@@ -1,0 +1,61 @@
+{
+  "title": "Coaxial capacitor off the grid: cut-cell held edges (electrostatics, conformal boundaries, analytic)",
+  "description": "Coax cross-section whose circles lie off the mesh: core (radius a) held at V0 and shield (every point with r > b) at 0 V by terminals, fill eps_fill; the axis is offset from every cell vertex and a, b are no multiples of the cell, so each mesh sees other sub-cell cuts. solver_defaults.conformal_boundaries is on: each free cell next to a terminal links to the drawn circle at its true distance (cut-cell held edges, Shortley-Weller conductance) instead of the staircased cell face. The sweep refines dx_cell (a / dx ~ 7.8, 15.6, 31.2).\nAnalytic: V = V0 ln(b/r)/ln(b/a), C' = 2 pi eps0 eps_fill/ln(b/a) per m of depth.\nDerived values tab: C_per_m (core charge / voltage) and Q_shield (= -C' V0) with their references; expect a few 1e-3 at the coarsest mesh, falling roughly 4x per refinement (second order). Switch Follow curved walls off (Solvers node) to compare: the staircase gives errors of ~1-3 % that jump irregularly with the mesh.\nSweep tab: C_per_m vs dx_cell with the dashed analytic value.\nLine profile tab (finest mesh): V_radial along the ray y = y_c from the axis to the domain edge against the log profile (held cells read V0 / 0, as the clamped analytic curve does at their centres); expect ~1e-3 of V0.\nStaircased twin: coax_capacitor_electrostatics.",
+  "version": 2,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "core voltage [V]; the shield is held at 0 V"},
+    {"name": "a", "expression": "0.4873*mm", "description": "core (inner conductor) radius, off the cell edges"},
+    {"name": "b", "expression": "1.9361*mm", "description": "shield (outer conductor) inner radius, off the cell edges"},
+    {"name": "eps_fill", "expression": 2.1, "description": "static relative permittivity of the fill (PTFE ~2.1)"},
+    {"name": "L_box", "expression": "5*mm", "description": "domain side; the shield fills every cell with r > b"},
+    {"name": "x_c", "expression": "L_box/2 + 13.7*um", "description": "axis x, off the cell vertices"},
+    {"name": "y_c", "expression": "L_box/2 - 21.9*um", "description": "axis y, off the cell vertices"},
+    {"name": "dx_cell", "expression": "15.625*um", "description": "uniform cell size (swept 62.5, 31.25, 15.625 um)"},
+    {"name": "C_ref", "expression": "2*pi*eps0_const*eps_fill/log(b/a)", "description": "analytic capacitance per length [F/m]"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "core", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "a"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "shield_disc", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "b"}},
+    {"name": "shield", "kind": "difference", "params": {"base": "box", "subtract": ["shield_disc"]}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fill", "library": null, "properties": {"eps_dc": "eps_fill"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "core", "type": "terminal", "selection": ["core"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "shield", "type": "terminal", "selection": ["shield"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-11}}
+  ],
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": false, "conformal_boundaries": true},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "dx_cell", "values": [6.25e-05, 3.125e-05, 1.5625e-05]}},
+  "derived_values": [
+    {"name": "C_per_m", "expression": "charge/voltage", "operation": "last", "source": "electrostatics.core",
+     "reference": "C_ref", "tolerance": 0.01},
+    {"name": "Q_shield", "expression": "charge", "operation": "last", "source": "electrostatics.shield",
+     "reference": "-C_ref*V0", "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "C_per_m_vs_dx", "target": "sweep", "series": "C_per_m", "expression": "C_ref", "tolerance": 0.01},
+    {"name": "V_radial", "target": "line",
+     "expression": "V0*log(b/min(max(hypot(x - x_c, y - y_c), a), b))/log(b/a)", "tolerance": 0.005,
+     "line": ["x_c", "y_c", "L_box", "y_c"], "field": "electrostatics.V"}
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "title": "Rotating solid cylinder: centrifugal body force and plane-strain stresses (analytic)",
+  "description": "Quarter cross-section of a long solid steel rod (radius b = 10 mm, E 200 GPa, nu 0.3, density 7850 kg/m^3; void outside) spinning about its axis at omega: the centrifugal load is an x, y dependent body force f = rho omega^2 (x, y) (body_force feature, no inertia otherwise). Rollers on x_lo / y_lo are the symmetry lines, the rod surface is free. Plane strain (eps_zz = 0: a long rod whose ends are held, not the free-ended generalised plane strain). The sweep runs omega over 1000, 3000, 5000 rad/s (every stress ~ omega^2).\nAnalytic (Timoshenko, plane strain; A = rho omega^2 / (8 (1 - nu))): sigma_r = A (3 - 2 nu)(b^2 - r^2), sigma_theta = A ((3 - 2 nu) b^2 - (1 + 2 nu) r^2), sigma_zz = nu (sigma_r + sigma_theta), so in Cartesian form sigma_xx = A ((3 - 2 nu)(b^2 - x^2) - (1 + 2 nu) y^2), sigma_yy = A ((3 - 2 nu) b^2 - (1 + 2 nu) x^2 - (3 - 2 nu) y^2); u_r = (1 + nu)(1 - 2 nu) rho omega^2 r ((3 - 2 nu) b^2 - r^2) / (8 E (1 - nu)). Centre stress A (3 - 2 nu) b^2 = 8.4 MPa and rim displacement (1 + nu)(1 - 2 nu) rho omega^2 b^3 / (4 E) = 0.13 um at 5000 rad/s. Equilibrium: the x_lo roller reacts with F_x = -rho omega^2 b^3 / 3 per m of depth (the total x body force on the quarter).\nThe rod surface is a staircase of 128 cells per radius (its area and moment are off by a few 1e-4; the outermost cells scatter).\nDerived values tab: sxx_centre / syy_centre / szz_centre (max over the rod, at the centre cell, ~1e-3), hoop_rim (probe in the rim cell on the x axis, sigma_theta(b) = A (2 - 4 nu) b^2, ~1-2 %), u_rim (probe u_x there, ~1e-3) and F_x_axis (x_lo reaction, ~1e-3).\nSweep tab: sxx_centre vs omega with the dashed omega^2 curve.\nLine profile tab (last sweep value, 5000 rad/s), half a cell above the x axis: sigma_r (solid.stress_xx), sigma_theta (solid.stress_yy), sigma_z (solid.stress_zz) and u_radial (solid.u_x); expected ~1 % of each curve's range.",
+  "version": 1,
+  "parameters": [
+    {"name": "E_rod", "expression": 2e11, "description": "Young's modulus in Pa (steel)"},
+    {"name": "nu_rod", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "rho_rod", "expression": 7850.0, "description": "density in kg/m^3 (enters only through the body force)"},
+    {"name": "omega_rot", "expression": 5000.0, "description": "angular speed in rad/s (swept 1000, 3000, 5000)"},
+    {"name": "b_rod", "expression": "10*mm", "description": "rod radius"},
+    {"name": "dx_mesh", "expression": "b_rod/128", "description": "uniform cell size (128 cells per radius)"},
+    {"name": "L_box", "expression": "b_rod + 4*dx_mesh", "description": "side of the quarter model (rod plus a 4-cell void margin)"},
+    {"name": "f_scale", "expression": "rho_rod*omega_rot**2", "description": "centrifugal body force per m of radius, rho omega^2 in N/m^4"},
+    {"name": "A_rot", "expression": "f_scale/(8*(1 - nu_rod))", "description": "plane-strain stress coefficient A in Pa/m^2"},
+    {"name": "x_rim", "expression": "b_rod - dx_mesh/2", "description": "rim probe x: centre of the last rod cell on the x axis"},
+    {"name": "y_rim", "expression": "dx_mesh/2", "description": "rim probe y (first cell row)"},
+    {"name": "hoop_rim_ref", "expression": "A_rot*((3 - 2*nu_rod)*b_rod**2 - (1 + 2*nu_rod)*x_rim**2 - (3 - 2*nu_rod)*y_rim**2)",
+     "description": "analytic sigma_yy at the rim probe in Pa (~A (2 - 4 nu) b^2)"},
+    {"name": "u_rim_ref", "expression": "(1 + nu_rod)*(1 - 2*nu_rod)*f_scale*x_rim*((3 - 2*nu_rod)*b_rod**2 - x_rim**2 - y_rim**2)/(8*E_rod*(1 - nu_rod))",
+     "description": "analytic u_x at the rim probe in m"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "rod", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_rod"}},
+    {"name": "rim_point", "kind": "point", "params": {"x": "x_rim", "y": "y_rim"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"youngs_modulus": "E_rod", "poisson_ratio": "nu_rod"},
+     "dispersion": null, "selection": ["rod"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "left", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "centrifugal", "type": "body_force", "selection": ["rod"],
+         "params": {"f_x": "f_scale*x", "f_y": "f_scale*y"}, "enabled": true},
+        {"name": "hoop", "type": "solid_probe", "selection": ["rim_point"], "params": {"component": "stress_yy"},
+         "enabled": true},
+        {"name": "rim", "type": "solid_probe", "selection": ["rim_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.stress_xx", "solid.stress_yy", "solid.stress_zz",
+                              "solid.von_mises"],
+            "sweep": {"parameter": "omega_rot", "values": [1000.0, 3000.0, 5000.0]}},
+  "derived_values": [
+    {"name": "sxx_centre", "expression": "solid_stress_xx", "selection": ["rod"], "operation": "max",
+     "reference": "A_rot*(3 - 2*nu_rod)*b_rod**2", "tolerance": 0.01},
+    {"name": "syy_centre", "expression": "solid_stress_yy", "selection": ["rod"], "operation": "max",
+     "reference": "A_rot*(3 - 2*nu_rod)*b_rod**2", "tolerance": 0.01},
+    {"name": "szz_centre", "expression": "solid_stress_zz", "selection": ["rod"], "operation": "max",
+     "reference": "2*nu_rod*A_rot*(3 - 2*nu_rod)*b_rod**2", "tolerance": 0.01},
+    {"name": "hoop_rim", "expression": "values", "selection": [], "operation": "last", "source": "solid.hoop",
+     "reference": "hoop_rim_ref", "tolerance": 0.03},
+    {"name": "u_rim", "expression": "values", "selection": [], "operation": "last", "source": "solid.rim",
+     "reference": "u_rim_ref", "tolerance": 0.01},
+    {"name": "F_x_axis", "expression": "F_x", "selection": [], "operation": "last", "source": "solid.left",
+     "reference": "-f_scale*b_rod**3/3", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "sxx_centre_vs_omega", "target": "sweep", "expression": "A_rot*(3 - 2*nu_rod)*b_rod**2",
+     "tolerance": 0.01, "series": "sxx_centre"},
+    {"name": "sigma_r", "target": "line",
+     "expression": "A_rot*((3 - 2*nu_rod)*(b_rod**2 - x**2) - (1 + 2*nu_rod)*y**2)", "tolerance": 0.03,
+     "line": [0.0, "dx_mesh/2", "b_rod - dx_mesh/2", "dx_mesh/2"], "field": "solid.stress_xx"},
+    {"name": "sigma_theta", "target": "line",
+     "expression": "A_rot*((3 - 2*nu_rod)*b_rod**2 - (1 + 2*nu_rod)*x**2 - (3 - 2*nu_rod)*y**2)", "tolerance": 0.03,
+     "line": [0.0, "dx_mesh/2", "b_rod - dx_mesh/2", "dx_mesh/2"], "field": "solid.stress_yy"},
+    {"name": "sigma_z", "target": "line",
+     "expression": "nu_rod*A_rot*(2*(3 - 2*nu_rod)*b_rod**2 - 4*(x**2 + y**2))", "tolerance": 0.03,
+     "line": [0.0, "dx_mesh/2", "b_rod - dx_mesh/2", "dx_mesh/2"], "field": "solid.stress_zz"},
+    {"name": "u_radial", "target": "line",
+     "expression": "(1 + nu_rod)*(1 - 2*nu_rod)*f_scale*x*((3 - 2*nu_rod)*b_rod**2 - x**2 - y**2)/(8*E_rod*(1 - nu_rod))",
+     "tolerance": 0.01, "line": [0.0, "dx_mesh/2", "b_rod - dx_mesh/2", "dx_mesh/2"], "field": "solid.u_x"}
+  ]
+}

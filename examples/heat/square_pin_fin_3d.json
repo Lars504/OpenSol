@@ -1,0 +1,66 @@
+{
+  "title": "Square pin fin with convective faces (3D, analytic)",
+  "description": "3D steady conduction in an aluminium pin fin of square cross-section W x W and length L: the base face x_lo held at T_base, the four long faces (y_lo, y_hi, z_lo, z_hi) cooled by convection h toward T_inf (Robin on outer faces, incl. the z faces), the tip x_hi insulated; 160 x 9 x 9 cells.\nAnalytic (fin equation with the first transverse eigenvalue): theta = theta_b cosh(m (L - x)) / cosh(m L), m^2 = 4 h / (k W) (1 - Bi / 3), Bi = h (W / 2) / k (~1e-3: the cross-section is nearly isothermal); efficiency tanh(m L) / (m L), tip ratio 1 / cosh(m L).\nDerived values tab: efficiency (volume mean of T_rise / theta_b), tip_ratio and mid_ratio (probes on the axis at x = L - dx / 2 and x = L / 2 + dx / 2). Expect ~1e-3 or better (transverse profile O(Bi), face Robin in series with the half cell).\nLine profile tab (mid-height cut z = W / 2): T_rise_axis along x through the axis.",
+  "version": 2,
+  "parameters": [
+    {"name": "T_base", "expression": 373.15, "description": "base temperature in K"},
+    {"name": "T_inf", "expression": 293.15, "description": "ambient temperature in K (also the heat T0)"},
+    {"name": "k_al", "expression": 237.0, "description": "aluminium thermal conductivity in W/(m K)"},
+    {"name": "h_conv", "expression": 100.0, "description": "heat transfer coefficient of the four long faces in W/(m^2 K) (forced air)"},
+    {"name": "dx_mesh", "expression": "0.5*mm", "description": "uniform cubic cell size"},
+    {"name": "W_fin", "expression": "9*dx_mesh", "description": "cross-section side (odd cell count: the axis is a cell centre)"},
+    {"name": "L_fin", "expression": "160*dx_mesh", "description": "fin length along x"},
+    {"name": "theta_b", "expression": "T_base - T_inf", "description": "base excess temperature in K"},
+    {"name": "Bi_half", "expression": "h_conv*W_fin/(2*k_al)", "description": "Biot number on the half width (~9.5e-4)"},
+    {"name": "m_fin", "expression": "sqrt(4*h_conv/(k_al*W_fin)*(1 - Bi_half/3))",
+     "description": "fin parameter m in 1/m (m L ~ 1.55)"},
+    {"name": "x_tip", "expression": "L_fin - dx_mesh/2", "description": "x of the tip probe (centre of the last cell)"},
+    {"name": "x_mid", "expression": "L_fin/2 + dx_mesh/2", "description": "x of the mid probe (a cell centre)"}
+  ],
+  "domain": {"size_x": "L_fin", "size_y": "W_fin", "size_z": "W_fin"},
+  "geometry": [
+    {"name": "tip_point", "kind": "point", "params": {"x": "x_tip", "y": "W_fin/2", "z": "W_fin/2"}},
+    {"name": "mid_point", "kind": "point", "params": {"x": "x_mid", "y": "W_fin/2", "z": "W_fin/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "aluminium", "library": null, "properties": {"k": "k_al"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_inf"},
+      "features": [
+        {"name": "base", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_base"},
+         "enabled": true},
+        {"name": "faces", "type": "convection", "selection": ["y_lo", "y_hi", "z_lo", "z_hi"],
+         "params": {"h": "h_conv", "T_ext": "T_inf"}, "enabled": true},
+        {"name": "tip", "type": "temperature_probe", "selection": ["tip_point"], "params": {}, "enabled": true},
+        {"name": "mid", "type": "temperature_probe", "selection": ["mid_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["heat.T", "heat.T_rise"], "sweep": null},
+  "derived_values": [
+    {"name": "efficiency", "expression": "heat_T_rise/theta_b", "selection": [], "operation": "mean",
+     "reference": "tanh(m_fin*L_fin)/(m_fin*L_fin)", "tolerance": 3e-3},
+    {"name": "tip_ratio", "expression": "(values - T_inf)/theta_b", "selection": [], "operation": "last",
+     "source": "heat.tip", "reference": "cosh(m_fin*(L_fin - x_tip))/cosh(m_fin*L_fin)", "tolerance": 3e-3},
+    {"name": "mid_ratio", "expression": "(values - T_inf)/theta_b", "selection": [], "operation": "last",
+     "source": "heat.mid", "reference": "cosh(m_fin*(L_fin - x_mid))/cosh(m_fin*L_fin)", "tolerance": 3e-3}
+  ],
+  "analytic_curves": [
+    {"name": "T_rise_axis", "target": "line",
+     "expression": "theta_b*cosh(m_fin*(L_fin - x))/cosh(m_fin*L_fin)", "tolerance": 3e-3,
+     "line": [0.0, "W_fin/2", "L_fin", "W_fin/2"], "field": "heat.T_rise", "plane": "W_fin/2"}
+  ]
+}

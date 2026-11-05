@@ -1,0 +1,95 @@
+{
+  "title": "Anisotropic elliptic coax: rotated permittivity tensor (electrostatics, analytic)",
+  "description": "Coaxial line in a uniaxial crystal (static principal permittivities eps_1 = 43 along the axis at angle theta from +x, eps_2 = 28 across it, lithium-niobate-like), entered as eps_dc_xx / eps_dc_yy / eps_dc_xy of the rotated tensor. Core (terminal at V0) and shield (terminal at 0 V, every cell outside the outer ellipse) are the ellipses rho = a and rho = b of the stretched metric, semi-axes a sqrt(eps_i / eps_bar), turned with theta. The sweep turns the crystal and both ellipses together over 0-90 deg (30 deg last, so the line curves show a rotated case).\nAnalytic (stretched coordinates u / sqrt(eps_1), v / sqrt(eps_2) along the principal axes): V = V0 ln(b / rho) / ln(b / a), rho = sqrt(eps_bar (u^2 / eps_1 + v^2 / eps_2)), eps_bar = sqrt(eps_1 eps_2); C' = 2 pi eps0 eps_bar / ln(b / a), independent of theta.\nE stays -grad V; D adds the cross part -eps0 eps_dc_xy (dV/dy, dV/dx) averaged over each cell's 2x2 blocks (help of eps_dc_xy); no D or field-energy check here.\nDerived values tab: C_per_m (core charge / voltage), Q_shield (= -C' V0) and V_probe (probe 40 cells along +x) with their references; expect ~1 % (staircased ellipses).\nSweep tab: C_per_m vs theta, flat (dashed).\nLine profile tab (theta = 30 deg): V_along_x / V_along_y (field V), E_x_along_x and E_y_along_x (field E_y: nonzero on the x axis only because the tensor is rotated; drawn without a tolerance: the stepped ellipse edges overshoot and blunt it next to both conductors at any dx, and the max-error score does not converge there, while C_vs_theta and V_probe check the cross term).",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "core voltage [V]; the shield is held at 0 V"},
+    {"name": "a_core", "expression": "0.5*mm", "description": "core size: the stretched radius rho = a of the core ellipse"},
+    {"name": "b_shield", "expression": "2*mm", "description": "shield size: the stretched radius rho = b of the shield ellipse"},
+    {"name": "eps_1", "expression": 43.0, "description": "static relative permittivity along the principal axis at angle theta"},
+    {"name": "eps_2", "expression": 28.0, "description": "static relative permittivity across it"},
+    {"name": "eps_bar", "expression": "sqrt(eps_1*eps_2)", "description": "geometric-mean permittivity (34.7)"},
+    {"name": "theta_deg", "expression": 30.0, "description": "rotation of the principal axis (and both ellipses) from +x in degrees (swept)"},
+    {"name": "c_t", "expression": "cos(theta_deg*pi/180)", "description": "cos(theta)"},
+    {"name": "s_t", "expression": "sin(theta_deg*pi/180)", "description": "sin(theta)"},
+    {"name": "eps_xx_rot", "expression": "eps_1*c_t**2 + eps_2*s_t**2", "description": "rotated tensor xx"},
+    {"name": "eps_yy_rot", "expression": "eps_1*s_t**2 + eps_2*c_t**2", "description": "rotated tensor yy"},
+    {"name": "eps_xy_rot", "expression": "(eps_1 - eps_2)*s_t*c_t", "description": "rotated tensor xy (6.5 at 30 deg)"},
+    {"name": "L_box", "expression": "5*mm", "description": "domain side; the shield fills every cell outside the outer ellipse"},
+    {"name": "x_c", "expression": "L_box/2", "description": "axis x (a cell vertex)"},
+    {"name": "y_c", "expression": "L_box/2", "description": "axis y (a cell vertex)"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform cell size"},
+    {"name": "x_probe", "expression": "40.5*dx_cell", "description": "probe x relative to the axis (a cell centre)"},
+    {"name": "y_probe", "expression": "dx_cell/2", "description": "probe y relative to the axis (a cell centre)"},
+    {"name": "rho_probe",
+     "expression": "sqrt(eps_bar*((x_probe*c_t + y_probe*s_t)**2/eps_1 + (y_probe*c_t - x_probe*s_t)**2/eps_2))",
+     "description": "stretched radius of the probe"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "core", "kind": "ellipse",
+     "params": {"cx": "x_c", "cy": "y_c", "a": "a_core*sqrt(eps_1/eps_bar)", "b": "a_core*sqrt(eps_2/eps_bar)",
+                "angle": "theta_deg"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "shield_inside", "kind": "ellipse",
+     "params": {"cx": "x_c", "cy": "y_c", "a": "b_shield*sqrt(eps_1/eps_bar)", "b": "b_shield*sqrt(eps_2/eps_bar)",
+                "angle": "theta_deg"}},
+    {"name": "shield", "kind": "difference", "params": {"base": "box", "subtract": ["shield_inside"]}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_c + x_probe", "y": "y_c + y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "crystal", "library": null,
+     "properties": {"eps_dc_xx": "eps_xx_rot", "eps_dc_yy": "eps_yy_rot", "eps_dc_xy": "eps_xy_rot"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "core", "type": "terminal", "selection": ["core"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "shield", "type": "terminal", "selection": ["shield"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "theta_deg", "values": [0.0, 15.0, 45.0, 60.0, 90.0, 30.0]}},
+  "derived_values": [
+    {"name": "C_per_m", "expression": "charge/voltage", "operation": "last", "source": "electrostatics.core",
+     "reference": "2*pi*eps0_const*eps_bar/log(b_shield/a_core)", "tolerance": 0.02},
+    {"name": "Q_shield", "expression": "charge", "operation": "last", "source": "electrostatics.shield",
+     "reference": "-2*pi*eps0_const*eps_bar*V0/log(b_shield/a_core)", "tolerance": 0.02},
+    {"name": "V_probe", "expression": "values", "operation": "last", "source": "electrostatics.probe",
+     "reference": "V0*log(b_shield/rho_probe)/log(b_shield/a_core)", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "C_vs_theta", "target": "sweep", "series": "C_per_m",
+     "expression": "2*pi*eps0_const*eps_bar/log(b_shield/a_core)", "tolerance": 0.02},
+    {"name": "V_along_x", "target": "line",
+     "expression": "V0*log(b_shield/min(max(sqrt(eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2)), a_core), b_shield))/log(b_shield/a_core)",
+     "tolerance": 0.02,
+     "line": [0.0, "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "electrostatics.V"},
+    {"name": "V_along_y", "target": "line",
+     "expression": "V0*log(b_shield/min(max(sqrt(eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2)), a_core), b_shield))/log(b_shield/a_core)",
+     "tolerance": 0.02,
+     "line": ["x_c + dx_cell/2", 0.0, "x_c + dx_cell/2", "L_box"], "field": "electrostatics.V"},
+    {"name": "E_x_along_x", "target": "line",
+     "expression": "where((eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2) > a_core**2)*(eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2) < b_shield**2), V0*(((x - x_c)*c_t + (y - y_c)*s_t)*c_t/eps_1 - ((y - y_c)*c_t - (x - x_c)*s_t)*s_t/eps_2)/((((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2)*log(b_shield/a_core)), 0)",
+     "tolerance": 0.05,
+     "line": [0.0, "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "electrostatics.E_x"},
+    {"name": "E_y_along_x", "target": "line",
+     "expression": "where((eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2) > a_core**2)*(eps_bar*(((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2) < b_shield**2), V0*(((x - x_c)*c_t + (y - y_c)*s_t)*s_t/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)*c_t/eps_2)/((((x - x_c)*c_t + (y - y_c)*s_t)**2/eps_1 + ((y - y_c)*c_t - (x - x_c)*s_t)**2/eps_2)*log(b_shield/a_core)), 0)",
+     "line": [0.0, "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "electrostatics.E_y"}
+  ]
+}

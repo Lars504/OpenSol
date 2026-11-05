@@ -1,0 +1,349 @@
+{
+  "open_sol_version": "0.3.0",
+  "status": "completed",
+  "message": "",
+  "model": {
+    "title": "Pressure-driven Poiseuille channel (analytic)",
+    "file": "examples\\fluid\\poiseuille_channel_pressure.json",
+    "study_type": "stationary"
+  },
+  "wall_time": 9.174146700068377,
+  "build": {
+    "nx": 80,
+    "ny": 20,
+    "n_cells": 1600,
+    "dt": null,
+    "dx_min": 1e-06,
+    "dx_max": 1e-06,
+    "npml_sides": {
+      "x_lo": 0,
+      "x_hi": 0,
+      "y_lo": 0,
+      "y_hi": 0
+    },
+    "build_seconds": 0.0028850999660789967,
+    "gpu_bytes": 271360,
+    "session_gpu_bytes": 271360,
+    "gpu_breakdown": [
+      [
+        "domain",
+        0
+      ],
+      [
+        "material arrays 'laminar_flow'",
+        13312
+      ],
+      [
+        "materials",
+        2048
+      ],
+      [
+        "physics 'fluid'",
+        242176
+      ],
+      [
+        "feature 'fluid/inlet'",
+        512
+      ],
+      [
+        "feature 'fluid/outlet'",
+        512
+      ],
+      [
+        "feature 'fluid/walls'",
+        2048
+      ],
+      [
+        "physics 'fluid' finalize",
+        12800
+      ],
+      [
+        "runner prepare",
+        0
+      ],
+      [
+        "build temporaries freed",
+        -2048
+      ]
+    ],
+    "gpu_peak_bytes": 325632,
+    "gpu_budget": 7010779136,
+    "gpu_estimate": {
+      "gpu_steady": 257600,
+      "gpu_build_peak": 345600,
+      "host": 0,
+      "items": [
+        [
+          "model: material arrays (2 x float32)",
+          12800
+        ],
+        [
+          "physics 'fluid': fields u, speed, pressure, forces (8 x float32)",
+          51200
+        ],
+        [
+          "physics 'fluid': populations (2 x 9 x float32)",
+          115200
+        ],
+        [
+          "physics 'fluid': lattice macros, rates, forces (10 x float32 + bool)",
+          65600
+        ],
+        [
+          "physics 'fluid': kinematic viscosity (float64)",
+          12800
+        ]
+      ],
+      "steady_deviation": 0.05341614906832298,
+      "peak_deviation": -0.057777777777777775
+    }
+  },
+  "study_seconds": 1.456374500063248,
+  "solver_work": {
+    "fluid": {
+      "lattice_steps": 116722,
+      "solves": 1
+    }
+  },
+  "ticks": 1,
+  "t_end": 0.0,
+  "warnings": [
+    "curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 4.52e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported",
+    "curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.37e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported",
+    "curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.55e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported",
+    "curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change inf > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported",
+    "curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.12e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported"
+  ],
+  "errors": [],
+  "issues": [],
+  "traceback": "",
+  "memory": {
+    "pool_used": 271360,
+    "pool_reserved": 309760,
+    "device_free": 7543455744,
+    "device_total": 8589410304,
+    "budget": 7010779136,
+    "other": 1045644800,
+    "build_gpu_bytes": 271360,
+    "session_gpu_bytes": 271360
+  },
+  "failed_build_memory": null,
+  "derived": {
+    "Q_sim": 1.6687611124277113e-08,
+    "u_max": 0.0012470067013055086,
+    "p_mean": 0.9999875733023509
+  },
+  "derived_reference": {
+    "Q_sim": 1.6666666666666664e-08,
+    "u_max": 0.0012468749999999997,
+    "p_mean": 1.0
+  },
+  "derived_error": {
+    "Q_sim": 0.0012566674566269445,
+    "u_max": 0.00010562510717505279,
+    "p_mean": 1.242669764911497e-05
+  },
+  "curve_error": {
+    "u_profile": {
+      "max": 7.030957922353013e-06,
+      "rms": 4.761011196828942e-06,
+      "n_points": 40
+    },
+    "p_profile": {
+      "max": 1.0712341692440313e-05,
+      "rms": 5.7768006515848706e-06,
+      "n_points": 160
+    },
+    "Q_vs_H": {
+      "max": 0.0003376379042864647,
+      "rms": 0.00020956101178063764,
+      "n_points": 5
+    }
+  },
+  "derived_curves": {},
+  "fixed_point": null,
+  "sweep": {
+    "parameter": "H_ch",
+    "values": [
+      9.999999999999999e-06,
+      1.6e-05,
+      2.9999999999999997e-05,
+      3.9999999999999996e-05,
+      1.9999999999999998e-05
+    ],
+    "derived": {
+      "Q_sim": [
+        2.0937554946541784e-09,
+        8.550029535055162e-09,
+        5.628241786766052e-08,
+        1.333783517205715e-07,
+        1.6687611124277113e-08
+      ],
+      "u_max": [
+        0.0003093784907832742,
+        0.000796913169324398,
+        0.0028105315286666155,
+        0.005001989658921957,
+        0.0012470067013055086
+      ],
+      "p_mean": [
+        1.0000001324689949,
+        0.9999962557412798,
+        0.9999168767388134,
+        0.9997090787650086,
+        0.9999875733023509
+      ]
+    },
+    "reference": {
+      "Q_sim": [
+        2.083333333333333e-09,
+        8.533333333333334e-09,
+        5.624999999999999e-08,
+        1.333333333333333e-07,
+        1.6666666666666664e-08
+      ],
+      "u_max": [
+        0.00030937499999999997,
+        0.0007968750000000001,
+        0.0028093750000000002,
+        0.004996875,
+        0.0012468749999999997
+      ],
+      "p_mean": [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "error": {
+      "Q_sim": [
+        0.005002637434005828,
+        0.0019565861392767093,
+        0.0005763176472982993,
+        0.0003376379042864647,
+        0.0012566674566269445
+      ],
+      "u_max": [
+        1.128333987621021e-05,
+        4.789876002884207e-05,
+        0.00041166760101988734,
+        0.0010235715165893555,
+        0.00010562510717505279
+      ],
+      "p_mean": [
+        1.324689948845048e-07,
+        3.744258720184135e-06,
+        8.312326118664615e-05,
+        0.00029092123499141476,
+        1.242669764911497e-05
+      ]
+    },
+    "curve_error": {},
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "failed": [],
+    "converged": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "stored_fields": [
+    "fluid.u_x",
+    "fluid.pressure",
+    "fluid.speed"
+  ],
+  "fields": {
+    "fluid.u_x": {
+      "physics": "fluid",
+      "component": "u_x",
+      "label": "Velocity x",
+      "unit": "m/s",
+      "shape": [
+        80,
+        20
+      ],
+      "min": 0.00012182439968455583,
+      "max": 0.0012470067013055086,
+      "mean": 0.0008343805355025324,
+      "max_abs": 0.0012470067013055086,
+      "max_abs_at": [
+        7.95e-05,
+        9.5e-06
+      ],
+      "n_nonfinite": 0,
+      "time": 0.0,
+      "time_label": "lattice step 116722"
+    },
+    "fluid.pressure": {
+      "physics": "fluid",
+      "component": "pressure",
+      "label": "Pressure",
+      "unit": "Pa",
+      "shape": [
+        80,
+        20
+      ],
+      "min": 0.01244333479553461,
+      "max": 1.9875215291976929,
+      "mean": 0.9999875733023513,
+      "max_abs": 1.9875215291976929,
+      "max_abs_at": [
+        5e-07,
+        9.5e-06
+      ],
+      "n_nonfinite": 0,
+      "time": 0.0,
+      "time_label": "lattice step 116722"
+    },
+    "fluid.speed": {
+      "physics": "fluid",
+      "component": "speed",
+      "label": "Flow speed",
+      "unit": "m/s",
+      "shape": [
+        80,
+        20
+      ],
+      "min": 0.00012182439968455583,
+      "max": 0.0012470067013055086,
+      "mean": 0.0008343805355389122,
+      "max_abs": 0.0012470067013055086,
+      "max_abs_at": [
+        7.95e-05,
+        9.5e-06
+      ],
+      "n_nonfinite": 0,
+      "time": 0.0,
+      "time_label": "lattice step 116722"
+    }
+  },
+  "results": {},
+  "snapshot_times": [
+    0.0
+  ],
+  "snapshot_labels": [
+    null
+  ],
+  "files": {
+    "summary": "summary.json",
+    "log": "log.txt",
+    "arrays": "results.npz",
+    "model": "model.json",
+    "figures": []
+  }
+}

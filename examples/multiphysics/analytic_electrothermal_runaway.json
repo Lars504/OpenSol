@@ -1,0 +1,94 @@
+{
+  "title": "Electrothermal strip, current drive: thermal runaway (analytic)",
+  "description": "The strip of the voltage-drive example, now fed a fixed current through x_lo (current_density) and grounded at x_hi; a resistivity rising with T makes the Joule power grow with T, and no steady state exists above J_crit = (pi / L) sqrt(k sigma0 / beta).\nAnalytic: beta (T_max - T0) = sec(pi/2 J_ratio) - 1, diverging at J_ratio = 1; theta = [cos(m (x - L/2)) / cos(m L / 2) - 1] / beta with m = pi J_ratio / L.\nSweep tab: beta_dT_max and dT_max versus J_ratio (0.2..0.95) with their references, against dT_const_sigma, the rise without feedback.\nDerived values tab: T_max, dT_max, beta_dT_max, T_probe and I_ground against their references (~1e-4 or below, growing toward J_ratio = 1).\nLine profile tab: T_profile (the cosine profile).\nProbes tab: T_centre gets one sample per fixed-point iteration; the Picard gain is J_ratio^2, so plain Picard (study anderson_depth 0) takes ~100+ iterations at 0.95; the Anderson-accelerated loop (anderson_depth 3) needs far fewer.\nSet J_ratio = 1.05 (no sweep) and anderson_depth 0 to see the runaway: the temperature grows each iteration and the study stops with a 'did not converge' warning (accelerated, the loop would head for an unphysical negative-resistivity fixed point instead).",
+  "version": 1,
+  "parameters": [
+    {"name": "J_ratio", "expression": 0.9,
+     "description": "drive current density as a fraction of the runaway current J_crit (the sweep runs 0.2..0.95)"},
+    {"name": "L", "expression": "1*mm", "description": "strip length along x"},
+    {"name": "w", "expression": "50*um", "description": "strip width along y (insulated faces: the problem is 1D in x)"},
+    {"name": "dx_cell", "expression": "L/200", "description": "uniform cell size (200 cells along the strip)"},
+    {"name": "sigma0", "expression": 9.4e6, "description": "DC conductivity at T0 in S/m (platinum-like)"},
+    {"name": "beta", "expression": 3.9e-3, "description": "temperature coefficient of resistivity in 1/K: rho = rho0 (1 + beta (T - T0))"},
+    {"name": "k_th", "expression": 72.0, "description": "thermal conductivity in W/(m K) (platinum-like)"},
+    {"name": "T0", "expression": 293.15, "description": "temperature of both strip ends and reference temperature in K"},
+    {"name": "J_crit", "expression": "(pi/L)*sqrt(k_th*sigma0/beta)", "description": "runaway current density in A/m^2 (~1.3e9 here)"},
+    {"name": "J_drive", "expression": "J_ratio*J_crit", "description": "applied current density in A/m^2 (inward through x_lo)"},
+    {"name": "m_c", "expression": "pi*J_ratio/L", "description": "wavenumber m of the cosine temperature profile in 1/m (m L = pi at runaway)"},
+    {"name": "beta_dT_ref", "expression": "1/cos(pi*J_ratio/2) - 1", "description": "analytic beta (T_max - T0), dimensionless"},
+    {"name": "dT_ref", "expression": "beta_dT_ref/beta",
+     "description": "analytic peak rise T_max - T0 in K (far beyond any real film near J_crit: the point is the divergence)"},
+    {"name": "x_probe", "expression": "L/2 + dx_cell/2", "description": "temperature probe x: the cell centre just right of the strip centre"},
+    {"name": "T_probe_ref", "expression": "T0 + (cos(m_c*(x_probe - L/2))/cos(pi*J_ratio/2) - 1)/beta",
+     "description": "analytic temperature at the probe in K"}
+  ],
+  "domain": {"size_x": "L", "size_y": "w"},
+  "geometry": [
+    {"name": "centre", "kind": "point", "params": {"x": "x_probe", "y": "w/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "film", "library": null,
+     "properties": {"sigma_dc": "sigma0/(1 + beta*(heat_T - T0))", "k": "k_th"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "feed", "type": "current_density", "selection": ["x_lo"], "params": {"current_density": "J_drive"},
+         "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T0"},
+      "features": [
+        {"name": "cold_ends", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T0"},
+         "enabled": true},
+        {"name": "T_centre", "type": "temperature_probe", "selection": ["centre"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "joule", "type": "currents_heat_joule", "source": "currents", "target": "heat", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 400, "tolerance": 2e-6, "relaxation": 1.0, "anderson_depth": 3,
+                         "warm_start": true},
+            "stored_fields": ["heat.T", "currents.V", "currents.q_joule"],
+            "sweep": {"parameter": "J_ratio", "values": [0.2, 0.4, 0.6, 0.8, 0.9, 0.95]}},
+  "derived_values": [
+    {"name": "T_max", "expression": "heat_T", "selection": [], "operation": "max", "reference": "T0 + dT_ref",
+     "tolerance": 1e-3},
+    {"name": "dT_max", "expression": "heat_T_rise", "selection": [], "operation": "max", "reference": "dT_ref",
+     "tolerance": 3e-3},
+    {"name": "beta_dT_max", "expression": "beta*heat_T_rise", "selection": [], "operation": "max",
+     "reference": "beta_dT_ref", "tolerance": 3e-3},
+    {"name": "T_probe", "expression": "values", "operation": "last", "source": "heat.T_centre",
+     "reference": "T_probe_ref", "tolerance": 1e-3},
+    {"name": "I_ground", "expression": "current", "operation": "last", "source": "currents.ground",
+     "reference": "-J_drive*w", "tolerance": 3e-4}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line", "expression": "T0 + (cos(m_c*(x - L/2))/cos(pi*J_ratio/2) - 1)/beta",
+     "tolerance": 0.015,
+     "line": [0.0, "w/2", "L", "w/2"], "field": "heat.T"},
+    {"name": "beta_dT_const_sigma", "target": "sweep", "expression": "pi**2/8*J_ratio**2", "series": "beta_dT_max"},
+    {"name": "dT_const_sigma", "target": "sweep", "expression": "pi**2/8*J_ratio**2/beta", "series": "dT_max"}
+  ]
+}

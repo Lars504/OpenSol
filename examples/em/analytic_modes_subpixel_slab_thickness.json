@@ -1,0 +1,100 @@
+{
+  "title": "Analytic: slab n_eff vs thickness off the grid, subpixel smoothing (em_modes)",
+  "description": "Cross-section modes (em_modes, mode_analysis at 1.55 um) of a silicon slab in silica, periodic x (4 cells), CPML along y, uniform 10 nm cells. The slab centre sits 0.37 cells off a cell edge and the sweep steps its thickness d_slab by 3 nm (0.3 cells) from 205 to 235 nm, so its two edges cross the cells at ever other sub-cell positions. solver_defaults.subpixel_smoothing is on: interface cells and faces get the Kottke-averaged permittivity (arithmetic for the tangential E_x of TE0, harmonic for the normal E_y of TM0).\nAnalytic: TE0 u tan(u) = w, TM0 u tan(u) = (eps_si / eps_sio2) w, u = kappa d / 2, u^2 + w^2 = V^2, V = k0 (d/2) sqrt(eps_si - eps_sio2); neff_te / neff_tm are solved in the parameters by 5 Newton steps. Below the TE1 cutoff (~245 nm) the table holds TE0 (row 0) and TM0 (row 1).\nSweep tab: n_eff_TE0 and n_eff_TM0 vs d_slab with the dashed dispersion: with smoothing a smooth curve ~1e-3 (TE0) / ~2e-3 (TM0) below the closed form (Yee dispersion at ~29 cells per wavelength in silicon, second order). Switch smoothing off (Solvers node, Smooth material interfaces) to compare: the staircase holds n_eff constant while no cell centre changes side and jumps by up to ~1e-2 when one does.\nDerived values tab (last value, 235 nm): the same with reference and relative error, te_fraction 1 (TE0) and 0 (TM0).",
+  "version": 2,
+  "parameters": [
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the mode solve"},
+    {"name": "eps_si", "expression": 12.11, "description": "silicon core permittivity (n = 3.480)"},
+    {"name": "eps_sio2", "expression": 2.085, "description": "silica cladding permittivity (n = 1.444)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "d_slab", "expression": "235*nm", "description": "slab thickness (swept 205-235 nm in 3 nm steps)"},
+    {"name": "Ly", "expression": "2*um", "description": "domain height (CPML beyond)"},
+    {"name": "y_slab", "expression": "Ly/2 + 0.37*dx_cell", "description": "slab centre line, off the cell edges"},
+    {"name": "V_slab", "expression": "pi*d_slab/lambda0*sqrt(eps_si - eps_sio2)",
+     "description": "normalised frequency V = k0 (d/2) sqrt(eps_si - eps_sio2)"},
+    {"name": "u_te0", "expression": "pi/2*V_slab/(V_slab + 1)", "description": "TE start value of u = kappa d / 2"},
+    {"name": "u_te1",
+     "expression": "u_te0 - (u_te0 - atan(sqrt(V_slab**2 - u_te0**2)/u_te0))/(1 + 1/sqrt(V_slab**2 - u_te0**2))",
+     "description": "TE Newton step 1 on u - atan(w / u) = 0"},
+    {"name": "u_te2",
+     "expression": "u_te1 - (u_te1 - atan(sqrt(V_slab**2 - u_te1**2)/u_te1))/(1 + 1/sqrt(V_slab**2 - u_te1**2))",
+     "description": "TE Newton step 2"},
+    {"name": "u_te3",
+     "expression": "u_te2 - (u_te2 - atan(sqrt(V_slab**2 - u_te2**2)/u_te2))/(1 + 1/sqrt(V_slab**2 - u_te2**2))",
+     "description": "TE Newton step 3"},
+    {"name": "u_te4",
+     "expression": "u_te3 - (u_te3 - atan(sqrt(V_slab**2 - u_te3**2)/u_te3))/(1 + 1/sqrt(V_slab**2 - u_te3**2))",
+     "description": "TE Newton step 4"},
+    {"name": "u_te5",
+     "expression": "u_te4 - (u_te4 - atan(sqrt(V_slab**2 - u_te4**2)/u_te4))/(1 + 1/sqrt(V_slab**2 - u_te4**2))",
+     "description": "TE Newton step 5 (converged to machine precision)"},
+    {"name": "neff_te", "expression": "sqrt(eps_si - (u_te5*lambda0/(pi*d_slab))**2)",
+     "description": "analytic n_eff of the fundamental TE (E_x along the slab) mode"},
+    {"name": "r_tm", "expression": "eps_si/eps_sio2", "description": "TM boundary factor n_core^2 / n_clad^2"},
+    {"name": "u_tm0", "expression": "min(pi/2*r_tm*V_slab/(r_tm*V_slab + 1), 0.98*V_slab)",
+     "description": "TM start value of u, between the root and V (convex: Newton descends from the right; uncapped it passes V below d = 220 nm)"},
+    {"name": "u_tm1",
+     "expression": "u_tm0 - (u_tm0 - atan(r_tm*sqrt(V_slab**2 - u_tm0**2)/u_tm0))/(1 + r_tm*V_slab**2/(sqrt(V_slab**2 - u_tm0**2)*(u_tm0**2 + r_tm**2*(V_slab**2 - u_tm0**2))))",
+     "description": "TM Newton step 1 on u - atan(r w / u) = 0"},
+    {"name": "u_tm2",
+     "expression": "u_tm1 - (u_tm1 - atan(r_tm*sqrt(V_slab**2 - u_tm1**2)/u_tm1))/(1 + r_tm*V_slab**2/(sqrt(V_slab**2 - u_tm1**2)*(u_tm1**2 + r_tm**2*(V_slab**2 - u_tm1**2))))",
+     "description": "TM Newton step 2"},
+    {"name": "u_tm3",
+     "expression": "u_tm2 - (u_tm2 - atan(r_tm*sqrt(V_slab**2 - u_tm2**2)/u_tm2))/(1 + r_tm*V_slab**2/(sqrt(V_slab**2 - u_tm2**2)*(u_tm2**2 + r_tm**2*(V_slab**2 - u_tm2**2))))",
+     "description": "TM Newton step 3"},
+    {"name": "u_tm4",
+     "expression": "u_tm3 - (u_tm3 - atan(r_tm*sqrt(V_slab**2 - u_tm3**2)/u_tm3))/(1 + r_tm*V_slab**2/(sqrt(V_slab**2 - u_tm3**2)*(u_tm3**2 + r_tm**2*(V_slab**2 - u_tm3**2))))",
+     "description": "TM Newton step 4"},
+    {"name": "u_tm5",
+     "expression": "u_tm4 - (u_tm4 - atan(r_tm*sqrt(V_slab**2 - u_tm4**2)/u_tm4))/(1 + r_tm*V_slab**2/(sqrt(V_slab**2 - u_tm4**2)*(u_tm4**2 + r_tm**2*(V_slab**2 - u_tm4**2))))",
+     "description": "TM Newton step 5 (converged to machine precision)"},
+    {"name": "neff_tm", "expression": "sqrt(eps_si - (u_tm5*lambda0/(pi*d_slab))**2)",
+     "description": "analytic n_eff of the fundamental TM (E_y normal to the slab) mode"}
+  ],
+  "domain": {"size_x": "4*dx_cell", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "y_slab - d_slab/2", "x1": "4*dx_cell", "y1": "y_slab + d_slab/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silica", "library": null, "properties": {"eps_r": "eps_sio2"}, "dispersion": null, "selection": ["all"]},
+    {"name": "silicon", "library": null, "properties": {"eps_r": "eps_si"}, "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "periodic", "bc_x_hi": "periodic", "wavelength": "lambda0", "n_modes": 2,
+                   "n_eff_guess": 3.0},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": true, "conformal_boundaries": false},
+  "study": {"type": "mode_analysis", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "d_slab",
+                      "values": [2.05e-07, 2.08e-07, 2.11e-07, 2.14e-07, 2.17e-07, 2.2e-07, 2.23e-07, 2.26e-07,
+                                 2.29e-07, 2.32e-07, 2.35e-07]}},
+  "derived_values": [
+    {"name": "n_eff_TE0", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
+     "reference": "neff_te", "tolerance": 3e-3},
+    {"name": "n_eff_TM0", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 1,
+     "reference": "neff_tm", "tolerance": 4e-3},
+    {"name": "te_fraction_TE0", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 0, "reference": 1.0, "tolerance": 1e-3},
+    {"name": "te_fraction_TM0", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 1, "reference": 0.0, "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "TE0_vs_thickness", "target": "sweep", "series": "n_eff_TE0", "expression": "neff_te",
+     "tolerance": 0.08},
+    {"name": "TM0_vs_thickness", "target": "sweep", "series": "n_eff_TM0", "expression": "neff_tm",
+     "tolerance": 0.1}
+  ]
+}

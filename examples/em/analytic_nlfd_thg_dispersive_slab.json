@@ -1,0 +1,95 @@
+{
+  "title": "Analytic: phase-mismatched third-harmonic generation of a chi3 slab (nonlinear FDFD)",
+  "description": "Undepleted THG (em_fdfd_nonlinear, nonlinear_frequency_domain study): a y-periodic strip (4 rows of 10 nm, CPML along x) filled everywhere, PML included, with one lossless Lorentz medium (eps_inf 2, delta_eps 0.3, resonance at 300 nm: n = 1.5204 at the 1550 nm pump, 1.5661 at the 516.7 nm harmonic), so nothing reflects. An E_z line source launches the pump (A_p = 1e7 V/m) into a chi3 slab (chi3_medium, strength chi3 = 1e-19 m^2/V^2, isotropic) of length L_nl; the generated channel th = 3 p is solved once with P(3w) = (1/4) eps0 chi3 E^3 as its source. The sweep runs L_nl over 1-12 um.\nAnalytic (continuum): |E_3w| = (3 k0 / (8 n_3w)) chi3 A^3 |sin(dk L / 2) / (dk / 2)|, dk = 3 k0 (n_3w - n_w): the harmonic grows over a coherence length pi / dk and falls back to 0 at 2 pi / dk. References use the exact 3-point lattice form of the same sum (the 2D solve of a y-uniform strip is the 1D lattice problem): K h = 2 asin(k h / 2) per channel, |E_3w| = 9 k0^2 h^2 chi3 A^3 / (8 sin(K_3w h)) |sin(N dK / 2) / sin(dK / 2)|, dK = 3 K_w h - K_3w h, N = L / h. The lattice mismatch is ~5 % larger than the continuum one (coherence length 5.40 um instead of 5.66 um, parameters L_coh / L_coh_cont), so the continuum curve E_th_cont is drawn for comparison only (no tolerance: sweep curves compare per point, and past the coherence length its zero at 11.3 um sits beside the lattice zero at 10.8 um, ~75 % apart at L = 12 um).\nSweep tab: E_th_forward (|E_z| of the TH beyond the slab) vs L_nl with the dashed lattice curve (peak ~336 V/m near L = 5.4 um, zero near 10.8 um).\nDerived values tab: E_th_forward and E_p_end (pump in the last slab cell, = A_p: undepleted, no linear step) against their references; expected ~1e-3 (CPML floor; to be confirmed by a first run).\nLine profile tab (last sweep value, L_nl = 12 um, snapshot 'channel th'): |E_z| of the TH from the slab start to 1 um past its end vs the exact lattice profile (forward growth sin(dK (n + 1) / 2) / sin(dK / 2) plus the small backward-generated part, which leaves a ~1.5 % ripple).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "1550*nm", "description": "pump vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "periodic y period (4 cells)"},
+    {"name": "eps_inf", "expression": 2.0, "description": "background permittivity of the medium"},
+    {"name": "d_eps", "expression": 0.3, "description": "Lorentz oscillator strength delta_eps"},
+    {"name": "lam_r", "expression": "300*nm", "description": "vacuum wavelength of the lossless Lorentz resonance"},
+    {"name": "omega_r", "expression": "2*pi*c_const/lam_r", "description": "resonance angular frequency omega_0 [rad/s]"},
+    {"name": "chi3_val", "expression": 1e-19, "description": "chi3 of the slab [m^2/V^2] (chi_xxxx; E_z only sees chi_zzzz = chi3)"},
+    {"name": "A_p", "expression": 1e7, "description": "pump amplitude [V/m] the line source launches into the medium"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump line source (centre of cell 100)"},
+    {"name": "x_nl", "expression": "2*um", "description": "slab front face (a cell edge)"},
+    {"name": "L_nl", "expression": "6*um", "description": "chi3 slab length (swept 1-12 um; whole cells)"},
+    {"name": "x_p_end", "expression": "x_nl + L_nl - dx_cell/2", "description": "pump probe: centre of the last slab cell"},
+    {"name": "x_fwd", "expression": "x_nl + L_nl + 1.005*um", "description": "forward TH probe (cell centre, 100 cells past the slab)"},
+    {"name": "Lx", "expression": "x_nl + L_nl + 2*um", "description": "strip length (CPML on both x faces, outside the window)"},
+    {"name": "k_vac", "expression": "2*pi/lam_p", "description": "pump vacuum wavenumber k0 [1/m]"},
+    {"name": "eps_p", "expression": "eps_inf + d_eps/(1 - (lam_r/lam_p)**2)", "description": "permittivity at the pump (2.3117)"},
+    {"name": "eps_th", "expression": "eps_inf + d_eps/(1 - (3*lam_r/lam_p)**2)", "description": "permittivity at the third harmonic (2.4526)"},
+    {"name": "K_p", "expression": "2*asin(k_vac*sqrt(eps_p)*dx_cell/2)", "description": "lattice phase per cell of the pump wave"},
+    {"name": "K_th", "expression": "2*asin(3*k_vac*sqrt(eps_th)*dx_cell/2)", "description": "lattice phase per cell of the TH wave"},
+    {"name": "dK", "expression": "3*K_p - K_th", "description": "lattice phase mismatch per cell (forward generation, -5.81e-3)"},
+    {"name": "sK", "expression": "3*K_p + K_th", "description": "lattice phase sum per cell (backward generation)"},
+    {"name": "N_nl", "expression": "L_nl/dx_cell", "description": "slab cells"},
+    {"name": "C_th", "expression": "9*k_vac**2*dx_cell**2*chi3_val*A_p**3/(8*sin(K_th))",
+     "description": "TH generated per slab cell [V/m]: h^2 / (2 sin K_th) (3 k0)^2 (chi3 / 4) A^3"},
+    {"name": "E_th_ref", "expression": "C_th*abs(sin(N_nl*dK/2)/sin(dK/2))", "description": "exact lattice forward |E_3w| [V/m]"},
+    {"name": "dk_cont", "expression": "3*k_vac*(sqrt(eps_th) - sqrt(eps_p))", "description": "continuum mismatch dk [1/m]"},
+    {"name": "E_th_cont", "expression": "3*k_vac*chi3_val*A_p**3/(8*sqrt(eps_th))*abs(sin(dk_cont*L_nl/2)/(dk_cont/2))",
+     "description": "continuum forward |E_3w| [V/m] (comparison only)"},
+    {"name": "L_coh", "expression": "pi*dx_cell/abs(dK)", "description": "lattice coherence length (5.40 um)"},
+    {"name": "L_coh_cont", "expression": "pi/abs(dk_cont)", "description": "continuum coherence length (5.66 um)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "chi3_slab", "kind": "rectangle", "params": {"x0": "x_nl", "y0": 0.0, "x1": "x_nl + L_nl", "y1": "Ly"}},
+    {"name": "pump_end_point", "kind": "point", "params": {"x": "x_p_end", "y": "1.5*dx_cell"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "1.5*dx_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "lorentz_medium", "library": null, "properties": {"eps_r": "eps_inf"},
+     "dispersion": [{"model": "lorentz", "delta_eps": "d_eps", "omega_0": "omega_r", "gamma": 0.0}],
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "undepleted"},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "ez"}, "enabled": true},
+        {"name": "th", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "3 p", "polarization": "ez"}, "enabled": true},
+        {"name": "chi3", "type": "chi3_medium", "selection": ["chi3_slab"],
+         "params": {"tensor": "isotropic", "strength": "chi3", "chi3_real": "chi3_val"}, "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "A_p", "phase": 0.0}, "enabled": true},
+        {"name": "pump_end", "type": "field_probe", "selection": ["pump_end_point"],
+         "params": {"channel": "p", "component": "ez"}, "enabled": true},
+        {"name": "th_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "th", "component": "ez"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs", "nl.ez_abs", "nl.ez_re"],
+            "sweep": {"parameter": "L_nl",
+                      "values": [1e-06, 2e-06, 3e-06, 4e-06, 5e-06, 6e-06, 7e-06, 8e-06, 9e-06, 1e-05, 1.1e-05, 1.2e-05]}},
+  "derived_values": [
+    {"name": "E_th_forward", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.th_forward",
+     "at": null, "reference": "E_th_ref", "tolerance": 0.005},
+    {"name": "E_p_end", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_end",
+     "at": null, "reference": "A_p", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "thg_lattice_sinc", "target": "sweep", "expression": "E_th_ref", "tolerance": 0.005,
+     "series": "E_th_forward"},
+    {"name": "thg_continuum_sinc", "target": "sweep", "expression": "E_th_cont", "series": "E_th_forward"},
+    {"name": "th_profile", "target": "line",
+     "expression": "C_th*sqrt((sin(dK*(min((x - x_nl)/dx_cell - 0.5, N_nl - 1) + 1)/2)/sin(dK/2))**2 + (sin(sK*max(N_nl - 0.5 - (x - x_nl)/dx_cell, 0)/2)/sin(sK/2))**2 + 2*(sin(dK*(min((x - x_nl)/dx_cell - 0.5, N_nl - 1) + 1)/2)/sin(dK/2))*(sin(sK*max(N_nl - 0.5 - (x - x_nl)/dx_cell, 0)/2)/sin(sK/2))*cos(sK*N_nl/2 - K_th*((x - x_nl)/dx_cell - 0.5)))",
+     "tolerance": 0.005, "line": ["x_nl + dx_cell/2", "1.5*dx_cell", "x_nl + L_nl + 1*um", "1.5*dx_cell"],
+     "field": "nl.ez_abs", "snapshot": "channel th"}
+  ]
+}

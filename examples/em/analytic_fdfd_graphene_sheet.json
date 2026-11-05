@@ -1,0 +1,98 @@
+{
+  "title": "Analytic: graphene sheet transmission and absorption, far infrared (FDFD)",
+  "description": "A normally incident plane wave (mode_source toward +x in a y-periodic vacuum strip, 0.2 um cells, CPML along x) crosses a doped graphene monolayer (conducting_sheet, graphene_kubo: E_F = 0.4 eV, tau = 0.1 ps, 300 K) on a vertical line; frequency_domain study 10-100 um. A flux line between source and sheet gives the net power P_in (1 - R), one behind it P_in T.\nAnalytic (zero-thickness sheet in vacuum, t = 1 / (1 + eta0 sigma_s / 2)): T = 1 / ((1 + eta0 sigma_r / 2)^2 + (eta0 sigma_i / 2)^2), A = eta0 sigma_r T, R = 1 - T - A, with the Kubo conductivity in its T -> 0 form (exp(+j omega t)): intraband Drude sigma = D tau / (1 + j omega tau), D tau = e^2 E_F tau / (pi hbar^2) = 4.71e-3 S, plus the interband term -(j sigma_0 / pi) ln|(hbar omega - 2 E_F) / (hbar omega + 2 E_F)| (capacitive, sigma_0 = e^2 / (4 hbar); 1-2 % of Im sigma here, below the 2 E_F = 0.8 eV absorption edge at 1.55 um, so no interband loss). Thermal corrections at 300 K are < 1e-6 relative (E_F = 15.5 kT). Drude regime: T falls from 0.993 at 10 um to 0.640 at 100 um (omega tau = 1.88), A rises to 0.250.\nCurves & tables tab: T, R and A (plot TRA) with the dotted references.\nSpectra tab: 'transmitted' power vs the dashed P_in T(lambda).\nDerived values tab: T and A at 40 and 100 um with their references.\nExpected agreement: ~1e-4 absolute (CPML reflection floor and the grid correction k0 w / sin(k w) - 1 ~ 5e-4 of eta0 sigma_s / 2 at 20 um); to be confirmed by a first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "dx_cell", "expression": "0.2*um", "description": "uniform cell size; the lines below sit at cell centres"},
+    {"name": "Lx", "expression": "150*dx_cell", "description": "strip length along x (cpml on both x faces)"},
+    {"name": "Ly", "expression": "10*dx_cell", "description": "periodic y period"},
+    {"name": "x_src", "expression": "25.5*dx_cell", "description": "mode source line (cell 25 centre), launching toward +x"},
+    {"name": "x_up", "expression": "50.5*dx_cell", "description": "upstream flux line (cell 50 centre): net power P_in (1 - R) into the sheet"},
+    {"name": "x_sheet", "expression": "75.5*dx_cell", "description": "graphene sheet line (cell 75 centre)"},
+    {"name": "x_down", "expression": "125.5*dx_cell", "description": "downstream flux line (cell 125 centre): transmitted power P_in T"},
+    {"name": "P_in", "expression": 1.0, "description": "mode source power in W per m of z (2D)"},
+    {"name": "E_F", "expression": 0.4, "description": "graphene Fermi energy in eV (interband edge 2 E_F at 1.55 um)"},
+    {"name": "tau_s", "expression": "0.1*ps", "description": "carrier scattering time"},
+    {"name": "T_el", "expression": 300.0, "description": "electron temperature in K"},
+    {"name": "Z_half", "expression": "mu0_const*c_const/2", "description": "eta0 / 2 in Ohm"},
+    {"name": "D_tau", "expression": "e_const**3*E_F*tau_s/(pi*hbar_const**2)", "description": "Drude weight times tau, e^2 E_F tau / (pi hbar^2) in S (4.71e-3): the DC sheet conductivity"},
+    {"name": "sigma0", "expression": "e_const**2/(4*hbar_const)", "description": "universal optical conductivity e^2 / (4 hbar) in S (6.085e-5)"},
+    {"name": "L_tau", "expression": "2*pi*c_const*tau_s", "description": "wavelength in m at which omega tau = 1 (188 um)"},
+    {"name": "hc_eV", "expression": "2*pi*hbar_const*c_const/e_const", "description": "photon energy times wavelength in eV m (1.24e-6)"},
+    {"name": "lam_a", "expression": "40*um", "description": "comparison wavelength (omega tau = 4.7)"},
+    {"name": "lam_b", "expression": "100*um", "description": "comparison wavelength (omega tau = 1.9)"},
+    {"name": "sr_a", "expression": "D_tau/(1 + (L_tau/lam_a)**2)", "description": "Re sigma_s at lam_a in S"},
+    {"name": "si_a", "expression": "-D_tau*(L_tau/lam_a)/(1 + (L_tau/lam_a)**2) - (sigma0/pi)*log(abs((hc_eV/lam_a - 2*E_F)/(hc_eV/lam_a + 2*E_F)))", "description": "Im sigma_s at lam_a in S (Drude + interband)"},
+    {"name": "T_a", "expression": "1/((1 + Z_half*sr_a)**2 + (Z_half*si_a)**2)", "description": "analytic transmittance at lam_a (0.9006)"},
+    {"name": "A_a", "expression": "2*Z_half*sr_a*T_a", "description": "analytic absorptance at lam_a (0.0689)"},
+    {"name": "sr_b", "expression": "D_tau/(1 + (L_tau/lam_b)**2)", "description": "Re sigma_s at lam_b in S"},
+    {"name": "si_b", "expression": "-D_tau*(L_tau/lam_b)/(1 + (L_tau/lam_b)**2) - (sigma0/pi)*log(abs((hc_eV/lam_b - 2*E_F)/(hc_eV/lam_b + 2*E_F)))", "description": "Im sigma_s at lam_b in S (Drude + interband)"},
+    {"name": "T_b", "expression": "1/((1 + Z_half*sr_b)**2 + (Z_half*si_b)**2)", "description": "analytic transmittance at lam_b (0.6398)"},
+    {"name": "A_b", "expression": "2*Z_half*sr_b*T_b", "description": "analytic absorptance at lam_b (0.2496)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "up_line", "kind": "line", "params": {"x0": "x_up", "y0": 0.0, "x1": "x_up", "y1": "Ly"}},
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_sheet", "y0": 0.0, "x1": "x_sheet", "y1": "Ly"}},
+    {"name": "down_line", "kind": "line", "params": {"x0": "x_down", "y0": 0.0, "x1": "x_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "power": "P_in", "phase": 0.0}, "enabled": true},
+        {"name": "graphene", "type": "conducting_sheet", "selection": ["sheet_line"],
+         "params": {"model": "graphene_kubo", "fermi_energy": "E_F", "scattering_time": "tau_s",
+                    "temperature": "T_el"},
+         "enabled": true},
+        {"name": "incident_side", "type": "flux_monitor", "selection": ["up_line"], "params": {}, "enabled": true},
+        {"name": "transmitted", "type": "flux_monitor", "selection": ["down_line"], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "frequency_domain",
+            "settings": {"wavelength_start": "10*um", "wavelength_stop": "100*um", "n_wavelengths": 46},
+            "stored_fields": ["em.ez_abs", "em.absorbed_power"], "sweep": null},
+  "derived_values": [
+    {"name": "T_40um", "expression": "T_sheet", "selection": [], "operation": "at", "source": "T_sheet",
+     "at": "lam_a", "reference": "T_a", "tolerance": 0.002},
+    {"name": "T_100um", "expression": "T_sheet", "selection": [], "operation": "at", "source": "T_sheet",
+     "at": "lam_b", "reference": "T_b", "tolerance": 0.002},
+    {"name": "A_40um", "expression": "A_sheet", "selection": [], "operation": "at", "source": "A_sheet",
+     "at": "lam_a", "reference": "A_a", "tolerance": 0.01},
+    {"name": "A_100um", "expression": "A_sheet", "selection": [], "operation": "at", "source": "A_sheet",
+     "at": "lam_b", "reference": "A_b", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "transmitted_power", "target": "em.transmitted", "series": "power",
+     "expression": "P_in/((1 + Z_half*D_tau/(1 + (L_tau/wavelength)**2))**2 + (Z_half*(D_tau*(L_tau/wavelength)/(1 + (L_tau/wavelength)**2) + (sigma0/pi)*log(abs((hc_eV/wavelength - 2*E_F)/(hc_eV/wavelength + 2*E_F)))))**2)",
+     "tolerance": 0.01}
+  ],
+  "derived_curves": [
+    {"name": "T_sheet", "inputs": {"Pd": "em.transmitted:power"},
+     "expression": "Pd/P_in", "plot": "TRA", "label": "T (transmitted / incident)", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "1/((1 + Z_half*D_tau/(1 + (L_tau/x)**2))**2 + (Z_half*(D_tau*(L_tau/x)/(1 + (L_tau/x)**2) + (sigma0/pi)*log(abs((hc_eV/x - 2*E_F)/(hc_eV/x + 2*E_F)))))**2)",
+     "tolerance": 0.01},
+    {"name": "R_sheet", "inputs": {"Pu": "em.incident_side:power"},
+     "expression": "1 - Pu/P_in", "plot": "TRA", "label": "R (reflected / incident)", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "(Z_half**2*((D_tau/(1 + (L_tau/x)**2))**2 + (D_tau*(L_tau/x)/(1 + (L_tau/x)**2) + (sigma0/pi)*log(abs((hc_eV/x - 2*E_F)/(hc_eV/x + 2*E_F))))**2))/((1 + Z_half*D_tau/(1 + (L_tau/x)**2))**2 + (Z_half*(D_tau*(L_tau/x)/(1 + (L_tau/x)**2) + (sigma0/pi)*log(abs((hc_eV/x - 2*E_F)/(hc_eV/x + 2*E_F)))))**2)",
+     "tolerance": 0.01},
+    {"name": "A_sheet", "inputs": {"Pu": "em.incident_side:power", "Pd": "em.transmitted:power"},
+     "expression": "(Pu - Pd)/P_in", "plot": "TRA", "label": "A (absorbed / incident)", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "2*Z_half*D_tau/(1 + (L_tau/x)**2)/((1 + Z_half*D_tau/(1 + (L_tau/x)**2))**2 + (Z_half*(D_tau*(L_tau/x)/(1 + (L_tau/x)**2) + (sigma0/pi)*log(abs((hc_eV/x - 2*E_F)/(hc_eV/x + 2*E_F)))))**2)",
+     "tolerance": 0.01}
+  ]
+}

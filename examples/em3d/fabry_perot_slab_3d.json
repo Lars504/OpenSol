@@ -1,0 +1,97 @@
+{
+  "title": "Analytic: 3D Fabry-Perot slab transmission (plane wave, FDTD)",
+  "description": "A normally incident plane-wave pulse (+x, E along y) crosses a lossless slab (n = 2, d = 500 nm) in a 4 x 4 cell column, periodic along y and z, CPML along x (em_fdtd_3d, 10 nm cells, runs in seconds). The plane wave is one-sided: its box opens into the x_hi CPML, so the reflected plane (x = 0.2 um, before the box) sees only the reflection.\nAnalytic (Airy): T = 1 / (1 + F sin^2(2 pi n d / lambda)), R = 1 - T, F = ((n^2 - 1)/(2 n))^2 = 0.5625; peak T = 1 at 1000 nm, dips T = 0.64 at 1333 nm and 800 nm; incident cw power P_inc = A^2 Ly Lz / (2 eta0).\nSpectra tab: select em.transmitted and em.reflected (power, a.u. = 2 |S(f)|^2 x the cw power, S = the gaussian pulse spectrum; reflected flows toward -x, so it is negative) vs the dashed Airy spectra; choose Reference = em.transmitted: the ratio plot shows em.reflected / em.transmitted = -R/T = -F sin^2(2 pi n d / lambda), dashed (independent of the source normalisation, ~1e-3).\nDerived values tab: T_peak, T_dip, T_dip2 and R_dip from power_per_cw / P_inc with the Airy references; they read low by O(dx^2): the discrete incident power is cos(k0 dx/2) cos(omega dt/2) of P_inc (~0.999 at 10 nm cells), and the Yee slab faces reflect like an index n cos(k0 dx/2) / cos(n k0 dx/2), which raises F (T_dip2 at 800 nm ~0.4 % low; at 20 nm cells ~1.4 %, over tolerance).",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size (40 per slab wavelength at 800 nm)"},
+    {"name": "Lp", "expression": "4*dx_cell", "description": "transverse period along y and z (4 cells)"},
+    {"name": "Lx", "expression": "2.4*um", "description": "domain length along x (cpml on both x faces)"},
+    {"name": "n_slab", "expression": 2.0, "description": "slab refractive index"},
+    {"name": "d_slab", "expression": "500*nm", "description": "slab thickness (50 cells; both faces on cell edges)"},
+    {"name": "x_slab", "expression": "1.0*um", "description": "slab front face"},
+    {"name": "x_src", "expression": "0.4*um", "description": "upstream face of the plane-wave box (incident from here on)"},
+    {"name": "x_refl", "expression": "0.2*um", "description": "reflection flux plane (scattered-field region)"},
+    {"name": "x_trans", "expression": "2.0*um", "description": "transmission flux plane, behind the slab"},
+    {"name": "A_src", "expression": 1.0, "description": "incident peak E [V/m]"},
+    {"name": "lambda0", "expression": "1*um", "description": "pulse centre wavelength"},
+    {"name": "bw", "expression": 0.5, "description": "relative bandwidth of the pulse"},
+    {"name": "f0", "expression": "c_const/lambda0", "description": "pulse centre frequency [Hz]"},
+    {"name": "tau_pulse", "expression": "1/(pi*bw*f0)",
+     "description": "gaussian envelope width [s]: g(t) = sin(2 pi f0 (t - t0)) exp(-((t - t0)/tau)^2)"},
+    {"name": "P_inc", "expression": "A_src**2*Lp**2/(2*mu0_const*c_const)",
+     "description": "incident cw power [W] through one period: A^2 Ly Lz / (2 eta0)"},
+    {"name": "F_coef", "expression": "((n_slab**2 - 1)/(2*n_slab))**2",
+     "description": "coefficient of finesse of the slab in vacuum (0.5625 for n = 2)"},
+    {"name": "lambda_peak", "expression": "2*n_slab*d_slab/2", "description": "transmission peak (order m = 2): 1000 nm"},
+    {"name": "lambda_dip", "expression": "4*n_slab*d_slab/3", "description": "transmission dip: 1333 nm"},
+    {"name": "lambda_dip2", "expression": "4*n_slab*d_slab/5", "description": "transmission dip: 800 nm"},
+    {"name": "band_start", "expression": "0.78*um", "description": "shortest monitored wavelength"},
+    {"name": "band_stop", "expression": "1.36*um", "description": "longest monitored wavelength (59 points, 10 nm apart)"},
+    {"name": "T_run", "expression": "80*fs", "description": "study duration: pulse, slab ring-down and the reflection past x_refl"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Lp", "size_z": "Lp"},
+  "geometry": [
+    {"name": "slab", "kind": "box",
+     "params": {"x0": "x_slab", "y0": 0.0, "z0": 0.0, "x1": "x_slab + d_slab", "y1": "Lp", "z1": "Lp"}},
+    {"name": "plane_wave_box", "kind": "box",
+     "params": {"x0": "x_src", "y0": 0.0, "z0": 0.0, "x1": "Lx", "y1": "Lp", "z1": "Lp"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "slab_material", "library": null, "properties": {"eps_r": "n_slab**2"}, "dispersion": null,
+     "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_3d",
+      "settings": {"pml_cells": 10, "bc_y_lo": "periodic", "bc_y_hi": "periodic", "bc_z_lo": "periodic",
+                   "bc_z_hi": "periodic"},
+      "features": [
+        {"name": "plane_wave", "type": "plane_wave_source", "selection": ["plane_wave_box"],
+         "params": {"direction": "+x", "polarization": "y", "waveform": "gaussian", "wavelength": "lambda0",
+                    "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "reflected", "type": "flux_plane", "selection": [],
+         "params": {"normal": "x", "position": "x_refl", "wavelength_start": "band_start",
+                    "wavelength_stop": "band_stop", "n_wavelengths": 59},
+         "enabled": true},
+        {"name": "transmitted", "type": "flux_plane", "selection": [],
+         "params": {"normal": "x", "position": "x_trans", "wavelength_start": "band_start",
+                    "wavelength_stop": "band_stop", "n_wavelengths": 59},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "T_peak", "expression": "power_per_cw/P_inc", "selection": [], "operation": "at",
+     "source": "em.transmitted", "at": "lambda_peak",
+     "reference": "1/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_peak)**2)", "tolerance": 0.01},
+    {"name": "T_dip", "expression": "power_per_cw/P_inc", "selection": [], "operation": "at",
+     "source": "em.transmitted", "at": "lambda_dip",
+     "reference": "1/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_dip)**2)", "tolerance": 0.01},
+    {"name": "T_dip2", "expression": "power_per_cw/P_inc", "selection": [], "operation": "at",
+     "source": "em.transmitted", "at": "lambda_dip2",
+     "reference": "1/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_dip2)**2)", "tolerance": 0.01},
+    {"name": "R_dip", "expression": "-power_per_cw/P_inc", "selection": [], "operation": "at",
+     "source": "em.reflected", "at": "lambda_dip",
+     "reference": "F_coef*sin(2*pi*n_slab*d_slab/lambda_dip)**2/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_dip)**2)",
+     "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "airy_transmitted", "target": "em.transmitted", "series": "power",
+     "expression": "2*(pi*tau_pulse**2/4)*(exp(-((c_const/wavelength - f0)/(bw*f0))**2) - exp(-((c_const/wavelength + f0)/(bw*f0))**2))**2*P_inc/(1 + F_coef*sin(2*pi*n_slab*d_slab/wavelength)**2)",
+     "tolerance": 0.02},
+    {"name": "airy_reflected", "target": "em.reflected", "series": "power",
+     "expression": "-2*(pi*tau_pulse**2/4)*(exp(-((c_const/wavelength - f0)/(bw*f0))**2) - exp(-((c_const/wavelength + f0)/(bw*f0))**2))**2*P_inc*F_coef*sin(2*pi*n_slab*d_slab/wavelength)**2/(1 + F_coef*sin(2*pi*n_slab*d_slab/wavelength)**2)",
+     "tolerance": 0.02},
+    {"name": "minus_R_over_T", "target": "em.reflected", "series": "ratio",
+     "expression": "-F_coef*sin(2*pi*n_slab*d_slab/wavelength)**2"}
+  ]
+}

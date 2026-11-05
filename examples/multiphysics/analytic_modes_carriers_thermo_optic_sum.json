@@ -1,0 +1,124 @@
+{
+  "title": "Doped, heated silicon in a PEC guide: plasma dispersion + thermo-optic index sum on em_modes (analytic)",
+  "description": "The PEC guide of analytic_modes_soref_bennett_guide (em_modes, mode_analysis at 1.55 um, 52 x 27 uniform 20 nm cells: a = 1.0 um, b = 0.5 um between the wall planes) filled with library silicon (thermal expansion set to 0, no dispersion), now with two background physics: drift_diffusion (uniform signed doping N_net, one ohmic contact: uniform neutral equilibrium) and steady heat (every outer face at T0 + dT: uniform dT = 25 K). semiconductor_em_plasma_dispersion (dn = -(a N + b P^0.8), Soref-Bennett silicon) and heat_em_thermo_optic (dndT dT) are two E13 index contributors summed on the em_modes permittivity slots, and sigma_e is a state-dependent material expression of semiconductor_N / semiconductor_P (Soref-Bennett free-carrier absorption, sigma_e = n0 alpha eps0 c). Sweep N_net = -1e25..1e25 1/m^3 (holes left, electrons right).\nAnalytic: N = |N_net| / 2 + sqrt(N_net^2 / 4 + n_i^2) for n type (P = n_i^2 / N), mirrored for p type; n = n0 + dndT dT - (a N + b P^0.8) (the thermo-optic +4.5e-3 against up to -1.3e-2 of 1e25 holes: the total dn changes sign between 1e24 and 3e24 holes and near 5e24 electrons); homogeneous complex fill, discrete TE10: n_eff^2 = A - j B, A = n^2 - (K / k0)^2, K = (2 / h) sin(pi h / (2 a)), B = sigma_e / (omega eps0) = n0 alpha / k0; Re n_eff = sqrt((hypot(A, B) + A) / 2), Im n_eff = -B / (2 Re n_eff), loss in dB/cm.\nDerived values tab: n_eff_1 (~1e-6), n_eff_imag_1 / loss_1 (~1e-5), dn_total = mean sqrt(eps_r) - n0 (the index sum; float32 eps_r ~1e-7 absolute, tolerance 1e-3 relative), sigma_fill (the state-dependent sigma_e, ~1e-6), N_mean (equilibrium, ~1e-7) and T_rise_mean (exact uniform rise, ~1e-9).\nSweep tab: n_eff_1, loss_1 and dn_total vs N_net with their dashed curves. Line profile tab: sz_profile = S_z of the 1 W TE10 mode across x at mid-height, 2 / (a b) sin^2(pi (x - h) / a) (W/m^2, independent of the fill).",
+  "version": 1,
+  "parameters": [
+    {"name": "N_net", "expression": 1e25, "description": "signed net doping in 1/m^3: > 0 donors (n type), < 0 acceptors (p type); the sweep runs -1e25..1e25 (base = its last value)"},
+    {"name": "dT", "expression": 25.0, "description": "uniform temperature rise in K (heat faces held at T0 + dT)"},
+    {"name": "T0", "expression": 293.15, "description": "heat T0: the thermo-optic reference temperature in K"},
+    {"name": "n_si", "expression": 3.476, "description": "undoped silicon index n0 at 1.55 um (eps_r = n_si^2)"},
+    {"name": "dndT_si", "expression": 1.8e-4, "description": "thermo-optic coefficient of silicon in 1/K"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "a_sb", "expression": 8.8e-28, "description": "electron coefficient of dn in m^3 (Soref-Bennett 8.8e-22 cm^3)"},
+    {"name": "b_sb", "expression": "8.5e-18*(1e-6)**0.8", "description": "hole coefficient of dn in m^2.4 (1.347e-22)"},
+    {"name": "c_sb", "expression": 0.8, "description": "hole exponent of dn"},
+    {"name": "lambda0", "expression": "1.55*um", "description": "vacuum wavelength of the mode solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "h_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "a_guide", "expression": "50*h_cell", "description": "guide width between the x wall planes (1.0 um)"},
+    {"name": "b_guide", "expression": "25*h_cell", "description": "guide height between the y wall planes (0.5 um)"},
+    {"name": "w_contact", "expression": "2*h_cell", "description": "ohmic contact width at the x_lo end (two cell columns)"},
+    {"name": "N_maj", "expression": "abs(N_net)/2 + sqrt(N_net**2/4 + n_i**2)", "description": "majority carrier density in 1/m^3"},
+    {"name": "N_min", "expression": "n_i**2/N_maj", "description": "minority carrier density in 1/m^3 (mass action)"},
+    {"name": "N0", "expression": "where(N_net >= 0, N_maj, N_min)", "description": "analytic electron density in 1/m^3"},
+    {"name": "P0", "expression": "where(N_net >= 0, N_min, N_maj)", "description": "analytic hole density in 1/m^3"},
+    {"name": "dn_plasma", "expression": "-(a_sb*N0 + b_sb*P0**c_sb)", "description": "analytic plasma-dispersion index change"},
+    {"name": "dn_thermal", "expression": "dndT_si*dT", "description": "analytic thermo-optic index change (+4.5e-3)"},
+    {"name": "n_ref", "expression": "n_si + dn_thermal + dn_plasma", "description": "analytic index of the doped, heated silicon (E13 index sum)"},
+    {"name": "alpha_ref", "expression": "100*(8.5e-18*(1e-6*N0) + 6.0e-18*(1e-6*P0))", "description": "Soref-Bennett free-carrier power absorption in 1/m"},
+    {"name": "sigma_ref", "expression": "n_si*alpha_ref*eps0_const*c_const", "description": "analytic sigma_e of the fill in S/m"},
+    {"name": "K_te10", "expression": "2/h_cell*sin(pi*h_cell/(2*a_guide))", "description": "discrete transverse wavenumber of TE10 in 1/m"},
+    {"name": "A_re", "expression": "n_ref**2 - (K_te10/k_vac)**2", "description": "Re n_eff^2 of TE10"},
+    {"name": "B_im", "expression": "n_si*alpha_ref/k_vac", "description": "-Im n_eff^2 = sigma_e / (omega eps0)"},
+    {"name": "n_eff_ref", "expression": "sqrt((hypot(A_re, B_im) + A_re)/2)", "description": "analytic Re n_eff of TE10"},
+    {"name": "n_eff_imag_ref", "expression": "-B_im/(2*n_eff_ref)", "description": "analytic Im n_eff of TE10 (< 0: loss)"},
+    {"name": "loss_ref", "expression": "-20/log(10)*k_vac*n_eff_imag_ref/100", "description": "analytic modal power loss in dB/cm"}
+  ],
+  "domain": {"size_x": "a_guide + 2*h_cell", "size_y": "b_guide + 2*h_cell"},
+  "geometry": [
+    {"name": "contact_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "b_guide + 2*h_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "doped_silicon", "library": "silicon",
+     "properties": {"eps_r": "n_si**2", "dndT": "dndT_si", "alpha": 0.0, "n_intrinsic": "n_i",
+                    "sigma_e": "n_si*100*(8.5e-18*(1e-6*semiconductor_N) + 6.0e-18*(1e-6*semiconductor_P))*eps0_const*c_const"},
+     "dispersion": [], "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {},
+      "features": [
+        {"name": "uniform_doping", "type": "doping", "selection": ["all"],
+         "params": {"donors": "max(N_net, 0)", "acceptors": "max(-N_net, 0)"}, "enabled": true},
+        {"name": "contact", "type": "ohmic_contact", "selection": ["contact_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T0"},
+      "features": [
+        {"name": "walls", "type": "temperature", "selection": ["x_lo", "x_hi", "y_lo", "y_hi"],
+         "params": {"temperature": "T0 + dT"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "wavelength": "lambda0",
+                   "n_modes": 1},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "plasma_dispersion", "type": "semiconductor_em_plasma_dispersion", "source": "semiconductor",
+     "target": "modes", "every": null,
+     "params": {"electron_coefficient": "a_sb", "hole_coefficient": "b_sb", "hole_exponent": "c_sb"}, "enabled": true},
+    {"name": "thermo_optic", "type": "heat_em_thermo_optic", "source": "heat", "target": "modes", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "h_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "mode_analysis", "settings": {},
+            "stored_fields": ["modes.sz", "modes.eps_r", "modes.sigma_e", "heat.T", "semiconductor.N",
+                              "semiconductor.P"],
+            "sweep": {"parameter": "N_net",
+                      "values": [-1e25, -3e24, -1e24, -3e23, -1e23, 1e23, 3e23, 1e24, 3e24, 1e25]}},
+  "derived_values": [
+    {"name": "n_eff_1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
+     "reference": "n_eff_ref", "tolerance": 3e-6},
+    {"name": "n_eff_imag_1", "expression": "n_eff_imag", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "n_eff_imag_ref", "tolerance": 3e-5},
+    {"name": "loss_1", "expression": "loss_db_per_cm", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "loss_ref", "tolerance": 3e-5},
+    {"name": "dn_total", "expression": "sqrt(modes_eps_r) - n_si", "selection": [], "operation": "mean",
+     "reference": "n_ref - n_si", "tolerance": 0.001},
+    {"name": "sigma_fill", "expression": "modes_sigma_e", "selection": [], "operation": "mean",
+     "reference": "sigma_ref", "tolerance": 1e-5},
+    {"name": "N_mean", "expression": "semiconductor_N", "selection": [], "operation": "mean", "reference": "N0",
+     "tolerance": 1e-6},
+    {"name": "T_rise_mean", "expression": "heat_T_rise", "selection": [], "operation": "mean", "reference": "dT",
+     "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "n_eff_curve", "target": "sweep", "expression": "n_eff_ref", "tolerance": 3e-6, "series": "n_eff_1"},
+    {"name": "loss_curve", "target": "sweep", "expression": "loss_ref", "tolerance": 3e-5, "series": "loss_1"},
+    {"name": "dn_curve", "target": "sweep", "expression": "n_ref - n_si", "tolerance": 0.001, "series": "dn_total"},
+    {"name": "sz_profile", "target": "line", "expression": "2/(a_guide*b_guide)*sin(pi*(x - h_cell)/a_guide)**2",
+     "tolerance": 0.01,
+     "line": ["h_cell", "(b_guide + 2*h_cell)/2", "a_guide + h_cell", "(b_guide + 2*h_cell)/2"], "field": "modes.sz"}
+  ]
+}

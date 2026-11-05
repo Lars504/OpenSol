@@ -1,0 +1,318 @@
+{
+  "open_sol_version": "0.3.0",
+  "status": "completed",
+  "message": "",
+  "model": {
+    "title": "Gravity-driven film on an inclined plate (analytic)",
+    "file": "examples\\fluid\\falling_film.json",
+    "study_type": "stationary"
+  },
+  "wall_time": 1.8352773000951856,
+  "build": {
+    "nx": 5,
+    "ny": 10,
+    "n_cells": 50,
+    "dt": null,
+    "dx_min": 2e-06,
+    "dx_max": 2e-06,
+    "npml_sides": {
+      "x_lo": 0,
+      "x_hi": 0,
+      "y_lo": 0,
+      "y_hi": 0
+    },
+    "build_seconds": 0.004053200013004243,
+    "gpu_bytes": 16896,
+    "session_gpu_bytes": 16896,
+    "gpu_breakdown": [
+      [
+        "domain",
+        0
+      ],
+      [
+        "material arrays 'laminar_flow'",
+        1024
+      ],
+      [
+        "materials",
+        512
+      ],
+      [
+        "physics 'fluid'",
+        14848
+      ],
+      [
+        "feature 'fluid/periodic_x'",
+        0
+      ],
+      [
+        "feature 'fluid/plate'",
+        512
+      ],
+      [
+        "feature 'fluid/free_surface'",
+        0
+      ],
+      [
+        "feature 'fluid/gravity'",
+        0
+      ],
+      [
+        "physics 'fluid' finalize",
+        512
+      ],
+      [
+        "runner prepare",
+        0
+      ],
+      [
+        "build temporaries freed",
+        -512
+      ]
+    ],
+    "gpu_peak_bytes": 21504,
+    "gpu_budget": 7010779136,
+    "gpu_estimate": {
+      "gpu_steady": 8050,
+      "gpu_build_peak": 10800,
+      "host": 0,
+      "items": [
+        [
+          "model: material arrays (2 x float32)",
+          400
+        ],
+        [
+          "physics 'fluid': fields u, speed, pressure, forces (8 x float32)",
+          1600
+        ],
+        [
+          "physics 'fluid': populations (2 x 9 x float32)",
+          3600
+        ],
+        [
+          "physics 'fluid': lattice macros, rates, forces (10 x float32 + bool)",
+          2050
+        ],
+        [
+          "physics 'fluid': kinematic viscosity (float64)",
+          400
+        ]
+      ],
+      "steady_deviation": 1.0988819875776397,
+      "peak_deviation": 0.9911111111111112
+    }
+  },
+  "study_seconds": 0.04515150003135204,
+  "solver_work": {
+    "fluid": {
+      "lattice_steps": 3000,
+      "solves": 1
+    }
+  },
+  "ticks": 1,
+  "t_end": 0.0,
+  "warnings": [
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn",
+    "curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn"
+  ],
+  "errors": [],
+  "issues": [],
+  "traceback": "",
+  "memory": {
+    "pool_used": 16896,
+    "pool_reserved": 19968,
+    "device_free": 7543455744,
+    "device_total": 8589410304,
+    "budget": 7010779136,
+    "other": 1045934592,
+    "build_gpu_bytes": 16896,
+    "session_gpu_bytes": 16896
+  },
+  "failed_build_memory": null,
+  "derived": {
+    "u_surface": 0.001694871811196208,
+    "Q_sim": 2.268326763153076e-08
+  },
+  "derived_reference": {
+    "u_surface": 0.0016948939876195053,
+    "Q_sim": 2.2655224563000905e-08
+  },
+  "derived_error": {
+    "u_surface": 1.3084253917539562e-05,
+    "Q_sim": 0.0012378190492824796
+  },
+  "curve_error": {
+    "u_profile": {
+      "max": 1.3084253917539562e-05,
+      "rms": 9.084905460629844e-06,
+      "n_points": 20
+    },
+    "u_surface_vs_beta": {
+      "max": 1.4397463045685172e-05,
+      "rms": 8.926602157333862e-06,
+      "n_points": 6
+    },
+    "Q_vs_beta": {
+      "max": 0.0012372524366469231,
+      "rms": 0.0009484232794093112,
+      "n_points": 6
+    }
+  },
+  "derived_curves": {},
+  "fixed_point": null,
+  "sweep": {
+    "parameter": "beta_deg",
+    "values": [
+      15.0,
+      30.0,
+      45.0,
+      75.0,
+      90.0,
+      60.0
+    ],
+    "derived": {
+      "u_surface": [
+        0.0005065391305834055,
+        0.000978538068011403,
+        0.0013838838785886765,
+        0.001890389947220683,
+        0.00195706682279706,
+        0.001694871811196208
+      ],
+      "Q_sim": [
+        6.779239435195924e-09,
+        1.3096227188110352e-08,
+        1.8521155166625976e-08,
+        2.5299974327087404e-08,
+        2.6192366523742674e-08,
+        2.268326763153076e-08
+      ]
+    },
+    "reference": {
+      "u_surface": [
+        0.0005065334590749177,
+        0.0009785474999999995,
+        0.0013838751459262862,
+        0.0018904086050012035,
+        0.0019570949999999994,
+        0.0016948939876195053
+      ],
+      "Q_sim": [
+        6.770706219881941e-09,
+        1.3079999999999992e-08,
+        1.849791339584008e-08,
+        2.5268619615722017e-08,
+        2.615999999999999e-08,
+        2.2655224563000905e-08
+      ]
+    },
+    "error": {
+      "u_surface": [
+        1.1196710476225274e-05,
+        9.63876418508389e-06,
+        6.310296428119123e-06,
+        9.869707782264416e-06,
+        1.4397463045685172e-05,
+        1.3084253917539562e-05
+      ],
+      "Q_sim": [
+        0.001260313922486477,
+        0.001240610711801241,
+        0.0012564536490436728,
+        0.0012408557270725522,
+        0.0012372524366469231,
+        0.0012378190492824796
+      ]
+    },
+    "curve_error": {},
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {},
+      {}
+    ],
+    "failed": [],
+    "converged": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "stored_fields": [
+    "fluid.u_x",
+    "fluid.speed"
+  ],
+  "fields": {
+    "fluid.u_x": {
+      "physics": "fluid",
+      "component": "u_x",
+      "label": "Velocity x",
+      "unit": "m/s",
+      "shape": [
+        5,
+        10
+      ],
+      "min": 0.000165664721862413,
+      "max": 0.001694871811196208,
+      "mean": 0.001134163340611849,
+      "max_abs": 0.001694871811196208,
+      "max_abs_at": [
+        1e-06,
+        1.9e-05
+      ],
+      "n_nonfinite": 0,
+      "time": 0.0,
+      "time_label": "lattice step 3000"
+    },
+    "fluid.speed": {
+      "physics": "fluid",
+      "component": "speed",
+      "label": "Flow speed",
+      "unit": "m/s",
+      "shape": [
+        5,
+        10
+      ],
+      "min": 0.000165664721862413,
+      "max": 0.001694871811196208,
+      "mean": 0.001134163340611849,
+      "max_abs": 0.001694871811196208,
+      "max_abs_at": [
+        1e-06,
+        1.9e-05
+      ],
+      "n_nonfinite": 0,
+      "time": 0.0,
+      "time_label": "lattice step 3000"
+    }
+  },
+  "results": {},
+  "snapshot_times": [
+    0.0
+  ],
+  "snapshot_labels": [
+    null
+  ],
+  "files": {
+    "summary": "summary.json",
+    "log": "log.txt",
+    "arrays": null,
+    "model": "model.json",
+    "figures": []
+  }
+}

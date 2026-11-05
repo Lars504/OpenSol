@@ -1,0 +1,87 @@
+{
+  "title": "Cube cooling: triple Fourier series (3D, analytic)",
+  "description": "3D transient heat: a steel cube of side L at T_i whose six faces are suddenly held at T_s; 41^3 cells, implicit Euler.\nAnalytic (product of three slab solutions): theta / theta_i = S(x) S(y) S(z), S(s) = (4/pi) sum_m sin((2m+1) pi s / L) / (2m+1) exp(-(2m+1)^2 pi^2 a t / L^2) (6 terms: valid for t > ~2 s); late times follow the first mode (4/pi)^3 exp(-3 pi^2 a t / L^2).\nProbes tab: centre and off_centre (x = L/4, y = z = L/2) with the dashed series curves, plus centre_first_mode.\nDerived values tab: theta at t_end and t_check, theta_mean (volume mean vs [(8/pi^2) sum exp(...)/(2m+1)^2]^3). Expect ~0.3 % at t_end (implicit-Euler lag t dt / (2 tau^2)), ~0.1 % at t_check.\nLine profile tab (mid-height cut): T_x_line through the centre and T_diagonal corner to corner at t_end.",
+  "version": 2,
+  "parameters": [
+    {"name": "T_i", "expression": 373.15, "description": "initial cube temperature in K"},
+    {"name": "T_s", "expression": 293.15, "description": "surface temperature in K held on all six faces from t = 0"},
+    {"name": "k_st", "expression": 16.0, "description": "stainless steel thermal conductivity in W/(m K)"},
+    {"name": "rho_st", "expression": 8000.0, "description": "density in kg/m^3"},
+    {"name": "cp_st", "expression": 500.0, "description": "specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_st/(rho_st*cp_st)", "description": "thermal diffusivity in m^2/s (4e-6)"},
+    {"name": "dx_mesh", "expression": "1*mm", "description": "uniform cubic cell size"},
+    {"name": "L_cube", "expression": "41*dx_mesh", "description": "cube side (odd cell count: the centre is a cell centre)"},
+    {"name": "x_off", "expression": "10.5*dx_mesh", "description": "x of the off-centre probe (a cell centre near L/4)"},
+    {"name": "rate_1", "expression": "pi**2*a_diff/L_cube**2",
+     "description": "slab first-mode decay rate in 1/s (0.0235); the cube's first mode decays at 3 rate_1 (tau 14 s)"},
+    {"name": "dt_step", "expression": 0.025, "description": "implicit-Euler time step in s"},
+    {"name": "t_end", "expression": 40.0, "description": "study duration in s (~2.8 first-mode decay times)"},
+    {"name": "t_check", "expression": 10.0, "description": "time of the derived value theta_centre_check in s"},
+    {"name": "S_mid_end", "expression": "4/pi*(exp(-rate_1*t_end) - exp(-9*rate_1*t_end)/3 + exp(-25*rate_1*t_end)/5)",
+     "description": "slab factor at mid-plane at t_end (higher terms < 1e-12)"}
+  ],
+  "domain": {"size_x": "L_cube", "size_y": "L_cube", "size_z": "L_cube"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "L_cube/2", "y": "L_cube/2", "z": "L_cube/2"}},
+    {"name": "off_centre_point", "kind": "point", "params": {"x": "x_off", "y": "L_cube/2", "z": "L_cube/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"k": "k_st", "rho": "rho_st", "cp": "cp_st"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_s"},
+      "features": [
+        {"name": "faces", "type": "temperature", "selection": ["x_lo", "x_hi", "y_lo", "y_hi", "z_lo", "z_hi"],
+         "params": {"temperature": "T_s"}, "enabled": true},
+        {"name": "start", "type": "initial_temperature", "selection": ["all"], "params": {"temperature": "T_i"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true},
+        {"name": "off_centre", "type": "temperature_probe", "selection": ["off_centre_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_centre_end", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "last",
+     "source": "heat.centre", "reference": "S_mid_end**3", "tolerance": 0.01},
+    {"name": "theta_centre_check", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "at",
+     "source": "heat.centre", "at": "t_check",
+     "reference": "(4/pi*(exp(-rate_1*t_check) - exp(-9*rate_1*t_check)/3 + exp(-25*rate_1*t_check)/5 - exp(-49*rate_1*t_check)/7))**3", "tolerance": 0.003},
+    {"name": "theta_off_centre_end", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "last",
+     "source": "heat.off_centre",
+     "reference": "S_mid_end**2*4/pi*(sin(pi*x_off/L_cube)*exp(-rate_1*t_end) + sin(3*pi*x_off/L_cube)*exp(-9*rate_1*t_end)/3 + sin(5*pi*x_off/L_cube)*exp(-25*rate_1*t_end)/5)",
+     "tolerance": 0.01},
+    {"name": "theta_mean", "expression": "(T - T_s)/(T_i - T_s)", "selection": [], "operation": "mean",
+     "reference": "(8/pi**2*(exp(-rate_1*t_end) + exp(-9*rate_1*t_end)/9 + exp(-25*rate_1*t_end)/25))**3", "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "centre_series", "target": "heat.centre",
+     "expression": "T_s + (T_i - T_s)*(4/pi*(exp(-rate_1*t) - exp(-9*rate_1*t)/3 + exp(-25*rate_1*t)/5 - exp(-49*rate_1*t)/7 + exp(-81*rate_1*t)/9 - exp(-121*rate_1*t)/11))**3"},
+    {"name": "centre_first_mode", "target": "heat.centre",
+     "expression": "T_s + (T_i - T_s)*(4/pi)**3*exp(-3*rate_1*t)"},
+    {"name": "off_centre_series", "target": "heat.off_centre",
+     "expression": "T_s + (T_i - T_s)*(4/pi*(exp(-rate_1*t) - exp(-9*rate_1*t)/3 + exp(-25*rate_1*t)/5 - exp(-49*rate_1*t)/7 + exp(-81*rate_1*t)/9 - exp(-121*rate_1*t)/11))**2*4/pi*(sin(pi*x_off/L_cube)*exp(-rate_1*t) + sin(3*pi*x_off/L_cube)*exp(-9*rate_1*t)/3 + sin(5*pi*x_off/L_cube)*exp(-25*rate_1*t)/5 + sin(7*pi*x_off/L_cube)*exp(-49*rate_1*t)/7 + sin(9*pi*x_off/L_cube)*exp(-81*rate_1*t)/9 + sin(11*pi*x_off/L_cube)*exp(-121*rate_1*t)/11)"},
+    {"name": "T_x_line", "target": "line",
+     "expression": "T_s + (T_i - T_s)*S_mid_end**2*4/pi*(sin(pi*x/L_cube)*exp(-rate_1*t_end) + sin(3*pi*x/L_cube)*exp(-9*rate_1*t_end)/3 + sin(5*pi*x/L_cube)*exp(-25*rate_1*t_end)/5)",
+     "tolerance": 0.01, "line": [0.0, "L_cube/2", "L_cube", "L_cube/2"], "field": "heat.T", "plane": "L_cube/2"},
+    {"name": "T_diagonal", "target": "line",
+     "expression": "T_s + (T_i - T_s)*S_mid_end*(4/pi)**2*(sin(pi*x/L_cube)*exp(-rate_1*t_end) + sin(3*pi*x/L_cube)*exp(-9*rate_1*t_end)/3 + sin(5*pi*x/L_cube)*exp(-25*rate_1*t_end)/5)*(sin(pi*y/L_cube)*exp(-rate_1*t_end) + sin(3*pi*y/L_cube)*exp(-9*rate_1*t_end)/3 + sin(5*pi*y/L_cube)*exp(-25*rate_1*t_end)/5)",
+     "tolerance": 0.01,
+     "line": [0.0, 0.0, "L_cube", "L_cube"], "field": "heat.T", "plane": "L_cube/2"}
+  ]
+}

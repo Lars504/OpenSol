@@ -1,0 +1,97 @@
+{
+  "title": "Heated core in a rigid sleeve: axisymmetric thermoelastic hoop stress (analytic)",
+  "description": "Axisymmetric (r, z) elastic_waves: a long aluminium-like cylinder (radius a = 4.8 mm, 48 cells of 0.1 mm; x = r, the axis is x_lo) in a rigid frictionless sleeve (bc_x_hi rigid: u_r = 0, s_rz = 0 at r = a), periodic along z (4 cells: a long cylinder, e_zz = 0). A short heating pulse (heat_pulse_source, Grueneisen G = 2, absorbed H = 5e5 J/m^3) in the core r < b = a / 2 adds the thermoelastic stress -sigma* = -G H to s_rr, s_zz and s_tt there; mass-proportional damping (acoustic_damping = 2 omega_1, the lowest radial mode critically damped) lets the ringing die out, so after 4 us (~400 steps, < 1 s) the fields are the static plane-strain thermal stress.\nAnalytic (Lame, plane strain, beta = b^2 / a^2): core u_r = A r, s_rr = s_tt = sigma* ((lambda + mu)(1 - beta) / (lambda + 2 mu) - 1), s_zz = sigma* (lambda (1 - beta) / (lambda + 2 mu) - 1); sleeve side u_r = B (r - a^2 / r), s_rr = -sigma* beta (lambda + mu + mu a^2 / r^2) / (lambda + 2 mu), s_tt = -sigma* beta (lambda + mu - mu a^2 / r^2) / (lambda + 2 mu), s_zz = -sigma* beta lambda / (lambda + 2 mu). The hoop stress jumps from -0.42 sigma* (compression) in the core to +0.03 sigma* (tension) just outside it. On the staggered ring-volume grid this static solution is exact with r^2 -> r_c^2 - dx^2 / 4 in the cell stresses (u_r = B (R - a^2 / R) on the faces satisfies every discrete face equilibrium), which the references use; expected agreement ~1e-5 (float32, residual ringing ~1e-7).\nDerived values tab: stt_core_mean / srr_core_mean / szz_core_mean = ring-weighted means over the core vs the core values; stt_probe_end / srr_outer_end = last samples of the stt probe in the core and the sxx probe at r = 36.5 dx; tolerance 1e-3.\nLine profile tab (final state, along r at mid-height): stt_radial, srr_radial, szz_radial vs the Lame profiles; tolerance 1e-3 of the range.\nProbes tab: hoop_probe and radial_probe settle on the dashed static values after the damped ringing.",
+  "version": 1,
+  "parameters": [
+    {"name": "rho_al", "expression": 2700.0, "description": "density in kg/m^3 (aluminium-like)"},
+    {"name": "cL_al", "expression": 6420.0, "description": "longitudinal speed in m/s"},
+    {"name": "cS_al", "expression": 3040.0, "description": "shear speed in m/s"},
+    {"name": "mu_al", "expression": "rho_al*cS_al**2", "description": "shear modulus mu in Pa (24.95 GPa)"},
+    {"name": "M_al", "expression": "rho_al*cL_al**2", "description": "P-wave modulus lambda + 2 mu in Pa (111.3 GPa)"},
+    {"name": "lam_al", "expression": "M_al - 2*mu_al", "description": "Lame lambda in Pa (61.4 GPa)"},
+    {"name": "G_th", "expression": 2.0, "description": "Grueneisen parameter: thermoelastic stress per absorbed energy density"},
+    {"name": "H_abs", "expression": 5.0e5, "description": "absorbed energy density of the whole pulse in J/m^3"},
+    {"name": "w_p", "expression": 1.0e-7, "description": "heating pulse 1/e half-width in s"},
+    {"name": "d_p", "expression": 3.0e-7, "description": "heating pulse centre time in s"},
+    {"name": "q0", "expression": "H_abs/(sqrt(pi)*w_p)", "description": "peak heating power density in W/m^3 (2.8e12)"},
+    {"name": "sig_star", "expression": "G_th*H_abs*(1 + erf(d_p/w_p))/2", "description": "thermoelastic stress G H in Pa (1 MPa; the envelope integral from t = 0)"},
+    {"name": "dx_cell", "expression": "0.1*mm", "description": "uniform cell size"},
+    {"name": "N_r", "expression": 48, "description": "cells along r"},
+    {"name": "a_cyl", "expression": "N_r*dx_cell", "description": "cylinder (sleeve) radius"},
+    {"name": "b_core", "expression": "24*dx_cell", "description": "heated core radius (a cell edge)"},
+    {"name": "beta", "expression": "(b_core/a_cyl)**2", "description": "core area fraction b^2 / a^2"},
+    {"name": "H_z", "expression": "4*dx_cell", "description": "periodic z period (z-uniform fields)"},
+    {"name": "y_mid", "expression": "1.5*dx_cell", "description": "height of the probes and the radial lines (a cell centre)"},
+    {"name": "r_core_probe", "expression": "12.5*dx_cell", "description": "radius of the hoop-stress probe (core cell centre)"},
+    {"name": "r_outer_probe", "expression": "36.5*dx_cell", "description": "radius of the radial-stress probe (cell centre outside the core)"},
+    {"name": "f_r1", "expression": "cL_al*3.831706/(2*pi*a_cyl)", "description": "lowest radial (breathing) mode with u_r(a) = 0 in Hz (816 kHz)"},
+    {"name": "g_damp", "expression": "4*pi*f_r1", "description": "mass-proportional damping rate 2 omega_1 in 1/s (mode 1 critically damped)"},
+    {"name": "T_run", "expression": "4*us", "description": "study duration (ringing below 1e-7 of sigma*)"},
+    {"name": "s_core", "expression": "sig_star*((lam_al + mu_al)*(1 - beta)/(lam_al + 2*mu_al) - 1)", "description": "core s_rr = s_tt in Pa (-0.42 MPa)"},
+    {"name": "szz_core", "expression": "sig_star*(lam_al*(1 - beta)/(lam_al + 2*mu_al) - 1)", "description": "core s_zz in Pa (-0.59 MPa)"},
+    {"name": "srr_outer", "expression": "-sig_star*beta*(lam_al + mu_al + mu_al*a_cyl**2/(r_outer_probe**2 - dx_cell**2/4))/(lam_al + 2*mu_al)", "description": "s_rr at the outer probe cell in Pa (discrete-exact r^2 -> r_c^2 - dx^2/4)"}
+  ],
+  "domain": {"size_x": "a_cyl", "size_y": "H_z"},
+  "geometry": [
+    {"name": "core", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "b_core", "y1": "H_z"}},
+    {"name": "core_probe_point", "kind": "point", "params": {"x": "r_core_probe", "y": "y_mid"}},
+    {"name": "outer_probe_point", "kind": "point", "params": {"x": "r_outer_probe", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "aluminium", "library": null,
+     "properties": {"rho": "rho_al", "sound_speed": "cL_al", "shear_speed": "cS_al", "gruneisen": "G_th",
+                    "acoustic_damping": "g_damp"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"geometry": "axisymmetric", "bc_x_lo": "rigid", "bc_x_hi": "rigid", "bc_y_lo": "periodic",
+                   "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "heating", "type": "heat_pulse_source", "selection": ["core"],
+         "params": {"power_density": "q0", "pulse_width": "w_p", "delay": "d_p"}, "enabled": true},
+        {"name": "hoop_probe", "type": "field_probe", "selection": ["core_probe_point"], "params": {"component": "stt"},
+         "enabled": true},
+        {"name": "radial_probe", "type": "field_probe", "selection": ["outer_probe_point"],
+         "params": {"component": "sxx"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": "T_run/8"},
+            "stored_fields": ["acoustics.stt", "acoustics.sxx", "acoustics.syy"], "sweep": null},
+  "derived_values": [
+    {"name": "stt_core_mean", "expression": "acoustics_stt", "selection": ["core"], "operation": "mean",
+     "reference": "s_core", "tolerance": 1e-3},
+    {"name": "srr_core_mean", "expression": "acoustics_sxx", "selection": ["core"], "operation": "mean",
+     "reference": "s_core", "tolerance": 1e-3},
+    {"name": "szz_core_mean", "expression": "acoustics_syy", "selection": ["core"], "operation": "mean",
+     "reference": "szz_core", "tolerance": 1e-3},
+    {"name": "stt_probe_end", "expression": "values", "selection": [], "operation": "last",
+     "source": "acoustics.hoop_probe", "reference": "s_core", "tolerance": 1e-3},
+    {"name": "srr_outer_end", "expression": "values", "selection": [], "operation": "last",
+     "source": "acoustics.radial_probe", "reference": "srr_outer", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "stt_radial", "target": "line", "field": "acoustics.stt",
+     "line": ["dx_cell/2", "y_mid", "a_cyl - dx_cell/2", "y_mid"],
+     "expression": "where(x < b_core, s_core, -sig_star*beta*(lam_al + mu_al - mu_al*a_cyl**2/(x**2 - dx_cell**2/4))/(lam_al + 2*mu_al))",
+     "tolerance": 1e-3},
+    {"name": "srr_radial", "target": "line", "field": "acoustics.sxx",
+     "line": ["dx_cell/2", "y_mid", "a_cyl - dx_cell/2", "y_mid"],
+     "expression": "where(x < b_core, s_core, -sig_star*beta*(lam_al + mu_al + mu_al*a_cyl**2/(x**2 - dx_cell**2/4))/(lam_al + 2*mu_al))",
+     "tolerance": 1e-3},
+    {"name": "szz_radial", "target": "line", "field": "acoustics.syy",
+     "line": ["dx_cell/2", "y_mid", "a_cyl - dx_cell/2", "y_mid"],
+     "expression": "where(x < b_core, szz_core, -sig_star*beta*lam_al/(lam_al + 2*mu_al))",
+     "tolerance": 1e-3},
+    {"name": "hoop_probe_static", "target": "acoustics.hoop_probe", "expression": "s_core + 0*t"},
+    {"name": "radial_probe_static", "target": "acoustics.radial_probe", "expression": "srr_outer + 0*t"}
+  ]
+}

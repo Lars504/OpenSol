@@ -1,0 +1,115 @@
+{
+  "title": "Lossy slab: optical absorption, Joule heating and energy balance (analytic)",
+  "description": "A 1.55 um plane-wave mode in a y-periodic glass strip (n0 = 1.5) crosses a slab with sigma_e = 2e3 S/m; em_heat_joule hands the absorbed power to heat, which leaves only through the substrate (out_of_plane_convection, insulated x faces), and heat_em_thermo_optic feeds T back (a silica-like dndT: negligible shift).\nAnalytic: absorbed fraction A = (1 - R) (1 - exp(-a d)) = 86.6 % (a = 2 k0 kappa the power attenuation, kappa = Im sqrt(eps), R the front-face reflection); temperature from the 1D k theta'' - H theta = -q0 exp(-a (x - x0)) inside the slab (Green function exp(-p |x - s|) / (2 k p), p = sqrt(H / k), H = h sides / thickness).\nDerived values tab: P_absorbed, P_up, P_down against the Fresnel / Beer-Lambert closed forms (a few 1e-4; P_down = P_in (1 - R)^2 (1 + kappa^2 / n^2) exp(-a d), the exit factor |N|^2 / n^2 of a wave leaving an absorbing medium, 1.7e-3 here), and the energy balance P_loss = integral of H (T - T0) = P_absorbed and dT_mean = P_absorbed / (H Lx Ly) (exact up to the A reference).\nLine profile tab: T_profile against the 1D solution; the small ripple near the slab back is the standing wave of its weak reflection.\nField tab: em.ez_abs, em.absorbed_power and heat.T maps.",
+  "version": 1,
+  "parameters": [
+    {"name": "P_in", "expression": 10.0, "description": "mode source power in W per m of z (2D)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "n0", "expression": 1.5, "description": "glass index (eps_r = n0^2, also inside the slab)"},
+    {"name": "sigma_slab", "expression": 2.0e3, "description": "optical conductivity sigma_e of the slab in S/m (Im eps / eps_r = 0.083: weak loss)"},
+    {"name": "x_slab0", "expression": "2*um", "description": "slab front face (on a cell face)"},
+    {"name": "d_slab", "expression": "4*um", "description": "slab thickness along x"},
+    {"name": "x_slab1", "expression": "x_slab0 + d_slab", "description": "slab back face"},
+    {"name": "Lx", "expression": "8*um", "description": "strip length along x (CPML outside for EM, insulated x faces for heat)"},
+    {"name": "Ly", "expression": "0.2*um", "description": "period along y (periodic EM boundaries, insulated heat faces)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size; the lines below sit at cell centres"},
+    {"name": "x_src", "expression": "1.01*um", "description": "mode source line (cell 50 centre), launching toward +x"},
+    {"name": "x_flux_up", "expression": "1.31*um", "description": "upstream flux monitor (cell 65 centre): net power into the slab"},
+    {"name": "x_flux_down", "expression": "6.71*um", "description": "downstream flux monitor (cell 335 centre): transmitted power"},
+    {"name": "k_glass", "expression": 0.2, "description": "thermal conductivity in W/(m K), everywhere"},
+    {"name": "dndT_glass", "expression": 1e-5, "description": "thermo-optic coefficient in 1/K (silica-like: the few-K rise shifts A by < 1e-4)"},
+    {"name": "T0", "expression": 293.15, "description": "substrate (ambient) and reference temperature in K"},
+    {"name": "t_film", "expression": "0.6*um", "description": "film thickness the 2D model stands for (out-of-plane loss per volume ~ 1 / thickness)"},
+    {"name": "h_sub", "expression": "1.38/(2*um)", "description": "heat transfer coefficient to the substrate in W/(m^2 K): k of silica / 2 um buried oxide"},
+    {"name": "n_sides", "expression": 1, "description": "cooled film faces (out_of_plane_convection sides)"},
+    {"name": "eps_imag", "expression": "sigma_slab/(2*pi*c_const/lambda0*eps0_const)", "description": "Im eps = sigma / (omega eps0) of the slab"},
+    {"name": "eps_abs", "expression": "sqrt(n0**4 + eps_imag**2)", "description": "|eps| of the slab"},
+    {"name": "kappa", "expression": "sqrt((eps_abs - n0**2)/2)", "description": "extinction coefficient Im sqrt(eps) of the slab"},
+    {"name": "n_re", "expression": "sqrt((eps_abs + n0**2)/2)", "description": "Re sqrt(eps) of the slab"},
+    {"name": "ksi0", "expression": "n0*k_vac*dx_cell/2", "description": "half-cell phase n0 k0 dx / 2 (grid-dispersion factor below)"},
+    {"name": "a_att", "expression": "2*k_vac*kappa/sqrt(1 - ksi0**2)", "description": "power attenuation coefficient of the discrete wave in 1/m (a d ~ 2.01)"},
+    {"name": "R_front", "expression": "((n0 - n_re)**2 + kappa**2)/((n0 + n_re)**2 + kappa**2)", "description": "power reflection of the slab front face (~4.2e-4)"},
+    {"name": "exit_factor", "expression": "1 + kappa**2/n_re**2", "description": "back-face power transmission over (1 - R) for a wave leaving an absorbing medium: |N|^2 / n_re^2 (1 + 1.7e-3)"},
+    {"name": "A_ref", "expression": "(1 - R_front)*(1 - exp(-a_att*d_slab))", "description": "absorbed fraction (back-face reflection and interference neglected, ~1e-4)"},
+    {"name": "P_abs_ref", "expression": "A_ref*P_in", "description": "analytic absorbed power in W/m"},
+    {"name": "H_loss", "expression": "h_sub*n_sides/t_film", "description": "volumetric loss coefficient H in W/(m^3 K)"},
+    {"name": "dT_mean_ref", "expression": "P_abs_ref/(H_loss*Lx*Ly)", "description": "analytic mean rise over the window in K (energy balance)"},
+    {"name": "p_heat", "expression": "sqrt(H_loss/k_glass)", "description": "inverse heat spreading length sqrt(H / k) in 1/m (0.42 um)"},
+    {"name": "q_front", "expression": "a_att*P_in*(1 - R_front)/Ly", "description": "absorbed power density at the slab front in W/m^3"},
+    {"name": "c_heat", "expression": "q_front/(2*k_glass*p_heat)", "description": "Green-function prefactor q0 / (2 k p) of T_profile in K/m"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab0", "y0": 0.0, "x1": "x_slab1", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "flux_up_line", "kind": "line", "params": {"x0": "x_flux_up", "y0": 0.0, "x1": "x_flux_up", "y1": "Ly"}},
+    {"name": "flux_down_line", "kind": "line",
+     "params": {"x0": "x_flux_down", "y0": 0.0, "x1": "x_flux_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null, "properties": {"eps_r": "n0**2", "k": "k_glass", "dndT": "dndT_glass"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "absorber", "library": null,
+     "properties": {"eps_r": "n0**2", "k": "k_glass", "dndT": "dndT_glass", "sigma_e": "sigma_slab"},
+     "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "power": "P_in", "phase": 0.0}, "enabled": true},
+        {"name": "flux_up", "type": "flux_monitor", "selection": ["flux_up_line"], "params": {}, "enabled": true},
+        {"name": "flux_down", "type": "flux_monitor", "selection": ["flux_down_line"], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T0"},
+      "features": [
+        {"name": "substrate", "type": "out_of_plane_convection", "selection": ["all"],
+         "params": {"h": "h_sub", "T_ext": "T0", "thickness": "t_film", "sides": "n_sides"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "joule", "type": "em_heat_joule", "source": "em", "target": "heat", "every": null, "params": {},
+     "enabled": true},
+    {"name": "thermo_optic", "type": "heat_em_thermo_optic", "source": "heat", "target": "em", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 30, "tolerance": 2e-6, "relaxation": 1.0, "warm_start": false},
+            "stored_fields": ["em.ez_abs", "em.absorbed_power", "heat.T"], "sweep": null},
+  "derived_values": [
+    {"name": "P_absorbed", "expression": "em_absorbed_power", "selection": ["slab"], "operation": "integral",
+     "reference": "P_abs_ref", "tolerance": 0.003},
+    {"name": "P_up", "expression": "power", "operation": "last", "source": "em.flux_up",
+     "reference": "P_in*(1 - R_front)", "tolerance": 0.003},
+    {"name": "P_down", "expression": "power", "operation": "last", "source": "em.flux_down",
+     "reference": "P_in*(1 - R_front)**2*exit_factor*exp(-a_att*d_slab)", "tolerance": 0.001},
+    {"name": "P_loss", "expression": "H_loss*heat_T_rise", "selection": ["all"], "operation": "integral",
+     "reference": "P_abs_ref", "tolerance": 0.003},
+    {"name": "dT_mean", "expression": "heat_T_rise", "selection": ["all"], "operation": "mean",
+     "reference": "dT_mean_ref", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line",
+     "expression": "T0 + c_heat*where(x < x_slab0, exp(-p_heat*(x_slab0 - x))*(1 - exp(-(a_att + p_heat)*d_slab))/(a_att + p_heat), where(x < x_slab1, (exp(-a_att*(x - x_slab0)) - exp(-p_heat*(x - x_slab0)))/(p_heat - a_att) + (exp(-a_att*(x - x_slab0)) - exp(-a_att*d_slab)*exp(-p_heat*(x_slab1 - x)))/(p_heat + a_att), exp(-p_heat*(x - x_slab1))*(exp(-a_att*d_slab) - exp(-p_heat*d_slab))/(p_heat - a_att)))",
+     "tolerance": 0.015,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "heat.T"}
+  ]
+}

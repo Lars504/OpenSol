@@ -1,0 +1,97 @@
+{
+  "title": "Uniformly heated long cylinder, axisymmetric (r, z): parabolic temperature and thermal stress (analytic)",
+  "description": "The heated_cylinder_thermal_stress rod as an axisymmetric (r, z) slice: heat and solid_mechanics both with geometry axisymmetric (x = r, the axis is x_lo; y = z). A thin slice (4 cells) of a long solid rod (radius b, 64 cells) with a uniform heat source q, the surface r = b held at T_amb (temperature on x_hi), the slice faces insulated (z-uniform temperature). heat_solid_thermal_strain hands T - T_amb to the solid; rollers on y_lo / y_hi hold u_z = 0 (a long rod with clamped ends: eps_zz = 0, plane strain along the axis), u_r = 0 on the axis is automatic, the surface is free. No staircase: the rod surface is the domain edge.\nAnalytic (as the plane-strain cross-section model): theta = T - T_amb = q (b^2 - r^2) / (4 k); with C = E alpha q / (16 k (1 - nu)): sigma_r = -C (b^2 - r^2), sigma_theta = -C (b^2 - 3 r^2), axial sigma_z = nu (sigma_r + sigma_theta) - E alpha theta; u_r = (1 + nu) alpha / (1 - nu) * theta0 r (3 - 2 nu - r^2 / b^2) / 4, theta0 = q b^2 / (4 k). The axial roller force is the whole-ring integral of sigma_z: -pi E alpha theta0 b^2 / 2 (the nu term integrates to 0).\nOutputs in (r, z): stress_xx = sigma_r, stress_yy = the axial sigma_z, stress_zz = the hoop sigma_theta, u_x = u_r. The finite-volume heat solve is exact up to a uniform offset q dx^2 / (16 k) (the half-cell surface conductance), ~6e-5 of theta0.\nLine profile tab: T_radial, sigma_r, sigma_theta, sigma_z and u_radial along r at the first cell row, centre to the last cell; expected agreement well below 1 % of each curve's range.\nDerived values tab: dT_centre, srr_centre / stt_centre (-C b^2 = -6.25 MPa on the axis), szz_centre (axial), stt_surface (hoop tension at the last cell centre), ux_peak (the interior maximum of u_r) and F_axial_top (whole-ring roller force in N) with their references.",
+  "version": 1,
+  "parameters": [
+    {"name": "q_vol", "expression": 1e9, "description": "uniform volumetric heat source in the rod in W/m^3"},
+    {"name": "k_rod", "expression": 10.0, "description": "thermal conductivity of the rod in W/(m K)"},
+    {"name": "E_rod", "expression": 7e10, "description": "Young's modulus of the rod in Pa"},
+    {"name": "nu_rod", "expression": 0.3, "description": "Poisson ratio of the rod"},
+    {"name": "alpha_rod", "expression": 1e-5, "description": "thermal expansion coefficient of the rod in 1/K"},
+    {"name": "T_amb", "expression": 293.15, "description": "surface temperature = heat T0 = stress-free temperature in K"},
+    {"name": "b_rod", "expression": "1*mm", "description": "rod radius"},
+    {"name": "dx_mesh", "expression": "b_rod/64", "description": "uniform cell size (64 cells per radius)"},
+    {"name": "H_slice", "expression": "4*dx_mesh", "description": "axial height of the slice (fields are z-uniform)"},
+    {"name": "y_line", "expression": "dx_mesh/2", "description": "height of the radial line (first cell row centre)"},
+    {"name": "theta0", "expression": "q_vol*b_rod**2/(4*k_rod)", "description": "analytic centre rise in K (25 K)"},
+    {"name": "C_stress", "expression": "E_rod*alpha_rod*q_vol/(16*k_rod*(1 - nu_rod))",
+     "description": "thermal stress coefficient C in Pa/m^2 (C b^2 = 6.25 MPa)"},
+    {"name": "K_exp", "expression": "(1 + nu_rod)*alpha_rod/(1 - nu_rod)", "description": "plane-strain radial expansion factor in 1/K"},
+    {"name": "r_last", "expression": "b_rod - dx_mesh/2", "description": "centre radius of the outermost cell"}
+  ],
+  "domain": {"size_x": "b_rod", "size_y": "H_slice"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "rod_material", "library": null,
+     "properties": {"k": "k_rod", "youngs_modulus": "E_rod", "poisson_ratio": "nu_rod", "alpha": "alpha_rod"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"geometry": "axisymmetric", "T0": "T_amb"},
+      "features": [
+        {"name": "source", "type": "heat_source", "selection": ["all"], "params": {"Q": "q_vol"}, "enabled": true},
+        {"name": "surface", "type": "temperature", "selection": ["x_hi"], "params": {"temperature": "T_amb"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"geometry": "axisymmetric"},
+      "features": [
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "top", "type": "roller", "selection": ["y_hi"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "thermal_strain", "type": "heat_solid_thermal_strain", "source": "heat", "target": "solid", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["heat.T", "solid.u_abs", "solid.u_x", "solid.stress_xx", "solid.stress_yy",
+                              "solid.stress_zz"],
+            "sweep": null},
+  "derived_values": [
+    {"name": "dT_centre", "expression": "heat_T_rise", "selection": ["all"], "operation": "max",
+     "reference": "theta0", "tolerance": 0.002},
+    {"name": "srr_centre", "expression": "solid_stress_xx", "selection": ["all"], "operation": "min",
+     "reference": "-C_stress*b_rod**2", "tolerance": 0.005},
+    {"name": "stt_centre", "expression": "solid_stress_zz", "selection": ["all"], "operation": "min",
+     "reference": "-C_stress*b_rod**2", "tolerance": 0.005},
+    {"name": "szz_centre", "expression": "solid_stress_yy", "selection": ["all"], "operation": "min",
+     "reference": "-2*nu_rod*C_stress*b_rod**2 - E_rod*alpha_rod*theta0", "tolerance": 0.005},
+    {"name": "stt_surface", "expression": "solid_stress_zz", "selection": ["all"], "operation": "max",
+     "reference": "-C_stress*(b_rod**2 - 3*r_last**2)", "tolerance": 0.01},
+    {"name": "ux_peak", "expression": "solid_u_x", "selection": ["all"], "operation": "max",
+     "reference": "K_exp*theta0*b_rod*((3 - 2*nu_rod)/3)**1.5/2", "tolerance": 0.005},
+    {"name": "F_axial_top", "expression": "F_y", "operation": "last", "source": "solid.top",
+     "reference": "-pi*E_rod*alpha_rod*theta0*b_rod**2/2", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "T_radial", "target": "line", "expression": "T_amb + q_vol*(b_rod**2 - x**2)/(4*k_rod)",
+     "tolerance": 0.002, "line": ["dx_mesh/2", "y_line", "r_last", "y_line"], "field": "heat.T"},
+    {"name": "sigma_r", "target": "line", "expression": "-C_stress*(b_rod**2 - x**2)", "tolerance": 0.01,
+     "line": ["dx_mesh/2", "y_line", "r_last", "y_line"], "field": "solid.stress_xx"},
+    {"name": "sigma_theta", "target": "line", "expression": "-C_stress*(b_rod**2 - 3*x**2)", "tolerance": 0.01,
+     "line": ["dx_mesh/2", "y_line", "r_last", "y_line"], "field": "solid.stress_zz"},
+    {"name": "sigma_z", "target": "line",
+     "expression": "-nu_rod*C_stress*(2*b_rod**2 - 4*x**2) - E_rod*alpha_rod*q_vol*(b_rod**2 - x**2)/(4*k_rod)",
+     "tolerance": 0.01, "line": ["dx_mesh/2", "y_line", "r_last", "y_line"], "field": "solid.stress_yy"},
+    {"name": "u_radial", "target": "line", "expression": "K_exp*theta0*x*(3 - 2*nu_rod - x**2/b_rod**2)/4",
+     "tolerance": 0.005, "line": ["dx_mesh/2", "y_line", "r_last", "y_line"], "field": "solid.u_x"}
+  ]
+}

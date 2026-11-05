@@ -1,0 +1,65 @@
+{
+  "title": "Analytic: Fabry-Perot slab transmission (FDFD)",
+  "description": "A normally incident plane wave (line source spanning the periodic y period) crosses a lossless slab; frequency_domain study 800-1600 nm.\nAnalytic (Airy): P_trans = P_inc / (1 + F sin^2(2 pi n d / lambda)); peaks T = 1 at lambda = 2 n d / m, dips T = 1/(1 + F) = 0.64 at 4 n d / (2m + 1).\nSpectra tab: 'trans' power (W/m) vs the dashed analytic Airy curve.\nDerived values tab: T_peak and T_dip with their analytic reference and relative error (~1e-3 expected).\nField tab: the Snapshot slider steps through |E_z| per wavelength.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_slab", "expression": 2.0, "description": "slab refractive index"},
+    {"name": "d_slab", "expression": "500*nm", "description": "slab thickness (50 cells; both faces on cell edges)"},
+    {"name": "x_slab", "expression": "2*um", "description": "slab front face"},
+    {"name": "Lx", "expression": "5*um", "description": "domain length along x (cpml on both x faces)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells)"},
+    {"name": "x_source", "expression": "1.005*um", "description": "line source (cell centre), in vacuum"},
+    {"name": "x_trans", "expression": "3.505*um", "description": "transmission flux line (cell centre), behind the slab"},
+    {"name": "A_src", "expression": 1.0, "description": "line source amplitude [V/m] radiated to each side"},
+    {"name": "P_inc", "expression": "A_src**2*Ly/(2*mu0_const*c_const)",
+     "description": "incident power [W/m] the line sends toward +x: A^2 Ly / (2 eta0)"},
+    {"name": "F_coef", "expression": "((n_slab**2 - 1)/(2*n_slab))**2",
+     "description": "coefficient of finesse F = ((n^2 - 1) / (2 n))^2 of the slab in vacuum (0.5625 for n = 2)"},
+    {"name": "lambda_peak", "expression": "2*n_slab*d_slab/2", "description": "transmission peak (order m = 2): 1000 nm"},
+    {"name": "lambda_dip", "expression": "4*n_slab*d_slab/3", "description": "transmission dip: 1333 nm"},
+    {"name": "lambda_start", "expression": "800*nm", "description": "first solved wavelength"},
+    {"name": "lambda_stop", "expression": "1600*nm", "description": "last solved wavelength"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab", "y0": 0.0, "x1": "x_slab + d_slab", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_source", "y0": 0.0, "x1": "x_source", "y1": "Ly"}},
+    {"name": "trans_line", "kind": "line", "params": {"x0": "x_trans", "y0": 0.0, "x1": "x_trans", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "slab_material", "library": null, "properties": {"eps_r": "n_slab**2"}, "dispersion": null,
+     "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"amplitude": "A_src", "phase": 0.0}, "enabled": true},
+        {"name": "trans", "type": "flux_monitor", "selection": ["trans_line"], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "10*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "frequency_domain",
+            "settings": {"wavelength_start": "lambda_start", "wavelength_stop": "lambda_stop", "n_wavelengths": 81},
+            "stored_fields": ["em.ez_abs"], "sweep": null},
+  "derived_values": [
+    {"name": "T_peak", "expression": "power/P_inc", "selection": [], "operation": "at", "source": "em.trans",
+     "at": "lambda_peak", "reference": "1/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_peak)**2)",
+     "tolerance": 0.003},
+    {"name": "T_dip", "expression": "power/P_inc", "selection": [], "operation": "at", "source": "em.trans",
+     "at": "lambda_dip", "reference": "1/(1 + F_coef*sin(2*pi*n_slab*d_slab/lambda_dip)**2)",
+     "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "airy", "target": "em.trans", "expression": "P_inc/(1 + F_coef*sin(2*pi*n_slab*d_slab/wavelength)**2)",
+     "tolerance": 0.025, "series": "power"}
+  ]
+}

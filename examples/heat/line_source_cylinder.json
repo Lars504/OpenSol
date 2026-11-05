@@ -1,0 +1,65 @@
+{
+  "title": "Line heat source in a cylinder: logarithmic profile (analytic)",
+  "description": "Steady conduction from a line source (point_heat_source) at the centre of a cylinder whose outside (everything beyond r_wall) is held at T_wall.\nAnalytic: T = T_wall + P / (2 pi k) ln(r_wall / r).\nDerived values tab: theta_near (r = 4 cells) and theta_far (r = 36 cells) from the two probes against the log law; staircase wall and lattice errors, expect < 1 %.\nLine profile tab: T_radial (T from one cell beside the source out to the wall); the first cell beside the source sits ~1 % of the rise off the log law (lattice Green's function), further out < 0.5 %.",
+  "version": 1,
+  "parameters": [
+    {"name": "P_line", "expression": 1.0, "description": "line source power in W per m of z"},
+    {"name": "k_med", "expression": 0.05, "description": "thermal conductivity in W/(m K) (an insulating solid)"},
+    {"name": "T_wall", "expression": 293.15, "description": "temperature held outside r_wall in K"},
+    {"name": "L_box", "expression": "40*mm", "description": "square domain side"},
+    {"name": "dx_mesh", "expression": "0.25*mm", "description": "uniform cell size"},
+    {"name": "xc", "expression": "L_box/2 + dx_mesh/2", "description": "source x: a cell centre near the domain centre"},
+    {"name": "yc", "expression": "xc", "description": "source y"},
+    {"name": "r_wall", "expression": "18*mm", "description": "radius of the held cylinder wall"},
+    {"name": "r_near", "expression": "4*dx_mesh", "description": "radius of the near probe (a cell centre on the source row)"},
+    {"name": "r_far", "expression": "36*dx_mesh", "description": "radius of the far probe (a cell centre on the source row)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "disk", "kind": "circle", "params": {"cx": "xc", "cy": "yc", "r": "r_wall"}},
+    {"name": "shell", "kind": "difference", "params": {"base": "box", "subtract": ["disk"]}},
+    {"name": "source_point", "kind": "point", "params": {"x": "xc", "y": "yc"}},
+    {"name": "near_point", "kind": "point", "params": {"x": "xc + r_near", "y": "yc"}},
+    {"name": "far_point", "kind": "point", "params": {"x": "xc + r_far", "y": "yc"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "medium", "library": null, "properties": {"k": "k_med"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_wall"},
+      "features": [
+        {"name": "wall", "type": "fixed_temperature_domain", "selection": ["shell"],
+         "params": {"temperature": "T_wall"}, "enabled": true},
+        {"name": "source", "type": "point_heat_source", "selection": ["source_point"], "params": {"P": "P_line"},
+         "enabled": true},
+        {"name": "near", "type": "temperature_probe", "selection": ["near_point"], "params": {}, "enabled": true},
+        {"name": "far", "type": "temperature_probe", "selection": ["far_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_near", "expression": "values - T_wall", "selection": [], "operation": "last",
+     "source": "heat.near", "reference": "P_line/(2*pi*k_med)*log(r_wall/r_near)", "tolerance": 0.03},
+    {"name": "theta_far", "expression": "values - T_wall", "selection": [], "operation": "last",
+     "source": "heat.far", "reference": "P_line/(2*pi*k_med)*log(r_wall/r_far)", "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "T_radial", "target": "line",
+     "expression": "T_wall + P_line/(2*pi*k_med)*log(r_wall/hypot(x - xc, y - yc))", "tolerance": 0.025,
+     "line": ["xc + dx_mesh", "yc", "xc + r_wall", "yc"], "field": "heat.T"}
+  ]
+}

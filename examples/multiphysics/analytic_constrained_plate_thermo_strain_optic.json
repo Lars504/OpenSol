@@ -1,0 +1,114 @@
+{
+  "title": "Heated constrained glass plate: thermo-optic + strain-optic index sum (analytic)",
+  "description": "A 40 x 20 um glass plate heated uniformly by dT (heat: all faces at T0 + dT, steady) on rollers at x_lo, x_hi and y_lo (y_hi free), plane strain. heat_solid_thermal_strain loads the solid; heat_em_thermo_optic and solid_em_strain_optic (deformation on) both contribute to eps_r_update of an em_fdfd_ez physics (no source: only its permittivity is the result), so the E13 index sum and the dropped (1 + alpha dT) factor are checked. The glass has an exaggerated alpha = 1e-5 1/K (silica ~5.5e-7) so the strain terms are well above float32 eps; the model twin of selftest solid_em_strain_optic_plate, with the plate constrained instead of free.\nAnalytic (uniform, exact in the bilinear elements): strain_xx = 0, strain_yy = (1 + nu) alpha dT / (1 - nu); elastic strains e_xx = e_zz = -alpha dT, e_yy = 2 nu alpha dT / (1 - nu); sigma_xx = sigma_zz = -E alpha dT / (1 - nu), sigma_yy = 0; E_z sees dn_pe = -n0^3/2 (p11 e_zz + p12 (e_xx + e_yy)) = (n0^3/2) alpha dT [p11 + p12 (1 - 3 nu)/(1 - nu)]; n = (n0 + dn_pe) sqrt(1 + strain_yy) + dndT dT (at dT = 100 K: dn = 2.44e-3, of which thermo-optic 1.0e-3, photoelastic 0.42e-3, deformation 1.02e-3; a kept alpha factor would add n0 alpha dT = 1.44e-3).\nSweep tab: dn vs dT (25, 50, 100 K) with the dashed analytic dn.\nDerived values tab: dn (mean sqrt(eps_r) - n0, ~1e-4: float32 eps_r; tolerance 1e-3), the strain and stress means and the x_hi reaction F_x = sigma_xx H (~1e-6), the heat rise.\nLine profile tab (dT = 100 K): eps_r_profile along x (flat (n0 + dn)^2) and u_y_up (strain_yy y).",
+  "version": 1,
+  "parameters": [
+    {"name": "dT", "expression": 100.0, "description": "uniform temperature rise in K (swept 25, 50, 100)"},
+    {"name": "T_ref", "expression": 293.15, "description": "heat T0 = stress-free and thermo-optic reference temperature in K"},
+    {"name": "L_plate", "expression": "40*um", "description": "plate width along x"},
+    {"name": "H_plate", "expression": "20*um", "description": "plate height along y"},
+    {"name": "dx_mesh", "expression": "1*um", "description": "uniform cell size"},
+    {"name": "E_glass", "expression": 7.3e10, "description": "Young's modulus in Pa (silica)"},
+    {"name": "nu_glass", "expression": 0.17, "description": "Poisson ratio (silica)"},
+    {"name": "alpha_glass", "expression": 1e-5, "description": "thermal expansion in 1/K (exaggerated; silica 5.5e-7)"},
+    {"name": "dndT_glass", "expression": 1e-5, "description": "thermo-optic coefficient in 1/K (silica ~1e-5)"},
+    {"name": "eps_glass", "expression": 2.085, "description": "relative permittivity (n0 = 1.444)"},
+    {"name": "p11_glass", "expression": 0.121, "description": "photoelastic coefficient p11 (silica)"},
+    {"name": "p12_glass", "expression": 0.270, "description": "photoelastic coefficient p12 (silica)"},
+    {"name": "k_glass", "expression": 1.4, "description": "thermal conductivity in W/(m K)"},
+    {"name": "lambda0", "expression": "20*um", "description": "FDFD wavelength (no source: sets only the mesh check, ~14 cells per wavelength)"},
+    {"name": "n0_glass", "expression": "sqrt(eps_glass)", "description": "unperturbed index n0"},
+    {"name": "strain_yy_ref", "expression": "(1 + nu_glass)*alpha_glass*dT/(1 - nu_glass)", "description": "analytic total strain_yy"},
+    {"name": "el_yy_ref", "expression": "2*nu_glass*alpha_glass*dT/(1 - nu_glass)", "description": "analytic elastic strain_yy"},
+    {"name": "sigma_xx_ref", "expression": "-E_glass*alpha_glass*dT/(1 - nu_glass)", "description": "analytic sigma_xx = sigma_zz in Pa (-88 MPa at 100 K)"},
+    {"name": "dn_pe_ref", "expression": "n0_glass**3/2*alpha_glass*dT*(p11_glass + p12_glass*(1 - 3*nu_glass)/(1 - nu_glass))",
+     "description": "analytic photoelastic index change seen by E_z"},
+    {"name": "n_ref", "expression": "(n0_glass + dn_pe_ref)*sqrt(1 + strain_yy_ref) + dndT_glass*dT", "description": "analytic index of the heated plate"},
+    {"name": "dn_ref", "expression": "n_ref - n0_glass", "description": "analytic total index change"}
+  ],
+  "domain": {"size_x": "L_plate", "size_y": "H_plate"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null,
+     "properties": {"eps_r": "eps_glass", "k": "k_glass", "dndT": "dndT_glass", "youngs_modulus": "E_glass",
+                    "poisson_ratio": "nu_glass", "alpha": "alpha_glass", "photoelastic_p11": "p11_glass",
+                    "photoelastic_p12": "p12_glass"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_ref"},
+      "features": [
+        {"name": "walls", "type": "temperature", "selection": ["x_lo", "x_hi", "y_lo", "y_hi"],
+         "params": {"temperature": "T_ref + dT"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "left", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "right", "type": "roller", "selection": ["x_hi"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0"},
+      "features": [],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "expansion", "type": "heat_solid_thermal_strain", "source": "heat", "target": "solid", "every": null,
+     "params": {}, "enabled": true},
+    {"name": "thermo_optic", "type": "heat_em_thermo_optic", "source": "heat", "target": "em", "every": null,
+     "params": {}, "enabled": true},
+    {"name": "strain_optic", "type": "solid_em_strain_optic", "source": "solid", "target": "em", "every": null,
+     "params": {"deformation": true}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["heat.T", "solid.u_y", "solid.stress_xx", "solid.strain_yy", "em.eps_r"],
+            "sweep": {"parameter": "dT", "values": [25.0, 50.0, 100.0]}},
+  "derived_values": [
+    {"name": "dn", "expression": "sqrt(em_eps_r) - n0_glass", "selection": [], "operation": "mean",
+     "reference": "dn_ref", "tolerance": 0.001},
+    {"name": "T_rise_mean", "expression": "heat_T_rise", "selection": [], "operation": "mean",
+     "reference": "dT", "tolerance": 1e-6},
+    {"name": "strain_yy_mean", "expression": "solid_strain_yy", "selection": [], "operation": "mean",
+     "reference": "strain_yy_ref", "tolerance": 1e-5},
+    {"name": "elastic_yy_mean", "expression": "solid_elastic_strain_yy", "selection": [], "operation": "mean",
+     "reference": "el_yy_ref", "tolerance": 1e-5},
+    {"name": "elastic_xx_mean", "expression": "solid_elastic_strain_xx", "selection": [], "operation": "mean",
+     "reference": "-alpha_glass*dT", "tolerance": 1e-5},
+    {"name": "elastic_zz_mean", "expression": "solid_elastic_strain_zz", "selection": [], "operation": "mean",
+     "reference": "-alpha_glass*dT", "tolerance": 1e-5},
+    {"name": "stress_xx_mean", "expression": "solid_stress_xx", "selection": [], "operation": "mean",
+     "reference": "sigma_xx_ref", "tolerance": 1e-5},
+    {"name": "stress_zz_mean", "expression": "solid_stress_zz", "selection": [], "operation": "mean",
+     "reference": "sigma_xx_ref", "tolerance": 1e-5},
+    {"name": "F_x_right", "expression": "F_x", "operation": "last", "source": "solid.right",
+     "reference": "sigma_xx_ref*H_plate", "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "dn_vs_dT", "target": "sweep", "expression": "dn_ref", "tolerance": 0.001, "series": "dn"},
+    {"name": "eps_r_profile", "target": "line", "expression": "n_ref**2", "tolerance": 1e-5,
+     "line": [0.0, "H_plate/2 + dx_mesh/2", "L_plate", "H_plate/2 + dx_mesh/2"], "field": "em.eps_r"},
+    {"name": "u_y_up", "target": "line", "expression": "strain_yy_ref*y", "tolerance": 1e-5,
+     "line": ["L_plate/2 + dx_mesh/2", 0.0, "L_plate/2 + dx_mesh/2", "H_plate"], "field": "solid.u_y"}
+  ]
+}

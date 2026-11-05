@@ -1,0 +1,76 @@
+{
+  "title": "Analytic: on-axis dipole radiation, flux faces and far field (body of revolution, FDFD)",
+  "description": "A z-directed current element I on the rotation axis (em_fdfd_bor, azimuthal order m = 0; the axis cell carries a current disc of moment p = I dx_cell) in vacuum, cpml on r_hi and both z faces, stationary solve at lambda0 = 1 um on the (r, z) half plane (25 nm cells, ~4.3e4 unknowns, host SuperLU).\nAnalytic: the time-averaged Poynting vector of a point dipole is exactly radial at every distance, S = U_max sin^2(theta) / R^2 with U_max = eta0 k^2 p^2 / (32 pi^2), so the power through a surface is the solid-angle integral of U: total P = eta0 k^2 p^2 / (12 pi); through the top disc of a box of half height h and radius R (cos theta_1 = h / sqrt(h^2 + R^2) = c) P_top = 2 pi U_max (2/3 - c + c^3/3), through its side cylinder P_side = 2 pi U_max 2 (c - c^3/3), through the bottom disc -P_top (flux_monitor is positive toward +z / +r).\nDerived values tab: P_top, P_bottom, P_side (flux monitors on the box faces, 2 pi ring weights, exactly conserved discrete flux) vs their references (P_top - P_bottom + P_side = P_total = eta0 k^2 p^2 / (12 pi)); U_equator / U_equator_back (far_field power per steradian at angle 0 / pi, the equator on both sides of the axis) vs U_max.\nFar field tab: em.far vs the dashed sin^2(theta) = cos^2(angle) pattern (angle from +r toward +z in the drawing plane; peak-normalised).\nField tab: |E_z| and |E|^2 of the solve.\nExpected agreement: ~1-3 % (the discrete current disc and numerical dispersion at 40 cells per wavelength, the PML reflection); to be confirmed by a first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size (40 cells per wavelength)"},
+    {"name": "lambda0", "expression": "1*um", "description": "vacuum wavelength of the solve"},
+    {"name": "I_src", "expression": 1e-3, "description": "element current [A]"},
+    {"name": "L_r", "expression": "2*um", "description": "radial extent of the half plane (cpml beyond)"},
+    {"name": "L_z", "expression": "3*um", "description": "axial extent (cpml below and above)"},
+    {"name": "x_src", "expression": "dx_cell/2", "description": "source r: the axis cell centre"},
+    {"name": "z_src", "expression": "L_z/2 + dx_cell/2", "description": "source z: a cell centre"},
+    {"name": "h_face", "expression": "1*um + dx_cell/2", "description": "distance of the top / bottom flux faces from the source"},
+    {"name": "R_face", "expression": "1.5*um", "description": "radius of the side flux face (a cell edge)"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "vacuum impedance [Ohm]"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber [1/m]"},
+    {"name": "p_moment", "expression": "I_src*dx_cell", "description": "dipole moment I h [A m]"},
+    {"name": "U_max", "expression": "eta0*k_vac**2*p_moment**2/(32*pi**2)", "description": "peak radiated power per steradian [W/sr]"},
+    {"name": "P_total", "expression": "eta0*k_vac**2*p_moment**2/(12*pi)", "description": "total radiated power [W]"},
+    {"name": "c_top", "expression": "h_face/sqrt(h_face**2 + R_face**2)", "description": "cos of the polar angle of the box corner"},
+    {"name": "P_top_ref", "expression": "2*pi*U_max*(2/3 - c_top + c_top**3/3)", "description": "power through the top disc [W]"},
+    {"name": "P_side_ref", "expression": "2*pi*U_max*2*(c_top - c_top**3/3)", "description": "power through the side cylinder [W]"}
+  ],
+  "domain": {"size_x": "L_r", "size_y": "L_z"},
+  "geometry": [
+    {"name": "source_point", "kind": "point", "params": {"x": "x_src", "y": "z_src"}},
+    {"name": "top_line", "kind": "line",
+     "params": {"x0": 0.0, "y0": "z_src + 1*um", "x1": "R_face - dx_cell/4", "y1": "z_src + 1*um"}},
+    {"name": "bottom_line", "kind": "line",
+     "params": {"x0": 0.0, "y0": "z_src - 1*um - dx_cell", "x1": "R_face - dx_cell/4", "y1": "z_src - 1*um - dx_cell"}},
+    {"name": "side_line", "kind": "line",
+     "params": {"x0": "R_face - dx_cell/2", "y0": "z_src - h_face + dx_cell/4", "x1": "R_face - dx_cell/2",
+                "y1": "z_src + h_face - dx_cell/4"}},
+    {"name": "far_field_box", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "z_src - 1.2*um", "x1": "1.6*um", "y1": "z_src + 1.2*um"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_bor",
+      "settings": {"wavelength": "lambda0", "azimuthal_order": 0, "bc_x_hi": "cpml", "bc_y_lo": "cpml",
+                   "bc_y_hi": "cpml"},
+      "features": [
+        {"name": "dipole", "type": "point_source", "selection": ["source_point"],
+         "params": {"component": "z", "current": "I_src", "phase": 0.0}, "enabled": true},
+        {"name": "top", "type": "flux_monitor", "selection": ["top_line"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "flux_monitor", "selection": ["bottom_line"], "params": {}, "enabled": true},
+        {"name": "side", "type": "flux_monitor", "selection": ["side_line"], "params": {}, "enabled": true},
+        {"name": "far", "type": "far_field", "selection": ["far_field_box"], "params": {"n_angles": 360},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["em.ez_abs", "em.e_intensity"], "sweep": null},
+  "derived_values": [
+    {"name": "P_top", "source": "em.top", "operation": "last", "expression": "power", "reference": "P_top_ref",
+     "tolerance": 0.04},
+    {"name": "P_bottom", "source": "em.bottom", "operation": "last", "expression": "power", "reference": "-P_top_ref",
+     "tolerance": 0.04},
+    {"name": "P_side", "source": "em.side", "operation": "last", "expression": "power", "reference": "P_side_ref",
+     "tolerance": 0.04},
+    {"name": "U_equator", "source": "em.far", "operation": "at", "at": 0.0, "wavelength": "lambda0",
+     "expression": "power", "reference": "U_max", "tolerance": 0.04},
+    {"name": "U_equator_back", "source": "em.far", "operation": "at", "at": "pi", "wavelength": "lambda0",
+     "expression": "power", "reference": "U_max", "tolerance": 0.04}
+  ],
+  "analytic_curves": [
+    {"name": "dipole_pattern", "target": "em.far", "expression": "cos(angle)**2", "tolerance": 0.05}
+  ]
+}

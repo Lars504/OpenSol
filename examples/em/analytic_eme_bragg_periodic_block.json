@@ -1,0 +1,97 @@
+{
+  "title": "Analytic: quarter-wave Bragg stack as an EME periodic block, Bloch phase and Chebyshev transmission (em_eme)",
+  "description": "One period of a quarter-wave Bragg stack (n_A = 1.5 / d_A = 250 nm, n_B = 2.5 / d_B = 150 nm, period 400 nm, n_A d_A = n_B d_B = 375 nm: Bragg wavelength 1.5 um) drawn once between 250 nm of vacuum on each side, em_eme along x (E_z, 25 nm cells, y-periodic strip of 200 nm, n_modes 0 = the complete basis of the 8-cell lines), an eme_periodic block over the drawn cell repeating it 6 times, so the device is vacuum | (A B)^6 | vacuum. Stationary solve, swept over lambda0 = 1.0-2.2 um (base 1.5 um, the last sweep value). The strip is uniform across y, so only the plane wave (mode 1, k_y = 0) is propagating and it couples to nothing else: the EME is exact up to rounding (continuum propagation along x, exact Fresnel interfaces, float32-exact eps 1, 2.25, 6.25).\nAnalytic (characteristic matrices, normal incidence): a = k0 n_A d_A, b = k0 n_B d_B; Bloch phase cos(K period) = t = cos a cos b - (n_A/n_B + n_B/n_A)/2 sin a sin b; attenuation Im K / k0 = -acosh(|t|) / (k0 period) in the stop band (|t| > 1), 0 in the pass bands (|lam| = exp(-acosh(max(|t|, 1))) per period); the 6-period stack in vacuum has M^6 = U_5(t) M - U_4(t) I (Chebyshev), so T = 1 / (T_6(t)^2 + U_5(t)^2 S^2 / 4), S = sin a cos b (n_A + 1/n_A) + cos a sin b (n_B + 1/n_B), R = 1 - T (lossless). At the Bragg wavelength t = -1.1333, Im K period = -ln(n_B / n_A), T = 1 / cosh(6 ln(5/3))^2 = 0.00867; stop band 1.292-1.788 um.\nDerived values tab (lambda0 = 1.5 um): T_bragg (eme_transmission_1), R_bragg (eme_reflection), cos_K_period (from the Bloch table row 1: (lam + 1/lam)/2 = (|lam| + 1/|lam|)/2 cos(phase_per_period)), n_bloch_imag_1 and bloch_multiplier_1 (|lam|) vs their references.\nSweep tab: T_bragg, cos_K_period and bloch_multiplier_1 versus lambda0 with the dashed analytic curves (the stop band: T dips, cos(K period) < -1, |lam| < 1); n_bloch_imag_1 is compared per sweep value only (its reference is exactly 0 in the pass bands, where a per-point relative curve error would measure rounding noise).\nCurves & tables: eme.stretch (eme_length_sweep over the drawn cell: every period stretched by 0.5-1.5 at 1.5 um, re-cascaded without a mode solve) transmission_1 / reflection versus the stretched period vs the dashed Chebyshev formula with a and b scaled by the stretch.\nExpected agreement: ~1e-8 or better everywhere (rounding of the 8-mode cascade); tolerances 1e-5 (T, R, curves) and 1e-6 (Bloch values). Field tab: |E_z| of the first period and the field leaving the sixth.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_A", "expression": 1.5, "description": "index of layer A (eps 2.25)"},
+    {"name": "n_B", "expression": 2.5, "description": "index of layer B (eps 6.25)"},
+    {"name": "d_A", "expression": "250*nm", "description": "thickness of layer A (10 cells)"},
+    {"name": "d_B", "expression": "150*nm", "description": "thickness of layer B (6 cells); n_B d_B = n_A d_A (quarter-wave at 1.5 um)"},
+    {"name": "Lam_cell", "expression": "d_A + d_B", "description": "period of the stack (400 nm)"},
+    {"name": "L_in", "expression": "250*nm", "description": "vacuum before the stack (input port medium)"},
+    {"name": "L_out", "expression": "250*nm", "description": "vacuum after the stack (output port medium)"},
+    {"name": "x_cell0", "expression": "L_in", "description": "start of the drawn period (a cell edge)"},
+    {"name": "x_cell1", "expression": "L_in + Lam_cell", "description": "end of the drawn period (a cell edge)"},
+    {"name": "H_strip", "expression": "200*nm", "description": "y-periodic strip height (8 cells; y harmonics evanescent at every swept wavelength)"},
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "lambda0", "expression": "1.5*um", "description": "vacuum wavelength of the stationary solve (swept 1.0-2.2 um, base = the Bragg wavelength)"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber [1/m]"},
+    {"name": "a_ph", "expression": "k_vac*n_A*d_A", "description": "phase thickness of layer A [rad]"},
+    {"name": "b_ph", "expression": "k_vac*n_B*d_B", "description": "phase thickness of layer B [rad]"},
+    {"name": "rho_ab", "expression": "(n_A/n_B + n_B/n_A)/2", "description": "(n_A/n_B + n_B/n_A)/2 = 1.1333"},
+    {"name": "t_bl", "expression": "cos(a_ph)*cos(b_ph) - rho_ab*sin(a_ph)*sin(b_ph)", "description": "cos(K period): half the trace of the cell matrix"},
+    {"name": "s_xy", "expression": "sin(a_ph)*cos(b_ph)*(n_A + 1/n_A) + cos(a_ph)*sin(b_ph)*(n_B + 1/n_B)", "description": "sum of the off-diagonal cell matrix entries (imaginary parts) in vacuum units"},
+    {"name": "cheb_T6", "expression": "32*t_bl**6 - 48*t_bl**4 + 18*t_bl**2 - 1", "description": "Chebyshev T_6(t) = half the trace of M^6 (written for n_periods = 6 of the grating feature)"},
+    {"name": "cheb_U5", "expression": "32*t_bl**5 - 32*t_bl**3 + 6*t_bl", "description": "Chebyshev U_5(t)"},
+    {"name": "T_ref", "expression": "1/(cheb_T6**2 + cheb_U5**2*s_xy**2/4)", "description": "power transmission of vacuum | (A B)^6 | vacuum"},
+    {"name": "mult_ref", "expression": "1/(max(abs(t_bl), 1) + sqrt(max(t_bl**2 - 1, 0)))", "description": "|lam| per period of the decaying plane-wave Bloch mode (< 1 in the stop band, 1 in the pass bands)"},
+    {"name": "alpha_ref", "expression": "log(mult_ref)/(k_vac*Lam_cell)", "description": "Im K / k0 of the plane-wave Bloch mode (< 0 in the stop band, 0 in the pass bands)"}
+  ],
+  "domain": {"size_x": "L_in + Lam_cell + L_out", "size_y": "H_strip"},
+  "geometry": [
+    {"name": "layer_A", "kind": "rectangle", "params": {"x0": "x_cell0", "y0": 0.0, "x1": "x_cell0 + d_A", "y1": "H_strip"}},
+    {"name": "layer_B", "kind": "rectangle", "params": {"x0": "x_cell0 + d_A", "y0": 0.0, "x1": "x_cell1", "y1": "H_strip"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "low_index", "library": null, "properties": {"eps_r": "n_A**2"}, "dispersion": null,
+     "selection": ["layer_A"]},
+    {"name": "high_index", "library": null, "properties": {"eps_r": "n_B**2"}, "dispersion": null,
+     "selection": ["layer_B"]}
+  ],
+  "physics": [
+    {
+      "name": "eme",
+      "type": "em_eme",
+      "settings": {"polarization": "ez", "propagation_axis": "x", "wavelength": "lambda0", "n_modes": 0,
+                   "bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "ports", "type": "eme_ports", "selection": [],
+         "params": {"input_face": "lo", "input_mode": 1, "input_power": 1.0, "n_port_modes": 2}, "enabled": true},
+        {"name": "sections", "type": "eme_section_table", "selection": [], "params": {}, "enabled": true},
+        {"name": "grating", "type": "eme_periodic", "selection": [],
+         "params": {"start": "x_cell0", "stop": "x_cell1", "n_periods": 6, "n_bloch_modes": 2}, "enabled": true},
+        {"name": "stretch", "type": "eme_length_sweep", "selection": [],
+         "params": {"start": "x_cell0", "stop": "x_cell1",
+                    "stretch_factors": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1,
+                                        1.15, 1.2, 1.25, 1.3, 1.35, 1.4, 1.45, 1.5]},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["eme.ez_abs", "eme.e_intensity"],
+            "sweep": {"parameter": "lambda0",
+                      "values": [1.0e-6, 1.05e-6, 1.1e-6, 1.15e-6, 1.2e-6, 1.25e-6, 1.3e-6, 1.35e-6, 1.4e-6, 1.45e-6,
+                                 1.55e-6, 1.6e-6, 1.65e-6, 1.7e-6, 1.75e-6, 1.8e-6, 1.85e-6, 1.9e-6, 1.95e-6, 2.0e-6,
+                                 2.05e-6, 2.1e-6, 2.15e-6, 2.2e-6, 1.5e-6]}},
+  "derived_values": [
+    {"name": "T_bragg", "expression": "eme_transmission_1", "selection": [], "operation": "mean",
+     "reference": "T_ref", "tolerance": 1e-5},
+    {"name": "R_bragg", "expression": "eme_reflection", "selection": [], "operation": "mean",
+     "reference": "1 - T_ref", "tolerance": 1e-5},
+    {"name": "cos_K_period", "source": "eme.grating", "operation": "at", "at": 0,
+     "expression": "0.5*(multiplier_abs + 1/multiplier_abs)*cos(phase_per_period_deg*pi/180)",
+     "reference": "t_bl", "tolerance": 1e-6},
+    {"name": "n_bloch_imag_1", "source": "eme.grating", "operation": "at", "at": 0, "expression": "n_bloch_imag",
+     "reference": "alpha_ref", "tolerance": 1e-6},
+    {"name": "bloch_multiplier_1", "source": "eme.grating", "operation": "at", "at": 0, "expression": "multiplier_abs",
+     "reference": "mult_ref", "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "T_vs_lambda", "target": "sweep", "series": "T_bragg", "expression": "T_ref", "tolerance": 1e-5},
+    {"name": "cos_K_period_vs_lambda", "target": "sweep", "series": "cos_K_period", "expression": "t_bl",
+     "tolerance": 1e-5},
+    {"name": "bloch_multiplier_vs_lambda", "target": "sweep", "series": "bloch_multiplier_1", "expression": "mult_ref",
+     "tolerance": 1e-5},
+    {"name": "T_vs_stretched_period", "target": "eme.stretch", "series": "transmission_1",
+     "expression": "1/((32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**6 - 48*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**4 + 18*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**2 - 1)**2 + (32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**5 - 32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**3 + 6*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell)))**2*(sin(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell)*(n_A + 1/n_A) + cos(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell)*(n_B + 1/n_B))**2/4)",
+     "tolerance": 1e-5},
+    {"name": "R_vs_stretched_period", "target": "eme.stretch", "series": "reflection",
+     "expression": "1 - 1/((32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**6 - 48*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**4 + 18*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**2 - 1)**2 + (32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**5 - 32*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell))**3 + 6*(cos(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell) - rho_ab*sin(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell)))**2*(sin(a_ph*x/Lam_cell)*cos(b_ph*x/Lam_cell)*(n_A + 1/n_A) + cos(a_ph*x/Lam_cell)*sin(b_ph*x/Lam_cell)*(n_B + 1/n_B))**2/4)",
+     "tolerance": 1e-5}
+  ]
+}

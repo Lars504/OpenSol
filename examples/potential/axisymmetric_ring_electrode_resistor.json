@@ -1,0 +1,86 @@
+{
+  "title": "Axisymmetric ring-electrode resistor: layered washer (electric currents, analytic)",
+  "description": "Electric currents with geometry 'axisymmetric' (x = r, the axis is x_lo, y = z): a washer of outer radius b made of a resistive film sigma_film (thickness t_film, on top) on a substrate sigma_sub (t_sub). The inner ring electrode (terminal at V0 on the rectangle a_hole < r < a_ring, the whole height) and the outer rim electrode (voltage 0 V on x_hi, r = b) drive a radial current; the z faces are insulated. The hole r < a_hole is enclosed by the ring, so it floats at V0 and carries no current. The layers are in parallel: the field is radial and the same in both.\nAnalytic: V = V0 ln(b/r)/ln(b/a_ring) for r > a_ring, J_r = sigma V0/(r ln(b/a_ring)) in each layer, whole-ring conductance G = 2 pi (sigma_film t_film + sigma_sub t_sub)/ln(b/a_ring) (in S: held currents are whole rings on (r, z)), R = 1/G, P = G V0^2, film current 2 pi sigma_film t_film V0/ln(b/a_ring).\nDerived values tab: G_ring and R_ring (ring electrode current / voltage), I_rim (scalar output current_rim = -G V0), P_joule (ring-weighted integral of q_joule = V0 I exactly), I_film (ring-weighted integral of J_x over the film / (b - a_ring) = the film current), V_probe (film probe at a cell centre next to sqrt(a_ring b)). Expect G, I, P ~3.5e-5 below the analytic value (the series ring conductances are a trapezoid rule of ln(b/a_ring)), I_film ~4e-5, V_probe ~1e-5.\nSweep tab: G_ring versus sigma_film (1 to 1000 S/m on a 1 S/m substrate: from substrate- to film-dominated) with the dashed G_vs_sigma_film.\nLine profile tab (sigma_film = 1000 S/m): V_radial (field V along the film, V0 in the hole and the ring), J_film and J_substrate (field J_x = J_r in each layer, 0 in the hole and the held ring).",
+  "version": 2,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "inner ring electrode voltage [V]; the outer rim is held at 0 V"},
+    {"name": "sigma_film", "expression": 100.0, "description": "DC conductivity of the top film in S/m (swept)"},
+    {"name": "sigma_sub", "expression": 1.0, "description": "DC conductivity of the substrate in S/m"},
+    {"name": "a_hole", "expression": "0.75*mm", "description": "inner radius of the ring electrode (the washer hole)"},
+    {"name": "a_ring", "expression": "1*mm", "description": "outer radius of the ring electrode (inner edge of the resistor)"},
+    {"name": "b_outer", "expression": "4*mm", "description": "outer rim radius = domain size along r"},
+    {"name": "t_sub", "expression": "0.4*mm", "description": "substrate thickness (bottom layer)"},
+    {"name": "t_film", "expression": "0.1*mm", "description": "film thickness (top layer)"},
+    {"name": "dx_mesh", "expression": "25*um", "description": "uniform cell size (layer and electrode edges on cell edges)"},
+    {"name": "y_film", "expression": "t_sub + t_film/2 + dx_mesh/2", "description": "height of a film cell-centre row"},
+    {"name": "y_sub", "expression": "t_sub/2 + dx_mesh/2", "description": "height of a substrate cell-centre row"},
+    {"name": "r_probe", "expression": "sqrt(a_ring*b_outer) + dx_mesh/2",
+     "description": "probe radius: the cell centre just outside sqrt(a_ring b) = 2 mm, where V is about V0/2"},
+    {"name": "G_ref", "expression": "2*pi*(sigma_film*t_film + sigma_sub*t_sub)/log(b_outer/a_ring)",
+     "description": "analytic whole-ring conductance in S"}
+  ],
+  "domain": {"size_x": "b_outer", "size_y": "t_sub + t_film"},
+  "geometry": [
+    {"name": "substrate", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "b_outer", "y1": "t_sub"}},
+    {"name": "film", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_sub", "x1": "b_outer", "y1": "t_sub + t_film"}},
+    {"name": "ring_electrode", "kind": "rectangle",
+     "params": {"x0": "a_hole", "y0": 0.0, "x1": "a_ring", "y1": "t_sub + t_film"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "r_probe", "y": "y_film"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "substrate_layer", "library": null, "properties": {"sigma_dc": "sigma_sub"}, "dispersion": null,
+     "selection": ["substrate"]},
+    {"name": "film_layer", "library": null, "properties": {"sigma_dc": "sigma_film"}, "dispersion": null,
+     "selection": ["film"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {"geometry": "axisymmetric"},
+      "features": [
+        {"name": "inner_ring", "type": "terminal", "selection": ["ring_electrode"], "params": {"voltage": "V0"},
+         "enabled": true},
+        {"name": "rim", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "sigma_film", "values": ["1", "10", "100", "1000"]}},
+  "derived_values": [
+    {"name": "G_ring", "expression": "current/voltage", "selection": [], "operation": "last",
+     "source": "currents.inner_ring", "reference": "G_ref", "tolerance": 5e-4},
+    {"name": "R_ring", "expression": "voltage/current", "selection": [], "operation": "last",
+     "source": "currents.inner_ring", "reference": "1/G_ref", "tolerance": 5e-4},
+    {"name": "I_rim", "expression": "currents_current_rim", "selection": [], "operation": "mean",
+     "reference": "-G_ref*V0", "tolerance": 5e-4},
+    {"name": "P_joule", "expression": "currents_q_joule", "selection": [], "operation": "integral",
+     "reference": "G_ref*V0**2", "tolerance": 5e-4},
+    {"name": "I_film", "expression": "currents_J_x/(b_outer - a_ring)", "selection": ["film"], "operation": "integral",
+     "reference": "2*pi*sigma_film*t_film*V0/log(b_outer/a_ring)", "tolerance": 5e-4},
+    {"name": "V_probe", "expression": "values", "selection": [], "operation": "last", "source": "currents.probe",
+     "reference": "V0*log(b_outer/r_probe)/log(b_outer/a_ring)", "tolerance": 2e-4}
+  ],
+  "analytic_curves": [
+    {"name": "G_vs_sigma_film", "target": "sweep", "series": "G_ring", "expression": "G_ref", "tolerance": 5e-4},
+    {"name": "V_radial", "target": "line", "field": "currents.V",
+     "expression": "V0*log(b_outer/min(max(x, a_ring), b_outer))/log(b_outer/a_ring)", "tolerance": 1e-3,
+     "line": ["dx_mesh/4", "y_film", "b_outer - dx_mesh/4", "y_film"]},
+    {"name": "J_film", "target": "line", "field": "currents.J_x",
+     "expression": "where(x > a_ring, sigma_film*V0/(x*log(b_outer/a_ring)), 0)", "tolerance": 1e-3,
+     "line": ["dx_mesh/4", "y_film", "b_outer - dx_mesh/4", "y_film"]},
+    {"name": "J_substrate", "target": "line", "field": "currents.J_x",
+     "expression": "where(x > a_ring, sigma_sub*V0/(x*log(b_outer/a_ring)), 0)", "tolerance": 1e-3,
+     "line": ["dx_mesh/4", "y_sub", "b_outer - dx_mesh/4", "y_sub"]}
+  ]
+}

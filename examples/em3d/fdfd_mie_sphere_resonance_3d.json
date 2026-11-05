@@ -1,0 +1,58 @@
+{
+  "title": "Analytic: Mie resonance and Q of a silicon sphere in D2O (3D FDFD eigenfrequency, eighth model)",
+  "description": "A silicon sphere (n = 3.47, r = 200 nm) in D2O (n = 1.32) solved by the eigenfrequency study of em_fdfd_3d near its magnetic-dipole (TE_1) resonance. Eighth model: the sphere centre sits on the domain corner, x_lo / y_lo are antisymmetric mirrors and z_lo a symmetric mirror (the parity sector of the m_z magnetic dipole, whose E circles the z axis), CPML (8 cells) on the hi faces after 300 nm of D2O, 25 nm cells (8 per radius), solver_defaults.subpixel_smoothing on; ~73k unknowns. GPU only: the eigen solver node uses factorization cudss_mixed (needs nvmath-python; a complex64 cuDSS LDL^T with float64 refinement, then Rayleigh quotients), seconds where the host SuperLU factor (Automatic, cpu backend) takes minutes and a few GB.\nAnalytic (Mie, exp(-i omega t) as in Bohren-Huffman, m = n_si / n_d2o, x = n_d2o k0 r): the TE_1 pole is the complex root of psi_1(m x) xi_1'(x) = m xi_1(x) psi_1'(m x), psi_1(z) = sin z / z - cos z, xi_1(x) = -e^{i x} (1 + i / x); here x = 1.11614 - 0.09098 i (by complex Newton on the closed-form l = 1 functions; selftests_fdfd3d._mie_poles finds it with scipy), so lambda_mie = 2 pi n_d2o r / Re x = 1.4862 um and Q_mie = Re x / (2 |Im x|) = 6.134. open_sol uses exp(+j omega t): the same pole has Im omega > 0 (decaying), the same Q.\nDerived values tab: lambda_1 and Q_1 (row 0 of em.resonances = the resonance nearest the target, which is lambda_mie) vs the Mie values; pml_1 = the resonance's share of the electric energy in the CPML (a leaky mode with Q ~6 carries a visible share; above 0.5 it would be filtered).\nField tab: the Snapshot slider shows each resonance (e_abs, cut planes through the sphere centre; the image cells fill the other seven octants).\nExpected agreement (measured on this grid): lambda_1 1.0e-2 blue of the pole, Q_1 4e-3. The wavelength error is the subpixel average's own bias, first order in the cell: it is diagonal (no eps_xy terms) with in-plane normals per z layer, so the tangential E of the m_z dipole on the oblique sphere faces sees eps biased low (the staircase sits 2.8e-3 red; thinner / nearer CPML changed lambda by < 2e-4; Yee dispersion, up to (k d)^2 / 24 ~ 5e-3 in silicon, pulls the other way, red). Tolerance lambda_1 2e-2 (twice the measured bias, which halves only at twice the cells, ~8x the unknowns), Q_1 15 %; switch subpixel_smoothing off to see the staircase shift.",
+  "version": 2,
+  "parameters": [
+    {"name": "r_s", "expression": "200*nm", "description": "sphere radius (8 cells)"},
+    {"name": "n_si", "expression": 3.47, "description": "silicon refractive index"},
+    {"name": "n_d2o", "expression": 1.32, "description": "D2O refractive index (background)"},
+    {"name": "pad", "expression": "300*nm", "description": "D2O between the sphere and the CPML along each axis"},
+    {"name": "L_half", "expression": "r_s + pad", "description": "side of the eighth-model window (20 cells)"},
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "x_re", "expression": 1.11614, "description": "Re of the TE_1 Mie pole x = n_d2o k0 r (exp(-i omega t))"},
+    {"name": "x_im", "expression": 0.09098, "description": "-Im of the TE_1 Mie pole (decay)"},
+    {"name": "lambda_mie", "expression": "2*pi*n_d2o*r_s/x_re", "description": "TE_1 resonance wavelength (1.4862 um) = target"},
+    {"name": "Q_mie", "expression": "x_re/(2*x_im)", "description": "TE_1 quality factor (6.134)"}
+  ],
+  "domain": {"size_x": "L_half", "size_y": "L_half", "size_z": "L_half"},
+  "geometry": [
+    {"name": "sphere", "kind": "sphere", "params": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "r": "r_s"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "d2o", "library": null, "properties": {"eps_r": "n_d2o**2"}, "dispersion": null, "selection": ["all"]},
+    {"name": "silicon", "library": null, "properties": {"eps_r": "n_si**2"}, "dispersion": null,
+     "selection": ["sphere"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_3d",
+      "settings": {"bc_x_lo": "antisymmetric", "bc_y_lo": "antisymmetric", "bc_z_lo": "symmetric",
+                   "bc_x_hi": "cpml", "bc_y_hi": "cpml", "bc_z_hi": "cpml", "pml_cells": 8,
+                   "wavelength": "lambda_mie"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"eigen": "eigen_gpu"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "eigen_gpu", "type": "arpack_shift_invert", "settings": {"factorization": "cudss_mixed"}}
+  ],
+  "solver_defaults": {"backend": "gpu", "subpixel_smoothing": true, "conformal_boundaries": false},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 3}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "lambda_mie", "tolerance": 0.02},
+    {"name": "Q_1", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "Q_mie", "tolerance": 0.15},
+    {"name": "pml_1", "expression": "pml_fraction", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0}
+  ],
+  "analytic_curves": []
+}

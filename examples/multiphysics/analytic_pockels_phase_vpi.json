@@ -1,0 +1,106 @@
+{
+  "title": "Analytic: Pockels phase shift vs voltage and V_pi (electrostatics + FDFD H_z)",
+  "description": "A y-periodic 8.0 x 0.2 um strip, eps_r = n0^2 everywhere (n0 = 2.138, n_e of lithium niobate), contains a 4 um crystal slab (x = 2..6 um, crystal z along model y: r_yy = r33 = 31e-12, r_xx = r13 = 10e-12 m/V, eps_dc 43 / eps_dc_yy 28; cladding eps_dc 3.9). Electrostatics: V0 on y_hi, 0 V on y_lo, x faces insulated, so E_y = -V0 / d exactly in every cell (d = Ly). electrostatics_em_pockels (field_component y) gives dn_ii = -1/2 n0^3 r_ii E_y; em_fdfd_hz launches the 1.55 um plane-wave mode at x_src, whose tangential E_y sees eps_yy. Stationary study, sweep V0 = 0..240 V.\nAnalytic: dn_yy = n0^3 r33 V0 / (2 d); dphi = -L [k_num(n0 + dn_yy) - k_num(n0)], k_num(n) = (2 / dx) asin(n k0 dx / 2) (the discrete plane-wave k); first order -pi V0 / V_pi with V_pi = lambda d / (n0^3 r33 L) = 256 V (dphi = -2.95 rad at 240 V, kept inside (-pi, pi]).\nSweep tab: dphi (phase_positive of 'down' minus the cold discrete phase -k_num(n0) (x_down - x_src), wrapped) with its dashed reference and the dashed first-order line; phi_up (upstream monitor, unperturbed glass: reference 0); E_y_mean (-V0 / d); dn_yy and dn_xx (crystal mean of sqrt(eps) - n0).\nLine profile tab: eps_yy_profile (em.eps_yy along x: (n0 + dn_yy)^2 in the crystal, n0^2 outside) and V_profile (electrostatics.V across y: V0 y / d), at the last sweep value.\nExpected: dphi ~1e-3 relative (Fabry-Perot ripple of the slab ends, (dn / 2 n)^2 ~2e-3 at 240 V), phi_up ~1e-3 rad absolute, E_y and dn ~1e-5 (exact discrete solution in float32).",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 120.0, "description": "voltage on y_hi [V] (y_lo at 0 V; sweep 0..240 V)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 [1/m]"},
+    {"name": "n0", "expression": 2.138, "description": "index of every cell before the Pockels change (n_e of lithium niobate)"},
+    {"name": "r33", "expression": 31e-12, "description": "Pockels coefficient on the component along the field (r_yy) [m/V]"},
+    {"name": "r13", "expression": 10e-12, "description": "Pockels coefficient on the component across it (r_xx) [m/V]"},
+    {"name": "Lx", "expression": "8*um", "description": "strip length along x (CPML for the EM, insulated for the electrostatics)"},
+    {"name": "Ly", "expression": "0.2*um", "description": "strip height d between the plates (periodic for the EM)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "x_xtal0", "expression": "2*um", "description": "crystal slab start (cell edge)"},
+    {"name": "x_xtal1", "expression": "6*um", "description": "crystal slab end (cell edge)"},
+    {"name": "L_xtal", "expression": "x_xtal1 - x_xtal0", "description": "crystal length L"},
+    {"name": "x_src", "expression": "1.01*um", "description": "mode source line (cell 50 centre)"},
+    {"name": "x_up", "expression": "1.51*um", "description": "upstream mode monitor (cell 75 centre)"},
+    {"name": "x_down", "expression": "6.51*um", "description": "downstream mode monitor (cell 325 centre)"},
+    {"name": "E_y_ref", "expression": "-V0/Ly", "description": "applied field E_y = -grad V [V/m]"},
+    {"name": "dn_yy_ref", "expression": "-0.5*n0**3*r33*E_y_ref", "description": "index change of eps_yy in the crystal"},
+    {"name": "dn_xx_ref", "expression": "-0.5*n0**3*r13*E_y_ref", "description": "index change of eps_xx in the crystal"},
+    {"name": "k_num0", "expression": "2/dx_cell*asin(n0*k_vac*dx_cell/2)", "description": "discrete FDFD wavenumber in the unperturbed glass [1/m]"},
+    {"name": "k_num_xtal", "expression": "2/dx_cell*asin((n0 + dn_yy_ref)*k_vac*dx_cell/2)", "description": "discrete wavenumber in the biased crystal [1/m]"},
+    {"name": "dphi_ref", "expression": "-L_xtal*(k_num_xtal - k_num0)", "description": "analytic Pockels phase shift [rad]"},
+    {"name": "phi_up_cold", "expression": "-k_num0*(x_up - x_src)", "description": "cold phase of the upstream monitor [rad]"},
+    {"name": "phi_down_cold", "expression": "-k_num0*(x_down - x_src)", "description": "cold phase of the downstream monitor [rad]"},
+    {"name": "V_pi", "expression": "lambda0*Ly/(n0**3*r33*L_xtal)", "description": "half-wave voltage (first order) [V]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "crystal", "kind": "rectangle", "params": {"x0": "x_xtal0", "y0": 0.0, "x1": "x_xtal1", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "up_line", "kind": "line", "params": {"x0": "x_up", "y0": 0.0, "x1": "x_up", "y1": "Ly"}},
+    {"name": "down_line", "kind": "line", "params": {"x0": "x_down", "y0": 0.0, "x1": "x_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "cladding", "library": null, "properties": {"eps_r": "n0**2", "eps_dc": 3.9}, "dispersion": null,
+     "selection": ["all"]},
+    {"name": "lithium_niobate", "library": null,
+     "properties": {"eps_r": "n0**2", "eps_dc": 43.0, "eps_dc_yy": 28.0, "r_yy": "r33", "r_xx": "r13"},
+     "dispersion": null, "selection": ["crystal"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_hz",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "power": 1.0, "phase": 0.0}, "enabled": true},
+        {"name": "up", "type": "mode_monitor", "selection": ["up_line"], "params": {"mode_number": 1}, "enabled": true},
+        {"name": "down", "type": "mode_monitor", "selection": ["down_line"], "params": {"mode_number": 1},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "top", "type": "voltage", "selection": ["y_hi"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "bottom", "type": "voltage", "selection": ["y_lo"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "pockels", "type": "electrostatics_em_pockels", "source": "electrostatics", "target": "em", "every": null,
+     "params": {"field_component": "y"}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 30, "tolerance": 1e-6, "relaxation": 1.0, "warm_start": false},
+            "stored_fields": ["em.hz_abs", "em.eps_xx", "em.eps_yy", "electrostatics.V", "electrostatics.E_y"],
+            "sweep": {"parameter": "V0", "values": [0.0, 40.0, 80.0, 120.0, 160.0, 200.0, 240.0]}},
+  "derived_values": [
+    {"name": "dphi", "expression": "atan2(sin(phase_positive - phi_down_cold), cos(phase_positive - phi_down_cold))",
+     "selection": [], "operation": "last", "source": "em.down", "reference": "dphi_ref", "tolerance": 0.005},
+    {"name": "phi_up", "expression": "atan2(sin(phase_positive - phi_up_cold), cos(phase_positive - phi_up_cold))",
+     "selection": [], "operation": "last", "source": "em.up", "reference": 0.0, "tolerance": 0.003},
+    {"name": "E_y_mean", "expression": "electrostatics_E_y", "selection": ["all"], "operation": "mean",
+     "reference": "E_y_ref", "tolerance": 3e-5},
+    {"name": "dn_yy", "expression": "sqrt(em_eps_yy) - n0", "selection": ["crystal"], "operation": "mean",
+     "reference": "dn_yy_ref", "tolerance": 3e-5},
+    {"name": "dn_xx", "expression": "sqrt(em_eps_xx) - n0", "selection": ["crystal"], "operation": "mean",
+     "reference": "dn_xx_ref", "tolerance": 3e-5}
+  ],
+  "analytic_curves": [
+    {"name": "first_order", "target": "sweep", "series": "dphi", "expression": "-pi*V0/V_pi"},
+    {"name": "eps_yy_profile", "target": "line",
+     "expression": "where(x > x_xtal0, where(x < x_xtal1, (n0 + dn_yy_ref)**2, n0**2), n0**2)", "tolerance": 1e-5,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_yy"},
+    {"name": "V_profile", "target": "line", "expression": "V0*y/Ly", "tolerance": 1e-5,
+     "line": ["Lx/2", 0.0, "Lx/2", "Ly"],
+     "field": "electrostatics.V"}
+  ]
+}

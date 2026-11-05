@@ -1,0 +1,87 @@
+{
+  "title": "Spinning disk: centrifugal stress from a body-force expression (3D, analytic)",
+  "description": "3D static elasticity (solid_mechanics_3d): a steel disk of radius b and thickness 2 t spinning at omega, loaded by the centrifugal body force f = rho omega^2 (x, y) (body_force feature with x, y expressions; the void around the disk, youngs_modulus 0, carries nothing). Quarter of the upper half: the disk axis on the origin corner, rollers on x_lo and y_lo (symmetry planes through the axis) and on z_lo (mid-plane), all other faces free; 1 mm cells, b = 64 cells, t = 6 cells.\nAnalytic (thin disk, plane stress, Timoshenko; K = rho omega^2): sigma_r = (3 + nu) / 8 K (b^2 - r^2), sigma_t = K / 8 ((3 + nu) b^2 - (1 + 3 nu) r^2), u_r = K r / (8 E) ((3 + nu)(1 - nu) b^2 - (1 - nu^2) r^2); in Cartesian form sigma_xx = K / 8 ((3 + nu)(b^2 - x^2) - (1 + 3 nu) y^2), sigma_yy likewise with x and y swapped, u_x = u_r x / r. Plane stress is the thickness average; at t / b ~ 0.1 the 3D variation through the thickness is ~0.1 %.\nDerived values tab: stress_xx_centre (probe in the cell at the axis, sigma_r = sigma_t = 13.3 MPa there), stress_yy_rim (hoop stress in the rim cell on the x axis, K b^2 (1 - nu) / 4) and u_x_rim (rim growth, K b^3 (1 - nu) / (4 E)); expect ~1-3 % (staircase rim, 64 cells per radius). F_x_sym: the x_lo roller reaction balances the body force on the quarter, -K t b^3 / 3 (exact for the voxel disk; the voxel first moment differs from the circle's by ~0.5 %).\nLine profile tab (mid-plane layer z = dx / 2, line y = dx / 2 along the x axis): stress_xx, stress_yy and u_x vs the closed forms; largest error in the rim cells.",
+  "version": 2,
+  "parameters": [
+    {"name": "E_disk", "expression": 2e11, "description": "Young's modulus in Pa (steel)"},
+    {"name": "nu_disk", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "rho_disk", "expression": 7850.0, "description": "density in kg/m^3"},
+    {"name": "omega", "expression": 1000.0, "description": "angular speed in rad/s (rim speed 64 m/s)"},
+    {"name": "dx_mesh", "expression": "1*mm", "description": "uniform cubic cell size"},
+    {"name": "b_disk", "expression": "64*dx_mesh", "description": "disk radius"},
+    {"name": "t_half", "expression": "6*dx_mesh", "description": "half thickness (the model holds the upper half)"},
+    {"name": "L_side", "expression": "68*dx_mesh", "description": "domain side along x and y (void beyond the rim)"},
+    {"name": "K_spin", "expression": "rho_disk*omega**2", "description": "centrifugal force per volume and metre of radius, N/m^4"},
+    {"name": "x_rim", "expression": "b_disk - dx_mesh/2", "description": "x of the rim probe (centre of the last disk cell on the x axis)"},
+    {"name": "y_probe", "expression": "dx_mesh/2", "description": "y of the probes (first cell row)"},
+    {"name": "sxx_centre_ref", "expression": "K_spin/8*((3 + nu_disk)*(b_disk**2 - y_probe**2) - (1 + 3*nu_disk)*y_probe**2)",
+     "description": "analytic sigma_xx at the axis probe (x = y = dx / 2) in Pa"},
+    {"name": "syy_rim_ref", "expression": "K_spin/8*((3 + nu_disk)*(b_disk**2 - y_probe**2) - (1 + 3*nu_disk)*x_rim**2)",
+     "description": "analytic hoop stress sigma_yy at the rim probe in Pa"},
+    {"name": "ux_rim_ref", "expression": "K_spin*x_rim/(8*E_disk)*((3 + nu_disk)*(1 - nu_disk)*b_disk**2 - (1 - nu_disk**2)*(x_rim**2 + y_probe**2))",
+     "description": "analytic u_x at the rim probe in m"}
+  ],
+  "domain": {"size_x": "L_side", "size_y": "L_side", "size_z": "t_half"},
+  "geometry": [
+    {"name": "disk", "kind": "cylinder_z", "params": {"cx": 0.0, "cy": 0.0, "r": "b_disk", "z0": 0.0, "z1": "t_half"}},
+    {"name": "axis_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "y_probe", "z": "dx_mesh/2"}},
+    {"name": "rim_point", "kind": "point", "params": {"x": "x_rim", "y": "y_probe", "z": "dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"youngs_modulus": "E_disk", "poisson_ratio": "nu_disk"},
+     "dispersion": null, "selection": ["disk"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics_3d",
+      "settings": {},
+      "features": [
+        {"name": "sym_x", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "sym_y", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "mid_plane", "type": "roller", "selection": ["z_lo"], "params": {}, "enabled": true},
+        {"name": "spin", "type": "body_force", "selection": ["disk"],
+         "params": {"f_x": "K_spin*x", "f_y": "K_spin*y", "f_z": 0.0}, "enabled": true},
+        {"name": "axis_stress", "type": "solid_probe", "selection": ["axis_point"], "params": {"component": "stress_xx"},
+         "enabled": true},
+        {"name": "rim_hoop", "type": "solid_probe", "selection": ["rim_point"], "params": {"component": "stress_yy"},
+         "enabled": true},
+        {"name": "rim_growth", "type": "solid_probe", "selection": ["rim_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.stress_xx", "solid.stress_yy", "solid.von_mises"], "sweep": null},
+  "derived_values": [
+    {"name": "stress_xx_centre", "expression": "values", "selection": [], "operation": "last",
+     "source": "solid.axis_stress", "reference": "sxx_centre_ref", "tolerance": 0.03},
+    {"name": "stress_yy_rim", "expression": "values", "selection": [], "operation": "last",
+     "source": "solid.rim_hoop", "reference": "syy_rim_ref", "tolerance": 0.05},
+    {"name": "u_x_rim", "expression": "values", "selection": [], "operation": "last",
+     "source": "solid.rim_growth", "reference": "ux_rim_ref", "tolerance": 0.03},
+    {"name": "F_x_sym", "expression": "F_x", "selection": [], "operation": "last", "source": "solid.sym_x",
+     "reference": "-K_spin*t_half*b_disk**3/3", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "stress_xx_x_axis", "target": "line",
+     "expression": "K_spin/8*((3 + nu_disk)*(b_disk**2 - x**2) - (1 + 3*nu_disk)*y**2)", "tolerance": 0.05,
+     "line": ["dx_mesh/2", "y_probe", "x_rim", "y_probe"], "field": "solid.stress_xx", "plane": "dx_mesh/2"},
+    {"name": "stress_yy_x_axis", "target": "line",
+     "expression": "K_spin/8*((3 + nu_disk)*(b_disk**2 - y**2) - (1 + 3*nu_disk)*x**2)", "tolerance": 0.05,
+     "line": ["dx_mesh/2", "y_probe", "x_rim", "y_probe"], "field": "solid.stress_yy", "plane": "dx_mesh/2"},
+    {"name": "u_x_x_axis", "target": "line",
+     "expression": "K_spin*x/(8*E_disk)*((3 + nu_disk)*(1 - nu_disk)*b_disk**2 - (1 - nu_disk**2)*(x**2 + y**2))",
+     "tolerance": 0.03,
+     "line": ["dx_mesh/2", "y_probe", "x_rim", "y_probe"], "field": "solid.u_x", "plane": "dx_mesh/2"}
+  ]
+}

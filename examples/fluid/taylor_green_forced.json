@@ -1,0 +1,79 @@
+{
+  "title": "Forced Taylor-Green vortices: start-up, inertial pressure, vorticity (analytic)",
+  "description": "Water in a 64 x 64 um box, periodic in x and y (64 x 64 cells), at rest at t = 0 and driven by the divergence-free body force f = 2 mu k^2 U0 (sin kx cos ky, -cos kx sin ky), k = 2 pi / L (transient laminar flow, time-dependent study, 5 viscous times, ~1600 lattice steps).\nAnalytic (exact Navier-Stokes solution: the inertia u.grad u of Taylor-Green vortices is a pure gradient, balanced by the pressure, so the amplitude obeys a linear ODE): u_x = a sin kx cos ky, u_y = -a cos kx sin ky, a(t) = U0 (1 - exp(-t / tau_v)), tau_v = 1 / (2 nu k^2) = 52 us; p = (rho a^2 / 4)(cos 2kx + cos 2ky) (zero mean, as the gauge pressure without a pressure face); vorticity = 2 a k sin kx sin ky. Re = U0 L / nu = 6.4.\nProbes tab: probe_u (u_x near a velocity maximum) with the dashed a(t) curve; probe_p (pressure near a maximum) with the quasi-static rho a(t)^2 / 4 (...) curve (not compared: lattice sound waves ring weakly during the start-up).\nDerived values tab: u_tau (u_x at t = tau_v), u_end (last sample) and p_end (pressure at the end) against the closed form; expected ~1e-3 for the velocities (lattice viscous error ~(k dx)^2), ~1 % for the pressure; tolerances 5e-3 (u) and 2 % (p).\nLine profile tab (final state): uy_profile (u_y along y at x = dx/2), p_profile (pressure along x at y = dx/2) and vorticity_profile (along x at y = L/4 + dx/2, interior points only: the vorticity is one-sided at the window edges; central differences shrink it by sin(k dx) / (k dx) = 1 - 1.6e-3).",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of water in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "density in kg/m^3"},
+    {"name": "nu_f", "expression": "mu_f/rho_f", "description": "kinematic viscosity in m^2/s"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "L_box", "expression": "64*um", "description": "period in x and y (64 cells)"},
+    {"name": "k_w", "expression": "2*pi/L_box", "description": "vortex wavenumber in 1/m"},
+    {"name": "U0", "expression": 0.1, "description": "steady velocity amplitude in m/s (lattice Mach ~0.03)"},
+    {"name": "F_amp", "expression": "2*mu_f*k_w**2*U0", "description": "body force amplitude 2 mu k^2 U0 in N/m^3"},
+    {"name": "tau_v", "expression": "1/(2*nu_f*k_w**2)", "description": "viscous time of the vortex mode in s (~52 us)"},
+    {"name": "t_end", "expression": "5*tau_v", "description": "study duration"},
+    {"name": "a_tau", "expression": "U0*(1 - exp(-1))", "description": "amplitude at t = tau_v in m/s"},
+    {"name": "a_end", "expression": "U0*(1 - exp(-t_end/tau_v))", "description": "amplitude at t_end in m/s"},
+    {"name": "x_u", "expression": "16.5*dx_cell", "description": "probe_u x (cell centre next to the sin kx maximum)"},
+    {"name": "y_u", "expression": "0.5*dx_cell", "description": "probe_u y (cell centre next to the cos ky maximum)"},
+    {"name": "x_p", "expression": "0.5*dx_cell", "description": "probe_p x (cell centre next to the cos 2kx maximum)"},
+    {"name": "y_p", "expression": "0.5*dx_cell", "description": "probe_p y"},
+    {"name": "shape_u", "expression": "sin(k_w*x_u)*cos(k_w*y_u)", "description": "u_x mode shape at probe_u"},
+    {"name": "shape_p", "expression": "cos(2*k_w*x_p) + cos(2*k_w*y_p)", "description": "pressure shape at probe_p"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "probe_u_point", "kind": "point", "params": {"x": "x_u", "y": "y_u"}},
+    {"name": "probe_p_point", "kind": "point", "params": {"x": "x_p", "y": "y_p"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {"time_mode": "transient"},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "periodic_y", "type": "periodic", "selection": ["y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "drive", "type": "body_force", "selection": ["all"],
+         "params": {"f_x": "F_amp*sin(k_w*x)*cos(k_w*y)", "f_y": "-F_amp*cos(k_w*x)*sin(k_w*y)"},
+         "enabled": true},
+        {"name": "probe_u", "type": "flow_probe", "selection": ["probe_u_point"], "params": {"component": "u_x"},
+         "enabled": true},
+        {"name": "probe_p", "type": "flow_probe", "selection": ["probe_p_point"], "params": {"component": "pressure"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "tau_v"},
+            "stored_fields": ["fluid.u_x", "fluid.u_y", "fluid.pressure", "fluid.vorticity"], "sweep": null},
+  "derived_values": [
+    {"name": "u_tau", "expression": "values", "operation": "at", "source": "fluid.probe_u", "at": "tau_v",
+     "reference": "a_tau*shape_u", "tolerance": 0.005},
+    {"name": "u_end", "expression": "values", "operation": "last", "source": "fluid.probe_u",
+     "reference": "a_end*shape_u", "tolerance": 0.005},
+    {"name": "p_end", "expression": "values", "operation": "last", "source": "fluid.probe_p",
+     "reference": "rho_f*a_end**2/4*shape_p", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "u_startup", "target": "fluid.probe_u", "expression": "U0*(1 - exp(-t/tau_v))*shape_u",
+     "tolerance": 0.005},
+    {"name": "p_quasi_static", "target": "fluid.probe_p", "expression": "rho_f*(U0*(1 - exp(-t/tau_v)))**2/4*shape_p"},
+    {"name": "uy_profile", "target": "line", "field": "fluid.u_y", "line": ["dx_cell/2", 0.0, "dx_cell/2", "L_box"],
+     "expression": "-a_end*cos(k_w*x)*sin(k_w*y)", "tolerance": 0.005},
+    {"name": "p_profile", "target": "line", "field": "fluid.pressure", "line": [0.0, "dx_cell/2", "L_box", "dx_cell/2"],
+     "expression": "rho_f*a_end**2/4*(cos(2*k_w*x) + cos(2*k_w*y))", "tolerance": 0.02},
+    {"name": "vorticity_profile", "target": "line", "field": "fluid.vorticity",
+     "line": ["1.5*dx_cell", "L_box/4 + dx_cell/2", "L_box - 1.5*dx_cell", "L_box/4 + dx_cell/2"],
+     "expression": "2*a_end*k_w*sin(k_w*x)*sin(k_w*y)", "tolerance": 0.01}
+  ]
+}

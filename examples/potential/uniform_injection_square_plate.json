@@ -1,0 +1,69 @@
+{
+  "title": "Uniform current injection in a square plate: 2D Poisson series and mesh convergence (electric currents, analytic)",
+  "description": "A square conducting plate (side a, conductivity sigma) with a uniform volumetric current_source s on every cell and all four faces grounded (voltage 0): -div(sigma grad V) = s, a genuinely 2D problem (the torsion problem of a square bar). The sweep refines the mesh, N = a / dx in {25, 51, 101, 201} (odd, so the plate centre is a cell centre).\nAnalytic: V = (s / (2 sigma)) [x (a - x) - (8 a^2 / pi^3) sum_{n odd} sin(n pi x / a) cosh(n pi (y - a/2) / a) / (n^3 cosh(n pi / 2))] (n = 1..7 kept: the rest is < 1e-4 of V_max on the curves below, which stay away from the corners where the series converges slowly); V_centre = 0.073671 s a^2 / sigma; integral V dA = 0.035144 s a^4 / sigma (series in tanh(n pi / 2) / n^5 with (31/32) zeta(5)).\nDerived values tab: I_ground (current of the grounded faces = -s a^2 per m of depth, charge conservation: exact), V_centre (probe at the plate centre) and P_joule (integral of q_joule = s integral V dA, since V = 0 on the faces). Second order in dx: expect ~1.5e-3 (V_centre) and ~4e-3 (P_joule) at N = 25, about 4x smaller per refinement (~3e-5 / ~1e-4 at N = 201); the tolerance holds at every sweep value.\nSweep tab: V_centre vs N with the dashed analytic value (2nd-order approach).\nLine profile tab (N = 201): V_mid_line (along y = a/2) and V_diagonal (the diagonal from a/8 to 7a/8), ~1e-4 of V_max.",
+  "version": 2,
+  "parameters": [
+    {"name": "s_inject", "expression": 1e8, "description": "injected current per volume in A/m^3"},
+    {"name": "sigma_plate", "expression": 100.0, "description": "plate conductivity in S/m"},
+    {"name": "a_plate", "expression": "1*mm", "description": "plate side length"},
+    {"name": "N_cells", "expression": 201, "description": "cells per side (swept; odd so the centre is a cell centre)"},
+    {"name": "dx_mesh", "expression": "a_plate/N_cells", "description": "uniform cell size"},
+    {"name": "V_half", "expression": "s_inject/(2*sigma_plate)", "description": "potential scale s / (2 sigma) in V/m^2"},
+    {"name": "V_centre_ref", "expression": "V_half*(a_plate**2/4 - 8*a_plate**2/pi**3*(1/cosh(pi/2) - 1/(27*cosh(3*pi/2)) + 1/(125*cosh(5*pi/2)) - 1/(343*cosh(7*pi/2))))",
+     "description": "analytic centre potential (0.073671 s a^2 / sigma) in V"},
+    {"name": "tanh_sum", "expression": "1.0045237628 - (1 - tanh(pi/2)) - (1 - tanh(3*pi/2))/243 - (1 - tanh(5*pi/2))/3125",
+     "description": "sum over odd n of tanh(n pi / 2) / n^5: (31/32) zeta(5) minus the first deficits"},
+    {"name": "P_ref", "expression": "s_inject*V_half*a_plate**4*(1/6 - 32/pi**5*tanh_sum)",
+     "description": "analytic Joule power s integral V dA in W per m of depth (0.035144 s^2 a^4 / sigma)"}
+  ],
+  "domain": {"size_x": "a_plate", "size_y": "a_plate"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "a_plate/2", "y": "a_plate/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "plate", "library": null, "properties": {"sigma_dc": "sigma_plate"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "injection", "type": "current_source", "selection": ["all"], "params": {"density": "s_inject"},
+         "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_lo", "x_hi", "y_lo", "y_hi"],
+         "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "centre", "type": "potential_probe", "selection": ["centre_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12, "max_iterations": 20000}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "N_cells", "values": [25, 51, 101, 201]}},
+  "derived_values": [
+    {"name": "I_ground", "expression": "current", "operation": "last", "source": "currents.ground",
+     "reference": "-s_inject*a_plate**2", "tolerance": 1e-6},
+    {"name": "V_centre", "expression": "values", "operation": "last", "source": "currents.centre",
+     "reference": "V_centre_ref", "tolerance": 5e-3},
+    {"name": "P_joule", "expression": "q_joule", "selection": [], "operation": "integral",
+     "reference": "P_ref", "tolerance": 1e-2}
+  ],
+  "analytic_curves": [
+    {"name": "V_centre_vs_N", "target": "sweep", "series": "V_centre", "expression": "V_centre_ref", "tolerance": 5e-3},
+    {"name": "V_mid_line", "target": "line",
+     "expression": "V_half*(x*(a_plate - x) - 8*a_plate**2/pi**3*(sin(pi*x/a_plate)*cosh(pi*(y - a_plate/2)/a_plate)/cosh(pi/2) + sin(3*pi*x/a_plate)*cosh(3*pi*(y - a_plate/2)/a_plate)/(27*cosh(3*pi/2)) + sin(5*pi*x/a_plate)*cosh(5*pi*(y - a_plate/2)/a_plate)/(125*cosh(5*pi/2)) + sin(7*pi*x/a_plate)*cosh(7*pi*(y - a_plate/2)/a_plate)/(343*cosh(7*pi/2))))",
+     "tolerance": 1e-3, "line": ["dx_mesh/4", "a_plate/2", "a_plate - dx_mesh/4", "a_plate/2"], "field": "currents.V"},
+    {"name": "V_diagonal", "target": "line",
+     "expression": "V_half*(x*(a_plate - x) - 8*a_plate**2/pi**3*(sin(pi*x/a_plate)*cosh(pi*(y - a_plate/2)/a_plate)/cosh(pi/2) + sin(3*pi*x/a_plate)*cosh(3*pi*(y - a_plate/2)/a_plate)/(27*cosh(3*pi/2)) + sin(5*pi*x/a_plate)*cosh(5*pi*(y - a_plate/2)/a_plate)/(125*cosh(5*pi/2)) + sin(7*pi*x/a_plate)*cosh(7*pi*(y - a_plate/2)/a_plate)/(343*cosh(7*pi/2))))",
+     "tolerance": 1e-3, "line": ["a_plate/8", "a_plate/8", "7*a_plate/8", "7*a_plate/8"], "field": "currents.V"}
+  ]
+}

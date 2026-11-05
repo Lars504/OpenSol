@@ -1,0 +1,99 @@
+{
+  "title": "Analytic: plane-wave scattering by a small dielectric sphere, closed TFSF box (3D FDTD, Mie)",
+  "description": "A plane-wave pulse (+z, E along x, amplitude 1 V/m, gaussian at 1 um, bandwidth 0.5) fills a closed TFSF box (0.15-0.35 um on every axis) around a dielectric sphere (eps = 4, r = 60 nm = 12 cells, centred on a cell corner) in a 0.5 um vacuum cube with CPML on all six faces (em_fdtd_3d, 5 nm cells, ~10 s). Outside the box only the scattered field remains: a flux box at 0.1-0.4 um gives the scattered power, the same box feeds two near-to-far transforms (x-z and y-z cuts).\nAnalytic (Mie, dipole terms; m = 2, size parameter x = 2 pi r / lambda): Q_sca = sigma / (pi r^2) = (6 / x^2) (|a1|^2 + |b1|^2) with a1, b1 from the Riccati-Bessel functions psi1(z) = sin z / z - cos z, chi1(z) = cos z / z + sin z in closed form: |a1|^2 = 1 / (1 + (M_a / N_a)^2), N_a = m psi1(mx) psi1'(x) - psi1(x) psi1'(mx), M_a = m psi1(mx) chi1'(x) - chi1(x) psi1'(mx), and b1 alike with m moved to the other term; a2 (~1e-4 of Q) is left out. Q_sca(1 um) = 0.01422 (Rayleigh (8/3) x^4 ((m^2 - 1)/(m^2 + 2))^2 = 0.01347, i.e. the a1 size correction is +5.6 %); power_per_cw = Q_sca pi r^2 A^2 / (2 eta0).\nDerived values tab: Q_sca_1000 = power_per_cw / (I_inc pi r^2) at 1 um vs the Mie value.\nSpectra tab: em.scattered quantity power_per_cw vs the dashed Mie spectrum (~1 / lambda^4) over 0.8-1.3 um.\nFar field tab (peak-normalised, angles from +x toward +z, resp. from +y toward +z; cos(theta) = sin(angle) with theta from the propagation axis +z): em.far_xz vs (sin(angle) + B + G cos 2 theta)^2 (the sin^2 of the x dipole, nulls along x) and em.far_yz vs (1 + (B + G) sin(angle))^2, B = b1 / a1 = x^2 (m^2 + 2) / 30, G = (5/3) a2 / a1 = x^2 (m^2 + 2) / (6 (2 m^2 + 3)) (small-x forms): the magnetic dipole and the electric quadrupole make the y-z pattern ~18 % stronger forward than backward at 1 um, not flat.\nExpected agreement: a few % in Q_sca with subpixel smoothing on (solver_defaults; the 3D averaging sees the sphere as one-cell disks, so normals near the poles are approximate); staircased with the plain face-mean permittivity Q_sca came out 8.5 % high at every wavelength (first-order in dx); ~1 % of the peak in the patterns.",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size (12 cells per sphere radius)"},
+    {"name": "L_box", "expression": "0.5*um", "description": "cube side (CPML outside, pml_cells 10 per face)"},
+    {"name": "c_s", "expression": "L_box/2", "description": "sphere centre x = y = z (a cell corner)"},
+    {"name": "r_s", "expression": "60*nm", "description": "sphere radius"},
+    {"name": "eps_s", "expression": 4.0, "description": "sphere relative permittivity"},
+    {"name": "m_s", "expression": "sqrt(eps_s)", "description": "sphere refractive index (relative to vacuum)"},
+    {"name": "tfsf_lo", "expression": "0.15*um", "description": "TFSF box lower faces (x, y, z)"},
+    {"name": "tfsf_hi", "expression": "0.35*um", "description": "TFSF box upper faces (x, y, z)"},
+    {"name": "box_lo", "expression": "0.1*um", "description": "flux / far-field box lower faces (scattered-field region)"},
+    {"name": "box_hi", "expression": "0.4*um", "description": "flux / far-field box upper faces (scattered-field region)"},
+    {"name": "lambda0", "expression": "1*um", "description": "centre wavelength of the gaussian pulse"},
+    {"name": "bw", "expression": 0.5, "description": "relative bandwidth of the pulse"},
+    {"name": "A_src", "expression": 1.0, "description": "incident peak E [V/m]"},
+    {"name": "I_inc", "expression": "A_src**2/(2*mu0_const*c_const)", "description": "incident cw intensity [W/m^2]: A^2 / (2 eta0)"},
+    {"name": "I_area", "expression": "I_inc*pi*r_s**2", "description": "incident cw power on the geometric cross-section [W]"},
+    {"name": "kr", "expression": "2*pi*r_s", "description": "2 pi r: size parameter x = kr / lambda"},
+    {"name": "mkr", "expression": "m_s*kr", "description": "m x lambda: inner size parameter m x = mkr / lambda"},
+    {"name": "xs0", "expression": "kr/lambda0", "description": "size parameter at lambda0 (0.377)"},
+    {"name": "qs0", "expression": "mkr/lambda0", "description": "inner size parameter m x at lambda0"},
+    {"name": "psi_x0", "expression": "sin(xs0)/xs0 - cos(xs0)", "description": "psi1(x) at lambda0"},
+    {"name": "dpsi_x0", "expression": "cos(xs0)/xs0 - sin(xs0)/xs0**2 + sin(xs0)", "description": "psi1'(x) at lambda0"},
+    {"name": "chi_x0", "expression": "cos(xs0)/xs0 + sin(xs0)", "description": "chi1(x) at lambda0"},
+    {"name": "dchi_x0", "expression": "cos(xs0) - sin(xs0)/xs0 - cos(xs0)/xs0**2", "description": "chi1'(x) at lambda0"},
+    {"name": "psi_q0", "expression": "sin(qs0)/qs0 - cos(qs0)", "description": "psi1(m x) at lambda0"},
+    {"name": "dpsi_q0", "expression": "cos(qs0)/qs0 - sin(qs0)/qs0**2 + sin(qs0)", "description": "psi1'(m x) at lambda0"},
+    {"name": "na_0", "expression": "m_s*psi_q0*dpsi_x0 - psi_x0*dpsi_q0", "description": "a1 = na / (na - i ma): numerator at lambda0"},
+    {"name": "ma_0", "expression": "m_s*psi_q0*dchi_x0 - chi_x0*dpsi_q0", "description": "a1: imaginary part of the denominator at lambda0"},
+    {"name": "nb_0", "expression": "psi_q0*dpsi_x0 - m_s*psi_x0*dpsi_q0", "description": "b1 = nb / (nb - i mb): numerator at lambda0"},
+    {"name": "mb_0", "expression": "psi_q0*dchi_x0 - m_s*chi_x0*dpsi_q0", "description": "b1: imaginary part of the denominator at lambda0"},
+    {"name": "Q_mie0", "expression": "6/xs0**2*(1/(1 + (ma_0/na_0)**2) + 1/(1 + (mb_0/nb_0)**2))", "description": "Mie dipole Q_sca at lambda0 (0.01422)"},
+    {"name": "Q_rayleigh0", "expression": "(8/3)*xs0**4*((eps_s - 1)/(eps_s + 2))**2", "description": "Rayleigh Q_sca at lambda0 for comparison (0.01347)"},
+    {"name": "b_fac", "expression": "(eps_s + 2)/30", "description": "b1 / a1 = b_fac x^2 (small-x form)"},
+    {"name": "g_fac", "expression": "(eps_s + 2)/(6*(2*eps_s + 3))", "description": "(5/3) a2 / a1 = g_fac x^2 (small-x form)"},
+    {"name": "T_run", "expression": "30*fs", "description": "study duration: pulse (2 t0 ~19 fs) plus the transit of the scattered wave out of the box"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box", "size_z": "L_box"},
+  "geometry": [
+    {"name": "sphere", "kind": "sphere", "params": {"cx": "c_s", "cy": "c_s", "cz": "c_s", "r": "r_s"}},
+    {"name": "tfsf_box", "kind": "box",
+     "params": {"x0": "tfsf_lo", "y0": "tfsf_lo", "z0": "tfsf_lo", "x1": "tfsf_hi", "y1": "tfsf_hi", "z1": "tfsf_hi"}},
+    {"name": "flux_surface", "kind": "box",
+     "params": {"x0": "box_lo", "y0": "box_lo", "z0": "box_lo", "x1": "box_hi", "y1": "box_hi", "z1": "box_hi"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "sphere_material", "library": null, "properties": {"eps_r": "eps_s"}, "dispersion": null,
+     "selection": ["sphere"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_3d",
+      "settings": {"pml_cells": 10},
+      "features": [
+        {"name": "plane_wave", "type": "plane_wave_source", "selection": ["tfsf_box"],
+         "params": {"direction": "+z", "polarization": "x", "waveform": "gaussian", "wavelength": "lambda0",
+                    "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "scattered", "type": "flux_box", "selection": ["flux_surface"],
+         "params": {"wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true},
+        {"name": "far_xz", "type": "far_field", "selection": ["flux_surface"],
+         "params": {"wavelength_start": "0.9*um", "wavelength_stop": "1.1*um", "n_wavelengths": 3,
+                    "cut_plane": "xz", "n_angles": 360},
+         "enabled": true},
+        {"name": "far_yz", "type": "far_field", "selection": ["flux_surface"],
+         "params": {"wavelength_start": "0.9*um", "wavelength_stop": "1.1*um", "n_wavelengths": 3,
+                    "cut_plane": "yz", "n_angles": 360},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": true, "conformal_boundaries": false},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "Q_sca_1000", "expression": "power_per_cw/I_area", "selection": [], "operation": "at",
+     "source": "em.scattered", "at": "lambda0", "reference": "Q_mie0", "tolerance": 0.05}
+  ],
+  "analytic_curves": [
+    {"name": "mie_spectrum", "target": "em.scattered", "series": "power_per_cw",
+     "expression": "I_area*6*(wavelength/kr)**2*(1/(1 + ((m_s*(sin(mkr/wavelength)*(wavelength/mkr) - cos(mkr/wavelength))*(cos(kr/wavelength) - sin(kr/wavelength)*(wavelength/kr) - cos(kr/wavelength)*(wavelength/kr)**2) - (cos(kr/wavelength)*(wavelength/kr) + sin(kr/wavelength))*(cos(mkr/wavelength)*(wavelength/mkr) - sin(mkr/wavelength)*(wavelength/mkr)**2 + sin(mkr/wavelength)))/(m_s*(sin(mkr/wavelength)*(wavelength/mkr) - cos(mkr/wavelength))*(cos(kr/wavelength)*(wavelength/kr) - sin(kr/wavelength)*(wavelength/kr)**2 + sin(kr/wavelength)) - (sin(kr/wavelength)*(wavelength/kr) - cos(kr/wavelength))*(cos(mkr/wavelength)*(wavelength/mkr) - sin(mkr/wavelength)*(wavelength/mkr)**2 + sin(mkr/wavelength))))**2) + 1/(1 + (((sin(mkr/wavelength)*(wavelength/mkr) - cos(mkr/wavelength))*(cos(kr/wavelength) - sin(kr/wavelength)*(wavelength/kr) - cos(kr/wavelength)*(wavelength/kr)**2) - m_s*(cos(kr/wavelength)*(wavelength/kr) + sin(kr/wavelength))*(cos(mkr/wavelength)*(wavelength/mkr) - sin(mkr/wavelength)*(wavelength/mkr)**2 + sin(mkr/wavelength)))/((sin(mkr/wavelength)*(wavelength/mkr) - cos(mkr/wavelength))*(cos(kr/wavelength)*(wavelength/kr) - sin(kr/wavelength)*(wavelength/kr)**2 + sin(kr/wavelength)) - m_s*(sin(kr/wavelength)*(wavelength/kr) - cos(kr/wavelength))*(cos(mkr/wavelength)*(wavelength/mkr) - sin(mkr/wavelength)*(wavelength/mkr)**2 + sin(mkr/wavelength))))**2))",
+     "tolerance": 0.06},
+    {"name": "pattern_xz", "target": "em.far_xz",
+     "expression": "(sin(angle) + b_fac*(kr/wavelength)**2 + g_fac*(kr/wavelength)**2*(2*sin(angle)**2 - 1))**2",
+     "tolerance": 0.03},
+    {"name": "pattern_yz", "target": "em.far_yz",
+     "expression": "(1 + (b_fac + g_fac)*(kr/wavelength)**2*sin(angle))**2", "tolerance": 0.1}
+  ]
+}

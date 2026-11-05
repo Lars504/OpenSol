@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated results / exports
+*.npz
+*.partial
+*.msh
+examples/**/*.png
+selftest_out/
+mesh_study_out/
+experiments/
+time_profiles/
+
+# Agent scratch files
+.temp_scratchpad/
+.claude/settings.local.json
+
+# Side project outside the package (open_sol never imports it)
+gpu_tet_meshing/
+
+# Article notes and saved article web pages
+articles/
+
+# Repository snapshot archives
+*.zip
+
+# Planning notes (current and retired)
+plans/
+old plans/

@@ -1,0 +1,95 @@
+{
+  "title": "Abrupt pn junction under reverse bias: depletion charge, width and field (analytic)",
+  "description": "An abrupt silicon pn junction (N_A = 1e23 1/m^3 for x < x_j, N_D = 2e23 beyond, eps_dc 11.7, n_i 1e16) on a 1 um strip two 2.5 nm cells high; ohmic contacts on the outer 10 nm, anode at 0 V, cathode at V_R (reverse bias). Stationary sweep V_R = 0..8 V.\nAnalytic (depletion approximation with the majority-carrier Debye-tail correction -2 V_T, which equals the exact Poisson-Boltzmann first integral at the junction up to ~1e-6): E_j = sqrt(2 q N_A N_D (V_bi + V_R - 2 V_T) / (eps (N_A + N_D))), V_bi = V_T (asinh(N_A / 2 n_i) + asinh(N_D / 2 n_i)) = 0.851 V; depleted charge per m of depth Q = eps E_j Ly; depletion widths x_p = eps E_j / (q N_A), x_n = eps E_j / (q N_D), W = x_p + x_n (0.12 um at 0 V, 0.41 um at 8 V).\nDerived values tab: Q_dep = integral of the positive space charge (all of it sits on the n side, so Gauss makes it eps times the junction face field: ~1e-3 at V_R = 0 from the 2.5 nm discretisation of the 13 / 9 nm Debye tails, less at higher bias), W_dep = Q_dep (1/N_A + 1/N_D) / (q Ly) (same accuracy) and E_max = max of -E_x against E_j minus q N_A dx / (2 eps), the drop of the cell-centre field (mean of the two faces) next to the junction face (~1e-3).\nSweep tab: Q_dep, W_dep and E_max versus V_R with their dashed square-root-law curves.\nLine profile tab (last sweep value, V_R = 8 V): V_profile (two parabolas; the curve steps by V_T at each depletion edge, where the real potential has a Debye tail about 3 L_D wide), E_profile (the triangle) and rho_profile (the box -q N_A / +q N_D, edges rounded over a few Debye lengths). Field tab: V, E_x, space_charge, N, P.",
+  "version": 1,
+  "parameters": [
+    {"name": "V_R", "expression": 4.0, "description": "reverse bias in V: cathode (n side) voltage, anode at 0 V (the sweep runs 0..8 V)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (the semiconductor temperature setting)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity of silicon"},
+    {"name": "eps_s", "expression": "eps0_const*eps_si", "description": "static permittivity in F/m"},
+    {"name": "N_A", "expression": 1e23, "description": "acceptor density of the p side in 1/m^3"},
+    {"name": "N_D", "expression": 2e23, "description": "donor density of the n side in 1/m^3"},
+    {"name": "Lx", "expression": "1*um", "description": "strip length along x"},
+    {"name": "dx_cell", "expression": "2.5*nm", "description": "uniform cell size (about 5 cells per p-side Debye length)"},
+    {"name": "Ly", "expression": "2*dx_cell", "description": "strip height (two cells: a 1D problem)"},
+    {"name": "x_j", "expression": "0.6*um", "description": "metallurgical junction (a cell face)"},
+    {"name": "w_contact", "expression": "10*nm", "description": "width of each ohmic contact at the strip ends"},
+    {"name": "L_Debye_p", "expression": "sqrt(eps_s*V_T/(q_e*N_A))", "description": "Debye length of the p side in m (13 nm)"},
+    {"name": "psi_p", "expression": "-V_T*log(N_A/(2*n_i) + sqrt((N_A/(2*n_i))**2 + 1))",
+     "description": "neutral p-side potential -V_T asinh(N_A / 2 n_i) in V (anode at 0 V)"},
+    {"name": "psi_n0", "expression": "V_T*log(N_D/(2*n_i) + sqrt((N_D/(2*n_i))**2 + 1))",
+     "description": "neutral n-side potential at zero bias V_T asinh(N_D / 2 n_i) in V"},
+    {"name": "psi_n", "expression": "V_R + psi_n0", "description": "neutral n-side potential under bias in V"},
+    {"name": "V_bi", "expression": "psi_n0 - psi_p", "description": "built-in potential in V (0.851 V)"},
+    {"name": "E_j", "expression": "sqrt(2*q_e*N_A*N_D*(V_bi + V_R - 2*V_T)/(eps_s*(N_A + N_D)))",
+     "description": "field magnitude at the junction in V/m"},
+    {"name": "x_dep_p", "expression": "eps_s*E_j/(q_e*N_A)", "description": "depletion width on the p side in m"},
+    {"name": "x_dep_n", "expression": "eps_s*E_j/(q_e*N_D)", "description": "depletion width on the n side in m"},
+    {"name": "W_ref", "expression": "x_dep_p + x_dep_n", "description": "analytic total depletion width in m"},
+    {"name": "Q_ref", "expression": "eps_s*E_j*Ly", "description": "analytic depleted charge of one side in C per m of depth"},
+    {"name": "E_cell_ref", "expression": "E_j - q_e*N_A*dx_cell/(2*eps_s)",
+     "description": "largest cell-centre field magnitude: the p-side cell next to the junction averages E_j and E_j - q N_A dx / eps"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "p_side", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_j", "y1": "Ly"}},
+    {"name": "n_side", "kind": "rectangle", "params": {"x0": "x_j", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "anode_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "Ly"}},
+    {"name": "cathode_pad", "kind": "rectangle", "params": {"x0": "Lx - w_contact", "y0": 0.0, "x1": "Lx", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": 0.135, "mobility_p": 0.048, "eps_dc": "eps_si", "lifetime": 1e-6},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {"temperature": "T_lat", "max_bias_step": 0.5, "max_iterations": 100},
+      "features": [
+        {"name": "p_doping", "type": "doping", "selection": ["p_side"], "params": {"acceptors": "N_A"}, "enabled": true},
+        {"name": "n_doping", "type": "doping", "selection": ["n_side"], "params": {"donors": "N_D"}, "enabled": true},
+        {"name": "anode", "type": "ohmic_contact", "selection": ["anode_pad"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "cathode", "type": "ohmic_contact", "selection": ["cathode_pad"], "params": {"voltage": "V_R"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["semiconductor.V", "semiconductor.E_x", "semiconductor.space_charge", "semiconductor.N",
+                              "semiconductor.P"],
+            "sweep": {"parameter": "V_R", "values": [0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0]}},
+  "derived_values": [
+    {"name": "Q_dep", "expression": "max(semiconductor_space_charge, 0)", "selection": [], "operation": "integral",
+     "reference": "Q_ref", "tolerance": 0.003},
+    {"name": "W_dep", "expression": "max(semiconductor_space_charge, 0)*(1/N_A + 1/N_D)/(q_e*Ly)", "selection": [],
+     "operation": "integral", "reference": "W_ref", "tolerance": 0.003},
+    {"name": "E_max", "expression": "-semiconductor_E_x", "selection": [], "operation": "max",
+     "reference": "E_cell_ref", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "Q_dep_curve", "target": "sweep", "expression": "Q_ref", "tolerance": 0.003, "series": "Q_dep"},
+    {"name": "W_dep_curve", "target": "sweep", "expression": "W_ref", "tolerance": 0.003, "series": "W_dep"},
+    {"name": "E_max_curve", "target": "sweep", "expression": "E_cell_ref", "tolerance": 0.003, "series": "E_max"},
+    {"name": "V_profile", "target": "line",
+     "expression": "where(x < x_j - x_dep_p, psi_p, where(x < x_j, psi_p + V_T + q_e*N_A*(x - x_j + x_dep_p)**2/(2*eps_s), where(x < x_j + x_dep_n, psi_n - V_T - q_e*N_D*(x_j + x_dep_n - x)**2/(2*eps_s), psi_n)))",
+     "tolerance": 0.005, "line": [0.0, "dx_cell/2", "Lx", "dx_cell/2"], "field": "semiconductor.V"},
+    {"name": "E_profile", "target": "line",
+     "expression": "where((x > x_j - x_dep_p)*(x < x_j), -q_e*N_A*(x - x_j + x_dep_p)/eps_s, where((x >= x_j)*(x < x_j + x_dep_n), -q_e*N_D*(x_j + x_dep_n - x)/eps_s, 0))",
+     "tolerance": 0.07,
+     "line": [0.0, "dx_cell/2", "Lx", "dx_cell/2"], "field": "semiconductor.E_x"},
+    {"name": "rho_profile", "target": "line",
+     "expression": "where((x > x_j - x_dep_p)*(x < x_j), -q_e*N_A, where((x >= x_j)*(x < x_j + x_dep_n), q_e*N_D, 0))",
+     "line": [0.0, "dx_cell/2", "Lx", "dx_cell/2"], "field": "semiconductor.space_charge"}
+  ]
+}

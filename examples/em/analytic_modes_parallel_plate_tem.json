@@ -1,0 +1,82 @@
+{
+  "title": "Analytic: parallel-plate TEM, TE1 and TM1 modes, uniaxial filling (em_modes)",
+  "description": "Two infinite metal plates 0.4 um apart filled with a uniaxial dielectric, optic axis along y (eps_yy = n_e^2 = 4.571, eps_xx = eps_zz = n_o^2 = 4.889: lithium-niobate-like, without material dispersion), seen in cross-section: em_modes with pec on y_lo / y_hi and periodic x (10 cells), uniform 10 nm cells; frequency_domain study over 0.8-1.5 um (15 wavelengths) with the group index on; mode_dispersion follows the TEM mode (mode 1), TE1 (mode 2) and TM1 (mode 3).\nWall plane: each plate sits on the inner face of the outermost cell (a ghost cell), so the gap is d_gap = size_y - 2 dx_cell.\nAnalytic: TEM (E_y only) n = sqrt(eps_yy) at every wavelength and n_g = n; TE1 (E_x) n^2 = eps_xx - (lambda / (2 d))^2, n_g = eps_xx / n; TM1 (E_y, E_z) n^2 = eps_yy (1 - (lambda / (2 d))^2 / eps_zz), n_g = eps_yy / n. Each of the three permittivity components enters a different mode.\nSpectra tab: modes.tem / te1 / tm1, quantity n_eff or n_group, with the analytic curves dashed.\nDerived values tab at lambda0 = 1 um: the TEM n_eff and n_group agree to the eigen-solve (~1e-6 or better: with the plates on the wall planes the discrete TEM mode is exact); TE1 / TM1 n_eff and n_group ~1.2e-4 (the discrete transverse wavenumber (2/h) sin(pi h / (2 d)) lies below pi / d: second order in dx_cell); n_eff_TE1_discrete uses that wavenumber and agrees to ~1e-6; te_fraction 1 for TE1 (E_x only) and 0 for TM1.\nCurves & tables / Field tab: the last wavelength (1.5 um).",
+  "version": 1,
+  "parameters": [
+    {"name": "d_gap", "expression": "0.4*um", "description": "plate gap between the y wall planes (40 cells)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "eps_o", "expression": 4.889, "description": "ordinary permittivity n_o^2 (eps_xx = eps_zz)"},
+    {"name": "eps_e", "expression": 4.571, "description": "extraordinary permittivity n_e^2 (eps_yy, optic axis along y)"},
+    {"name": "lambda0", "expression": "1*um", "description": "wavelength of the derived values (one of the study wavelengths)"},
+    {"name": "n_tem", "expression": "sqrt(eps_e)", "description": "analytic TEM n_eff = n_group (E_y sees eps_yy)"},
+    {"name": "n_te1", "expression": "sqrt(eps_o - (lambda0/(2*d_gap))**2)", "description": "analytic TE1 n_eff at lambda0"},
+    {"name": "n_tm1", "expression": "sqrt(eps_e*(1 - (lambda0/(2*d_gap))**2/eps_o))",
+     "description": "analytic TM1 n_eff at lambda0"},
+    {"name": "K_1_discrete", "expression": "2/dx_cell*sin(pi*dx_cell/(2*d_gap))",
+     "description": "discrete transverse wavenumber of the first order between the wall planes [1/m]"},
+    {"name": "n_te1_discrete", "expression": "sqrt(eps_o - (K_1_discrete*lambda0/(2*pi))**2)",
+     "description": "TE1 n_eff of the discrete (Yee) cross-section at lambda0"},
+    {"name": "lambda_cut_1", "expression": "2*d_gap*sqrt(eps_o)",
+     "description": "cutoff wavelength of TE1 and TM1 (both set by n_o) [m]"}
+  ],
+  "domain": {"size_x": "10*dx_cell", "size_y": "d_gap + 2*dx_cell"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "uniaxial_filling", "library": null, "properties": {"eps_r": "eps_o", "eps_yy": "eps_e"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "periodic", "bc_x_hi": "periodic", "bc_y_lo": "pec", "bc_y_hi": "pec", "n_modes": 3,
+                   "group_index": true},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true},
+        {"name": "tem", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 1}, "enabled": true},
+        {"name": "te1", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 2}, "enabled": true},
+        {"name": "tm1", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 3}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "frequency_domain",
+            "settings": {"wavelength_start": 8e-07, "wavelength_stop": 1.5e-06, "n_wavelengths": 15},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "n_eff_TEM", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.tem",
+     "at": "lambda0", "reference": "n_tem", "tolerance": 3e-6},
+    {"name": "n_eff_TE1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te1",
+     "at": "lambda0", "reference": "n_te1", "tolerance": 3e-4},
+    {"name": "n_eff_TE1_discrete", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te1",
+     "at": "lambda0", "reference": "n_te1_discrete", "tolerance": 3e-6},
+    {"name": "n_eff_TM1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.tm1",
+     "at": "lambda0", "reference": "n_tm1", "tolerance": 3e-4},
+    {"name": "n_group_TEM", "expression": "n_group", "selection": [], "operation": "at", "source": "modes.tem",
+     "at": "lambda0", "reference": "n_tem", "tolerance": 3e-6},
+    {"name": "n_group_TE1", "expression": "n_group", "selection": [], "operation": "at", "source": "modes.te1",
+     "at": "lambda0", "reference": "eps_o/n_te1", "tolerance": 3e-4},
+    {"name": "n_group_TM1", "expression": "n_group", "selection": [], "operation": "at", "source": "modes.tm1",
+     "at": "lambda0", "reference": "eps_e/n_tm1", "tolerance": 3e-4},
+    {"name": "te_fraction_TE1", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.te1", "at": "lambda0", "reference": 1.0, "tolerance": 1e-3},
+    {"name": "te_fraction_TM1", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.tm1", "at": "lambda0", "reference": 0.0, "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "tem_n_eff", "target": "modes.tem", "series": "n_eff", "expression": "n_tem", "tolerance": 1e-5},
+    {"name": "te1_n_eff", "target": "modes.te1", "series": "n_eff",
+     "expression": "sqrt(eps_o - (wavelength/(2*d_gap))**2)", "tolerance": 3e-3},
+    {"name": "tm1_n_eff", "target": "modes.tm1", "series": "n_eff",
+     "expression": "sqrt(eps_e*(1 - (wavelength/(2*d_gap))**2/eps_o))", "tolerance": 3e-3},
+    {"name": "tem_n_group", "target": "modes.tem", "series": "n_group", "expression": "n_tem", "tolerance": 1e-5},
+    {"name": "te1_n_group", "target": "modes.te1", "series": "n_group",
+     "expression": "eps_o/sqrt(eps_o - (wavelength/(2*d_gap))**2)", "tolerance": 4e-3},
+    {"name": "tm1_n_group", "target": "modes.tm1", "series": "n_group",
+     "expression": "eps_e/sqrt(eps_e*(1 - (wavelength/(2*d_gap))**2/eps_o))", "tolerance": 4e-3}
+  ]
+}

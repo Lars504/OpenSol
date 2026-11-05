@@ -1,0 +1,84 @@
+{
+  "title": "Low-frequency S0 Lamb wave in a free plate: plate velocity (analytic)",
+  "description": "A 0.275 mm solid plate (11 cells of 25 um, nu = 1/3: cL = 2 cS = 6000 m/s, rho 2700) between vacuum cells (traction-free faces), 125 mm long with 120-cell absorbing layers on both x faces (rigid y faces behind the vacuum, never reached). A normal traction sheet across the plate (Ricker 0.5 MHz, wavelength ~10 mm = 38 plate thicknesses) launches the symmetric Lamb mode S0 both ways (~2 s per run).\nAnalytic (thin plate, plane strain, f d << cS): S0 travels at the plate velocity c_p = sqrt(E / (rho (1 - nu^2))) = 2 cS sqrt(1 - cS^2 / cL^2) = sqrt(3) cS = 5196 m/s, not at cL = 6000 m/s (the plate contracts laterally), with the thickness-averaged velocity v_x = T / (2 rho c_p) s(t - |x - x_s| / c_p) on each side (s the Ricker wavelet, peak 1 at t0 = 4 / f0). Dispersion corrections ~ (nu / (1 - nu))^2 (k d / 2)^2 / 6 ~ 3e-4 at f0 (the curves use the non-dispersive pulse).\nDerived values tab: m1_matched / m2_matched = matched filters (v_x at the plate midplane projected on the Ricker wavelet at the predicted S0 arrival, over its energy) at 20 and 50 mm from the sheet: 1 expected (tolerance 2 %); at cL the pulse would arrive 0.5 / 1.3 us early (pi f0 times the shift = 0.8 / 2) and both filters would fall far below 1.\nProbes tab: probe_1 / probe_2 (v_x at the midplane) with the dashed S0 pulses.\nLine profile tab: vx_midplane along the midplane at the final time (pulse centre ~88 mm) vs the S0 pulse (tolerance 3 % of the range; dispersion and the O((k d)^2) mode-shape corrections expected below 1 %).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "0.5*MHz", "description": "Ricker peak frequency"},
+    {"name": "t0_r", "expression": "4/f0", "description": "time of the Ricker maximum at the sheet (8 us)"},
+    {"name": "T_sheet", "expression": 1.0e6, "description": "peak traction of the sheet in Pa"},
+    {"name": "rho_s", "expression": 2700.0, "description": "plate density in kg/m^3"},
+    {"name": "cS_s", "expression": 3000.0, "description": "shear speed in m/s"},
+    {"name": "cL_s", "expression": "2*cS_s", "description": "longitudinal speed in m/s (cL = 2 cS: nu = 1/3)"},
+    {"name": "c_plate", "expression": "2*cS_s*sqrt(1 - cS_s**2/cL_s**2)", "description": "S0 plate velocity in m/s (sqrt(3) cS = 5196)"},
+    {"name": "v0", "expression": "T_sheet/(2*rho_s*c_plate)", "description": "S0 velocity amplitude on each side in m/s"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform cell size"},
+    {"name": "N_cells", "expression": 11, "description": "plate cells across y (odd: the midplane is a cell centre)"},
+    {"name": "d_plate", "expression": "N_cells*dx_cell", "description": "plate thickness (free faces on cell edges)"},
+    {"name": "y0_plate", "expression": "2*dx_cell", "description": "lower plate face (two vacuum cells below it)"},
+    {"name": "Ly", "expression": "d_plate + 4*dx_cell", "description": "domain height: plate plus two vacuum cells each side"},
+    {"name": "y_mid", "expression": "y0_plate + d_plate/2", "description": "plate midplane (a cell centre)"},
+    {"name": "Lx", "expression": "125*mm", "description": "plate length (5000 cells)"},
+    {"name": "n_pml", "expression": 120, "description": "absorbing layer cells on each x face (3 mm)"},
+    {"name": "x_s", "expression": "600.5*dx_cell", "description": "sheet position (cell centre, 15.0 mm; its normal traction sits on the two x faces of the cell)"},
+    {"name": "r1", "expression": "800.5*dx_cell", "description": "distance sheet -> v_x node of probe_1 (its cell's +x face, 20.0 mm)"},
+    {"name": "r2", "expression": "2000.5*dx_cell", "description": "distance sheet -> v_x node of probe_2 (50.0 mm)"},
+    {"name": "t1", "expression": "t0_r + r1/c_plate", "description": "S0 pulse centre time at probe_1"},
+    {"name": "t2", "expression": "t0_r + r2/c_plate", "description": "S0 pulse centre time at probe_2"},
+    {"name": "E_ric", "expression": "3/(4*f0*sqrt(2*pi))", "description": "Ricker energy: integral of s^2 dt in s"},
+    {"name": "S_courant", "expression": 0.9, "description": "courant setting"},
+    {"name": "dt_ac", "expression": "S_courant*dx_cell/(2*cL_s)", "description": "acoustic step: courant / (sqrt(2 c11 / rho) sqrt(2) / dx), the solid-vacuum faces having rho / 2"},
+    {"name": "T_run", "expression": "22*us", "description": "study duration (probe_2's window ends at t2 + 2 / f0 = 21.6 us)"},
+    {"name": "t_end", "expression": "floor(T_run/dt_ac + 0.5)*dt_ac", "description": "final time: the tick nearest T_run"},
+    {"name": "t_vel", "expression": "t_end - dt_ac/2", "description": "time of the final velocities (half a step before t_end)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "plate", "kind": "rectangle", "params": {"x0": 0.0, "y0": "y0_plate", "x1": "Lx", "y1": "y0_plate + d_plate"}},
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_s", "y0": 0.0, "x1": "x_s", "y1": "Ly"}},
+    {"name": "probe_1_point", "kind": "point", "params": {"x": "x_s + 800*dx_cell", "y": "y_mid"}},
+    {"name": "probe_2_point", "kind": "point", "params": {"x": "x_s + 2000*dx_cell", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "plate_solid", "library": null,
+     "properties": {"rho": "rho_s", "sound_speed": "cL_s", "shear_speed": "cS_s"},
+     "dispersion": null, "selection": ["plate"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_lo": "rigid", "bc_y_hi": "rigid", "pml_cells": "n_pml", "courant": "S_courant"},
+      "features": [
+        {"name": "sheet", "type": "traction_line_source", "selection": ["sheet_line"],
+         "params": {"waveform": "ricker", "frequency": "f0", "traction": "T_sheet", "direction": "x"}, "enabled": true},
+        {"name": "probe_1", "type": "field_probe", "selection": ["probe_1_point"], "params": {"component": "vx"},
+         "enabled": true},
+        {"name": "probe_2", "type": "field_probe", "selection": ["probe_2_point"], "params": {"component": "vx"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": "T_run/4"},
+            "stored_fields": ["acoustics.vx", "acoustics.vy"], "sweep": null},
+  "derived_values": [
+    {"name": "m1_matched", "source": "acoustics.probe_1", "operation": "integral", "reference": 1.0, "tolerance": 0.02,
+     "expression": "where(abs(t - t1) < 2/f0, values*(1 - 2*(pi*f0*(t - t1))**2)*exp(-(pi*f0*(t - t1))**2), 0)/(v0*E_ric)"},
+    {"name": "m2_matched", "source": "acoustics.probe_2", "operation": "integral", "reference": 1.0, "tolerance": 0.02,
+     "expression": "where(abs(t - t2) < 2/f0, values*(1 - 2*(pi*f0*(t - t2))**2)*exp(-(pi*f0*(t - t2))**2), 0)/(v0*E_ric)"}
+  ],
+  "analytic_curves": [
+    {"name": "probe_1_pulse", "target": "acoustics.probe_1",
+     "expression": "v0*(1 - 2*(pi*f0*(t - t1))**2)*exp(-(pi*f0*(t - t1))**2)", "tolerance": 0.03},
+    {"name": "probe_2_pulse", "target": "acoustics.probe_2",
+     "expression": "v0*(1 - 2*(pi*f0*(t - t2))**2)*exp(-(pi*f0*(t - t2))**2)", "tolerance": 0.03},
+    {"name": "vx_midplane", "target": "line", "field": "acoustics.vx",
+     "line": ["x_s + 1800*dx_cell", "y_mid", "x_s + 4000*dx_cell", "y_mid"],
+     "expression": "v0*(1 - 2*(pi*f0*(t_vel - t0_r - (x + dx_cell/2 - x_s)/c_plate))**2)*exp(-(pi*f0*(t_vel - t0_r - (x + dx_cell/2 - x_s)/c_plate))**2)",
+     "tolerance": 0.03}
+  ]
+}

@@ -1,0 +1,88 @@
+{
+  "title": "Saturating cores: tabulated B-H curve vs closed-form curve (magnetostatics, analytic)",
+  "description": "Planar magnetostatics, 1D in x: a current sheet (current_source J = -K / w in air, x in [0.6, 0.8] mm) beside two iron cores, magnetic insulation on x_lo (the mirror plane of the opposite return sheet), symmetry on x_hi and the y faces. Ampere fixes H_y = K in both cores whatever their permeability (the planar long solenoid / toroid: H = N I / l), so every core cell sits on its own B-H curve. core_table (x < 0.3 mm) is a bh_curve table sampled from the Frohlich-Kennelly curve at H = 200, 500, 1000, 2000, 5000 A/m (rows as parameter expressions); core_fk (0.3 - 0.6 mm) is that curve in closed form (mu_dc = 2000, saturation_polarization = 1.6 T). Saturation loop: Anderson, relaxation 0.5, tolerance 1e-8. The sweep runs K = 100 .. 10000 A/m.\nAnalytic: B_table = linear interpolation of the table rows (from the origin; slope mu0 past the last row), B_fk = mu0 H + J_s a H / (1 + a H) with a = mu0 (mu_dc - 1) / J_s.\nDerived values tab: H_cores (= K), B_table, B_fk and mu_secant_table (B / (mu0 H) of the table core, 1520 at 100 A/m -> 114 at 10000 A/m): exact finite-volume identities, expect ~1e-6 (loop tolerance, float32 field storage), tolerance 1e-4.\nSweep tab: B_table and B_fk vs K with their dashed references; fk_over_table draws the closed-form curve over the table series (reported, not checked): they meet at the rows, between rows the table chord lies below the concave curve (12 % at 100 A/m, 4.3 % at 350, 2.5 % at 1500, 2.7 % at 3500), and at 10000 A/m, past the last row, the table core is 5.6 % low (1.432 vs 1.517 T) since the table continues with slope mu0: end a table well into saturation. Use log axes.\nLine profile tab (last sweep value, K = 10000 A/m): B_profile (field B_y): 1.432 T in the table core, 1.517 T in the closed-form core, mu0 H falling linearly to 0 across the sheet, 0 beyond.",
+  "version": 1,
+  "parameters": [
+    {"name": "K_drive", "expression": 1500.0, "description": "sheet current per m of height in A/m = the uniform H_y in both cores (swept 100 .. 10000)"},
+    {"name": "mu_i", "expression": 2000.0, "description": "initial relative permeability mu_dc of the closed-form (Frohlich-Kennelly) curve"},
+    {"name": "J_sat", "expression": 1.6, "description": "saturation polarisation J_s in T: B -> mu0 H + J_s"},
+    {"name": "a_fk", "expression": "mu0_const*(mu_i - 1)/J_sat", "description": "curve constant a = mu0 (mu_dc - 1) / J_s in m/A"},
+    {"name": "H_row1", "expression": 200.0, "description": "table row 1: H in A/m"},
+    {"name": "H_row2", "expression": 500.0, "description": "table row 2: H in A/m"},
+    {"name": "H_row3", "expression": 1000.0, "description": "table row 3: H in A/m"},
+    {"name": "H_row4", "expression": 2000.0, "description": "table row 4: H in A/m"},
+    {"name": "H_row5", "expression": 5000.0, "description": "table row 5 (last): H in A/m; beyond it the table continues with slope mu0"},
+    {"name": "B_row1", "expression": "mu0_const*H_row1 + J_sat*a_fk*H_row1/(1 + a_fk*H_row1)", "description": "table row 1: B in T, the closed-form curve at H_row1 (0.3826 T)"},
+    {"name": "B_row2", "expression": "mu0_const*H_row2 + J_sat*a_fk*H_row2/(1 + a_fk*H_row2)", "description": "table row 2: B in T (0.7043 T)"},
+    {"name": "B_row3", "expression": "mu0_const*H_row3 + J_sat*a_fk*H_row3/(1 + a_fk*H_row3)", "description": "table row 3: B in T (0.9787 T)"},
+    {"name": "B_row4", "expression": "mu0_const*H_row4 + J_sat*a_fk*H_row4/(1 + a_fk*H_row4)", "description": "table row 4: B in T (1.2160 T)"},
+    {"name": "B_row5", "expression": "mu0_const*H_row5 + J_sat*a_fk*H_row5/(1 + a_fk*H_row5)", "description": "table row 5: B in T (1.4255 T)"},
+    {"name": "B_table_ref",
+     "expression": "B_row1/H_row1*min(K_drive, H_row1) + (B_row2 - B_row1)/(H_row2 - H_row1)*max(min(K_drive, H_row2) - H_row1, 0) + (B_row3 - B_row2)/(H_row3 - H_row2)*max(min(K_drive, H_row3) - H_row2, 0) + (B_row4 - B_row3)/(H_row4 - H_row3)*max(min(K_drive, H_row4) - H_row3, 0) + (B_row5 - B_row4)/(H_row5 - H_row4)*max(min(K_drive, H_row5) - H_row4, 0) + mu0_const*max(K_drive - H_row5, 0)",
+     "description": "analytic B of the table core in T: piecewise-linear table at H = K_drive (sum of clipped segment ramps)"},
+    {"name": "B_fk_ref", "expression": "mu0_const*K_drive + J_sat*a_fk*K_drive/(1 + a_fk*K_drive)", "description": "analytic B of the closed-form core in T at H = K_drive"},
+    {"name": "dx_cell", "expression": "10*um", "description": "uniform cell size (100 x 10 cells)"},
+    {"name": "L_x", "expression": "1*mm", "description": "domain length along x"},
+    {"name": "h_y", "expression": "10*dx_cell", "description": "domain height (symmetry y faces: the problem is 1D in x)"},
+    {"name": "x_fk0", "expression": "0.3*mm", "description": "table core | closed-form core interface (a cell edge)"},
+    {"name": "x_sheet0", "expression": "0.6*mm", "description": "closed-form core | current sheet interface (a cell edge)"},
+    {"name": "x_sheet1", "expression": "0.8*mm", "description": "current sheet | air interface (a cell edge)"},
+    {"name": "w_sheet", "expression": "x_sheet1 - x_sheet0", "description": "sheet thickness along x"}
+  ],
+  "domain": {"size_x": "L_x", "size_y": "h_y"},
+  "geometry": [
+    {"name": "core_table", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_fk0", "y1": "h_y"}},
+    {"name": "core_fk", "kind": "rectangle", "params": {"x0": "x_fk0", "y0": 0.0, "x1": "x_sheet0", "y1": "h_y"}},
+    {"name": "sheet", "kind": "rectangle", "params": {"x0": "x_sheet0", "y0": 0.0, "x1": "x_sheet1", "y1": "h_y"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "iron_table", "library": null,
+     "properties": {"bh_curve": [["H_row1", "B_row1"], ["H_row2", "B_row2"], ["H_row3", "B_row3"], ["H_row4", "B_row4"], ["H_row5", "B_row5"]]},
+     "dispersion": null, "selection": ["core_table"]},
+    {"name": "iron_fk", "library": null, "properties": {"mu_dc": "mu_i", "saturation_polarization": "J_sat"},
+     "dispersion": null, "selection": ["core_fk"]}
+  ],
+  "physics": [
+    {
+      "name": "magnetic",
+      "type": "magnetostatics",
+      "settings": {"nonlinear_method": "anderson", "nonlinear_relaxation": 0.5, "nonlinear_tolerance": 1e-8,
+                   "nonlinear_max_iterations": 300},
+      "features": [
+        {"name": "mirror_plane", "type": "magnetic_insulation", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "symmetry", "type": "symmetry", "selection": ["x_hi", "y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "winding", "type": "current_source", "selection": ["sheet"], "params": {"density": "-K_drive/w_sheet"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["magnetic.B_y", "magnetic.H_y"],
+            "sweep": {"parameter": "K_drive", "values": [100.0, 200.0, 350.0, 1000.0, 1500.0, 3500.0, 5000.0, 10000.0]}},
+  "derived_values": [
+    {"name": "H_cores", "expression": "magnetic_H_y", "selection": ["core_table", "core_fk"], "operation": "mean",
+     "reference": "K_drive", "tolerance": 1e-4},
+    {"name": "B_table", "expression": "magnetic_B_y", "selection": ["core_table"], "operation": "mean",
+     "reference": "B_table_ref", "tolerance": 1e-4},
+    {"name": "B_fk", "expression": "magnetic_B_y", "selection": ["core_fk"], "operation": "mean",
+     "reference": "B_fk_ref", "tolerance": 1e-4},
+    {"name": "mu_secant_table", "expression": "magnetic_B_y/(mu0_const*magnetic_H_y)", "selection": ["core_table"],
+     "operation": "mean", "reference": "B_table_ref/(mu0_const*K_drive)", "tolerance": 1e-4}
+  ],
+  "analytic_curves": [
+    {"name": "B_table_vs_K", "target": "sweep", "series": "B_table", "expression": "B_table_ref", "tolerance": 1e-4},
+    {"name": "B_fk_vs_K", "target": "sweep", "series": "B_fk", "expression": "B_fk_ref", "tolerance": 1e-4},
+    {"name": "fk_over_table", "target": "sweep", "series": "B_table", "expression": "B_fk_ref"},
+    {"name": "B_profile", "target": "line",
+     "expression": "where(x < x_fk0, B_table_ref, where(x < x_sheet0, B_fk_ref, where(x < x_sheet1, mu0_const*K_drive*(x_sheet1 - x)/w_sheet, 0)))",
+     "tolerance": 1e-4, "line": [0.0, "h_y/2 + dx_cell/2", "L_x", "h_y/2 + dx_cell/2"], "field": "magnetic.B_y"}
+  ]
+}

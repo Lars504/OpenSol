@@ -1,0 +1,78 @@
+{
+  "title": "Absorbing-layer (CPML) reflection vs its target reflection (analytic)",
+  "description": "A plane Ricker pressure pulse (normal traction sheet, 1 MHz) in a y-periodic water strip (elastic_waves) runs into the absorbing layers of both x faces (80 cells = 1 mm each, inside the domain, backed by a rigid wall). The sweep runs the layer's target reflection pml_reflection over 0.3-0.01.\nAnalytic (continuum CPML, order 2, kappa 1, alpha 0): the damping d0 = 3 c ln(1/R) / (2 L) attenuates the wave travelling in and back out by exp(-2 integral d / c dx) = R at every frequency, and the rigid backing reflects pressure with +1, so each echo is +R times the pulse that entered that layer, timed as a reflection at the domain edge. The +x traction compresses the +x side and rarefies the -x side: pressure +T/2 toward x_hi, -T/2 toward x_lo, so at the probe the x_hi echo is +R p_half and the x_lo echo -R p_half. Both echoes pass the probe (x = 10 mm; sheet at 5 mm): the x_lo echo after the path x_s + x_inc, the x_hi echo after 2 Lx - x_s - x_inc.\nTime-stepped layer (R_disc): the CPML recursion psi = b psi + a dv/dx (b = exp(-d dt), a = b - 1, current derivative) stretches by 1/s_disc = (1/s) exp(-d dt / 2) to first order, an extra real stretch (still matched) and the damping d (1 + d dt / 2). The round trip adds exp(-dt integral d^2 / c dx) = exp(-0.45 (c dt / L) ln(1/R)^2), so the layer reflects less than its target: 0.5 % at R = 0.3, 7.3 % at R = 0.01 here (dt from courant_f, set explicitly).\nSweep tab: R_lo_matched and R_hi_matched (matched filters: the probe trace projected on the Ricker wavelet at each predicted arrival, over its energy, divided by the pressure of the wave that entered that layer: -p_half for x_lo, +p_half for x_hi) against the dashed R_disc.\nProbes tab (last sweep value, R = 0.01): the incident pulse and the two echoes (x_lo inverted) with the dashed analytic trace.\nDerived values tab: inc_matched (should be 1), R_lo_matched, R_hi_matched. Measured against R_disc: 0.08 % (R = 0.3) to 0.66 % (R = 0.01), the rest of the discrete layer (grading over 80 cells, higher orders in d dt); against the bare target R they were 0.6 % to 7.9 %. Tolerance 2 %.",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "1*MHz", "description": "Ricker peak frequency"},
+    {"name": "t_d", "expression": "4/f0", "description": "time of the Ricker maximum at the sheet"},
+    {"name": "T_sheet", "expression": 2.0e5, "description": "peak normal traction of the sheet in Pa"},
+    {"name": "p_half", "expression": "T_sheet/2", "description": "pressure amplitude of each plane wave the sheet launches"},
+    {"name": "rho_w", "expression": 1000.0, "description": "density of water in kg/m^3"},
+    {"name": "c_w", "expression": 1480.0, "description": "sound speed of water in m/s"},
+    {"name": "R_pml", "expression": 0.01, "description": "target reflection of the absorbing layers (swept)"},
+    {"name": "n_pml", "expression": 80, "description": "absorbing layer cells per face (1 mm, 0.68 wavelengths at f0)"},
+    {"name": "dx_cell", "expression": "12.5*um", "description": "uniform cell size (47 cells per wavelength at 2.5 f0)"},
+    {"name": "Lx", "expression": "20*mm", "description": "strip length (1600 cells)"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "strip height (periodic y)"},
+    {"name": "y_mid", "expression": "1.5*dx_cell", "description": "y of the probe (a cell centre)"},
+    {"name": "x_s", "expression": "400.5*dx_cell", "description": "sheet position (cell centre, 5.006 mm)"},
+    {"name": "x_inc", "expression": "800.5*dx_cell", "description": "probe position (cell centre, 10.006 mm)"},
+    {"name": "t_inc", "expression": "t_d + (x_inc - x_s)/c_w", "description": "incident pulse centre time at the probe"},
+    {"name": "t_lo", "expression": "t_d + (x_s + x_inc)/c_w", "description": "x_lo echo centre time at the probe"},
+    {"name": "t_hi", "expression": "t_d + (2*Lx - x_s - x_inc)/c_w", "description": "x_hi echo centre time at the probe"},
+    {"name": "E_ric", "expression": "3/(4*f0*sqrt(2*pi))", "description": "Ricker energy: integral of w^2 dt in s"},
+    {"name": "courant_f", "expression": 0.9, "description": "elastic_waves time step factor (the default)"},
+    {"name": "dt_step", "expression": "courant_f*dx_cell/(c_w*sqrt(2))", "description": "time step of the run (square fluid cells: courant dx / (c sqrt 2))"},
+    {"name": "L_pml", "expression": "n_pml*dx_cell", "description": "absorbing layer thickness"},
+    {"name": "R_disc", "expression": "R_pml*exp(-0.45*c_w*dt_step/L_pml*log(R_pml)**2)", "description": "reflection of the time-stepped layer: the CPML recursion damps at d (1 + d dt / 2), order 2 grading"},
+    {"name": "t_end", "expression": "25*us", "description": "study duration (the x_hi echo has passed the probe)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_s", "y0": 0.0, "x1": "x_s", "y1": "Ly"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_inc", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": null, "properties": {"rho": "rho_w", "sound_speed": "c_w"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": "n_pml", "pml_reflection": "R_pml",
+                   "courant": "courant_f"},
+      "features": [
+        {"name": "sheet", "type": "traction_line_source", "selection": ["sheet_line"],
+         "params": {"waveform": "ricker", "frequency": "f0", "traction": "T_sheet", "direction": "x"}, "enabled": true},
+        {"name": "probe", "type": "field_probe", "selection": ["probe_point"],
+         "params": {"component": "pressure"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "R_pml", "values": [0.3, 0.1, 0.03, 0.01]}},
+  "derived_values": [
+    {"name": "inc_matched", "source": "acoustics.probe", "operation": "integral", "reference": 1.0, "tolerance": 0.02,
+     "expression": "where(abs(t - t_inc) < 2/f0, values*(1 - 2*(pi*f0*(t - t_inc))**2)*exp(-(pi*f0*(t - t_inc))**2), 0)/(p_half*E_ric)"},
+    {"name": "R_lo_matched", "source": "acoustics.probe", "operation": "integral", "reference": "R_disc",
+     "tolerance": 0.02,
+     "expression": "where(abs(t - t_lo) < 2/f0, values*(1 - 2*(pi*f0*(t - t_lo))**2)*exp(-(pi*f0*(t - t_lo))**2), 0)/(-p_half*E_ric)"},
+    {"name": "R_hi_matched", "source": "acoustics.probe", "operation": "integral", "reference": "R_disc",
+     "tolerance": 0.02,
+     "expression": "where(abs(t - t_hi) < 2/f0, values*(1 - 2*(pi*f0*(t - t_hi))**2)*exp(-(pi*f0*(t - t_hi))**2), 0)/(p_half*E_ric)"}
+  ],
+  "analytic_curves": [
+    {"name": "R_lo_vs_target", "target": "sweep", "expression": "R_disc", "tolerance": 0.02, "series": "R_lo_matched"},
+    {"name": "R_hi_vs_target", "target": "sweep", "expression": "R_disc", "tolerance": 0.02, "series": "R_hi_matched"},
+    {"name": "probe_trace", "target": "acoustics.probe",
+     "expression": "p_half*((1 - 2*(pi*f0*(t - t_inc))**2)*exp(-(pi*f0*(t - t_inc))**2) - R_disc*(1 - 2*(pi*f0*(t - t_lo))**2)*exp(-(pi*f0*(t - t_lo))**2) + R_disc*(1 - 2*(pi*f0*(t - t_hi))**2)*exp(-(pi*f0*(t - t_hi))**2))",
+     "tolerance": 0.03}
+  ]
+}

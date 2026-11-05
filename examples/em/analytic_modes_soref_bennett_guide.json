@@ -1,0 +1,66 @@
+{
+  "title": "Analytic: doped silicon in a PEC guide, Soref-Bennett n_eff and loss vs hole density (em_modes)",
+  "description": "Cross-section modes (em_modes, mode_analysis at 1.55 um) of a PEC rectangle of 52 x 27 uniform 20 nm cells (wall planes on the inner faces of the outermost cells: a = 1.0 um, b = 0.5 um) filled with silicon whose eps_r / sigma_e follow the Soref-Bennett plasma dispersion (1.55 um fit, N, P in cm^-3: dn = -(8.8e-22 N + 8.5e-18 P^0.8), alpha = 8.5e-18 N + 6.0e-18 P [1/cm]; eps_r = (n0 + dn)^2, sigma_e = n alpha eps0 c) with N_e = 1e18 cm^-3 and the hole density N_h swept 1e23..1e25 m^-3.\nAnalytic (homogeneous complex fill, discrete TE10): n_eff^2 = A - j B with A = eps_r - (K / k0)^2, K = (2 / h) sin(pi h / (2 a)), B = n alpha / k0; Re n_eff = sqrt((hypot(A, B) + A) / 2), Im n_eff = -B / (2 Re n_eff); loss = -(20 / ln 10) k0 Im n_eff / 100 dB/cm (the material alpha times n / Re n_eff, in dB/cm).\nSweep tab: n_eff_1, n_eff_imag_1 and loss_1 (mode table row 0) vs N_h with their dashed references (the hole term's 0.8 power bends n_eff; the loss is linear in N_h).\nLine profile tab: sz_profile = S_z of the 1 W mode across x at mid-height, 2 / (a b) sin^2(pi (x - h) / a) (W/m^2; TE10 power flow, independent of the fill).\nExpected: n_eff ~1e-6, n_eff_imag / loss ~1e-5 (float32 eps_r / sigma_e and the eigen-solve), sz ~1e-4 (if the mode is normalised to +1 W).",
+  "version": 1,
+  "parameters": [
+    {"name": "N_h", "expression": 1e24, "description": "hole density [m^-3] (sweep 1e23..1e25 m^-3 = 1e17..1e19 cm^-3)"},
+    {"name": "N_e", "expression": 1e24, "description": "electron density [m^-3] (1e18 cm^-3)"},
+    {"name": "n_Si", "expression": 3.476, "description": "undoped silicon index at 1.55 um"},
+    {"name": "lambda0", "expression": "1.55*um", "description": "vacuum wavelength of the mode solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 [1/m]"},
+    {"name": "h_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "a_guide", "expression": "50*h_cell", "description": "guide width between the x wall planes (1.0 um)"},
+    {"name": "b_guide", "expression": "25*h_cell", "description": "guide height between the y wall planes (0.5 um)"},
+    {"name": "n_doped", "expression": "n_Si - (8.8e-22*(1e-6*N_e) + 8.5e-18*(1e-6*N_h)**0.8)",
+     "description": "Soref-Bennett index of the doped silicon"},
+    {"name": "alpha_doped", "expression": "100*(8.5e-18*(1e-6*N_e) + 6.0e-18*(1e-6*N_h))",
+     "description": "Soref-Bennett power absorption [1/m]"},
+    {"name": "K_te10", "expression": "2/h_cell*sin(pi*h_cell/(2*a_guide))", "description": "discrete transverse wavenumber of TE10 [1/m]"},
+    {"name": "A_re", "expression": "n_doped**2 - (K_te10/k_vac)**2", "description": "Re n_eff^2 of TE10"},
+    {"name": "B_im", "expression": "n_doped*alpha_doped/k_vac", "description": "-Im n_eff^2 = sigma_e / (omega eps0) = n alpha / k0"},
+    {"name": "n_eff_ref", "expression": "sqrt((hypot(A_re, B_im) + A_re)/2)", "description": "analytic Re n_eff of TE10"},
+    {"name": "n_eff_imag_ref", "expression": "-B_im/(2*n_eff_ref)", "description": "analytic Im n_eff of TE10 (< 0: loss)"},
+    {"name": "loss_ref", "expression": "-20/log(10)*k_vac*n_eff_imag_ref/100", "description": "analytic modal power loss [dB/cm]"}
+  ],
+  "domain": {"size_x": "a_guide + 2*h_cell", "size_y": "b_guide + 2*h_cell"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "doped_silicon", "library": null,
+     "properties": {"eps_r": "n_doped**2", "sigma_e": "n_doped*alpha_doped*eps0_const*c_const"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "wavelength": "lambda0",
+                   "n_modes": 1},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "h_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "mode_analysis", "settings": {},
+            "stored_fields": ["modes.e_intensity", "modes.sz", "modes.eps_r", "modes.sigma_e"],
+            "sweep": {"parameter": "N_h", "values": [1e23, 3e23, 1e24, 3e24, 1e25]}},
+  "derived_values": [
+    {"name": "n_eff_1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
+     "reference": "n_eff_ref", "tolerance": 3e-6},
+    {"name": "n_eff_imag_1", "expression": "n_eff_imag", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "n_eff_imag_ref", "tolerance": 3e-5},
+    {"name": "loss_1", "expression": "loss_db_per_cm", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "loss_ref", "tolerance": 3e-5},
+    {"name": "eps_fill", "expression": "modes_eps_r", "selection": ["all"], "operation": "mean",
+     "reference": "n_doped**2", "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "sz_profile", "target": "line", "expression": "2/(a_guide*b_guide)*sin(pi*(x - h_cell)/a_guide)**2",
+     "tolerance": 0.01,
+     "line": ["h_cell", "(b_guide + 2*h_cell)/2", "a_guide + h_cell", "(b_guide + 2*h_cell)/2"], "field": "modes.sz"}
+  ]
+}

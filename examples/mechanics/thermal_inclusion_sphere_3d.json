@@ -1,0 +1,77 @@
+{
+  "title": "Heated spherical inclusion in a block: Eshelby thermal stress (3D, analytic)",
+  "description": "3D static elasticity (solid_mechanics_3d): a sphere of radius a inside a uniform elastic block is heated by dT (temperature_change feature on the sphere, no heat physics), so it tries to expand by alpha dT and the block holds it back. Octant model: the sphere is centred on the origin corner, rollers on x_lo, y_lo and z_lo are the three symmetry planes, the other faces are free (the full body is a free cube of side 10 a); 40^3 cubic cells, a = 8 cells.\nAnalytic (Eshelby, same material inside and out, infinite medium): inside a uniform hydrostatic stress sigma_in = -2 E alpha dT / (3 (1 - nu)) (-95 MPa here) and u = B r / a^3; outside u_r = B / r^2 with B = (1 + nu) / (3 (1 - nu)) alpha dT a^3, sigma_rr = -2 S a^3 / r^3, sigma_tt = S a^3 / r^3, S = E alpha dT / (3 (1 - nu)) (zero trace outside). The finite cube lowers the inside pressure by about (a / b)^3 ~ 0.4 % (b = the radius of a sphere of the cube's volume).\nDerived values tab: stress_xx_inclusion and stress_zz_inclusion (means over the sphere) vs sigma_in, expect ~1-3 % (staircase sphere of voxels); stress_xx_centre (probe in the corner cell) likewise. Two exact identities (double-precision pcg solver node cg, tolerance 1e-12; expect ~1e-7): stress_xx_mean_all = mean of stress_xx over the block / |sigma_in| = 0 (a traction-free body without body force carries zero mean stress; the symmetry rollers hold only normal components, at x = 0), and strain_excess_all = mean of (strain_xx - alpha temperature_rise_ext) / (alpha dT) = 0 (so the block grows on average exactly by the inclusion's free expansion share).\nLine profile tab (cut z = dx / 2, line y = dx / 2): u_x inside (linear) and outside (1 / r^2) and stress_xx outside, using the exact r of the sampled cell centres; ~2-5 % of each curve's range, largest next to the voxel surface.\nField tab: von Mises (0 inside in the analytic solution: the voxel surface shows as a thin shell of shear).",
+  "version": 2,
+  "parameters": [
+    {"name": "E_m", "expression": 1e11, "description": "Young's modulus in Pa (inclusion and block)"},
+    {"name": "nu_m", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "alpha_m", "expression": 1e-5, "description": "thermal expansion coefficient in 1/K"},
+    {"name": "dT_inc", "expression": 100.0, "description": "temperature change of the inclusion in K"},
+    {"name": "dx_mesh", "expression": "1*um", "description": "uniform cubic cell size"},
+    {"name": "a_inc", "expression": "8*dx_mesh", "description": "inclusion radius"},
+    {"name": "L_box", "expression": "40*dx_mesh", "description": "side of the octant model (full cube 2 L = 10 a)"},
+    {"name": "z_cut", "expression": "dx_mesh/2", "description": "height of the line-profile cut (first cell layer, next to the z_lo symmetry plane)"},
+    {"name": "sigma_in", "expression": "-2*E_m*alpha_m*dT_inc/(3*(1 - nu_m))", "description": "Eshelby hydrostatic stress inside in Pa"},
+    {"name": "S_out", "expression": "E_m*alpha_m*dT_inc/(3*(1 - nu_m))", "description": "outside stress scale in Pa (sigma_tt at r = a)"},
+    {"name": "B_out", "expression": "(1 + nu_m)/(3*(1 - nu_m))*alpha_m*dT_inc*a_inc**3", "description": "outside displacement constant, u_r = B / r^2 (m^3)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box", "size_z": "L_box"},
+  "geometry": [
+    {"name": "inclusion", "kind": "sphere", "params": {"cx": 0.0, "cy": 0.0, "cz": 0.0, "r": "a_inc"}},
+    {"name": "centre_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "dx_mesh/2", "z": "dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "matrix", "library": null,
+     "properties": {"youngs_modulus": "E_m", "poisson_ratio": "nu_m", "alpha": "alpha_m"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics_3d",
+      "settings": {},
+      "features": [
+        {"name": "sym_x", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "sym_y", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "sym_z", "type": "roller", "selection": ["z_lo"], "params": {}, "enabled": true},
+        {"name": "heating", "type": "temperature_change", "selection": ["inclusion"], "params": {"delta_T": "dT_inc"},
+         "enabled": true},
+        {"name": "centre", "type": "solid_probe", "selection": ["centre_point"], "params": {"component": "stress_xx"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.stress_xx", "solid.von_mises"], "sweep": null},
+  "derived_values": [
+    {"name": "stress_xx_inclusion", "expression": "solid_stress_xx", "selection": ["inclusion"], "operation": "mean",
+     "reference": "sigma_in", "tolerance": 0.04},
+    {"name": "stress_zz_inclusion", "expression": "solid_stress_zz", "selection": ["inclusion"], "operation": "mean",
+     "reference": "sigma_in", "tolerance": 0.04},
+    {"name": "stress_xx_centre", "expression": "values", "selection": [], "operation": "last", "source": "solid.centre",
+     "reference": "sigma_in", "tolerance": 0.05},
+    {"name": "stress_xx_mean_all", "expression": "solid_stress_xx/abs(sigma_in)", "selection": [], "operation": "mean",
+     "reference": 0.0, "tolerance": 1e-5},
+    {"name": "strain_excess_all", "expression": "(solid_strain_xx - alpha_m*solid_temperature_rise_ext)/(alpha_m*dT_inc)",
+     "selection": [], "operation": "mean", "reference": 0.0, "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "u_x_inside", "target": "line", "expression": "B_out/a_inc**3*x", "tolerance": 0.05,
+     "line": ["dx_mesh/2", "dx_mesh/2", "0.75*a_inc", "dx_mesh/2"], "field": "solid.u_x", "plane": "z_cut"},
+    {"name": "u_x_outside", "target": "line", "expression": "B_out*x/(x**2 + y**2 + z_cut**2)**1.5", "tolerance": 0.05,
+     "line": ["1.25*a_inc", "dx_mesh/2", "3*a_inc", "dx_mesh/2"], "field": "solid.u_x", "plane": "z_cut"},
+    {"name": "stress_xx_outside", "target": "line",
+     "expression": "S_out*a_inc**3/(x**2 + y**2 + z_cut**2)**1.5*(1 - 3*x**2/(x**2 + y**2 + z_cut**2))",
+     "tolerance": 0.06,
+     "line": ["1.25*a_inc", "dx_mesh/2", "3*a_inc", "dx_mesh/2"], "field": "solid.stress_xx", "plane": "z_cut"}
+  ]
+}

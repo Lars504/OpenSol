@@ -1,0 +1,90 @@
+{
+  "title": "3D nanobeam photonic crystal cavity, eighth model (FDFD eigenfrequency)",
+  "description": "The 3D version of examples/em/nanobeam_cavity_fdfd: a silicon nanobeam (n 3.48, 500 nm wide in y, 220 nm thick in z, along x) in air with a row of 12 air holes on each side of the centre (lattice a = 350 nm, r = 0.28 a, through the slab). The centre-to-centre gap L_def between the two innermost holes is the defect: L_def = 1.5 a adds half a period, a quarter-wave phase shift, which puts the localised resonance near the middle of the mirror stop band. Unlike the 2D effective-index model the mode also radiates out of the slab (up and down), so Q is set by the vertical light cone as well as the mirror leakage; all of it is absorbed by the CPML (8 cells on the hi faces). The beam runs into the x CPML.\nEighth model: the cavity centre is on the domain corner and all three planes through it are mirrors chosen for the fundamental TE-like cavity mode (E_y across the beam dominant, antinode at the centre): x_lo symmetric (PMC: E_y even about the cavity centre), y_lo antisymmetric (PEC: E_y even, E_x / E_z odd about the beam axis) and z_lo symmetric (PMC: TE-like, E_x / E_y even about the slab mid-plane). x_lo antisymmetric gives the odd cavity modes (E_y node at the centre); z_lo antisymmetric the TM-like ones. Integrals and maxima of the derived values count the mirror images (the whole cavity).\nGraded mesh: a / 16 (21.9 nm) along the whole beam in x and across its half width in y, t / 12 (18.3 nm) through the half thickness in z, graded (ratio 1.3) to 80 nm in the air and the CPML; ~2e5 cells, ~6e5 unknowns; subpixel smoothing on the hole edges.\nThe target lambda_target is an estimate (Bragg wavelength 2 a n_B with n_B ~2.2, 1540 nm): the cavity mode is the high-Q row of the resonance table (Q_max); set lambda_target to its wavelength for the nearest-first ranking and the most accurate Q (the PML stretch is frozen at the target), and run without the sweep first to find it.\nGPU: the eigen solver node 'eigen_gpu' uses factorization cudss_mixed (complex64 cuDSS LDL^T + float64 refinement, Rayleigh quotients; gpu backend, needs nvmath-python); 'cudss' is the full complex128 factor. Host SuperLU would need tens of GB of fill at this size.\nSweep tab: lambda_1, Q_1, Q_max and V_m_norm vs L_def (1.4-1.6 a). Derived values (resonance 1 = nearest the target, also the shown field): V_m = W_E / max(w_e) (the peak electric energy density mode volume) and V_m_norm = V_m / (lambda_1 / n_si)^3.\nField tab: |E|, Re E_y and w_e on the slab mid-plane (z cut) and the beam axis plane (y cut). Not yet run: the stop band and Q are unverified.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_si", "expression": 3.48, "description": "silicon refractive index"},
+    {"name": "a_lat", "expression": "350*nm", "description": "hole spacing (lattice constant)"},
+    {"name": "r_hole", "expression": "0.28*a_lat", "description": "hole radius"},
+    {"name": "w_beam", "expression": "500*nm", "description": "beam width (y)"},
+    {"name": "t_si", "expression": "220*nm", "description": "beam thickness (z)"},
+    {"name": "L_def", "expression": "1.5*a_lat", "description": "centre-to-centre spacing of the two innermost holes (the defect; swept)"},
+    {"name": "x_first", "expression": "L_def/2", "description": "x of the innermost hole (the cavity centre at x = 0)"},
+    {"name": "L_mirror", "expression": "11*a_lat", "description": "innermost to outermost hole centre of one mirror (12 holes)"},
+    {"name": "margin", "expression": "600*nm", "description": "beam beyond the outermost hole + a, before the x CPML"},
+    {"name": "pad", "expression": "800*nm", "description": "air between the beam and the CPML (y and z)"},
+    {"name": "n_bragg", "expression": 2.2, "description": "estimated Bloch index at the stop band (sets the target only)"},
+    {"name": "lambda_target", "expression": "2*a_lat*n_bragg", "description": "eigenfrequency target (Bragg estimate, 1540 nm)"},
+    {"name": "h_beam", "expression": "a_lat/16", "description": "cells along the beam (x) and across its half width (y)"},
+    {"name": "h_slab", "expression": "t_si/12", "description": "cells through the half thickness (z)"},
+    {"name": "h_air", "expression": "80*nm", "description": "largest (air) cells, also the CPML cells (19 per wavelength in air)"}
+  ],
+  "domain": {"size_x": "x_first + L_mirror + a_lat + margin", "size_y": "w_beam/2 + pad", "size_z": "t_si/2 + pad"},
+  "geometry": [
+    {"name": "beam", "kind": "box", "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "x_first + L_mirror + a_lat + margin", "y1": "w_beam/2", "z1": "t_si/2"}},
+    {"name": "hole0", "kind": "circle", "params": {"cx": "x_first + 0*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole1", "kind": "circle", "params": {"cx": "x_first + 1*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole2", "kind": "circle", "params": {"cx": "x_first + 2*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole3", "kind": "circle", "params": {"cx": "x_first + 3*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole4", "kind": "circle", "params": {"cx": "x_first + 4*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole5", "kind": "circle", "params": {"cx": "x_first + 5*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole6", "kind": "circle", "params": {"cx": "x_first + 6*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole7", "kind": "circle", "params": {"cx": "x_first + 7*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole8", "kind": "circle", "params": {"cx": "x_first + 8*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole9", "kind": "circle", "params": {"cx": "x_first + 9*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole10", "kind": "circle", "params": {"cx": "x_first + 10*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}},
+    {"name": "hole11", "kind": "circle", "params": {"cx": "x_first + 11*a_lat", "cy": 0.0, "r": "r_hole", "z0": 0.0, "z1": "t_si"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "air", "library": null, "properties": {"eps_r": 1.0}, "dispersion": null, "selection": ["all"]},
+    {"name": "silicon", "library": null, "properties": {"eps_r": "n_si**2"}, "dispersion": null, "selection": ["beam"]},
+    {"name": "air_holes", "library": null, "properties": {"eps_r": 1.0}, "dispersion": null,
+     "selection": ["hole0", "hole1", "hole2", "hole3", "hole4", "hole5", "hole6", "hole7", "hole8", "hole9", "hole10",
+                   "hole11"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_3d",
+      "settings": {"bc_x_lo": "symmetric", "bc_y_lo": "antisymmetric", "bc_z_lo": "symmetric",
+                   "bc_x_hi": "cpml", "bc_y_hi": "cpml", "bc_z_hi": "cpml", "pml_cells": 8,
+                   "wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"eigen": "eigen_gpu"}
+    }
+  ],
+  "solvers": [
+    {"name": "eigen_gpu", "type": "arpack_shift_invert", "settings": {"factorization": "cudss_mixed"}}
+  ],
+  "couplings": [],
+  "mesh": {"mode": "nonuniform", "dx": "h_air", "max_ratio": 1.3, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": [],
+           "axes": [
+             {"axis": "x", "max_ratio": null, "edges": [], "segments": [],
+              "bands": [{"lo": 0.0, "hi": "x_first + L_mirror + a_lat + margin", "dx": "h_beam"}]},
+             {"axis": "y", "max_ratio": null, "edges": [], "segments": [],
+              "bands": [{"lo": 0.0, "hi": "w_beam/2", "dx": "h_beam"}]},
+             {"axis": "z", "max_ratio": null, "edges": [], "segments": [],
+              "bands": [{"lo": 0.0, "hi": "t_si/2", "dx": "h_slab"}]}
+           ]},
+  "solver_defaults": {"backend": "gpu", "subpixel_smoothing": true, "conformal_boundaries": false},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 3},
+            "stored_fields": ["em.e_abs", "em.ey_re", "em.w_e"],
+            "stored_cuts": [["z", "1*nm"], ["y", "1*nm"]],
+            "sweep": {"parameter": "L_def", "values": ["1.4*a_lat", "1.5*a_lat", "1.6*a_lat"]}},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "Q_1", "expression": "q_factor", "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "Q_max", "expression": "q_factor", "operation": "max", "source": "em.resonances"},
+    {"name": "pml_1", "expression": "pml_fraction", "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "W_all", "expression": "em_w_e", "operation": "integral"},
+    {"name": "w_max", "expression": "em_w_e", "operation": "max"},
+    {"name": "V_m", "expression": "W_all/w_max"},
+    {"name": "V_m_norm", "expression": "V_m/(lambda_1/n_si)**3"}
+  ],
+  "analytic_curves": []
+}

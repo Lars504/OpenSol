@@ -1,0 +1,93 @@
+{
+  "title": "Natural convection in a tall vertical slot, Boussinesq buoyancy by field_transfer (analytic)",
+  "description": "Heat + laminar flow, stationary: water between two vertical walls W = 1 mm apart (x), the hot wall x_lo at T_m + dT/2 and the cold wall x_hi at T_m - dT/2; the slot is infinitely tall (fluid periodic in y over 4 cells; heat y faces insulated). A field_transfer writes the Boussinesq buoyancy f_y = rho g beta (T - T_m) of the heat T into the fluid body_force_y slot (gravity along -y: warm fluid rises). One-way coupling: heat solves, the force is transferred, the flow marches to its steady state (no fluid_heat_convection: u . grad T = u_y dT/dy = 0 here).\nAnalytic (xi = x / W, fully developed, no net flow since the mean force is 0): T = T_h - dT xi, u_y = U_b xi (1 - xi)(1 - 2 xi) with U_b = rho g beta dT W^2 / (12 mu) (1.6e-3 m/s at dT = 10 K); peak |u_y| = |U_b| / (6 sqrt 3) at xi = (3 - sqrt 3) / 6 (and mirrored on the cold side).\nDerived values tab: u_probe (u_y at the cell centre x = 212.5 um next to the hot-side peak), u_peak (max u_y over the cells), u_mean_norm (mean u_y / U_b, reference 0: the up- and down-flow cancel).\nLine profile tab: u_profile (u_y across the slot, the antisymmetric cubic), T_profile (linear T) and force_profile (the transferred body_force_y, linear through 0 at mid-slot: checks the sign of the buoyancy), at the last sweep value dT = 10 K.\nSweep tab: u_probe and u_peak versus dT (-10..20 K; negative = hot wall on the right, the flow reverses) with the dashed closed forms.\nExpected: T and body_force_y exact (~1e-6); the velocity ~1e-4..1e-3 (second-order lattice-Boltzmann with halfway bounce-back walls on 40 cells; the cubic profile is not reproduced exactly as a parabola is; float32 steady state); tolerance 3e-3.",
+  "version": 1,
+  "parameters": [
+    {"name": "dT", "expression": 10.0, "description": "wall temperature difference T_h - T_c in K; swept (negative: hot wall on x_hi)"},
+    {"name": "T_m", "expression": 300.0, "description": "mean (reference) temperature in K: the buoyancy is zero there"},
+    {"name": "T_h", "expression": "T_m + dT/2", "description": "temperature of the x_lo wall in K"},
+    {"name": "T_c", "expression": "T_m - dT/2", "description": "temperature of the x_hi wall in K"},
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of water in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "density of water in kg/m^3"},
+    {"name": "k_f", "expression": 0.6, "description": "thermal conductivity of water in W/(m K)"},
+    {"name": "beta_f", "expression": 2e-4, "description": "volumetric thermal expansion coefficient of water in 1/K"},
+    {"name": "g_acc", "expression": 9.81, "description": "gravitational acceleration in m/s^2 (magnitude; gravity along -y)"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform square cell size (40 cells across the slot)"},
+    {"name": "W_slot", "expression": "1*mm", "description": "slot width along x (wall gap)"},
+    {"name": "H_period", "expression": "4*dx_cell", "description": "height of the periodic cell along y (the flow is uniform in y)"},
+    {"name": "U_b", "expression": "rho_f*g_acc*beta_f*dT*W_slot**2/(12*mu_f)", "description": "velocity scale of the cubic profile in m/s"},
+    {"name": "x_p", "expression": "8.5*dx_cell", "description": "probe x: the cell centre next to the hot-side peak xi = 0.2113"},
+    {"name": "xi_p", "expression": "x_p/W_slot", "description": "probe position x / W"},
+    {"name": "y_c", "expression": "1.5*dx_cell", "description": "y of the probe and of the line profiles (a cell centre)"},
+    {"name": "u_probe_ref", "expression": "U_b*xi_p*(1 - xi_p)*(1 - 2*xi_p)", "description": "analytic u_y at the probe in m/s"},
+    {"name": "u_peak_ref", "expression": "sqrt(U_b**2)/(6*sqrt(3))", "description": "analytic peak u_y in m/s (on the hot side, either sign of dT)"}
+  ],
+  "domain": {"size_x": "W_slot", "size_y": "H_period"},
+  "geometry": [
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_p", "y": "y_c"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "water", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f", "k": "k_f"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_m"},
+      "features": [
+        {"name": "hot_wall", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_h"},
+         "enabled": true},
+        {"name": "cold_wall", "type": "temperature", "selection": ["x_hi"], "params": {"temperature": "T_c"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "periodic_y", "type": "periodic", "selection": ["y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "walls", "type": "wall", "selection": ["x_lo", "x_hi"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "probe", "type": "flow_probe", "selection": ["probe_point"], "params": {"component": "u_y"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "buoyancy", "type": "field_transfer", "source": "heat", "target": "fluid", "every": null,
+     "params": {"source_field": "T", "target_slot": "body_force_y", "expression": "rho_f*g_acc*beta_f*(value - T_m)"},
+     "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["heat.T", "fluid.u_y", "fluid.body_force_y", "fluid.pressure"],
+            "sweep": {"parameter": "dT", "values": [-10.0, -5.0, 5.0, 20.0, 10.0]}},
+  "derived_values": [
+    {"name": "u_probe", "expression": "values", "operation": "last", "source": "fluid.probe",
+     "reference": "u_probe_ref", "tolerance": 0.003},
+    {"name": "u_peak", "expression": "fluid_u_y", "selection": [], "operation": "max",
+     "reference": "u_peak_ref", "tolerance": 0.003},
+    {"name": "u_mean_norm", "expression": "fluid_u_y/U_b", "selection": [], "operation": "mean",
+     "reference": 0.0, "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "field": "fluid.u_y", "line": [0.0, "y_c", "W_slot", "y_c"],
+     "expression": "U_b*(x/W_slot)*(1 - x/W_slot)*(1 - 2*x/W_slot)", "tolerance": 0.003},
+    {"name": "T_profile", "target": "line", "field": "heat.T", "line": [0.0, "y_c", "W_slot", "y_c"],
+     "expression": "T_h - dT*x/W_slot", "tolerance": 1e-4},
+    {"name": "force_profile", "target": "line", "field": "fluid.body_force_y", "line": [0.0, "y_c", "W_slot", "y_c"],
+     "expression": "rho_f*g_acc*beta_f*dT*(0.5 - x/W_slot)", "tolerance": 1e-4},
+    {"name": "probe_vs_dT", "target": "sweep", "series": "u_probe", "expression": "u_probe_ref", "tolerance": 0.003},
+    {"name": "peak_vs_dT", "target": "sweep", "series": "u_peak", "expression": "u_peak_ref", "tolerance": 0.003}
+  ]
+}

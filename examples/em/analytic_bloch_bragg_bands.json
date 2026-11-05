@@ -1,0 +1,81 @@
+{
+  "title": "Analytic: Bragg stack band diagram (Bloch FDTD)",
+  "description": "One unit cell of a 1D quarter-wave Bragg stack (n1 = 2 / d1 = 150 nm, n2 = 1.5 / d2 = 200 nm, a = 350 nm, n1 d1 = n2 d2 = 300 nm), every face periodic, Bloch wave vector bloch_kx = k_fraction 2 pi / a swept over 0.05-0.5 (Gamma to X). A point-source pulse rings the cell (E_z) and a resonance finder lists the band frequencies at each k.\nAnalytic (Rytov, quarter-wave cell, phase phi = n1 d1 omega / c in both layers): cos(K a) = cos^2(phi) - rho sin^2(phi), rho = (n1/n2 + n2/n1)/2, so cos^2(phi) = (cos(K a) + rho) / (1 + rho); band 1 f = c phi / (2 pi n1 d1), band 2 uses pi - phi. Gap at K = pi / a between lambda_gap_lo = 1.0996 um and lambda_gap_hi = 1.3205 um (centre f_mid, 1.2 um).\nSweep tab: 'Table column vs k_fraction: em.bands frequency' shows frequency_1 (band 1) and frequency_2 (band 2) with the dashed analytic bands (wavelength: wavelength_1 = band 2, wavelength_2 = band 1); derived band1_f / band2_f (the band below / above f_mid) carry the same references.\nExpected agreement: ~0.1 % (FDTD numerical dispersion at >= 60 cells per wavelength in the n = 2 layer; 5 nm cells put every interface on a cell face).",
+  "version": 1,
+  "parameters": [
+    {"name": "n1", "expression": 2.0, "description": "index of layer 1"},
+    {"name": "d1", "expression": "150*nm", "description": "thickness of layer 1 (30 cells)"},
+    {"name": "n2", "expression": 1.5, "description": "index of layer 2"},
+    {"name": "d2", "expression": "200*nm", "description": "thickness of layer 2 (40 cells); n2 d2 = n1 d1 (quarter-wave)"},
+    {"name": "a_cell", "expression": "d1 + d2", "description": "lattice constant a"},
+    {"name": "Ly", "expression": "20*nm", "description": "periodic y period (4 cells; y harmonics lie far above the band)"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "k_fraction", "expression": 0.25, "description": "Bloch kx in units of 2 pi / a (swept 0.05-0.5)"},
+    {"name": "Ka", "expression": "2*pi*k_fraction", "description": "Bloch phase per cell K a [rad]"},
+    {"name": "rho_c", "expression": "(n1/n2 + n2/n1)/2", "description": "rho = (n1/n2 + n2/n1)/2"},
+    {"name": "phi1", "expression": "acos(sqrt((cos(Ka) + rho_c)/(1 + rho_c)))",
+     "description": "layer phase phi of band 1 at this K [rad]"},
+    {"name": "f_band1", "expression": "c_const*phi1/(2*pi*n1*d1)", "description": "band 1 frequency [Hz]"},
+    {"name": "f_band2", "expression": "c_const*(pi - phi1)/(2*pi*n1*d1)", "description": "band 2 frequency [Hz]"},
+    {"name": "f_mid", "expression": "c_const/(4*n1*d1)", "description": "gap centre frequency [Hz] (1.2 um), splits band 1 from band 2"},
+    {"name": "phi_edge", "expression": "acos(sqrt((rho_c - 1)/(rho_c + 1)))", "description": "phi at the band edge K = pi / a"},
+    {"name": "lambda_gap_lo", "expression": "2*pi*n1*d1/(pi - phi_edge)", "description": "short-wavelength gap edge (band 2 at X)"},
+    {"name": "lambda_gap_hi", "expression": "2*pi*n1*d1/phi_edge", "description": "long-wavelength gap edge (band 1 at X)"},
+    {"name": "x_src", "expression": "32.5*nm", "description": "source x (cell centre, off the layer centres and interfaces)"},
+    {"name": "y_src", "expression": "7.5*nm", "description": "source y (cell centre)"},
+    {"name": "x_mon", "expression": "217.5*nm", "description": "resonance finder x (cell centre, in layer 2 off its centre)"},
+    {"name": "y_mon", "expression": "12.5*nm", "description": "resonance finder y (cell centre)"},
+    {"name": "T_run", "expression": "1*ps", "description": "study duration: > 10 periods of the longest searched wavelength"}
+  ],
+  "domain": {"size_x": "a_cell", "size_y": "Ly"},
+  "geometry": [
+    {"name": "layer_1", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "d1", "y1": "Ly"}},
+    {"name": "layer_2", "kind": "rectangle", "params": {"x0": "d1", "y0": 0.0, "x1": "a_cell", "y1": "Ly"}},
+    {"name": "source_point", "kind": "point", "params": {"x": "x_src", "y": "y_src"}},
+    {"name": "monitor_point", "kind": "point", "params": {"x": "x_mon", "y": "y_mon"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "high_index", "library": null, "properties": {"eps_r": "n1**2"}, "dispersion": null,
+     "selection": ["layer_1"]},
+    {"name": "low_index", "library": null, "properties": {"eps_r": "n2**2"}, "dispersion": null,
+     "selection": ["layer_2"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_x_lo": "periodic", "bc_x_hi": "periodic", "bc_y_lo": "periodic", "bc_y_hi": "periodic",
+                   "bloch_kx": "k_fraction*2*pi/a_cell"},
+      "features": [
+        {"name": "source", "type": "point_source", "selection": ["source_point"],
+         "params": {"waveform": "gaussian", "wavelength": "1.2*um", "bandwidth": 0.8, "current": 0.001},
+         "enabled": true},
+        {"name": "bands", "type": "resonance_monitor", "selection": ["monitor_point"],
+         "params": {"component": "ez", "wavelength_min": "0.59*um", "wavelength_max": "15*um"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "k_fraction", "values": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]}},
+  "derived_values": [
+    {"name": "band1_f", "expression": "where(frequency < f_mid, frequency, 0)", "selection": [], "operation": "max",
+     "source": "em.bands", "reference": "f_band1", "tolerance": 0.003},
+    {"name": "band2_f", "expression": "where(frequency > f_mid, frequency, 1e30)", "selection": [],
+     "operation": "min", "source": "em.bands", "reference": "f_band2", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "band_1", "target": "sweep", "series": "frequency_1", "expression": "f_band1", "tolerance": 0.003},
+    {"name": "band_2", "target": "sweep", "series": "frequency_2", "expression": "f_band2", "tolerance": 0.003},
+    {"name": "band_2_wavelength", "target": "sweep", "series": "wavelength_1", "expression": "c_const/f_band2",
+     "tolerance": 0.003},
+    {"name": "band_1_wavelength", "target": "sweep", "series": "wavelength_2", "expression": "c_const/f_band1",
+     "tolerance": 0.003}
+  ]
+}

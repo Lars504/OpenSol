@@ -1,0 +1,74 @@
+{
+  "title": "Semi-infinite solid after a surface temperature step (analytic)",
+  "description": "A steel bar at T_i whose x_lo face is suddenly held at T_s (implicit-Euler transient heat); the far end is insulated but too far away to matter before t_end.\nAnalytic: (T - T_i) / (T_s - T_i) = erfc(x / (2 sqrt(a t))).\nProbes tab: probes near and far with the dashed erfc curves.\nDerived values tab: theta_near / theta_far at t_end, theta_near_early at t_end/4 and E_stored (heat taken up per m of z) vs 2 k (T_s - T_i) H sqrt(t / (pi a)); errors ~0.1-0.5 %.\nLine profile tab: T_profile at t_end, with the image term erfc((2 L - x) / (2 sqrt(a t))) of the insulated far end (0.6 % of the rise at x = L).",
+  "version": 1,
+  "parameters": [
+    {"name": "T_s", "expression": 373.15, "description": "surface temperature in K, held on x_lo from t = 0"},
+    {"name": "T_i", "expression": 293.15, "description": "initial temperature in K (also the heat T0)"},
+    {"name": "k_steel", "expression": 16.0, "description": "stainless steel thermal conductivity in W/(m K)"},
+    {"name": "rho_steel", "expression": 8000.0, "description": "density in kg/m^3"},
+    {"name": "cp_steel", "expression": 500.0, "description": "specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_steel/(rho_steel*cp_steel)", "description": "thermal diffusivity in m^2/s (4e-6)"},
+    {"name": "L_bar", "expression": "60*mm",
+     "description": "bar length along x; L_bar / (2 sqrt(a t_end)) ~ 1.9, so the insulated far end shifts the probes by < 1e-5"},
+    {"name": "dx_mesh", "expression": "0.5*mm", "description": "uniform cell size"},
+    {"name": "H_bar", "expression": "10*dx_mesh", "description": "bar height (insulated y faces: 1D)"},
+    {"name": "x_near", "expression": "10.5*dx_mesh", "description": "near probe position (a cell centre)"},
+    {"name": "x_far", "expression": "40.5*dx_mesh", "description": "far probe position (a cell centre)"},
+    {"name": "dt_step", "expression": 0.02, "description": "implicit-Euler time step in s"},
+    {"name": "t_end", "expression": 60.0, "description": "study duration in s"}
+  ],
+  "domain": {"size_x": "L_bar", "size_y": "H_bar"},
+  "geometry": [
+    {"name": "near_point", "kind": "point", "params": {"x": "x_near", "y": "H_bar/2"}},
+    {"name": "far_point", "kind": "point", "params": {"x": "x_far", "y": "H_bar/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"k": "k_steel", "rho": "rho_steel", "cp": "cp_steel"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_i"},
+      "features": [
+        {"name": "surface", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_s"},
+         "enabled": true},
+        {"name": "near", "type": "temperature_probe", "selection": ["near_point"], "params": {}, "enabled": true},
+        {"name": "far", "type": "temperature_probe", "selection": ["far_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_near", "expression": "(values - T_i)/(T_s - T_i)", "selection": [], "operation": "last",
+     "source": "heat.near", "reference": "erfc(x_near/(2*sqrt(a_diff*t_end)))", "tolerance": 0.015},
+    {"name": "theta_far", "expression": "(values - T_i)/(T_s - T_i)", "selection": [], "operation": "last",
+     "source": "heat.far", "reference": "erfc(x_far/(2*sqrt(a_diff*t_end)))", "tolerance": 0.015},
+    {"name": "theta_near_early", "expression": "(values - T_i)/(T_s - T_i)", "selection": [], "operation": "at",
+     "source": "heat.near", "at": "t_end/4", "reference": "erfc(x_near/(2*sqrt(a_diff*t_end/4)))", "tolerance": 0.015},
+    {"name": "E_stored", "expression": "rho_steel*cp_steel*(T - T_i)", "selection": [], "operation": "integral",
+     "reference": "2*k_steel*(T_s - T_i)*H_bar*sqrt(t_end/(pi*a_diff))", "tolerance": 0.015}
+  ],
+  "analytic_curves": [
+    {"name": "near_erfc", "target": "heat.near",
+     "expression": "T_i + (T_s - T_i)*erfc(x_near/(2*sqrt(a_diff*t)))", "tolerance": 0.006},
+    {"name": "far_erfc", "target": "heat.far",
+     "expression": "T_i + (T_s - T_i)*erfc(x_far/(2*sqrt(a_diff*t)))", "tolerance": 0.003},
+    {"name": "T_profile", "target": "line",
+     "expression": "T_i + (T_s - T_i)*(erfc(x/(2*sqrt(a_diff*t_end))) + erfc((2*L_bar - x)/(2*sqrt(a_diff*t_end))))",
+     "tolerance": 0.005,
+     "line": [0.0, "H_bar/2", "L_bar", "H_bar/2"], "field": "heat.T"}
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "title": "Simply supported beam under its own weight: deflection, bending stress and Q1 locking sweep (analytic)",
+  "description": "Half of a simply supported beam (span S = 2 mm, depth h = 100 um, plane strain) loaded by a uniform body force f_y (body_force feature). x_lo is the support: a displacement feature holding u_y = 0 with u_x free (the end section may rotate); x_hi is the mid-span symmetry plane (roller: u_x = 0). The sweep runs the cells over the depth n_h = 4, 8, 16 (square cells).\nAnalytic (Timoshenko beam, plane strain E' = E / (1 - nu^2), q = -f_y h per m of depth, I = h^3 / 12, shear factor 5/6): delta_mid = 5 q S^4 / (384 E' I) + 3 q S^2 / (20 G h) (the shear term is 0.7 % here); w(x) = q x (S^3 - 2 S x^2 + x^3) / (24 E' I) + 3 q x (S - x) / (5 G h); M(x) = q x (S - x) / 2, sigma_xx = -M (y - h/2) / I; support reaction F_y = q S / 2 (exact: equilibrium).\nBilinear elements lock in bending: the beam is too stiff by about c / n_h^2 with c = (1 - nu) / 2 (parasitic shear: the element edges stay straight, so gamma ~ kappa (x - x_cell)) + nu^2 / (1 - 2 nu) (eps_yy is constant over each element's depth while eps_xx varies linearly in it, so that part of the bending strain sees lambda + 2 mu instead of E'), c = 0.575 at nu = 0.3: delta_mid ~3.5 %, 0.9 %, 0.22 % low at n_h = 4, 8, 16 (dashed locking_estimate on the Sweep tab, matched to ~1e-3, tolerance 5e-3); the 2D elasticity solution differs from the Timoshenko formula by a few 1e-4 at S / h = 20.\nSweep tab: delta_mid vs n_h with the flat reference and the locking estimate.\nDerived values tab: F_y_support (exact by equilibrium: the report's suspicious_exact flag is expected), delta_mid (probe on the neutral axis next to mid-span) and sigma_bottom_mid (largest tension, bottom cell next to mid-span), both within the locking error (tolerance 4 %, set by n_h = 4).\nLine profile tab (last sweep value, n_h = 16): u_y_neutral along the neutral axis and sigma_xx_mid across the depth next to mid-span (~0.2 %).",
+  "version": 1,
+  "parameters": [
+    {"name": "E_beam", "expression": 7e10, "description": "Young's modulus in Pa (aluminium-like)"},
+    {"name": "nu_beam", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "h_beam", "expression": "100*um", "description": "beam depth along y"},
+    {"name": "S_span", "expression": "2*mm", "description": "full span between the supports (S / h = 20)"},
+    {"name": "L_half", "expression": "S_span/2", "description": "modelled half span along x (x_hi = mid-span symmetry plane)"},
+    {"name": "n_h", "expression": 16, "description": "cells over the depth (swept 4, 8, 16; square cells)"},
+    {"name": "dx_mesh", "expression": "h_beam/n_h", "description": "uniform cell size"},
+    {"name": "f_body", "expression": -1e6, "description": "body force density along y in N/m^3 (downward)"},
+    {"name": "q_line", "expression": "-f_body*h_beam", "description": "downward line load in N/m per m of depth (100)"},
+    {"name": "E_ps", "expression": "E_beam/(1 - nu_beam**2)", "description": "plane-strain modulus E' in Pa"},
+    {"name": "G_beam", "expression": "E_beam/(2*(1 + nu_beam))", "description": "shear modulus in Pa"},
+    {"name": "I_beam", "expression": "h_beam**3/12", "description": "second moment of area per m of depth in m^3"},
+    {"name": "delta_bend", "expression": "5*q_line*S_span**4/(384*E_ps*I_beam)", "description": "Euler-Bernoulli mid-span deflection in m (3.25 nm)"},
+    {"name": "delta_shear", "expression": "3*q_line*S_span**2/(20*G_beam*h_beam)", "description": "Timoshenko shear deflection in m (shear factor 5/6)"},
+    {"name": "delta_ref", "expression": "delta_bend + delta_shear", "description": "analytic mid-span deflection magnitude in m"},
+    {"name": "x_probe", "expression": "L_half - dx_mesh/2", "description": "probe x: centre of the last cell column (next to mid-span)"},
+    {"name": "y_probe", "expression": "h_beam/2 + dx_mesh/2", "description": "probe y: the cell centre just above the neutral axis"},
+    {"name": "M_probe", "expression": "q_line*x_probe*(S_span - x_probe)/2", "description": "bending moment at x_probe in N m/m"}
+  ],
+  "domain": {"size_x": "L_half", "size_y": "h_beam"},
+  "geometry": [
+    {"name": "mid_point", "kind": "point", "params": {"x": "x_probe", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "beam_material", "library": null,
+     "properties": {"youngs_modulus": "E_beam", "poisson_ratio": "nu_beam"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "support", "type": "displacement", "selection": ["x_lo"], "params": {"u_x": null, "u_y": 0.0},
+         "enabled": true},
+        {"name": "symmetry", "type": "roller", "selection": ["x_hi"], "params": {}, "enabled": true},
+        {"name": "weight", "type": "body_force", "selection": ["all"], "params": {"f_x": 0.0, "f_y": "f_body"},
+         "enabled": true},
+        {"name": "mid_deflection", "type": "solid_probe", "selection": ["mid_point"], "params": {"component": "u_y"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 200000}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_y", "solid.stress_xx", "solid.stress_xy"],
+            "sweep": {"parameter": "n_h", "values": [4, 8, 16]}},
+  "derived_values": [
+    {"name": "F_y_support", "expression": "F_y", "operation": "last", "source": "solid.support",
+     "reference": "q_line*L_half", "tolerance": 1e-6},
+    {"name": "delta_mid", "expression": "values", "operation": "last", "source": "solid.mid_deflection",
+     "reference": "-delta_ref", "tolerance": 0.04},
+    {"name": "sigma_bottom_mid", "expression": "solid_stress_xx", "selection": [], "operation": "max",
+     "reference": "M_probe*(h_beam/2 - dx_mesh/2)/I_beam", "tolerance": 0.04}
+  ],
+  "analytic_curves": [
+    {"name": "delta_vs_n", "target": "sweep", "expression": "-delta_ref", "tolerance": 0.04, "series": "delta_mid"},
+    {"name": "locking_estimate", "target": "sweep",
+     "expression": "-delta_ref/(1 + ((1 - nu_beam)/2 + nu_beam**2/(1 - 2*nu_beam))/n_h**2)", "tolerance": 0.005,
+     "series": "delta_mid"},
+    {"name": "u_y_neutral", "target": "line",
+     "expression": "-(q_line*x*(S_span**3 - 2*S_span*x**2 + x**3)/(24*E_ps*I_beam) + 3*q_line*x*(S_span - x)/(5*G_beam*h_beam))",
+     "tolerance": 0.03, "line": [0.0, "y_probe", "L_half", "y_probe"], "field": "solid.u_y"},
+    {"name": "sigma_xx_mid", "target": "line", "expression": "-(q_line*x*(S_span - x)/2)*(y - h_beam/2)/I_beam",
+     "tolerance": 0.03, "line": ["x_probe", 0.0, "x_probe", "h_beam"], "field": "solid.stress_xx"}
+  ]
+}

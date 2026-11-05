@@ -1,0 +1,1 @@
+Start by reading structure_conventions.md it should contain 'conventions and gotchas' and a structure overview. Update, but it is not a changelog and should not track temporary tests. Then read the sub_structure_conventions.md of each folder you work in folder-specific gotchas go there, gotchas every agent needs stay in structure_conventions.md.

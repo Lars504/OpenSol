@@ -1,0 +1,72 @@
+{
+  "title": "Couette-Poiseuille flow over a drawn off-grid wall (laminar flow, Bouzidi walls, analytic)",
+  "description": "Steady flow in a periodic channel: a solid rectangle drawn up to y_w (no viscosity = a wall at rest) whose edge lies off the cell faces, a wall sliding at U_wall along +x on the y_hi face, and a body force G along x. solver_defaults.conformal_boundaries is on: each fluid cell next to the drawn wall takes the linear interpolated (Bouzidi) bounce-back at the wall's true position along its links, instead of the halfway bounce-back on the cell face. The sweep moves the wall through one cell (s_wall: y_w = (1 + s_wall) dx), so the first fluid link is cut at delta = 0.1-0.9 of its length on both sides of 1/2.\nAnalytic: with h = H_dom - y_w, u_x = U (y - y_w)/h + G (y - y_w)(H_dom - y)/(2 mu) above the wall, 0 inside it.\nDerived values tab: u_mid (cell centre y = 10.5 um) and u_near (y = 4.5 um, ~3 cells above the wall) vs their references; expect ~1e-3 (linear Bouzidi + TRT: an O(dx^2) slip that depends weakly on the relaxation time). Switch Follow curved walls off (Solvers node) to compare: the halfway wall sits on the nearest cell face, ~10 % off at u_near and ~2 % at u_mid.\nSweep tab: u_mid and u_near vs s_wall with the dashed analytic lines.\nLine profile tab (last value s_wall = 0.3): u_profile across the channel incl. the solid cells (both 0 there); expect ~1e-3 of the profile range.",
+  "version": 2,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3 (also given to the solid, as rho must be set)"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_dom", "expression": "20*um", "description": "domain height; the moving wall is the y_hi face"},
+    {"name": "L_ch", "expression": "10*um", "description": "length of the periodic cell along x"},
+    {"name": "s_wall", "expression": 0.3, "description": "wall offset inside its cell (swept 0.1-0.9; 0.5 would put the wall on a cell centre)"},
+    {"name": "y_w", "expression": "(1 + s_wall)*dx_cell", "description": "height of the drawn wall (top of the solid rectangle)"},
+    {"name": "h_ch", "expression": "H_dom - y_w", "description": "channel height between the drawn wall and the y_hi face"},
+    {"name": "U_wall", "expression": 5e-3, "description": "speed of the y_hi wall along +x in m/s"},
+    {"name": "G_drive", "expression": "2*mu_f*U_wall*1.5/(18*um)**2", "description": "body force density along x in N/m^3 (shape factor ~1.5 at h = 18 um)"},
+    {"name": "y_mid", "expression": "10.5*um", "description": "mid probe height (cell centre)"},
+    {"name": "y_near", "expression": "4.5*um", "description": "near-wall probe height (cell centre, ~3 cells above the wall)"},
+    {"name": "u_mid_ref", "expression": "U_wall*(y_mid - y_w)/h_ch + G_drive*(y_mid - y_w)*(H_dom - y_mid)/(2*mu_f)", "description": "analytic u_x at y_mid in m/s"},
+    {"name": "u_near_ref", "expression": "U_wall*(y_near - y_w)/h_ch + G_drive*(y_near - y_w)*(H_dom - y_near)/(2*mu_f)", "description": "analytic u_x at y_near in m/s"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_dom"},
+  "geometry": [
+    {"name": "wall_block", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_ch", "y1": "y_w"}},
+    {"name": "mid_point", "kind": "point", "params": {"x": "L_ch/2 + dx_cell/2", "y": "y_mid"}},
+    {"name": "near_point", "kind": "point", "params": {"x": "L_ch/2 + dx_cell/2", "y": "y_near"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]},
+    {"name": "solid", "library": null, "properties": {"viscosity": 0.0, "rho": "rho_f"}, "dispersion": null,
+     "selection": ["wall_block"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {"tolerance": 1e-6},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "moving_wall", "type": "wall", "selection": ["y_hi"], "params": {"tangential_velocity": "U_wall"},
+         "enabled": true},
+        {"name": "drive", "type": "body_force", "selection": ["all"],
+         "params": {"f_x": "G_drive", "f_y": 0.0}, "enabled": true},
+        {"name": "probe_mid", "type": "flow_probe", "selection": ["mid_point"], "params": {"component": "u_x"},
+         "enabled": true},
+        {"name": "probe_near", "type": "flow_probe", "selection": ["near_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": false, "conformal_boundaries": true},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x"],
+            "sweep": {"parameter": "s_wall", "values": [0.1, 0.25, 0.4, 0.6, 0.75, 0.9, 0.3]}},
+  "derived_values": [
+    {"name": "u_mid", "expression": "values", "operation": "last", "source": "fluid.probe_mid",
+     "reference": "u_mid_ref", "tolerance": 0.005},
+    {"name": "u_near", "expression": "values", "operation": "last", "source": "fluid.probe_near",
+     "reference": "u_near_ref", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line",
+     "expression": "U_wall*max(y - y_w, 0)/h_ch + G_drive*max(y - y_w, 0)*(H_dom - y)/(2*mu_f)",
+     "tolerance": 0.01, "line": ["L_ch/2", 0.0, "L_ch/2", "H_dom"], "field": "fluid.u_x"},
+    {"name": "mid_vs_s", "target": "sweep", "expression": "u_mid_ref", "tolerance": 0.005, "series": "u_mid"},
+    {"name": "near_vs_s", "target": "sweep", "expression": "u_near_ref", "tolerance": 0.02, "series": "u_near"}
+  ]
+}

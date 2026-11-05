@@ -1,0 +1,70 @@
+{
+  "title": "Mesh study: slanted-sidewall TFLN rib (em_modes n_eff)",
+  "description": "S7.8 mesh study reference problem: the TFLN rib of examples/em/tfln_rib_waveguide_modes.json (600 nm x-cut film, 300 nm etch, 1.2 um top, 60 degree sidewalls) at 1550 nm, mode_analysis, quasi-TE0 n_eff. No closed form: the analysis takes a Richardson extrapolation of the finest uniform runs as reference.\nMesh variants (set by open_sol.mesh_study.accuracy): uniform dx_fine; graded_box = base dx_base with the rib bounding box refined to dx_fine (rows across the whole width, so the slab is fine too); anisotropic = base dx_base, S7.1 axis bands: y rows over the film, x columns over the sidewall only. snap_film / snap_slab put cell edges on the film interfaces and make the first cell dx_fine wide, so the x min mirror plane (inner face of the first cell) stays at x_mirror = dx_fine.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_o", "expression": 2.211, "description": "ordinary index of LN at 1550 nm"},
+    {"name": "n_e", "expression": 2.138, "description": "extraordinary index of LN at 1550 nm"},
+    {"name": "n_top", "expression": 1.0, "description": "top cladding index (air)"},
+    {"name": "t_film", "expression": "600*nm", "description": "LN film thickness"},
+    {"name": "t_etch", "expression": "300*nm", "description": "etch depth"},
+    {"name": "w_top", "expression": "1.2*um", "description": "rib top width"},
+    {"name": "sidewall_deg", "expression": 60.0, "description": "sidewall angle to the substrate plane in degrees"},
+    {"name": "t_box", "expression": "1.5*um", "description": "buried oxide inside the window"},
+    {"name": "t_top", "expression": "1*um", "description": "top cladding above the film top"},
+    {"name": "w_window", "expression": "3*um", "description": "lateral window from the mirror plane to the x max PML"},
+    {"name": "dx_fine", "expression": "20*nm", "description": "finest cell size (uniform dx; first cell = mirror plane offset)"},
+    {"name": "dx_base", "expression": "50*nm", "description": "base cell size of the graded variants"},
+    {"name": "ref_margin", "expression": "200*nm", "description": "refinement margin around the rib / bands"},
+    {"name": "x_mirror", "expression": "dx_fine", "description": "rib centre = x min mirror plane (inner face of the first cell)"},
+    {"name": "Lx", "expression": "x_mirror + w_window", "description": "domain width"},
+    {"name": "Ly", "expression": "t_box + t_film + t_top", "description": "domain height"},
+    {"name": "y_slab", "expression": "t_box + t_film - t_etch", "description": "top of the etched slab"},
+    {"name": "y_film", "expression": "t_box + t_film", "description": "top of the film"},
+    {"name": "x_top_edge", "expression": "x_mirror + w_top/2", "description": "rib top corner"},
+    {"name": "x_foot", "expression": "x_top_edge + t_etch/tan(sidewall_deg*pi/180)", "description": "rib foot"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "top_region", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_box", "x1": "Lx", "y1": "Ly"}},
+    {"name": "slab", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_box", "x1": "Lx", "y1": "y_slab"}},
+    {"name": "rib", "kind": "polygon",
+     "params": {"points": [[0.0, "t_box"], ["x_foot", "t_box"], ["x_foot", "y_slab"], ["x_top_edge", "y_film"],
+                           [0.0, "y_film"]]}},
+    {"name": "snap_film", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_box", "x1": "x_mirror", "y1": "y_film"}},
+    {"name": "snap_slab", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_box", "x1": "x_mirror", "y1": "y_slab"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "buried_oxide", "library": "silica", "properties": {}, "dispersion": null, "selection": ["all"]},
+    {"name": "top_cladding", "library": null, "properties": {"eps_r": "n_top**2"}, "dispersion": null,
+     "selection": ["top_region"]},
+    {"name": "lithium_niobate_x_cut", "library": null,
+     "properties": {"eps_xx": "n_e**2", "eps_yy": "n_o**2", "eps_zz": "n_o**2"}, "dispersion": null,
+     "selection": ["slab", "rib"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "antisymmetric", "bc_x_hi": "cpml", "bc_y_lo": "cpml", "bc_y_hi": "cpml",
+                   "pml_sigma_factor": 0.7, "wavelength": 1.55e-06, "n_modes": 2, "group_index": false},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_fine", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "mode_analysis", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "n_eff_1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0},
+    {"name": "te_fraction_1", "expression": "te_fraction", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0},
+    {"name": "A_eff_um2", "expression": "effective_area*1e12", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 0}
+  ],
+  "analytic_curves": []
+}

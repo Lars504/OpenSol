@@ -1,0 +1,81 @@
+{
+  "title": "Longitudinal vibration modes of a laterally constrained clamped-free layer (analytic, eigenfrequency)",
+  "description": "A 10 x 1 mm strip (40 x 4 cells of 0.25 mm; E = 70 GPa, rho = 2200 kg/m^3), plane strain, clamped at x_lo (fixed), free at x_hi, on rollers at y_lo and y_hi (u_y = 0, u_x free): eigenfrequency study (solid_mechanics, target_frequency 0, 4 modes), sweep of the Poisson ratio over 0-0.4.\nAnalytic: the rollers forbid lateral motion, so the lowest modes are u_x = sin(k_n x), u_y = 0 with the constrained (P-wave) modulus M = E (1 - nu) / ((1 + nu)(1 - 2 nu)): f_n = (2n - 1) c_L / (4 L), c_L = sqrt(M / rho) (154.5 kHz for nu = 0.25). In the bilinear elements with the consistent mass these modes are exact discrete modes of the 1D linear-element bar: f_n = sqrt(6 M / (rho h^2) (1 - cos t_n) / (2 + cos t_n)) / (2 pi), t_n = (2n - 1) pi / (2 N), N = L / h (the continuum f_n differs by ~t_n^2 / 24: 6e-5 for mode 1, 3e-3 for mode 4). Shear-type modes start near c_S / (2 H) = 1.7-1.8 MHz, above the four requested.\nDerived values tab: f_1..f_4 (picked from the resonance table by a 1 % window) against the discrete references, exact to ~1e-8 (float64 K and M, eigsh); f_1_bar and f_4_bar against the continuum bar formula (~6e-5 and ~3e-3 high: consistent mass).\nSweep tab: f_1 vs nu_bar with the dashed discrete curve (M grows from E to 2.14 E).\nLine profile tab (last sweep value, nu = 0.4): u_x along the strip of snapshot 'resonance 1' = sin(pi x / (2 L)) cos(pi / (4 N)) (cell centre = mean of the corner values, peak node |u| = 1 m at the free end), of 'resonance 2' = -sin(3 pi x / (2 L)) cos(3 pi / (4 N)) (sign: the peak component is made positive), and stress_xx of resonance 1 = M (2 / h) sin(pi / (4 N)) cos(pi x / (2 L)); float32 outputs, ~1e-6.",
+  "version": 1,
+  "parameters": [
+    {"name": "E_bar", "expression": 7e10, "description": "Young's modulus in Pa"},
+    {"name": "nu_bar", "expression": 0.25, "description": "Poisson ratio (swept 0-0.4)"},
+    {"name": "rho_bar", "expression": 2200.0, "description": "density in kg/m^3"},
+    {"name": "L_bar", "expression": "10*mm", "description": "strip length along x (clamped at x = 0, free at x = L)"},
+    {"name": "H_bar", "expression": "1*mm", "description": "strip height along y (rollers on both faces)"},
+    {"name": "dx_mesh", "expression": "0.25*mm", "description": "uniform cell size (40 x 4 cells)"},
+    {"name": "N_x", "expression": "L_bar/dx_mesh", "description": "elements along the strip"},
+    {"name": "y_line", "expression": "1.5*dx_mesh", "description": "profile line height (a cell centre)"},
+    {"name": "M_c", "expression": "E_bar*(1 - nu_bar)/((1 + nu_bar)*(1 - 2*nu_bar))",
+     "description": "constrained (P-wave) modulus in Pa"},
+    {"name": "c_L", "expression": "sqrt(M_c/rho_bar)", "description": "longitudinal wave speed of the constrained layer [m/s]"},
+    {"name": "t_1", "expression": "pi/(2*N_x)", "description": "discrete phase per element of mode 1"},
+    {"name": "t_2", "expression": "3*pi/(2*N_x)", "description": "discrete phase per element of mode 2"},
+    {"name": "t_3", "expression": "5*pi/(2*N_x)", "description": "discrete phase per element of mode 3"},
+    {"name": "t_4", "expression": "7*pi/(2*N_x)", "description": "discrete phase per element of mode 4"},
+    {"name": "w_scale", "expression": "6*M_c/(rho_bar*dx_mesh**2)", "description": "6 M / (rho h^2) [1/s^2] of the linear-element symbol"},
+    {"name": "f1_ref", "expression": "sqrt(w_scale*(1 - cos(t_1))/(2 + cos(t_1)))/(2*pi)", "description": "discrete f_1 [Hz]"},
+    {"name": "f2_ref", "expression": "sqrt(w_scale*(1 - cos(t_2))/(2 + cos(t_2)))/(2*pi)", "description": "discrete f_2 [Hz]"},
+    {"name": "f3_ref", "expression": "sqrt(w_scale*(1 - cos(t_3))/(2 + cos(t_3)))/(2*pi)", "description": "discrete f_3 [Hz]"},
+    {"name": "f4_ref", "expression": "sqrt(w_scale*(1 - cos(t_4))/(2 + cos(t_4)))/(2*pi)", "description": "discrete f_4 [Hz]"},
+    {"name": "f1_bar", "expression": "c_L/(4*L_bar)", "description": "continuum clamped-free bar f_1 [Hz]"},
+    {"name": "f4_bar", "expression": "7*c_L/(4*L_bar)", "description": "continuum clamped-free bar f_4 [Hz]"}
+  ],
+  "domain": {"size_x": "L_bar", "size_y": "H_bar"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "strip_material", "library": null,
+     "properties": {"youngs_modulus": "E_bar", "poisson_ratio": "nu_bar", "rho": "rho_bar"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"target_frequency": 0.0},
+      "features": [
+        {"name": "clamp", "type": "fixed", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "top", "type": "roller", "selection": ["y_hi"], "params": {}, "enabled": true},
+        {"name": "modes", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 4},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.u_y", "solid.stress_xx"],
+            "sweep": {"parameter": "nu_bar", "values": [0.0, 0.1, 0.2, 0.3, 0.4]}},
+  "derived_values": [
+    {"name": "f_1", "expression": "where(abs(frequency/f1_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f1_ref", "tolerance": 1e-6},
+    {"name": "f_2", "expression": "where(abs(frequency/f2_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f2_ref", "tolerance": 1e-6},
+    {"name": "f_3", "expression": "where(abs(frequency/f3_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f3_ref", "tolerance": 1e-6},
+    {"name": "f_4", "expression": "where(abs(frequency/f4_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f4_ref", "tolerance": 1e-6},
+    {"name": "f_1_bar", "expression": "where(abs(frequency/f1_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f1_bar", "tolerance": 2e-4},
+    {"name": "f_4_bar", "expression": "where(abs(frequency/f4_ref - 1) < 0.01, frequency, 0)", "selection": [],
+     "operation": "max", "source": "solid.modes", "at": null, "reference": "f4_bar", "tolerance": 5e-3}
+  ],
+  "analytic_curves": [
+    {"name": "f_1_vs_nu", "target": "sweep", "expression": "f1_ref", "tolerance": 1e-6, "series": "f_1"},
+    {"name": "mode_1_u_x", "target": "line", "expression": "sin(pi*x/(2*L_bar))*cos(pi/(4*N_x))", "tolerance": 1e-4,
+     "line": [0.0, "y_line", "L_bar", "y_line"], "field": "solid.u_x", "snapshot": "resonance 1"},
+    {"name": "mode_2_u_x", "target": "line", "expression": "-sin(3*pi*x/(2*L_bar))*cos(3*pi/(4*N_x))", "tolerance": 1e-4,
+     "line": [0.0, "y_line", "L_bar", "y_line"], "field": "solid.u_x", "snapshot": "resonance 2"},
+    {"name": "mode_1_stress_xx", "target": "line", "expression": "M_c*(2/dx_mesh)*sin(pi/(4*N_x))*cos(pi*x/(2*L_bar))",
+     "tolerance": 1e-4, "line": [0.0, "y_line", "L_bar", "y_line"], "field": "solid.stress_xx",
+     "snapshot": "resonance 1"}
+  ]
+}

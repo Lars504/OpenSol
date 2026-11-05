@@ -1,0 +1,103 @@
+{
+  "title": "Analytic: impedance-matched magnetic absorber (mu_r, sigma_m; E_z and H_z FDTD)",
+  "description": "A 1 um slab with eps_r = mu_r = 2 and electric plus magnetic loss chosen so that sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r) sits in a y-periodic vacuum strip with CPML along x. Both polarisations run at once (physics 'em' = em_fdtd_ez, 'em_hz' = em_fdtd_hz), each launched by a one-sided mode source (the plane wave of the periodic strip, toward +x).\nAnalytic: the slab impedance equals eta0 at every frequency, so nothing is reflected (R = 0) and the transmission is frequency-flat: T = exp(-2 sigma_e eta0 sqrt(mu_r / eps_r) d) = e^-2 = 0.1353 (amplitude decay sigma_e eta0 sqrt(mu_r / eps_r) per m).\nSpectra tab: em.trans / em_hz.trans quantity fraction_positive (transmission) and em.refl / em_hz.refl (upstream of the source) quantity fraction_negative (reflection) over 0.8-1.3 um vs the dashed flat lines.\nDerived values tab: R_ez, R_hz (absolute, reference 0) and T_ez, T_hz at 1 um.\nExpected agreement: T ~0.3 % (discrete loss terms, numerical dispersion). R_hz should stay well below R_ez (H_z at the cell centres takes the mu of its own cell, the E faces average eps across the slab faces: no half-cell offset). R_ez is larger, an estimated 2-4e-4: the E_z type's H_x / H_y faces take mu_r and sigma_m of their lower cell, so its magnetic slab sits half a cell (+x) off the electric one and each slab face is a 5 nm unmatched layer (R grows as 1 / lambda^2); tolerance 1e-3 absolute, to be confirmed by a first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "eps_slab", "expression": 2.0, "description": "relative permittivity of the slab"},
+    {"name": "mu_slab", "expression": 2.0, "description": "relative permeability of the slab"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "vacuum impedance [Ohm]"},
+    {"name": "d_slab", "expression": "1*um", "description": "slab thickness (100 cells, faces on cell edges)"},
+    {"name": "alpha_target", "expression": "1/d_slab", "description": "field decay rate [1/m]: T = exp(-2 alpha d) = e^-2"},
+    {"name": "sigma_e_slab", "expression": "alpha_target/(eta0*sqrt(mu_slab/eps_slab))",
+     "description": "electric conductivity [S/m] (2654 S/m)"},
+    {"name": "sigma_m_slab", "expression": "sigma_e_slab*mu0_const*mu_slab/(eps0_const*eps_slab)",
+     "description": "magnetic conductivity [Ohm/m]: sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r)"},
+    {"name": "T_ref", "expression": "exp(-2*sigma_e_slab*eta0*sqrt(mu_slab/eps_slab)*d_slab)",
+     "description": "analytic transmission (e^-2 = 0.1353)"},
+    {"name": "Lx", "expression": "4*um", "description": "domain length (cpml on both x faces)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size (33 cells per slab wavelength at the top of the band)"},
+    {"name": "x_slab", "expression": "1.5*um", "description": "slab front face (a cell edge)"},
+    {"name": "x_refl", "expression": "0.505*um", "description": "reflection mode monitor (cell centre, upstream of the source)"},
+    {"name": "x_src", "expression": "1.005*um", "description": "mode source line (cell centre)"},
+    {"name": "x_trans", "expression": "3.205*um", "description": "transmission mode monitor (cell centre, behind the slab)"},
+    {"name": "lambda0", "expression": "1*um", "description": "pulse centre wavelength = wavelength of the derived values"},
+    {"name": "bw", "expression": 0.5, "description": "relative pulse bandwidth (covers 0.8-1.3 um)"},
+    {"name": "T_run", "expression": "120*fs", "description": "study duration: pulse (~20 fs) and transit past both monitors"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab", "y0": 0.0, "x1": "x_slab + d_slab", "y1": "Ly"}},
+    {"name": "refl_line", "kind": "line", "params": {"x0": "x_refl", "y0": 0.0, "x1": "x_refl", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "trans_line", "kind": "line", "params": {"x0": "x_trans", "y0": 0.0, "x1": "x_trans", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "matched_absorber", "library": null,
+     "properties": {"eps_r": "eps_slab", "mu_r": "mu_slab", "sigma_e": "sigma_e_slab", "sigma_m": "sigma_m_slab"},
+     "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "waveform": "gaussian", "wavelength": "lambda0",
+                    "bandwidth": "bw", "power": 1.0},
+         "enabled": true},
+        {"name": "refl", "type": "mode_monitor", "selection": ["refl_line"],
+         "params": {"mode_number": 1, "wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true},
+        {"name": "trans", "type": "mode_monitor", "selection": ["trans_line"],
+         "params": {"mode_number": 1, "wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_hz",
+      "type": "em_fdtd_hz",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "waveform": "gaussian", "wavelength": "lambda0",
+                    "bandwidth": "bw", "power": 1.0},
+         "enabled": true},
+        {"name": "refl", "type": "mode_monitor", "selection": ["refl_line"],
+         "params": {"mode_number": 1, "wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true},
+        {"name": "trans", "type": "mode_monitor", "selection": ["trans_line"],
+         "params": {"mode_number": 1, "wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "R_ez", "expression": "fraction_negative", "selection": [], "operation": "at", "source": "em.refl",
+     "at": "lambda0", "reference": 0.0, "tolerance": 1e-3},
+    {"name": "R_hz", "expression": "fraction_negative", "selection": [], "operation": "at", "source": "em_hz.refl",
+     "at": "lambda0", "reference": 0.0, "tolerance": 1e-3},
+    {"name": "T_ez", "expression": "fraction_positive", "selection": [], "operation": "at", "source": "em.trans",
+     "at": "lambda0", "reference": "T_ref", "tolerance": 0.01},
+    {"name": "T_hz", "expression": "fraction_positive", "selection": [], "operation": "at", "source": "em_hz.trans",
+     "at": "lambda0", "reference": "T_ref", "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "T_flat_ez", "target": "em.trans", "series": "fraction_positive", "expression": "T_ref", "tolerance": 0.02},
+    {"name": "T_flat_hz", "target": "em_hz.trans", "series": "fraction_positive", "expression": "T_ref",
+     "tolerance": 0.02},
+    {"name": "R_zero_ez", "target": "em.refl", "series": "fraction_negative", "expression": "0*wavelength",
+     "tolerance": 2e-3},
+    {"name": "R_zero_hz", "target": "em_hz.refl", "series": "fraction_negative", "expression": "0*wavelength",
+     "tolerance": 2e-3}
+  ]
+}

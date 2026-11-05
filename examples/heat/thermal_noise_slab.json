@@ -1,0 +1,81 @@
+{
+  "title": "Thermal noise of a slab with held faces: mean-temperature PSD (thermal_noise study, analytic)",
+  "description": "thermal_noise study of heat alone: a silica-like slab of thickness Lx between two faces held at T0 (temperature on x_lo / x_hi; y faces insulated, so 1D), thermorefractive_noise with an expression weighting w = 1 / (Lx Ly L) on every cell, axial wavenumber 0 and a uniform axial profile of length L: X is the volume-mean temperature fluctuation in K, S its one-sided PSD in K^2/Hz.\nAnalytic (fluctuation-dissipation, (j omega C - k d^2/dx^2) u = w with u = 0 on the held faces): b = sqrt(pi f C / k), S(f) = 4 k_B T0^2 (sinh(b Lx) - sin(b Lx)) / (Lx^2 Ly L 2 pi f C b (cosh(b Lx) + cos(b Lx))), C = rho cp; flat below the first relaxation rate D pi^2 / (2 pi Lx^2) ~ 13 kHz at k_B T0^2 Lx / (3 k Ly L), f^(-3/2) above; variance k_B T0^2 / (C Lx Ly L). The uniform profile gives S = L S_2D(q0 = 0), the long-L limit (see the axial_profile help).\nDerived values tab: S_low (largest psd, at 100 Hz), S_1e3 / S_1e5 / S_1e6 (psd at those frequencies, all solved samples) and X_variance (the result's variance: exact sum rule, float32 material and area rounding only). The cell-centred operator raises the high-frequency boundary-layer term by about (b dx)^2 / 4: ~4e-4 at 1 MHz, ~4e-3 at 10 MHz, < 1e-4 below 100 kHz.\nCurves & tables tab: psd_slab (dashed analytic on series psd, judged against its low-frequency plateau). Derived curves tab: psd_ratio (psd / analytic over the whole band, dotted reference 1: the per-frequency check of the f^(-3/2) tail).",
+  "version": 2,
+  "parameters": [
+    {"name": "T_ref", "expression": 300.0, "description": "uniform temperature T0 in K (noise scales with T0^2)"},
+    {"name": "k_th", "expression": 1.38, "description": "thermal conductivity in W/(m K) (silica)"},
+    {"name": "rho_m", "expression": 2200.0, "description": "density in kg/m^3"},
+    {"name": "cp_m", "expression": 746.0, "description": "specific heat in J/(kg K)"},
+    {"name": "C_vol", "expression": "rho_m*cp_m", "description": "volumetric heat capacity rho cp in J/(m^3 K)"},
+    {"name": "L_x", "expression": "10*um", "description": "slab thickness between the held faces"},
+    {"name": "dx_mesh", "expression": "20*nm", "description": "uniform cell size (500 cells across the slab)"},
+    {"name": "L_y", "expression": "2*dx_mesh", "description": "slab height (2 cells, insulated y faces: 1D)"},
+    {"name": "L_int", "expression": "100*um", "description": "interaction length L of the uniform axial profile"},
+    {"name": "w0", "expression": "1/(L_x*L_y*L_int)", "description": "weighting 1 / volume in 1/(K m^3): X = mean temperature fluctuation"},
+    {"name": "S_pref", "expression": "4*kB_const*T_ref**2/(L_x**2*L_y*L_int)", "description": "prefactor 4 k_B T0^2 / (Lx^2 Ly L) of S(f)"},
+    {"name": "S_LF", "expression": "kB_const*T_ref**2*L_x/(3*k_th*L_y*L_int)", "description": "low-frequency plateau of S in K^2/Hz (for reading the plot)"},
+    {"name": "f_low", "expression": 100.0, "description": "lowest study frequency in Hz"},
+    {"name": "f_high", "expression": 1e7, "description": "highest study frequency in Hz"},
+    {"name": "b_low", "expression": "sqrt(pi*f_low*C_vol/k_th)", "description": "b = sqrt(pi f C / k) at f_low in 1/m"},
+    {"name": "b_1e3", "expression": "sqrt(pi*1e3*C_vol/k_th)", "description": "b at 1 kHz in 1/m"},
+    {"name": "b_1e5", "expression": "sqrt(pi*1e5*C_vol/k_th)", "description": "b at 100 kHz in 1/m"},
+    {"name": "b_1e6", "expression": "sqrt(pi*1e6*C_vol/k_th)", "description": "b at 1 MHz in 1/m"}
+  ],
+  "domain": {"size_x": "L_x", "size_y": "L_y"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "silica_like", "library": null, "properties": {"k": "k_th", "rho": "rho_m", "cp": "cp_m"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_ref"},
+      "features": [
+        {"name": "held_faces", "type": "temperature", "selection": ["x_lo", "x_hi"],
+         "params": {"temperature": "T_ref"}, "enabled": true},
+        {"name": "noise", "type": "thermorefractive_noise", "selection": ["all"],
+         "params": {"weighting": "expression", "weight": "w0", "axial_wavenumber": 0.0,
+                    "axial_profile": "uniform", "interaction_length": "L_int"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "thermal_noise",
+            "settings": {"frequency_start": "f_low", "frequency_stop": "f_high", "n_frequencies": 21,
+                         "log_spacing": true},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "S_low", "expression": "psd", "operation": "max", "source": "heat.noise",
+     "reference": "S_pref*(sinh(b_low*L_x) - sin(b_low*L_x))/(2*pi*f_low*C_vol*b_low*(cosh(b_low*L_x) + cos(b_low*L_x)))",
+     "tolerance": 1e-3},
+    {"name": "S_1e3", "expression": "psd", "operation": "at", "at": 1e3, "source": "heat.noise",
+     "reference": "S_pref*(sinh(b_1e3*L_x) - sin(b_1e3*L_x))/(2*pi*1e3*C_vol*b_1e3*(cosh(b_1e3*L_x) + cos(b_1e3*L_x)))",
+     "tolerance": 1e-3},
+    {"name": "S_1e5", "expression": "psd", "operation": "at", "at": 1e5, "source": "heat.noise",
+     "reference": "S_pref*(sinh(b_1e5*L_x) - sin(b_1e5*L_x))/(2*pi*1e5*C_vol*b_1e5*(cosh(b_1e5*L_x) + cos(b_1e5*L_x)))",
+     "tolerance": 1e-3},
+    {"name": "S_1e6", "expression": "psd", "operation": "at", "at": 1e6, "source": "heat.noise",
+     "reference": "S_pref*(sinh(b_1e6*L_x) - sin(b_1e6*L_x))/(2*pi*1e6*C_vol*b_1e6*(cosh(b_1e6*L_x) + cos(b_1e6*L_x)))",
+     "tolerance": 1e-3},
+    {"name": "X_variance", "expression": "variance", "operation": "last", "source": "heat.noise",
+     "reference": "kB_const*T_ref**2/(C_vol*L_x*L_y*L_int)", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "psd_slab", "target": "heat.noise", "series": "psd",
+     "expression": "S_pref*(sinh(L_x*sqrt(pi*x*C_vol/k_th)) - sin(L_x*sqrt(pi*x*C_vol/k_th)))/(2*pi*x*C_vol*sqrt(pi*x*C_vol/k_th)*(cosh(L_x*sqrt(pi*x*C_vol/k_th)) + cos(L_x*sqrt(pi*x*C_vol/k_th))))",
+     "tolerance": 1e-3}
+  ],
+  "derived_curves": [
+    {"name": "psd_ratio", "inputs": {"S": "heat.noise:psd"},
+     "expression": "S*2*pi*x*C_vol*sqrt(pi*x*C_vol/k_th)*(cosh(L_x*sqrt(pi*x*C_vol/k_th)) + cos(L_x*sqrt(pi*x*C_vol/k_th)))/(S_pref*(sinh(L_x*sqrt(pi*x*C_vol/k_th)) - sin(L_x*sqrt(pi*x*C_vol/k_th))))",
+     "plot": "psd_ratio", "label": "psd / analytic", "unit": "1", "log_x": true, "log_y": false,
+     "reference": 1.0, "tolerance": 1e-2}
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "title": "Plate with a circular hole under tension: Kirsch stress concentration (analytic)",
+  "description": "Quarter model of a large plate with a traction-free hole of radius a at the origin corner, pulled along x by a remote stress S (boundary_load t_x = S on x_hi); rollers on x_lo and y_lo are the two symmetry lines, y_hi is free. Plane strain, static.\nAnalytic (Kirsch, infinite plate, independent of E and nu): with q = a^2 / r^2, c2 = cos 2theta, c4 = cos 4theta: sigma_xx = S (1 - q (3/2 c2 + c4) + 3/2 q^2 c4), sigma_yy = -S (q (c2/2 - c4) + 3/2 q^2 c4). On the y axis sigma_xx = S (1 + a^2 / 2y^2 + 3a^4 / 2y^4) (3 S at the hole), on the x axis sigma_yy = S/2 (a^2/x^2 - 3a^4/x^4) (-S at the hole) and sigma_xx = S (1 - 5a^2 / 2x^2 + 3a^4 / 2x^4).\nLine profile tab: sxx_y_axis (solid.stress_xx up the y axis), syy_x_axis and sxx_x_axis (along the x axis); the lines run half a cell off the axes through the cell centres and start a quarter cell outside the hole (a start on the hole edge can sample the void cell, stress 0); the curves use the full Kirsch field at the sampled cell centres. Errors relative to each curve's range: ~1-2 % rms and up to ~13 % (sxx_y_axis; ~5 % syy_x_axis, ~3 % sxx_x_axis) in the cell next to the hole: the hole is a staircase of 32 cells per radius (the first cell or two at the hole scatter more) and the plate is finite (width 24 a: the peak rises ~0.7 %, the far field carries the load the hole removes).\nDerived values tab: F_left = x_lo roller reaction vs -S L (exact equilibrium, ~1e-8); sxx_peak (probe in the cell next to the hole on the y axis, ~2.9 S) and sxx_near (4 cells further out) vs Kirsch at the probe points (~9 % low next to the staircase, ~3 % high further out: the ligament still carries the whole load).\nField tab: von Mises and stress maps.",
+  "version": 1,
+  "parameters": [
+    {"name": "S_load", "expression": 1e8, "description": "remote tension along x in Pa (traction on x_hi)"},
+    {"name": "a_hole", "expression": "1*mm", "description": "hole radius"},
+    {"name": "dx_mesh", "expression": "a_hole/32", "description": "uniform cell size (32 cells per hole radius)"},
+    {"name": "L_plate", "expression": "12*a_hole", "description": "side of the quarter model (full plate 24 a wide)"},
+    {"name": "E_plate", "expression": 2e11, "description": "Young's modulus in Pa (steel; the Kirsch stresses do not depend on it)"},
+    {"name": "nu_plate", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "x_peak", "expression": "dx_mesh/2", "description": "peak probe x (centre of the first cell column)"},
+    {"name": "y_peak", "expression": "a_hole + dx_mesh/2", "description": "peak probe y (first solid cell above the hole)"},
+    {"name": "x_near", "expression": "dx_mesh/2", "description": "near probe x"},
+    {"name": "y_near", "expression": "a_hole + 4.5*dx_mesh", "description": "near probe y (five cells above the hole edge)"},
+    {"name": "q_peak", "expression": "a_hole**2/(x_peak**2 + y_peak**2)", "description": "a^2 / r^2 at the peak probe"},
+    {"name": "c2_peak", "expression": "(x_peak**2 - y_peak**2)/(x_peak**2 + y_peak**2)", "description": "cos 2theta at the peak probe"},
+    {"name": "q_near", "expression": "a_hole**2/(x_near**2 + y_near**2)", "description": "a^2 / r^2 at the near probe"},
+    {"name": "c2_near", "expression": "(x_near**2 - y_near**2)/(x_near**2 + y_near**2)", "description": "cos 2theta at the near probe"},
+    {"name": "sxx_peak_ref", "expression": "S_load*(1 - q_peak*(1.5*c2_peak + 2*c2_peak**2 - 1) + 1.5*q_peak**2*(2*c2_peak**2 - 1))",
+     "description": "Kirsch sigma_xx at the peak probe in Pa (~2.89 S)"},
+    {"name": "sxx_near_ref", "expression": "S_load*(1 - q_near*(1.5*c2_near + 2*c2_near**2 - 1) + 1.5*q_near**2*(2*c2_near**2 - 1))",
+     "description": "Kirsch sigma_xx at the near probe in Pa (~2.27 S)"}
+  ],
+  "domain": {"size_x": "L_plate", "size_y": "L_plate"},
+  "geometry": [
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_plate", "y1": "L_plate"}},
+    {"name": "hole", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "a_hole"}},
+    {"name": "plate", "kind": "difference", "params": {"base": "box", "subtract": ["hole"]}},
+    {"name": "peak_point", "kind": "point", "params": {"x": "x_peak", "y": "y_peak"}},
+    {"name": "near_point", "kind": "point", "params": {"x": "x_near", "y": "y_near"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"youngs_modulus": "E_plate", "poisson_ratio": "nu_plate"},
+     "dispersion": null, "selection": ["plate"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "left", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "pull", "type": "boundary_load", "selection": ["x_hi"], "params": {"t_x": "S_load", "t_y": 0.0},
+         "enabled": true},
+        {"name": "peak", "type": "solid_probe", "selection": ["peak_point"], "params": {"component": "stress_xx"},
+         "enabled": true},
+        {"name": "near", "type": "solid_probe", "selection": ["near_point"], "params": {"component": "stress_xx"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.stress_xx", "solid.stress_yy", "solid.von_mises"], "sweep": null},
+  "derived_values": [
+    {"name": "F_left", "expression": "F_x", "selection": [], "operation": "last", "source": "solid.left",
+     "reference": "-S_load*L_plate", "tolerance": 3e-8},
+    {"name": "sxx_peak", "expression": "values", "selection": [], "operation": "last", "source": "solid.peak",
+     "reference": "sxx_peak_ref", "tolerance": 0.15},
+    {"name": "sxx_near", "expression": "values", "selection": [], "operation": "last", "source": "solid.near",
+     "reference": "sxx_near_ref", "tolerance": 0.06}
+  ],
+  "analytic_curves": [
+    {"name": "sxx_y_axis", "target": "line",
+     "expression": "S_load*(1 - a_hole**2/(x**2 + y**2)*(1.5*(x**2 - y**2)/(x**2 + y**2) + 2*((x**2 - y**2)/(x**2 + y**2))**2 - 1) + 1.5*a_hole**4/(x**2 + y**2)**2*(2*((x**2 - y**2)/(x**2 + y**2))**2 - 1))",
+     "tolerance": 0.2, "line": ["dx_mesh/2", "a_hole + dx_mesh/4", "dx_mesh/2", "L_plate"], "field": "solid.stress_xx"},
+    {"name": "syy_x_axis", "target": "line",
+     "expression": "-S_load*(a_hole**2/(x**2 + y**2)*(0.5*(x**2 - y**2)/(x**2 + y**2) - 2*((x**2 - y**2)/(x**2 + y**2))**2 + 1) + 1.5*a_hole**4/(x**2 + y**2)**2*(2*((x**2 - y**2)/(x**2 + y**2))**2 - 1))",
+     "tolerance": 0.1, "line": ["a_hole + dx_mesh/4", "dx_mesh/2", "L_plate", "dx_mesh/2"], "field": "solid.stress_yy"},
+    {"name": "sxx_x_axis", "target": "line",
+     "expression": "S_load*(1 - a_hole**2/(x**2 + y**2)*(1.5*(x**2 - y**2)/(x**2 + y**2) + 2*((x**2 - y**2)/(x**2 + y**2))**2 - 1) + 1.5*a_hole**4/(x**2 + y**2)**2*(2*((x**2 - y**2)/(x**2 + y**2))**2 - 1))",
+     "tolerance": 0.06, "line": ["a_hole + dx_mesh/4", "dx_mesh/2", "L_plate", "dx_mesh/2"], "field": "solid.stress_xx"}
+  ]
+}

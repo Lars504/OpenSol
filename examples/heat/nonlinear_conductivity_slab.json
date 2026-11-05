@@ -1,0 +1,65 @@
+{
+  "title": "Slab with temperature-dependent conductivity k ~ 1/T (analytic, Kirchhoff transform)",
+  "description": "Steady conduction through a 10 mm slab with k(T) = k_ref T_ref / T (silicon-like 1/T), x_lo held at T1 and x_hi at T2, insulated y faces (1D). The conductivity reads the heat temperature, so the stationary study iterates (Picard) until T stops changing; the sweep runs T2 over 400-1200 K.\nAnalytic (Kirchhoff transform, k T = const): T(x) = T1 (T2 / T1)^(x / L), so T(L/2) = sqrt(T1 T2); heat flux q = k_ref T_ref ln(T2 / T1) / L; mean T = (T2 - T1) / ln(T2 / T1) (432.8 K at T2 = 600 K, against 450 K for a constant k).\nDerived values tab: q_mean (mean heat_flux_abs magnitude), T_mean and T_probe (probe at x = 50.5 dx, last fixed-point iteration), all ~1e-4 (the face conductances are harmonic means of the cell k).\nSweep tab: q_mean vs T2 with the dashed k_ref T_ref ln(T2 / T1) / L.\nProbes tab: T_probe per fixed-point iteration (the convergence of the Picard loop).\nLine profile tab (last sweep value, T2 = 1200 K): T_rise_profile (exponential in x) against the dashed analytic curve, plus the dashed straight line of a constant k for contrast (reported, not checked).",
+  "version": 1,
+  "parameters": [
+    {"name": "k_ref", "expression": 150.0, "description": "conductivity at T_ref in W/(m K)"},
+    {"name": "T_ref", "expression": 300.0, "description": "reference temperature of k_ref in K"},
+    {"name": "T1", "expression": 300.0, "description": "temperature of x_lo in K (also the heat T0)"},
+    {"name": "T2", "expression": 600.0, "description": "temperature of x_hi in K (swept)"},
+    {"name": "L_slab", "expression": "10*mm", "description": "slab thickness along x"},
+    {"name": "dx_mesh", "expression": "0.1*mm", "description": "uniform cell size (100 cells along x)"},
+    {"name": "H_slab", "expression": "4*dx_mesh", "description": "slab height (insulated y faces: 1D)"},
+    {"name": "x_probe", "expression": "50.5*dx_mesh", "description": "probe position (the cell centre just above L/2)"}
+  ],
+  "domain": {"size_x": "L_slab", "size_y": "H_slab"},
+  "geometry": [
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_probe", "y": "H_slab/2 + dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "conductor", "library": null, "properties": {"k": "k_ref*T_ref/T"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T1"},
+      "features": [
+        {"name": "cold_face", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T1"},
+         "enabled": true},
+        {"name": "hot_face", "type": "temperature", "selection": ["x_hi"], "params": {"temperature": "T2"},
+         "enabled": true},
+        {"name": "probe", "type": "temperature_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {"max_iterations": 200, "tolerance": 1e-6},
+            "stored_fields": ["heat.T", "heat.T_rise"],
+            "sweep": {"parameter": "T2", "values": [400.0, 600.0, 900.0, 1200.0]}},
+  "derived_values": [
+    {"name": "q_mean", "expression": "heat_flux_abs", "selection": [], "operation": "mean",
+     "reference": "k_ref*T_ref*log(T2/T1)/L_slab", "tolerance": 1e-3},
+    {"name": "T_mean", "expression": "T", "selection": [], "operation": "mean",
+     "reference": "(T2 - T1)/log(T2/T1)", "tolerance": 1e-3},
+    {"name": "T_probe", "expression": "values", "selection": [], "operation": "last", "source": "heat.probe",
+     "reference": "T1*(T2/T1)**(x_probe/L_slab)", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "q_vs_T2", "target": "sweep", "series": "q_mean", "expression": "k_ref*T_ref*log(T2/T1)/L_slab",
+     "tolerance": 1e-3},
+    {"name": "T_rise_profile", "target": "line", "expression": "T1*(T2/T1)**(x/L_slab) - T1", "tolerance": 1e-3,
+     "line": [0.0, "H_slab/2 + dx_mesh/2", "L_slab", "H_slab/2 + dx_mesh/2"], "field": "heat.T_rise"},
+    {"name": "T_rise_constant_k", "target": "line", "expression": "(T2 - T1)*x/L_slab",
+     "line": [0.0, "H_slab/2 + dx_mesh/2", "L_slab", "H_slab/2 + dx_mesh/2"], "field": "heat.T_rise"}
+  ]
+}

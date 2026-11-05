@@ -1,0 +1,90 @@
+{
+  "title": "Analytic: in-plane electric dipole, H1 near field and sin^2 far field (H_z, Ricker pulse)",
+  "description": "An in-plane electric dipole (H_z point_source, excitation electric_dipole, strength M = 1 mA) in a CPML-bounded vacuum box (FDTD), its current tilted by alpha = 30.17 deg (atan(25/43), so the on-axis probe sits exactly on a cell-centre line through the source). Two physics on one mesh: 'em_cw' drives it cw at lambda0 = 1 um (near-field probes), 'em_pulse' with a Ricker wavelet peaked at lambda0 (far_field box at lambda0).\nAnalytic: |H_z| = (k M / 4) |H1^(2)(k r)| |sin(phi - alpha)| (H1^(2) = J1 - j Y1); the far-field pattern is sin^2(angle - alpha) at every wavelength, so the broadband Ricker pulse gives the same pattern as cw: nulls along the current (alpha, alpha + 180 deg), lobes broadside.\nProbes tab: em_cw.probe_broad (r = 0.995 um, phi = alpha + 90 deg) between the dashed +-H_amp lines; em_cw.probe_axis (phi = alpha) stays near 0.\nDerived values tab: H_broad (steady peak over the last 3 periods) vs H_amp, H_axis_ratio (on-axis peak / H_amp, reference 0, absolute), null_far and half_far (peak-normalised far-field power at alpha and alpha + 45 deg: 0 and 0.5).\nFar field tab: em_pulse.far vs the dashed sin^2(angle - alpha) (both peak-normalised).\nExpected agreement: ~1-3 % on H_broad (finite four-face dipole, discrete dispersion, CPML), < 1e-2 on the null and the pattern; to be confirmed by a first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "1*um", "description": "cw wavelength and Ricker peak wavelength (50 cells)"},
+    {"name": "L", "expression": "4*um", "description": "domain side length (CPML outside)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "M_dip", "expression": 0.001, "description": "dipole strength M [A] (current moment per unit z length)"},
+    {"name": "n_ax_x", "expression": 43, "description": "on-axis probe offset along x [cells]"},
+    {"name": "n_ax_y", "expression": 25, "description": "on-axis probe offset along y [cells]"},
+    {"name": "alpha_deg", "expression": "atan2(n_ax_y, n_ax_x)*180/pi",
+     "description": "dipole orientation [deg] counter-clockwise from +x: 30.17 deg, the direction of the on-axis probe"},
+    {"name": "alpha_rad", "expression": "alpha_deg*pi/180", "description": "dipole orientation [rad]"},
+    {"name": "x_src", "expression": "2.01*um", "description": "dipole x (centre of cell 100)"},
+    {"name": "y_src", "expression": "2.01*um", "description": "dipole y (centre of cell 100)"},
+    {"name": "x_axis_prb", "expression": "x_src + n_ax_x*dx_cell", "description": "on-axis probe x (a cell centre)"},
+    {"name": "y_axis_prb", "expression": "y_src + n_ax_y*dx_cell", "description": "on-axis probe y (a cell centre)"},
+    {"name": "x_broad_prb", "expression": "x_src - n_ax_y*dx_cell",
+     "description": "broadside probe x (a cell centre; offset rotated by +90 deg)"},
+    {"name": "y_broad_prb", "expression": "y_src + n_ax_x*dx_cell", "description": "broadside probe y (a cell centre)"},
+    {"name": "r_prb", "expression": "hypot(n_ax_x, n_ax_y)*dx_cell", "description": "distance of both probes to the dipole (0.995 um)"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber [1/m]"},
+    {"name": "H_amp", "expression": "k_vac*M_dip/4*hypot(j1(k_vac*r_prb), y1(k_vac*r_prb))",
+     "description": "analytic broadside steady |H_z| [A/m]: (k M / 4) |H1^(2)(k r)|"},
+    {"name": "T_run", "expression": "30*lambda0/c_const", "description": "study duration: 30 periods (Ricker ends after 8)"},
+    {"name": "T_steady", "expression": "T_run - 3*lambda0/c_const",
+     "description": "start of the window (last 3 periods) whose peak |H_z| is the steady amplitude"}
+  ],
+  "domain": {"size_x": "L", "size_y": "L"},
+  "geometry": [
+    {"name": "dipole_point", "kind": "point", "params": {"x": "x_src", "y": "y_src"}},
+    {"name": "broad_point", "kind": "point", "params": {"x": "x_broad_prb", "y": "y_broad_prb"}},
+    {"name": "axis_point", "kind": "point", "params": {"x": "x_axis_prb", "y": "y_axis_prb"}},
+    {"name": "far_field_box", "kind": "rectangle", "params": {"x0": "1*um", "y0": "1*um", "x1": "3*um", "y1": "3*um"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em_cw",
+      "type": "em_fdtd_hz",
+      "settings": {},
+      "features": [
+        {"name": "dipole", "type": "point_source", "selection": ["dipole_point"],
+         "params": {"excitation": "electric_dipole", "waveform": "cw", "wavelength": "lambda0",
+                    "dipole_moment": "M_dip", "orientation": "alpha_deg"}, "enabled": true},
+        {"name": "probe_broad", "type": "field_probe", "selection": ["broad_point"], "params": {"component": "hz"},
+         "enabled": true},
+        {"name": "probe_axis", "type": "field_probe", "selection": ["axis_point"], "params": {"component": "hz"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_pulse",
+      "type": "em_fdtd_hz",
+      "settings": {},
+      "features": [
+        {"name": "dipole", "type": "point_source", "selection": ["dipole_point"],
+         "params": {"excitation": "electric_dipole", "waveform": "ricker", "wavelength": "lambda0",
+                    "dipole_moment": "M_dip", "orientation": "alpha_deg"}, "enabled": true},
+        {"name": "far", "type": "far_field", "selection": ["far_field_box"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1, "n_angles": 360},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "H_broad", "source": "em_cw.probe_broad", "operation": "max", "reference": "H_amp", "tolerance": 0.03,
+     "expression": "where(t > T_steady, abs(values), 0)"},
+    {"name": "H_axis_ratio", "source": "em_cw.probe_axis", "operation": "max", "reference": 0.0, "tolerance": 0.02,
+     "expression": "where(t > T_steady, abs(values), 0)/H_amp"},
+    {"name": "null_far", "source": "em_pulse.far", "operation": "at", "at": "alpha_rad", "wavelength": "lambda0",
+     "expression": "power_norm", "reference": 0.0, "tolerance": 0.005},
+    {"name": "half_far", "source": "em_pulse.far", "operation": "at", "at": "alpha_rad + pi/4", "wavelength": "lambda0",
+     "expression": "power_norm", "reference": 0.5, "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "dipole_pattern", "target": "em_pulse.far", "expression": "sin(angle - alpha_rad)**2", "tolerance": 0.02},
+    {"name": "hankel_amplitude", "target": "em_cw.probe_broad", "expression": "H_amp"},
+    {"name": "hankel_amplitude_negative", "target": "em_cw.probe_broad", "expression": "-H_amp"}
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "title": "Uniaxial stress in glass: plane-strain strain and photoelastic birefringence (analytic)",
+  "description": "A 2 x 1 um silica strip pulled along x by a traction S on x_hi (rollers on x_lo and y_lo, y_hi free), plane strain; solid_em_strain_optic (deformation off: photoelastic part only) writes the index change into eps_xx / eps_yy of an em_fdfd_hz physics. The EM physics has no source: only its permittivity is the result.\nAnalytic (uniform, exact in the bilinear elements): sigma_xx = S, sigma_yy = 0, sigma_zz = nu S; strain_xx = (1 - nu^2) S / E, strain_yy = -nu (1 + nu) S / E, strain_zz = 0; dn_xx = -n0^3/2 (p11 e_xx + p12 e_yy), dn_yy = -n0^3/2 (p11 e_yy + p12 e_xx), birefringence n_xx - n_yy = -n0^3/2 (p11 - p12) (1 + nu) S / E (+7.2e-4 at 200 MPa tension).\nSweep tab: dn_xx, dn_yy, birefringence, strain_xx_mean and strain_yy_mean vs S_load (-200..200 MPa) with the dashed analytic lines.\nDerived values tab: the same plus stress_zz_mean with references; strains and stresses ~1e-6, index changes ~1e-3 (float32 eps: ~1e-7 absolute on ~1e-3).\nLine profile tab (last sweep value, +200 MPa): u_x along x (strain_xx x), u_y up y (strain_yy y), em.eps_xx and em.eps_yy (flat lines at (n0 + dn)^2).\nSwitch deformation on in the coupling to add the stretch image: n = (n0 + dn) sqrt(1 + strain_xx + strain_yy) (the references then no longer apply).",
+  "version": 1,
+  "parameters": [
+    {"name": "S_load", "expression": 2e8, "description": "traction along x on x_hi in Pa (> 0 tension); swept"},
+    {"name": "E_glass", "expression": 7.3e10, "description": "Young's modulus of silica in Pa"},
+    {"name": "nu_glass", "expression": 0.17, "description": "Poisson ratio of silica"},
+    {"name": "n_glass", "expression": 1.444, "description": "refractive index of silica at 1550 nm (eps_r = n^2)"},
+    {"name": "p11_glass", "expression": 0.121, "description": "photoelastic coefficient p11 of silica"},
+    {"name": "p12_glass", "expression": 0.270, "description": "photoelastic coefficient p12 of silica"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "FDFD wavelength (no source: sets only the mesh check)"},
+    {"name": "Lx", "expression": "2*um", "description": "strip length along x"},
+    {"name": "Ly", "expression": "1*um", "description": "strip height along y"},
+    {"name": "dx_mesh", "expression": "50*nm", "description": "uniform cell size (~21 cells per wavelength in the glass)"},
+    {"name": "strain_xx_ref", "expression": "(1 - nu_glass**2)*S_load/E_glass", "description": "analytic plane-strain strain_xx"},
+    {"name": "strain_yy_ref", "expression": "-nu_glass*(1 + nu_glass)*S_load/E_glass", "description": "analytic plane-strain strain_yy"},
+    {"name": "dn_xx_ref", "expression": "-n_glass**3/2*(p11_glass*strain_xx_ref + p12_glass*strain_yy_ref)",
+     "description": "analytic index change seen by E_x"},
+    {"name": "dn_yy_ref", "expression": "-n_glass**3/2*(p11_glass*strain_yy_ref + p12_glass*strain_xx_ref)",
+     "description": "analytic index change seen by E_y"},
+    {"name": "biref_ref", "expression": "-n_glass**3/2*(p11_glass - p12_glass)*(1 + nu_glass)*S_load/E_glass",
+     "description": "analytic birefringence n_xx - n_yy"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "silica_strip", "library": null,
+     "properties": {"eps_r": "n_glass**2", "youngs_modulus": "E_glass", "poisson_ratio": "nu_glass",
+                    "photoelastic_p11": "p11_glass", "photoelastic_p12": "p12_glass"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "left", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "pull", "type": "boundary_load", "selection": ["x_hi"], "params": {"t_x": "S_load", "t_y": 0.0},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "em",
+      "type": "em_fdfd_hz",
+      "settings": {"wavelength": "lambda0"},
+      "features": [],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "strain_optic", "type": "solid_em_strain_optic", "source": "solid", "target": "em", "every": null,
+     "params": {"deformation": false}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.u_y", "solid.stress_xx", "em.eps_xx", "em.eps_yy"],
+            "sweep": {"parameter": "S_load", "values": [-2e8, -1e8, 0.0, 1e8, 2e8]}},
+  "derived_values": [
+    {"name": "strain_xx_mean", "expression": "solid_strain_xx", "selection": [], "operation": "mean",
+     "reference": "strain_xx_ref", "tolerance": 3e-6},
+    {"name": "strain_yy_mean", "expression": "solid_strain_yy", "selection": [], "operation": "mean",
+     "reference": "strain_yy_ref", "tolerance": 3e-6},
+    {"name": "stress_zz_mean", "expression": "solid_stress_zz", "selection": [], "operation": "mean",
+     "reference": "nu_glass*S_load", "tolerance": 3e-6},
+    {"name": "dn_xx", "expression": "sqrt(em_eps_xx) - n_glass", "selection": [], "operation": "mean",
+     "reference": "dn_xx_ref", "tolerance": 0.003},
+    {"name": "dn_yy", "expression": "sqrt(em_eps_yy) - n_glass", "selection": [], "operation": "mean",
+     "reference": "dn_yy_ref", "tolerance": 0.003},
+    {"name": "birefringence", "expression": "sqrt(em_eps_xx) - sqrt(em_eps_yy)", "selection": [],
+     "operation": "mean", "reference": "biref_ref", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "dn_xx_vs_S", "target": "sweep", "expression": "dn_xx_ref", "tolerance": 0.003, "series": "dn_xx"},
+    {"name": "dn_yy_vs_S", "target": "sweep", "expression": "dn_yy_ref", "tolerance": 0.003, "series": "dn_yy"},
+    {"name": "biref_vs_S", "target": "sweep", "expression": "biref_ref", "tolerance": 0.003,
+     "series": "birefringence"},
+    {"name": "strain_xx_vs_S", "target": "sweep", "expression": "strain_xx_ref", "tolerance": 3e-6,
+     "series": "strain_xx_mean"},
+    {"name": "strain_yy_vs_S", "target": "sweep", "expression": "strain_yy_ref", "tolerance": 3e-6,
+     "series": "strain_yy_mean"},
+    {"name": "u_x_along_x", "target": "line", "expression": "strain_xx_ref*x", "tolerance": 0.003,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "solid.u_x"},
+    {"name": "u_y_along_y", "target": "line", "expression": "strain_yy_ref*y", "tolerance": 0.003,
+     "line": ["Lx/2", 0.0, "Lx/2", "Ly"], "field": "solid.u_y"},
+    {"name": "eps_xx_profile", "target": "line", "expression": "(n_glass + dn_xx_ref)**2", "tolerance": 1e-5,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_xx"},
+    {"name": "eps_yy_profile", "target": "line", "expression": "(n_glass + dn_yy_ref)**2", "tolerance": 1e-5,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_yy"}
+  ]
+}

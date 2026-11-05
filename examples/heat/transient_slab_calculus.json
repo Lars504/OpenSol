@@ -1,0 +1,78 @@
+{
+  "title": "Transient slab: rate, time integral and decay fit of the centre temperature (analytic)",
+  "description": "The transient_slab_decay slab (silicon, both x faces held at T_s from t = 0, implicit-Euler heat), post-processed with curve calculus.\nAnalytic centre value (image series): theta = (T_c - T_s) / (T_i - T_s) = 1 - 2 sum_k (-1)^k erfc(c_k K / sqrt(t)), c_k = 1, 3, 5, 7, 9, K = L / (4 sqrt(a)).\nDerived curves tab: cooling_rate = gradient(theta) against d theta / dt = -2 K / (sqrt(pi) t^1.5) sum_k (-1)^k c_k exp(-c_k^2 K^2 / t) (reference dotted); theta_integral = cumtrapz(theta) from the first sample (t = dt) against its closed form, the integral of erfc(c K / sqrt(s)) ds = (t + 2 c^2 K^2) erfc(c K / sqrt(t)) - 2 c K sqrt(t / pi) exp(-c^2 K^2 / t).\nDerived values tab: tau_fit / amplitude_fit = exp_fit of T_c - T_s over [1.5 tau_1, t_end] (first Fourier mode (4/pi) (T_i - T_s) exp(-t / tau_1); implicit Euler lengthens tau by ~dt / (2 tau_1) = 0.1 %), fastest_cooling_time = argmax of -cooling_rate (2 K^2 / 3, the image series' first term), theta_time_integral = the last theta_integral value.\nThe tolerances are estimates from the implicit-Euler lag (~0.4 % of the rise at t_end): tune them after the first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "T_i", "expression": 373.15, "description": "initial slab temperature in K"},
+    {"name": "T_s", "expression": 293.15, "description": "surface temperature in K held on both x faces from t = 0"},
+    {"name": "L_slab", "expression": "10*mm", "description": "slab thickness along x"},
+    {"name": "dx_mesh", "expression": "L_slab/101", "description": "uniform cell size (odd cell count: the centre is a cell centre)"},
+    {"name": "H_slab", "expression": "10*dx_mesh", "description": "slab height along y (insulated y faces: 1D)"},
+    {"name": "k_si", "expression": 130.0, "description": "silicon thermal conductivity in W/(m K)"},
+    {"name": "rho_si", "expression": 2329.0, "description": "silicon density in kg/m^3"},
+    {"name": "cp_si", "expression": 700.0, "description": "silicon specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_si/(rho_si*cp_si)", "description": "thermal diffusivity in m^2/s (~8e-5)"},
+    {"name": "tau_1", "expression": "L_slab**2/(pi**2*a_diff)", "description": "first-mode decay time in s (~0.127)"},
+    {"name": "k_img", "expression": "L_slab/(4*sqrt(a_diff))", "description": "image-series scale K in sqrt(s): erfc(c K / sqrt(t)) (~0.28)"},
+    {"name": "dt_step", "expression": 2.5e-4, "description": "implicit-Euler time step in s (the probe's first sample is at t = dt)"},
+    {"name": "t_end", "expression": 0.5, "description": "study duration in s (~4 tau_1)"}
+  ],
+  "domain": {"size_x": "L_slab", "size_y": "H_slab"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "L_slab/2", "y": "H_slab/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null, "properties": {"k": "k_si", "rho": "rho_si", "cp": "cp_si"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_s"},
+      "features": [
+        {"name": "faces", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T_s"},
+         "enabled": true},
+        {"name": "start", "type": "initial_temperature", "selection": ["all"], "params": {"temperature": "T_i"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "tau_fit", "expression": "values - T_s", "selection": [], "operation": "exp_fit", "source": "heat.centre",
+     "window": ["1.5*tau_1", "t_end"], "fit": "decay", "reference": "tau_1", "tolerance": 0.003},
+    {"name": "amplitude_fit", "expression": "values - T_s", "selection": [], "operation": "exp_fit",
+     "source": "heat.centre", "window": ["1.5*tau_1", "t_end"], "fit": "amplitude",
+     "reference": "4/pi*(T_i - T_s)", "tolerance": 0.003},
+    {"name": "fastest_cooling_time", "expression": "-cooling_rate", "selection": [], "operation": "argmax",
+     "source": "cooling_rate", "reference": "2*k_img**2/3", "tolerance": 0.01},
+    {"name": "theta_time_integral", "expression": "theta_integral", "selection": [], "operation": "last",
+     "source": "theta_integral",
+     "reference": "t_end - 2*((t_end + 2*k_img**2)*erfc(k_img/sqrt(t_end)) - 2*k_img*sqrt(t_end/pi)*exp(-k_img**2/t_end) - ((t_end + 18*k_img**2)*erfc(3*k_img/sqrt(t_end)) - 6*k_img*sqrt(t_end/pi)*exp(-9*k_img**2/t_end)) + (t_end + 50*k_img**2)*erfc(5*k_img/sqrt(t_end)) - 10*k_img*sqrt(t_end/pi)*exp(-25*k_img**2/t_end) - ((t_end + 98*k_img**2)*erfc(7*k_img/sqrt(t_end)) - 14*k_img*sqrt(t_end/pi)*exp(-49*k_img**2/t_end)) + (t_end + 162*k_img**2)*erfc(9*k_img/sqrt(t_end)) - 18*k_img*sqrt(t_end/pi)*exp(-81*k_img**2/t_end)) - dt_step",
+     "tolerance": 0.005}
+  ],
+  "analytic_curves": [],
+  "derived_curves": [
+    {"name": "cooling_rate", "expression": "gradient((T_c - T_s)/(T_i - T_s))", "inputs": {"T_c": "heat.centre:values"},
+     "plot": "", "label": "d theta / dt", "unit": "1/s", "log_x": false, "log_y": false,
+     "reference": "-2*k_img/(sqrt(pi)*x**1.5)*(exp(-k_img**2/x) - 3*exp(-9*k_img**2/x) + 5*exp(-25*k_img**2/x) - 7*exp(-49*k_img**2/x) + 9*exp(-81*k_img**2/x))",
+     "tolerance": 0.02},
+    {"name": "theta_integral", "expression": "cumtrapz((T_c - T_s)/(T_i - T_s))", "inputs": {"T_c": "heat.centre:values"},
+     "plot": "", "label": "integral of theta from t = dt", "unit": "s", "log_x": false, "log_y": false,
+     "reference": "x - 2*((x + 2*k_img**2)*erfc(k_img/sqrt(x)) - 2*k_img*sqrt(x/pi)*exp(-k_img**2/x) - ((x + 18*k_img**2)*erfc(3*k_img/sqrt(x)) - 6*k_img*sqrt(x/pi)*exp(-9*k_img**2/x)) + (x + 50*k_img**2)*erfc(5*k_img/sqrt(x)) - 10*k_img*sqrt(x/pi)*exp(-25*k_img**2/x) - ((x + 98*k_img**2)*erfc(7*k_img/sqrt(x)) - 14*k_img*sqrt(x/pi)*exp(-49*k_img**2/x)) + (x + 162*k_img**2)*erfc(9*k_img/sqrt(x)) - 18*k_img*sqrt(x/pi)*exp(-81*k_img**2/x)) - dt_step",
+     "tolerance": 0.005}
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "title": "Lossy slab, FDTD: cw absorption into transient heat, window lag and stored energy (analytic)",
+  "description": "The analytic_lossy_slab_heating strip in the time domain: a cw 1.55 um plane-wave mode (em_fdtd_ez mode_source, P_in = 2e5 W/m, ramped in by 1 - exp(-t / (3 T))) crosses a glass slab with sigma_e = 2e3 S/m; em_heat_joule hands the window-averaged absorbed power to an insulated transient heat physics stepped every 1008 EM steps (time_dependent, 64 heat steps, 2.98 ps). The EM time step is set (courant_factor) to exactly 1/112 of the optical period, so a heat window is exactly 18 half periods and its mean of sigma E^2 has no cw ripple. Conduction is made negligible (k = 0.05 W/(m K): ~2e-4 of the slab-edge rise over the run), so each cell stores its own absorbed energy.\nAnalytic: absorbed fraction A = (1 - R) (1 - exp(-a d)) (a = the power attenuation of the discrete FDTD wave: Yee dispersion in space and time, the time-averaged conductivity term sigma cos(omega dt / 2) / Omega), q(x) = q_front exp(-a (x - x0)) in the slab. Cadence: heat step k covers [k W, (k+1) W] with the power of [(k-1) W, k W] (the first one sourceless), so at heat time t the stored energy is that absorbed up to t - W; the ramp withholds 1.5 tau of power (tau = 3 T) and the wave reaches x after n0 (x - x_src) / c. Stored heat at the end: P_abs ((K - 1) W - 1.5 tau - t_abs), t_abs the absorption-weighted arrival delay (~12 fs). The cw flux spectra (power_per_cw over the whole run) see the arrival delay t_d too: x ((t_run - tau - t_d) / (t_run - tau))^2 (-1.9 % at the down monitor).\nDerived values tab: P_front, P_trans (flux power_per_cw, ~1e-3), P_heat = integral of the coupled heat source heat.Q (the last window: the cw absorbed power, ~1e-3) and E_heat = integral rho cp T_rise (the stored energy; a missing or extra window lag is 1.6 %, the ramp and delay 1.2 %; expected ~1e-3, tolerance 2e-3).\nProbes tab: T_front (slab front cell) with the dashed lagged ramp curve and the curve without the one-window lag. Line profile tab (end): Q_line = heat.Q and T_rise_line = heat.T_rise along the strip vs q(x) and q(x) ((K - 1) W - 1.5 tau - n0 (x - x_src) / c) / (rho cp); pointwise checks carry the standing-wave ripple of the slab back-face reflection (+-0.5 % at the front cell, more toward the back), tolerance 1e-2.",
+  "version": 1,
+  "parameters": [
+    {"name": "P_in", "expression": 2.0e5, "description": "cw mode source power in W per m of z (2D), after the ramp"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the cw source"},
+    {"name": "omega0", "expression": "2*pi*c_const/lambda0", "description": "angular frequency in rad/s"},
+    {"name": "n0", "expression": 1.5, "description": "glass index (eps_r = n0^2, also inside the slab)"},
+    {"name": "sigma_slab", "expression": 2.0e3, "description": "optical conductivity sigma_e of the slab in S/m (weak loss, a d ~ 2)"},
+    {"name": "x_slab0", "expression": "2*um", "description": "slab front face (on a cell face)"},
+    {"name": "d_slab", "expression": "4*um", "description": "slab thickness along x"},
+    {"name": "x_slab1", "expression": "x_slab0 + d_slab", "description": "slab back face"},
+    {"name": "Lx", "expression": "8*um", "description": "strip length along x (CPML outside for EM, insulated heat faces)"},
+    {"name": "Ly", "expression": "0.2*um", "description": "period along y (periodic EM boundaries, insulated heat faces)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size; the lines below sit at cell centres"},
+    {"name": "x_src", "expression": "1.01*um", "description": "mode source line (cell 50 centre), launching toward +x"},
+    {"name": "x_flux_up", "expression": "1.31*um", "description": "upstream flux monitor (cell 65 centre): net power into the slab"},
+    {"name": "x_flux_down", "expression": "6.71*um", "description": "downstream flux monitor (cell 335 centre): transmitted power"},
+    {"name": "x_probe", "expression": "x_slab0 + dx_cell/2", "description": "temperature probe x: the first slab cell centre"},
+    {"name": "steps_half_period", "expression": 56, "description": "EM time steps per half optical period (sets the time step)"},
+    {"name": "courant_em", "expression": "lambda0*sqrt(2)/(2*steps_half_period*dx_cell)", "description": "courant_factor giving dt = T / 112 (0.979 of the 2D CFL limit)"},
+    {"name": "dt_em", "expression": "lambda0/(2*steps_half_period*c_const)", "description": "EM time step in s (46.2 as)"},
+    {"name": "heat_every", "expression": 1008, "description": "EM steps per heat step = 18 half periods (must equal the heat physics every)"},
+    {"name": "n_heat_steps", "expression": 64, "description": "heat steps K in the run"},
+    {"name": "window_heat", "expression": "heat_every*dt_em", "description": "heat window W = 9 optical periods in s (46.5 fs)"},
+    {"name": "t_end", "expression": "n_heat_steps*window_heat", "description": "study duration in s (64512 EM steps, 2.98 ps)"},
+    {"name": "k_glass", "expression": 0.05, "description": "thermal conductivity in W/(m K), low on purpose (silica 1.4 would spread the slab-edge cell by ~6e-3)"},
+    {"name": "rho_glass", "expression": 2200.0, "description": "density in kg/m^3"},
+    {"name": "cp_glass", "expression": 740.0, "description": "specific heat in J/(kg K)"},
+    {"name": "rho_cp", "expression": "rho_glass*cp_glass", "description": "volumetric heat capacity in J/(m^3 K)"},
+    {"name": "T0", "expression": 293.15, "description": "initial and reference temperature in K"},
+    {"name": "Omega_d", "expression": "2/dt_em*sin(omega0*dt_em/2)", "description": "discrete-time frequency (2 / dt) sin(omega dt / 2) of the Yee update in rad/s"},
+    {"name": "k_time", "expression": "Omega_d/c_const", "description": "vacuum wavenumber seen by the time-discrete update in 1/m"},
+    {"name": "eps_imag", "expression": "sigma_slab*cos(omega0*dt_em/2)/(Omega_d*eps0_const)", "description": "Im eps of the slab in the semi-implicit conductivity update"},
+    {"name": "eps_abs", "expression": "sqrt(n0**4 + eps_imag**2)", "description": "|eps| of the slab"},
+    {"name": "kappa", "expression": "sqrt((eps_abs - n0**2)/2)", "description": "extinction coefficient Im sqrt(eps) of the slab"},
+    {"name": "n_re", "expression": "sqrt((eps_abs + n0**2)/2)", "description": "Re sqrt(eps) of the slab"},
+    {"name": "ksi0", "expression": "n0*k_time*dx_cell/2", "description": "half-cell phase n0 k dx / 2 (spatial grid-dispersion factor)"},
+    {"name": "a_att", "expression": "2*k_time*kappa/sqrt(1 - ksi0**2)", "description": "power attenuation coefficient of the discrete wave in 1/m (a d ~ 2.0)"},
+    {"name": "R_front", "expression": "((n0 - n_re)**2 + kappa**2)/((n0 + n_re)**2 + kappa**2)", "description": "power reflection of the slab front face (~4e-4)"},
+    {"name": "exit_factor", "expression": "1 + kappa**2/n_re**2", "description": "back-face power transmission over (1 - R) for a wave leaving an absorbing medium"},
+    {"name": "A_ref", "expression": "(1 - R_front)*(1 - exp(-a_att*d_slab))", "description": "absorbed fraction (back-face reflection and interference neglected, ~1e-4)"},
+    {"name": "P_abs_ref", "expression": "A_ref*P_in", "description": "analytic cw absorbed power in W/m"},
+    {"name": "q_front", "expression": "a_att*P_in*(1 - R_front)/Ly", "description": "cw absorbed power density at the slab front in W/m^3"},
+    {"name": "tau_ramp", "expression": "3*lambda0/c_const", "description": "cw ramp time constant 3 T in s (15.5 fs)"},
+    {"name": "delay_up", "expression": "n0*(x_flux_up - x_src)/c_const", "description": "arrival delay at the up monitor in s"},
+    {"name": "delay_down", "expression": "n0*(x_flux_down - x_src)/c_const", "description": "arrival delay at the down monitor in s (28.5 fs)"},
+    {"name": "dft_up", "expression": "((t_end - tau_ramp - delay_up)/(t_end - tau_ramp))**2", "description": "whole-run DFT factor of the delayed wave at the up monitor"},
+    {"name": "dft_down", "expression": "((t_end - tau_ramp - delay_down)/(t_end - tau_ramp))**2", "description": "whole-run DFT factor of the delayed wave at the down monitor"},
+    {"name": "depth_mean", "expression": "1/a_att - d_slab*exp(-a_att*d_slab)/(1 - exp(-a_att*d_slab))", "description": "absorption-weighted mean depth into the slab in m"},
+    {"name": "delay_abs", "expression": "n0*(x_slab0 - x_src + depth_mean)/c_const", "description": "absorption-weighted arrival delay t_abs in s"},
+    {"name": "t_heated", "expression": "(n_heat_steps - 1)*window_heat - 1.5*tau_ramp - delay_abs", "description": "effective full-power heating time of the stored energy in s"},
+    {"name": "E_heat_ref", "expression": "P_abs_ref*t_heated", "description": "analytic stored heat at the end in J/m"},
+    {"name": "q_probe", "expression": "q_front*exp(-a_att*dx_cell/2)", "description": "cw absorbed power density at the probe cell centre in W/m^3"},
+    {"name": "delay_probe", "expression": "n0*(x_probe - x_src)/c_const", "description": "arrival delay at the probe in s"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab0", "y0": 0.0, "x1": "x_slab1", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "flux_up_line", "kind": "line", "params": {"x0": "x_flux_up", "y0": 0.0, "x1": "x_flux_up", "y1": "Ly"}},
+    {"name": "flux_down_line", "kind": "line",
+     "params": {"x0": "x_flux_down", "y0": 0.0, "x1": "x_flux_down", "y1": "Ly"}},
+    {"name": "front_point", "kind": "point", "params": {"x": "x_probe", "y": "Ly/2 + dx_cell/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null,
+     "properties": {"eps_r": "n0**2", "k": "k_glass", "rho": "rho_glass", "cp": "cp_glass"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "absorber", "library": null,
+     "properties": {"eps_r": "n0**2", "k": "k_glass", "rho": "rho_glass", "cp": "cp_glass", "sigma_e": "sigma_slab"},
+     "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "courant_factor": "courant_em"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "waveform": "cw", "wavelength": "lambda0",
+                    "power": "P_in"}, "enabled": true},
+        {"name": "flux_up", "type": "flux_monitor", "selection": ["flux_up_line"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1}, "enabled": true},
+        {"name": "flux_down", "type": "flux_monitor", "selection": ["flux_down_line"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": 1e-13, "T0": "T0"},
+      "features": [
+        {"name": "T_front", "type": "temperature_probe", "selection": ["front_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1008,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "joule", "type": "em_heat_joule", "source": "em", "target": "heat", "every": null, "params": {},
+     "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/4"},
+            "stored_fields": ["em.ez", "heat.T_rise", "heat.Q"], "sweep": null},
+  "derived_values": [
+    {"name": "P_front", "expression": "power_per_cw", "operation": "last", "source": "em.flux_up",
+     "reference": "P_in*(1 - R_front)*dft_up", "tolerance": 0.003},
+    {"name": "P_trans", "expression": "power_per_cw", "operation": "last", "source": "em.flux_down",
+     "reference": "P_in*(1 - R_front)**2*exit_factor*exp(-a_att*d_slab)*dft_down", "tolerance": 0.003},
+    {"name": "P_heat", "expression": "heat_Q", "selection": [], "operation": "integral",
+     "reference": "P_abs_ref", "tolerance": 0.003},
+    {"name": "E_heat", "expression": "rho_cp*heat_T_rise", "selection": [], "operation": "integral",
+     "reference": "E_heat_ref", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "lagged_ramp", "target": "heat.T_front",
+     "expression": "T0 + q_probe/rho_cp*where(t - window_heat - delay_probe > 0, (t - window_heat - delay_probe) - 2*tau_ramp*(1 - exp(-(t - window_heat - delay_probe)/tau_ramp)) + tau_ramp/2*(1 - exp(-2*(t - window_heat - delay_probe)/tau_ramp)), 0)",
+     "tolerance": 0.01},
+    {"name": "no_window_lag", "target": "heat.T_front",
+     "expression": "T0 + q_probe/rho_cp*where(t - delay_probe > 0, (t - delay_probe) - 2*tau_ramp*(1 - exp(-(t - delay_probe)/tau_ramp)) + tau_ramp/2*(1 - exp(-2*(t - delay_probe)/tau_ramp)), 0)"},
+    {"name": "Q_line", "target": "line",
+     "expression": "where(x > x_slab0, where(x < x_slab1, q_front*exp(-a_att*(x - x_slab0)), 0), 0)",
+     "tolerance": 0.01, "line": [0.0, "Ly/2 + dx_cell/2", "Lx", "Ly/2 + dx_cell/2"], "field": "heat.Q"},
+    {"name": "T_rise_line", "target": "line",
+     "expression": "where(x > x_slab0, where(x < x_slab1, q_front*exp(-a_att*(x - x_slab0))*((n_heat_steps - 1)*window_heat - 1.5*tau_ramp - n0*(x - x_src)/c_const)/rho_cp, 0), 0)",
+     "tolerance": 0.01, "line": [0.0, "Ly/2 + dx_cell/2", "Lx", "Ly/2 + dx_cell/2"], "field": "heat.T_rise"}
+  ]
+}

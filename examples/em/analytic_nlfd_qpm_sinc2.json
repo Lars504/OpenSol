@@ -1,0 +1,96 @@
+{
+  "title": "Analytic: quasi-phase-matched SHG tuning curve, sinc^2 vs poling period (nonlinear FDFD)",
+  "description": "Undepleted SHG in a periodically poled chi2 slab (em_fdfd_nonlinear, chi2_medium with poling): a y-periodic strip (4 rows of 10 nm, CPML along x) filled everywhere, PML included, with one lossless Lorentz medium (eps_inf 1, delta_eps 3, omega_0 4.7e15 rad/s: n = 2.0530 at the 1550 nm pump, 2.2572 at 775 nm), so pump and SH are far from phase matched (lattice coherence length 1.87 um). An E_z line source launches the pump (A_p = 1e7 V/m) into a 20 um 3m z-cut slab (d33 = 25 pm/V: P_z(2w) = eps0 d33 E_z^2) poled as sign(sin(2 pi (x - x_nl) / Lambda)) at the cell centres. The sweep runs the poling period Lambda over +-8 % of the first-order QPM period Lambda0 = 2 pi h / dK = 3.748 um (dK = K_2w h - 2 K_w h, the lattice mismatch per cell; the continuum value Lambda0_cont = 3.80 um is ~1 % longer).\nAnalytic (the exact 3-point lattice sum of the first-order Fourier terms of the square wave): |E_2w| = C_sh (2 / pi) sqrt(R-^2 + R+^2 - 2 R- R+ cos(G L)), R+- = sin(N (dK +- G h) / 2) / sin((dK +- G h) / 2), G = 2 pi / Lambda, N = L / h, C_sh = 2 k0^2 h^2 d33 A_p^2 / sin(K_2w h) the SH per cell; at the peak (R- = N) this is the first-order QPM value (2 / pi) of the phase-matched growth, and the curve is the sinc of the detuning. The neglected third-order poling terms leave a ~1-2 % ripple.\nSweep tab: E_sh_forward vs Lambda with the dashed lattice curve (peak ~5.7e4 V/m), eta_rel (power relative to the ideal QPM peak) with its sinc^2 curve.\nDerived values tab: E_sh_forward, eta_rel and E_p_end (pump in the last slab cell, = A_p: undepleted) against their references; expected ~1-2 % (to be confirmed by a first run).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "1550*nm", "description": "pump vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "periodic y period (4 cells)"},
+    {"name": "eps_inf", "expression": 1.0, "description": "background permittivity of the medium"},
+    {"name": "d_eps", "expression": 3.0, "description": "Lorentz oscillator strength delta_eps"},
+    {"name": "omega_r", "expression": 4.7e15, "description": "lossless Lorentz resonance omega_0 [rad/s] (401 nm)"},
+    {"name": "omega_p", "expression": "2*pi*c_const/lam_p", "description": "pump angular frequency [rad/s]"},
+    {"name": "k_vac", "expression": "2*pi/lam_p", "description": "pump vacuum wavenumber k0 [1/m]"},
+    {"name": "d33", "expression": 25e-12, "description": "d33 of the 3m z-cut medium [m/V]"},
+    {"name": "A_p", "expression": 1e7, "description": "pump amplitude [V/m] the line source launches into the medium"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump line source (centre of cell 100)"},
+    {"name": "x_nl", "expression": "2*um", "description": "poled slab front face (a cell edge)"},
+    {"name": "L_nl", "expression": "20*um", "description": "poled slab length (2000 cells)"},
+    {"name": "x_p_end", "expression": "x_nl + L_nl - dx_cell/2", "description": "pump probe: centre of the last slab cell"},
+    {"name": "x_fwd", "expression": "x_nl + L_nl + 1.005*um", "description": "forward SH probe (cell centre, 100 cells past the slab)"},
+    {"name": "Lx", "expression": "x_nl + L_nl + 2*um", "description": "strip length (CPML on both x faces, outside the window)"},
+    {"name": "eps_p", "expression": "eps_inf + d_eps/(1 - (omega_p/omega_r)**2)", "description": "permittivity at the pump (4.2149)"},
+    {"name": "eps_sh", "expression": "eps_inf + d_eps/(1 - (2*omega_p/omega_r)**2)", "description": "permittivity at the SH (5.0951)"},
+    {"name": "K_p", "expression": "2*asin(k_vac*sqrt(eps_p)*dx_cell/2)", "description": "lattice phase per cell of the pump wave"},
+    {"name": "K_sh", "expression": "2*asin(k_vac*sqrt(eps_sh)*dx_cell)", "description": "lattice phase per cell of the SH wave"},
+    {"name": "dK", "expression": "K_sh - 2*K_p", "description": "lattice phase mismatch per cell (1.676e-2)"},
+    {"name": "Lambda0", "expression": "2*pi*dx_cell/dK", "description": "first-order QPM poling period on the lattice (3.748 um)"},
+    {"name": "Lambda0_cont", "expression": "pi/(k_vac*(sqrt(eps_sh) - sqrt(eps_p)))", "description": "continuum QPM period (comparison only)"},
+    {"name": "Lambda", "expression": "3.748*um", "description": "poling period (swept)"},
+    {"name": "G_h", "expression": "2*pi*dx_cell/Lambda", "description": "poling grating phase per cell"},
+    {"name": "N_nl", "expression": "L_nl/dx_cell", "description": "slab cells"},
+    {"name": "R_m", "expression": "sin(N_nl*(dK - G_h)/2)/sin((dK - G_h)/2)", "description": "phase-matched Fourier term sum"},
+    {"name": "R_p", "expression": "sin(N_nl*(dK + G_h)/2)/sin((dK + G_h)/2)", "description": "counter-propagating Fourier term sum"},
+    {"name": "S_qpm", "expression": "(2/pi)*sqrt(R_m**2 + R_p**2 - 2*R_m*R_p*cos(G_h*N_nl))", "description": "|first-order poled lattice sum|"},
+    {"name": "C_sh", "expression": "2*k_vac**2*dx_cell**2*d33*A_p**2/sin(K_sh)", "description": "SH generated per slab cell [V/m] (45 V/m)"},
+    {"name": "E_sh_ref", "expression": "C_sh*S_qpm", "description": "lattice forward |E_2w| [V/m]"},
+    {"name": "E_peak", "expression": "C_sh*(2/pi)*N_nl", "description": "ideal first-order QPM |E_2w| [V/m]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "poled_slab", "kind": "rectangle", "params": {"x0": "x_nl", "y0": 0.0, "x1": "x_nl + L_nl", "y1": "Ly"}},
+    {"name": "pump_end_point", "kind": "point", "params": {"x": "x_p_end", "y": "1.5*dx_cell"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "1.5*dx_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "lorentz_medium", "library": null, "properties": {"eps_r": "eps_inf"},
+     "dispersion": [{"model": "lorentz", "delta_eps": "d_eps", "omega_0": "omega_r", "gamma": 0.0}],
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "undepleted"},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "ez"}, "enabled": true},
+        {"name": "sh", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "2 p", "polarization": "ez"}, "enabled": true},
+        {"name": "ppln", "type": "chi2_medium", "selection": ["poled_slab"],
+         "params": {"crystal_class": "3m", "d33": "d33", "orientation": "z_cut",
+                    "poling": "sign(sin(2*pi*(x - x_nl)/Lambda))"}, "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "A_p", "phase": 0.0}, "enabled": true},
+        {"name": "pump_end", "type": "field_probe", "selection": ["pump_end_point"],
+         "params": {"channel": "p", "component": "ez"}, "enabled": true},
+        {"name": "sh_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "sh", "component": "ez"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs"],
+            "sweep": {"parameter": "Lambda",
+                      "values": [3.448e-06, 3.523e-06, 3.598e-06, 3.673e-06, 3.748e-06, 3.823e-06, 3.898e-06,
+                                 3.973e-06, 4.048e-06]}},
+  "derived_values": [
+    {"name": "E_sh_forward", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.sh_forward",
+     "at": null, "reference": "E_sh_ref", "tolerance": 0.03},
+    {"name": "eta_rel", "expression": "(abs/E_peak)**2", "selection": [], "operation": "mean", "source": "nl.sh_forward",
+     "at": null, "reference": "(E_sh_ref/E_peak)**2", "tolerance": 0.06},
+    {"name": "E_p_end", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_end",
+     "at": null, "reference": "A_p", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "qpm_lattice", "target": "sweep", "expression": "E_sh_ref", "tolerance": 0.03, "series": "E_sh_forward"},
+    {"name": "qpm_sinc2", "target": "sweep", "expression": "(E_sh_ref/E_peak)**2", "tolerance": 0.06,
+     "series": "eta_rel"}
+  ]
+}

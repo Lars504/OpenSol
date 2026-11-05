@@ -1,0 +1,66 @@
+{
+  "title": "Insulated pipe: critical insulation radius (axisymmetric, analytic)",
+  "description": "Axisymmetric (r, z) steady conduction through a cylindrical insulation shell a < r < b around a pipe held at T_i (fixed_temperature_domain r < a), cooled by convection h to T_inf on its outer surface (x_hi = r = b); the y (z) faces are insulated, so the problem is radial. The sweep runs the outer radius b (the domain size) over 7.5-60 mm.\nAnalytic: heat loss per m of pipe q'(b) = 2 pi (T_i - T_inf) / (ln(b / a) / k + 1 / (h b)), largest at the critical radius b = k / h = 20 mm (thin insulation on a small pipe increases the loss); T(r) = T_i - q' ln(r / a) / (2 pi k).\nDerived values tab: q_line (ring-weighted integral of the heat_flux_abs magnitude over the window / ((b - a) H) = q', checks the 2 pi r weighting; held cells read 0) and theta_surface (probe in the outermost cell, r = b - dx/2, rise over T_inf). Expect < 1e-3 (trapezoid rule of the cell-face conductances for ln(b / a), cell-centre averaging of the face fluxes).\nSweep tab: q_line vs b with the dashed q'(b), maximum at b = 20 mm.\nLine profile tab (b = 60 mm): T_radial (log profile from r = a to b).",
+  "version": 2,
+  "parameters": [
+    {"name": "T_pipe", "expression": 353.15, "description": "pipe (inner) temperature in K"},
+    {"name": "T_inf", "expression": 293.15, "description": "ambient temperature in K"},
+    {"name": "k_ins", "expression": 0.2, "description": "insulation thermal conductivity in W/(m K)"},
+    {"name": "h_conv", "expression": 10.0, "description": "outer heat transfer coefficient in W/(m^2 K) (still air)"},
+    {"name": "a_pipe", "expression": "5*mm", "description": "pipe radius (inner insulation radius), 20 cells"},
+    {"name": "b_outer", "expression": "60*mm", "description": "outer insulation radius = domain size along r (swept)"},
+    {"name": "H_slab", "expression": "1*mm", "description": "axial (z) height of the modelled slice, insulated faces"},
+    {"name": "dx_mesh", "expression": "0.25*mm", "description": "uniform cell size"},
+    {"name": "r_probe", "expression": "b_outer - dx_mesh/2", "description": "probe radius: centre of the outermost cell"},
+    {"name": "q_ref", "expression": "2*pi*(T_pipe - T_inf)/(log(b_outer/a_pipe)/k_ins + 1/(h_conv*b_outer))",
+     "description": "analytic heat loss per m of pipe in W/m"}
+  ],
+  "domain": {"size_x": "b_outer", "size_y": "H_slab"},
+  "geometry": [
+    {"name": "pipe", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "a_pipe", "y1": "H_slab"}},
+    {"name": "surface_point", "kind": "point", "params": {"x": "r_probe", "y": "H_slab/2 + dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "insulation", "library": null, "properties": {"k": "k_ins"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"geometry": "axisymmetric", "T0": "T_inf"},
+      "features": [
+        {"name": "pipe_wall", "type": "fixed_temperature_domain", "selection": ["pipe"],
+         "params": {"temperature": "T_pipe"}, "enabled": true},
+        {"name": "outer_air", "type": "convection", "selection": ["x_hi"],
+         "params": {"h": "h_conv", "T_ext": "T_inf"}, "enabled": true},
+        {"name": "surface", "type": "temperature_probe", "selection": ["surface_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "b_outer", "values": ["7.5*mm", "10*mm", "15*mm", "20*mm", "30*mm", "45*mm", "60*mm"]}},
+  "derived_values": [
+    {"name": "q_line", "expression": "heat_flux_abs/((b_outer - a_pipe)*H_slab)", "selection": [], "operation": "integral",
+     "reference": "q_ref", "tolerance": 2e-3},
+    {"name": "theta_surface", "expression": "values - T_inf", "selection": [], "operation": "last",
+     "source": "heat.surface", "reference": "T_pipe - T_inf - q_ref/(2*pi*k_ins)*log(r_probe/a_pipe)",
+     "tolerance": 2e-3}
+  ],
+  "analytic_curves": [
+    {"name": "q_vs_b", "target": "sweep", "series": "q_line",
+     "expression": "2*pi*(T_pipe - T_inf)/(log(b_outer/a_pipe)/k_ins + 1/(h_conv*b_outer))", "tolerance": 2e-3},
+    {"name": "T_radial", "target": "line",
+     "expression": "T_pipe - q_ref/(2*pi*k_ins)*log(x/a_pipe)", "tolerance": 2e-3,
+     "line": ["a_pipe + dx_mesh/4", "H_slab/2 + dx_mesh/2", "b_outer - dx_mesh/4", "H_slab/2 + dx_mesh/2"],
+     "field": "heat.T"}
+  ]
+}

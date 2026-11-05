@@ -1,0 +1,88 @@
+{
+  "title": "Illuminated n-type bar with one contact: minority-hole diffusion length, SRH + radiative lifetime (analytic)",
+  "description": "An n-type bar (N_D = 1e23 1/m^3, n_i 1e16, 10 um long, two 5 nm cells high) with a single ohmic contact on [0, 20 nm] (0 V) and uniform generation G = 1e27 1/(m^3 s) (generation feature on all; contact cells generate nothing), SRH lifetime tau_srh plus radiative B = 1e-16 m^3/s (B N_D = 1e7 1/s). With one contact the total current is zero: the electron and hole contact currents separate the minority diffusion current. Stationary sweep tau_srh = 1e-10..3e-8 s (diffusion length 0.35..5.4 um). Low injection (excess holes <= 2.3e19 = 2.3e-4 N_D).\nAnalytic: tau_eff = 1 / (1 / tau_srh + B N_D), L = sqrt(D_p tau_eff), D_p = mu_p V_T; the excess holes vanish at the innermost contact cell centre x_c = w_contact - dx / 2 and are insulated at Lx: dp = G tau_eff (1 - cosh((Lx - x) / L) / cosh(W / L)), W = Lx - x_c. Hole current into the contact I_h = q G Ly (L tanh(W / L) - dx / 2) per m of depth (the half cell between x_c and the contact edge belongs to the contact and generates nothing); the free cells recombine the rest, integral R = G Ly (W - L tanh(W / L)).\nDerived values tab: I_electron (contact electron_current, = +I_h), I_hole (-hole_current, = I_h: the total is zero), L_measured = I_electron / (q G Ly) + dx / 2 against L tanh(W / L), R_total (integral of semiconductor_recombination) and P_max (largest hole density, at the cell next to x = Lx). Expect ~1e-4 (low-injection and ambipolar corrections ~dp / N_D, discretisation ~(dx / L)^2 / 24).\nSweep tab: the five derived values versus tau_srh (log axis useful) with their dashed curves: L_measured grows as sqrt(tau_eff) and bends over at tanh(W / L) and at the radiative limit tau_eff -> 1e-7 s.\nLine profile tab (last sweep value, 3e-8 s): P_profile, the cosh profile from p0 at the contact to its maximum at Lx. Field tab: N, P, recombination, V.",
+  "version": 1,
+  "parameters": [
+    {"name": "tau_srh", "expression": 1e-9, "description": "SRH lifetime of both carriers in s (the sweep runs 1e-10..3e-8 s)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (the semiconductor temperature setting)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity"},
+    {"name": "N_D", "expression": 1e23, "description": "donor density in 1/m^3"},
+    {"name": "mu_e", "expression": 0.135, "description": "electron mobility in m^2/(V s)"},
+    {"name": "mu_h", "expression": 0.048, "description": "hole (minority) mobility in m^2/(V s)"},
+    {"name": "B_rad", "expression": 1e-16, "description": "radiative recombination coefficient in m^3/s (GaAs-like)"},
+    {"name": "G0", "expression": 1e27, "description": "uniform generation rate in 1/(m^3 s)"},
+    {"name": "Lx", "expression": "10*um", "description": "bar length along x"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "2*dx_cell", "description": "bar height (two cells: a 1D problem)"},
+    {"name": "w_contact", "expression": "20*nm", "description": "width of the ohmic contact at x_lo"},
+    {"name": "x_c", "expression": "w_contact - dx_cell/2", "description": "centre of the innermost held contact cell (excess holes 0 there)"},
+    {"name": "W_free", "expression": "Lx - x_c", "description": "diffusion width from x_c to the insulated end in m"},
+    {"name": "n0", "expression": "N_D/2 + sqrt(N_D**2/4 + n_i**2)", "description": "equilibrium electron density in 1/m^3"},
+    {"name": "p0", "expression": "n_i**2/n0", "description": "equilibrium hole density in 1/m^3"},
+    {"name": "tau_eff", "expression": "1/(1/tau_srh + B_rad*N_D)", "description": "low-injection hole lifetime (SRH + radiative) in s"},
+    {"name": "D_h", "expression": "mu_h*V_T", "description": "hole diffusion constant in m^2/s"},
+    {"name": "L_D", "expression": "sqrt(D_h*tau_eff)", "description": "hole diffusion length in m"},
+    {"name": "L_tanh", "expression": "L_D*tanh(W_free/L_D)", "description": "effective collection length L tanh(W / L) in m"},
+    {"name": "I_h_ref", "expression": "q_e*G0*Ly*(L_tanh - dx_cell/2)", "description": "analytic hole current into the contact in A/m"},
+    {"name": "R_total_ref", "expression": "G0*Ly*(W_free - L_tanh)", "description": "analytic recombination per m of depth in 1/(m s)"},
+    {"name": "P_max_ref", "expression": "p0 + G0*tau_eff*(1 - cosh(dx_cell/(2*L_D))/cosh(W_free/L_D))",
+     "description": "hole density at the last cell centre Lx - dx / 2 in 1/m^3"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "contact_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "n_semiconductor", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": "mu_e", "mobility_p": "mu_h", "eps_dc": "eps_si",
+                    "lifetime": "tau_srh", "radiative_recombination": "B_rad"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {"temperature": "T_lat", "max_iterations": 100},
+      "features": [
+        {"name": "donors", "type": "doping", "selection": ["all"], "params": {"donors": "N_D"}, "enabled": true},
+        {"name": "light", "type": "generation", "selection": ["all"], "params": {"rate": "G0"}, "enabled": true},
+        {"name": "contact", "type": "ohmic_contact", "selection": ["contact_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["semiconductor.N", "semiconductor.P", "semiconductor.recombination", "semiconductor.V"],
+            "sweep": {"parameter": "tau_srh", "values": [1e-10, 3e-10, 1e-9, 3e-9, 1e-8, 3e-8]}},
+  "derived_values": [
+    {"name": "I_electron", "expression": "electron_current", "operation": "last", "source": "semiconductor.contact",
+     "reference": "I_h_ref", "tolerance": 0.001},
+    {"name": "I_hole", "expression": "-hole_current", "operation": "last", "source": "semiconductor.contact",
+     "reference": "I_h_ref", "tolerance": 0.001},
+    {"name": "L_measured", "expression": "electron_current/(q_e*G0*Ly) + dx_cell/2", "operation": "last",
+     "source": "semiconductor.contact", "reference": "L_tanh", "tolerance": 0.001},
+    {"name": "R_total", "expression": "semiconductor_recombination", "selection": [], "operation": "integral",
+     "reference": "R_total_ref", "tolerance": 0.001},
+    {"name": "P_max", "expression": "semiconductor_P", "selection": [], "operation": "max",
+     "reference": "P_max_ref", "tolerance": 0.001}
+  ],
+  "analytic_curves": [
+    {"name": "I_electron_curve", "target": "sweep", "expression": "I_h_ref", "tolerance": 0.001, "series": "I_electron"},
+    {"name": "I_hole_curve", "target": "sweep", "expression": "I_h_ref", "tolerance": 0.001, "series": "I_hole"},
+    {"name": "L_measured_curve", "target": "sweep", "expression": "L_tanh", "tolerance": 0.001, "series": "L_measured"},
+    {"name": "R_total_curve", "target": "sweep", "expression": "R_total_ref", "tolerance": 0.001, "series": "R_total"},
+    {"name": "P_max_curve", "target": "sweep", "expression": "P_max_ref", "tolerance": 0.001, "series": "P_max"},
+    {"name": "P_profile", "target": "line",
+     "expression": "p0 + G0*tau_eff*(1 - cosh((Lx - x)/L_D)/cosh(W_free/L_D))", "tolerance": 0.001,
+     "line": ["w_contact + dx_cell/4", "dx_cell/2", "Lx - dx_cell/4", "dx_cell/2"], "field": "semiconductor.P"}
+  ]
+}

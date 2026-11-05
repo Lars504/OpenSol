@@ -1,0 +1,108 @@
+{
+  "title": "Piezoelectric stiffening: pulse speed c_D in a shorted strip (two-way, analytic)",
+  "description": "A 6 mm strip along x (600 cells of 10 um, periodic y of 4 cells, rigid x walls) of one piezoelectric solid (rho 4700, c11 = 200 GPa, eps_dc 10, piezo_e11 = e only: P = e S_xx), electrostatics grounded on both x faces (shorted electrodes), electrostatics_acoustics_piezo two-way (back_action bound_charge: the bound charge -div(e S) re-solves the electrostatics every acoustic step). A Ricker traction sheet (10 MHz) at 1.5 mm launches a plane P pulse each way; the probes sit 1 and 2 mm to the right, and the run ends before any wall echo reaches them (the x_lo echo would reach probe_1 at ~0.95 us at e = 2.1; ~860-950 steps per run, one warm-started multigrid CG solve per step).\nAnalytic: with both ends grounded and pinned walls, D = e <S> = 0, so E = -e S / (eps0 eps) and T = (c11 + e^2 / (eps0 eps)) S: the pulse travels at the stiffened c_D = sqrt((c11 + e^2 / (eps0 eps)) / rho) (7290 m/s at e = 2.1, K^2 = 0.2) instead of c_E = sqrt(c11 / rho) (6523 m/s), with v_x = T / (2 rho c_D) s(t - t0 - r / c_D) (s the Ricker wavelet, t0 = 4 / f0); the potential carried by the pulse is V = e u / (eps0 eps), u = the displacement (u = v0 tau exp(-(pi f0 tau)^2)).\nDerived values tab: travel_1 / travel_2 = travel times sheet -> probe by a first-order matched-filter delay (r / c_D plus the delay estimate -integral of v s'(t - t_pred) / (v0 integral of s'^2)) vs r / c_D, expected ~1-2e-3 long (grid dispersion at ~70 cells per wavelength and the discrete stiffening e^2 / (eps0 eps) cos^2(k h / 2) both slow the pulse, more at the high-frequency end of the Ricker spectrum), tolerance 5e-3; m2_matched (amplitude and shape, 1 expected, 2 %). With back_action none (one-way, switch it in the coupling) the pulse runs at c_E: the travel times come out ~11 % long and every check fails, as it should; at e = 0.7 c_D is only 1.4 % above c_E, still ~3x the tolerance.\nProbes tab: probe_1 / probe_2 (v_x) with the dashed stiffened pulses (~1-2 % of the range from the dispersion delay); electrostatics.potential_1 with the dashed e u / (eps0 eps) (~3 %: the delay plus the cell-centre / half-step sampling).\nSweep tab: travel_2 versus piezo_e11 (0.7, 1.4, 2.1 C/m^2: c_D - c_E ~ e^2) with the dashed travel_2_vs_e (its error is measured against the 28 ns range of the curve, so ~2 % there).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "10*MHz", "description": "Ricker peak frequency of the sheet"},
+    {"name": "t0_r", "expression": "4/f0", "description": "time of the Ricker maximum at the sheet (400 ns)"},
+    {"name": "T_sheet", "expression": 1.0e6, "description": "peak traction of the sheet in Pa"},
+    {"name": "rho_p", "expression": 4700.0, "description": "density in kg/m^3"},
+    {"name": "c11_p", "expression": 2.0e11, "description": "stiffness c11 = c22 at constant field (c^E) in Pa"},
+    {"name": "c12_p", "expression": 0.7e11, "description": "stiffness c12 in Pa"},
+    {"name": "c66_p", "expression": 0.65e11, "description": "shear stiffness c66 in Pa (not excited)"},
+    {"name": "eps_p", "expression": 10.0, "description": "relative static permittivity eps_dc (clamped)"},
+    {"name": "e11_p", "expression": 2.1, "description": "piezoelectric constant piezo_e11 in C/m^2 (swept)"},
+    {"name": "stiff_p", "expression": "e11_p**2/(eps0_const*eps_p)", "description": "piezoelectric stiffening e^2 / (eps0 eps) in Pa (49.8 GPa at e = 2.1)"},
+    {"name": "c_D", "expression": "sqrt((c11_p + stiff_p)/rho_p)", "description": "stiffened P speed in m/s (7290 at e = 2.1)"},
+    {"name": "c_E", "expression": "sqrt(c11_p/rho_p)", "description": "unstiffened P speed in m/s (6523; one-way coupling)"},
+    {"name": "v0", "expression": "T_sheet/(2*rho_p*c_D)", "description": "velocity amplitude T / (2 rho c_D) on each side in m/s"},
+    {"name": "V_scale", "expression": "e11_p*v0/(eps0_const*eps_p)", "description": "potential per unit u / v0 [V/s]: V = V_scale tau exp(-(pi f0 tau)^2)"},
+    {"name": "dx_cell", "expression": "10*um", "description": "uniform cell size"},
+    {"name": "Lx", "expression": "6*mm", "description": "strip length (rigid walls at both ends)"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "strip height (periodic y: plane waves)"},
+    {"name": "y_mid", "expression": "1.5*dx_cell", "description": "y of the probes (a cell centre)"},
+    {"name": "x_s", "expression": "150.5*dx_cell", "description": "sheet position (cell centre; its normal traction sits on the two x faces of the cell)"},
+    {"name": "r1", "expression": "100.5*dx_cell", "description": "distance sheet -> v_x node of probe_1 (its cell's +x face)"},
+    {"name": "r2", "expression": "200.5*dx_cell", "description": "distance sheet -> v_x node of probe_2"},
+    {"name": "t1", "expression": "t0_r + r1/c_D", "description": "stiffened pulse centre time at probe_1"},
+    {"name": "t2", "expression": "t0_r + r2/c_D", "description": "stiffened pulse centre time at probe_2"},
+    {"name": "t1_centre", "expression": "t0_r + 100*dx_cell/c_D", "description": "pulse centre time at the probe_1 cell centre (the potential probe)"},
+    {"name": "E_ric", "expression": "3/(4*f0*sqrt(2*pi))", "description": "Ricker energy: integral of s^2 dt in s"},
+    {"name": "E_dot", "expression": "3.75*pi*f0*sqrt(pi/2)", "description": "integral of s'^2 dt in 1/s (the delay estimate's norm)"},
+    {"name": "T_run", "expression": "0.825*us", "description": "study duration: past probe_2's pulse (t2 + 1.2 / f0 at e = 0.7) and before the x_lo wall echo reaches probe_1 (t0_r + (2*x_s + r1) / c_D - 1.2 / f0 at e = 2.1)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_s", "y0": 0.0, "x1": "x_s", "y1": "Ly"}},
+    {"name": "probe_1_point", "kind": "point", "params": {"x": "x_s + 100*dx_cell", "y": "y_mid"}},
+    {"name": "probe_2_point", "kind": "point", "params": {"x": "x_s + 200*dx_cell", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "piezo_solid", "library": null,
+     "properties": {"rho": "rho_p", "c11": "c11_p", "c12": "c12_p", "c22": "c11_p", "c66": "c66_p",
+                    "eps_dc": "eps_p", "piezo_e11": "e11_p"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_x_lo": "rigid", "bc_x_hi": "rigid", "bc_y_lo": "periodic", "bc_y_hi": "periodic",
+                   "courant": 0.9},
+      "features": [
+        {"name": "sheet", "type": "traction_line_source", "selection": ["sheet_line"],
+         "params": {"waveform": "ricker", "frequency": "f0", "traction": "T_sheet", "direction": "x"}, "enabled": true},
+        {"name": "probe_1", "type": "field_probe", "selection": ["probe_1_point"], "params": {"component": "vx"},
+         "enabled": true},
+        {"name": "probe_2", "type": "field_probe", "selection": ["probe_2_point"], "params": {"component": "vx"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "ground_lo", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "ground_hi", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "potential_1", "type": "potential_probe", "selection": ["probe_1_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "piezo", "type": "electrostatics_acoustics_piezo", "source": "electrostatics", "target": "acoustics",
+     "every": null, "params": {"back_action": "bound_charge"}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-10, "preconditioner": "multigrid"}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": "T_run/4"},
+            "stored_fields": ["acoustics.vx", "electrostatics.V"],
+            "sweep": {"parameter": "e11_p", "values": [0.7, 1.4, 2.1]}},
+  "derived_values": [
+    {"name": "travel_1", "source": "acoustics.probe_1", "operation": "integral", "reference": "r1/c_D",
+     "tolerance": 5e-3,
+     "expression": "where(abs(t - t1) < 2/f0, r1/c_D*((1 - 2*(pi*f0*(t - t1))**2)*exp(-(pi*f0*(t - t1))**2))**2/E_ric - values*2*pi*f0*(pi*f0*(t - t1))*(2*(pi*f0*(t - t1))**2 - 3)*exp(-(pi*f0*(t - t1))**2)/(v0*E_dot), 0)"},
+    {"name": "travel_2", "source": "acoustics.probe_2", "operation": "integral", "reference": "r2/c_D",
+     "tolerance": 5e-3,
+     "expression": "where(abs(t - t2) < 2/f0, r2/c_D*((1 - 2*(pi*f0*(t - t2))**2)*exp(-(pi*f0*(t - t2))**2))**2/E_ric - values*2*pi*f0*(pi*f0*(t - t2))*(2*(pi*f0*(t - t2))**2 - 3)*exp(-(pi*f0*(t - t2))**2)/(v0*E_dot), 0)"},
+    {"name": "m2_matched", "source": "acoustics.probe_2", "operation": "integral", "reference": 1.0, "tolerance": 0.02,
+     "expression": "where(abs(t - t2) < 2/f0, values*(1 - 2*(pi*f0*(t - t2))**2)*exp(-(pi*f0*(t - t2))**2), 0)/(v0*E_ric)"}
+  ],
+  "analytic_curves": [
+    {"name": "probe_1_pulse", "target": "acoustics.probe_1",
+     "expression": "v0*(1 - 2*(pi*f0*(t - t1))**2)*exp(-(pi*f0*(t - t1))**2)", "tolerance": 0.03},
+    {"name": "probe_2_pulse", "target": "acoustics.probe_2",
+     "expression": "v0*(1 - 2*(pi*f0*(t - t2))**2)*exp(-(pi*f0*(t - t2))**2)", "tolerance": 0.04},
+    {"name": "potential_1_pulse", "target": "electrostatics.potential_1",
+     "expression": "V_scale*(t - t1_centre)*exp(-(pi*f0*(t - t1_centre))**2)", "tolerance": 0.05},
+    {"name": "travel_2_vs_e", "target": "sweep", "series": "travel_2", "expression": "r2/c_D", "tolerance": 0.05}
+  ]
+}

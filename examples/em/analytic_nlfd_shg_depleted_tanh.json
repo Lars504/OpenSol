@@ -1,0 +1,84 @@
+{
+  "title": "Analytic: pump-depleted SHG saturation, tanh^2 conversion (nonlinear FDFD)",
+  "description": "Phase-matched second-harmonic generation into saturation (em_fdfd_nonlinear, coupling_mode pump_depleted, Newton-Krylov): a y-periodic strip (4 rows of 10 nm, CPML along x) filled everywhere, PML included, with a birefringent medium: the E_z pump (1550 nm) sees eps_zz = 2.25, the H_z second harmonic travelling along x sees eps_yy = eps_sh, chosen so that the two 3-point lattice waves are exactly phase matched (K_2w = 2 K_w per cell; eps_sh = 2.2479). A 20 um chi2 slab (chi2_medium, crystal_class general, d23 = d34 = 25 pm/V: P_y(2w) = eps0 d E_z^2 and the back-action P_z(w) = 2 eps0 d E_y(2w) conj(E_z)) converts the pump launched by a line source of amplitude E0 = gamma_L / G_coef. The sweep runs the conversion length product Gamma L over 0.25-2.\nAnalytic (lattice coupled-mode theory, the reference of self-test nlfd_shg_depleted_tanh): with kappa_p = k0^2 d h / sin(K_w h) and kappa_sh = 2 cos^2(K_w h) k0^2 d h / sin(2 K_w h) (the hz centre factor included), Gamma L = E0 L sqrt(kappa_p kappa_sh); the SH at the cell centres grows as E0 kappa_ratio tanh(Gamma x / L), kappa_ratio = sqrt(kappa_sh / kappa_p), and the pump falls as E0 / cosh(Gamma L): the SH power fraction is tanh^2(Gamma L) (58 % at Gamma L = 1, 93 % at 2).\nSweep tab: eta_sh (the SH power fraction) vs gamma_L with the dashed tanh^2 curve, A_pump with the sech curve.\nDerived values tab: A_sh, A_pump and eta_sh against their references; expected ~1 % (coupled-mode accuracy Gamma / K and the backward waves; to be confirmed by a first run).\nLine profile tab (last sweep value, Gamma L = 2, snapshot 'channel sh'): |E| of the SH along the slab vs E0 kappa_ratio tanh(Gamma x / L).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "1550*nm", "description": "pump vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "periodic y period (4 cells)"},
+    {"name": "k_vac", "expression": "2*pi/lam_p", "description": "pump vacuum wavenumber k0 [1/m]"},
+    {"name": "eps_zz_p", "expression": 2.25, "description": "eps_zz seen by the E_z pump"},
+    {"name": "K_p", "expression": "2*asin(k_vac*sqrt(eps_zz_p)*dx_cell/2)", "description": "lattice phase per cell of the pump wave"},
+    {"name": "eps_sh", "expression": "(sin(K_p)/(k_vac*dx_cell))**2", "description": "eps_yy whose 2w lattice wave has K = 2 K_p (2.2479)"},
+    {"name": "d_val", "expression": 25e-12, "description": "d23 = d34 of the general chi2 tensor [m/V]"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump line source (centre of cell 100)"},
+    {"name": "x_nl", "expression": "2*um", "description": "chi2 slab front face (a cell edge)"},
+    {"name": "L_nl", "expression": "20*um", "description": "chi2 slab length (2000 cells)"},
+    {"name": "x_fwd", "expression": "x_nl + L_nl + 1.005*um", "description": "forward probes (cell centre, 100 cells past the slab)"},
+    {"name": "Lx", "expression": "x_nl + L_nl + 2*um", "description": "strip length (CPML on both x faces, outside the window)"},
+    {"name": "kappa_p", "expression": "k_vac**2*d_val*dx_cell/sin(K_p)", "description": "pump coupling per SH amplitude [1/V]"},
+    {"name": "kappa_sh", "expression": "2*cos(K_p)**2*k_vac**2*d_val*dx_cell/sin(2*K_p)", "description": "SH coupling per pump amplitude^2 at the cell centres [1/V]"},
+    {"name": "G_coef", "expression": "L_nl*sqrt(kappa_p*kappa_sh)", "description": "Gamma L per unit pump amplitude [m/V] (1.35e-9)"},
+    {"name": "kappa_ratio", "expression": "sqrt(kappa_sh/kappa_p)", "description": "SH / pump amplitude ratio at full conversion"},
+    {"name": "gamma_L", "expression": 1.0, "description": "conversion length product Gamma L (swept 0.25-2)"},
+    {"name": "E0", "expression": "gamma_L/G_coef", "description": "pump amplitude the line source launches [V/m] (7.4e8 at Gamma L = 1)"},
+    {"name": "A_sh_ref", "expression": "E0*kappa_ratio*tanh(gamma_L)", "description": "forward SH |E_y| at a cell centre [V/m]"},
+    {"name": "A_pump_ref", "expression": "E0/cosh(gamma_L)", "description": "transmitted pump |E_z| [V/m]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "chi2_slab", "kind": "rectangle", "params": {"x0": "x_nl", "y0": 0.0, "x1": "x_nl + L_nl", "y1": "Ly"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "1.5*dx_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "birefringent_medium", "library": null, "properties": {"eps_r": "eps_sh", "eps_zz": "eps_zz_p"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "pump_depleted",
+                   "iteration_method": "newton", "max_iterations": 30},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "ez"}, "enabled": true},
+        {"name": "sh", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "2 p", "polarization": "hz"}, "enabled": true},
+        {"name": "chi2", "type": "chi2_medium", "selection": ["chi2_slab"],
+         "params": {"crystal_class": "general", "d23": "d_val", "d34": "d_val", "orientation": "z_cut"}, "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "E0", "phase": 0.0}, "enabled": true},
+        {"name": "pump_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "p", "component": "ez"}, "enabled": true},
+        {"name": "sh_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "sh", "component": "ey"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs"],
+            "sweep": {"parameter": "gamma_L", "values": [0.25, 0.5, 1.0, 1.5, 2.0]}},
+  "derived_values": [
+    {"name": "A_sh", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.sh_forward",
+     "at": null, "reference": "A_sh_ref", "tolerance": 0.02},
+    {"name": "A_pump", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_forward",
+     "at": null, "reference": "A_pump_ref", "tolerance": 0.03},
+    {"name": "eta_sh", "expression": "(abs/(E0*kappa_ratio))**2", "selection": [], "operation": "mean",
+     "source": "nl.sh_forward", "at": null, "reference": "tanh(gamma_L)**2", "tolerance": 0.04}
+  ],
+  "analytic_curves": [
+    {"name": "cmt_tanh2", "target": "sweep", "expression": "tanh(gamma_L)**2", "tolerance": 0.04, "series": "eta_sh"},
+    {"name": "cmt_sech", "target": "sweep", "expression": "E0/cosh(gamma_L)", "tolerance": 0.03, "series": "A_pump"},
+    {"name": "sh_growth", "target": "line",
+     "expression": "E0*kappa_ratio*tanh(gamma_L*min(max((x - x_nl)/L_nl, 0), 1))",
+     "tolerance": 0.02, "line": ["x_nl + dx_cell/2", "1.5*dx_cell", "x_nl + L_nl + 1*um", "1.5*dx_cell"],
+     "field": "nl.e_abs", "snapshot": "channel sh"}
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "title": "Analytic: adjoint sensitivity of the Fabry-Perot transmission, dT/d eps (FDFD)",
+  "description": "The FDFD Fabry-Perot slab (n = 2, d = 500 nm, normal incidence from a line source spanning the periodic y period) with an adjoint_objective on the transmission line (quantity flux, weight 1): the output field eps_sensitivity = dJ/d eps_r per unit area from one transposed solve. Stationary study swept over the wavelength lam (1.05-1.5 um, both signs of the slope).\nAnalytic (Airy, slab in vacuum): g = (n^2 - 1) / (2 n), delta = 2 pi n d / lam, T = 1 / (1 + g^2 sin^2 delta); dT/dn = -T^2 [2 g g' sin^2 delta + g^2 sin(2 delta) 2 pi d / lam] with g' = (n^2 + 1) / (2 n^2); a uniform eps_r change of the slab gives dT/d eps = dT/dn / (2 n) (lam = 1.2 um: T 0.7033, dT/d eps +0.0708; lam = 1.25 um is a zero of the slope, so it is not swept).\nDerived values tab: T_obj = objective flux / P_inc vs T; dT_deps = integral of eps_sensitivity over the slab / P_inc vs dT/d eps (the source line, the objective line and the cells beyond their hi faces lie in vacuum outside the slab, so the adjoint gradient is exact for the discrete system).\nSweep tab: T_obj and dT_deps vs lam with the dashed analytic curves.\nField tab: eps_sensitivity (dJ/d eps_r per area of every cell, vacuum included; standing-wave fringes inside the slab) and |E_z|.\nExpected agreement: T ~1e-3 (as analytic_fdfd_fabry_perot_slab), dT/d eps ~0.5-1 % (discrete phase delta off by ~(k_n dx)^2 / 24); to be confirmed by a first run.",
+  "version": 1,
+  "parameters": [
+    {"name": "lam", "expression": "1.2*um", "description": "vacuum wavelength of the solve (swept 1.05-1.5 um)"},
+    {"name": "n_slab", "expression": 2.0, "description": "slab refractive index"},
+    {"name": "d_slab", "expression": "500*nm", "description": "slab thickness (50 cells; both faces on cell edges)"},
+    {"name": "x_slab", "expression": "2*um", "description": "slab front face"},
+    {"name": "Lx", "expression": "5*um", "description": "domain length along x (cpml on both x faces)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells)"},
+    {"name": "x_source", "expression": "1.005*um", "description": "line source (cell centre), in vacuum"},
+    {"name": "x_trans", "expression": "3.505*um", "description": "objective (transmission flux) line (cell centre), behind the slab"},
+    {"name": "A_src", "expression": 1.0, "description": "line source amplitude [V/m] radiated to each side"},
+    {"name": "P_inc", "expression": "A_src**2*Ly/(2*mu0_const*c_const)",
+     "description": "incident power [W/m] the line sends toward +x: A^2 Ly / (2 eta0)"},
+    {"name": "g_coef", "expression": "(n_slab**2 - 1)/(2*n_slab)", "description": "g = (n^2 - 1) / (2 n); F = g^2 = 0.5625"},
+    {"name": "g_prime", "expression": "(n_slab**2 + 1)/(2*n_slab**2)", "description": "dg/dn = (n^2 + 1) / (2 n^2)"},
+    {"name": "delta", "expression": "2*pi*n_slab*d_slab/lam", "description": "one-pass phase delta = 2 pi n d / lam"},
+    {"name": "T_ref", "expression": "1/(1 + g_coef**2*sin(delta)**2)", "description": "analytic Airy transmission"},
+    {"name": "dT_dn", "expression": "-T_ref**2*(2*g_coef*g_prime*sin(delta)**2 + g_coef**2*sin(2*delta)*2*pi*d_slab/lam)",
+     "description": "analytic dT/dn at fixed thickness"},
+    {"name": "dT_deps_ref", "expression": "dT_dn/(2*n_slab)", "description": "analytic dT/d eps_r = dT/dn / (2 n)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab", "y0": 0.0, "x1": "x_slab + d_slab", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_source", "y0": 0.0, "x1": "x_source", "y1": "Ly"}},
+    {"name": "trans_line", "kind": "line", "params": {"x0": "x_trans", "y0": 0.0, "x1": "x_trans", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "slab_material", "library": null, "properties": {"eps_r": "n_slab**2"}, "dispersion": null,
+     "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "wavelength": "lam"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"amplitude": "A_src", "phase": 0.0}, "enabled": true},
+        {"name": "objective", "type": "adjoint_objective", "selection": ["trans_line"],
+         "params": {"quantity": "flux", "weight": 1.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "10*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["em.eps_sensitivity", "em.ez_abs"],
+            "sweep": {"parameter": "lam", "values": ["1.05*um", "1.1*um", "1.2*um", "1.4*um", "1.5*um"]}},
+  "derived_values": [
+    {"name": "T_obj", "expression": "weighted/P_inc", "selection": [], "operation": "last", "source": "em.objective",
+     "reference": "T_ref", "tolerance": 0.003},
+    {"name": "dT_deps", "expression": "em_eps_sensitivity/P_inc", "selection": ["slab"], "operation": "integral",
+     "source": null, "reference": "dT_deps_ref", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "T_sweep", "target": "sweep", "series": "T_obj", "expression": "T_ref", "tolerance": 0.003},
+    {"name": "dT_deps_sweep", "target": "sweep", "series": "dT_deps", "expression": "dT_deps_ref", "tolerance": 0.02}
+  ]
+}

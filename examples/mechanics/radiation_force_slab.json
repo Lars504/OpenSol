@@ -1,0 +1,89 @@
+{
+  "title": "Radiation pressure on a dielectric slab: optical force vs thickness (analytic)",
+  "description": "A plane wave (line source spanning the y period, em_fdfd_ez at 1550 nm) hits a lossless glass slab (n = 1.5) in vacuum; em_solid_optical_force hands the force density -(eps0/4) |E_z|^2 grad eps_r to the solid, and a Fixed (domain) support on the slab itself holds it, so minus its reaction is the total force on the slab. Stationary study, swept over the slab thickness d (60..460 nm, every value a whole number of 10 nm cells; the base 260 nm runs last).\nAnalytic (momentum balance of a lossless slab): F_x = 2 R P_inc / c per m of depth, P_inc = A^2 Ly / (2 eta0), Airy reflectance R = F sin^2(delta) / (1 + F sin^2(delta)), delta = 2 pi n d / lambda, F = ((n^2 - 1) / (2 n))^2; transmitted power (1 - R) P_inc. R peaks (0.148) at the quarter wave d = lambda / (4 n) = 258 nm and vanishes at the half wave 517 nm.\nSweep tab: force_x, P_trans and R_measured vs d_slab with the dashed analytic curves. Derived values tab: the same per run with their references. Expect ~0.5 % on force_x near the quarter wave: the face form of the force is not the discretely conserved one, an error of O((n k0 dx)^2 / 2) ~2e-3 of each interface term (~0.6 P_inc / c), so where R is small (60 nm, 460 nm) the relative error grows to a few %; ~4e-4 on P_trans; R_measured = 1 - P_trans / P_inc (relative to R) ~2e-3 where R is not small, ~1 % at 60 / 460 nm (R ~0.02).\nLine profile tab (base d = 260 nm): E_transmitted = |E_z| behind the slab vs A sqrt(1 - R). Field tab: em.ez_abs and the coupled body force solid.body_force_x (two opposite face forces, net along +x).",
+  "version": 1,
+  "parameters": [
+    {"name": "d_slab", "expression": "260*nm", "description": "slab thickness (26 cells, ~a quarter wave); swept"},
+    {"name": "n_slab", "expression": 1.5, "description": "slab refractive index (eps_r = n^2, lossless)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "Lx", "expression": "4*um", "description": "strip length along x (CPML outside both x faces)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells)"},
+    {"name": "dx_mesh", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "x_slab", "expression": "1.5*um", "description": "slab front face (on a cell edge)"},
+    {"name": "x_source", "expression": "0.505*um", "description": "line source x (cell centre), in vacuum"},
+    {"name": "x_trans", "expression": "3.005*um", "description": "transmission flux line x (cell centre), behind the slab"},
+    {"name": "A_src", "expression": 1e7, "description": "line source amplitude in V/m (radiated to each side)"},
+    {"name": "P_inc", "expression": "A_src**2*Ly/(2*mu0_const*c_const)",
+     "description": "incident power in W/m the source sends toward +x: A^2 Ly / (2 eta0)"},
+    {"name": "F_coef", "expression": "((n_slab**2 - 1)/(2*n_slab))**2",
+     "description": "coefficient of finesse F of the slab in vacuum (0.174 for n = 1.5)"},
+    {"name": "delta_slab", "expression": "2*pi*n_slab*d_slab/lambda0", "description": "single-pass phase of the slab in rad"},
+    {"name": "R_slab", "expression": "F_coef*sin(delta_slab)**2/(1 + F_coef*sin(delta_slab)**2)",
+     "description": "analytic (Airy) reflectance of the slab"},
+    {"name": "F_rad", "expression": "2*R_slab*P_inc/c_const", "description": "analytic radiation force on the slab in N/m"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab", "y0": 0.0, "x1": "x_slab + d_slab", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_source", "y0": 0.0, "x1": "x_source", "y1": "Ly"}},
+    {"name": "trans_line", "kind": "line", "params": {"x0": "x_trans", "y0": 0.0, "x1": "x_trans", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null,
+     "properties": {"eps_r": "n_slab**2", "youngs_modulus": 1e10, "poisson_ratio": 0.2},
+     "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"amplitude": "A_src", "phase": 0.0}, "enabled": true},
+        {"name": "transmitted", "type": "flux_monitor", "selection": ["trans_line"], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "anchor", "type": "fixed_domain", "selection": ["slab"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "optical_force", "type": "em_solid_optical_force", "source": "em", "target": "solid", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["em.ez_re", "em.ez_abs", "solid.body_force_x"],
+            "sweep": {"parameter": "d_slab", "values": [6e-08, 1.2e-07, 1.8e-07, 2.2e-07, 3e-07, 3.6e-07, 4.2e-07,
+                                                        4.6e-07, 2.6e-07]}},
+  "derived_values": [
+    {"name": "force_x", "expression": "-F_x", "selection": [], "operation": "last", "source": "solid.anchor",
+     "reference": "F_rad", "tolerance": 0.08},
+    {"name": "P_trans", "expression": "power", "selection": [], "operation": "last", "source": "em.transmitted",
+     "reference": "(1 - R_slab)*P_inc", "tolerance": 0.003},
+    {"name": "R_measured", "expression": "1 - power/P_inc", "selection": [], "operation": "last",
+     "source": "em.transmitted", "reference": "R_slab", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "force_vs_d", "target": "sweep", "expression": "F_rad", "tolerance": 0.015, "series": "force_x"},
+    {"name": "P_trans_vs_d", "target": "sweep", "expression": "(1 - R_slab)*P_inc", "tolerance": 0.003,
+     "series": "P_trans"},
+    {"name": "R_vs_d", "target": "sweep", "expression": "R_slab", "tolerance": 0.02, "series": "R_measured"},
+    {"name": "E_transmitted", "target": "line", "expression": "A_src*sqrt(1 - R_slab)", "tolerance": 0.01,
+     "line": ["x_slab + d_slab + 100*nm", "Ly/2", "Lx - 100*nm", "Ly/2"], "field": "em.ez_abs"}
+  ]
+}

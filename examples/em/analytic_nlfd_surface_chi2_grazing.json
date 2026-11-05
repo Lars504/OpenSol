@@ -1,0 +1,81 @@
+{
+  "title": "Analytic: surface chi2 SHG at grazing incidence, linear growth (nonlinear FDFD)",
+  "description": "Surface second-harmonic generation (em_fdfd_nonlinear, surface_chi2): a y-periodic vacuum strip (period H = 200 nm, 20 rows of 10 nm, CPML along x); an H_z line source launches the pump (1550 nm, E_y = A_p along the full height), so the pump field is NORMAL to the horizontal top face of the surface layer, a rectangle y 0-100 nm over x_nl .. x_nl + L_nl with chi_s_nnn only (chi_s_ntt = chi_s_tnt = 0). interface_with = the one cell row above it keeps only that top face (not the periodic wrap at y = 0, whose opposite dipoles would cancel it, nor the vertical ends, where E_n = E_x = 0 anyway). P_s,n = (1/2) eps0 chi_s_nnn E_n^2 (selvedge inside) is a one-cell dipole layer P_y = P_s,n / h; its y-mean P_s,n / H drives the y-uniform SH wave, phase matched in vacuum (2 k), so the SH grows linearly with L_nl (swept 2-10 um); the higher y orders are evanescent (H below the 775 nm SH wavelength).\nAnalytic: continuum |E_2w| = k0 chi_s_nnn A_p^2 L / (2 H) (the coupled-mode growth k_2w <P> L / (2 eps0)); the reference E_sh_ref is the exact 3-point lattice form: E_n = A_p cos(K_w h / 2) (the face-mean normal field), the face deposit's cos(K_w h), the face-lattice Green's function h^2 / (2 sin K_2w h) and the centre probe's cos(K_2w h / 2), times the vacuum lattice mismatch |sin(N dK / 2) / sin(dK / 2)| (dK = K_2w h - 2 K_w h ~ (k h)^3 / 4, negligible here); the two differ by ~0.1 %.\nSweep tab: E_sh (forward |E_y| of the SH, ~1e6 V/m at 10 um) vs L_nl with the dashed lattice and continuum lines.\nDerived values tab: E_sh against E_sh_ref and E_p (the pump inside the layer region) against A_p cos(K_w h / 2); expected ~1e-3 (CPML floor; to be confirmed by a first run).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "1550*nm", "description": "pump vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "H_per", "expression": "200*nm", "description": "periodic y period H (20 cells)"},
+    {"name": "y_top", "expression": "100*nm", "description": "top face of the surface layer (a cell edge, normal +y)"},
+    {"name": "k_vac", "expression": "2*pi/lam_p", "description": "pump vacuum wavenumber k0 [1/m]"},
+    {"name": "chi_nnn", "expression": 1e-18, "description": "surface chi_s_nnn [m^2/V]"},
+    {"name": "A_p", "expression": 1e8, "description": "pump E_y amplitude [V/m] the line source launches (on the faces)"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump line source (centre of cell 100)"},
+    {"name": "x_nl", "expression": "2*um", "description": "start of the surface layer (a cell edge)"},
+    {"name": "L_nl", "expression": "6*um", "description": "surface layer length (swept 2-10 um; whole cells)"},
+    {"name": "x_mid", "expression": "x_nl + L_nl/2 + dx_cell/2", "description": "pump probe inside the layer region"},
+    {"name": "x_fwd", "expression": "x_nl + L_nl + 1.005*um", "description": "forward SH probe (cell centre, 100 cells past the layer)"},
+    {"name": "y_probe", "expression": "155*nm", "description": "probe row (a cell centre above the layer)"},
+    {"name": "Lx", "expression": "x_nl + L_nl + 2*um", "description": "strip length (CPML on both x faces, outside the window)"},
+    {"name": "K_p", "expression": "2*asin(k_vac*dx_cell/2)", "description": "vacuum lattice phase per cell of the pump"},
+    {"name": "K_sh", "expression": "2*asin(k_vac*dx_cell)", "description": "vacuum lattice phase per cell of the SH"},
+    {"name": "dK", "expression": "K_sh - 2*K_p", "description": "vacuum lattice mismatch per cell (1.7e-5)"},
+    {"name": "N_nl", "expression": "L_nl/dx_cell", "description": "layer cells along x"},
+    {"name": "E_n", "expression": "A_p*cos(K_p/2)", "description": "normal pump field at the cell centres [V/m]"},
+    {"name": "C_tem", "expression": "cos(K_sh/2)*dx_cell**2/(2*sin(K_sh))*(2*k_vac)**2*cos(K_p)*0.5*chi_nnn*E_n**2/H_per",
+     "description": "SH per layer column at the centre probe [V/m]"},
+    {"name": "E_sh_ref", "expression": "C_tem*abs(sin(N_nl*dK/2)/sin(dK/2))", "description": "lattice forward |E_2w| [V/m]"},
+    {"name": "E_sh_cont", "expression": "k_vac*chi_nnn*A_p**2*L_nl/(2*H_per)", "description": "continuum forward |E_2w| [V/m]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "H_per"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "H_per"}},
+    {"name": "surface_layer", "kind": "rectangle", "params": {"x0": "x_nl", "y0": 0.0, "x1": "x_nl + L_nl", "y1": "y_top"}},
+    {"name": "row_above", "kind": "rectangle", "params": {"x0": 0.0, "y0": "y_top", "x1": "Lx", "y1": "y_top + dx_cell"}},
+    {"name": "mid_point", "kind": "point", "params": {"x": "x_mid", "y": "y_probe"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "vacuum", "library": null, "properties": {"eps_r": 1.0}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "undepleted"},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "hz"}, "enabled": true},
+        {"name": "sh", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "2 p", "polarization": "hz"}, "enabled": true},
+        {"name": "surface", "type": "surface_chi2", "selection": ["surface_layer"],
+         "params": {"chi_s_nnn": "chi_nnn", "chi_s_ntt": 0.0, "chi_s_tnt": 0.0, "selvedge": "inside",
+                    "interface": "staircase", "interface_with": ["row_above"]}, "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "A_p", "phase": 0.0}, "enabled": true},
+        {"name": "pump_mid", "type": "field_probe", "selection": ["mid_point"],
+         "params": {"channel": "p", "component": "ey"}, "enabled": true},
+        {"name": "sh_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "sh", "component": "ey"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs"],
+            "sweep": {"parameter": "L_nl", "values": [2e-06, 4e-06, 6e-06, 8e-06, 1e-05]}},
+  "derived_values": [
+    {"name": "E_sh", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.sh_forward",
+     "at": null, "reference": "E_sh_ref", "tolerance": 0.005},
+    {"name": "E_p", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_mid",
+     "at": null, "reference": "E_n", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "tem_lattice", "target": "sweep", "expression": "E_sh_ref", "tolerance": 0.005, "series": "E_sh"},
+    {"name": "tem_continuum", "target": "sweep", "expression": "E_sh_cont", "tolerance": 0.01, "series": "E_sh"}
+  ]
+}

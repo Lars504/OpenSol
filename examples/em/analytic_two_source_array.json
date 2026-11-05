@@ -1,0 +1,72 @@
+{
+  "title": "Analytic: two line-source array far field and Hankel near field",
+  "description": "Two in-phase cw E_z line sources, d_src = 1.5 lambda0 apart along x, in a CPML-bounded vacuum box (FDTD).\nAnalytic: array factor cos^2(pi d cos(angle) / lambda) with lobes at 90, +-48.2 deg and nulls at 0, +-70.5 deg; steady probe amplitude E_amp = (omega mu0 I / 4) |H0^(2)(k r1) + H0^(2)(k r2)|.\nFar field tab: em.far vs the dashed array_factor (both peak-normalised).\nProbes tab: em.probe between the dashed +-E_amp lines. Derived values tab: E_steady vs its reference.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "1*um", "description": "cw vacuum wavelength (50 cells)"},
+    {"name": "L", "expression": "4*um", "description": "domain side length (CPML outside)"},
+    {"name": "d_src", "expression": "1.5*lambda0",
+     "description": "source spacing along x"},
+    {"name": "I_src", "expression": 0.001, "description": "filament current of each source [A], in phase"},
+    {"name": "x_src1", "expression": "L/2 - d_src/2", "description": "left source x (a cell centre)"},
+    {"name": "x_src2", "expression": "L/2 + d_src/2", "description": "right source x (a cell centre)"},
+    {"name": "y_src", "expression": "2.01*um", "description": "source y (a cell centre)"},
+    {"name": "x_prb", "expression": "2.51*um", "description": "probe x (a cell centre)"},
+    {"name": "y_prb", "expression": "3.01*um", "description": "probe y (a cell centre)"},
+    {"name": "r1", "expression": "hypot(x_prb - x_src1, y_prb - y_src)", "description": "probe distance to the left source"},
+    {"name": "r2", "expression": "hypot(x_prb - x_src2, y_prb - y_src)", "description": "probe distance to the right source"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber [1/m]"},
+    {"name": "E_amp",
+     "expression": "2*pi*c_const/lambda0*mu0_const*I_src/4*hypot(j0(k_vac*r1) + j0(k_vac*r2), y0(k_vac*r1) + y0(k_vac*r2))",
+     "description": "analytic steady |E_z| at the probe [V/m]: (omega mu0 I / 4) |H0^(2)(k r1) + H0^(2)(k r2)|, H0^(2) = J0 - j Y0"},
+    {"name": "null_deg", "expression": "acos(lambda0/(2*d_src))*180/pi",
+     "description": "first far-field null off the axis [deg]: cos(phi) = lambda / (2 d)"},
+    {"name": "lobe_deg", "expression": "acos(lambda0/d_src)*180/pi",
+     "description": "off-broadside lobe [deg]: cos(phi) = lambda / d"},
+    {"name": "T_run", "expression": "30*lambda0/c_const", "description": "study duration: 30 periods"},
+    {"name": "T_steady", "expression": "T_run - 3*lambda0/c_const",
+     "description": "start of the window (last 3 periods) whose peak |E_z| is the steady amplitude"}
+  ],
+  "domain": {"size_x": "L", "size_y": "L"},
+  "geometry": [
+    {"name": "source_point_1", "kind": "point", "params": {"x": "x_src1", "y": "y_src"}},
+    {"name": "source_point_2", "kind": "point", "params": {"x": "x_src2", "y": "y_src"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_prb", "y": "y_prb"}},
+    {"name": "far_field_box", "kind": "rectangle", "params": {"x0": "1*um", "y0": "1*um", "x1": "3*um", "y1": "3*um"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {},
+      "features": [
+        {"name": "source_1", "type": "point_source", "selection": ["source_point_1"],
+         "params": {"waveform": "cw", "wavelength": "lambda0", "current": "I_src"}, "enabled": true},
+        {"name": "source_2", "type": "point_source", "selection": ["source_point_2"],
+         "params": {"waveform": "cw", "wavelength": "lambda0", "current": "I_src"}, "enabled": true},
+        {"name": "probe", "type": "field_probe", "selection": ["probe_point"], "params": {"component": "ez"},
+         "enabled": true},
+        {"name": "far", "type": "far_field", "selection": ["far_field_box"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1, "n_angles": 360},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "20*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "E_steady", "source": "em.probe", "operation": "max", "reference": "E_amp", "tolerance": 0.05,
+     "expression": "where(t > T_steady, abs(values), 0)"}
+  ],
+  "analytic_curves": [
+    {"name": "array_factor", "target": "em.far", "expression": "cos(pi*d_src*cos(angle)/wavelength)**2", "tolerance": 0.05},
+    {"name": "hankel_amplitude", "target": "em.probe", "expression": "E_amp"},
+    {"name": "hankel_amplitude_negative", "target": "em.probe", "expression": "-E_amp"}
+  ]
+}

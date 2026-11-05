@@ -1,0 +1,71 @@
+{
+  "title": "Axisymmetric coaxial capacitor: (r, z) slice (electrostatics, analytic)",
+  "description": "Electrostatics with geometry 'axisymmetric' (x = r, the axis is x_lo, y = z): an (r, z) slice of height H of an infinite coax. The core (rectangle r < a) is a terminal at V0, the shield is a voltage 0 V on x_hi (r = b), the z faces are insulated, so the field is radial. Fill eps_fill. The same coax as coax_capacitor_electrostatics, without its staircased circles.\nAnalytic: V = V0 ln(b/r)/ln(b/a), E_r = V0/(r ln(b/a)), whole-ring capacitance of the slice C = 2 pi eps0 eps_fill H/ln(b/a) (in F: held charges are whole rings on (r, z)), C' = C/H per m of depth.\nDerived values tab: C_ring (core charge / voltage, F), C_per_m (C_ring / H, F/m), Q_shield (scalar output charge_shield = -C V0), W_field (ring-weighted integral of E.D/2 = C V0^2/2), V_mid (probe at the centre of the cell containing r = sqrt(a b)). Expect C 1e-4 (b = 4 mm) to 2.3e-4 (b = 1 mm) below the analytic value (the series ring conductances are a trapezoid rule of ln(b/a): (dx^2/12)(1/a^2 - 1/b^2)/ln(b/a)), W within ~5e-4 (cell-centre E), V_mid ~1e-4.\nSweep tab: C_ring versus the shield radius b (1 to 4 mm) with the dashed C_vs_b, C ~ 1/ln(b/a).\nLine profile tab (b = 4 mm): V_radial (field V, V0 in the held core) and E_radial (field E_x = E_r, 0 in the core) from the axis to the shield.",
+  "version": 2,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "core voltage [V]; the shield is held at 0 V"},
+    {"name": "a_core", "expression": "0.5*mm", "description": "core (inner conductor) radius"},
+    {"name": "b_shield", "expression": "2*mm", "description": "shield (outer conductor) inner radius = domain size along r (swept)"},
+    {"name": "eps_fill", "expression": 2.1, "description": "static relative permittivity of the fill (PTFE ~2.1)"},
+    {"name": "H_slice", "expression": "0.25*mm", "description": "axial height of the modelled slice (insulated z faces)"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform cell size (a / dx = 20)"},
+    {"name": "r_probe", "expression": "(floor(sqrt(a_core*b_shield)/dx_cell + 1e-9) + 0.5)*dx_cell",
+     "description": "probe radius: centre of the cell containing sqrt(a b), where V is about V0/2"},
+    {"name": "C_ref", "expression": "2*pi*eps0_const*eps_fill*H_slice/log(b_shield/a_core)",
+     "description": "analytic whole-ring capacitance of the slice in F"}
+  ],
+  "domain": {"size_x": "b_shield", "size_y": "H_slice"},
+  "geometry": [
+    {"name": "core", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "a_core", "y1": "H_slice"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "r_probe", "y": "H_slice/2 + dx_cell/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fill", "library": null, "properties": {"eps_dc": "eps_fill"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {"geometry": "axisymmetric"},
+      "features": [
+        {"name": "core", "type": "terminal", "selection": ["core"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "shield", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "mid_probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "b_shield", "values": ["1*mm", "1.5*mm", "2*mm", "3*mm", "4*mm"]}},
+  "derived_values": [
+    {"name": "C_ring", "expression": "charge/voltage", "selection": [], "operation": "last",
+     "source": "electrostatics.core", "reference": "C_ref", "tolerance": 1e-3},
+    {"name": "C_per_m", "expression": "charge/(voltage*H_slice)", "selection": [], "operation": "last",
+     "source": "electrostatics.core", "reference": "2*pi*eps0_const*eps_fill/log(b_shield/a_core)",
+     "tolerance": 1e-3},
+    {"name": "Q_shield", "expression": "electrostatics_charge_shield", "selection": [], "operation": "mean",
+     "reference": "-C_ref*V0", "tolerance": 1e-3},
+    {"name": "W_field", "expression": "0.5*(E_x*D_x + E_y*D_y)", "selection": ["all"], "operation": "integral",
+     "reference": "0.5*C_ref*V0**2", "tolerance": 3e-3},
+    {"name": "V_mid", "expression": "values", "selection": [], "operation": "last",
+     "source": "electrostatics.mid_probe", "reference": "V0*log(b_shield/r_probe)/log(b_shield/a_core)",
+     "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "C_vs_b", "target": "sweep", "series": "C_ring", "expression": "C_ref", "tolerance": 1e-3},
+    {"name": "V_radial", "target": "line", "field": "electrostatics.V",
+     "expression": "V0*log(b_shield/min(max(x, a_core), b_shield))/log(b_shield/a_core)", "tolerance": 2e-3,
+     "line": ["dx_cell/4", "H_slice/2 + dx_cell/2", "b_shield - dx_cell/4", "H_slice/2 + dx_cell/2"]},
+    {"name": "E_radial", "target": "line", "field": "electrostatics.E_x",
+     "expression": "where(x > a_core, V0/(x*log(b_shield/a_core)), 0)", "tolerance": 2e-3,
+     "line": ["dx_cell/4", "H_slice/2 + dx_cell/2", "b_shield - dx_cell/4", "H_slice/2 + dx_cell/2"]}
+  ]
+}

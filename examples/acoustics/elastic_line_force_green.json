@@ -1,0 +1,93 @@
+{
+  "title": "Line force in an elastic solid: 2D elastodynamic Green's function (analytic)",
+  "description": "A cw point force (force_source, 1 MHz, F per m of z, along +x) at the centre of a 45 mm silica-like square (elastic_waves, isotropic: cL 5960, cS 3760 m/s; 40 cells per shear wavelength, 64-cell absorbing layers inside the domain), run for ~40 periods (~3 s).\nAnalytic (rho dv/dt = div s + F sin(w t) x delta, time convention exp(+j w t), g = -(j/4) H0^(2)(k r) the outgoing solution of (lap + k^2) g = -delta): U_xx = g_S / mu + (1 / (rho w^2)) d^2(g_S - g_P)/dx^2, i.e. with c = X / r, s = Y / r (X along the force): U_xx = -(j/4) [ (s^2 H0(kS r) + (c^2 - s^2) H1(kS r)/(kS r)) / mu + (c^2 H0(kP r) - (c^2 - s^2) H1(kP r)/(kP r)) / M ], mu = rho cS^2, M = rho cL^2; v_x = Im[j w F U_xx e^(j w t)] = (w F / 4) [J sin(w t) - Y cos(w t)] with J, Y the same brackets of J0, J1 (Y0, Y1). Along the force the far field is the P wave (H0(kP r) / M), across it the S wave (H0(kS r) / mu); both lines carry the 1/r^2 near field of the other wave.\nLine profile tab (final state, v_x at t_end - dt/2): vx_along_force (y = y_s, P) and vx_across_force (x = x_s, S), from 12 to 160 cells out; v_x sits on the +x cell face, so the curves use X = x + dx/2 - x_s in the general (c, s) formula, which also holds half a cell off the axis. Expected ~1 % of the curve range (grid dispersion ~1e-3 in phase speed over up to 4 shear wavelengths, CPML reflections, the source split over the two x faces of its cell); tolerance 3 % (P) / 4 % (S), to be confirmed by a first run.\nProbes tab: probe_P (100.5 cells along +x) and probe_S (100 cells along +y) with the steady state times the source ramp (approximate while the ramp lasts).\nDerived values tab: pp_mean_P / pp_mean_S = time mean of 2 v_x^2 over the last 10 periods vs (w F / 4)^2 (J^2 + Y^2) at the v_x node (tolerance 6 %).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "1*MHz", "description": "source frequency"},
+    {"name": "w_ang", "expression": "2*pi*f0", "description": "angular frequency in rad/s"},
+    {"name": "rho_s", "expression": 2200.0, "description": "solid density in kg/m^3"},
+    {"name": "cL_s", "expression": 5960.0, "description": "longitudinal (P) speed in m/s"},
+    {"name": "cS_s", "expression": 3760.0, "description": "shear (S) speed in m/s"},
+    {"name": "mu_s", "expression": "rho_s*cS_s**2", "description": "shear modulus mu in Pa (31.1 GPa)"},
+    {"name": "M_s", "expression": "rho_s*cL_s**2", "description": "P-wave modulus lambda + 2 mu in Pa (78.1 GPa)"},
+    {"name": "kP", "expression": "w_ang/cL_s", "description": "P wavenumber in 1/m"},
+    {"name": "kS", "expression": "w_ang/cS_s", "description": "S wavenumber in 1/m"},
+    {"name": "dx_cell", "expression": "cS_s/(40*f0)", "description": "uniform cell size (40 cells per shear wavelength, 63 per P wavelength; 94 um)"},
+    {"name": "L_box", "expression": "480*dx_cell", "description": "domain side (480 cells, 45 mm)"},
+    {"name": "n_pml", "expression": 64, "description": "absorbing layer cells per face (6 mm, one P wavelength)"},
+    {"name": "x_s", "expression": "240.5*dx_cell", "description": "source x (cell centre)"},
+    {"name": "y_s", "expression": "240.5*dx_cell", "description": "source y (cell centre)"},
+    {"name": "x_v", "expression": "x_s - dx_cell/2", "description": "x_s minus half a cell: X = x - x_v is the offset of the v_x node (+x face) of the cell centred at x"},
+    {"name": "F_line", "expression": 1.0, "description": "peak line force per m of z in N/m (along +x)"},
+    {"name": "v_amp", "expression": "w_ang*F_line/4", "description": "velocity prefactor w F / 4 (times the 1/Pa brackets)"},
+    {"name": "S_courant", "expression": 0.9, "description": "courant setting"},
+    {"name": "dt_ac", "expression": "S_courant*dx_cell/(sqrt(2)*cL_s)", "description": "acoustic step: courant / (cL sqrt(2) / dx) (uniform isotropic solid, no vacuum)"},
+    {"name": "T_run", "expression": "40.125/f0", "description": "study duration (an eighth period past whole periods: both brackets show)"},
+    {"name": "t_end", "expression": "floor(T_run/dt_ac + 0.5)*dt_ac", "description": "final time: the tick nearest T_run"},
+    {"name": "t_vel", "expression": "t_end - dt_ac/2", "description": "time of the final velocities (half a step before t_end)"},
+    {"name": "t_avg0", "expression": "T_run - 10/f0", "description": "start of the 10-period averaging window"},
+    {"name": "tau_ramp", "expression": "3/f0", "description": "time constant of the cw switch-on ramp 1 - exp(-t / tau)"},
+    {"name": "rP", "expression": "100.5*dx_cell", "description": "probe_P v_x node distance along +x (on the force axis)"},
+    {"name": "JP", "expression": "j1(kS*rP)/(kS*rP)/mu_s + (j0(kP*rP) - j1(kP*rP)/(kP*rP))/M_s", "description": "J bracket at probe_P (c = 1, s = 0) in 1/Pa"},
+    {"name": "YP", "expression": "y1(kS*rP)/(kS*rP)/mu_s + (y0(kP*rP) - y1(kP*rP)/(kP*rP))/M_s", "description": "Y bracket at probe_P in 1/Pa"},
+    {"name": "rS", "expression": "hypot(0.5*dx_cell, 100*dx_cell)", "description": "probe_S v_x node distance (half a cell along x, 100 cells along +y)"},
+    {"name": "c2S", "expression": "(0.5*dx_cell/rS)**2", "description": "cos^2 of the probe_S direction to the force"},
+    {"name": "s2S", "expression": "1 - c2S", "description": "sin^2 of the probe_S direction to the force"},
+    {"name": "JS", "expression": "(s2S*j0(kS*rS) + (c2S - s2S)*j1(kS*rS)/(kS*rS))/mu_s + (c2S*j0(kP*rS) - (c2S - s2S)*j1(kP*rS)/(kP*rS))/M_s", "description": "J bracket at probe_S in 1/Pa"},
+    {"name": "YS", "expression": "(s2S*y0(kS*rS) + (c2S - s2S)*y1(kS*rS)/(kS*rS))/mu_s + (c2S*y0(kP*rS) - (c2S - s2S)*y1(kP*rS)/(kP*rS))/M_s", "description": "Y bracket at probe_S in 1/Pa"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "source_point", "kind": "point", "params": {"x": "x_s", "y": "y_s"}},
+    {"name": "probe_P_point", "kind": "point", "params": {"x": "x_s + 100*dx_cell", "y": "y_s"}},
+    {"name": "probe_S_point", "kind": "point", "params": {"x": "x_s", "y": "y_s + 100*dx_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "solid", "library": null, "properties": {"rho": "rho_s", "sound_speed": "cL_s", "shear_speed": "cS_s"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"pml_cells": "n_pml", "courant": "S_courant"},
+      "features": [
+        {"name": "force", "type": "force_source", "selection": ["source_point"],
+         "params": {"waveform": "cw", "frequency": "f0", "force": "F_line", "angle": 0.0}, "enabled": true},
+        {"name": "probe_P", "type": "field_probe", "selection": ["probe_P_point"], "params": {"component": "vx"},
+         "enabled": true},
+        {"name": "probe_S", "type": "field_probe", "selection": ["probe_S_point"], "params": {"component": "vx"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": "10/f0"},
+            "stored_fields": ["acoustics.vx", "acoustics.vy"], "sweep": null},
+  "derived_values": [
+    {"name": "pp_mean_P", "source": "acoustics.probe_P", "operation": "integral",
+     "expression": "where(t > t_avg0, 2*values**2, 0)/(T_run - t_avg0)",
+     "reference": "v_amp**2*(JP**2 + YP**2)", "tolerance": 0.06},
+    {"name": "pp_mean_S", "source": "acoustics.probe_S", "operation": "integral",
+     "expression": "where(t > t_avg0, 2*values**2, 0)/(T_run - t_avg0)",
+     "reference": "v_amp**2*(JS**2 + YS**2)", "tolerance": 0.06}
+  ],
+  "analytic_curves": [
+    {"name": "vx_along_force", "target": "line", "field": "acoustics.vx",
+     "line": ["x_s + 12*dx_cell", "y_s", "x_s + 160*dx_cell", "y_s"],
+     "expression": "v_amp*((((y - y_s)**2*j0(kS*hypot(x - x_v, y - y_s)) + ((x - x_v)**2 - (y - y_s)**2)*j1(kS*hypot(x - x_v, y - y_s))/(kS*hypot(x - x_v, y - y_s)))/mu_s + ((x - x_v)**2*j0(kP*hypot(x - x_v, y - y_s)) - ((x - x_v)**2 - (y - y_s)**2)*j1(kP*hypot(x - x_v, y - y_s))/(kP*hypot(x - x_v, y - y_s)))/M_s)*sin(w_ang*t_vel) - (((y - y_s)**2*y0(kS*hypot(x - x_v, y - y_s)) + ((x - x_v)**2 - (y - y_s)**2)*y1(kS*hypot(x - x_v, y - y_s))/(kS*hypot(x - x_v, y - y_s)))/mu_s + ((x - x_v)**2*y0(kP*hypot(x - x_v, y - y_s)) - ((x - x_v)**2 - (y - y_s)**2)*y1(kP*hypot(x - x_v, y - y_s))/(kP*hypot(x - x_v, y - y_s)))/M_s)*cos(w_ang*t_vel))/hypot(x - x_v, y - y_s)**2",
+     "tolerance": 0.03},
+    {"name": "vx_across_force", "target": "line", "field": "acoustics.vx",
+     "line": ["x_s", "y_s + 12*dx_cell", "x_s", "y_s + 160*dx_cell"],
+     "expression": "v_amp*((((y - y_s)**2*j0(kS*hypot(x - x_v, y - y_s)) + ((x - x_v)**2 - (y - y_s)**2)*j1(kS*hypot(x - x_v, y - y_s))/(kS*hypot(x - x_v, y - y_s)))/mu_s + ((x - x_v)**2*j0(kP*hypot(x - x_v, y - y_s)) - ((x - x_v)**2 - (y - y_s)**2)*j1(kP*hypot(x - x_v, y - y_s))/(kP*hypot(x - x_v, y - y_s)))/M_s)*sin(w_ang*t_vel) - (((y - y_s)**2*y0(kS*hypot(x - x_v, y - y_s)) + ((x - x_v)**2 - (y - y_s)**2)*y1(kS*hypot(x - x_v, y - y_s))/(kS*hypot(x - x_v, y - y_s)))/mu_s + ((x - x_v)**2*y0(kP*hypot(x - x_v, y - y_s)) - ((x - x_v)**2 - (y - y_s)**2)*y1(kP*hypot(x - x_v, y - y_s))/(kP*hypot(x - x_v, y - y_s)))/M_s)*cos(w_ang*t_vel))/hypot(x - x_v, y - y_s)**2",
+     "tolerance": 0.04},
+    {"name": "probe_P_quasi_steady", "target": "acoustics.probe_P",
+     "expression": "v_amp*where(t > rP/cL_s, 1 - exp(-(t - rP/cL_s)/tau_ramp), 0)*(JP*sin(w_ang*t) - YP*cos(w_ang*t))"},
+    {"name": "probe_S_quasi_steady", "target": "acoustics.probe_S",
+     "expression": "v_amp*where(t > rS/cS_s, 1 - exp(-(t - rS/cS_s)/tau_ramp), 0)*(JS*sin(w_ang*t) - YS*cos(w_ang*t))"}
+  ]
+}

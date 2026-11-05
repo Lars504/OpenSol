@@ -1,0 +1,48 @@
+{
+  "title": "Dielectric cylinder scattering",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "550*nm", "description": "source centre wavelength"},
+    {"name": "L", "expression": "8*um", "description": "domain side length"},
+    {"name": "r_cylinder", "expression": "1*um", "description": "cylinder radius"},
+    {"name": "eps_cylinder", "expression": 4.0, "description": "cylinder relative permittivity"}
+  ],
+  "domain": {"size_x": "L", "size_y": "L"},
+  "geometry": [
+    {"name": "cylinder", "kind": "circle", "params": {"cx": "L/2", "cy": "L/2", "r": "r_cylinder"}},
+    {"name": "source_point", "kind": "point", "params": {"x": "0.25*L", "y": "L/2"}},
+    {"name": "transmission_point", "kind": "point", "params": {"x": "0.75*L", "y": "L/2"}},
+    {"name": "reflection_point", "kind": "point", "params": {"x": "0.15*L", "y": "L/2"}},
+    {"name": "dft_box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L", "y1": "L"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "dielectric", "library": null, "properties": {"eps_r": "eps_cylinder"}, "dispersion": null,
+     "selection": ["cylinder"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {},
+      "features": [
+        {"name": "source", "type": "point_source", "selection": ["source_point"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": 0.3, "current": 1.0},
+         "enabled": true},
+        {"name": "transmission_probe", "type": "field_probe", "selection": ["transmission_point"],
+         "params": {"component": "ez"}, "enabled": true},
+        {"name": "reflection_probe", "type": "field_probe", "selection": ["reflection_point"],
+         "params": {"component": "ez"}, "enabled": true},
+        {"name": "near_field", "type": "dft_monitor", "selection": ["dft_box"],
+         "params": {"wavelength_start": 5e-07, "wavelength_stop": 6e-07, "n_wavelengths": 3}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "lambda0/(20*sqrt(eps_cylinder))", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "3*L/c_const", "output_interval": "2.5*fs"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": []
+}

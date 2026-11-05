@@ -1,0 +1,62 @@
+{
+  "title": "Benchmark: 500 x 220 nm silicon strip modes (published n_eff, n_g)",
+  "description": "Benchmark against published values (not a closed form): the quasi-TE0 mode of the standard 500 x 220 nm silicon strip fully clad in silica at 1550 nm, the most quoted silicon-photonics waveguide. Commonly published (e.g. Chrostowski and Hochberg, Silicon Photonics Design; commercial mode solvers with dispersive silicon): n_eff about 2.44, group index about 4.2. These carry the references of n_eff_TE0 and n_g_TE0; the published numbers themselves scatter by about 0.01 (n_eff) and 0.05 (n_g) with the material data and solver used, so read the agreement as roughly 1% in n_eff and 2-3% in n_g, not as an exact test.\nQuarter domain: the strip is symmetric about both axes, so x min is an antisymmetric mirror (keeps E_x even in x) and y min a symmetric mirror (E_x even in y): only the quasi-TE family is solved, on a quarter of the unknowns. The mirror planes lie on the domain edges x = 0 and y = 0 (their ghost cells are added outside), so the quarter core spans 0 to w_core/2 and 0 to h_core/2. For quasi-TM0 swap the mirrors (x min symmetric, y min antisymmetric); n_eff about 1.7-1.8 is then expected (no reference given).\nMaterials: silicon is dispersive here, unlike the library silicon: permittivity 1 plus a lossless Lorentz pole equal to the first term of Li's Sellmeier fit (strength 10.668 at 301.5 nm: n = 3.477 at 1550 nm, bulk group index about 3.6), so the group index includes the material dispersion, as the published values do. Set si_dispersion = 0 for a constant index (eps = its 1550 nm value): n_eff stays, n_g drops by roughly 0.1. Silica is the library constant n = 1.444 (its own dispersion would add only about 0.01 to n_g).\nStudy: mode_analysis at lambda0 with Compute group index on, swept over dx_cell = 10 and 5 nm (a mesh-convergence check; a value must divide 110 nm and 250 nm so the core faces lie on cell edges): about 4.5e4 and 1.6e5 unknowns. Derived values tab: n_eff_TE0 and n_g_TE0 with reference and relative error per run; Sweep tab: both vs dx_cell with the references dashed. The arithmetic face averaging of the permittivity converges to first order in dx, so 5 nm should sit closer to the references than 10 nm and 2 n(5 nm) - n(10 nm) estimates the converged value. te_fraction_TE0 is close to 1. A second table row, if any, is a cladding mode with n_eff below 1.444.\nParameters to change: w_core, h_core (keep them multiples of 2 dx_cell), lambda0, si_dispersion.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size (swept 10, 5 nm)"},
+    {"name": "w_core", "expression": "500*nm", "description": "strip width"},
+    {"name": "h_core", "expression": "220*nm", "description": "strip height"},
+    {"name": "clad_x", "expression": "1.5*um", "description": "silica from the x mirror plane to the x max PML"},
+    {"name": "clad_y", "expression": "1.2*um", "description": "silica from the y mirror plane to the y max PML"},
+    {"name": "x_mirror", "expression": "0*nm", "description": "x min mirror plane (the domain edge) = strip centre"},
+    {"name": "y_mirror", "expression": "0*nm", "description": "y min mirror plane (the domain edge) = strip centre"},
+    {"name": "A_si", "expression": 10.6684293, "description": "silicon Sellmeier strength, first term of Li (1980)"},
+    {"name": "lambda_si", "expression": "301.516485*nm", "description": "silicon Sellmeier resonance wavelength"},
+    {"name": "si_dispersion", "expression": 1.0, "description": "1 = dispersive silicon (Lorentz pole), 0 = constant index"},
+    {"name": "eps_si_lambda0", "expression": "1 + A_si*lambda0**2/(lambda0**2 - lambda_si**2)",
+     "description": "silicon permittivity at lambda0 (12.09 at 1550 nm, n = 3.477)"},
+    {"name": "neff_published", "expression": 2.44, "description": "commonly published quasi-TE0 n_eff (approximate)"},
+    {"name": "ng_published", "expression": 4.2, "description": "commonly published quasi-TE0 group index (approximate, dispersive Si)"}
+  ],
+  "domain": {"size_x": "x_mirror + clad_x", "size_y": "y_mirror + clad_y"},
+  "geometry": [
+    {"name": "core_quarter", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": 0.0, "x1": "x_mirror + w_core/2", "y1": "y_mirror + h_core/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "cladding", "library": "silica", "properties": {}, "dispersion": null, "selection": ["all"]},
+    {"name": "silicon_sellmeier", "library": null,
+     "properties": {"eps_r": "1 + (1 - si_dispersion)*(eps_si_lambda0 - 1)"},
+     "dispersion": [{"model": "lorentz", "delta_eps": "si_dispersion*A_si", "omega_0": "2*pi*c_const/lambda_si",
+                     "gamma": 0.0}],
+     "selection": ["core_quarter"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "antisymmetric", "bc_x_hi": "cpml", "bc_y_lo": "symmetric", "bc_y_hi": "cpml",
+                   "pml_sigma_factor": 0.7, "wavelength": "lambda0", "n_modes": 2, "group_index": true},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "mode_analysis", "settings": {}, "stored_fields": ["modes.e_intensity", "modes.ex", "modes.sz"],
+            "sweep": {"parameter": "dx_cell", "values": [1e-08, 5e-09]}},
+  "derived_values": [
+    {"name": "n_eff_TE0", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
+     "reference": "neff_published", "tolerance": 0.03},
+    {"name": "n_g_TE0", "expression": "n_group", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
+     "reference": "ng_published", "tolerance": 0.07},
+    {"name": "te_fraction_TE0", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 0}
+  ],
+  "analytic_curves": []
+}

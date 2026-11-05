@@ -1,0 +1,67 @@
+{
+  "title": "Dielectric cylinder in a uniform field (electrostatics, analytic)",
+  "description": "Dielectric cylinder (radius R, eps_cyl) between plates x_lo = V0 and x_hi = 0 (E0 = V0/Lx), insulated y faces.\nAnalytic: an isolated cylinder has the uniform inside field E_in/E0 = 2/(eps_cyl+1); the plates and insulated faces image it into a square array of area fraction f_area, so the reference is 2/(eps_cyl+1)/(1 - f_area K_pol) (Rayleigh, K_pol = (eps-1)/(eps+1); 0.8 % above the isolated value at eps 100).\nRun the sweep (eps_cyl 2, 4, 10, 100). Sweep tab: E_in per value with the analytic curves E_in_vs_eps and E_in_isolated.\nDerived values tab: E_in with its relative error (staircase, ~0.1-0.4 %, largest at high contrast) and E_in_y ~ 0.\nLine profile tab (last sweep value): E_along_field and E_across_field, field E_x, against E0 (1 + K R^2 (x^2 - y^2)/r^4)/(1 - f K) outside and the uniform value inside.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 20.0, "description": "voltage of x_lo [V] (x_hi is at 0 V)"},
+    {"name": "Lx", "expression": "20*mm", "description": "domain length along the field (electrode gap)"},
+    {"name": "Ly", "expression": "20*mm", "description": "domain height (insulated y faces)"},
+    {"name": "R", "expression": "1*mm", "description": "cylinder radius"},
+    {"name": "eps_cyl", "expression": 4.0,
+     "description": "static relative permittivity of the cylinder (swept; background vacuum)"},
+    {"name": "dx_cell", "expression": "40*um", "description": "uniform cell size (R / dx = 25)"},
+    {"name": "x_c", "expression": "Lx/2", "description": "cylinder centre x (a cell vertex)"},
+    {"name": "y_c", "expression": "Ly/2", "description": "cylinder centre y (a cell vertex)"},
+    {"name": "E0", "expression": "V0/Lx", "description": "applied (domain-average) field [V/m]"},
+    {"name": "K_pol", "expression": "(eps_cyl - 1)/(eps_cyl + 1)", "description": "cylinder polarisability factor"},
+    {"name": "f_area", "expression": "pi*R**2/(Lx*Ly)",
+     "description": "area fraction: the Dirichlet x / insulated y faces image the cylinder into a square array"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "cylinder", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "R"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "dielectric", "library": null, "properties": {"eps_dc": "eps_cyl"}, "dispersion": null,
+     "selection": ["cylinder"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "high", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 30000}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "eps_cyl", "values": [2.0, 4.0, 10.0, 100.0]}},
+  "derived_values": [
+    {"name": "E_in", "expression": "E_x/E0", "selection": ["cylinder"], "operation": "mean",
+     "reference": "2/(eps_cyl + 1)/(1 - f_area*K_pol)", "tolerance": 0.012},
+    {"name": "E_in_y", "expression": "E_y/E0", "selection": ["cylinder"], "operation": "mean", "reference": 0.0,
+     "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "E_in_vs_eps", "target": "sweep", "expression": "2/(eps_cyl + 1)/(1 - f_area*K_pol)",
+     "series": "E_in", "tolerance": 0.012},
+    {"name": "E_in_isolated", "target": "sweep", "expression": "2/(eps_cyl + 1)", "series": "E_in"},
+    {"name": "E_along_field", "target": "line",
+     "expression": "E0/(1 - f_area*K_pol)*where(hypot(x - x_c, y - y_c) < R, 1 - K_pol, 1 + K_pol*R**2*((x - x_c)**2 - (y - y_c)**2)/hypot(x - x_c, y - y_c)**4)",
+     "line": [0.0, "y_c + dx_cell/2", "Lx", "y_c + dx_cell/2"], "field": "electrostatics.E_x"},
+    {"name": "E_across_field", "target": "line",
+     "expression": "E0/(1 - f_area*K_pol)*where(hypot(x - x_c, y - y_c) < R, 1 - K_pol, 1 + K_pol*R**2*((x - x_c)**2 - (y - y_c)**2)/hypot(x - x_c, y - y_c)**4)",
+     "line": ["x_c + dx_cell/2", 0.0, "x_c + dx_cell/2", "Ly"], "field": "electrostatics.E_x"}
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "title": "Couette-Poiseuille flow with backflow (analytic)",
+  "description": "Steady flow in a periodic channel between a fixed wall (y_lo) and a wall sliding at U_wall along +x (y_hi), with a body force G along x (an imposed pressure gradient -dp/dx = G).\nAnalytic: u_x = U y/H + G y (H - y) / (2 mu); with the shape factor P = G H^2 / (2 mu U): mean u = U (1/2 + P/6), and the flow reverses next to the fixed wall for P < -1 (an adverse gradient).\nLine profile tab: u_profile (u_x across the channel; shows the base P_shape = -2 with its backflow region).\nDerived values tab: u_probe (u_x at y = H/4 + dx/2, exact up to ~1e-6) and u_mean (mean u_x; the cell-centre average of the parabola overshoots by (dx/H)^2/2 of the parabolic part, ~2.5e-3 at P = -2).\nSweep tab: u_probe and u_mean versus P_shape (-1.5..3) with the dashed lines probe_vs_P and mean_vs_P.",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_ch", "expression": "20*um", "description": "channel height (wall gap) along y"},
+    {"name": "L_ch", "expression": "10*um", "description": "length of the periodic cell along x (any length: the flow is uniform in x)"},
+    {"name": "U_wall", "expression": 5e-3, "description": "speed of the upper wall along +x in m/s"},
+    {"name": "P_shape", "expression": -2.0, "description": "pressure-gradient shape factor P = G H^2 / (2 mu U) (> 0 favourable, < -1 backflow); swept"},
+    {"name": "G_drive", "expression": "2*mu_f*U_wall*P_shape/H_ch**2", "description": "body force density along x in N/m^3 (= -dp/dx)"},
+    {"name": "y_probe", "expression": "H_ch/4 + dx_cell/2", "description": "probe height: a cell centre near the quarter height"},
+    {"name": "u_probe_ref", "expression": "U_wall*y_probe/H_ch + G_drive*y_probe*(H_ch - y_probe)/(2*mu_f)", "description": "analytic u_x at the probe in m/s"},
+    {"name": "u_mean_ref", "expression": "U_wall*(1/2 + P_shape/6)", "description": "analytic mean velocity in m/s"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [
+    {"name": "probe_point", "kind": "point", "params": {"x": "L_ch/2 + dx_cell/2", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "fixed_wall", "type": "wall", "selection": ["y_lo"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "moving_wall", "type": "wall", "selection": ["y_hi"], "params": {"tangential_velocity": "U_wall"},
+         "enabled": true},
+        {"name": "drive", "type": "body_force", "selection": ["all"],
+         "params": {"f_x": "G_drive", "f_y": 0.0}, "enabled": true},
+        {"name": "probe", "type": "flow_probe", "selection": ["probe_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x", "fluid.u_abs"],
+            "sweep": {"parameter": "P_shape", "values": [-1.5, -1.0, 0.0, 1.0, 2.0, 3.0, -2.0]}},
+  "derived_values": [
+    {"name": "u_probe", "expression": "values", "operation": "last", "source": "fluid.probe",
+     "reference": "u_probe_ref", "tolerance": 1e-4},
+    {"name": "u_mean", "expression": "fluid_u_x", "selection": [], "operation": "mean", "reference": "u_mean_ref",
+     "tolerance": 0.008}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "expression": "U_wall*y/H_ch + G_drive*y*(H_ch - y)/(2*mu_f)",
+     "tolerance": 0.01, "line": ["L_ch/2", 0.0, "L_ch/2", "H_ch"], "field": "fluid.u_x"},
+    {"name": "probe_vs_P", "target": "sweep", "expression": "u_probe_ref", "tolerance": 1e-4, "series": "u_probe"},
+    {"name": "mean_vs_P", "target": "sweep", "expression": "u_mean_ref", "tolerance": 0.008, "series": "u_mean"}
+  ]
+}

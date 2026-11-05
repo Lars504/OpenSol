@@ -1,0 +1,33 @@
+[0.70] [info] GPU NVIDIA GeForce RTX 3050 OEM: 8.00 GiB total, 7.03 GiB free; memory budget 6.53 GiB
+[0.75] [info] sweep beta_deg = 15 (1/6)
+[0.76] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[0.76] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.44] [info] built 5 x 10 = 50 cells, no time stepping, 0.67 s, GPU 16.5 KiB
+[1.44] [info] study started
+[1.48] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3200 lattice steps (last steady march 3200), peak lattice Mach 0.000292
+[1.48] [info] sweep beta_deg = 30 (2/6)
+[1.50] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.50] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.51] [info] built 5 x 10 = 50 cells, no time stepping, 0.00 s, GPU 16.5 KiB
+[1.57] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3000 lattice steps (last steady march 3000), peak lattice Mach 0.000565
+[1.57] [info] sweep beta_deg = 45 (3/6)
+[1.58] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.58] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.59] [info] built 5 x 10 = 50 cells, no time stepping, 0.00 s, GPU 16.5 KiB
+[1.63] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3000 lattice steps (last steady march 3000), peak lattice Mach 0.000799
+[1.63] [info] sweep beta_deg = 75 (4/6)
+[1.64] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.64] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.65] [info] built 5 x 10 = 50 cells, no time stepping, 0.00 s, GPU 16.5 KiB
+[1.69] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3000 lattice steps (last steady march 3000), peak lattice Mach 0.00109
+[1.69] [info] sweep beta_deg = 90 (5/6)
+[1.70] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.70] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.71] [info] built 5 x 10 = 50 cells, no time stepping, 0.00 s, GPU 16.5 KiB
+[1.76] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3000 lattice steps (last steady march 3000), peak lattice Mach 0.00113
+[1.76] [info] sweep beta_deg = 60 (6/6)
+[1.78] [warning] curve u_surface_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.78] [warning] curve Q_vs_beta: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.79] [info] built 5 x 10 = 50 cells, no time stepping, 0.00 s, GPU 16.5 KiB
+[1.83] [info] fluid: lattice Boltzmann D2Q9 TRT, 50 fluid cells, dt_lbm = 6.667e-07 s, 3000 lattice steps (last steady march 3000), peak lattice Mach 0.000979
+[1.84] [info] study finished (completed): 1 ticks, t_end 0 s, wall 1.09 s

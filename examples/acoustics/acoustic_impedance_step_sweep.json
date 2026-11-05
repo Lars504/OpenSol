@@ -1,0 +1,93 @@
+{
+  "title": "Acoustic reflection at an impedance step, density sweep (analytic)",
+  "description": "A plane Ricker pressure pulse (normal traction sheet, 1 MHz) in a y-periodic fluid strip (rho1 = 1000, c1 = 1480) hits fluid 2 (c2 = 2500, density rho2 swept 250..8000 kg/m^3) at normal incidence at x = 20 mm, a cell edge (elastic_waves, absorbing x faces).\nAnalytic: pressure reflection R = (Z2 - Z1) / (Z2 + Z1), transmission T = 2 Z2 / (Z2 + Z1), Z = rho c; the incident pulse is p = (T_sheet / 2) w(t - 4/f0 - d / c1), w the Ricker wavelet.\nSweep tab: R_matched and T_matched (matched filter: the probe trace projected on the Ricker wavelet at the predicted arrival, over its energy) against the dashed R(rho2), T(rho2); R changes sign at rho2 = Z1 / c2 = 592.\nProbes tab (last sweep value, rho2 = 2000): acoustics.incident (incident pulse + reflected echo) and acoustics.transmitted with the dashed analytic traces; their FFTs against the Ricker spectrum (incident: |1 + R exp(-j 2 pi f dt)| interference ripple).\nLine profile tab: p_profile, the reflected pulse at t_end.\nDerived values tab: inc_matched (should be 1), R_matched, T_matched; expected < 1 % (O((k dx)^2) at 47 cells per shortest wavelength).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "1*MHz", "description": "Ricker peak frequency"},
+    {"name": "t_d", "expression": "4/f0", "description": "time of the Ricker maximum at the sheet"},
+    {"name": "T_sheet", "expression": 2.0e5, "description": "peak normal traction of the sheet in Pa"},
+    {"name": "p_half", "expression": "T_sheet/2", "description": "pressure amplitude of each plane wave the sheet launches"},
+    {"name": "rho1", "expression": 1000.0, "description": "density of fluid 1 in kg/m^3"},
+    {"name": "c1", "expression": 1480.0, "description": "sound speed of fluid 1 in m/s"},
+    {"name": "rho2", "expression": 2000.0, "description": "density of fluid 2 in kg/m^3 (swept)"},
+    {"name": "c2", "expression": 2500.0, "description": "sound speed of fluid 2 in m/s"},
+    {"name": "Z1", "expression": "rho1*c1", "description": "acoustic impedance of fluid 1 in Pa s/m"},
+    {"name": "Z2", "expression": "rho2*c2", "description": "acoustic impedance of fluid 2"},
+    {"name": "R_ref", "expression": "(Z2 - Z1)/(Z2 + Z1)", "description": "pressure reflection coefficient"},
+    {"name": "T_ref", "expression": "2*Z2/(Z2 + Z1)", "description": "pressure transmission coefficient"},
+    {"name": "dx_cell", "expression": "12.5*um", "description": "uniform cell size"},
+    {"name": "Lx", "expression": "30*mm", "description": "strip length"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "strip height (periodic y)"},
+    {"name": "y_mid", "expression": "1.5*dx_cell", "description": "y of the probes and the profile line (a cell centre)"},
+    {"name": "x_s", "expression": "400.5*dx_cell", "description": "sheet position (cell centre, 5.006 mm)"},
+    {"name": "x_inc", "expression": "800.5*dx_cell", "description": "incident probe (cell centre, 10.006 mm)"},
+    {"name": "x_I", "expression": "20*mm", "description": "interface (a cell edge)"},
+    {"name": "x_tr", "expression": "2000.5*dx_cell", "description": "transmitted probe (cell centre, 25.006 mm)"},
+    {"name": "t_inc", "expression": "t_d + (x_inc - x_s)/c1", "description": "incident pulse centre time at the incident probe"},
+    {"name": "t_refl", "expression": "t_d + (2*x_I - x_s - x_inc)/c1", "description": "reflected pulse centre time at the incident probe"},
+    {"name": "t_tr", "expression": "t_d + (x_I - x_s)/c1 + (x_tr - x_I)/c2", "description": "transmitted pulse centre time"},
+    {"name": "E_ric", "expression": "3/(4*f0*sqrt(2*pi))", "description": "Ricker energy: integral of w^2 dt in s"},
+    {"name": "t_end", "expression": "25*us", "description": "study duration (the reflected pulse has passed the incident probe)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "dense_region", "kind": "rectangle", "params": {"x0": "x_I", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_s", "y0": 0.0, "x1": "x_s", "y1": "Ly"}},
+    {"name": "incident_point", "kind": "point", "params": {"x": "x_inc", "y": "y_mid"}},
+    {"name": "transmitted_point", "kind": "point", "params": {"x": "x_tr", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fluid_1", "library": null, "properties": {"rho": "rho1", "sound_speed": "c1"}, "dispersion": null,
+     "selection": ["all"]},
+    {"name": "fluid_2", "library": null, "properties": {"rho": "rho2", "sound_speed": "c2"}, "dispersion": null,
+     "selection": ["dense_region"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 80},
+      "features": [
+        {"name": "sheet", "type": "traction_line_source", "selection": ["sheet_line"],
+         "params": {"waveform": "ricker", "frequency": "f0", "traction": "T_sheet", "direction": "x"}, "enabled": true},
+        {"name": "incident", "type": "field_probe", "selection": ["incident_point"],
+         "params": {"component": "pressure"}, "enabled": true},
+        {"name": "transmitted", "type": "field_probe", "selection": ["transmitted_point"],
+         "params": {"component": "pressure"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "rho2", "values": [250.0, 400.0, 800.0, 1500.0, 3000.0, 5000.0, 8000.0, 2000.0]}},
+  "derived_values": [
+    {"name": "inc_matched", "source": "acoustics.incident", "operation": "integral", "reference": 1.0, "tolerance": 0.03,
+     "expression": "where(abs(t - t_inc) < 2/f0, values*(1 - 2*(pi*f0*(t - t_inc))**2)*exp(-(pi*f0*(t - t_inc))**2), 0)/(p_half*E_ric)"},
+    {"name": "R_matched", "source": "acoustics.incident", "operation": "integral", "reference": "R_ref", "tolerance": 0.03,
+     "expression": "where(abs(t - t_refl) < 2/f0, values*(1 - 2*(pi*f0*(t - t_refl))**2)*exp(-(pi*f0*(t - t_refl))**2), 0)/(p_half*E_ric)"},
+    {"name": "T_matched", "source": "acoustics.transmitted", "operation": "integral", "reference": "T_ref", "tolerance": 0.03,
+     "expression": "where(abs(t - t_tr) < 2/f0, values*(1 - 2*(pi*f0*(t - t_tr))**2)*exp(-(pi*f0*(t - t_tr))**2), 0)/(p_half*E_ric)"}
+  ],
+  "analytic_curves": [
+    {"name": "R_vs_rho2", "target": "sweep", "expression": "R_ref", "tolerance": 0.03, "series": "R_matched"},
+    {"name": "T_vs_rho2", "target": "sweep", "expression": "T_ref", "tolerance": 0.03, "series": "T_matched"},
+    {"name": "incident_trace", "target": "acoustics.incident",
+     "expression": "p_half*((1 - 2*(pi*f0*(t - t_inc))**2)*exp(-(pi*f0*(t - t_inc))**2) + R_ref*(1 - 2*(pi*f0*(t - t_refl))**2)*exp(-(pi*f0*(t - t_refl))**2))",
+     "tolerance": 0.03},
+    {"name": "transmitted_trace", "target": "acoustics.transmitted",
+     "expression": "p_half*T_ref*(1 - 2*(pi*f0*(t - t_tr))**2)*exp(-(pi*f0*(t - t_tr))**2)", "tolerance": 0.03},
+    {"name": "incident_spectrum", "target": "acoustics.incident", "series": "fft",
+     "expression": "p_half*2*frequency**2/(sqrt(pi)*f0**3)*exp(-(frequency/f0)**2)*sqrt(1 + R_ref**2 + 2*R_ref*cos(2*pi*frequency*(t_refl - t_inc)))"},
+    {"name": "transmitted_spectrum", "target": "acoustics.transmitted", "series": "fft",
+     "expression": "p_half*T_ref*2*frequency**2/(sqrt(pi)*f0**3)*exp(-(frequency/f0)**2)"},
+    {"name": "p_profile", "target": "line",
+     "expression": "where(x < x_I, p_half*R_ref*(1 - 2*(pi*f0*(t_end - t_d - (2*x_I - x_s - x)/c1))**2)*exp(-(pi*f0*(t_end - t_d - (2*x_I - x_s - x)/c1))**2), 0)",
+     "tolerance": 0.05,
+     "line": [0.0, "y_mid", "Lx", "y_mid"], "field": "acoustics.pressure"}
+  ]
+}

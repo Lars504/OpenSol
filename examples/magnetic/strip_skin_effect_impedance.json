@@ -1,0 +1,81 @@
+{
+  "title": "Wide flat strip: skin effect, AC resistance and internal inductance (magnetic fields AC, analytic)",
+  "description": "Planar magnetic_fields_ac, 1D in x: a copper strip 2b = 0.2 mm thick (solid conductor 'bar', drive current I0 = 1 A peak) between air gaps g = 0.1 mm and magnetic insulation faces (A = 0 on x_lo / x_hi: the return current flows in the image strips beyond them), symmetry on the y faces, so the window (h = 4 um high) is a slice of an infinitely wide strip and all impedances are per m of length for that slice. The surface fields are H = +-K / 2 (K = I0 / h) as on an isolated wide strip, so the current crowds onto both faces. Sweep f = 10 kHz .. 5 MHz (skin depth delta = 661 .. 29.6 um, u = b / delta = 0.15 .. 3.38); one host SuperLU solve per frequency.\nAnalytic (H = (K / 2) sinh(gamma x) / sinh(gamma b), gamma = (1 + j) / delta, written in real arithmetic): R_ac / R_dc = u (sinh 2u + sin 2u) / (cosh 2u - cos 2u) (1.000, 1.111 at 500 kHz, 2.06 at 2 MHz, 3.39 at 5 MHz; tends to u), internal inductance L_int / L_int,dc = 3 (sinh 2u - sin 2u) / (2u (cosh 2u - cos 2u)) (1 -> 0.444), with R_dc = 1 / (sigma 2b h), L_int,dc = mu0 b / (6h) and the gap inductance L_ext = mu0 g / (2h) (exact: uniform H in the gaps) taken off the coil inductance.\nDerived values tab: R_ratio (coil resistance / R_dc), L_int_ratio ((coil inductance - L_ext) / L_int,dc), P_loss (eddy_loss = I0^2 R_ac / 2), W_mag (energy = I0^2 L / 4) and B_gap (mu0 K / 2 in the left gap). Expect ~1e-4 (second order in dx / delta, delta >= 30 cells; B_gap exact up to float32 storage); tolerances 2e-3 / 5e-3 (L_int is a difference).\nSweep tab: R_ratio and L_int_ratio vs f with the dashed formulas (log f axis), plus R_ratio_high_f = u, the thick-conductor asymptote R_dc b / delta (not checked).\nLine profile tab (last sweep value, 5 MHz): J_profile (J_total_abs, ~ cosh across the strip, 14.8 x higher at the faces than at the centre) and B_profile (B_abs: ~ sinh inside, mu0 K / 2 in the gaps).",
+  "version": 1,
+  "parameters": [
+    {"name": "f", "expression": 5e5, "description": "frequency in Hz (swept 10 kHz .. 5 MHz)"},
+    {"name": "I0", "expression": 1.0, "description": "strip current amplitude (peak) in A, phase 0"},
+    {"name": "sigma_cu", "expression": 5.8e7, "description": "copper conductivity in S/m"},
+    {"name": "b_half", "expression": "0.1*mm", "description": "strip half thickness b (thickness 2b along x)"},
+    {"name": "g_gap", "expression": "0.1*mm", "description": "air gap between the strip faces and the insulation faces"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform cell size (400 x 4 cells)"},
+    {"name": "h_y", "expression": "4*dx_cell", "description": "window height (symmetry y faces: a slice of an infinitely wide strip)"},
+    {"name": "x_bar0", "expression": "g_gap", "description": "left strip face (a cell edge)"},
+    {"name": "x_bar1", "expression": "g_gap + 2*b_half", "description": "right strip face (a cell edge)"},
+    {"name": "x_mid", "expression": "g_gap + b_half", "description": "strip centre plane"},
+    {"name": "L_x", "expression": "2*g_gap + 2*b_half", "description": "domain length along x"},
+    {"name": "delta", "expression": "1/sqrt(pi*f*mu0_const*sigma_cu)", "description": "skin depth sqrt(2 / (omega mu0 sigma)) in m"},
+    {"name": "u_skin", "expression": "b_half/delta", "description": "u = b / delta"},
+    {"name": "D_u", "expression": "cosh(2*u_skin) - cos(2*u_skin)", "description": "common denominator cosh 2u - cos 2u = 2 |sinh(gamma b)|^2"},
+    {"name": "K_sheet", "expression": "I0/h_y", "description": "strip current per m of height K in A/m (surface fields +-K / 2)"},
+    {"name": "R_dc", "expression": "1/(sigma_cu*2*b_half*h_y)", "description": "DC resistance per m of length of the slice in Ohm/m"},
+    {"name": "L_ext", "expression": "mu0_const*g_gap/(2*h_y)", "description": "inductance of the two gaps per m of length in H/m (uniform H = K / 2)"},
+    {"name": "L_int_dc", "expression": "mu0_const*b_half/(6*h_y)", "description": "DC internal inductance per m of length in H/m"},
+    {"name": "R_ratio_ref", "expression": "u_skin*(sinh(2*u_skin) + sin(2*u_skin))/D_u", "description": "analytic R_ac / R_dc"},
+    {"name": "L_ratio_ref", "expression": "3*(sinh(2*u_skin) - sin(2*u_skin))/(2*u_skin*D_u)", "description": "analytic L_int / L_int,dc"}
+  ],
+  "domain": {"size_x": "L_x", "size_y": "h_y"},
+  "geometry": [
+    {"name": "bar", "kind": "rectangle", "params": {"x0": "x_bar0", "y0": 0.0, "x1": "x_bar1", "y1": "h_y"}},
+    {"name": "gap_lo", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_bar0", "y1": "h_y"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "copper", "library": null, "properties": {"sigma_dc": "sigma_cu"}, "dispersion": null, "selection": ["bar"]}
+  ],
+  "physics": [
+    {
+      "name": "magnetic",
+      "type": "magnetic_fields_ac",
+      "settings": {"frequency": "f"},
+      "features": [
+        {"name": "walls", "type": "magnetic_insulation", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "symmetry", "type": "symmetry", "selection": ["y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "bar", "type": "coil", "selection": ["bar"],
+         "params": {"conductor": "solid", "drive": "current", "current": "I0", "phase": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["magnetic.J_total_abs", "magnetic.B_abs"],
+            "sweep": {"parameter": "f", "values": [1e4, 5e4, 2e5, 5e5, 1e6, 2e6, 5e6]}},
+  "derived_values": [
+    {"name": "R_ratio", "expression": "magnetic_bar_resistance/R_dc", "selection": [], "operation": "mean",
+     "reference": "R_ratio_ref", "tolerance": 2e-3},
+    {"name": "L_int_ratio", "expression": "(magnetic_bar_inductance - L_ext)/L_int_dc", "selection": [],
+     "operation": "mean", "reference": "L_ratio_ref", "tolerance": 5e-3},
+    {"name": "P_loss", "expression": "magnetic_eddy_loss", "selection": [], "operation": "mean",
+     "reference": "0.5*I0**2*R_dc*R_ratio_ref", "tolerance": 2e-3},
+    {"name": "W_mag", "expression": "magnetic_energy", "selection": [], "operation": "mean",
+     "reference": "0.25*I0**2*(L_ext + L_int_dc*L_ratio_ref)", "tolerance": 2e-3},
+    {"name": "B_gap", "expression": "magnetic_B_abs", "selection": ["gap_lo"], "operation": "mean",
+     "reference": "mu0_const*K_sheet/2", "tolerance": 1e-4}
+  ],
+  "analytic_curves": [
+    {"name": "R_ratio_vs_f", "target": "sweep", "series": "R_ratio", "expression": "R_ratio_ref", "tolerance": 2e-3},
+    {"name": "L_int_ratio_vs_f", "target": "sweep", "series": "L_int_ratio", "expression": "L_ratio_ref",
+     "tolerance": 5e-3},
+    {"name": "R_ratio_high_f", "target": "sweep", "series": "R_ratio", "expression": "u_skin"},
+    {"name": "J_profile", "target": "line",
+     "expression": "where(abs(x - x_mid) < b_half, K_sheet/2*sqrt(2)/delta*sqrt((cosh(2*(x - x_mid)/delta) + cos(2*(x - x_mid)/delta))/D_u), 0)",
+     "tolerance": 3e-3, "line": [0.0, "h_y/2 + dx_cell/2", "L_x", "h_y/2 + dx_cell/2"],
+     "field": "magnetic.J_total_abs"},
+    {"name": "B_profile", "target": "line",
+     "expression": "mu0_const*K_sheet/2*where(abs(x - x_mid) < b_half, sqrt((cosh(2*(x - x_mid)/delta) - cos(2*(x - x_mid)/delta))/D_u), 1)",
+     "tolerance": 3e-3, "line": [0.0, "h_y/2 + dx_cell/2", "L_x", "h_y/2 + dx_cell/2"], "field": "magnetic.B_abs"}
+  ]
+}

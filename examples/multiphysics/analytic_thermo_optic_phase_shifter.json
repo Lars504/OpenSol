@@ -1,0 +1,133 @@
+{
+  "title": "Thermo-optic phase shifter: resistive heating, parabolic T, mode phase (analytic)",
+  "description": "A y-periodic glass strip (n0 = 1.5) is itself a uniform resistor driven by V0, so q = sigma V0^2 / Lx^2 everywhere; heat_em_thermo_optic turns the temperature rise into n = n0 + dndT theta for the 1.55 um plane-wave mode launched at x_src.\nAnalytic: with both ends held at T0, theta = q x (Lx - x) / (2 k) (peak 37.5 K at 2 V); mode phase wrap(-k_num(n0) (x - x_src) - k0 dndT / sqrt(1 - (n0 k0 dx / 2)^2) * integral of theta from x_src to x).\nDerived values tab: dT_max, I_drive, P_joule (exact identities, ~1e-6), n_eff_mid = the discrete local index (2 / (k0 dx)) asin(n k0 dx / 2) at x_mid (~1e-6), and phi_up / phi_down = phase_positive of the mode monitors relative to the source against the phase formula (thermo-optic shift -0.70 rad at phi_down, ~1e-3 rad expected).\nSweep tab: phi_down, phi_up, n_eff_mid and dT_max versus V0 (0..2 V) with their references (V0 = 0 checks the cold phase alone).\nLine profile tab: T_profile, eps_profile (em.eps_r = n^2) and V_profile. Field tab: heat.T and em.eps_r maps.\nField-transfer twin: disable coupling thermo_optic and enable thermo_optic_transfer (the same eps through field_transfer): every result must agree to float32 rounding.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 2.0,
+     "description": "heater voltage in V (x_lo face at V0, x_hi face at 0 V; the sweep runs V0 = 0..2 V)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "n0", "expression": 1.5, "description": "glass index at T0 (eps_r = n0^2)"},
+    {"name": "dndT_glass", "expression": 1e-3, "description": "thermo-optic coefficient in 1/K (exaggerated: ~100x silica, so the shift is large)"},
+    {"name": "k_glass", "expression": 0.2, "description": "thermal conductivity in W/(m K)"},
+    {"name": "sigma_glass", "expression": 15.0, "description": "DC conductivity in S/m (the whole strip is the heater; the optical sigma_e stays 0: lossless)"},
+    {"name": "T0", "expression": 293.15, "description": "temperature of both strip ends and reference temperature in K"},
+    {"name": "Lx", "expression": "8*um", "description": "strip length along x (heat and voltage held on its x faces; CPML outside for EM)"},
+    {"name": "Ly", "expression": "0.2*um", "description": "period along y (periodic EM boundaries, insulated heat / current faces)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size; the lines below sit at cell centres"},
+    {"name": "x_src", "expression": "1.01*um", "description": "mode source line (cell 50 centre), launching toward +x"},
+    {"name": "x_up", "expression": "1.61*um", "description": "upstream mode monitor (cell 80 centre)"},
+    {"name": "x_mid", "expression": "4.01*um", "description": "mid mode monitor (cell 200 centre, next to the hottest point)"},
+    {"name": "x_down", "expression": "6.51*um", "description": "downstream mode monitor (cell 325 centre)"},
+    {"name": "q_heat", "expression": "sigma_glass*V0**2/Lx**2", "description": "uniform Joule power density in W/m^3"},
+    {"name": "theta_peak", "expression": "q_heat*Lx**2/(8*k_glass)", "description": "analytic peak rise at Lx/2 in K"},
+    {"name": "ksi0", "expression": "n0*k_vac*dx_cell/2", "description": "half-cell phase n0 k0 dx / 2 of the discrete plane wave"},
+    {"name": "k_num0", "expression": "2*asin(ksi0)/dx_cell", "description": "discrete FDFD wavenumber of the cold glass in 1/m"},
+    {"name": "dk_dn", "expression": "k_vac/sqrt(1 - ksi0**2)", "description": "d k_num / d n in 1/m (k0 plus the 0.2 % grid-dispersion factor)"},
+    {"name": "int_up", "expression": "q_heat/(2*k_glass)*(Lx*(x_up**2 - x_src**2)/2 - (x_up**3 - x_src**3)/3)",
+     "description": "integral of theta from x_src to x_up in K m"},
+    {"name": "int_down", "expression": "q_heat/(2*k_glass)*(Lx*(x_down**2 - x_src**2)/2 - (x_down**3 - x_src**3)/3)",
+     "description": "integral of theta from x_src to x_down in K m"},
+    {"name": "phi_up_raw", "expression": "-k_num0*(x_up - x_src) - dk_dn*dndT_glass*int_up",
+     "description": "unwrapped analytic phase at the upstream monitor in rad"},
+    {"name": "phi_down_raw", "expression": "-k_num0*(x_down - x_src) - dk_dn*dndT_glass*int_down",
+     "description": "unwrapped analytic phase at the downstream monitor in rad"},
+    {"name": "phi_up_ref", "expression": "atan2(sin(phi_up_raw), cos(phi_up_raw))", "description": "analytic phase_positive of 'up', wrapped into (-pi, pi]"},
+    {"name": "phi_down_ref", "expression": "atan2(sin(phi_down_raw), cos(phi_down_raw))", "description": "analytic phase_positive of 'down', wrapped into (-pi, pi]"},
+    {"name": "theta_mid", "expression": "q_heat/(2*k_glass)*x_mid*(Lx - x_mid)", "description": "analytic rise at the mid monitor in K"},
+    {"name": "n_eff_mid_ref", "expression": "2*asin((n0 + dndT_glass*theta_mid)*k_vac*dx_cell/2)/(k_vac*dx_cell)",
+     "description": "n_eff of the discrete plane-wave mode at x_mid (the port mode solve uses the grid dispersion)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "up_line", "kind": "line", "params": {"x0": "x_up", "y0": 0.0, "x1": "x_up", "y1": "Ly"}},
+    {"name": "mid_line", "kind": "line", "params": {"x0": "x_mid", "y0": 0.0, "x1": "x_mid", "y1": "Ly"}},
+    {"name": "down_line", "kind": "line", "params": {"x0": "x_down", "y0": 0.0, "x1": "x_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null,
+     "properties": {"eps_r": "n0**2", "k": "k_glass", "dndT": "dndT_glass", "sigma_dc": "sigma_glass"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "drive", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T0"},
+      "features": [
+        {"name": "walls", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T0"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    },
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "power": 1.0, "phase": 0.0}, "enabled": true},
+        {"name": "up", "type": "mode_monitor", "selection": ["up_line"], "params": {"mode_number": 1}, "enabled": true},
+        {"name": "mid", "type": "mode_monitor", "selection": ["mid_line"], "params": {"mode_number": 1},
+         "enabled": true},
+        {"name": "down", "type": "mode_monitor", "selection": ["down_line"], "params": {"mode_number": 1},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "joule", "type": "currents_heat_joule", "source": "currents", "target": "heat", "every": null,
+     "params": {}, "enabled": true},
+    {"name": "thermo_optic", "type": "heat_em_thermo_optic", "source": "heat", "target": "em", "every": null,
+     "params": {}, "enabled": true},
+    {"name": "thermo_optic_transfer", "type": "field_transfer", "source": "heat", "target": "em", "every": null,
+     "params": {"source_field": "T", "target_slot": "eps_r_update", "expression": "(n0 + dndT_glass*(value - T0))**2"},
+     "enabled": false}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 30, "tolerance": 2e-6, "relaxation": 1.0, "warm_start": false},
+            "stored_fields": ["em.ez_abs", "em.eps_r", "heat.T", "currents.V"],
+            "sweep": {"parameter": "V0", "values": [0.0, 0.5, 1.0, 1.5, 2.0]}},
+  "derived_values": [
+    {"name": "dT_max", "expression": "heat_T_rise", "selection": [], "operation": "max", "reference": "theta_peak",
+     "tolerance": 3e-6},
+    {"name": "I_drive", "expression": "current", "operation": "last", "source": "currents.drive",
+     "reference": "sigma_glass*V0*Ly/Lx", "tolerance": 3e-6},
+    {"name": "P_joule", "expression": "currents_q_joule", "selection": ["all"], "operation": "integral",
+     "reference": "sigma_glass*V0**2*Ly/Lx", "tolerance": 3e-6},
+    {"name": "n_eff_mid", "expression": "n_eff", "operation": "last", "source": "em.mid",
+     "reference": "n_eff_mid_ref", "tolerance": 3e-6},
+    {"name": "phi_up", "expression": "phase_positive", "operation": "last", "source": "em.up",
+     "reference": "phi_up_ref", "tolerance": 0.002},
+    {"name": "phi_down", "expression": "phase_positive", "operation": "last", "source": "em.down",
+     "reference": "phi_down_ref", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line", "expression": "T0 + q_heat/(2*k_glass)*x*(Lx - x)", "tolerance": 5e-4,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "heat.T"},
+    {"name": "eps_profile", "target": "line", "expression": "(n0 + dndT_glass*q_heat/(2*k_glass)*x*(Lx - x))**2",
+     "tolerance": 0.001, "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_r"},
+    {"name": "V_profile", "target": "line", "expression": "V0*(1 - x/Lx)", "tolerance": 1e-5,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "currents.V"}
+  ]
+}

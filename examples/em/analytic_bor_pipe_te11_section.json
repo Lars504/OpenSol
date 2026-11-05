@@ -1,0 +1,82 @@
+{
+  "title": "Analytic: circular metal pipe TE11 through a dielectric section, mode ports at m = 1 (body of revolution, FDFD)",
+  "description": "A hollow circular metal waveguide of radius a = 1 um along the rotation axis (em_fdfd_bor, azimuthal order m = 1: the fields of the fundamental TE11 mode, E_r, E_phi and H_phi non-zero on the axis), 25 nm cells (~3e4 unknowns, host SuperLU), pec r_hi wall on the grid edge (the pipe surface), cpml (20 cells) on both z faces, a dielectric section eps = 2.25 of length L = 1 um filling the whole cross-section. A mode_source (mode 1 = TE11, 1 W) at z = 0.41 um launches toward +z; mode_monitors at z = 0.81 um (incident: forward = the launched power, backward = reflection) and z = 2.41 um (transmitted); frequency_domain study, 25 wavelengths 1.8-3.0 um (single-mode at m = 1 in the empty pipe: TE11 cutoff 2 pi a / x'11 = 3.41 um, TM11 1.64 um).\nAnalytic (single-mode transmission line, TE wave impedance ~ 1 / beta; the section fills the cross-section, so TE11 couples to no other mode, also on the mesh: the discrete TE11 profile does not depend on eps): n1 = sqrt(1 - (lambda / lambda_c)^2) in the empty pipe, n2 = sqrt(eps - (lambda / lambda_c)^2) in the section, lambda_c = 2 pi a / x'11 (x'11 = 1.84118, the first zero of J1'); T = 1 / (1 + F sin^2(2 pi n2 L / lambda)), F = ((n1^2 - n2^2) / (2 n1 n2))^2, R = 1 - T. Peak T = 1 at 2.588 um (n2 L / lambda = 1/2), T(2.6 um) = 0.9998, T(1.9 um) = 0.776; n1(2.2 um) = 0.7645.\nSpectra / Curves: em.transmitted fraction_positive vs the dashed T, em.incident fraction_negative vs R (the launch is exact: power_positive of em.incident = 1 W).\nDerived values tab: T_2600, T_1900, R_1900, the launched power P_launch and n_eff_2200 (n_eff of the incident monitor) vs n1.\nField tab: |E|^2 of the last wavelength (3 um).\nExpected agreement (first CPU run): the mesh error is ~1e-4 (n_eff 2e-4); T and R are set by the 20-cell z PML echo of the slow TE11 (amplitude ~4e-3: em.transmitted power_negative 0.7-1.4e-5 W), which ripples the launched forward power by +-0.35 % (P_launch 0.9964-1.0032) and T / R by a like cavity term with the section: up to 0.0065 in T (T_1900 0.0081 below), 0.003 in R; n_eff 2e-4.",
+  "version": 1,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "a_pipe", "expression": "1*um", "description": "pipe radius = the r extent of the half plane (40 cells, pec r_hi)"},
+    {"name": "L_z", "expression": "3*um", "description": "axial extent of the window (cpml below and above)"},
+    {"name": "x11p", "expression": 1.8411837813, "description": "first zero of J1' (TE11)"},
+    {"name": "lambda_c", "expression": "2*pi*a_pipe/x11p", "description": "TE11 cutoff wavelength of the empty pipe (3.413 um)"},
+    {"name": "eps_sec", "expression": 2.25, "description": "relative permittivity of the dielectric section"},
+    {"name": "z_src", "expression": "0.4*um + dx_cell/2", "description": "mode source line (a cell centre: row 16)"},
+    {"name": "z_inc", "expression": "0.8*um + dx_cell/2", "description": "incident / reflection monitor line (row 32; it and the row above below the section)"},
+    {"name": "z_sec", "expression": "1.0*um", "description": "lower face of the dielectric section (a cell edge)"},
+    {"name": "L_sec", "expression": "1.0*um", "description": "length of the section (40 rows)"},
+    {"name": "z_trans", "expression": "2.4*um + dx_cell/2", "description": "transmission monitor line (row 96)"},
+    {"name": "band_start", "expression": "1.8*um", "description": "shortest solved wavelength"},
+    {"name": "band_stop", "expression": "3.0*um", "description": "longest solved wavelength (25 points, 50 nm apart)"},
+    {"name": "lam_a", "expression": "2.6*um", "description": "comparison wavelength near the transmission peak"},
+    {"name": "lam_b", "expression": "1.9*um", "description": "comparison wavelength near the transmission dip"},
+    {"name": "lam_n", "expression": "2.2*um", "description": "n_eff comparison wavelength"},
+    {"name": "u_a", "expression": "(lam_a/lambda_c)**2", "description": "(lambda / lambda_c)^2 at lam_a"},
+    {"name": "u_b", "expression": "(lam_b/lambda_c)**2", "description": "(lambda / lambda_c)^2 at lam_b"},
+    {"name": "T_a", "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - u_a)*(eps_sec - u_a))*sin(2*pi*L_sec*sqrt(eps_sec - u_a)/lam_a)**2)", "description": "analytic T at lam_a (0.9998)"},
+    {"name": "T_b", "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - u_b)*(eps_sec - u_b))*sin(2*pi*L_sec*sqrt(eps_sec - u_b)/lam_b)**2)", "description": "analytic T at lam_b (0.776)"},
+    {"name": "n1_n", "expression": "sqrt(1 - (lam_n/lambda_c)**2)", "description": "analytic TE11 n_eff of the empty pipe at lam_n (0.7645)"}
+  ],
+  "domain": {"size_x": "a_pipe", "size_y": "L_z"},
+  "geometry": [
+    {"name": "section", "kind": "rectangle", "params": {"x0": 0.0, "y0": "z_sec", "x1": "a_pipe", "y1": "z_sec + L_sec"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": 0.0, "y0": "z_src", "x1": "a_pipe", "y1": "z_src"}},
+    {"name": "incident_line", "kind": "line", "params": {"x0": 0.0, "y0": "z_inc", "x1": "a_pipe", "y1": "z_inc"}},
+    {"name": "transmitted_line", "kind": "line", "params": {"x0": 0.0, "y0": "z_trans", "x1": "a_pipe", "y1": "z_trans"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "section_material", "library": null, "properties": {"eps_r": "eps_sec"}, "dispersion": null,
+     "selection": ["section"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_bor",
+      "settings": {"azimuthal_order": 1, "bc_x_hi": "pec", "bc_y_lo": "cpml", "bc_y_hi": "cpml", "pml_cells": 20},
+      "features": [
+        {"name": "launch", "type": "mode_source", "selection": ["source_line"],
+         "params": {"power": 1.0, "mode_number": 1, "direction": "positive", "phase": 0.0}, "enabled": true},
+        {"name": "incident", "type": "mode_monitor", "selection": ["incident_line"], "params": {"mode_number": 1},
+         "enabled": true},
+        {"name": "transmitted", "type": "mode_monitor", "selection": ["transmitted_line"], "params": {"mode_number": 1},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "frequency_domain",
+            "settings": {"wavelength_start": "band_start", "wavelength_stop": "band_stop", "n_wavelengths": 25},
+            "stored_fields": ["em.e_intensity"], "sweep": null},
+  "derived_values": [
+    {"name": "T_2600", "expression": "fraction_positive", "selection": [], "operation": "at", "source": "em.transmitted",
+     "at": "lam_a", "reference": "T_a", "tolerance": 0.005},
+    {"name": "T_1900", "expression": "fraction_positive", "selection": [], "operation": "at", "source": "em.transmitted",
+     "at": "lam_b", "reference": "T_b", "tolerance": 0.012},
+    {"name": "R_1900", "expression": "fraction_negative", "selection": [], "operation": "at", "source": "em.incident",
+     "at": "lam_b", "reference": "1 - T_b", "tolerance": 0.02},
+    {"name": "P_launch", "expression": "power_positive", "selection": [], "operation": "at", "source": "em.incident",
+     "at": "lam_b", "reference": 1.0, "tolerance": 0.005},
+    {"name": "n_eff_2200", "expression": "n_eff", "selection": [], "operation": "at", "source": "em.incident",
+     "at": "lam_n", "reference": "n1_n", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "T_section", "target": "em.transmitted", "series": "fraction_positive",
+     "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - (x/lambda_c)**2)*(eps_sec - (x/lambda_c)**2))*sin(2*pi*L_sec*sqrt(eps_sec - (x/lambda_c)**2)/x)**2)",
+     "tolerance": 0.035},
+    {"name": "R_section", "target": "em.incident", "series": "fraction_negative",
+     "expression": "1 - 1/(1 + (1 - eps_sec)**2/(4*(1 - (x/lambda_c)**2)*(eps_sec - (x/lambda_c)**2))*sin(2*pi*L_sec*sqrt(eps_sec - (x/lambda_c)**2)/x)**2)",
+     "tolerance": 0.02}
+  ]
+}

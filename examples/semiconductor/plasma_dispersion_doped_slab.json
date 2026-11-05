@@ -1,0 +1,107 @@
+{
+  "title": "Doped silicon strip: free-carrier plasma dispersion of a guided plane wave (analytic)",
+  "description": "A y-periodic silicon strip (n0 = 3.476) uniformly doped with the signed net doping N_net (> 0 donors, < 0 acceptors), one ohmic contact at the x_lo end (drift_diffusion: uniform charge-neutral equilibrium everywhere, no current). semiconductor_em_plasma_dispersion turns the carriers into dn = -(a N + b P^0.8) (Soref-Bennett silicon at 1.55 um, SI units) on the em_fdfd_ez index; a 1.55 um plane-wave mode is launched toward +x at x_src. Stationary sweep N_net = -1e25..1e25 1/m^3 (holes left, electrons right).\nAnalytic: N = |N_net| / 2 + sqrt(N_net^2 / 4 + n_i^2) for n type (P = n_i^2 / N), mirrored for p type; n = n0 + dn uniform; the discrete plane-wave index n_eff = 2 asin(n k0 dx / 2) / (k0 dx) and the mode phase at x_down relative to the source -k0 n_eff (x_down - x_src), wrapped into (-pi, pi] (about -1.70 rad undoped, rising by up to 0.22 rad at 1e25 holes).\nDerived values tab: N_mean (exact equilibrium, ~1e-7), dn_mean = mean of sqrt(eps_r) - n0 (the coupling identity; float32 eps limits it to ~2e-7 absolute, i.e. ~1e-3 relative at |N_net| = 1e23), n_eff_mid and dn_eff_mid = n_eff - n_eff(undoped) from the mid mode monitor (~1e-6 / ~1e-3) and phi_down = phase_positive of the down monitor (~1e-3 rad).\nSweep tab: dn_eff_mid, dn_mean and phi_down versus N_net with their dashed curves: linear in the electron branch, the 0.8 power in the hole branch (holes shift the index more at equal density).\nLine profile tab (last sweep value, N_net = 1e25): eps_profile, the uniform (n0 + dn)^2 along the strip. Field tab: em.ez_abs, em.eps_r, semiconductor.N and P.",
+  "version": 1,
+  "parameters": [
+    {"name": "N_net", "expression": 1e24, "description": "signed net doping in 1/m^3: > 0 donors (n type), < 0 acceptors (p type); the sweep runs -1e25..1e25"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "n_si", "expression": 3.476, "description": "undoped silicon index n0 (eps_r = n_si^2)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "a_sb", "expression": 8.8e-28, "description": "electron coefficient of dn in m^3 (Soref-Bennett 8.8e-22 cm^3)"},
+    {"name": "b_sb", "expression": "8.5e-18*(1e-6)**0.8", "description": "hole coefficient of dn in m^2.4 (1.347e-22)"},
+    {"name": "c_sb", "expression": 0.8, "description": "hole exponent of dn"},
+    {"name": "Lx", "expression": "6*um", "description": "strip length along x (CPML outside for EM, insulating semiconductor faces)"},
+    {"name": "Ly", "expression": "0.2*um", "description": "period along y (periodic EM boundaries)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size; the lines below sit at cell centres"},
+    {"name": "w_contact", "expression": "0.2*um", "description": "ohmic contact width at the x_lo end"},
+    {"name": "x_src", "expression": "1.01*um", "description": "mode source line (cell 50 centre), launching toward +x"},
+    {"name": "x_mid", "expression": "3.01*um", "description": "mid mode monitor (cell 150 centre)"},
+    {"name": "x_down", "expression": "5.13*um", "description": "downstream mode monitor (cell 256 centre; the undoped phase sits near -pi/2, far from the wrap)"},
+    {"name": "N_maj", "expression": "abs(N_net)/2 + sqrt(N_net**2/4 + n_i**2)", "description": "majority carrier density in 1/m^3"},
+    {"name": "N_min", "expression": "n_i**2/N_maj", "description": "minority carrier density in 1/m^3 (mass action)"},
+    {"name": "N0", "expression": "where(N_net >= 0, N_maj, N_min)", "description": "analytic electron density in 1/m^3"},
+    {"name": "P0", "expression": "where(N_net >= 0, N_min, N_maj)", "description": "analytic hole density in 1/m^3"},
+    {"name": "dn_ref", "expression": "-(a_sb*N0 + b_sb*P0**c_sb)", "description": "analytic plasma-dispersion index change"},
+    {"name": "n_doped", "expression": "n_si + dn_ref", "description": "index of the doped strip"},
+    {"name": "ksi0", "expression": "n_si*k_vac*dx_cell/2", "description": "half-cell phase n0 k0 dx / 2 of the undoped discrete plane wave"},
+    {"name": "n_eff_cold", "expression": "2*asin(ksi0)/(k_vac*dx_cell)", "description": "discrete plane-wave n_eff of undoped silicon"},
+    {"name": "n_eff_ref", "expression": "2*asin(n_doped*k_vac*dx_cell/2)/(k_vac*dx_cell)", "description": "discrete plane-wave n_eff of the doped strip"},
+    {"name": "dn_eff_ref", "expression": "n_eff_ref - n_eff_cold", "description": "analytic n_eff shift"},
+    {"name": "phi_down_raw", "expression": "-k_vac*n_eff_ref*(x_down - x_src)", "description": "unwrapped analytic phase at the down monitor in rad"},
+    {"name": "phi_down_ref", "expression": "atan2(sin(phi_down_raw), cos(phi_down_raw))", "description": "analytic phase_positive of 'down', wrapped into (-pi, pi]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "contact_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "mid_line", "kind": "line", "params": {"x0": "x_mid", "y0": 0.0, "x1": "x_mid", "y1": "Ly"}},
+    {"name": "down_line", "kind": "line", "params": {"x0": "x_down", "y0": 0.0, "x1": "x_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": "silicon", "properties": {"eps_r": "n_si**2", "n_intrinsic": "n_i"},
+     "dispersion": [], "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {},
+      "features": [
+        {"name": "uniform_doping", "type": "doping", "selection": ["all"],
+         "params": {"donors": "max(N_net, 0)", "acceptors": "max(-N_net, 0)"}, "enabled": true},
+        {"name": "contact", "type": "ohmic_contact", "selection": ["contact_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "power": 1.0, "phase": 0.0}, "enabled": true},
+        {"name": "mid", "type": "mode_monitor", "selection": ["mid_line"], "params": {"mode_number": 1},
+         "enabled": true},
+        {"name": "down", "type": "mode_monitor", "selection": ["down_line"], "params": {"mode_number": 1},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "plasma_dispersion", "type": "semiconductor_em_plasma_dispersion", "source": "semiconductor",
+     "target": "em", "every": null,
+     "params": {"electron_coefficient": "a_sb", "hole_coefficient": "b_sb", "hole_exponent": "c_sb"}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 30, "tolerance": 2e-6, "relaxation": 1.0, "warm_start": false},
+            "stored_fields": ["em.ez_abs", "em.eps_r", "semiconductor.N", "semiconductor.P"],
+            "sweep": {"parameter": "N_net",
+                      "values": [-1e25, -3e24, -1e24, -3e23, -1e23, 1e23, 3e23, 1e24, 3e24, 1e25]}},
+  "derived_values": [
+    {"name": "N_mean", "expression": "semiconductor_N", "selection": [], "operation": "mean", "reference": "N0",
+     "tolerance": 1e-6},
+    {"name": "dn_mean", "expression": "sqrt(em_eps_r) - n_si", "selection": [], "operation": "mean",
+     "reference": "dn_ref", "tolerance": 0.006},
+    {"name": "n_eff_mid", "expression": "n_eff", "operation": "last", "source": "em.mid",
+     "reference": "n_eff_ref", "tolerance": 3e-6},
+    {"name": "dn_eff_mid", "expression": "n_eff - n_eff_cold", "operation": "last", "source": "em.mid",
+     "reference": "dn_eff_ref", "tolerance": 0.006},
+    {"name": "phi_down", "expression": "phase_positive", "operation": "last", "source": "em.down",
+     "reference": "phi_down_ref", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "dn_eff_curve", "target": "sweep", "expression": "dn_eff_ref", "tolerance": 0.006,
+     "series": "dn_eff_mid"},
+    {"name": "dn_mean_curve", "target": "sweep", "expression": "dn_ref", "tolerance": 0.006, "series": "dn_mean"},
+    {"name": "phi_down_curve", "target": "sweep", "expression": "phi_down_ref", "tolerance": 0.002,
+     "series": "phi_down"},
+    {"name": "eps_profile", "target": "line", "expression": "n_doped**2", "tolerance": 1e-5,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_r"}
+  ]
+}

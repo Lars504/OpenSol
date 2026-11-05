@@ -1,0 +1,78 @@
+{
+  "title": "Plasmonic gold nanoparticle (H_z polarisation)",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "480*nm", "description": "TFSF pulse centre wavelength"},
+    {"name": "L", "expression": "1.2*um", "description": "domain side length"},
+    {"name": "r_particle", "expression": "50*nm", "description": "gold cylinder radius"},
+    {"name": "lambda_lspr", "expression": "2*pi*c_const/sqrt(1.37e16**2/(9.84 + 1) - 1.02e14**2)",
+     "description": "quasi-static LSPR of the library Drude gold in vacuum (Re eps = -1); retardation red-shifts it"}
+  ],
+  "domain": {"size_x": "L", "size_y": "L"},
+  "geometry": [
+    {"name": "particle", "kind": "circle", "params": {"cx": "L/2", "cy": "L/2", "r": "r_particle"}},
+    {"name": "tfsf_box", "kind": "rectangle",
+     "params": {"x0": "0.35*um", "y0": "0.35*um", "x1": "0.85*um", "y1": "0.85*um"}},
+    {"name": "near_field_box", "kind": "rectangle",
+     "params": {"x0": "L/2 - 2*r_particle", "y0": "L/2 - 2*r_particle",
+                "x1": "L/2 + 2*r_particle", "y1": "L/2 + 2*r_particle"}},
+    {"name": "scattered_left_line", "kind": "line",
+     "params": {"x0": "0.29875*um", "y0": "0.30125*um", "x1": "0.29875*um", "y1": "0.89875*um"}},
+    {"name": "scattered_right_line", "kind": "line",
+     "params": {"x0": "0.89875*um", "y0": "0.30125*um", "x1": "0.89875*um", "y1": "0.89875*um"}},
+    {"name": "scattered_bottom_line", "kind": "line",
+     "params": {"x0": "0.30125*um", "y0": "0.29875*um", "x1": "0.89875*um", "y1": "0.29875*um"}},
+    {"name": "scattered_top_line", "kind": "line",
+     "params": {"x0": "0.30125*um", "y0": "0.89875*um", "x1": "0.89875*um", "y1": "0.89875*um"}},
+    {"name": "absorbed_left_line", "kind": "line",
+     "params": {"x0": "0.49875*um", "y0": "0.50125*um", "x1": "0.49875*um", "y1": "0.69875*um"}},
+    {"name": "absorbed_right_line", "kind": "line",
+     "params": {"x0": "0.69875*um", "y0": "0.50125*um", "x1": "0.69875*um", "y1": "0.69875*um"}},
+    {"name": "absorbed_bottom_line", "kind": "line",
+     "params": {"x0": "0.50125*um", "y0": "0.49875*um", "x1": "0.69875*um", "y1": "0.49875*um"}},
+    {"name": "absorbed_top_line", "kind": "line",
+     "params": {"x0": "0.50125*um", "y0": "0.69875*um", "x1": "0.69875*um", "y1": "0.69875*um"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "gold", "library": "gold", "properties": {}, "dispersion": null, "selection": ["particle"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_hz",
+      "settings": {"pml_cells": 20},
+      "features": [
+        {"name": "plane_wave", "type": "plane_wave_tfsf", "selection": ["tfsf_box"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": 0.6, "amplitude": 1.0},
+         "enabled": true},
+        {"name": "scattered_left", "type": "flux_monitor", "selection": ["scattered_left_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "scattered_right", "type": "flux_monitor", "selection": ["scattered_right_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "scattered_bottom", "type": "flux_monitor", "selection": ["scattered_bottom_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "scattered_top", "type": "flux_monitor", "selection": ["scattered_top_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "absorbed_left", "type": "flux_monitor", "selection": ["absorbed_left_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "absorbed_right", "type": "flux_monitor", "selection": ["absorbed_right_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "absorbed_bottom", "type": "flux_monitor", "selection": ["absorbed_bottom_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "absorbed_top", "type": "flux_monitor", "selection": ["absorbed_top_line"],
+         "params": {"wavelength_start": 3.8e-07, "wavelength_stop": 6.5e-07, "n_wavelengths": 55}, "enabled": true},
+        {"name": "near_field", "type": "dft_monitor", "selection": ["near_field_box"],
+         "params": {"wavelength_start": "lambda_lspr", "wavelength_stop": "620*nm", "n_wavelengths": 2},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "2.5*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "150*fs", "output_interval": "5*fs"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": []
+}

@@ -1,0 +1,105 @@
+{
+  "title": "Heated bimetal strip: laminate curvature and interface stress jump (analytic)",
+  "description": "Half of a free bimetal strip (two 50 um layers: aluminium-like E 70 GPa, alpha 23e-6 below, steel-like E 200 GPa, alpha 12e-6 above, nu 0.3 both; plane strain) heated uniformly by dT = 100 K (temperature_change feature, no heat physics). x_lo is the symmetry plane (roller); one fixed_domain pin cell at the bottom of x_lo stops the y translation; every other face is free.\nAnalytic (laminate theory, exact away from the free end): plane strain turns E_i into E_i' = E_i / (1 - nu^2) and alpha_i into alpha_i' = (1 + nu) alpha_i; strain_xx = eps0 + kappa y (y from the bottom) with A = sum E_i' t_i, B = sum E_i' int y dy, D = sum E_i' int y^2 dy, N_T = dT sum E_i' alpha_i' t_i, M_T = dT sum E_i' alpha_i' int y dy: kappa = (A M_T - B N_T) / (A D - B^2) (-19.9 1/m: the strip curls upward, the aluminium side convex), eps0 = (D N_T - B M_T) / (A D - B^2); sigma_xx = E_i' (eps0 + kappa y - alpha_i' dT), jumping at the interface (about -63 MPa in the aluminium to +134 MPa in the steel); sigma_zz = nu sigma_xx - E_i alpha_i dT; u_x = (eps0 + kappa y) x, u_y = -kappa x^2 / 2 + const. Cross-check: Timoshenko's bimetal formula for equal thicknesses, kappa = -24 dalpha' dT / (h (12 + (1 + n)(1 + 1/n))), n = E_al / E_steel (1.5 dalpha' dT / h for n = 1), gives the same kappa.\nComparison window: x = 3 h .. L - 3 h (selections interior, row_below, row_above), away from the pin and the free end (end effects decay over ~h). Bilinear elements are slightly too stiff in bending (32 cells over the depth: ~0.575 / 32^2 = 0.06 %; 16 cells gave 0.27 %). The pin cell cannot expand, so the far field carries a rigid offset (translation + rotation, ~4 alpha' dT dx^2 / h at the bottom fibre): ~0.6 % of the u_x range at dx = 6.25 um, hence dx = 3.125 um (~0.15 %).\nDerived values tab: curvature (from the strain_xx moment over the window; also against the Timoshenko value), strain_mid (strain_xx at the interface height), sigma_below / sigma_above (the cell rows either side of the interface) and sigma_zz_above; expected ~1e-3 or better (tolerance 5e-3).\nLine profile tab: sigma_xx_depth across the strip at x = 0.5 mm (piecewise linear with the jump), u_x_bottom and u_y_bottom along the bottom cell row (both within that pin offset; u_y ~0.5 % of its range, tolerance 2 %).",
+  "version": 1,
+  "parameters": [
+    {"name": "E_al", "expression": 7e10, "description": "Young's modulus of the lower (aluminium-like) layer in Pa"},
+    {"name": "alpha_al", "expression": 23e-6, "description": "thermal expansion of the lower layer in 1/K"},
+    {"name": "E_st", "expression": 2e11, "description": "Young's modulus of the upper (steel-like) layer in Pa"},
+    {"name": "alpha_st", "expression": 12e-6, "description": "thermal expansion of the upper layer in 1/K"},
+    {"name": "nu_strip", "expression": 0.3, "description": "Poisson ratio of both layers"},
+    {"name": "t_layer", "expression": "50*um", "description": "thickness of each layer"},
+    {"name": "h_strip", "expression": "2*t_layer", "description": "total strip thickness"},
+    {"name": "L_half", "expression": "1*mm", "description": "modelled half length (x_lo = symmetry plane, x_hi = free end)"},
+    {"name": "dx_mesh", "expression": "3.125*um", "description": "uniform cell size (16 cells per layer: the pin offset ~ dx^2 stays below the u_x tolerance)"},
+    {"name": "dT", "expression": 100.0, "description": "uniform temperature change in K"},
+    {"name": "x_a", "expression": "3*h_strip", "description": "start of the comparison window (3 h from the symmetry plane and pin)"},
+    {"name": "x_b", "expression": "L_half - 3*h_strip", "description": "end of the comparison window (3 h from the free end)"},
+    {"name": "E1p", "expression": "E_al/(1 - nu_strip**2)", "description": "plane-strain modulus of the lower layer in Pa"},
+    {"name": "E2p", "expression": "E_st/(1 - nu_strip**2)", "description": "plane-strain modulus of the upper layer in Pa"},
+    {"name": "a1p", "expression": "(1 + nu_strip)*alpha_al", "description": "plane-strain expansion of the lower layer in 1/K"},
+    {"name": "a2p", "expression": "(1 + nu_strip)*alpha_st", "description": "plane-strain expansion of the upper layer in 1/K"},
+    {"name": "A_lam", "expression": "t_layer*(E1p + E2p)", "description": "laminate extensional stiffness A in N/m"},
+    {"name": "B_lam", "expression": "t_layer**2*(E1p + 3*E2p)/2", "description": "laminate coupling stiffness B (moments about y = 0) in N"},
+    {"name": "D_lam", "expression": "t_layer**3*(E1p + 7*E2p)/3", "description": "laminate bending stiffness D (about y = 0) in N m"},
+    {"name": "N_T", "expression": "dT*t_layer*(E1p*a1p + E2p*a2p)", "description": "thermal force resultant in N/m"},
+    {"name": "M_T", "expression": "dT*t_layer**2*(E1p*a1p + 3*E2p*a2p)/2", "description": "thermal moment resultant about y = 0 in N"},
+    {"name": "det_lam", "expression": "A_lam*D_lam - B_lam**2", "description": "A D - B^2"},
+    {"name": "kappa_ref", "expression": "(A_lam*M_T - B_lam*N_T)/det_lam", "description": "analytic curvature d(strain_xx)/dy in 1/m (u_y = -kappa x^2 / 2)"},
+    {"name": "eps0_ref", "expression": "(D_lam*N_T - B_lam*M_T)/det_lam", "description": "analytic strain_xx at the bottom face y = 0"},
+    {"name": "n_ratio", "expression": "E_al/E_st", "description": "modulus ratio n of the Timoshenko formula"},
+    {"name": "kappa_timo", "expression": "-24*(a1p - a2p)*dT/(h_strip*(12 + (1 + n_ratio)*(1 + 1/n_ratio)))",
+     "description": "Timoshenko bimetal curvature for equal layer thicknesses in 1/m (cross-check of kappa_ref)"},
+    {"name": "y_below", "expression": "t_layer - dx_mesh/2", "description": "cell-centre height of the row just below the interface"},
+    {"name": "y_above", "expression": "t_layer + dx_mesh/2", "description": "cell-centre height of the row just above the interface"},
+    {"name": "sigma_below_ref", "expression": "E1p*(eps0_ref + kappa_ref*y_below - a1p*dT)", "description": "analytic sigma_xx in the row below the interface in Pa"},
+    {"name": "sigma_above_ref", "expression": "E2p*(eps0_ref + kappa_ref*y_above - a2p*dT)", "description": "analytic sigma_xx in the row above the interface in Pa"},
+    {"name": "x_cut", "expression": "0.5*mm + dx_mesh/2", "description": "x of the through-thickness stress line (a cell centre)"}
+  ],
+  "domain": {"size_x": "L_half", "size_y": "h_strip"},
+  "geometry": [
+    {"name": "layer_al", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_half", "y1": "t_layer"}},
+    {"name": "layer_steel", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_layer", "x1": "L_half", "y1": "h_strip"}},
+    {"name": "pin", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "dx_mesh", "y1": "dx_mesh"}},
+    {"name": "interior", "kind": "rectangle", "params": {"x0": "x_a", "y0": 0.0, "x1": "x_b", "y1": "h_strip"}},
+    {"name": "row_below", "kind": "rectangle", "params": {"x0": "x_a", "y0": "t_layer - dx_mesh", "x1": "x_b", "y1": "t_layer"}},
+    {"name": "row_above", "kind": "rectangle", "params": {"x0": "x_a", "y0": "t_layer", "x1": "x_b", "y1": "t_layer + dx_mesh"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "aluminium_like", "library": null,
+     "properties": {"youngs_modulus": "E_al", "poisson_ratio": "nu_strip", "alpha": "alpha_al"},
+     "dispersion": null, "selection": ["layer_al"]},
+    {"name": "steel_like", "library": null,
+     "properties": {"youngs_modulus": "E_st", "poisson_ratio": "nu_strip", "alpha": "alpha_st"},
+     "dispersion": null, "selection": ["layer_steel"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "symmetry", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "pin_cell", "type": "fixed_domain", "selection": ["pin"], "params": {}, "enabled": true},
+        {"name": "heating", "type": "temperature_change", "selection": ["all"], "params": {"delta_T": "dT"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 200000}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.u_y", "solid.stress_xx", "solid.stress_zz",
+                              "solid.strain_xx"],
+            "sweep": null},
+  "derived_values": [
+    {"name": "curvature", "expression": "12*solid_strain_xx*(y - t_layer)/(h_strip**2 - dx_mesh**2)",
+     "selection": ["interior"], "operation": "mean", "reference": "kappa_ref", "tolerance": 0.005},
+    {"name": "curvature_timoshenko", "expression": "12*solid_strain_xx*(y - t_layer)/(h_strip**2 - dx_mesh**2)",
+     "selection": ["interior"], "operation": "mean", "reference": "kappa_timo", "tolerance": 0.005},
+    {"name": "strain_mid", "expression": "solid_strain_xx", "selection": ["interior"], "operation": "mean",
+     "reference": "eps0_ref + kappa_ref*t_layer", "tolerance": 0.005},
+    {"name": "sigma_below", "expression": "solid_stress_xx", "selection": ["row_below"], "operation": "mean",
+     "reference": "sigma_below_ref", "tolerance": 0.005},
+    {"name": "sigma_above", "expression": "solid_stress_xx", "selection": ["row_above"], "operation": "mean",
+     "reference": "sigma_above_ref", "tolerance": 0.005},
+    {"name": "sigma_zz_above", "expression": "solid_stress_zz", "selection": ["row_above"], "operation": "mean",
+     "reference": "nu_strip*sigma_above_ref - E_st*alpha_st*dT", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "sigma_xx_depth", "target": "line",
+     "expression": "where(y < t_layer, E1p*(eps0_ref + kappa_ref*y - a1p*dT), E2p*(eps0_ref + kappa_ref*y - a2p*dT))",
+     "tolerance": 0.005, "line": ["x_cut", 0.0, "x_cut", "h_strip"], "field": "solid.stress_xx"},
+    {"name": "u_x_bottom", "target": "line", "expression": "(eps0_ref + kappa_ref*y)*x", "tolerance": 0.005,
+     "line": ["x_a", "dx_mesh/2", "x_b", "dx_mesh/2"], "field": "solid.u_x"},
+    {"name": "u_y_bottom", "target": "line", "expression": "-kappa_ref*x**2/2", "tolerance": 0.02,
+     "line": [0.0, "dx_mesh/2", "x_b", "dx_mesh/2"], "field": "solid.u_y"}
+  ]
+}

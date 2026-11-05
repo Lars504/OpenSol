@@ -1,0 +1,68 @@
+{
+  "title": "Analytic: effective index of symmetric slabs on the b-V curve (2.5D)",
+  "description": "Three effective_index features (em_fdfd_hz, stationary, no source: only the permittivity they write matters) collapse a symmetric silica / core / silica stack (n_clad = 1.444, n_core = 2.0, 1.55 um) to one index: TE0 (slab mode 1, E along the layers), TM0 (slab_polarization tm, mode 1) and TE1 (mode 2), each on its own third of the domain. The sweep runs the normalised index b over 0.1-0.9; each film thickness is chosen so that its mode lands exactly at that b, so all three must return the same n_eff.\nAnalytic (symmetric slab dispersion, V = k0 d NA, NA = sqrt(n_core^2 - n_clad^2)): V sqrt(1 - b) = m pi + 2 atan(p sqrt(b / (1 - b))), p = 1 (TE) or (n_core / n_clad)^2 (TM), so d = (m pi + 2 atan(p sqrt(b / (1 - b)))) / (k0 NA sqrt(1 - b)); then n_eff = sqrt(n_clad^2 + b NA^2).\nSweep tab: derived n_TE0, n_TM0, n_TE1 (mean sqrt(eps_xx) over each region) vs b with the dashed n_eff(b); the validation messages (info) list each feature's n_eff.\nExpected agreement: ~1e-3 absolute in n_eff (the feature's automatic slab cell of about wavelength / (100 n_core)); float32 permittivity adds ~1e-7.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_clad", "expression": 1.444, "description": "cladding index (silica), below and above the film"},
+    {"name": "n_core", "expression": 2.0, "description": "film index"},
+    {"name": "lambda_s", "expression": "1.55*um", "description": "wavelength of the slab solves and of the FDFD physics"},
+    {"name": "b_norm", "expression": 0.5, "description": "normalised index b = (n_eff^2 - n_clad^2) / (n_core^2 - n_clad^2) (swept)"},
+    {"name": "NA", "expression": "sqrt(n_core**2 - n_clad**2)", "description": "numerical aperture of the slab"},
+    {"name": "k_vac", "expression": "2*pi/lambda_s", "description": "vacuum wavenumber k0 [rad/m]"},
+    {"name": "d_te0", "expression": "2*atan(sqrt(b_norm/(1 - b_norm)))/(k_vac*NA*sqrt(1 - b_norm))",
+     "description": "film thickness putting TE0 at b"},
+    {"name": "d_tm0", "expression": "2*atan((n_core/n_clad)**2*sqrt(b_norm/(1 - b_norm)))/(k_vac*NA*sqrt(1 - b_norm))",
+     "description": "film thickness putting TM0 at b"},
+    {"name": "d_te1", "expression": "(pi + 2*atan(sqrt(b_norm/(1 - b_norm))))/(k_vac*NA*sqrt(1 - b_norm))",
+     "description": "film thickness putting TE1 at b"},
+    {"name": "n_eff_b", "expression": "sqrt(n_clad**2 + b_norm*NA**2)", "description": "analytic effective index at b"},
+    {"name": "region_w", "expression": "0.5*um", "description": "width of each region (25 cells)"},
+    {"name": "Ly", "expression": "0.6*um", "description": "domain height"}
+  ],
+  "domain": {"size_x": "3*region_w", "size_y": "Ly"},
+  "geometry": [
+    {"name": "te0_region", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "region_w", "y1": "Ly"}},
+    {"name": "tm0_region", "kind": "rectangle",
+     "params": {"x0": "region_w", "y0": 0.0, "x1": "2*region_w", "y1": "Ly"}},
+    {"name": "te1_region", "kind": "rectangle",
+     "params": {"x0": "2*region_w", "y0": 0.0, "x1": "3*region_w", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_hz",
+      "settings": {"wavelength": "lambda_s"},
+      "features": [
+        {"name": "stack_te0", "type": "effective_index", "selection": ["te0_region"],
+         "params": {"layer_indices": ["n_clad", "n_core", "n_clad"], "layer_thicknesses": ["d_te0"],
+                    "wavelength": "lambda_s", "slab_polarization": "te", "mode_number": 1},
+         "enabled": true},
+        {"name": "stack_tm0", "type": "effective_index", "selection": ["tm0_region"],
+         "params": {"layer_indices": ["n_clad", "n_core", "n_clad"], "layer_thicknesses": ["d_tm0"],
+                    "wavelength": "lambda_s", "slab_polarization": "tm", "mode_number": 1},
+         "enabled": true},
+        {"name": "stack_te1", "type": "effective_index", "selection": ["te1_region"],
+         "params": {"layer_indices": ["n_clad", "n_core", "n_clad"], "layer_thicknesses": ["d_te1"],
+                    "wavelength": "lambda_s", "slab_polarization": "te", "mode_number": 2},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "20*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "b_norm", "values": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]}},
+  "derived_values": [
+    {"name": "n_TE0", "expression": "sqrt(eps_xx)", "selection": ["te0_region"], "operation": "mean",
+     "reference": "n_eff_b", "tolerance": 0.002},
+    {"name": "n_TM0", "expression": "sqrt(eps_xx)", "selection": ["tm0_region"], "operation": "mean",
+     "reference": "n_eff_b", "tolerance": 0.002},
+    {"name": "n_TE1", "expression": "sqrt(eps_xx)", "selection": ["te1_region"], "operation": "mean",
+     "reference": "n_eff_b", "tolerance": 0.002}
+  ],
+  "analytic_curves": []
+}

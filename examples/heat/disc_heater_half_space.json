@@ -1,0 +1,75 @@
+{
+  "title": "Disc heater on a half-space: axisymmetric surface heating (analytic)",
+  "description": "Axisymmetric (r, z) steady conduction: a uniform heat flux q over a disc of radius a on the insulated surface (y_hi) of a large solid, held at T_s beyond a hemisphere of radius R_out = 10 a (x = r, the axis is x_lo). The flux is a heat source q / dx in the top cell layer for r < a (a = 20 cells).\nAnalytic (Carslaw and Jaeger): axis T(0, z) = T_s + (q / k)(sqrt(a^2 + z^2) - z) - T_corr; disc mean 8 q a / (3 pi k); surface beyond the disc (q a^2 / (2 k r))(1 + u^2/8 + 3 u^4/64 + 25 u^6/1024), u = a / r. T_corr = q a^2 / (2 k R_out) is the shift from holding the hemisphere at T_s.\nDerived values tab: theta_centre and theta_depth (axis probes at depth dx/2 and a + dx/2), heater_mean_rise (ring-weighted mean over the top cell layer of the disc, - q dx / (2 k) for its depth), P_total (integral of the applied source = q pi a^2, exact: checks the ring weighting). Expect ~1 % (disc-edge singularity, 20 cells per radius).\nLine profile tab: T_axis (depth profile on the axis) and T_surface (top cell row from 2 a to R_out, multipole series).",
+  "version": 2,
+  "parameters": [
+    {"name": "q_flux", "expression": 1e4, "description": "heat flux into the disc in W/m^2 (1 W/cm^2)"},
+    {"name": "k_med", "expression": 0.2, "description": "thermal conductivity of the solid in W/(m K) (a polymer)"},
+    {"name": "T_s", "expression": 293.15, "description": "temperature held beyond R_out in K"},
+    {"name": "a_heat", "expression": "1*mm", "description": "heater disc radius"},
+    {"name": "dx_mesh", "expression": "a_heat/20", "description": "uniform cell size (20 cells across the heater radius)"},
+    {"name": "R_out", "expression": "10*a_heat", "description": "radius of the held hemisphere around the disc centre"},
+    {"name": "L_box", "expression": "R_out + 10*dx_mesh", "description": "domain size along r and z"},
+    {"name": "z_depth", "expression": "a_heat + dx_mesh/2", "description": "depth of the second axis probe (a cell centre)"},
+    {"name": "T_corr", "expression": "q_flux*a_heat**2/(2*k_med*R_out)",
+     "description": "drop from holding the hemisphere R_out at T_s instead of infinity, in K (5 % of the centre rise)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "heater", "kind": "rectangle", "params": {"x0": 0.0, "y0": "L_box - dx_mesh", "x1": "a_heat", "y1": "L_box"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "hemisphere", "kind": "circle", "params": {"cx": 0.0, "cy": "L_box", "r": "R_out"}},
+    {"name": "far_solid", "kind": "difference", "params": {"base": "box", "subtract": ["hemisphere"]}},
+    {"name": "centre_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "L_box - dx_mesh/2"}},
+    {"name": "depth_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "L_box - z_depth"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "solid", "library": null, "properties": {"k": "k_med"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"geometry": "axisymmetric", "T0": "T_s"},
+      "features": [
+        {"name": "far_field", "type": "fixed_temperature_domain", "selection": ["far_solid"],
+         "params": {"temperature": "T_s"}, "enabled": true},
+        {"name": "disc_flux", "type": "heat_source", "selection": ["heater"], "params": {"Q": "q_flux/dx_mesh"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true},
+        {"name": "depth", "type": "temperature_probe", "selection": ["depth_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_centre", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.centre",
+     "reference": "q_flux/k_med*(sqrt(a_heat**2 + (dx_mesh/2)**2) - dx_mesh/2) - T_corr", "tolerance": 0.03},
+    {"name": "theta_depth", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.depth", "reference": "q_flux/k_med*(sqrt(a_heat**2 + z_depth**2) - z_depth) - T_corr",
+     "tolerance": 0.03},
+    {"name": "heater_mean_rise", "expression": "T - T_s", "selection": ["heater"], "operation": "mean",
+     "reference": "8*q_flux*a_heat/(3*pi*k_med) - q_flux*dx_mesh/(2*k_med) - T_corr", "tolerance": 0.01},
+    {"name": "P_total", "expression": "Q_ext", "selection": [], "operation": "integral",
+     "reference": "q_flux*pi*a_heat**2", "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "T_axis", "target": "line",
+     "expression": "T_s + q_flux/k_med*(sqrt(a_heat**2 + (L_box - y)**2) - (L_box - y)) - T_corr", "tolerance": 0.01,
+     "line": ["dx_mesh/2", "L_box - R_out", "dx_mesh/2", "L_box - dx_mesh/2"], "field": "heat.T"},
+    {"name": "T_surface", "target": "line",
+     "expression": "T_s + q_flux*a_heat**2/(2*k_med)*((1 + (a_heat/x)**2/8 + 3*(a_heat/x)**4/64 + 25*(a_heat/x)**6/1024)/x - 1/R_out)",
+     "tolerance": 0.003,
+     "line": ["2*a_heat", "L_box - dx_mesh/2", "R_out", "L_box - dx_mesh/2"], "field": "heat.T"}
+  ]
+}

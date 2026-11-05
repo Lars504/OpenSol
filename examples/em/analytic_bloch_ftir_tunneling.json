@@ -1,0 +1,101 @@
+{
+  "title": "Analytic: frustrated total internal reflection across a vacuum gap (Bloch FDTD, s and p)",
+  "description": "A plane-wave pulse travels in glass (n = 1.5) at 60 deg, beyond the critical angle 41.8 deg, toward a vacuum gap of width d followed by glass again; once in E_z (physics 'em_s', s-polarised) and once in H_z (physics 'em_p', p-polarised). The strip is y-periodic with Bloch wave vector ky = n k0 sin(60 deg) at lambda0 = 1 um (ky = 1.30 k0 > k0: evanescent in the gap), so the vertical line source in the glass launches the wave at 60 deg; glass fills both sides into the CPML. The sweep runs d over 0.05-0.5 um.\nAnalytic (symmetric barrier): q = n k0 cos(theta) in the glass, kappa = k0 sqrt(n^2 sin^2(theta) - 1) in the gap, 1 / T = 1 + ((alpha^2 + kappa^2) / (2 alpha kappa))^2 sinh^2(kappa d) with alpha = q (s) or q / n^2 (p) (d = 0.3 um: T_s 0.160, T_p 0.084; p tunnels less); incident power per period in the glass P_s = A^2 n Ly / (2 eta0 cos(theta)) (an E_z sheet radiates A / cos(theta)), P_p = A^2 n Ly cos(theta) / (2 eta0) (an in-plane sheet radiates |E| = A).\nSweep tab: derived T_s, T_p (power_per_cw of the flux line behind the gap at lambda0 / P) vs d_gap with the dashed references (exponential tunnelling decay ~exp(-2 kappa d) beyond d ~ 1 / kappa = 0.19 um).\nSpectra tab: em_s.trans / em_p.trans quantity power_per_cw vs the dashed P(lambda) T(lambda): at fixed ky the angle, kappa and P change across the 0.95-1.05 um band (grazing cutoff in the glass at 1.155 um).\nMeasured agreement (CPU run): T_s within 0.3 %, T_p within 0.5 % over the sweep. spectrum_s is scored against the band range (ptp) of P_s T_s, and at d = 0.2 um the rise of P_s(lambda) ~ 1 / cos(theta) and the fall of T_s(lambda) cancel to first order (ptp ~2 % of the value), so a 0.17 % deviation reads as 0.087: hence its tolerance 0.15.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_glass", "expression": 1.5, "description": "refractive index of the glass on both sides of the gap"},
+    {"name": "lambda0", "expression": "1*um", "description": "source centre wavelength = wavelength of the derived values"},
+    {"name": "theta_deg", "expression": 60.0, "description": "incidence angle in the glass at lambda0 [deg] (critical angle 41.8 deg)"},
+    {"name": "th", "expression": "theta_deg*pi/180", "description": "incidence angle [rad]"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 at lambda0 [1/m]"},
+    {"name": "ky", "expression": "n_glass*k_vac*sin(th)", "description": "Bloch wave vector along y [rad/m] (1.30 k0)"},
+    {"name": "d_gap", "expression": "0.3*um", "description": "vacuum gap width (swept 0.05-0.5 um; whole cells)"},
+    {"name": "Lx", "expression": "4*um", "description": "domain length (cpml on both x faces, glass into both)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells; only the zeroth diffraction order)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size (67 cells per glass wavelength)"},
+    {"name": "x_src", "expression": "1.005*um", "description": "line source x (cell centre), in the glass"},
+    {"name": "x_gap", "expression": "1.5*um", "description": "gap front face (a cell edge)"},
+    {"name": "x_flux", "expression": "3.005*um", "description": "transmitted flux line x (cell centre), in the glass behind the gap"},
+    {"name": "A_src", "expression": 1.0, "description": "line source amplitude [V/m] (normal-incidence calibration in the glass)"},
+    {"name": "bw", "expression": 0.05,
+     "description": "relative pulse bandwidth: narrow, so the spectrum is negligible at the grazing cutoff 2 pi n / ky (1.155 um)"},
+    {"name": "T_run", "expression": "600*fs", "description": "study duration (pulse 2 t0 ~ 190 fs plus the slow x transit c cos(theta) / n)"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "vacuum impedance [Ohm]"},
+    {"name": "cos_i", "expression": "cos(th)", "description": "cos of the incidence angle in the glass"},
+    {"name": "q_glass", "expression": "n_glass*k_vac*cos_i", "description": "normal wavenumber in the glass [1/m]"},
+    {"name": "kappa", "expression": "k_vac*sqrt(n_glass**2*sin(th)**2 - 1)", "description": "decay constant in the gap [1/m]"},
+    {"name": "F_s", "expression": "((q_glass**2 + kappa**2)/(2*q_glass*kappa))**2", "description": "s barrier factor (alpha = q)"},
+    {"name": "F_p", "expression": "((q_glass**2/n_glass**4 + kappa**2)/(2*q_glass/n_glass**2*kappa))**2",
+     "description": "p barrier factor (alpha = q / n^2)"},
+    {"name": "T_s_ref", "expression": "1/(1 + F_s*sinh(kappa*d_gap)**2)", "description": "analytic s power transmission"},
+    {"name": "T_p_ref", "expression": "1/(1 + F_p*sinh(kappa*d_gap)**2)", "description": "analytic p power transmission"},
+    {"name": "P_s", "expression": "A_src**2*n_glass*Ly/(2*eta0*cos_i)", "description": "incident E_z power per period [W/m] toward +x"},
+    {"name": "P_p", "expression": "A_src**2*n_glass*Ly*cos_i/(2*eta0)", "description": "incident H_z power per period [W/m] toward +x"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "glass_in", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_gap", "y1": "Ly"}},
+    {"name": "glass_out", "kind": "rectangle", "params": {"x0": "x_gap + d_gap", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "flux_line", "kind": "line", "params": {"x0": "x_flux", "y0": 0.0, "x1": "x_flux", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass_material", "library": null, "properties": {"eps_r": "n_glass**2"}, "dispersion": null,
+     "selection": ["glass_in", "glass_out"]}
+  ],
+  "physics": [
+    {
+      "name": "em_s",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "bloch_ky": "ky", "pml_cells": 25,
+                   "pml_sigma_factor": 0.7},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "trans", "type": "flux_monitor", "selection": ["flux_line"],
+         "params": {"wavelength_start": "0.95*um", "wavelength_stop": "1.05*um", "n_wavelengths": 21},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_p",
+      "type": "em_fdtd_hz",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "bloch_ky": "ky", "pml_cells": 25,
+                   "pml_sigma_factor": 0.7},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "trans", "type": "flux_monitor", "selection": ["flux_line"],
+         "params": {"wavelength_start": "0.95*um", "wavelength_stop": "1.05*um", "n_wavelengths": 21},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "d_gap", "values": ["0.05*um", "0.1*um", "0.2*um", "0.3*um", "0.4*um", "0.5*um"]}},
+  "derived_values": [
+    {"name": "T_s", "expression": "power_per_cw/P_s", "selection": [], "operation": "at", "source": "em_s.trans",
+     "at": "lambda0", "reference": "T_s_ref", "tolerance": 0.03},
+    {"name": "T_p", "expression": "power_per_cw/P_p", "selection": [], "operation": "at", "source": "em_p.trans",
+     "at": "lambda0", "reference": "T_p_ref", "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "T_s_sweep", "target": "sweep", "series": "T_s", "expression": "T_s_ref", "tolerance": 0.03},
+    {"name": "T_p_sweep", "target": "sweep", "series": "T_p", "expression": "T_p_ref", "tolerance": 0.03},
+    {"name": "spectrum_s", "target": "em_s.trans", "series": "power_per_cw",
+     "expression": "A_src**2*Ly*n_glass/(2*eta0*sqrt(1 - (ky*wavelength/(2*pi*n_glass))**2))/(1 + ((n_glass**2 - 1)*(2*pi/wavelength)**2/(2*sqrt((2*pi*n_glass/wavelength)**2 - ky**2)*sqrt(ky**2 - (2*pi/wavelength)**2)))**2*sinh(sqrt(ky**2 - (2*pi/wavelength)**2)*d_gap)**2)",
+     "tolerance": 0.15},
+    {"name": "spectrum_p", "target": "em_p.trans", "series": "power_per_cw",
+     "expression": "A_src**2*Ly*n_glass*sqrt(1 - (ky*wavelength/(2*pi*n_glass))**2)/(2*eta0)/(1 + (((2*pi*n_glass/wavelength)**2 - ky**2)/n_glass**2 + n_glass**2*(ky**2 - (2*pi/wavelength)**2))**2/(4*((2*pi*n_glass/wavelength)**2 - ky**2)*(ky**2 - (2*pi/wavelength)**2))*sinh(sqrt(ky**2 - (2*pi/wavelength)**2)*d_gap)**2)",
+     "tolerance": 0.05}
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "title": "Analytic: walled guide at a fixed out-of-plane wave number, conical eigenfrequencies (em_fdfd_conical)",
+  "description": "The cross-section of a z-invariant guide between pec walls on x and pmc walls on y (32 x 24 cells of 25 nm between the wall planes, the inner faces of the outermost cells), filled with n = 2, solved by the eigenfrequency study of em_fdfd_conical at the out-of-plane wave number k_z = 2 pi n / 1.55 um. At k_z = beta the resonances are the guided modes of propagation constant beta read the other way (omega at given beta instead of beta at given omega, the same discrete equations as em_modes).\nAnalytic (exact discrete): a homogeneous guide between walls separates into 1D wall Laplacians, k0^2 n^2 = k_z^2 + Kx^2 + Ky^2 with K = (2 / dx) sin(p pi / (2 M)), M the cells between the wall planes; pec x: p = 0..M on the faces, 1..M at the centres; pmc y: 0..M-1 at the centres, 1..M-1 on the faces. The (0, 0) order is the TEM mode of the pec-x / pmc-y parallel plate (E along x, uniform), exactly at the target 1.55 um; then (1, 0) at 1.395 um, (0, 1) at 1.302 um and the degenerate (1, 1) pair at 1.206 um.\nDerived values tab (the analytic comparison: Value, Reference, Rel. error, Tolerance per mode): the wavelength of each order picked from the resonance table by a 1 % window around its reference; exact to round-off and the float32 mesh widths (~1e-7). The references assume this uniform 25 nm mesh (M = 32 x 24): another mesh moves the wall planes (auto at 40 points per wavelength: 42 x 32 cells of 19.4 nm, a 0.81 x 0.62 um guide), so the values shift by ~1 % and (1, 1) falls outside its window (0). The table itself is in the Curves & tables tab.\nSolve: the TEM mode sits exactly on the target, the hard case of the conical shift-invert (see the em sub file); on finer meshes check the eigs line of the log (seconds, operator applications).\nField tab: snapshot 'resonance 1' is the TEM mode (e_abs uniform, only E_x and H_y), the others show one half-wave across x or y.",
+  "version": 1,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform square cell size"},
+    {"name": "m_x", "expression": 32, "description": "cells between the pec wall planes along x"},
+    {"name": "m_y", "expression": 24, "description": "cells between the pmc wall planes along y"},
+    {"name": "n_fill", "expression": 2.0, "description": "refractive index of the filling"},
+    {"name": "lambda_target", "expression": "1.55*um", "description": "eigenfrequency target (the wavelength setting)"},
+    {"name": "kz_guide", "expression": "2*pi*n_fill/lambda_target", "description": "out-of-plane wave number in rad/m: the TEM mode sits exactly at the target"},
+    {"name": "Kx1", "expression": "2/dx_cell*sin(pi/(2*m_x))", "description": "discrete Kx of the order p = 1 between the pec planes"},
+    {"name": "Ky1", "expression": "2/dx_cell*sin(pi/(2*m_y))", "description": "discrete Ky of the order q = 1 between the pmc planes"},
+    {"name": "lam_00", "expression": "2*pi*n_fill/kz_guide", "description": "TEM (0, 0): 1.55 um"},
+    {"name": "lam_10", "expression": "2*pi*n_fill/sqrt(kz_guide**2 + Kx1**2)", "description": "order (1, 0): 1.395 um"},
+    {"name": "lam_01", "expression": "2*pi*n_fill/sqrt(kz_guide**2 + Ky1**2)", "description": "order (0, 1): 1.302 um"},
+    {"name": "lam_11", "expression": "2*pi*n_fill/sqrt(kz_guide**2 + Kx1**2 + Ky1**2)", "description": "orders (1, 1), a degenerate pair: 1.206 um"}
+  ],
+  "domain": {"size_x": "(m_x + 2)*dx_cell", "size_y": "(m_y + 2)*dx_cell"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "filling", "library": null, "properties": {"eps_r": "n_fill**2"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_conical",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pmc", "bc_y_hi": "pmc",
+                   "wavelength": "lambda_target", "k_z": "kz_guide"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 4},
+            "stored_fields": ["em.e_abs", "em.ex_abs", "em.ey_abs", "em.ez_abs"],
+            "sweep": null},
+  "derived_values": [
+    {"name": "lambda_00", "expression": "where(abs(wavelength/lam_00 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_00", "tolerance": 1e-5},
+    {"name": "lambda_10", "expression": "where(abs(wavelength/lam_10 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_10", "tolerance": 1e-5},
+    {"name": "lambda_01", "expression": "where(abs(wavelength/lam_01 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_01", "tolerance": 1e-5},
+    {"name": "lambda_11", "expression": "where(abs(wavelength/lam_11 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_11", "tolerance": 1e-5}
+  ],
+  "analytic_curves": []
+}

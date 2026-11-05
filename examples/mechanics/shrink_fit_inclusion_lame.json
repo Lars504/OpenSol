@@ -1,0 +1,97 @@
+{
+  "title": "Heated inclusion in a free disc: eigenstrain stress and Lame decay outside (analytic)",
+  "description": "Quarter of a free solid disc (radius b = 1 mm, one material, steel-like E 200 GPa, nu 0.3, alpha 1.2e-5; void outside) whose central core r < a is heated by dT = 100 K (temperature_change feature on the inclusion only, no heat physics): the core wants to expand, the ring around it holds it back (the stress of a shrink fit). Rollers on x_lo / y_lo are the symmetry lines, the disc rim is free. Plane strain; the sweep runs a / b over 0.2, 0.4, 0.6.\nAnalytic (plane strain, eps_zz = 0; K = alpha E dT / (2 (1 - nu)), rho = a^2 / b^2): inside the core a uniform hydrostatic state sigma_r = sigma_theta = -K (1 - rho), sigma_zz = -2 nu K (1 - rho) - E alpha dT; outside sigma_r = -K a^2 (1/r^2 - 1/b^2), sigma_theta = K a^2 (1/r^2 + 1/b^2) (the Lame 1/r^2 decay plus a uniform tension 2 K rho in sigma_r + sigma_theta), sigma_zz = 2 nu K rho; sigma_theta jumps by 2 K at r = a, sigma_r is continuous. u_r = C r (1 + (1 - 2 nu) rho) inside and C a^2 (1/r + (1 - 2 nu) r / b^2) outside with C = (1 + nu) alpha dT / (2 (1 - nu)), so the rim moves by u_r(b) = (1 + nu) alpha dT a^2 / b.\nBoth circles are staircases of 128 cells per b: the inclusion area (and every quantity ~ a^2) is off by a few 1e-3 (more at a / b = 0.2: ~26 cells per radius), and the cell or two at the inclusion edge scatter.\nDerived values tab: sxx_core / syy_core / szz_core (means over r < a / 2, ~1e-3), sum_outside (mean of sigma_xx + sigma_yy over the ring a + 4 dx < r < b - 4 dx vs 2 K rho, ~1 %) and u_rim (probe in the rim cell on the x axis, ~1 %).\nSweep tab: sxx_core and sum_outside vs a / b with their dashed curves.\nLine profile tab (last sweep value, a / b = 0.6), half a cell above the x axis: sigma_r_axis (solid.stress_xx through core and ring), sigma_theta_ring (solid.stress_yy, the ring only, starting 3 cells outside the inclusion), sigma_z_axis (solid.stress_zz, with the E alpha dT step) and u_radial (solid.u_x); expected ~1-2 % of each curve's range.",
+  "version": 1,
+  "parameters": [
+    {"name": "E_disc", "expression": 2e11, "description": "Young's modulus in Pa (steel-like)"},
+    {"name": "nu_disc", "expression": 0.3, "description": "Poisson ratio"},
+    {"name": "alpha_disc", "expression": 1.2e-5, "description": "thermal expansion coefficient in 1/K"},
+    {"name": "dT", "expression": 100.0, "description": "temperature change of the inclusion in K (the ring stays at the stress-free temperature)"},
+    {"name": "b_disc", "expression": "1*mm", "description": "disc radius"},
+    {"name": "a_ratio", "expression": 0.4, "description": "inclusion radius over disc radius (swept 0.2, 0.4, 0.6)"},
+    {"name": "a_incl", "expression": "a_ratio*b_disc", "description": "inclusion radius"},
+    {"name": "dx_mesh", "expression": "b_disc/128", "description": "uniform cell size (128 cells per disc radius)"},
+    {"name": "L_box", "expression": "b_disc + 4*dx_mesh", "description": "side of the quarter model (disc plus a 4-cell void margin)"},
+    {"name": "rho_a", "expression": "a_incl**2/b_disc**2", "description": "area ratio a^2 / b^2"},
+    {"name": "K_th", "expression": "alpha_disc*E_disc*dT/(2*(1 - nu_disc))", "description": "plane-strain eigenstress scale K in Pa (171 MPa)"},
+    {"name": "C_u", "expression": "(1 + nu_disc)*alpha_disc*dT/(2*(1 - nu_disc))", "description": "plane-strain displacement scale C (strain)"},
+    {"name": "x_rim", "expression": "b_disc - dx_mesh/2", "description": "rim probe x: centre of the last disc cell on the x axis"},
+    {"name": "y_rim", "expression": "dx_mesh/2", "description": "rim probe y (first cell row)"},
+    {"name": "u_rim_ref", "expression": "C_u*a_incl**2*x_rim*(1/(x_rim**2 + y_rim**2) + (1 - 2*nu_disc)/b_disc**2)",
+     "description": "analytic u_x at the rim probe in m (~(1 + nu) alpha dT a^2 / b)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "disc", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_disc"}},
+    {"name": "inclusion", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "a_incl"}},
+    {"name": "core", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "a_incl/2"}},
+    {"name": "ring_outer", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_disc - 4*dx_mesh"}},
+    {"name": "ring_inner", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "a_incl + 4*dx_mesh"}},
+    {"name": "ring", "kind": "difference", "params": {"base": "ring_outer", "subtract": ["ring_inner"]}},
+    {"name": "rim_point", "kind": "point", "params": {"x": "x_rim", "y": "y_rim"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "disc_material", "library": null,
+     "properties": {"youngs_modulus": "E_disc", "poisson_ratio": "nu_disc", "alpha": "alpha_disc"},
+     "dispersion": null, "selection": ["disc"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "left", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "heated_core", "type": "temperature_change", "selection": ["inclusion"], "params": {"delta_T": "dT"},
+         "enabled": true},
+        {"name": "rim", "type": "solid_probe", "selection": ["rim_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.stress_xx", "solid.stress_yy", "solid.stress_zz",
+                              "solid.von_mises"],
+            "sweep": {"parameter": "a_ratio", "values": [0.2, 0.4, 0.6]}},
+  "derived_values": [
+    {"name": "sxx_core", "expression": "solid_stress_xx", "selection": ["core"], "operation": "mean",
+     "reference": "-K_th*(1 - rho_a)", "tolerance": 0.01},
+    {"name": "syy_core", "expression": "solid_stress_yy", "selection": ["core"], "operation": "mean",
+     "reference": "-K_th*(1 - rho_a)", "tolerance": 0.01},
+    {"name": "szz_core", "expression": "solid_stress_zz", "selection": ["core"], "operation": "mean",
+     "reference": "-2*nu_disc*K_th*(1 - rho_a) - E_disc*alpha_disc*dT", "tolerance": 0.01},
+    {"name": "sum_outside", "expression": "solid_stress_xx + solid_stress_yy", "selection": ["ring"],
+     "operation": "mean", "reference": "2*K_th*rho_a", "tolerance": 0.03},
+    {"name": "u_rim", "expression": "values", "selection": [], "operation": "last", "source": "solid.rim",
+     "reference": "u_rim_ref", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "sxx_core_vs_a", "target": "sweep", "expression": "-K_th*(1 - rho_a)", "tolerance": 0.01,
+     "series": "sxx_core"},
+    {"name": "sum_outside_vs_a", "target": "sweep", "expression": "2*K_th*rho_a", "tolerance": 0.03,
+     "series": "sum_outside"},
+    {"name": "sigma_r_axis", "target": "line",
+     "expression": "where(x**2 + y**2 < a_incl**2, -K_th*(1 - rho_a), K_th*rho_a + K_th*a_incl**2*(y**2 - x**2)/(x**2 + y**2)**2)",
+     "tolerance": 0.03, "line": [0.0, "dx_mesh/2", "b_disc - dx_mesh/2", "dx_mesh/2"], "field": "solid.stress_xx"},
+    {"name": "sigma_theta_ring", "target": "line",
+     "expression": "K_th*rho_a + K_th*a_incl**2*(x**2 - y**2)/(x**2 + y**2)**2",
+     "tolerance": 0.05, "line": ["a_incl + 3*dx_mesh", "dx_mesh/2", "b_disc - dx_mesh/2", "dx_mesh/2"],
+     "field": "solid.stress_yy"},
+    {"name": "sigma_z_axis", "target": "line",
+     "expression": "where(x**2 + y**2 < a_incl**2, -2*nu_disc*K_th*(1 - rho_a) - E_disc*alpha_disc*dT, 2*nu_disc*K_th*rho_a)",
+     "tolerance": 0.02, "line": [0.0, "dx_mesh/2", "b_disc - dx_mesh/2", "dx_mesh/2"], "field": "solid.stress_zz"},
+    {"name": "u_radial", "target": "line",
+     "expression": "where(x**2 + y**2 < a_incl**2, C_u*x*(1 + (1 - 2*nu_disc)*rho_a), C_u*a_incl**2*x*(1/(x**2 + y**2) + (1 - 2*nu_disc)/b_disc**2))",
+     "tolerance": 0.01, "line": [0.0, "dx_mesh/2", "b_disc - dx_mesh/2", "dx_mesh/2"], "field": "solid.u_x"}
+  ]
+}

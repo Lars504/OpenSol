@@ -1,0 +1,57 @@
+{
+  "title": "Pressure-driven Poiseuille channel (analytic)",
+  "description": "Steady laminar flow of a liquid between two no-slip walls (y faces), driven by a pressure dp on the inlet face x_lo against 0 on the outlet x_hi.\nAnalytic: u_x = (dp/L) y (H - y) / (2 mu), u_y = 0, p = dp (1 - x/L), flow rate per m of depth Q = dp H^3 / (12 mu L).\nLine profile tab: u_profile (u_x across the channel at x = L/2, the parabola) and p_profile (pressure along the centreline, linear); both show the last sweep value, the base H_ch = 20 um.\nDerived values tab: Q_sim against Q_ref (the cell-centre sum overshoots by (dx/H)^2/2 = 1.25e-3 at 20 cells), u_max against the parabola at the centre-most cell centre (1e-4 at 20 um, 1e-3 at 40 um: the pressure faces' error grows with the Reynolds number), p_mean against dp/2.\nSweep tab: Q_sim versus H_ch (10..40 um) with the dashed H^3 law Q_vs_H; per point ~5e-3 at 10 um down to ~3e-4 at 40 um (mostly the midpoint offset (dx/H)^2/2 above; pressure faces, float32).",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s (water-like)"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size (lattice spacing)"},
+    {"name": "H_ch", "expression": "20*um", "description": "channel height along y (even cell counts only: u_max_ref assumes the centreline is a cell edge); swept"},
+    {"name": "L_ch", "expression": "80*um", "description": "channel length along x"},
+    {"name": "dp", "expression": 2.0, "description": "pressure drop in Pa (inlet gauge pressure, outlet 0); kept low (Re <= 0.13 at H = 40 um): the pressure faces' error grows with Re (u_max ~4e-3 off at dp = 8 Pa, H = 40 um)"},
+    {"name": "G_p", "expression": "dp/L_ch", "description": "pressure gradient magnitude in Pa/m (2.5e4)"},
+    {"name": "Q_ref", "expression": "dp*H_ch**3/(12*mu_f*L_ch)", "description": "analytic flow rate per m of depth in m^2/s"},
+    {"name": "u_max_ref", "expression": "G_p*(H_ch**2 - dx_cell**2)/(8*mu_f)", "description": "parabola at the cell centres next to the centreline (dx/2 off it) in m/s (~1.25 mm/s at H = 20 um)"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "inlet", "type": "pressure", "selection": ["x_lo"], "params": {"pressure": "dp"}, "enabled": true},
+        {"name": "outlet", "type": "pressure", "selection": ["x_hi"], "params": {"pressure": 0.0}, "enabled": true},
+        {"name": "walls", "type": "wall", "selection": ["y_lo", "y_hi"], "params": {"tangential_velocity": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x", "fluid.pressure", "fluid.u_abs"],
+            "sweep": {"parameter": "H_ch", "values": ["10*um", "16*um", "30*um", "40*um", "20*um"]}},
+  "derived_values": [
+    {"name": "Q_sim", "expression": "fluid_u_x/L_ch", "selection": [], "operation": "integral", "reference": "Q_ref",
+     "tolerance": 0.015},
+    {"name": "u_max", "expression": "fluid_u_x", "selection": [], "operation": "max", "reference": "u_max_ref",
+     "tolerance": 3e-3},
+    {"name": "p_mean", "expression": "fluid_pressure", "selection": [], "operation": "mean", "reference": "dp/2",
+     "tolerance": 3e-3}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "expression": "G_p*y*(H_ch - y)/(2*mu_f)", "tolerance": 0.01,
+     "line": ["L_ch/2", 0.0, "L_ch/2", "H_ch"], "field": "fluid.u_x"},
+    {"name": "p_profile", "target": "line", "expression": "dp*(1 - x/L_ch)", "tolerance": 0.005,
+     "line": [0.0, "H_ch/2", "L_ch", "H_ch/2"], "field": "fluid.pressure"},
+    {"name": "Q_vs_H", "target": "sweep", "expression": "Q_ref", "tolerance": 0.015, "series": "Q_sim"}
+  ]
+}

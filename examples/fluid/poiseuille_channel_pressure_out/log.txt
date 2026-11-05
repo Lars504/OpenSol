@@ -1,0 +1,28 @@
+[1.82] [info] GPU NVIDIA GeForce RTX 3050 OEM: 8.00 GiB total, 7.03 GiB free; memory budget 6.53 GiB
+[1.88] [info] sweep H_ch = 1e-05 (1/5)
+[1.90] [warning] curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn
+[1.99] [info] built 80 x 10 = 800 cells, no time stepping, 0.08 s, GPU 142.0 KiB
+[1.99] [info] study started
+[3.49] [info] fluid: lattice Boltzmann D2Q9 TRT, 800 fluid cells, dt_lbm = 1.667e-07 s, 116722 lattice steps (last steady march 116722), peak lattice Mach 9.74e-05
+[3.50] [warning] laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 4.52e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported
+[3.50] [info] sweep H_ch = 1.6e-05 (2/5)
+[3.51] [warning] curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn
+[3.53] [info] built 80 x 16 = 1,280 cells, no time stepping, 0.01 s, GPU 209.0 KiB
+[4.86] [info] fluid: lattice Boltzmann D2Q9 TRT, 1280 fluid cells, dt_lbm = 1.667e-07 s, 116722 lattice steps (last steady march 116722), peak lattice Mach 0.000237
+[4.86] [warning] laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.37e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported
+[4.86] [info] sweep H_ch = 3e-05 (3/5)
+[4.88] [warning] curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn
+[4.89] [info] built 80 x 30 = 2,400 cells, no time stepping, 0.00 s, GPU 388.0 KiB
+[6.29] [info] fluid: lattice Boltzmann D2Q9 TRT, 2400 fluid cells, dt_lbm = 1.667e-07 s, 116722 lattice steps (last steady march 116722), peak lattice Mach 0.000811
+[6.29] [warning] laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.55e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported
+[6.29] [info] sweep H_ch = 4e-05 (4/5)
+[6.30] [warning] curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn
+[6.31] [info] built 80 x 40 = 3,200 cells, no time stepping, 0.00 s, GPU 511.0 KiB
+[7.69] [info] fluid: lattice Boltzmann D2Q9 TRT, 3200 fluid cells, dt_lbm = 1.667e-07 s, 116722 lattice steps (last steady march 116722), peak lattice Mach 0.00144
+[7.69] [warning] laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change inf > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported
+[7.69] [info] sweep H_ch = 2e-05 (5/5)
+[7.71] [warning] curve Q_vs_H: target sweep: the study has no parameter sweep, so the curve is not drawn
+[7.72] [info] built 80 x 20 = 1,600 cells, no time stepping, 0.00 s, GPU 265.0 KiB
+[9.17] [info] fluid: lattice Boltzmann D2Q9 TRT, 1600 fluid cells, dt_lbm = 1.667e-07 s, 116722 lattice steps (last steady march 116722), peak lattice Mach 0.000361
+[9.17] [warning] laminar flow 'fluid': the steady march did not converge in 116722 lattice steps (estimated remaining relative change 1.12e-06 > tolerance 1e-08); raise max_steps or relaxation_time; further unconverged solves of 'fluid' in this run are not reported
+[9.17] [info] study finished (completed): 1 ticks, t_end 0 s, wall 7.29 s

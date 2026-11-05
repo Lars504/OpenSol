@@ -1,0 +1,67 @@
+{
+  "title": "Analytic: lossy membrane guide, window-averaged mode power and output / input ratio vs frequency",
+  "description": "A straight strip guide (membrane on quadratic triangles, h = 3 um) of width W = 78 um clamped on x_lo / x_hi, T = 80 N/m, rho_s = 3.2e-4 kg/m^2 (c = 500 m/s), loss_factor eta = 0.01, between two ports (y_lo sends mode 1 in, both absorb 3 modes exactly). Frequency response 3.5-6 MHz (11 frequencies, between the cutoffs c / 2W = 3.21 MHz and c / W = 6.41 MHz: only mode 1 propagates).\nTwo mode_projection features with result_axis 'frequency' give mode_1_power = the mean of |a_1|^2 over a window of the guide versus frequency: input_power samples y = 30-80 um (11 points, the whole range averaged), output_power samples 220-290 um (15 points) and averages only 230-280 um (average_start / average_end), so its 11 averaged points are the input points shifted by D = 200 um.\nCurves & tables tab: the derived curve power_ratio = output_power:mode_1_power / input_power:mode_1_power with the dotted reference exp(-2 alpha D), alpha = -Im beta, beta^2 = rho_s omega^2 / (T (1 + j eta)) - (pi / W)^2 (a matched lossy guide: |a_1(y)|^2 = A^2 exp(-2 alpha y), so the window means differ by exactly that factor). The ratio peaks near 0.85 at 4.5 MHz (alpha ~ eta k^2 / (2 beta) is smallest at k = sqrt(2) pi / W) and falls to 0.84 at 6 MHz and 0.80 at 3.5 MHz, near cutoff.\nDerived values tab: ratio_5MHz from the ratio curve against the same formula.\nExpected agreement: about 1e-4 (P2 dispersion O((k h)^4), discrete DtN mismatch of the ports); tolerances are first estimates.",
+  "version": 2,
+  "parameters": [
+    {"name": "W_guide", "expression": "78*um", "description": "guide width between the clamped walls"},
+    {"name": "L_guide", "expression": "310*um", "description": "guide length between the ports"},
+    {"name": "h_mesh", "expression": "3*um", "description": "triangle size (about 30 elements per guide wavelength at 6 MHz)"},
+    {"name": "T_film", "expression": 80.0, "description": "tension [N/m]"},
+    {"name": "rho_film", "expression": 3.2e-4, "description": "areal density [kg/m^2]"},
+    {"name": "eta", "expression": 0.01, "description": "loss factor of the tension"},
+    {"name": "D_windows", "expression": "200*um", "description": "shift between the input and output averaging windows"},
+    {"name": "f_check", "expression": 5e6, "description": "frequency of the ratio check (a sample of the sweep)"},
+    {"name": "k2_check", "expression": "rho_film*(2*pi*f_check)**2/(T_film*(1 + eta**2))", "description": "Re of rho_s omega^2 / (T (1 + j eta)) at f_check"},
+    {"name": "a_check", "expression": "k2_check - (pi/W_guide)**2", "description": "Re beta^2 at f_check"},
+    {"name": "b_check", "expression": "eta*k2_check", "description": "-Im beta^2 at f_check"},
+    {"name": "alpha_check", "expression": "sqrt((sqrt(a_check**2 + b_check**2) - a_check)/2)", "description": "attenuation -Im beta of mode 1 at f_check [1/m]"},
+    {"name": "ratio_check", "expression": "exp(-2*alpha_check*D_windows)", "description": "analytic output / input window power ratio at f_check"}
+  ],
+  "domain": {"size_x": "W_guide", "size_y": "L_guide"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "film", "library": null,
+     "properties": {"tension": "T_film", "areal_density": "rho_film", "loss_factor": "eta"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "membrane",
+      "type": "membrane",
+      "settings": {"discretization": "quadratic"},
+      "features": [
+        {"name": "walls", "type": "clamped", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "in_port", "type": "port", "selection": ["y_lo"],
+         "params": {"mode_count": 3, "incident_mode": 1, "amplitude": 1e-9}, "enabled": true},
+        {"name": "out_port", "type": "port", "selection": ["y_hi"], "params": {"mode_count": 3}, "enabled": true},
+        {"name": "input_power", "type": "mode_projection", "selection": [],
+         "params": {"guide_axis": "y", "start": "30*um", "end": "80*um", "points": 11, "mode_count": 1,
+                    "result_axis": "frequency"},
+         "enabled": true},
+        {"name": "output_power", "type": "mode_projection", "selection": [],
+         "params": {"guide_axis": "y", "start": "220*um", "end": "290*um", "points": 15, "mode_count": 1,
+                    "result_axis": "frequency", "average_start": "230*um", "average_end": "280*um"},
+         "enabled": true}
+      ]
+    }
+  ],
+  "couplings": [],
+  "meshes": [{"name": "mesh", "kind": "triangles", "mode": "uniform", "dx": "h_mesh"}],
+  "study": {"type": "frequency_response",
+            "settings": {"frequency_start": 3.5e6, "frequency_stop": 6e6, "n_frequencies": 11, "snapshots": "last"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "ratio_5MHz", "expression": "power_ratio", "selection": [], "operation": "at", "source": "power_ratio",
+     "at": "f_check", "reference": "ratio_check", "tolerance": 0.002}
+  ],
+  "analytic_curves": [],
+  "derived_curves": [
+    {"name": "power_ratio",
+     "inputs": {"P_out": "membrane.output_power:mode_1_power", "P_in": "membrane.input_power:mode_1_power"},
+     "expression": "P_out/P_in", "plot": "", "label": "output / input window power, mode 1", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "exp(-2*D_windows*sqrt((sqrt((rho_film*(2*pi*x)**2/(T_film*(1 + eta**2)) - (pi/W_guide)**2)**2 + (eta*rho_film*(2*pi*x)**2/(T_film*(1 + eta**2)))**2) - (rho_film*(2*pi*x)**2/(T_film*(1 + eta**2)) - (pi/W_guide)**2))/2))",
+     "tolerance": 0.02}
+  ]
+}

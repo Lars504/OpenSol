@@ -1,0 +1,89 @@
+{
+  "title": "Series and parallel resistor branches (electric currents, analytic)",
+  "description": "Two resistor branches between terminal blocks at V0 (left) and 0 V (right), separated by an insulating strip (no sigma_dc).\nSeries branch: material 1 over L1 then material 2 over L2, I_series = w_s V0/(L1/sigma_1 + L2/sigma_2). Parallel branch: strips of width w_1 (material 1) and w_2 (material 2) over the full length L1 + L2, I_parallel = V0 (sigma_1 w_1 + sigma_2 w_2)/(L1 + L2).\nDerived values tab: I_series, I_parallel, I_series_out (= -I_series) and P_joule (= V0 (I_series + I_parallel)), exact to ~1e-6 (the finite-volume scheme is exact for piecewise-linear V).\nLine profile tab: V_series (kink at the material interface), V_parallel (straight), J_cross_section (J_x across both branches: two levels in the parallel strips, 0 in the gap, one level in the series branch).\nField tab: V, J_x, q_joule.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "voltage of the left terminals [V] (right terminals at 0 V)"},
+    {"name": "sigma_1", "expression": 10.0, "description": "conductivity of material 1 [S/m]"},
+    {"name": "sigma_2", "expression": 30.0, "description": "conductivity of material 2 [S/m]"},
+    {"name": "L1", "expression": "0.4*mm", "description": "series branch: length of material 1"},
+    {"name": "L2", "expression": "0.6*mm", "description": "series branch: length of material 2"},
+    {"name": "w_s", "expression": "0.2*mm", "description": "series branch width (y)"},
+    {"name": "w_1", "expression": "0.08*mm", "description": "parallel branch: width of the material 1 strip"},
+    {"name": "w_2", "expression": "0.12*mm", "description": "parallel branch: width of the material 2 strip"},
+    {"name": "gap", "expression": "0.1*mm", "description": "insulating strip (no sigma_dc) between the branches"},
+    {"name": "L_t", "expression": "0.1*mm", "description": "terminal block length at each end"},
+    {"name": "dx_cell", "expression": "10*um", "description": "uniform cell size (every edge on a cell edge)"},
+    {"name": "Lx", "expression": "2*L_t + L1 + L2", "description": "domain length"},
+    {"name": "Ly", "expression": "w_1 + w_2 + gap + w_s", "description": "domain height"},
+    {"name": "y_s", "expression": "w_1 + w_2 + gap", "description": "lower edge of the series branch"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "par_strip_1", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "w_1"}},
+    {"name": "par_strip_2", "kind": "rectangle", "params": {"x0": 0.0, "y0": "w_1", "x1": "Lx", "y1": "w_1 + w_2"}},
+    {"name": "ser_part_1", "kind": "rectangle", "params": {"x0": 0.0, "y0": "y_s", "x1": "L_t + L1", "y1": "Ly"}},
+    {"name": "ser_part_2", "kind": "rectangle", "params": {"x0": "L_t + L1", "y0": "y_s", "x1": "Lx", "y1": "Ly"}},
+    {"name": "par_in_block", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_t", "y1": "w_1 + w_2"}},
+    {"name": "par_out_block", "kind": "rectangle",
+     "params": {"x0": "Lx - L_t", "y0": 0.0, "x1": "Lx", "y1": "w_1 + w_2"}},
+    {"name": "ser_in_block", "kind": "rectangle", "params": {"x0": 0.0, "y0": "y_s", "x1": "L_t", "y1": "Ly"}},
+    {"name": "ser_out_block", "kind": "rectangle", "params": {"x0": "Lx - L_t", "y0": "y_s", "x1": "Lx", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "material_1", "library": null, "properties": {"sigma_dc": "sigma_1"}, "dispersion": null,
+     "selection": ["par_strip_1", "ser_part_1"]},
+    {"name": "material_2", "library": null, "properties": {"sigma_dc": "sigma_2"}, "dispersion": null,
+     "selection": ["par_strip_2", "ser_part_2"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "par_in", "type": "terminal", "selection": ["par_in_block"], "params": {"voltage": "V0"},
+         "enabled": true},
+        {"name": "par_out", "type": "terminal", "selection": ["par_out_block"], "params": {"voltage": 0.0},
+         "enabled": true},
+        {"name": "ser_in", "type": "terminal", "selection": ["ser_in_block"], "params": {"voltage": "V0"},
+         "enabled": true},
+        {"name": "ser_out", "type": "terminal", "selection": ["ser_out_block"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "I_series", "expression": "current", "operation": "last", "source": "currents.ser_in",
+     "reference": "w_s*V0/(L1/sigma_1 + L2/sigma_2)", "tolerance": 3e-6},
+    {"name": "I_parallel", "expression": "current", "operation": "last", "source": "currents.par_in",
+     "reference": "V0*(sigma_1*w_1 + sigma_2*w_2)/(L1 + L2)", "tolerance": 3e-6},
+    {"name": "I_series_out", "expression": "current", "operation": "last", "source": "currents.ser_out",
+     "reference": "-w_s*V0/(L1/sigma_1 + L2/sigma_2)", "tolerance": 3e-6},
+    {"name": "P_joule", "expression": "q_joule", "selection": ["all"], "operation": "integral",
+     "reference": "V0**2*(w_s/(L1/sigma_1 + L2/sigma_2) + (sigma_1*w_1 + sigma_2*w_2)/(L1 + L2))",
+     "tolerance": 3e-6}
+  ],
+  "analytic_curves": [
+    {"name": "V_series", "target": "line",
+     "expression": "where(x < L_t, V0, where(x < L_t + L1, V0 - V0/(L1/sigma_1 + L2/sigma_2)*(x - L_t)/sigma_1, where(x < Lx - L_t, V0/(L1/sigma_1 + L2/sigma_2)*(Lx - L_t - x)/sigma_2, 0)))",
+     "tolerance": 0.02, "line": [0.0, "y_s + w_s/2 + dx_cell/2", "Lx", "y_s + w_s/2 + dx_cell/2"], "field": "currents.V"},
+    {"name": "V_parallel", "target": "line",
+     "expression": "where(x < L_t, V0, where(x < Lx - L_t, V0*(Lx - L_t - x)/(L1 + L2), 0))", "tolerance": 0.015,
+     "line": [0.0, "w_1/2 + dx_cell/2", "Lx", "w_1/2 + dx_cell/2"], "field": "currents.V"},
+    {"name": "J_cross_section", "target": "line",
+     "expression": "where(y < w_1, sigma_1*V0/(L1 + L2), where(y < w_1 + w_2, sigma_2*V0/(L1 + L2), where(y < y_s, 0, V0/(L1/sigma_1 + L2/sigma_2))))",
+     "tolerance": 1e-5,
+     "line": ["Lx/2 + dx_cell/2", 0.0, "Lx/2 + dx_cell/2", "Ly"], "field": "currents.J_x"}
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "title": "Spherical grid: two-layer spherical capacitor (analytic)",
+  "description": "Electrostatics between two concentric spheres on a spherical (r, theta) domain (coordinates 'spherical', geometry axisymmetric, radius_min = a, theta 0..pi: the whole shell; the drawing is the (r sin theta, r cos theta) half disc about the rotation axis). The inner sphere x_lo is held at V0, the outer x_hi at 0 V; y_lo / y_hi are the axis (no area). Two dielectric layers: eps_1 for a < r < c, eps_2 for c < r < b, painted by circles about the origin; the interface c is a radial cell edge.\nAnalytic: Q = C V0 with C = 4 pi eps0 / ((1/a - 1/c) / eps_1 + (1/c - 1/b) / eps_2) (whole sphere, in F); D_r = Q / (4 pi r^2) (continuous), E_r = D_r / (eps0 eps_i) (jumps at c), V = V0 - Q (1/a - 1/r) / (4 pi eps0 eps_1) inside c, Q (1/r - 1/b) / (4 pi eps0 eps_2) outside; field energy C V0^2 / 2.\nDerived values tab: C_shell (inner charge / voltage, whole-shell charge in C), Q_outer (scalar output charge_outer = -C V0), W_field (integral of E.D / 2 over the metric volumes 2 pi / 3 (r_hi^3 - r_lo^3) (cos theta_lo - cos theta_hi)), V_probe (probe in the inner layer). Expect C and Q ~1e-4 (second order: the 4 pi r_f^2 faces in series, harmonic face mean at the interface), W_field ~1e-3 (cell-centre E and D), V_probe ~1e-4.\nLine profile tab: V_ray and E_ray (E_x = the radial component) along the ray theta = pi/4 against the piecewise closed forms (containing-cell image: ~1 % of the range for E).",
+  "version": 2,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "inner sphere voltage [V]; the outer sphere is held at 0 V"},
+    {"name": "a_inner", "expression": "0.5*mm", "description": "inner sphere radius (radius_min)"},
+    {"name": "c_interface", "expression": "0.9*mm", "description": "radius of the layer interface (40 radial cells from a: a cell edge)"},
+    {"name": "b_outer", "expression": "1.5*mm", "description": "outer sphere radius"},
+    {"name": "eps_1", "expression": 9.8, "description": "relative permittivity of the inner layer (alumina-like)"},
+    {"name": "eps_2", "expression": 2.1, "description": "relative permittivity of the outer layer (PTFE-like)"},
+    {"name": "dx_mesh", "expression": "10*um", "description": "radial cell size, also the cell length along the outer arc"},
+    {"name": "C_ref",
+     "expression": "4*pi*eps0_const/((1/a_inner - 1/c_interface)/eps_1 + (1/c_interface - 1/b_outer)/eps_2)",
+     "description": "analytic capacitance of the whole spherical capacitor in F"},
+    {"name": "Q_ref", "expression": "C_ref*V0", "description": "analytic inner-sphere charge in C"},
+    {"name": "r_probe", "expression": "a_inner + 20.5*dx_mesh", "description": "probe radius (a radial cell centre in the inner layer)"},
+    {"name": "theta_probe", "expression": "pi/3", "description": "probe polar angle from the rotation axis (V does not depend on it)"},
+    {"name": "theta_ray", "expression": "pi/4", "description": "polar angle of the profile ray"}
+  ],
+  "domain": {"size_x": "b_outer - a_inner", "size_y": "pi", "coordinates": "spherical",
+             "radius_min": "a_inner", "angle_min": 0.0},
+  "geometry": [
+    {"name": "inner_ball", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "c_interface"}},
+    {"name": "inner_cut", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "c_interface"}},
+    {"name": "outer_ball", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_outer + 1*mm"}},
+    {"name": "outer_layer", "kind": "difference", "params": {"base": "outer_ball", "subtract": ["inner_cut"]}},
+    {"name": "probe_point", "kind": "point",
+     "params": {"x": "r_probe*sin(theta_probe)", "y": "r_probe*cos(theta_probe)"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "inner_dielectric", "library": null, "properties": {"eps_dc": "eps_1"}, "dispersion": null,
+     "selection": ["inner_ball"]},
+    {"name": "outer_dielectric", "library": null, "properties": {"eps_dc": "eps_2"}, "dispersion": null,
+     "selection": ["outer_layer"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {"geometry": "axisymmetric"},
+      "features": [
+        {"name": "inner", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "outer", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "C_shell", "expression": "charge/voltage", "selection": [], "operation": "last",
+     "source": "electrostatics.inner", "reference": "C_ref", "tolerance": 1e-3},
+    {"name": "Q_outer", "expression": "electrostatics_charge_outer", "selection": [], "operation": "mean",
+     "reference": "-Q_ref", "tolerance": 1e-3},
+    {"name": "W_field", "expression": "0.5*(electrostatics_E_x*electrostatics_D_x + electrostatics_E_y*electrostatics_D_y)",
+     "selection": [], "operation": "integral", "reference": "C_ref*V0**2/2", "tolerance": 3e-3},
+    {"name": "V_probe", "expression": "values", "selection": [], "operation": "last", "source": "electrostatics.probe",
+     "reference": "V0 - Q_ref*(1/a_inner - 1/r_probe)/(4*pi*eps0_const*eps_1)", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "V_ray", "target": "line", "field": "electrostatics.V",
+     "expression": "where(hypot(x, y) < c_interface, V0 - Q_ref*(1/a_inner - 1/hypot(x, y))/(4*pi*eps0_const*eps_1), Q_ref*(1/hypot(x, y) - 1/b_outer)/(4*pi*eps0_const*eps_2))",
+     "tolerance": 1e-2,
+     "line": ["(a_inner + dx_mesh/4)*sin(theta_ray)", "(a_inner + dx_mesh/4)*cos(theta_ray)",
+              "(b_outer - dx_mesh/4)*sin(theta_ray)", "(b_outer - dx_mesh/4)*cos(theta_ray)"]},
+    {"name": "E_ray", "target": "line", "field": "electrostatics.E_x",
+     "expression": "Q_ref/(4*pi*eps0_const*where(hypot(x, y) < c_interface, eps_1, eps_2)*(x**2 + y**2))",
+     "tolerance": 3e-2,
+     "line": ["(a_inner + dx_mesh/4)*sin(theta_ray)", "(a_inner + dx_mesh/4)*cos(theta_ray)",
+              "(b_outer - dx_mesh/4)*sin(theta_ray)", "(b_outer - dx_mesh/4)*cos(theta_ray)"]}
+  ]
+}

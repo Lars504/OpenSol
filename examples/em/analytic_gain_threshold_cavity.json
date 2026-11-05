@@ -1,0 +1,76 @@
+{
+  "title": "Analytic: lasing threshold of a lossy cavity filled with gain (FDTD, gain_medium)",
+  "description": "A 1D cavity between PEC walls on x (y-periodic, 25 nm cells) filled with eps 1 and sigma_e = 50 S/m everywhere rings down after a gaussian line-source pulse; a gain_medium on every cell (four-level, gamma = 1e14 rad/s, tau_21 = 1 ns) has its line centre on the discrete mode-6 resonance (lambda_mode ~0.992 um) and starts with N2 - N1 = r_inv dN_th (no pump; dN_th = sigma gamma / kappa, kappa = 6 pi eps0 c^3 / (omega^2 tau_21)); sweep r_inv = 0..0.8.\nAnalytic (uniform filling: omega^2 eps(omega) = c^2 K^2 for the mode, gain chi = j kappa dN / (eps0 gamma omega) at line centre): field decay rate Im omega = sigma / (2 eps0) - kappa dN / (2 eps0 gamma) = sigma (1 - r_inv) / (2 eps0), so the decay falls linearly to 0 at the lasing threshold r_inv = 1; Q = omega / (2 Im omega); the resonance stays at lambda_mode (no pulling at line centre). lambda_mode uses the discrete FDTD dispersion of K = 6 pi / (Lx - dx) (E_z = 0 at the outermost cell centres).\nSweep tab: gamma_decay (2 pi x the resonance_monitor frequency_imag of row 0, the only resonance in 0.93-1.08 um) with its dashed reference line, which extrapolates to 0 at r_inv = 1 (the threshold); cold_decay (dashed) = the no-gain level sigma / (2 eps0); Q_mode (q_factor) and lambda_res with references; the table column em.ring frequency_imag (series frequency_imag_1) carries the same dashed line divided by 2 pi (threshold_line).\nCurves & tables tab: the resonance table of the last value.\nExpected: gamma_decay within ~0.7 % of the cold rate, an offset, so ~2 % relative at r_inv = 0.8 where the decay is 5x smaller (leap-frog Lorentz line ~(omega dt)^2, conductivity stepping, population drift through tau_21 ~1.6e-3 over the 1.6 ps run), lambda_res ~1e-4.",
+  "version": 1,
+  "parameters": [
+    {"name": "r_inv", "expression": 0.5, "description": "initial inversion as a fraction of the line-centre threshold dN_th (sweep 0..0.8)"},
+    {"name": "Lx", "expression": "3*um", "description": "domain length along x (pec on both x faces, 120 cells)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (4 cells)"},
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "sigma_cav", "expression": 50.0, "description": "conductivity of every cell [S/m] (cold field decay sigma / (2 eps0) = 2.8e12 1/s)"},
+    {"name": "m_mode", "expression": 6, "description": "longitudinal mode number of the cavity resonance studied"},
+    {"name": "L_cav", "expression": "Lx - dx_cell", "description": "cavity length between the E_z = 0 planes (centres of the outermost cells) [m]"},
+    {"name": "K_mode", "expression": "m_mode*pi/L_cav", "description": "mode wavenumber [1/m]"},
+    {"name": "dt_fdtd", "expression": "0.99*dx_cell/(c_const*sqrt(2))", "description": "FDTD time step at courant 0.99 on square cells [s]"},
+    {"name": "omega_mode", "expression": "2/dt_fdtd*asin(c_const*dt_fdtd/dx_cell*sin(K_mode*dx_cell/2))",
+     "description": "discrete FDTD angular frequency of mode m_mode [rad/s]"},
+    {"name": "lambda_mode", "expression": "2*pi*c_const/omega_mode", "description": "vacuum wavelength of the discrete mode (gain line centre)"},
+    {"name": "gamma_line", "expression": 1e14, "description": "gain linewidth [rad/s]"},
+    {"name": "tau_21", "expression": 1e-9, "description": "upper lasing level lifetime [s] (sets kappa)"},
+    {"name": "kappa_gain", "expression": "6*pi*eps0_const*c_const**3/(omega_mode**2*tau_21)",
+     "description": "gain coupling kappa [C^2/kg] of the polarisation equation"},
+    {"name": "dN_th", "expression": "sigma_cav*gamma_line/kappa_gain", "description": "line-centre threshold inversion [1/m^3] (~4e21)"},
+    {"name": "G_cold", "expression": "sigma_cav/(2*eps0_const)", "description": "cold-cavity field decay rate [1/s]"},
+    {"name": "G_ref", "expression": "G_cold*(1 - r_inv)", "description": "analytic field decay rate with gain [1/s]"},
+    {"name": "Q_ref", "expression": "omega_mode/(2*G_ref)", "description": "analytic quality factor omega / (2 gamma)"},
+    {"name": "x_src", "expression": "1.2625*um", "description": "line source x (cell 50 centre, an antinode of mode 6)"},
+    {"name": "x_probe", "expression": "0.7625*um", "description": "resonance monitor x (cell 30 centre, an antinode)"},
+    {"name": "t_run", "expression": "1.6*ps", "description": "study duration [s]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_probe", "y": "Ly/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "lossy", "library": null, "properties": {"eps_r": 1.0, "sigma_e": "sigma_cav"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda_mode", "bandwidth": 0.2, "amplitude": 1.0},
+         "enabled": true},
+        {"name": "ring", "type": "resonance_monitor", "selection": ["probe_point"],
+         "params": {"component": "ez", "wavelength_min": "0.93*um", "wavelength_max": "1.08*um"}, "enabled": true},
+        {"name": "gain", "type": "gain_medium", "selection": ["all"],
+         "params": {"wavelength": "lambda_mode", "linewidth": "gamma_line", "density": "dN_th", "pump_rate": 0.0,
+                    "tau_32": 1e-13, "tau_21": "tau_21", "tau_10": 1e-13, "initial_upper_fraction": "r_inv"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": {"parameter": "r_inv", "values": [0.0, 0.2, 0.4, 0.6, 0.8]}},
+  "derived_values": [
+    {"name": "gamma_decay", "expression": "2*pi*frequency_imag", "selection": [], "operation": "at", "source": "em.ring",
+     "at": 0, "reference": "G_ref", "tolerance": 0.03},
+    {"name": "Q_mode", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.ring", "at": 0,
+     "reference": "Q_ref", "tolerance": 0.03},
+    {"name": "lambda_res", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.ring",
+     "at": 0, "reference": "lambda_mode", "tolerance": 3e-4}
+  ],
+  "analytic_curves": [
+    {"name": "cold_decay", "target": "sweep", "series": "gamma_decay", "expression": "G_cold"},
+    {"name": "threshold_line", "target": "sweep", "series": "frequency_imag_1", "expression": "G_ref/(2*pi)", "tolerance": 0.05}
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "title": "Square array of cylinders: Darcy permeability (analytic)",
+  "description": "Steady Stokes flow through a square array of solid cylinders: one periodic cell (l = 128 um, periodic x and y) with a centred solid disc of radius a (a material without viscosity: no-slip halfway bounce-back on its staircased boundary; relaxation_time 2: the steady TRT result with halfway bounce-back does not depend on it, and the march needs ~3x fewer lattice steps than at 1, lattice Mach ~5e-3), the liquid driven by a uniform body force f along x (body_force; solid cells ignore it). The sweep runs a over 12..32 um (solid fraction c = pi a^2 / l^2 = 0.028..0.196).\nAnalytic (Sangani & Acrivos 1982 / Drummond & Tahir 1984, square array, Stokes): K = l^2 (-ln c - 1.476 + 2 c - 1.774 c^2 + 4.076 c^3) / (8 pi), Darcy U_sup = K f / mu, U_sup the superficial velocity (mean over the whole cell, solid included). A body force on the liquid alone is the same Stokes problem as a mean pressure gradient G = f (the force per cylinder G l^2 then includes the mean-gradient pressure on the solid), so no (1 - c) factor appears.\nDerived values tab: K_sim = mean(u_x) mu / f over the cell vs K_ref (tolerance 6 %: the staircased disc shifts the effective radius by a fraction of a cell, worst at a = 12 cells; the c^3 series is good to ~1 % at c = 0.2; Reynolds <= 0.2).\nSweep tab: K_sim versus a with the dashed K_vs_radius.",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "l_cell", "expression": "128*um", "description": "side of the periodic unit cell (cylinder spacing)"},
+    {"name": "a_disc", "expression": "32*um", "description": "cylinder radius; swept"},
+    {"name": "c_s", "expression": "pi*a_disc**2/l_cell**2", "description": "solid area fraction"},
+    {"name": "f_x", "expression": 1.0e3, "description": "body force density on the liquid along x in N/m^3 (the equivalent mean pressure gradient)"},
+    {"name": "K_ref", "expression": "l_cell**2*(-log(c_s) - 1.476 + 2*c_s - 1.774*c_s**2 + 4.076*c_s**3)/(8*pi)", "description": "Darcy permeability of the square array in m^2"},
+    {"name": "U_sup_ref", "expression": "K_ref*f_x/mu_f", "description": "superficial velocity in m/s (1.4e-3 at a = 12 um, 3.3e-4 at 32 um)"}
+  ],
+  "domain": {"size_x": "l_cell", "size_y": "l_cell"},
+  "geometry": [
+    {"name": "cylinder", "kind": "circle", "params": {"cx": "l_cell/2", "cy": "l_cell/2", "r": "a_disc"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]},
+    {"name": "solid", "library": null, "properties": {"viscosity": 0.0}, "dispersion": null,
+     "selection": ["cylinder"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {"relaxation_time": 2.0},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "periodic_y", "type": "periodic", "selection": ["y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "drive", "type": "body_force", "selection": ["all"],
+         "params": {"f_x": "f_x", "f_y": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x", "fluid.u_y", "fluid.u_abs", "fluid.pressure"],
+            "sweep": {"parameter": "a_disc", "values": ["12*um", "16*um", "24*um", "32*um"]}},
+  "derived_values": [
+    {"name": "K_sim", "expression": "fluid_u_x*mu_f/f_x", "selection": [], "operation": "mean", "reference": "K_ref",
+     "tolerance": 0.06}
+  ],
+  "analytic_curves": [
+    {"name": "K_vs_radius", "target": "sweep", "expression": "K_ref", "tolerance": 0.06, "series": "K_sim"}
+  ]
+}

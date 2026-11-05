@@ -1,0 +1,67 @@
+{
+  "title": "Graded resistor driven by a current density (electric currents, analytic)",
+  "description": "A 1 mm long strip whose conductivity rises linearly along x, sigma = sigma0 (1 + g x / L), fed by a prescribed inward current_density J0 on x_lo (Neumann drive, no voltage there) and grounded (voltage 0) on x_hi; insulated y faces (1D). The sweep runs the grading g over 0.25-9.\nAnalytic: J_x = J0 everywhere; E_x = J0 / sigma(x); V(x) = (J0 L / (g sigma0)) ln((1 + g) / (1 + g x / L)); resistance per m of depth R' = L ln(1 + g) / (g sigma0 H); P_joule = J0^2 H L ln(1 + g) / (g sigma0).\nDerived values tab: I_ground (current of the grounded face, = -J0 H, charge conservation: exact), V_drive (potential probe in the first cell, x = dx/2), E_mean (= V(0) / L) and P_joule; ~1e-4 (second order in dx: face conductances are harmonic means of the cell values). The Neumann drive feeds its current into the first cell, so the half cell in front of that cell centre carries no Joule heat: P_joule is compared with J0 H V(dx/2) (the full-strip value J0 H V(0) is ~1 % higher at g = 9).\nSweep tab: V_drive vs g with the dashed reference.\nLine profile tab (last sweep value, g = 9): V_profile (logarithmic) and E_profile (1 / sigma).",
+  "version": 1,
+  "parameters": [
+    {"name": "J0", "expression": 1e6, "description": "inward current density on x_lo in A/m^2"},
+    {"name": "sigma0", "expression": 1e3, "description": "conductivity at x = 0 in S/m"},
+    {"name": "grade", "expression": 9.0, "description": "conductivity grading g: sigma = sigma0 (1 + g x / L) (swept; g = 0 makes the formulas 0/0)"},
+    {"name": "L_strip", "expression": "1*mm", "description": "strip length along x"},
+    {"name": "H_strip", "expression": "0.1*mm", "description": "strip height along y (insulated y faces: 1D)"},
+    {"name": "dx_mesh", "expression": "5*um", "description": "uniform cell size (200 cells along x)"},
+    {"name": "x_drive", "expression": "dx_mesh/2", "description": "probe position: centre of the first cell"},
+    {"name": "V_scale", "expression": "J0*L_strip/(grade*sigma0)", "description": "potential scale J0 L / (g sigma0) in V"}
+  ],
+  "domain": {"size_x": "L_strip", "size_y": "H_strip"},
+  "geometry": [
+    {"name": "drive_point", "kind": "point", "params": {"x": "x_drive", "y": "H_strip/2 + dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "graded_conductor", "library": null, "properties": {"sigma_dc": "sigma0*(1 + grade*x/L_strip)"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "drive", "type": "current_density", "selection": ["x_lo"], "params": {"current_density": "J0"},
+         "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "probe", "type": "potential_probe", "selection": ["drive_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "grade", "values": [0.25, 1.0, 3.0, 9.0]}},
+  "derived_values": [
+    {"name": "I_ground", "expression": "current", "operation": "last", "source": "currents.ground",
+     "reference": "-J0*H_strip", "tolerance": 1e-6},
+    {"name": "V_drive", "expression": "values", "operation": "last", "source": "currents.probe",
+     "reference": "V_scale*log((1 + grade)/(1 + grade*x_drive/L_strip))", "tolerance": 1e-3},
+    {"name": "E_mean", "expression": "E_x", "selection": [], "operation": "mean",
+     "reference": "J0*log(1 + grade)/(grade*sigma0)", "tolerance": 1e-3},
+    {"name": "P_joule", "expression": "q_joule", "selection": [], "operation": "integral",
+     "reference": "J0*H_strip*V_scale*log((1 + grade)/(1 + grade*x_drive/L_strip))", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "V_drive_vs_g", "target": "sweep", "series": "V_drive",
+     "expression": "V_scale*log((1 + grade)/(1 + grade*x_drive/L_strip))", "tolerance": 1e-3},
+    {"name": "V_profile", "target": "line", "expression": "V_scale*log((1 + grade)/(1 + grade*x/L_strip))",
+     "tolerance": 1e-3, "line": [0.0, "H_strip/2 + dx_mesh/2", "L_strip", "H_strip/2 + dx_mesh/2"],
+     "field": "currents.V"},
+    {"name": "E_profile", "target": "line", "expression": "J0/(sigma0*(1 + grade*x/L_strip))",
+     "tolerance": 1e-3, "line": [0.0, "H_strip/2 + dx_mesh/2", "L_strip", "H_strip/2 + dx_mesh/2"],
+     "field": "currents.E_x"}
+  ]
+}

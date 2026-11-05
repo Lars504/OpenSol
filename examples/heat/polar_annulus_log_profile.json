@@ -1,0 +1,67 @@
+{
+  "title": "Polar grid: annulus between two held arcs (log profile, analytic)",
+  "description": "Steady conduction in a quarter annulus a < r < b on a polar (r, phi) domain (coordinates 'polar', radius_min = a, angle span pi/2): the inner arc x_lo is held at T_i, the outer arc x_hi at T_o, the rays y_lo / y_hi are insulated, so the problem is radial. The conductor is a circle about the origin (radius b + 1 mm), painted at the mapped cell centres; the arcs are coordinate lines, so nothing staircases.\nAnalytic: T(r) = T_i + (T_o - T_i) ln(r / a) / ln(b / a); heat flow through the quarter q' / 4 = (pi / 2) k (T_i - T_o) / ln(b / a).\nDerived values tab: theta_probe (probe at a cell-centre radius on the diagonal: the point mapping), T_mean (area mean over the sector cells: the exact sector areas), q_quarter (integral of the heat_flux_abs magnitude over the sector / (b - a) = q' / 4). Expect < 1e-3 (second order: the arithmetic r_f / dr faces, cell-centre fluxes).\nLine profile tab: T_diagonal (log profile along phi = pi/4; the field is a containing-cell image of the polar cells, so expect ~1 % of the rise).",
+  "version": 2,
+  "parameters": [
+    {"name": "T_i", "expression": 373.15, "description": "inner arc temperature in K"},
+    {"name": "T_o", "expression": 293.15, "description": "outer arc temperature in K"},
+    {"name": "k_ring", "expression": 1.5, "description": "thermal conductivity in W/(m K)"},
+    {"name": "a_inner", "expression": "1*mm", "description": "inner radius (radius_min)"},
+    {"name": "b_outer", "expression": "3*mm", "description": "outer radius"},
+    {"name": "dx_mesh", "expression": "0.02*mm", "description": "radial cell size (also the cell length along the outer arc)"},
+    {"name": "r_probe", "expression": "a_inner + 50.5*dx_mesh", "description": "probe radius: a cell centre"},
+    {"name": "log_ratio", "expression": "log(b_outer/a_inner)", "description": "ln(b / a)"},
+    {"name": "q_quarter_ref", "expression": "pi/2*k_ring*(T_i - T_o)/log_ratio",
+     "description": "analytic heat flow through the quarter annulus in W/m"},
+    {"name": "T_mean_ref",
+     "expression": "T_i + (T_o - T_i)/log_ratio*(b_outer**2/2*log_ratio - (b_outer**2 - a_inner**2)/4)/((b_outer**2 - a_inner**2)/2)",
+     "description": "analytic area mean of T over the annulus in K"}
+  ],
+  "domain": {"size_x": "b_outer - a_inner", "size_y": "pi/2", "coordinates": "polar", "radius_min": "a_inner"},
+  "geometry": [
+    {"name": "disk", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "b_outer + 1*mm"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "r_probe*cos(pi/4)", "y": "r_probe*sin(pi/4)"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "conductor", "library": null, "properties": {"k": "k_ring"}, "dispersion": null, "selection": ["disk"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_o"},
+      "features": [
+        {"name": "inner_arc", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_i"},
+         "enabled": true},
+        {"name": "outer_arc", "type": "temperature", "selection": ["x_hi"], "params": {"temperature": "T_o"},
+         "enabled": true},
+        {"name": "probe", "type": "temperature_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_probe", "expression": "values - T_o", "selection": [], "operation": "last",
+     "source": "heat.probe", "reference": "(T_i - T_o)*(1 - log(r_probe/a_inner)/log_ratio)", "tolerance": 1e-3},
+    {"name": "T_mean", "expression": "heat_T", "selection": [], "operation": "mean", "reference": "T_mean_ref",
+     "tolerance": 1e-3},
+    {"name": "q_quarter", "expression": "heat_flux_abs/(b_outer - a_inner)", "selection": [], "operation": "integral",
+     "reference": "q_quarter_ref", "tolerance": 2e-3}
+  ],
+  "analytic_curves": [
+    {"name": "T_diagonal", "target": "line",
+     "expression": "T_i + (T_o - T_i)*log(sqrt(x**2 + y**2)/a_inner)/log_ratio", "tolerance": 2e-2,
+     "line": ["(a_inner + dx_mesh/4)*cos(pi/4)", "(a_inner + dx_mesh/4)*sin(pi/4)",
+              "(b_outer - dx_mesh/4)*cos(pi/4)", "(b_outer - dx_mesh/4)*sin(pi/4)"],
+     "field": "heat.T"}
+  ]
+}

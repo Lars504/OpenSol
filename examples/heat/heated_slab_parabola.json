@@ -1,0 +1,53 @@
+{
+  "title": "Uniformly heated slab: parabolic profile (analytic)",
+  "description": "The heated_slab template with its analytic answer: steady conduction with a uniform heat source and both x faces at T_wall.\nAnalytic: T = T_wall + q x (L - x) / (2 k).\nDerived values tab: rise_max vs q L^2 / (8 k) (~1e-6: with an even cell count the scheme's uniform offset q dx^2 / (8 k) cancels at the two centre cells), rise_mean vs q L^2 / (12 k) (offset not cancelled: 2 (dx/L)^2 = 2e-4) and flux_mean (mean |heat flux|) vs q L / 4 (exact).\nLine profile tab: T_profile.",
+  "version": 1,
+  "parameters": [
+    {"name": "q_vol", "expression": 1e9, "description": "uniform volumetric heat source in W/m^3"},
+    {"name": "k_slab", "expression": 2.0, "description": "thermal conductivity in W/(m K)"},
+    {"name": "T_wall", "expression": 300.0, "description": "temperature of both x faces in K"},
+    {"name": "L_slab", "expression": "1*mm", "description": "slab thickness along x"},
+    {"name": "H_slab", "expression": "0.1*mm", "description": "slab height along y (insulated y faces: 1D)"},
+    {"name": "dx_mesh", "expression": "10*um", "description": "uniform cell size (an even number of cells along x)"}
+  ],
+  "domain": {"size_x": "L_slab", "size_y": "H_slab"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "conductor", "library": null, "properties": {"k": "k_slab"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_wall"},
+      "features": [
+        {"name": "walls", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T_wall"},
+         "enabled": true},
+        {"name": "source", "type": "heat_source", "selection": ["all"], "params": {"Q": "q_vol"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "rise_max", "expression": "T - T_wall", "selection": [], "operation": "max",
+     "reference": "q_vol*L_slab**2/(8*k_slab)", "tolerance": 3e-6},
+    {"name": "rise_mean", "expression": "T - T_wall", "selection": [], "operation": "mean",
+     "reference": "q_vol*L_slab**2/(12*k_slab)", "tolerance": 6e-4},
+    {"name": "flux_mean", "expression": "heat_flux_abs", "selection": [], "operation": "mean",
+     "reference": "q_vol*L_slab/4", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line", "expression": "T_wall + q_vol*x*(L_slab - x)/(2*k_slab)",
+     "tolerance": 0.006,
+     "line": [0.0, "H_slab/2", "L_slab", "H_slab/2"], "field": "heat.T"}
+  ]
+}

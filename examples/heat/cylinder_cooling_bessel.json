@@ -1,0 +1,111 @@
+{
+  "title": "Finite cylinder cooling: Bessel x Fourier series (axisymmetric, analytic)",
+  "description": "Axisymmetric (r, z) transient heat: a steel cylinder (radius R, height H ~ 2 R, x = r, the axis is x_lo) at T_i whose mantle (x_hi) and both end faces (y_lo, y_hi) are suddenly held at T_s; 50 x 101 cells, implicit Euler.\nAnalytic (product solution): theta / theta_i = [sum_n 2 J0(lam_n r / R) / (lam_n J1(lam_n)) exp(-lam_n^2 a t / R^2)] x [(4/pi) sum_m sin((2m+1) pi z / H) / (2m+1) exp(-((2m+1) pi / H)^2 a t)], lam_n the zeros of J0 (6 radial, 5 axial terms: valid for t > ~0.02 R^2 / a = 0.5 s).\nProbes tab: centre (axis, mid-height) and off_axis (r = 0.51 R) with the dashed series curves, plus centre_first_mode.\nDerived values tab: theta at t_end and t_check, theta_mean (ring-weighted volume mean vs [sum 4 / lam_n^2 ...] x [sum 8 / ((2m+1) pi)^2 ...]). Expect ~0.3 % at t_end (implicit-Euler lag t dt / (2 tau^2)), ~0.05 % at t_check.\nLine profile tab: T_radial (mid-height) and T_axial (axis) at t_end.",
+  "version": 2,
+  "parameters": [
+    {"name": "T_i", "expression": 373.15, "description": "initial cylinder temperature in K"},
+    {"name": "T_s", "expression": 293.15, "description": "surface temperature in K held on mantle and ends from t = 0"},
+    {"name": "k_st", "expression": 16.0, "description": "stainless steel thermal conductivity in W/(m K)"},
+    {"name": "rho_st", "expression": 8000.0, "description": "density in kg/m^3"},
+    {"name": "cp_st", "expression": 500.0, "description": "specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_st/(rho_st*cp_st)", "description": "thermal diffusivity in m^2/s (4e-6)"},
+    {"name": "R_cyl", "expression": "10*mm", "description": "cylinder radius (x extent)"},
+    {"name": "dx_mesh", "expression": "R_cyl/50", "description": "uniform cell size (50 cells along r)"},
+    {"name": "H_cyl", "expression": "101*dx_mesh", "description": "cylinder height (odd cell count: mid-height is a cell centre)"},
+    {"name": "r_axis", "expression": "dx_mesh/2", "description": "radius of the first cell centres (the centre probe)"},
+    {"name": "r_off", "expression": "25.5*dx_mesh", "description": "radius of the off-axis probe (a cell centre)"},
+    {"name": "lam1", "expression": 2.404826, "description": "first zero of J0"},
+    {"name": "lam2", "expression": 5.520078, "description": "second zero of J0"},
+    {"name": "lam3", "expression": 8.653728, "description": "third zero of J0"},
+    {"name": "lam4", "expression": 11.791534, "description": "fourth zero of J0"},
+    {"name": "lam5", "expression": 14.930918, "description": "fifth zero of J0"},
+    {"name": "lam6", "expression": 18.071064, "description": "sixth zero of J0"},
+    {"name": "coef_r1", "expression": "2/(lam1*j1(lam1))", "description": "radial series coefficient 1"},
+    {"name": "coef_r2", "expression": "2/(lam2*j1(lam2))", "description": "radial series coefficient 2"},
+    {"name": "coef_r3", "expression": "2/(lam3*j1(lam3))", "description": "radial series coefficient 3"},
+    {"name": "coef_r4", "expression": "2/(lam4*j1(lam4))", "description": "radial series coefficient 4"},
+    {"name": "coef_r5", "expression": "2/(lam5*j1(lam5))", "description": "radial series coefficient 5"},
+    {"name": "coef_r6", "expression": "2/(lam6*j1(lam6))", "description": "radial series coefficient 6"},
+    {"name": "rate_r1", "expression": "lam1**2*a_diff/R_cyl**2", "description": "radial decay rate 1 in 1/s (0.23)"},
+    {"name": "rate_r2", "expression": "lam2**2*a_diff/R_cyl**2", "description": "radial decay rate 2 in 1/s"},
+    {"name": "rate_r3", "expression": "lam3**2*a_diff/R_cyl**2", "description": "radial decay rate 3 in 1/s"},
+    {"name": "rate_r4", "expression": "lam4**2*a_diff/R_cyl**2", "description": "radial decay rate 4 in 1/s"},
+    {"name": "rate_r5", "expression": "lam5**2*a_diff/R_cyl**2", "description": "radial decay rate 5 in 1/s"},
+    {"name": "rate_r6", "expression": "lam6**2*a_diff/R_cyl**2", "description": "radial decay rate 6 in 1/s"},
+    {"name": "rate_z", "expression": "(pi/H_cyl)**2*a_diff", "description": "first axial decay rate in 1/s (0.097); mode 2m+1 decays (2m+1)^2 times faster"},
+    {"name": "dt_step", "expression": 5e-3, "description": "implicit-Euler time step in s"},
+    {"name": "t_end", "expression": 10.0, "description": "study duration in s (~3.3 first-mode decay times)"},
+    {"name": "t_check", "expression": 2.0, "description": "time of the derived value theta_centre_check in s"},
+    {"name": "radial_axis_end", "expression": "coef_r1*j0(lam1*r_axis/R_cyl)*exp(-rate_r1*t_end) + coef_r2*j0(lam2*r_axis/R_cyl)*exp(-rate_r2*t_end) + coef_r3*j0(lam3*r_axis/R_cyl)*exp(-rate_r3*t_end)",
+     "description": "radial factor on the axis at t_end (higher terms < 1e-5)"},
+    {"name": "axial_mid_end", "expression": "4/pi*(exp(-rate_z*t_end) - exp(-9*rate_z*t_end)/3 + exp(-25*rate_z*t_end)/5)",
+     "description": "axial factor at mid-height at t_end"}
+  ],
+  "domain": {"size_x": "R_cyl", "size_y": "H_cyl"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "r_axis", "y": "H_cyl/2"}},
+    {"name": "off_axis_point", "kind": "point", "params": {"x": "r_off", "y": "H_cyl/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"k": "k_st", "rho": "rho_st", "cp": "cp_st"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"geometry": "axisymmetric", "time_mode": "transient", "time_step": "dt_step", "T0": "T_s"},
+      "features": [
+        {"name": "surfaces", "type": "temperature", "selection": ["x_hi", "y_lo", "y_hi"],
+         "params": {"temperature": "T_s"}, "enabled": true},
+        {"name": "start", "type": "initial_temperature", "selection": ["all"], "params": {"temperature": "T_i"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true},
+        {"name": "off_axis", "type": "temperature_probe", "selection": ["off_axis_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_centre_end", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "last",
+     "source": "heat.centre", "reference": "radial_axis_end*axial_mid_end", "tolerance": 0.01},
+    {"name": "theta_centre_check", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "at",
+     "source": "heat.centre", "at": "t_check",
+     "reference": "(coef_r1*j0(lam1*r_axis/R_cyl)*exp(-rate_r1*t_check) + coef_r2*j0(lam2*r_axis/R_cyl)*exp(-rate_r2*t_check) + coef_r3*j0(lam3*r_axis/R_cyl)*exp(-rate_r3*t_check) + coef_r4*j0(lam4*r_axis/R_cyl)*exp(-rate_r4*t_check))*4/pi*(exp(-rate_z*t_check) - exp(-9*rate_z*t_check)/3 + exp(-25*rate_z*t_check)/5 - exp(-49*rate_z*t_check)/7)",
+     "tolerance": 0.0015},
+    {"name": "theta_off_axis_end", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "last",
+     "source": "heat.off_axis",
+     "reference": "(coef_r1*j0(lam1*r_off/R_cyl)*exp(-rate_r1*t_end) + coef_r2*j0(lam2*r_off/R_cyl)*exp(-rate_r2*t_end) + coef_r3*j0(lam3*r_off/R_cyl)*exp(-rate_r3*t_end))*axial_mid_end",
+     "tolerance": 0.01},
+    {"name": "theta_mean", "expression": "(T - T_s)/(T_i - T_s)", "selection": [], "operation": "mean",
+     "reference": "(4/lam1**2*exp(-rate_r1*t_end) + 4/lam2**2*exp(-rate_r2*t_end) + 4/lam3**2*exp(-rate_r3*t_end))*8/pi**2*(exp(-rate_z*t_end) + exp(-9*rate_z*t_end)/9 + exp(-25*rate_z*t_end)/25)",
+     "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "centre_series", "target": "heat.centre",
+     "expression": "T_s + (T_i - T_s)*(coef_r1*j0(lam1*r_axis/R_cyl)*exp(-rate_r1*t) + coef_r2*j0(lam2*r_axis/R_cyl)*exp(-rate_r2*t) + coef_r3*j0(lam3*r_axis/R_cyl)*exp(-rate_r3*t) + coef_r4*j0(lam4*r_axis/R_cyl)*exp(-rate_r4*t) + coef_r5*j0(lam5*r_axis/R_cyl)*exp(-rate_r5*t) + coef_r6*j0(lam6*r_axis/R_cyl)*exp(-rate_r6*t))*4/pi*(exp(-rate_z*t) - exp(-9*rate_z*t)/3 + exp(-25*rate_z*t)/5 - exp(-49*rate_z*t)/7 + exp(-81*rate_z*t)/9)"},
+    {"name": "centre_first_mode", "target": "heat.centre",
+     "expression": "T_s + (T_i - T_s)*coef_r1*4/pi*exp(-(rate_r1 + rate_z)*t)"},
+    {"name": "off_axis_series", "target": "heat.off_axis",
+     "expression": "T_s + (T_i - T_s)*(coef_r1*j0(lam1*r_off/R_cyl)*exp(-rate_r1*t) + coef_r2*j0(lam2*r_off/R_cyl)*exp(-rate_r2*t) + coef_r3*j0(lam3*r_off/R_cyl)*exp(-rate_r3*t) + coef_r4*j0(lam4*r_off/R_cyl)*exp(-rate_r4*t) + coef_r5*j0(lam5*r_off/R_cyl)*exp(-rate_r5*t) + coef_r6*j0(lam6*r_off/R_cyl)*exp(-rate_r6*t))*4/pi*(exp(-rate_z*t) - exp(-9*rate_z*t)/3 + exp(-25*rate_z*t)/5 - exp(-49*rate_z*t)/7 + exp(-81*rate_z*t)/9)"},
+    {"name": "T_radial", "target": "line",
+     "expression": "T_s + (T_i - T_s)*(coef_r1*j0(lam1*x/R_cyl)*exp(-rate_r1*t_end) + coef_r2*j0(lam2*x/R_cyl)*exp(-rate_r2*t_end) + coef_r3*j0(lam3*x/R_cyl)*exp(-rate_r3*t_end))*axial_mid_end",
+     "tolerance": 0.01,
+     "line": [0.0, "H_cyl/2", "R_cyl", "H_cyl/2"], "field": "heat.T"},
+    {"name": "T_axial", "target": "line",
+     "expression": "T_s + (T_i - T_s)*radial_axis_end*4/pi*(sin(pi*y/H_cyl)*exp(-rate_z*t_end) + sin(3*pi*y/H_cyl)*exp(-9*rate_z*t_end)/3 + sin(5*pi*y/H_cyl)*exp(-25*rate_z*t_end)/5)",
+     "tolerance": 0.01,
+     "line": ["r_axis", 0.0, "r_axis", "H_cyl"], "field": "heat.T"}
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "title": "Analytic: closed cavity with pec, pmc and a mirror plane, E_z and H_z eigenfrequencies (FDFD)",
+  "description": "A vacuum cavity closed by walls only (no PML, lossless): x_lo a symmetric mirror plane (E mirror-even), x_hi pec, y_lo / y_hi pmc, solved by the eigenfrequency study in both polarisations at once (physics 'em' = em_fdfd_ez, 'em_hz' = em_fdfd_hz, same boundary settings).\nWall planes (the mirror on the domain edge, its ghost cell outside; walls half a cell apart between the polarisations): E_z: mirror at x = 0 (E_z even, cos), pec at the centre of the last cell (x = Lx - dx/2), pmc on the inner faces of the y cells (y = dx and Ly - dx; dE_z/dy = 0), so E_z = cos(kx x) cos(ky (y - dx)) with kx = (m - 1/2) pi / a, a = Lx - 0.5 dx, ky = n pi / b, b = Ly - 2 dx, n >= 0. H_z: mirror at x = 0 (H_z odd, sin), pec on the inner face of the last cell (x = Lx - dx), pmc at the y cell centres (y = dx/2 and Ly - dx/2; H_z = 0), so H_z = sin(kx x) sin(ky (y - dx/2)), a_h = Lx - dx, b_h = Ly - dx, n >= 1.\nReferences are the exact discrete ones of the 5-point operator: lambda = 2 pi / sqrt(Kx^2 + Ky^2), K = (2 / dx) sin(k dx / 2) (the continuum 2 pi / sqrt(kx^2 + ky^2) differs by ~(k dx)^2 / 24, 1e-4 here).\nDerived values tab: the wavelength of each mode (m, n) picked from the resonance table by a 1 % window around its reference; exact to ~1e-6 (Q is infinite: lossless walls, no PML).\nField tab / Line profile tab: snapshot 'resonance 2' is ez (m, n) = (2, 0) and hz (1, 1): |E_z| along x = |cos(kx x)|, |H_z| along y = |sin(ky (y - dx/2))| (each mode scaled to 1 at its peak).",
+  "version": 1,
+  "parameters": [
+    {"name": "Lx", "expression": "2*um", "description": "cavity length along x (100 cells)"},
+    {"name": "Ly", "expression": "1.5*um", "description": "cavity height along y (75 cells)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "lambda_target", "expression": "2.2*um", "description": "eigenfrequency target (the four nearest modes of each polarisation are well separated from the fifth)"},
+    {"name": "a_ez", "expression": "Lx - 0.5*dx_cell", "description": "E_z: mirror plane to pec plane along x"},
+    {"name": "b_ez", "expression": "Ly - 2*dx_cell", "description": "E_z: pmc plane to pmc plane along y"},
+    {"name": "a_hz", "expression": "Lx - dx_cell", "description": "H_z: mirror plane to pec plane along x"},
+    {"name": "b_hz", "expression": "Ly - dx_cell", "description": "H_z: pmc plane to pmc plane along y"},
+    {"name": "kx1_ez", "expression": "0.5*pi/a_ez", "description": "E_z kx of m = 1"},
+    {"name": "kx2_ez", "expression": "1.5*pi/a_ez", "description": "E_z kx of m = 2"},
+    {"name": "kx3_ez", "expression": "2.5*pi/a_ez", "description": "E_z kx of m = 3"},
+    {"name": "ky1_ez", "expression": "pi/b_ez", "description": "E_z ky of n = 1"},
+    {"name": "kx1_hz", "expression": "0.5*pi/a_hz", "description": "H_z kx of m = 1"},
+    {"name": "kx2_hz", "expression": "1.5*pi/a_hz", "description": "H_z kx of m = 2"},
+    {"name": "kx3_hz", "expression": "2.5*pi/a_hz", "description": "H_z kx of m = 3"},
+    {"name": "ky1_hz", "expression": "pi/b_hz", "description": "H_z ky of n = 1"},
+    {"name": "ky2_hz", "expression": "2*pi/b_hz", "description": "H_z ky of n = 2"},
+    {"name": "lam_ez_21", "expression": "2*pi/hypot(2/dx_cell*sin(kx2_ez*dx_cell/2), 2/dx_cell*sin(ky1_ez*dx_cell/2))",
+     "description": "discrete E_z wavelength of (m, n) = (2, 1) (1.964 um)"},
+    {"name": "lam_ez_20", "expression": "2*pi/(2/dx_cell*sin(kx2_ez*dx_cell/2))",
+     "description": "discrete E_z wavelength of (2, 0) (2.654 um)"},
+    {"name": "lam_ez_11", "expression": "2*pi/hypot(2/dx_cell*sin(kx1_ez*dx_cell/2), 2/dx_cell*sin(ky1_ez*dx_cell/2))",
+     "description": "discrete E_z wavelength of (1, 1) (2.742 um)"},
+    {"name": "lam_ez_30", "expression": "2*pi/(2/dx_cell*sin(kx3_ez*dx_cell/2))",
+     "description": "discrete E_z wavelength of (3, 0) (1.592 um)"},
+    {"name": "lam_hz_21", "expression": "2*pi/hypot(2/dx_cell*sin(kx2_hz*dx_cell/2), 2/dx_cell*sin(ky1_hz*dx_cell/2))",
+     "description": "discrete H_z wavelength of (2, 1) (1.970 um)"},
+    {"name": "lam_hz_11", "expression": "2*pi/hypot(2/dx_cell*sin(kx1_hz*dx_cell/2), 2/dx_cell*sin(ky1_hz*dx_cell/2))",
+     "description": "discrete H_z wavelength of (1, 1) (2.773 um)"},
+    {"name": "lam_hz_12", "expression": "2*pi/hypot(2/dx_cell*sin(kx1_hz*dx_cell/2), 2/dx_cell*sin(ky2_hz*dx_cell/2))",
+     "description": "discrete H_z wavelength of (1, 2) (1.455 um)"},
+    {"name": "lam_hz_31", "expression": "2*pi/hypot(2/dx_cell*sin(kx3_hz*dx_cell/2), 2/dx_cell*sin(ky1_hz*dx_cell/2))",
+     "description": "discrete H_z wavelength of (3, 1) (1.397 um)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_x_lo": "symmetric", "bc_x_hi": "pec", "bc_y_lo": "pmc", "bc_y_hi": "pmc",
+                   "wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_hz",
+      "type": "em_fdfd_hz",
+      "settings": {"bc_x_lo": "symmetric", "bc_x_hi": "pec", "bc_y_lo": "pmc", "bc_y_hi": "pmc",
+                   "wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 4},
+            "stored_fields": ["em.ez_re", "em.ez_im", "em.ez_abs", "em_hz.hz_re", "em_hz.hz_im", "em_hz.hz_abs"],
+            "sweep": null},
+  "derived_values": [
+    {"name": "lambda_ez_21", "expression": "where(abs(wavelength/lam_ez_21 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_ez_21", "tolerance": 1e-5},
+    {"name": "lambda_ez_20", "expression": "where(abs(wavelength/lam_ez_20 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_ez_20", "tolerance": 1e-5},
+    {"name": "lambda_ez_11", "expression": "where(abs(wavelength/lam_ez_11 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_ez_11", "tolerance": 1e-5},
+    {"name": "lambda_ez_30", "expression": "where(abs(wavelength/lam_ez_30 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em.resonances", "reference": "lam_ez_30", "tolerance": 1e-5},
+    {"name": "lambda_hz_21", "expression": "where(abs(wavelength/lam_hz_21 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em_hz.resonances", "reference": "lam_hz_21", "tolerance": 1e-5},
+    {"name": "lambda_hz_11", "expression": "where(abs(wavelength/lam_hz_11 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em_hz.resonances", "reference": "lam_hz_11", "tolerance": 1e-5},
+    {"name": "lambda_hz_12", "expression": "where(abs(wavelength/lam_hz_12 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em_hz.resonances", "reference": "lam_hz_12", "tolerance": 1e-5},
+    {"name": "lambda_hz_31", "expression": "where(abs(wavelength/lam_hz_31 - 1) < 0.01, wavelength, 0)",
+     "operation": "max", "source": "em_hz.resonances", "reference": "lam_hz_31", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "ez_20_along_x", "target": "line", "expression": "abs(cos(kx2_ez*x))", "tolerance": 2e-3,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.ez_abs", "snapshot": "resonance 2"},
+    {"name": "hz_11_along_y", "target": "line", "expression": "abs(sin(ky1_hz*(y - dx_cell/2)))", "tolerance": 2e-3,
+     "line": ["Lx - 1.5*dx_cell", 0.0, "Lx - 1.5*dx_cell", "Ly"], "field": "em_hz.hz_abs", "snapshot": "resonance 2"}
+  ]
+}

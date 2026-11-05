@@ -1,0 +1,108 @@
+{
+  "title": "Acousto-optic plane P pulse in silica (analytic)",
+  "description": "A traction sheet across a y-periodic silica strip (elastic_waves) launches a plane longitudinal Ricker pulse to each side; the photoelastic strain is handed to a sourceless em_fdfd_ez (acoustics_em_acousto_optic), which re-solves every 100 acoustic steps (stroboscopic) and once more at the end. The absorbing layers of both physics sit in the EM CPML padding (100 cells), outside the drawn domain.\nAnalytic (1D wave): v_x = T / (2 rho c) w(t - 4/f0 - |x - x_s| / c), w the Ricker wavelet (1 - 2 a^2) exp(-a^2), a = pi f0 tau; e_xx = -sign(x - x_s) T / (2 rho c^2) w; plane strain e_yy = e_zz = 0, so the E_z index shift is dn = -n0^3 / 2 p12 e_xx and eps_r = (n0 + dn)^2.\nProbes tab: acoustics.near / far (v_x) with the dashed Ricker curves; their FFTs against |V(f)| = T / (2 rho c) 2 f^2 / (sqrt(pi) f0^3) exp(-f^2 / f0^2).\nLine profile tab (final state, t_end): strain_profile on acoustics.elastic_strain_xx and eps_profile on em.eps_r (the right-going pulse near x = 38 um; the left one has left through the x_lo layer).\nDerived values tab: peak v_x near / far, a flank value of the far probe (tests the speed), min elastic strain and max / min of sqrt(eps_r) - n0 against their closed forms; expected ~0.1-0.5 % (float32 eps rounding ~4e-4 of dn, dispersion < 1e-4 at 30+ cells per wavelength).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "1*GHz", "description": "Ricker peak frequency"},
+    {"name": "t_d", "expression": "4/f0", "description": "time of the Ricker maximum at the sheet (the waveform's t0)"},
+    {"name": "T_sheet", "expression": 1.0e8, "description": "peak traction of the sheet in Pa (normal, along +x)"},
+    {"name": "rho_glass", "expression": 2200.0, "description": "silica density in kg/m^3"},
+    {"name": "cL_glass", "expression": 5960.0, "description": "longitudinal (P) speed in m/s"},
+    {"name": "cS_glass", "expression": 3760.0, "description": "shear (S) speed in m/s (not excited by a normal traction)"},
+    {"name": "eps_glass", "expression": 2.085, "description": "relative permittivity at 1.55 um (n0 = 1.444)"},
+    {"name": "n_glass", "expression": "sqrt(eps_glass)", "description": "unperturbed index n0 (the E13 reference index)"},
+    {"name": "p11_glass", "expression": 0.121, "description": "photoelastic coefficient p11"},
+    {"name": "p12_glass", "expression": 0.270, "description": "photoelastic coefficient p12 (the only one an x strain gives eps_zz)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solves"},
+    {"name": "dx_cell", "expression": "50*nm", "description": "uniform cell size (119 cells per P wavelength at f0)"},
+    {"name": "Lx", "expression": "50*um", "description": "strip length (window; the absorbing layers lie outside it)"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "strip height (periodic y: every wave stays plane)"},
+    {"name": "y_mid", "expression": "1.5*dx_cell", "description": "y of the probes and the profile lines (a cell centre)"},
+    {"name": "x_s", "expression": "40.5*dx_cell", "description": "traction sheet position (cell centre)"},
+    {"name": "x_near", "expression": "240.5*dx_cell", "description": "near probe cell centre (v_x sits on its +x face)"},
+    {"name": "x_far", "expression": "640.5*dx_cell", "description": "far probe cell centre"},
+    {"name": "t_end", "expression": "10*ns", "description": "study duration; the right pulse is then centred near x = 37.8 um"},
+    {"name": "A_v", "expression": "T_sheet/(2*rho_glass*cL_glass)", "description": "peak particle velocity T / (2 rho c) in m/s (3.81)"},
+    {"name": "A_strain", "expression": "T_sheet/(2*rho_glass*cL_glass**2)", "description": "peak strain magnitude T / (2 rho c^2) (6.4e-4)"},
+    {"name": "dn_peak", "expression": "0.5*n_glass**3*p12_glass*A_strain", "description": "peak index rise n0^3 p12 |e_xx| / 2 (2.6e-4)"},
+    {"name": "delay_near", "expression": "t_d + (x_near + dx_cell/2 - x_s)/cL_glass", "description": "pulse centre time at the near probe face"},
+    {"name": "delay_far", "expression": "t_d + (x_far + dx_cell/2 - x_s)/cL_glass", "description": "pulse centre time at the far probe face"},
+    {"name": "t_flank", "expression": "delay_far + 0.5/(pi*f0)", "description": "far-probe flank time (a = 0.5: w = 0.5 exp(-0.25))"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "sheet_line", "kind": "line", "params": {"x0": "x_s", "y0": 0.0, "x1": "x_s", "y1": "Ly"}},
+    {"name": "near_point", "kind": "point", "params": {"x": "x_near", "y": "y_mid"}},
+    {"name": "far_point", "kind": "point", "params": {"x": "x_far", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silica", "library": null,
+     "properties": {"eps_r": "eps_glass", "rho": "rho_glass", "sound_speed": "cL_glass", "shear_speed": "cS_glass",
+                    "photoelastic_p11": "p11_glass", "photoelastic_p12": "p12_glass"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 100},
+      "features": [],
+      "every": 100
+    },
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 100},
+      "features": [
+        {"name": "sheet", "type": "traction_line_source", "selection": ["sheet_line"],
+         "params": {"waveform": "ricker", "frequency": "f0", "traction": "T_sheet", "direction": "x"}, "enabled": true},
+        {"name": "near", "type": "field_probe", "selection": ["near_point"], "params": {"component": "vx"},
+         "enabled": true},
+        {"name": "far", "type": "field_probe", "selection": ["far_point"], "params": {"component": "vx"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "acousto_optic", "type": "acoustics_em_acousto_optic", "source": "acoustics", "target": "em",
+     "every": null, "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": ["acoustics.vx", "acoustics.elastic_strain_xx", "em.eps_r"], "sweep": null},
+  "derived_values": [
+    {"name": "vx_near_peak", "expression": "values", "operation": "max", "source": "acoustics.near",
+     "reference": "A_v", "tolerance": 0.015},
+    {"name": "vx_far_peak", "expression": "values", "operation": "max", "source": "acoustics.far",
+     "reference": "A_v", "tolerance": 0.015},
+    {"name": "vx_far_flank", "expression": "values", "operation": "at", "source": "acoustics.far", "at": "t_flank",
+     "reference": "A_v*0.5*exp(-0.25)", "tolerance": 0.03},
+    {"name": "strain_min", "expression": "acoustics_elastic_strain_xx", "selection": [], "operation": "min",
+     "reference": "-A_strain", "tolerance": 0.015},
+    {"name": "dn_max", "expression": "sqrt(em_eps_r) - n_glass", "selection": [], "operation": "max",
+     "reference": "dn_peak", "tolerance": 0.015},
+    {"name": "dn_min", "expression": "sqrt(em_eps_r) - n_glass", "selection": [], "operation": "min",
+     "reference": "-2*exp(-1.5)*dn_peak", "tolerance": 0.015}
+  ],
+  "analytic_curves": [
+    {"name": "near_ricker", "target": "acoustics.near",
+     "expression": "A_v*(1 - 2*(pi*f0*(t - delay_near))**2)*exp(-(pi*f0*(t - delay_near))**2)", "tolerance": 0.02},
+    {"name": "far_ricker", "target": "acoustics.far",
+     "expression": "A_v*(1 - 2*(pi*f0*(t - delay_far))**2)*exp(-(pi*f0*(t - delay_far))**2)", "tolerance": 0.02},
+    {"name": "near_spectrum", "target": "acoustics.near", "series": "fft",
+     "expression": "A_v*2*frequency**2/(sqrt(pi)*f0**3)*exp(-(frequency/f0)**2)"},
+    {"name": "far_spectrum", "target": "acoustics.far", "series": "fft",
+     "expression": "A_v*2*frequency**2/(sqrt(pi)*f0**3)*exp(-(frequency/f0)**2)"},
+    {"name": "strain_profile", "target": "line",
+     "expression": "-sign(x - x_s)*A_strain*(1 - 2*(pi*f0*(t_end - t_d - abs(x - x_s)/cL_glass))**2)*exp(-(pi*f0*(t_end - t_d - abs(x - x_s)/cL_glass))**2)",
+     "tolerance": 0.02,
+     "line": [0.0, "y_mid", "Lx", "y_mid"], "field": "acoustics.elastic_strain_xx"},
+    {"name": "eps_profile", "target": "line",
+     "expression": "(n_glass + dn_peak*sign(x - x_s)*(1 - 2*(pi*f0*(t_end - t_d - abs(x - x_s)/cL_glass))**2)*exp(-(pi*f0*(t_end - t_d - abs(x - x_s)/cL_glass))**2))**2",
+     "tolerance": 0.02,
+     "line": [0.0, "y_mid", "Lx", "y_mid"], "field": "em.eps_r"}
+  ]
+}

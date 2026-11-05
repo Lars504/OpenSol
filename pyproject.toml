@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open_sol"
+dynamic = ["version"]
+description = "GPU (cupy) / CPU 1D-3D multiphysics: FDTD / FDFD / EME / nonlinear electromagnetics, modes, heat, currents, magnetics, semiconductors, mechanics, acoustics, fluid; FEM on triangles / tetrahedra"
+readme = "README.md"
+requires-python = ">=3.11"
+# cupy (GPU backend, optional: without it everything runs on the CPU backend) has a CUDA-specific wheel: install the
+# matching cupy-cudaXXx first, or use an extra below.
+dependencies = ["numpy", "scipy", "matplotlib"]
+
+[project.optional-dependencies]
+cuda12 = ["cupy-cuda12x"]
+cuda11 = ["cupy-cuda11x"]
+gui = ["PySide6", "pyqtgraph"]
+# cuDSS sparse direct solver on the GPU (back ends / factorizations 'cudss', 'cudss_mixed'); [cu13] for CUDA 13
+cudss = ["nvmath-python[cu12]"]
+
+[tool.setuptools.dynamic]
+version = { attr = "open_sol.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["open_sol*"]
+
+[tool.setuptools.package-data]
+open_sol = ["api_reference.md", "api_templates.md", "mesh_study/models/*.json"]

@@ -1,0 +1,86 @@
+{
+  "title": "Analytic: surface plasmon on a Drude metal / glass interface, mesh convergence (em_modes)",
+  "description": "A planar Drude metal / glass interface seen in cross-section: metal below y = 300 nm (the Drude metal of analytic_spp_drude: omega_p 1.37e16 rad/s, gamma 2e14 rad/s), glass eps_d = 2.25 above; x periodic (4 cells: the interface is infinite in x), pec on y_lo (inside the metal, ~14 metal decay lengths deep) and on y_hi (1.5 um of glass, ~8 glass decay lengths: no PML needed); mode_analysis at 633 nm with n_eff_guess = n_spp, swept over dx_cell = 4, 2, 1, 0.5 nm.\nAnalytic: n_spp = sqrt(eps_m eps_d / (eps_m + eps_d)) with the complex Drude eps_m at lambda0 (Im < 0 = loss); L_spp = lambda0 / (4 pi |Im n_spp|) (1/e power propagation length); |H_x| = H0 exp(-Re(kappa) |y - t_metal|) with kappa^2 = k0^2 (n_spp^2 - eps) on each side, H0 from the 1 W normalisation over the window width.\nDerived values tab: n_eff_spp, n_eff_imag_spp, L_spp_measured and te_fraction_spp (0: the plasmon has E_y and E_z only) vs their references. Sweep tab: each vs dx_cell with the reference dashed. The error is first order in dx_cell: E_y on the interface face sees the arithmetic mean (eps_m + eps_d) / 2 where the normal field needs the harmonic one; estimated (not a closed form) n_eff about +0.4 % per nm of cell size, Im n_eff about 6.5 % and L_spp about 5 % per nm (26 % / 21 % at 4 nm, the tolerance 0.5 covers the coarsest run, judged at its worst sweep value), so each halving of dx_cell should about halve the errors.\nLine profile tab: the analytic curve 'h_profile' (|H| along y across the interface) dashed over the h_abs line of the last (finest) run; the cell-centre averaging rounds the cusp at the interface.\nCurves & tables tab: modes 2 and 3 are modes of the glass gap between the metal and the top wall (n_eff < 1.5), not part of the benchmark.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "633*nm", "description": "vacuum wavelength of the mode solve"},
+    {"name": "eps_d", "expression": 2.25, "description": "glass permittivity (n = 1.5)"},
+    {"name": "wp_metal", "expression": 1.37e16, "description": "Drude plasma frequency [rad/s]"},
+    {"name": "gamma_metal", "expression": 2e14, "description": "Drude damping [rad/s]"},
+    {"name": "eps_inf_metal", "expression": 1.0, "description": "Drude background permittivity"},
+    {"name": "dx_cell", "expression": "1*nm", "description": "uniform cell size (swept 4 / 2 / 1 / 0.5 nm)"},
+    {"name": "Lx", "expression": "4*dx_cell", "description": "periodic window width (4 cells)"},
+    {"name": "t_metal", "expression": "300*nm", "description": "interface height = metal thickness (a cell edge for every dx_cell)"},
+    {"name": "t_glass", "expression": "1.5*um", "description": "glass thickness above the interface"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber [1/m]"},
+    {"name": "omega0", "expression": "2*pi*c_const/lambda0", "description": "angular frequency at lambda0 [rad/s]"},
+    {"name": "eps_m_re", "expression": "eps_inf_metal - wp_metal**2/(omega0**2 + gamma_metal**2)",
+     "description": "Re eps of the metal at lambda0 (Drude, exp(+j omega t)), ~ -20.1"},
+    {"name": "eps_m_im", "expression": "-wp_metal**2*gamma_metal/(omega0*(omega0**2 + gamma_metal**2))",
+     "description": "Im eps of the metal at lambda0 (< 0 = loss), ~ -1.42"},
+    {"name": "n2_den", "expression": "(eps_m_re + eps_d)**2 + eps_m_im**2", "description": "|eps_m + eps_d|^2"},
+    {"name": "n2_re", "expression": "eps_d*(eps_m_re*(eps_m_re + eps_d) + eps_m_im**2)/n2_den",
+     "description": "Re n_spp^2, n_spp^2 = eps_m eps_d / (eps_m + eps_d)"},
+    {"name": "n2_im", "expression": "eps_d**2*eps_m_im/n2_den", "description": "Im n_spp^2"},
+    {"name": "n_spp", "expression": "sqrt((hypot(n2_re, n2_im) + n2_re)/2)",
+     "description": "analytic Re n_spp (~1.591)"},
+    {"name": "n_spp_imag", "expression": "n2_im/(2*n_spp)", "description": "analytic Im n_spp (< 0 = loss, ~ -7.0e-3)"},
+    {"name": "L_spp", "expression": "lambda0/(4*pi*abs(n_spp_imag))",
+     "description": "analytic 1/e propagation length of the plasmon power [m] (~7.2 um)"},
+    {"name": "kappa_d_re", "expression": "k_vac*sqrt((hypot(n2_re - eps_d, n2_im) + n2_re - eps_d)/2)",
+     "description": "Re of the field decay constant into the glass [1/m] (1/e length ~190 nm)"},
+    {"name": "kappa_m_re",
+     "expression": "k_vac*sqrt((hypot(n2_re - eps_m_re, n2_im - eps_m_im) + n2_re - eps_m_re)/2)",
+     "description": "Re of the field decay constant into the metal [1/m] (1/e length ~21 nm)"},
+    {"name": "re_n_over_eps_m", "expression": "(n_spp*eps_m_re + n_spp_imag*eps_m_im)/(eps_m_re**2 + eps_m_im**2)",
+     "description": "Re(n_spp / eps_m) (< 0: the power flows backward in the metal)"},
+    {"name": "H0_peak",
+     "expression": "sqrt(2/(Lx*mu0_const*c_const*(n_spp/eps_d/(2*kappa_d_re) + re_n_over_eps_m/(2*kappa_m_re))))",
+     "description": "|H_x| at the interface for 1 W over the window: P = Lx eta0 / 2 integral Re(n / eps) |H_x|^2 dy [A/m]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "t_metal + t_glass"},
+  "geometry": [
+    {"name": "metal", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "t_metal"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null, "properties": {"eps_r": "eps_d"}, "dispersion": null, "selection": ["all"]},
+    {"name": "drude_metal", "library": null, "properties": {},
+     "dispersion": [{"model": "drude", "omega_p": "wp_metal", "gamma": "gamma_metal", "eps_inf": "eps_inf_metal"}],
+     "selection": ["metal"]}
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "periodic", "bc_x_hi": "periodic", "bc_y_lo": "pec", "bc_y_hi": "pec",
+                   "wavelength": "lambda0", "n_modes": 3, "n_eff_guess": "n_spp"},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "mode_analysis", "settings": {}, "stored_fields": ["modes.e_intensity", "modes.h_abs"],
+            "sweep": {"parameter": "dx_cell", "values": [4e-09, 2e-09, 1e-09, 5e-10]}},
+  "derived_values": [
+    {"name": "n_eff_spp", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "n_spp", "tolerance": 0.03},
+    {"name": "n_eff_imag_spp", "expression": "n_eff_imag", "selection": [], "operation": "at", "source": "modes.table",
+     "at": 0, "reference": "n_spp_imag", "tolerance": 0.5},
+    {"name": "L_spp_measured", "expression": "lambda0/(4*pi*abs(n_eff_imag))", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 0, "reference": "L_spp", "tolerance": 0.5},
+    {"name": "te_fraction_spp", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.table", "at": 0, "reference": 0.0, "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "h_profile", "target": "line",
+     "expression": "where(y > t_metal, H0_peak*exp(-kappa_d_re*abs(y - t_metal)), H0_peak*exp(-kappa_m_re*abs(y - t_metal)))",
+     "tolerance": 0.03,
+     "series": "", "line": ["1.5*dx_cell", "t_metal - 100*nm", "1.5*dx_cell", "t_metal + 800*nm"],
+     "field": "modes.h_abs"}
+  ]
+}

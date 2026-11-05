@@ -1,0 +1,112 @@
+{
+  "title": "Circular MOS capacitor in (r, z): whole-disc gate charge and low-frequency C-V in farad (analytic)",
+  "description": "The MOS stack of analytic_mos_capacitor_charge as a body of revolution (drift_diffusion geometry axisymmetric: x = r from the axis at x_lo, y = z): a disc of radius R_disc = 4 cells (2 nm) on p-type silicon (N_A = 1e22 1/m^3, n_i 1e16, 0.8 um, ohmic body contact on the bottom 10 nm at 0 V), 10 nm oxide (eps_dc 3.9) and a 2 nm mid-gap gate layer (work_function_difference 0). The rim r = R_disc is an insulating outer face, so the field is purely axial and every ring column is the 1D stack: the drawn radius is arbitrary (kept at 4 cells to make the solve cheap) and the whole-ring gate charge / capacitance scale with A_disc = pi R_disc^2 (a 100 um disc is (100 um / 2 nm)^2 times larger). The sweep runs over the surface band bending psi_s = -0.1..0.8 V and sets the gate voltage from it: V_g = V_bulk + psi_s + Q_g / C_ox, V_bulk = -V_T asinh(N_A / 2 n_i) = -0.357 V, C_ox = eps0 3.9 / t_ox = 3.45e-3 F/m^2. Two identical physics: mos at V_g, mos_dv at V_g + dV_g (1 mV); their gate charge difference is the low-frequency capacitance. SRH lifetime 1e-10 s as in the planar model (no effect on the equilibrium; it keeps the inversion electrons numerically tied to the body near psi_s = 0.8 V).\nAnalytic (exact Poisson-Boltzmann first integral, as in the planar model): Q_g = sign(psi_s) sqrt(2 eps_s q V_T) sqrt(p0 (e^(-u) + u - 1) + n0 (e^u - u - 1)), u = psi_s / V_T; C = 1 / (1 / C_ox + 1 / C_s) at the midpoint surface potential. With geometry axisymmetric the gate table / scalar charge_gate is the whole-ring charge in C (the y-face ring areas 2 pi r_c dr add up to pi R_disc^2 exactly) and the 'integral' of space_charge is ring-weighted (2 pi r dr dz), so both are per-area values times A_disc.\nDerived values tab: Q_gate = mos_charge_gate / A_disc against Q_g, Q_space = integral of space_charge / A_disc against -Q_g (Gauss), C_disc = (mos_dv_charge_gate - mos_charge_gate) / dV_g in F against A_disc C (4.3e-20 F in accumulation), and C_ratio = C_disc / (A_disc C_ox). Expect ~1e-3 as the planar model (0.5 nm cells over the 4-8 nm accumulation / inversion layers); a wrong ring weight shows as a factor (e.g. 2 pi R^2 or a missing r).\nSweep tab: the four derived values versus psi_s with their dashed curves (depletion minimum of C near 2 phi_F = 0.71 V).\nLine profile tab (last sweep value, psi_s = 0.8 V): V_oxide in the rim column r = R_disc - dr / 2, the linear oxide potential from V_bulk + psi_s with slope Q_g / (eps0 3.9) (the same in every column). Field tab: V, N, P, space_charge of mos.",
+  "version": 1,
+  "parameters": [
+    {"name": "psi_s", "expression": 0.4, "description": "surface band bending in V, positive toward depletion / inversion (the sweep runs -0.1..0.8 V)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (the semiconductor temperature setting)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "N_A", "expression": 1e22, "description": "substrate acceptor density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity of silicon"},
+    {"name": "eps_ox", "expression": 3.9, "description": "static relative permittivity of the oxide"},
+    {"name": "eps_s", "expression": "eps0_const*eps_si", "description": "silicon permittivity in F/m"},
+    {"name": "tau_srh", "expression": 1e-10, "description": "SRH lifetime of both carriers in s (no effect on the equilibrium; short so the inversion electrons are tied to the body numerically)"},
+    {"name": "dx_cell", "expression": "0.5*nm", "description": "uniform cell size (8 cells per 4 nm inversion layer at 0.8 V)"},
+    {"name": "R_disc", "expression": "4*dx_cell", "description": "disc radius = domain width in r (four ring cells; the solution does not depend on it)"},
+    {"name": "A_disc", "expression": "pi*R_disc**2", "description": "disc area in m^2 (whole-ring values / A_disc = per-area values)"},
+    {"name": "t_sub", "expression": "0.8*um", "description": "substrate thickness (depletion width <= 0.32 um)"},
+    {"name": "t_ox", "expression": "10*nm", "description": "oxide thickness"},
+    {"name": "t_gate", "expression": "2*nm", "description": "gate layer thickness (held cells)"},
+    {"name": "w_body", "expression": "10*nm", "description": "body contact thickness at z = 0"},
+    {"name": "Lz", "expression": "t_sub + t_ox + t_gate", "description": "domain height (z)"},
+    {"name": "C_ox", "expression": "eps0_const*eps_ox/t_ox", "description": "oxide capacitance per area in F/m^2 (3.45e-3)"},
+    {"name": "p0", "expression": "N_A/2 + sqrt(N_A**2/4 + n_i**2)", "description": "bulk hole density in 1/m^3"},
+    {"name": "n0", "expression": "n_i**2/p0", "description": "bulk electron density in 1/m^3"},
+    {"name": "V_bulk", "expression": "-V_T*log(N_A/(2*n_i) + sqrt((N_A/(2*n_i))**2 + 1))", "description": "bulk potential -V_T asinh(N_A / 2 n_i) in V (-0.357 V) = flat-band voltage of a mid-gap gate"},
+    {"name": "A_s", "expression": "sqrt(2*eps_s*q_e*V_T)", "description": "prefactor sqrt(2 eps_s q V_T) of the first integral"},
+    {"name": "u_s", "expression": "psi_s/V_T", "description": "normalised band bending"},
+    {"name": "F_s", "expression": "sqrt(p0*(exp(-u_s) + u_s - 1) + n0*(exp(u_s) - u_s - 1))", "description": "first-integral factor at psi_s in 1/m^1.5"},
+    {"name": "Q_g", "expression": "sign(psi_s)*A_s*F_s", "description": "analytic gate charge per area in C/m^2 (= minus the semiconductor charge)"},
+    {"name": "V_g", "expression": "V_bulk + psi_s + Q_g/C_ox", "description": "gate voltage of physics mos in V"},
+    {"name": "dV_g", "expression": 1e-3, "description": "gate voltage step of physics mos_dv in V"},
+    {"name": "C_s_s", "expression": "A_s*abs(p0*(1 - exp(-u_s)) + n0*(exp(u_s) - 1))/(2*V_T*F_s)", "description": "semiconductor capacitance dQ / dpsi at psi_s in F/m^2"},
+    {"name": "psi_mid", "expression": "psi_s + 0.5*dV_g*C_ox/(C_ox + C_s_s)", "description": "surface potential at the mid gate voltage V_g + dV_g / 2 in V"},
+    {"name": "u_m", "expression": "psi_mid/V_T", "description": "normalised midpoint band bending"},
+    {"name": "F_m", "expression": "sqrt(p0*(exp(-u_m) + u_m - 1) + n0*(exp(u_m) - u_m - 1))", "description": "first-integral factor at psi_mid"},
+    {"name": "C_s_m", "expression": "A_s*abs(p0*(1 - exp(-u_m)) + n0*(exp(u_m) - 1))/(2*V_T*F_m)", "description": "semiconductor capacitance at psi_mid in F/m^2"},
+    {"name": "C_ref", "expression": "1/(1/C_ox + 1/C_s_m)", "description": "analytic low-frequency capacitance per area in F/m^2"},
+    {"name": "C_disc_ref", "expression": "A_disc*C_ref", "description": "analytic low-frequency capacitance of the whole disc in F"}
+  ],
+  "domain": {"size_x": "R_disc", "size_y": "Lz"},
+  "geometry": [
+    {"name": "substrate", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "R_disc", "y1": "t_sub"}},
+    {"name": "body_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "R_disc", "y1": "w_body"}},
+    {"name": "oxide", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_sub", "x1": "R_disc", "y1": "t_sub + t_ox"}},
+    {"name": "gate_layer", "kind": "rectangle", "params": {"x0": 0.0, "y0": "t_sub + t_ox", "x1": "R_disc", "y1": "Lz"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": 0.135, "mobility_p": 0.048, "eps_dc": "eps_si",
+                    "lifetime": "tau_srh"},
+     "dispersion": null, "selection": ["substrate"]},
+    {"name": "gate_oxide", "library": null, "properties": {"eps_dc": "eps_ox"}, "dispersion": null,
+     "selection": ["oxide", "gate_layer"]}
+  ],
+  "physics": [
+    {
+      "name": "mos",
+      "type": "drift_diffusion",
+      "settings": {"geometry": "axisymmetric", "temperature": "T_lat", "max_bias_step": 0.1, "max_iterations": 100},
+      "features": [
+        {"name": "acceptors", "type": "doping", "selection": ["substrate"], "params": {"acceptors": "N_A"},
+         "enabled": true},
+        {"name": "body", "type": "ohmic_contact", "selection": ["body_pad"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "gate", "type": "gate", "selection": ["gate_layer"],
+         "params": {"voltage": "V_g", "work_function_difference": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "mos_dv",
+      "type": "drift_diffusion",
+      "settings": {"geometry": "axisymmetric", "temperature": "T_lat", "max_bias_step": 0.1, "max_iterations": 100},
+      "features": [
+        {"name": "acceptors", "type": "doping", "selection": ["substrate"], "params": {"acceptors": "N_A"},
+         "enabled": true},
+        {"name": "body", "type": "ohmic_contact", "selection": ["body_pad"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "gate", "type": "gate", "selection": ["gate_layer"],
+         "params": {"voltage": "V_g + dV_g", "work_function_difference": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["mos.V", "mos.N", "mos.P", "mos.space_charge"],
+            "sweep": {"parameter": "psi_s", "values": [-0.1, -0.05, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8]}},
+  "derived_values": [
+    {"name": "Q_gate", "expression": "mos_charge_gate/A_disc", "selection": [], "operation": "mean",
+     "reference": "Q_g", "tolerance": 0.003},
+    {"name": "Q_space", "expression": "mos_space_charge/A_disc", "selection": [], "operation": "integral",
+     "reference": "-Q_g", "tolerance": 0.003},
+    {"name": "C_disc", "expression": "(mos_dv_charge_gate - mos_charge_gate)/dV_g", "selection": [],
+     "operation": "mean", "reference": "C_disc_ref", "tolerance": 0.003},
+    {"name": "C_ratio", "expression": "(mos_dv_charge_gate - mos_charge_gate)/(dV_g*A_disc*C_ox)", "selection": [],
+     "operation": "mean", "reference": "C_ref/C_ox", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "Q_gate_curve", "target": "sweep", "expression": "Q_g", "tolerance": 0.003, "series": "Q_gate"},
+    {"name": "Q_space_curve", "target": "sweep", "expression": "-Q_g", "tolerance": 0.003, "series": "Q_space"},
+    {"name": "C_disc_curve", "target": "sweep", "expression": "C_disc_ref", "tolerance": 0.003, "series": "C_disc"},
+    {"name": "C_ratio_curve", "target": "sweep", "expression": "C_ref/C_ox", "tolerance": 0.003, "series": "C_ratio"},
+    {"name": "V_oxide", "target": "line", "expression": "V_bulk + psi_s + Q_g*(y - t_sub)/(eps0_const*eps_ox)",
+     "tolerance": 0.003, "line": ["R_disc - dx_cell/2", "t_sub + dx_cell/4", "R_disc - dx_cell/2", "t_sub + t_ox - dx_cell/4"],
+     "field": "mos.V"}
+  ]
+}

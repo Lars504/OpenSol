@@ -1,0 +1,79 @@
+{
+  "title": "Analytic: vertical dipole above a PEC ground plane, image interference (3D FDTD)",
+  "description": "A z-oriented electric point dipole (current moment Il = 1e-12 A m, gaussian pulse at 1 um) at height h above a perfectly conducting ground (em_fdtd_3d, 25 nm cells): bc_z_lo pec plus a pec_domain on the next cell layer, so the conductor fills z < 2 dx and its surface (the pinned tangential E) lies at z = 1.5 dx; CPML on the four side faces and on z_hi, the ground running into the side layers. The dipole sits on the E_z face at z = n_up dx, h = (n_up - 1.5) dx; the study sweeps n_up over 6, 10, 14, 20, 26 (h = 112.5-612.5 nm). A flux box from z = dx (bottom face inside the conductor, zero flux) to 0.95 um collects the power radiated into the upper half-space.\nAnalytic (image theory: dipole plus its in-phase image 2h below, half of the pair's power goes up): P / P0 = 1 + 3 (sin(u) / u^3 - cos(u) / u^2), u = 2 k h = 4 pi h / lambda, P0 = eta0 k^2 (Il)^2 / (12 pi) of the free dipole; P / P0 -> 2 as h -> 0 (1.814, 1.446, 1.103, 0.914, 0.999 at 1 um for the five heights). The image is exact on the Yee lattice (mirror plane on the tangential E nodes).\nSweep tab: P_ratio (1 um) and P_ratio_long (1.2 um) vs n_up with the dashed references.\nSpectra tab: em.radiated_power quantity power_per_cw vs the dashed P0(lambda) P / P0 over 0.8-1.3 um.\nExpected agreement: ~0.2-0.5 % (lattice dispersion and box quadrature as dipole_far_field, CPML reflection of the grazing wave along the ground); to be confirmed by a first run. No far-field pattern: near_to_far assumes vacuum outside the box.",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "L_xy", "expression": "1.2*um", "description": "domain width along x and y (CPML outside, pml_cells 10 per face)"},
+    {"name": "L_z", "expression": "1.15*um", "description": "domain height (pec z_lo, CPML above z_hi)"},
+    {"name": "n_up", "expression": 10, "description": "dipole E_z face index: dipole at z = n_up dx (swept 6, 10, 14, 20, 26)"},
+    {"name": "z_ground", "expression": "1.5*dx_cell", "description": "conductor surface: centres of the top PEC cell layer"},
+    {"name": "z_dip", "expression": "n_up*dx_cell", "description": "dipole height (on an E_z face)"},
+    {"name": "h_dip", "expression": "z_dip - z_ground", "description": "dipole height above the conductor surface"},
+    {"name": "x_c", "expression": "L_xy/2 + dx_cell/2", "description": "dipole x = y (a cell centre)"},
+    {"name": "box_lo", "expression": "0.2*um", "description": "flux box lower x / y faces"},
+    {"name": "box_hi", "expression": "1.0*um", "description": "flux box upper x / y faces"},
+    {"name": "box_z0", "expression": "dx_cell", "description": "flux box bottom face: inside the conductor (between its two layers)"},
+    {"name": "box_z1", "expression": "0.95*um", "description": "flux box top face (8 cells below the z_hi CPML)"},
+    {"name": "lambda0", "expression": "1*um", "description": "centre wavelength of the gaussian pulse"},
+    {"name": "lam_b", "expression": "1.2*um", "description": "second comparison wavelength"},
+    {"name": "bw", "expression": 0.5, "description": "relative bandwidth of the pulse"},
+    {"name": "Il", "expression": 1e-12, "description": "peak current moment I l of the dipole [A m]"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "impedance of free space [Ohm]"},
+    {"name": "P0_a", "expression": "eta0*(2*pi/lambda0)**2*Il**2/(12*pi)", "description": "free-dipole cw power at lambda0 [W]"},
+    {"name": "P0_b", "expression": "eta0*(2*pi/lam_b)**2*Il**2/(12*pi)", "description": "free-dipole cw power at lam_b [W]"},
+    {"name": "u_a", "expression": "4*pi*h_dip/lambda0", "description": "2 k h at lambda0"},
+    {"name": "u_b", "expression": "4*pi*h_dip/lam_b", "description": "2 k h at lam_b"},
+    {"name": "ratio_a", "expression": "1 + 3*(sin(u_a)/u_a**3 - cos(u_a)/u_a**2)", "description": "analytic P / P0 at lambda0"},
+    {"name": "ratio_b", "expression": "1 + 3*(sin(u_b)/u_b**3 - cos(u_b)/u_b**2)", "description": "analytic P / P0 at lam_b"},
+    {"name": "T_run", "expression": "50*fs", "description": "study duration: pulse (2 t0 ~19 fs), ground echo and transit out of the box"}
+  ],
+  "domain": {"size_x": "L_xy", "size_y": "L_xy", "size_z": "L_z"},
+  "geometry": [
+    {"name": "dipole_point", "kind": "point", "params": {"x": "x_c", "y": "x_c", "z": "z_dip"}},
+    {"name": "ground_layer", "kind": "box",
+     "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "L_xy", "y1": "L_xy", "z1": "2*dx_cell"}},
+    {"name": "flux_surface", "kind": "box",
+     "params": {"x0": "box_lo", "y0": "box_lo", "z0": "box_z0", "x1": "box_hi", "y1": "box_hi", "z1": "box_z1"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_3d",
+      "settings": {"bc_z_lo": "pec", "pml_cells": 10},
+      "features": [
+        {"name": "dipole", "type": "dipole_source", "selection": ["dipole_point"],
+         "params": {"dipole_axis": "z", "waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw",
+                    "current_moment": "Il"},
+         "enabled": true},
+        {"name": "ground", "type": "pec_domain", "selection": ["ground_layer"], "params": {}, "enabled": true},
+        {"name": "radiated_power", "type": "flux_box", "selection": ["flux_surface"],
+         "params": {"wavelength_start": "0.8*um", "wavelength_stop": "1.3*um", "n_wavelengths": 26},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "n_up", "values": [6, 10, 14, 20, 26]}},
+  "derived_values": [
+    {"name": "P_ratio", "expression": "power_per_cw/P0_a", "selection": [], "operation": "at",
+     "source": "em.radiated_power", "at": "lambda0", "reference": "ratio_a", "tolerance": 0.02},
+    {"name": "P_ratio_long", "expression": "power_per_cw/P0_b", "selection": [], "operation": "at",
+     "source": "em.radiated_power", "at": "lam_b", "reference": "ratio_b", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "P_ratio_image", "target": "sweep", "series": "P_ratio", "expression": "ratio_a", "tolerance": 0.02},
+    {"name": "P_ratio_long_image", "target": "sweep", "series": "P_ratio_long", "expression": "ratio_b",
+     "tolerance": 0.02},
+    {"name": "spectrum_image", "target": "em.radiated_power", "series": "power_per_cw",
+     "expression": "eta0*(2*pi/wavelength)**2*Il**2/(12*pi)*(1 + 3*(sin(4*pi*h_dip/wavelength)/(4*pi*h_dip/wavelength)**3 - cos(4*pi*h_dip/wavelength)/(4*pi*h_dip/wavelength)**2))",
+     "tolerance": 0.02}
+  ]
+}

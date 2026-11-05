@@ -1,0 +1,101 @@
+{
+  "title": "Recombination heating of an illuminated n-type bar: drift-diffusion -> heat by field_transfer (analytic)",
+  "description": "The bar of semiconductor/analytic_minority_diffusion_length (N_D = 1e23 1/m^3, 10 um, one ohmic contact on [0, 20 nm], uniform generation G = 1e27 1/(m^3 s), SRH tau_srh + radiative B = 1e-16 m^3/s) plus a heat physics (k = 130 W/(m K), T = T0 on the x_lo face, other faces insulated). An enabled field_transfer turns the net recombination into heat, Q = E_g q R (each pair releases the gap energy E_g = 1.12 eV; the contact cells recombine and heat nothing). Stationary study (drift-diffusion, then heat as a sink: one pass), sweep tau_srh = 1e-10..3e-8 s.\nAnalytic (low injection): tau_eff = 1 / (1 / tau_srh + B N_D), L = sqrt(mu_p V_T tau_eff), r(x) = 1 - cosh((Lx - x) / L) / cosh(W / L) (W = Lx - x_c, x_c = w_contact - dx / 2 the innermost contact cell centre), Q = Q0 r on x > w_contact with Q0 = E_g q G. Heat sink power per m of depth P_sink = Q0 Ly (W - L tanh(W / L)); the rise theta(x) = (Q0 / k) [w_c (S - L sinh(S / L) / C) + (S^2 - (Lx - x)^2) / 2 - L^2 (cosh(S / L) - cosh((Lx - x) / L)) / C] on the free part (S = Lx - w_contact, C = cosh(W / L)), theta_end = theta(Lx) -> Q0 (Lx^2 - w_c^2) / (2 k) as L -> 0. The rise is small (~7e-5 K): it is compared as heat_T_rise (solved in float64, not the float32 T).\nDerived values tab: P_sink (integral of heat_Q), theta_end (max of heat_T_rise, at the last cell centre: (dx / Lx)^2 below theta(Lx)). Expect ~1e-4 (low-injection corrections ~dp / N_D, discretisation ~(dx / L)^2).\nSweep tab: P_sink and theta_end versus tau_srh with their dashed curves (both fall as the holes diffuse to the contact and recombine there, out of the heated bar).\nLine profile tab (last sweep value, 3e-8 s): T_rise_profile, theta(x) along the free part of the bar. Field tab: heat T, T_rise, Q and semiconductor P, recombination.",
+  "version": 1,
+  "parameters": [
+    {"name": "tau_srh", "expression": 1e-9, "description": "SRH lifetime of both carriers in s (the sweep runs 1e-10..3e-8 s)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (semiconductor temperature and heat T0)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity"},
+    {"name": "N_D", "expression": 1e23, "description": "donor density in 1/m^3"},
+    {"name": "mu_e", "expression": 0.135, "description": "electron mobility in m^2/(V s)"},
+    {"name": "mu_h", "expression": 0.048, "description": "hole (minority) mobility in m^2/(V s)"},
+    {"name": "B_rad", "expression": 1e-16, "description": "radiative recombination coefficient in m^3/s"},
+    {"name": "G0", "expression": 1e27, "description": "uniform generation rate in 1/(m^3 s)"},
+    {"name": "E_g", "expression": 1.12, "description": "band gap in eV: heat per recombined pair E_g q"},
+    {"name": "k_si", "expression": 130.0, "description": "thermal conductivity in W/(m K)"},
+    {"name": "Lx", "expression": "10*um", "description": "bar length along x"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "2*dx_cell", "description": "bar height (two cells: a 1D problem)"},
+    {"name": "w_contact", "expression": "20*nm", "description": "width of the ohmic contact at x_lo"},
+    {"name": "x_c", "expression": "w_contact - dx_cell/2", "description": "centre of the innermost held contact cell (excess holes 0 there)"},
+    {"name": "W_free", "expression": "Lx - x_c", "description": "diffusion width from x_c to the insulated end in m"},
+    {"name": "S_heat", "expression": "Lx - w_contact", "description": "heated length (free cells) in m"},
+    {"name": "tau_eff", "expression": "1/(1/tau_srh + B_rad*N_D)", "description": "low-injection hole lifetime in s"},
+    {"name": "L_D", "expression": "sqrt(mu_h*V_T*tau_eff)", "description": "hole diffusion length in m"},
+    {"name": "C_W", "expression": "cosh(W_free/L_D)", "description": "cosh(W / L)"},
+    {"name": "Q0", "expression": "E_g*q_e*G0", "description": "heat density of full local recombination in W/m^3 (1.8e8)"},
+    {"name": "P_sink_ref", "expression": "Q0*Ly*(W_free - L_D*tanh(W_free/L_D))", "description": "analytic recombination heat per m of depth in W/m"},
+    {"name": "theta_end_ref",
+     "expression": "Q0/k_si*(w_contact*(S_heat - L_D*sinh(S_heat/L_D)/C_W) + S_heat**2/2 - L_D**2*(cosh(S_heat/L_D) - 1)/C_W)",
+     "description": "analytic temperature rise at the insulated end x = Lx in K"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "contact_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "n_semiconductor", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": "mu_e", "mobility_p": "mu_h", "eps_dc": "eps_si",
+                    "lifetime": "tau_srh", "radiative_recombination": "B_rad", "k": "k_si"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {"temperature": "T_lat", "max_iterations": 100},
+      "features": [
+        {"name": "donors", "type": "doping", "selection": ["all"], "params": {"donors": "N_D"}, "enabled": true},
+        {"name": "light", "type": "generation", "selection": ["all"], "params": {"rate": "G0"}, "enabled": true},
+        {"name": "contact", "type": "ohmic_contact", "selection": ["contact_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_lat"},
+      "features": [
+        {"name": "heat_sink", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_lat"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "recombination_heat", "type": "field_transfer", "source": "semiconductor", "target": "heat",
+     "every": null,
+     "params": {"source_field": "recombination", "target_slot": "volumetric_power", "expression": "E_g*q_e*value"},
+     "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["heat.T", "heat.T_rise", "heat.Q", "semiconductor.P", "semiconductor.recombination"],
+            "sweep": {"parameter": "tau_srh", "values": [1e-10, 3e-10, 1e-9, 3e-9, 1e-8, 3e-8]}},
+  "derived_values": [
+    {"name": "P_sink", "expression": "heat_Q", "selection": [], "operation": "integral",
+     "reference": "P_sink_ref", "tolerance": 0.001},
+    {"name": "theta_end", "expression": "heat_T_rise", "selection": [], "operation": "max",
+     "reference": "theta_end_ref", "tolerance": 0.001}
+  ],
+  "analytic_curves": [
+    {"name": "P_sink_curve", "target": "sweep", "expression": "P_sink_ref", "tolerance": 0.001, "series": "P_sink"},
+    {"name": "theta_end_curve", "target": "sweep", "expression": "theta_end_ref", "tolerance": 0.001,
+     "series": "theta_end"},
+    {"name": "T_rise_profile", "target": "line",
+     "expression": "Q0/k_si*(w_contact*(S_heat - L_D*sinh(S_heat/L_D)/C_W) + (S_heat**2 - (Lx - x)**2)/2 - L_D**2*(cosh(S_heat/L_D) - cosh((Lx - x)/L_D))/C_W)",
+     "tolerance": 0.001,
+     "line": ["w_contact + dx_cell/4", "dx_cell/2", "Lx - dx_cell/4", "dx_cell/2"], "field": "heat.T_rise"}
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "title": "Polar grid: sector resistor driven across the angle (analytic)",
+  "description": "Electric currents in an annular sector a < r < b, angle_start < phi < angle_start + Phi, on a polar (r, phi) domain (coordinates 'polar', radius_min = a, angle_min = angle_start, size_y = Phi). The two rays are the electrodes: y_lo (phi = angle_start) held at V0, y_hi at 0 V; the arcs x_lo / x_hi are insulated, so the current runs around the angle (the angular faces and the r_c dphi distances of the metric, not the radial ones of polar_annulus_log_profile). Uniform sigma_dc on 'all'.\nAnalytic: V = V0 (1 - (phi - angle_start) / Phi), angular current density J_phi = sigma V0 / (r Phi), conductance per metre of depth G' = sigma ln(b / a) / Phi, Joule power P' = V0^2 G'.\nDerived values tab: G_per_m (drive current / voltage), I_ground (the scalar output current_ground = -G' V0), P_joule (integral of q_joule over the sector areas = V0 I exactly), V_probe (probe at a cell-centre angle: V is exactly linear in phi on the cells). Expect G and P ~1.4e-5 below the analytic value (the radial rows add up as the midpoint rule of the integral of dr / r), V_probe to the CG accuracy.\nLine profile tab: V_chord (a straight chord across the angle near the outer arc: the angle staircase of the containing-cell image, ~0.3 %) and J_angular (J_y = the angular component along the ray at mid-angle: 1 / r, ~1 % from the radial cell image).\nSweep tab: G_per_m versus the sector angle Phi (pi/6, pi/3, pi/2; G' ~ 1 / Phi) with the dashed G_vs_angle.",
+  "version": 2,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "voltage of the y_lo ray [V]; the y_hi ray is held at 0 V"},
+    {"name": "sigma_c", "expression": 100.0, "description": "conductivity sigma_dc in S/m"},
+    {"name": "a_inner", "expression": "0.5*mm", "description": "inner arc radius (radius_min)"},
+    {"name": "b_outer", "expression": "1.5*mm", "description": "outer arc radius"},
+    {"name": "angle_start", "expression": 0.3, "description": "angle of the y_lo ray in rad (angle_min)"},
+    {"name": "sector_angle", "expression": "pi/2", "description": "sector angle Phi in rad (size_y; swept)"},
+    {"name": "dx_mesh", "expression": "10*um", "description": "radial cell size, also the cell length along the outer arc"},
+    {"name": "n_angle", "expression": "ceil(sector_angle*b_outer/dx_mesh - 1e-9)",
+     "description": "angle cells of the mesh (Phi b / dx rounded up, as the polar mesher does)"},
+    {"name": "phi_probe", "expression": "angle_start + (floor(n_angle/3) + 0.5)*sector_angle/n_angle",
+     "description": "probe angle: a cell-centre angle about a third of the way across"},
+    {"name": "r_probe", "expression": "a_inner + 30.5*dx_mesh", "description": "probe radius (a radial cell centre)"},
+    {"name": "G_ref", "expression": "sigma_c*log(b_outer/a_inner)/sector_angle",
+     "description": "analytic conductance per metre of depth in S/m"},
+    {"name": "r_chord", "expression": "1.4*mm", "description": "radius of the chord end points"},
+    {"name": "phi_mid", "expression": "angle_start + sector_angle/2", "description": "mid-angle of the sector (ray of J_angular)"}
+  ],
+  "domain": {"size_x": "b_outer - a_inner", "size_y": "sector_angle", "coordinates": "polar",
+             "radius_min": "a_inner", "angle_min": "angle_start"},
+  "geometry": [
+    {"name": "probe_point", "kind": "point",
+     "params": {"x": "r_probe*cos(phi_probe)", "y": "r_probe*sin(phi_probe)"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "conductor", "library": null, "properties": {"sigma_dc": "sigma_c"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "drive", "type": "voltage", "selection": ["y_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["y_hi"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-11}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "sector_angle", "values": ["pi/6", "pi/3", "pi/2"]}},
+  "derived_values": [
+    {"name": "G_per_m", "expression": "current/voltage", "selection": [], "operation": "last",
+     "source": "currents.drive", "reference": "G_ref", "tolerance": 2e-4},
+    {"name": "I_ground", "expression": "currents_current_ground", "selection": [], "operation": "mean",
+     "reference": "-G_ref*V0", "tolerance": 2e-4},
+    {"name": "P_joule", "expression": "currents_q_joule", "selection": [], "operation": "integral",
+     "reference": "G_ref*V0**2", "tolerance": 2e-4},
+    {"name": "V_probe", "expression": "values", "selection": [], "operation": "last", "source": "currents.probe",
+     "reference": "V0*(1 - (phi_probe - angle_start)/sector_angle)", "tolerance": 1e-4}
+  ],
+  "analytic_curves": [
+    {"name": "V_chord", "target": "line", "field": "currents.V",
+     "expression": "V0*(1 - (atan2(y, x) - angle_start)/sector_angle)", "tolerance": 1e-2,
+     "line": ["r_chord*cos(angle_start + 0.02*sector_angle)", "r_chord*sin(angle_start + 0.02*sector_angle)",
+              "r_chord*cos(angle_start + 0.98*sector_angle)", "r_chord*sin(angle_start + 0.98*sector_angle)"]},
+    {"name": "J_angular", "target": "line", "field": "currents.J_y",
+     "expression": "sigma_c*V0/(hypot(x, y)*sector_angle)", "tolerance": 3e-2,
+     "line": ["(a_inner + dx_mesh/4)*cos(phi_mid)", "(a_inner + dx_mesh/4)*sin(phi_mid)",
+              "(b_outer - dx_mesh/4)*cos(phi_mid)", "(b_outer - dx_mesh/4)*sin(phi_mid)"]},
+    {"name": "G_vs_angle", "target": "sweep", "series": "G_per_m", "expression": "G_ref", "tolerance": 1e-3}
+  ]
+}

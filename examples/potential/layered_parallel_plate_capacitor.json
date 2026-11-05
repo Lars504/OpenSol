@@ -1,0 +1,68 @@
+{
+  "title": "Layered parallel-plate capacitor (electrostatics, analytic)",
+  "description": "Parallel-plate capacitor with two dielectric layers: plate x_lo at V0, plate x_hi at 0 V, eps_1 over d1, eps_2 over d2, insulated y faces (no fringing).\nAnalytic: C' = eps0 w/(d1/eps_1 + d2/eps_2) per m of depth; D_x is the same in both layers while E_x jumps by eps_2/eps_1 (4 here) at the interface.\nDerived values tab: C_per_m (plate charge / voltage), Q_plate_lo (= -C' V0), D_mean, E_layer_1 and E_layer_2, all exact to ~1e-6.\nLine profile tab: V_profile (kink at x = d1), E_profile (step) and D_profile (flat) against the analytic curves.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "voltage of the x_lo plate [V] (x_hi plate at 0 V)"},
+    {"name": "d1", "expression": "0.4*mm", "description": "thickness of dielectric layer 1 (next to x_lo)"},
+    {"name": "d2", "expression": "0.6*mm", "description": "thickness of dielectric layer 2 (next to x_hi)"},
+    {"name": "eps_1", "expression": 2.0, "description": "static relative permittivity of layer 1"},
+    {"name": "eps_2", "expression": 8.0, "description": "static relative permittivity of layer 2"},
+    {"name": "w", "expression": "0.2*mm", "description": "plate width (y extent; insulated y faces, no fringing)"},
+    {"name": "dx_cell", "expression": "10*um", "description": "uniform cell size (the interface on a cell edge)"}
+  ],
+  "domain": {"size_x": "d1 + d2", "size_y": "w"},
+  "geometry": [
+    {"name": "layer_1", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "d1", "y1": "w"}},
+    {"name": "layer_2", "kind": "rectangle", "params": {"x0": "d1", "y0": 0.0, "x1": "d1 + d2", "y1": "w"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "dielectric_1", "library": null, "properties": {"eps_dc": "eps_1"}, "dispersion": null,
+     "selection": ["layer_1"]},
+    {"name": "dielectric_2", "library": null, "properties": {"eps_dc": "eps_2"}, "dispersion": null,
+     "selection": ["layer_2"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "plate_hi", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "plate_lo", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "C_per_m", "expression": "charge/voltage", "operation": "last", "source": "electrostatics.plate_hi",
+     "reference": "eps0_const*w/(d1/eps_1 + d2/eps_2)", "tolerance": 3e-6},
+    {"name": "Q_plate_lo", "expression": "charge", "operation": "last", "source": "electrostatics.plate_lo",
+     "reference": "-eps0_const*w*V0/(d1/eps_1 + d2/eps_2)", "tolerance": 3e-6},
+    {"name": "D_mean", "expression": "D_x", "selection": ["all"], "operation": "mean",
+     "reference": "eps0_const*V0/(d1/eps_1 + d2/eps_2)", "tolerance": 3e-6},
+    {"name": "E_layer_1", "expression": "E_x", "selection": ["layer_1"], "operation": "mean",
+     "reference": "V0/(eps_1*(d1/eps_1 + d2/eps_2))", "tolerance": 3e-6},
+    {"name": "E_layer_2", "expression": "E_x", "selection": ["layer_2"], "operation": "mean",
+     "reference": "V0/(eps_2*(d1/eps_1 + d2/eps_2))", "tolerance": 3e-6}
+  ],
+  "analytic_curves": [
+    {"name": "V_profile", "target": "line",
+     "expression": "where(x < d1, V0 - V0*x/(eps_1*(d1/eps_1 + d2/eps_2)), V0*(d1 + d2 - x)/(eps_2*(d1/eps_1 + d2/eps_2)))",
+     "tolerance": 0.02, "line": [0.0, "w/2 + dx_cell/2", "d1 + d2", "w/2 + dx_cell/2"], "field": "electrostatics.V"},
+    {"name": "E_profile", "target": "line",
+     "expression": "where(x < d1, 1/eps_1, 1/eps_2)*V0/(d1/eps_1 + d2/eps_2)", "tolerance": 1e-5,
+     "line": [0.0, "w/2 + dx_cell/2", "d1 + d2", "w/2 + dx_cell/2"], "field": "electrostatics.E_x"},
+    {"name": "D_profile", "target": "line", "expression": "eps0_const*V0/(d1/eps_1 + d2/eps_2)", "tolerance": 1e-5,
+     "line": [0.0, "w/2 + dx_cell/2", "d1 + d2", "w/2 + dx_cell/2"], "field": "electrostatics.D_x"}
+  ]
+}

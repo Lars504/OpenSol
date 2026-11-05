@@ -1,0 +1,106 @@
+{
+  "title": "Analytic: hollow PEC waveguide TE10 through a dielectric section, mode ports (3D FDTD)",
+  "description": "A hollow rectangular metal waveguide along z (em_fdtd_3d, 20 nm cells) with a dielectric section eps = 2.25 of length L = 1 um; only half of the guide is modelled: the TE10 mode (E along y, sin(pi x / a)) is symmetric about the guide centre, where its tangential H vanishes, so bc_x_hi pmc (the grid edge) is that plane. Walls: two-cell pec_domain layers on x_lo, y_lo and y_hi (plus bc pec there), the surface at the centre of the inner wall layer, so a = 2 (L_x - 1.5 dx) = 0.98 um (pec and pmc lie half a cell apart) and b = L_y - 3 dx = 0.5 um; CPML (20 cells) on both z faces, the walls running into them. A mode_source (mode 1 = TE10, 1 W, gaussian at 1.43 um, bandwidth 0.1) at z = 0.31 um launches toward +z; mode_monitors at z = 0.5 um (incident: forward = incident power, backward = reflection) and z = 1.9 um (transmitted), 23 wavelengths 1.2-1.75 um. Needs scipy (cross-section mode solves at build).\nAnalytic (single-mode transmission line, TE wave impedance ~ 1 / beta): n1 = sqrt(1 - (lambda / 2a)^2) in the empty guide, n2 = sqrt(eps - (lambda / 2a)^2) in the section; T = 1 / (1 + F sin^2(2 pi n2 L / lambda)), F = ((n1^2 - n2^2) / (2 n1 n2))^2, R = 1 - T; the section fills the whole cross-section, so TE10 couples to no other mode. Peak T = 1 at 1.336 um (n2 L / lambda = 1), dip at 1.654 um (T = 0.532); T(1.35 um) = 0.997, T(1.65 um) = 0.535; n1(1.5 um) = 0.6437.\nCurves & tables tab: T_mode = transmitted / incident forward mode power and R_mode = incident backward / forward, with the dotted references (independent of the launch spectrum).\nSpectra / Curves: em.transmitted fraction_positive vs the dashed T (normalised by the nominal source power: the launch is exact at 1.43 um only, the dispersive TE10 impedance makes it (Z + Z0)^2 / (4 Z Z0) ~ 4 % high at 1.75 um, hence the looser tolerance).\nDerived values tab: T_1350, T_1650, R_1650 from the ratio curves, n_eff_1500 = n_eff of the incident monitor vs n1.\nPulse spectrum: keep it off the TE10 cutoff. Spectrum at the cutoff (zero group velocity) stays near the source as a slowly decaying ringing (~t^-1/2), so the run-length DFT is truncated: a ripple with period ~lambda^2 / (c T_run) in the incident forward power. With bandwidth 0.4 the cutoff carried 0.66 of the peak amplitude and T / R were off by up to 0.08 at 1.6-1.75 um. The narrow pulse puts ~7e-4 there.\nExpected agreement: ~0.3 % in T and R (Yee interface and dispersion, O((beta dx)^2)), ~2e-4 in n_eff (the 200 fs bandwidth 0.4 run: T_1350 6e-4, n_eff 1.3e-4; the ports touch pec / pmc faces, which the em3d mode ports treat approximately).",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "n_half", "expression": 26, "description": "cells along x: 2 wall cells + 24 guide cells up to the pmc symmetry plane"},
+    {"name": "n_wide", "expression": 28, "description": "cells along y: 2 wall cells on each side + 24 guide cells"},
+    {"name": "Lx", "expression": "n_half*dx_cell", "description": "domain width along x (pec x_lo wall, pmc x_hi symmetry plane)"},
+    {"name": "Ly", "expression": "n_wide*dx_cell", "description": "domain width along y (pec walls on both faces)"},
+    {"name": "Lz", "expression": "2.1*um", "description": "domain length along the guide (CPML on both z faces)"},
+    {"name": "a_guide", "expression": "2*(Lx - 1.5*dx_cell)", "description": "guide width between the conductor surfaces (0.98 um)"},
+    {"name": "b_guide", "expression": "Ly - 3*dx_cell", "description": "guide height between the conductor surfaces (0.5 um; TE10 does not depend on it)"},
+    {"name": "wall", "expression": "2*dx_cell", "description": "wall thickness (two cell layers)"},
+    {"name": "eps_sec", "expression": 2.25, "description": "relative permittivity of the dielectric section"},
+    {"name": "z_src", "expression": "0.31*um", "description": "mode source position (its cell; interface face at z = 0.3 um)"},
+    {"name": "z_inc", "expression": "0.5*um", "description": "incident / reflection mode monitor (cell edge)"},
+    {"name": "z_sec", "expression": "0.7*um", "description": "front face of the dielectric section (cell edge)"},
+    {"name": "L_sec", "expression": "1.0*um", "description": "length of the dielectric section (50 cells)"},
+    {"name": "z_trans", "expression": "1.9*um", "description": "transmission mode monitor (cell edge)"},
+    {"name": "lambda0", "expression": "1.43*um", "description": "source wavelength (the mode is solved there; centred so both band edges sit near 0.03 of the peak amplitude)"},
+    {"name": "bw", "expression": 0.10, "description": "relative bandwidth of the pulse: covers 1.2-1.75 um and keeps the TE10 cutoff (1.96 um) at ~7e-4 of the peak amplitude"},
+    {"name": "P_mode", "expression": 1.0, "description": "launched mode power [W]"},
+    {"name": "band_start", "expression": "1.2*um", "description": "shortest monitored wavelength"},
+    {"name": "band_stop", "expression": "1.75*um", "description": "longest monitored wavelength (23 points, 25 nm apart; below the TE10 cutoff 2a = 1.96 um)"},
+    {"name": "lam_a", "expression": "1.35*um", "description": "comparison wavelength near the transmission peak (a monitor sample)"},
+    {"name": "lam_b", "expression": "1.65*um", "description": "comparison wavelength near the transmission dip (a monitor sample)"},
+    {"name": "lam_n", "expression": "1.5*um", "description": "n_eff comparison wavelength (a monitor sample)"},
+    {"name": "u_a", "expression": "(lam_a/(2*a_guide))**2", "description": "(lambda / 2a)^2 at lam_a"},
+    {"name": "u_b", "expression": "(lam_b/(2*a_guide))**2", "description": "(lambda / 2a)^2 at lam_b"},
+    {"name": "T_a", "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - u_a)*(eps_sec - u_a))*sin(2*pi*L_sec*sqrt(eps_sec - u_a)/lam_a)**2)", "description": "analytic T at lam_a (0.997)"},
+    {"name": "T_b", "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - u_b)*(eps_sec - u_b))*sin(2*pi*L_sec*sqrt(eps_sec - u_b)/lam_b)**2)", "description": "analytic T at lam_b (0.535)"},
+    {"name": "n1_n", "expression": "sqrt(1 - (lam_n/(2*a_guide))**2)", "description": "analytic TE10 n_eff of the empty guide at lam_n (0.6437)"},
+    {"name": "T_run", "expression": "400*fs", "description": "study duration: pulse (2 t0 ~137 fs), slow guided transit near 1.75 um, section ring-down and the t^-1/2 cutoff ringing near the source"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly", "size_z": "Lz"},
+  "geometry": [
+    {"name": "wall_x", "kind": "box", "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "wall", "y1": "Ly", "z1": "Lz"}},
+    {"name": "wall_y_lo", "kind": "box", "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "Lx", "y1": "wall", "z1": "Lz"}},
+    {"name": "wall_y_hi", "kind": "box",
+     "params": {"x0": 0.0, "y0": "Ly - wall", "z0": 0.0, "x1": "Lx", "y1": "Ly", "z1": "Lz"}},
+    {"name": "section", "kind": "box",
+     "params": {"x0": 0.0, "y0": 0.0, "z0": "z_sec", "x1": "Lx", "y1": "Ly", "z1": "z_sec + L_sec"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "section_material", "library": null, "properties": {"eps_r": "eps_sec"}, "dispersion": null,
+     "selection": ["section"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_3d",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pmc", "bc_y_lo": "pec", "bc_y_hi": "pec", "pml_cells": 20},
+      "features": [
+        {"name": "walls", "type": "pec_domain", "selection": ["wall_x", "wall_y_lo", "wall_y_hi"], "params": {},
+         "enabled": true},
+        {"name": "launch", "type": "mode_source", "selection": [],
+         "params": {"normal": "z", "position": "z_src", "mode_number": 1, "direction": "positive",
+                    "waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw", "power": "P_mode"},
+         "enabled": true},
+        {"name": "incident", "type": "mode_monitor", "selection": [],
+         "params": {"normal": "z", "position": "z_inc", "mode_number": 1, "wavelength_start": "band_start",
+                    "wavelength_stop": "band_stop", "n_wavelengths": 23},
+         "enabled": true},
+        {"name": "transmitted", "type": "mode_monitor", "selection": [],
+         "params": {"normal": "z", "position": "z_trans", "mode_number": 1, "wavelength_start": "band_start",
+                    "wavelength_stop": "band_stop", "n_wavelengths": 23},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "T_1350", "expression": "T_mode", "selection": [], "operation": "at", "source": "T_mode",
+     "at": "lam_a", "reference": "T_a", "tolerance": 0.01},
+    {"name": "T_1650", "expression": "T_mode", "selection": [], "operation": "at", "source": "T_mode",
+     "at": "lam_b", "reference": "T_b", "tolerance": 0.02},
+    {"name": "R_1650", "expression": "R_mode", "selection": [], "operation": "at", "source": "R_mode",
+     "at": "lam_b", "reference": "1 - T_b", "tolerance": 0.02},
+    {"name": "n_eff_1500", "expression": "n_eff", "selection": [], "operation": "at", "source": "em.incident",
+     "at": "lam_n", "reference": "n1_n", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "T_launch_normalised", "target": "em.transmitted", "series": "fraction_positive",
+     "expression": "1/(1 + (1 - eps_sec)**2/(4*(1 - (x/(2*a_guide))**2)*(eps_sec - (x/(2*a_guide))**2))*sin(2*pi*L_sec*sqrt(eps_sec - (x/(2*a_guide))**2)/x)**2)",
+     "tolerance": 0.08}
+  ],
+  "derived_curves": [
+    {"name": "T_mode", "inputs": {"Pt": "em.transmitted:power_positive", "Pi": "em.incident:power_positive"},
+     "expression": "Pt/Pi", "plot": "TR_mode", "label": "T (transmitted / incident)", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "1/(1 + (1 - eps_sec)**2/(4*(1 - (x/(2*a_guide))**2)*(eps_sec - (x/(2*a_guide))**2))*sin(2*pi*L_sec*sqrt(eps_sec - (x/(2*a_guide))**2)/x)**2)",
+     "tolerance": 0.02},
+    {"name": "R_mode", "inputs": {"Pr": "em.incident:power_negative", "Pi": "em.incident:power_positive"},
+     "expression": "Pr/Pi", "plot": "TR_mode", "label": "R (reflected / incident)", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "1 - 1/(1 + (1 - eps_sec)**2/(4*(1 - (x/(2*a_guide))**2)*(eps_sec - (x/(2*a_guide))**2))*sin(2*pi*L_sec*sqrt(eps_sec - (x/(2*a_guide))**2)/x)**2)",
+     "tolerance": 0.02}
+  ]
+}

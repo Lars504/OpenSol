@@ -1,0 +1,55 @@
+{
+  "title": "Analytic: leaky Fabry-Perot slab resonance and Q (FDFD eigenfrequency)",
+  "description": "A dielectric slab (thickness L = 600 nm) in vacuum, y-periodic strip with CPML along x, solved by the eigenfrequency study (em_fdfd_ez) near its 4th-order resonance. The sweep runs the facet reflectance R_mirror over 0.2-0.5 by setting n_slab = (1 + sqrt(R)) / (1 - sqrt(R)); the target wavelength follows lambda_res.\nAnalytic (open slab, exp(+j omega t)): omega_m = (c / (n L)) (m pi + j ln((n + 1)/(n - 1))), so lambda_m = 2 n L / m (= 300 n nm for m = 4: the wavelength inside the slab is always 2 L / m = 300 nm) and Q_m = Re omega / (2 Im omega) = pi m / (-ln R), R = ((n - 1)/(n + 1))^2.\nSweep tab: derived lambda_1 and Q_1 (resonance nearest the target, row 0 of em.resonances) vs R_mirror with the dashed exact references; the extra dashed curve Q_finesse = pi m sqrt(R) / (1 - R) on Q_1 is the high-reflectance (finesse) approximation, which the exact Q leaves at low R. pml_1 = the resonance's share of |E_z|^2 in the PML (keep it well below 0.5).\nField tab: the Snapshot slider shows each resonance (field 1 at its peak; the leaky tail grows toward the PML).\nExpected agreement: lambda_1 ~5e-4 (discrete dispersion, 60 cells per slab wavelength), Q_1 ~0.5 % (discrete facet reflection, PML).",
+  "version": 1,
+  "parameters": [
+    {"name": "R_mirror", "expression": 0.3, "description": "facet power reflectance (swept)"},
+    {"name": "sqrt_R", "expression": "sqrt(R_mirror)", "description": "facet amplitude reflectance |r|"},
+    {"name": "n_slab", "expression": "(1 + sqrt_R)/(1 - sqrt_R)", "description": "slab index giving R_mirror"},
+    {"name": "L_slab", "expression": "600*nm", "description": "slab thickness (120 cells, faces on cell edges)"},
+    {"name": "m_order", "expression": 4.0, "description": "longitudinal order m of the resonance followed"},
+    {"name": "lambda_res", "expression": "2*n_slab*L_slab/m_order", "description": "analytic resonance wavelength = target"},
+    {"name": "Q_exact", "expression": "pi*m_order/(-log(R_mirror))", "description": "analytic Q of the leaky slab mode"},
+    {"name": "Q_finesse", "expression": "pi*m_order*sqrt_R/(1 - R_mirror)", "description": "high-reflectance approximation m x finesse"},
+    {"name": "gap", "expression": "0.6*um", "description": "vacuum between slab and PML on each side"},
+    {"name": "Lx", "expression": "L_slab + 2*gap", "description": "domain length (cpml on both x faces)"},
+    {"name": "Ly", "expression": "20*nm", "description": "periodic y period (4 cells)"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "gap", "y0": 0.0, "x1": "gap + L_slab", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "slab_material", "library": null, "properties": {"eps_r": "n_slab**2"}, "dispersion": null,
+     "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "wavelength": "lambda_res"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 3}, "stored_fields": [],
+            "sweep": {"parameter": "R_mirror", "values": [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]}},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "lambda_res", "tolerance": 0.0015},
+    {"name": "Q_1", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "Q_exact", "tolerance": 0.015},
+    {"name": "pml_1", "expression": "pml_fraction", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0}
+  ],
+  "analytic_curves": [
+    {"name": "Q_finesse_approx", "target": "sweep", "series": "Q_1", "expression": "Q_finesse"}
+  ]
+}

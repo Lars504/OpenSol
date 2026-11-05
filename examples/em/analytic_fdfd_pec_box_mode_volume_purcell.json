@@ -1,0 +1,67 @@
+{
+  "title": "Analytic: mode volume and Purcell factor of a filled PEC box (E_z FDFD eigenfrequency)",
+  "description": "A rectangular PEC box of a x b = 2 x 1.2 um (101 x 61 cells of 20 nm; pec pins E_z at the centres of the outer cells, so the walls are dx/2 inside the domain) filled with a lossless dielectric eps_fill, solved by the eigenfrequency study (em_fdfd_ez) at the discrete (1, 1) wavelength. The resonance field is scaled to 1 at its peak, the centre cell, so the window sums of sin^2 sin^2 are exact. The sweep runs eps_fill over 1, 2.25 and 4.\nAnalytic (discrete 5-point box): lambda_11 = 2 pi n / K, K^2 = (2/h)^2 (sin^2(pi h/(2a)) + sin^2(pi h/(2b))); W_E = integral of eps0 eps_r |E|^2 / 4 = eps0 eps_fill a b / 16 (J/m); mode volume of eps_r |E|^2 = a b / 4 at the maximum and a b / 2 at the quarter point (|E|^2 = 1/2 there); Purcell factor of an E_z line emitter in 2D F = (Q / (pi^2 V)) (lambda / n)^2 with a parameter Q (the box is lossless), the same at every eps_fill since lambda / n is fixed.\nDerived values tab (each figure of merit is a derived value reading the ones listed before it): W_E, W_H (integral of mu0 |H|^2 / 4, = W_E at resonance; the wall cells average one H face, ~1 %), V_max, V_quarter, E2_centre, lam (resonance_table row 0), purcell; expect ~1e-5 for W_E, V, E2 and lam (float32 fields), purcell as lam and V.\nSweep tab: W_E and purcell vs eps_fill with the dashed analytic lines (W_E grows with eps_fill, purcell stays flat).",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size h"},
+    {"name": "a_box", "expression": "100*dx_cell", "description": "box width between the E_z walls (101 cells)"},
+    {"name": "b_box", "expression": "60*dx_cell", "description": "box height between the E_z walls (61 cells)"},
+    {"name": "eps_fill", "expression": 2.25, "description": "relative permittivity of the filling (swept 1, 2.25, 4)"},
+    {"name": "n_fill", "expression": "sqrt(eps_fill)", "description": "refractive index of the filling"},
+    {"name": "Q_assumed", "expression": 1e4, "description": "quality factor for the Purcell formula (the PEC box itself is lossless)"},
+    {"name": "x_wall", "expression": "dx_cell/2", "description": "position of the x_lo / y_lo E_z wall (centre of the outer cell)"},
+    {"name": "K_11", "expression": "2/dx_cell*sqrt(sin(pi*dx_cell/(2*a_box))**2 + sin(pi*dx_cell/(2*b_box))**2)", "description": "discrete (1, 1) wave number in the filling [rad/m]"},
+    {"name": "lambda_11", "expression": "2*pi*n_fill/K_11", "description": "vacuum wavelength of the discrete (1, 1) mode (eigen target)"},
+    {"name": "W_E_ref", "expression": "eps0_const*eps_fill*a_box*b_box/16", "description": "stored electric energy per length [J/m] of a peak-1 field"},
+    {"name": "V_max_ref", "expression": "a_box*b_box/4", "description": "mode volume (area) at the field maximum [m^2]"},
+    {"name": "V_quarter_ref", "expression": "a_box*b_box/2", "description": "mode volume at the quarter point (|E|^2 = 1/2) [m^2]"},
+    {"name": "purcell_ref", "expression": "Q_assumed/(pi**2*V_max_ref)*(lambda_11/n_fill)**2", "description": "2D E_z Purcell factor"}
+  ],
+  "domain": {"size_x": "a_box + dx_cell", "size_y": "b_box + dx_cell"},
+  "geometry": [
+    {"name": "centre", "kind": "point", "params": {"x": "x_wall + a_box/2", "y": "x_wall + b_box/2"}},
+    {"name": "quarter", "kind": "point", "params": {"x": "x_wall + a_box/4", "y": "x_wall + b_box/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "filling", "library": null, "properties": {"eps_r": "eps_fill"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "wavelength": "lambda_11"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": false, "conformal_boundaries": false},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 1}, "stored_fields": [],
+            "sweep": {"parameter": "eps_fill", "values": [1.0, 4.0, 2.25]}},
+  "derived_values": [
+    {"name": "W_E", "expression": "eps0_const*em_eps_r*em_e_intensity/4", "operation": "integral",
+     "reference": "W_E_ref", "tolerance": 1e-4},
+    {"name": "W_H", "expression": "mu0_const*em_h_abs**2/4", "operation": "integral",
+     "reference": "W_E_ref", "tolerance": 0.03},
+    {"name": "V_max", "expression": "em_eps_r*em_e_intensity", "operation": "mode_volume",
+     "reference": "V_max_ref", "tolerance": 1e-4},
+    {"name": "V_quarter", "expression": "em_eps_r*em_e_intensity", "operation": "mode_volume", "point": "quarter",
+     "reference": "V_quarter_ref", "tolerance": 1e-4},
+    {"name": "E2_centre", "expression": "em_e_intensity", "operation": "at", "point": "centre",
+     "reference": 1.0, "tolerance": 1e-4},
+    {"name": "lam", "expression": "wavelength", "operation": "at", "source": "em.resonances", "at": 0,
+     "reference": "lambda_11", "tolerance": 1e-4},
+    {"name": "purcell", "expression": "(Q_assumed/(pi**2*V_max))*(lam/n_fill)**2",
+     "reference": "purcell_ref", "tolerance": 3e-4}
+  ],
+  "analytic_curves": [
+    {"name": "W_E_vs_eps", "target": "sweep", "series": "W_E", "expression": "W_E_ref", "tolerance": 1e-4},
+    {"name": "purcell_vs_eps", "target": "sweep", "series": "purcell", "expression": "purcell_ref", "tolerance": 3e-4}
+  ]
+}

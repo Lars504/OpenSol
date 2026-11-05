@@ -1,0 +1,83 @@
+{
+  "title": "Semi-infinite solid heated by a constant surface flux (analytic)",
+  "description": "A steel bar at T_i whose x_lo face takes a constant inward heat flux q0 from t = 0 (heat_flux feature, Neumann; implicit-Euler transient heat); the far end is insulated but too far away to matter before t_end.\nAnalytic: T - T_i = (2 q0 / k) sqrt(a t / pi) exp(-x^2 / (4 a t)) - (q0 x / k) erfc(x / (2 sqrt(a t))); surface rise 2 q0 sqrt(t / (pi k rho cp)) (~109 K at t_end).\nProbes tab: probes in the first cell (x = dx/2) and at x = 10.5 dx with the dashed analytic traces.\nDerived values tab: rise_surface at t_end and t_end/4, rise_inner at t_end (~1e-3: first-order time stepping, second-order space) and E_stored = integral rho cp T_rise (heat taken up per m of z) vs q0 H t_end (energy balance: exact to the tolerance of the pcg solver node cg).\nLine profile tab: T_rise_profile at t_end.",
+  "version": 1,
+  "parameters": [
+    {"name": "q0", "expression": 1e5, "description": "inward surface heat flux on x_lo in W/m^2"},
+    {"name": "T_i", "expression": 293.15, "description": "initial temperature in K (also the heat T0)"},
+    {"name": "k_steel", "expression": 16.0, "description": "stainless steel thermal conductivity in W/(m K)"},
+    {"name": "rho_steel", "expression": 8000.0, "description": "density in kg/m^3"},
+    {"name": "cp_steel", "expression": 500.0, "description": "specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_steel/(rho_steel*cp_steel)", "description": "thermal diffusivity in m^2/s (4e-6)"},
+    {"name": "L_bar", "expression": "60*mm",
+     "description": "bar length along x; L_bar / (2 sqrt(a t_end)) ~ 1.9, so the insulated far end shifts the probes by < 1e-5"},
+    {"name": "dx_mesh", "expression": "0.5*mm", "description": "uniform cell size"},
+    {"name": "H_bar", "expression": "10*dx_mesh", "description": "bar height (insulated y faces: 1D)"},
+    {"name": "x_surf", "expression": "0.5*dx_mesh", "description": "surface probe position (centre of the first cell)"},
+    {"name": "x_inner", "expression": "10.5*dx_mesh", "description": "inner probe position (a cell centre)"},
+    {"name": "dt_step", "expression": 0.02, "description": "implicit-Euler time step in s"},
+    {"name": "t_end", "expression": 60.0, "description": "study duration in s"},
+    {"name": "theta_scale", "expression": "2*q0/k_steel", "description": "2 q0 / k in K/m"}
+  ],
+  "domain": {"size_x": "L_bar", "size_y": "H_bar"},
+  "geometry": [
+    {"name": "surface_point", "kind": "point", "params": {"x": "x_surf", "y": "H_bar/2 + dx_mesh/2"}},
+    {"name": "inner_point", "kind": "point", "params": {"x": "x_inner", "y": "H_bar/2 + dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "steel", "library": null, "properties": {"k": "k_steel", "rho": "rho_steel", "cp": "cp_steel"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_i"},
+      "features": [
+        {"name": "surface_flux", "type": "heat_flux", "selection": ["x_lo"], "params": {"flux": "q0"},
+         "enabled": true},
+        {"name": "surface", "type": "temperature_probe", "selection": ["surface_point"], "params": {}, "enabled": true},
+        {"name": "inner", "type": "temperature_probe", "selection": ["inner_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": ["heat.T", "heat.T_rise"], "sweep": null},
+  "derived_values": [
+    {"name": "rise_surface", "expression": "values - T_i", "selection": [], "operation": "last",
+     "source": "heat.surface",
+     "reference": "theta_scale*sqrt(a_diff*t_end/pi)*exp(-x_surf**2/(4*a_diff*t_end)) - q0*x_surf/k_steel*erfc(x_surf/(2*sqrt(a_diff*t_end)))",
+     "tolerance": 0.005},
+    {"name": "rise_surface_early", "expression": "values - T_i", "selection": [], "operation": "at",
+     "source": "heat.surface", "at": "t_end/4",
+     "reference": "theta_scale*sqrt(a_diff*t_end/4/pi)*exp(-x_surf**2/(a_diff*t_end)) - q0*x_surf/k_steel*erfc(x_surf/sqrt(a_diff*t_end))",
+     "tolerance": 0.005},
+    {"name": "rise_inner", "expression": "values - T_i", "selection": [], "operation": "last",
+     "source": "heat.inner",
+     "reference": "theta_scale*sqrt(a_diff*t_end/pi)*exp(-x_inner**2/(4*a_diff*t_end)) - q0*x_inner/k_steel*erfc(x_inner/(2*sqrt(a_diff*t_end)))",
+     "tolerance": 0.005},
+    {"name": "E_stored", "expression": "rho_steel*cp_steel*heat_T_rise", "selection": [], "operation": "integral",
+     "reference": "q0*H_bar*t_end", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "surface_trace", "target": "heat.surface",
+     "expression": "T_i + theta_scale*sqrt(a_diff*t/pi)*exp(-x_surf**2/(4*a_diff*t)) - q0*x_surf/k_steel*erfc(x_surf/(2*sqrt(a_diff*t)))",
+     "tolerance": 0.005},
+    {"name": "inner_trace", "target": "heat.inner",
+     "expression": "T_i + theta_scale*sqrt(a_diff*t/pi)*exp(-x_inner**2/(4*a_diff*t)) - q0*x_inner/k_steel*erfc(x_inner/(2*sqrt(a_diff*t)))",
+     "tolerance": 0.005},
+    {"name": "T_rise_profile", "target": "line",
+     "expression": "theta_scale*sqrt(a_diff*t_end/pi)*exp(-x**2/(4*a_diff*t_end)) - q0*x/k_steel*erfc(x/(2*sqrt(a_diff*t_end)))",
+     "tolerance": 0.003,
+     "line": [0.0, "H_bar/2 + dx_mesh/2", "L_bar", "H_bar/2 + dx_mesh/2"], "field": "heat.T_rise"}
+  ]
+}

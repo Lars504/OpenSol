@@ -1,0 +1,82 @@
+{
+  "title": "Flux concentration by a permeable prolate spheroid (magnetostatics, axisymmetric, analytic)",
+  "description": "Axisymmetric (r, z) magnetostatics: a prolate spheroid of relative permeability mu_r (semi-axes a = 1 mm along z, b = 0.1 mm in r, aspect 10) on the axis of a 20 x 40 mm window in a uniform axial field B0 (external_field ring). The needle flux concentrator of Carey et al. 2026 (Eq. 1) in the one shape where that formula is exact; see experiments/Ben_flux for the paper's needle. Automatic mesh (physics rule: base 0.8 mm = the 40 mm height / 50, the spheroid refined to its 0.1 mm radius / 4 = 25 um) plus two mesh axis bands at 0.5 um: r from the axis to 2.5 um, z from 2 um below the upper tip to 60 um above it. Band ends are cell edges, so the staircase tip sits on a cell edge, the tip probe (50.25 um above it) on a z cell centre and r_axis on the first cell's centre. Point refinements would not do: their bands have no fixed ends, and the rescale between the core rectangle's snapped edges moved them by tens of um, leaving the probe in a ~24 um cell. B_z there falls ~1.6 % per um of height (radius of curvature b^2 / a = 10 um), and the 'at' value is the containing cell's; one host SuperLU solve per mu_r. Sweep mu_r = 10 .. 1e5.\nAnalytic (prolate spheroidal harmonics, focal distance c = sqrt(a^2 - b^2), xi0 = a / c, Q1(xi) = (xi / 2) ln((xi + 1) / (xi - 1)) - 1): the interior field is uniform, B_in / B0 = mu_r / (1 + N (mu_r - 1)) with the demagnetization factor N = (xi0^2 - 1) Q1(xi0) = 0.0203, so the gain saturates at 1 / N = 49.3 once N mu_r >> 1 (the shape, not the permeability, limits the concentration). On the axis outside, B_z / B0 = 1 - (1 - B_in / (mu_r B0)) xi0 Q1'(xi) / Q1(xi0), xi = (z - z_c) / c, Q1'(xi) = (1/2) ln((xi + 1) / (xi - 1)) - xi / (xi^2 - 1); B_z is continuous at the tip and decays to B0 over ~c.\nDerived values tab: gain_core (mean B_z over the middle quarter of the spheroid / B0), H_core (mean H_z there), gain_tip (B_z / B0 at a point on the axis 50.25 um above the upper tip). The staircase surface perturbs N, which the gain sees fully when N mu_r >> 1; tolerances 3 %.\nSweep tab: gain_core vs mu_r with the dashed formula and the 1 / N limit (not checked); use a log mu_r axis.\nLine profile tab (last sweep value, mu_r = 1e5): B_axis, B_z on the axis from 25 um to 3 mm above the tip.",
+  "version": 2,
+  "parameters": [
+    {"name": "B0", "expression": 0.001, "description": "applied axial flux density in T"},
+    {"name": "mu_r", "expression": 10000.0, "description": "relative permeability of the spheroid (swept 10 .. 1e5)"},
+    {"name": "a_long", "expression": "1*mm", "description": "semi-axis along z"},
+    {"name": "b_short", "expression": "0.1*mm", "description": "semi-axis in r (aspect a / b = 10)"},
+    {"name": "size_r", "expression": "20*mm", "description": "window radius (the dipole field at the ring is ~4e-5 B0)"},
+    {"name": "size_z", "expression": "40*mm", "description": "window height"},
+    {"name": "z_c", "expression": "size_z/2", "description": "z of the spheroid centre"},
+    {"name": "r_axis", "expression": "0.25*um", "description": "r of the axis probe and line (centre of the first 0.5 um cell)"},
+    {"name": "c_foc", "expression": "sqrt(a_long**2 - b_short**2)", "description": "focal distance c"},
+    {"name": "xi0", "expression": "a_long/c_foc", "description": "spheroidal coordinate of the surface"},
+    {"name": "Q1_0", "expression": "xi0/2*log((xi0 + 1)/(xi0 - 1)) - 1", "description": "Legendre function Q1(xi0)"},
+    {"name": "N_demag", "expression": "(xi0**2 - 1)*Q1_0", "description": "axial demagnetization factor (0.0203)"},
+    {"name": "G_in", "expression": "mu_r/(1 + N_demag*(mu_r - 1))", "description": "analytic interior gain B_in / B0"},
+    {"name": "d_tip", "expression": "50.25*um", "description": "distance of the tip probe point above the upper tip (a cell centre of the 0.5 um z band)"},
+    {"name": "xi_p", "expression": "(a_long + d_tip)/c_foc", "description": "spheroidal coordinate of the tip probe point"},
+    {"name": "G_tip", "expression": "1 - (1 - G_in/mu_r)*xi0*(log((xi_p + 1)/(xi_p - 1))/2 - xi_p/(xi_p**2 - 1))/Q1_0",
+     "description": "analytic B_z / B0 at the tip probe point"}
+  ],
+  "domain": {"size_x": "size_r", "size_y": "size_z"},
+  "geometry": [
+    {"name": "spheroid", "kind": "ellipse", "params": {"cx": 0.0, "cy": "z_c", "a": "b_short", "b": "a_long", "angle": 0.0}},
+    {"name": "core", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "z_c - a_long/2", "x1": "b_short/2", "y1": "z_c + a_long/2"}},
+    {"name": "tip_point", "kind": "point", "params": {"x": "r_axis", "y": "z_c + a_long + d_tip"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "permeable", "library": null, "properties": {"mu_dc": "mu_r"}, "dispersion": null, "selection": ["spheroid"]}
+  ],
+  "physics": [
+    {
+      "name": "magnetic",
+      "type": "magnetostatics",
+      "settings": {"geometry": "axisymmetric"},
+      "features": [
+        {"name": "applied", "type": "external_field", "selection": ["all"], "params": {"B_x": 0.0, "B_y": "B0"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "direct"}
+    }
+  ],
+  "couplings": [],
+  "meshes": [
+    {
+      "name": "mesh",
+      "kind": "tensor",
+      "mode": "auto",
+      "refinements": [],
+      "axes": [
+        {"axis": "x", "max_ratio": null, "edges": [], "segments": [],
+         "bands": [{"lo": 0.0, "hi": "2.5*um", "dx": "0.5*um"}]},
+        {"axis": "y", "max_ratio": null, "edges": [], "segments": [],
+         "bands": [{"lo": "z_c + a_long - 2*um", "hi": "z_c + a_long + 60*um", "dx": "0.5*um"}]}
+      ]
+    }
+  ],
+  "solvers": [{"name": "direct", "type": "sparse_direct", "settings": {"back_end": "scipy_splu"}}],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["magnetic.B_abs", "magnetic.B_y"],
+            "sweep": {"parameter": "mu_r", "values": [10.0, 100.0, 1000.0, 10000.0, 100000.0]}},
+  "derived_values": [
+    {"name": "gain_core", "expression": "magnetic_B_y/B0", "selection": ["core"], "operation": "mean",
+     "reference": "G_in", "tolerance": 0.03},
+    {"name": "H_core", "expression": "magnetic_H_y", "selection": ["core"], "operation": "mean",
+     "reference": "B0*G_in/(mu0_const*mu_r)", "tolerance": 0.03},
+    {"name": "gain_tip", "expression": "magnetic_B_y/B0", "selection": [], "operation": "at", "point": "tip_point",
+     "reference": "G_tip", "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "gain_core_vs_mu", "target": "sweep", "series": "gain_core", "expression": "G_in", "tolerance": 0.03},
+    {"name": "demag_limit", "target": "sweep", "series": "gain_core", "expression": "1/N_demag"},
+    {"name": "B_axis", "target": "line",
+     "expression": "B0*(1 - (1 - G_in/mu_r)*xi0*(log(((y - z_c)/c_foc + 1)/((y - z_c)/c_foc - 1))/2 - ((y - z_c)/c_foc)/(((y - z_c)/c_foc)**2 - 1))/Q1_0)",
+     "tolerance": 0.03,
+     "line": ["r_axis", "z_c + a_long + 25*um", "r_axis", "z_c + a_long + 3*mm"], "field": "magnetic.B_y"}
+  ]
+}

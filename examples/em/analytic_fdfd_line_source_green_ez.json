@@ -1,0 +1,70 @@
+{
+  "title": "Analytic: line-current Green's function, E_z (FDFD)",
+  "description": "A z-directed filament current I in vacuum (all-CPML 4 x 4 um box, stationary study at 1 um, the source in a cell centre), swept over dx_cell.\nAnalytic: E_z = (omega mu0 I / 4) H0^(2)(k r).\nLine profile tab: pick the analytic curve 'hankel_axis' to plot |E_z| along +x from the source with the exact Hankel modulus dashed.\nDerived values tab: |E_z| (E_axis, E_diag) and phase (phase_axis, phase_diag = arg H0^(2)(k r)) at r = 1 um along x and r = 0.99 um along the diagonal vs their analytic references.\nSweep tab: each derived value vs dx_cell with the reference dashed; the error should fall roughly 4x per halving (2nd order).\nField tab: |E_z| and Re E_z of the last (finest) run.",
+  "version": 1,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "mesh cell size (swept 50 / 25 / 12.5 nm)"},
+    {"name": "lambda0", "expression": "1*um", "description": "vacuum wavelength of the solve"},
+    {"name": "I_src", "expression": 1e-3, "description": "filament current [A]"},
+    {"name": "L_box", "expression": "4*um", "description": "domain size (square, cpml on every face)"},
+    {"name": "x_src", "expression": "L_box/2 + dx_cell/2", "description": "source x: a cell centre for every dx_cell"},
+    {"name": "y_src", "expression": "L_box/2 + dx_cell/2", "description": "source y: a cell centre for every dx_cell"},
+    {"name": "r_axis", "expression": "1*um", "description": "probe distance along +x (a whole number of cells)"},
+    {"name": "d_diag", "expression": "700*nm", "description": "x and y offset of the diagonal probe"},
+    {"name": "r_diag", "expression": "sqrt(2)*d_diag", "description": "diagonal probe distance"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber"},
+    {"name": "E_pref", "expression": "2*pi*c_const/lambda0*mu0_const*I_src/4",
+     "description": "omega mu0 I / 4 [V/m]: |E_z| = E_pref |H0^(2)(k r)|"},
+    {"name": "half_cell", "expression": "dx_cell/4",
+     "description": "half width of the one-cell derived-value squares (contain only the probe cell centre)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "source_point", "kind": "point", "params": {"x": "x_src", "y": "y_src"}},
+    {"name": "axis_point", "kind": "point", "params": {"x": "x_src + r_axis", "y": "y_src"}},
+    {"name": "diag_point", "kind": "point", "params": {"x": "x_src + d_diag", "y": "y_src + d_diag"}},
+    {"name": "axis_cell", "kind": "rectangle",
+     "params": {"x0": "x_src + r_axis - half_cell", "y0": "y_src - half_cell", "x1": "x_src + r_axis + half_cell",
+                "y1": "y_src + half_cell"}},
+    {"name": "diag_cell", "kind": "rectangle",
+     "params": {"x0": "x_src + d_diag - half_cell", "y0": "y_src + d_diag - half_cell",
+                "x1": "x_src + d_diag + half_cell", "y1": "y_src + d_diag + half_cell"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0"},
+      "features": [
+        {"name": "source", "type": "point_source", "selection": ["source_point"],
+         "params": {"current": "I_src", "phase": 0.0}, "enabled": true},
+        {"name": "probe_axis", "type": "field_probe", "selection": ["axis_point"],
+         "params": {"component": "ez"}, "enabled": true},
+        {"name": "probe_diag", "type": "field_probe", "selection": ["diag_point"],
+         "params": {"component": "ez"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["em.ez_abs", "em.ez_re"],
+            "sweep": {"parameter": "dx_cell", "values": [5e-08, 2.5e-08, 1.25e-08]}},
+  "derived_values": [
+    {"name": "E_axis", "expression": "em_ez_abs", "selection": ["axis_cell"], "operation": "mean", "source": null,
+     "at": null, "reference": "E_pref*hypot(j0(k_vac*r_axis), y0(k_vac*r_axis))", "tolerance": 0.05},
+    {"name": "E_diag", "expression": "em_ez_abs", "selection": ["diag_cell"], "operation": "mean", "source": null,
+     "at": null, "reference": "E_pref*hypot(j0(k_vac*r_diag), y0(k_vac*r_diag))", "tolerance": 0.05},
+    {"name": "phase_axis", "expression": "phase", "selection": [], "operation": "last", "source": "em.probe_axis",
+     "at": null, "reference": "atan2(-y0(k_vac*r_axis), j0(k_vac*r_axis))", "tolerance": 0.05},
+    {"name": "phase_diag", "expression": "phase", "selection": [], "operation": "last", "source": "em.probe_diag",
+     "at": null, "reference": "atan2(-y0(k_vac*r_diag), j0(k_vac*r_diag))", "tolerance": 0.05}
+  ],
+  "analytic_curves": [
+    {"name": "hankel_axis", "target": "line", "expression": "E_pref*hypot(j0(k_vac*(x - x_src)), y0(k_vac*(x - x_src)))",
+     "tolerance": 0.01, "series": "", "line": ["x_src + 100*nm", "y_src", "L_box - 50*nm", "y_src"], "field": "em.ez_abs"}
+  ]
+}

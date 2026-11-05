@@ -1,0 +1,58 @@
+{
+  "title": "Gravity-driven film on an inclined plate (analytic)",
+  "description": "Steady Nusselt film: a liquid layer of thickness H on a plate inclined at beta, driven by the gravity component rho g sin(beta) along the plate (x, periodic), no-slip on the plate (y_lo) and a free, shear-free surface (slip wall on y_hi).\nAnalytic: u_x = G y (2H - y) / (2 mu), G = rho g sin(beta); surface speed G H^2 / (2 mu), flow rate per m of depth Q = G H^3 / (3 mu).\nLine profile tab: u_profile (the half parabola, steepest at the plate, flat at the surface).\nDerived values tab: u_surface (top cell centre, dx/2 below the surface; reference includes that offset; the scheme is exact, ~4e-5 is the float32 rounding bias of the steady lattice) and Q_sim (cell-centre sum, (dx/H)^2/8 = 3e-4 above Q_ref).\nSweep tab: Q_sim and u_surface versus the inclination beta_deg (15..90 degrees) with the dashed sin(beta) laws.",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "g_acc", "expression": 9.81, "description": "gravitational acceleration in m/s^2"},
+    {"name": "beta_deg", "expression": 60.0, "description": "plate inclination from the horizontal in degrees; swept"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_film", "expression": "20*um", "description": "film thickness along y"},
+    {"name": "L_ch", "expression": "10*um", "description": "length of the periodic cell along the plate"},
+    {"name": "G_grav", "expression": "rho_f*g_acc*sin(beta_deg*pi/180)", "description": "gravity force density along the plate in N/m^3"},
+    {"name": "u_surface_ref", "expression": "G_grav*(H_film**2 - dx_cell**2/4)/(2*mu_f)", "description": "analytic u_x at the top cell centre (y = H - dx/2) in m/s (~1.7 mm/s at 60 degrees)"},
+    {"name": "Q_ref", "expression": "G_grav*H_film**3/(3*mu_f)", "description": "analytic flow rate per m of depth in m^2/s"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_film"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "plate", "type": "wall", "selection": ["y_lo"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "free_surface", "type": "slip_wall", "selection": ["y_hi"], "params": {}, "enabled": true},
+        {"name": "gravity", "type": "body_force", "selection": ["all"],
+         "params": {"f_x": "G_grav", "f_y": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x", "fluid.u_abs"],
+            "sweep": {"parameter": "beta_deg", "values": [15.0, 30.0, 45.0, 75.0, 90.0, 60.0]}},
+  "derived_values": [
+    {"name": "u_surface", "expression": "fluid_u_x", "selection": [], "operation": "max",
+     "reference": "u_surface_ref", "tolerance": 1e-4},
+    {"name": "Q_sim", "expression": "fluid_u_x/L_ch", "selection": [], "operation": "integral", "reference": "Q_ref",
+     "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "expression": "G_grav*y*(2*H_film - y)/(2*mu_f)", "tolerance": 0.01,
+     "line": ["L_ch/2", 0.0, "L_ch/2", "H_film"], "field": "fluid.u_x"},
+    {"name": "u_surface_vs_beta", "target": "sweep", "expression": "u_surface_ref", "tolerance": 1e-4,
+     "series": "u_surface"},
+    {"name": "Q_vs_beta", "target": "sweep", "expression": "Q_ref", "tolerance": 1e-3, "series": "Q_sim"}
+  ]
+}

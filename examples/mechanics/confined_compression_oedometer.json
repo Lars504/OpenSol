@@ -1,0 +1,72 @@
+{
+  "title": "Confined compression (oedometer): prescribed displacement and reactions (analytic)",
+  "description": "A square block (W = H = 1 mm, 10 x 10 cells) on rollers at x_lo, x_hi and y_lo is pushed down by a prescribed displacement u_y = -delta on y_hi (solid_mechanics displacement feature, u_x left free there), plane strain; the sweep runs the Poisson ratio over 0.1-0.4.\nAnalytic (uniform strain, exact in the bilinear elements): strain_yy = -delta / H, strain_xx = 0; sigma_yy = -M delta / H with the constrained (oedometric) modulus M = E (1 - nu) / ((1 + nu)(1 - 2 nu)); sigma_xx = sigma_zz = nu / (1 - nu) sigma_yy; reaction of the top support F_y = sigma_yy W (pushes down), of the bottom roller -F_y, of the side roller x_lo F_x = -sigma_xx H.\nSweep tab: F_y_top, F_x_side and the mean stresses vs nu_block with the dashed references (M grows from 1.04 E at nu = 0.1 to 2.14 E at nu = 0.4).\nDerived values tab: F_y_top, F_y_bottom, F_x_side (support results, column F_y / F_x), stress_yy_mean, stress_xx_mean, stress_zz_mean; all exact to ~1e-6 (double-precision pcg solver node cg, tolerance 1e-12; float32 stored stresses).\nLine profile tab (last sweep value, nu = 0.4): u_y up the centre (-delta y / H).",
+  "version": 1,
+  "parameters": [
+    {"name": "E_block", "expression": 2e11, "description": "Young's modulus in Pa (steel-like)"},
+    {"name": "nu_block", "expression": 0.3, "description": "Poisson ratio (swept 0.1-0.4; not 0, where the x references are 0 and the absolute error is in Pa)"},
+    {"name": "W_block", "expression": "1*mm", "description": "block width along x"},
+    {"name": "H_block", "expression": "1*mm", "description": "block height along y"},
+    {"name": "dx_mesh", "expression": "0.1*mm", "description": "uniform cell size (10 x 10 cells)"},
+    {"name": "delta_top", "expression": "1*um", "description": "downward displacement of the top face (strain 1e-3)"},
+    {"name": "M_oed", "expression": "E_block*(1 - nu_block)/((1 + nu_block)*(1 - 2*nu_block))",
+     "description": "constrained (oedometric) modulus in Pa"},
+    {"name": "sigma_yy_ref", "expression": "-M_oed*delta_top/H_block", "description": "analytic sigma_yy in Pa (compression < 0)"},
+    {"name": "sigma_xx_ref", "expression": "nu_block/(1 - nu_block)*sigma_yy_ref", "description": "analytic sigma_xx = sigma_zz in Pa"}
+  ],
+  "domain": {"size_x": "W_block", "size_y": "H_block"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "block_material", "library": null,
+     "properties": {"youngs_modulus": "E_block", "poisson_ratio": "nu_block"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "side_lo", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "side_hi", "type": "roller", "selection": ["x_hi"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "top", "type": "displacement", "selection": ["y_hi"], "params": {"u_x": null, "u_y": "-delta_top"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.u_abs", "solid.u_x", "solid.u_y", "solid.stress_yy"],
+            "sweep": {"parameter": "nu_block", "values": [0.1, 0.2, 0.3, 0.4]}},
+  "derived_values": [
+    {"name": "F_y_top", "expression": "F_y", "operation": "last", "source": "solid.top",
+     "reference": "sigma_yy_ref*W_block", "tolerance": 1e-6},
+    {"name": "F_y_bottom", "expression": "F_y", "operation": "last", "source": "solid.bottom",
+     "reference": "-sigma_yy_ref*W_block", "tolerance": 1e-6},
+    {"name": "F_x_side", "expression": "F_x", "operation": "last", "source": "solid.side_lo",
+     "reference": "-sigma_xx_ref*H_block", "tolerance": 1e-6},
+    {"name": "stress_yy_mean", "expression": "solid_stress_yy", "selection": [], "operation": "mean",
+     "reference": "sigma_yy_ref", "tolerance": 1e-6},
+    {"name": "stress_xx_mean", "expression": "solid_stress_xx", "selection": [], "operation": "mean",
+     "reference": "sigma_xx_ref", "tolerance": 1e-6},
+    {"name": "stress_zz_mean", "expression": "solid_stress_zz", "selection": [], "operation": "mean",
+     "reference": "sigma_xx_ref", "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "F_y_vs_nu", "target": "sweep", "expression": "sigma_yy_ref*W_block", "tolerance": 1e-6,
+     "series": "F_y_top"},
+    {"name": "F_x_vs_nu", "target": "sweep", "expression": "-sigma_xx_ref*H_block", "tolerance": 1e-6,
+     "series": "F_x_side"},
+    {"name": "u_y_up_centre", "target": "line", "expression": "-delta_top*y/H_block", "tolerance": 1e-5,
+     "line": ["W_block/2 + dx_mesh/2", 0.0, "W_block/2 + dx_mesh/2", "H_block"], "field": "solid.u_y"}
+  ]
+}

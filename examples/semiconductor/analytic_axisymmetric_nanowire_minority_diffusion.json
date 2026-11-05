@@ -1,0 +1,86 @@
+{
+  "title": "Illuminated p-type nanowire with a shell contact in (r, z): radial minority-electron diffusion, I0 / I1 collection (analytic)",
+  "description": "A p-type silicon-like wire as a body of revolution (drift_diffusion geometry axisymmetric: x = r from the axis at x_lo, y = z): radius R = 3 um, two 5 nm cells high (a 1D radial problem), N_A = 1e22 1/m^3, n_i 1e16, a single ohmic shell contact on R - 20 nm < r < R (0 V) and uniform generation G = 1e27 1/(m^3 s) (generation feature on all; contact cells generate nothing), SRH lifetime tau_srh (no radiative term). With one contact the total current is zero: the electron and hole contact currents separate the minority diffusion current. Stationary sweep tau_srh = 1e-11..1e-9 s (diffusion length 0.19..1.87 um against R = 3 um). Low injection (excess electrons <= 4.3e17 = 4.3e-5 N_A).\nAnalytic: L = sqrt(D_n tau_srh), D_n = mu_n V_T; the excess electrons obey D_n (1 / r) d/dr (r d dn / dr) - dn / tau + G = 0, regular on the axis and 0 at the innermost held contact centre r_b = R - w_contact + dr / 2: dn = G tau (1 - I0(r / L) / I0(r_b / L)). The electron current into the contact through its inner face r_f = R - w_contact (whole ring, A) is I_n = q G 2 pi H L r_f I1(r_f / L) / I0(r_b / L) (= q times the generation minus the recombination of the free cylinder r < r_f, since the integral of I0(r / L) r dr is L r I1(r / L)); the collection efficiency eta = I_n / (q G pi r_f^2 H) = 2 L I1(r_f / L) / (r_f I0(r_b / L)) runs from 0.12 (L << R: about 2 L / R, the planar L / W doubled by the cylinder) to 0.78 (planar slab of the same thickness: L tanh(W / L) / W is lower).\nDerived values tab: I_electron (contact electron_current, A of the whole ring, = +I_n), I_hole (-hole_current, = I_n: the total is zero), eta, R_total (ring-weighted integral of semiconductor_recombination, 1/s, against G pi r_f^2 H (1 - eta)) and N_axis (largest N, at the axis cell r = dr / 2: n0 + G tau (1 - I0(dr / 2L) / I0(r_b / L))). Expect ~1e-4 (low-injection and ambipolar corrections ~dn / N_A, discretisation ~(dr / L)^2 / 24); a missing or misplaced 2 pi r weight changes eta by tens of percent.\nSweep tab: the five derived values versus tau_srh (log axis useful) with their dashed curves.\nLine profile tab (last sweep value, 1e-9 s): N_profile, the I0 profile from its maximum on the axis to n0 at the contact. Field tab: N, P, recombination, V.",
+  "version": 1,
+  "parameters": [
+    {"name": "tau_srh", "expression": 1e-10, "description": "SRH lifetime of both carriers in s (the sweep runs 1e-11..1e-9 s)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (the semiconductor temperature setting)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity"},
+    {"name": "N_A", "expression": 1e22, "description": "acceptor density in 1/m^3"},
+    {"name": "mu_e", "expression": 0.135, "description": "electron (minority) mobility in m^2/(V s)"},
+    {"name": "mu_h", "expression": 0.048, "description": "hole mobility in m^2/(V s)"},
+    {"name": "G0", "expression": 1e27, "description": "uniform generation rate in 1/(m^3 s)"},
+    {"name": "R_wire", "expression": "3*um", "description": "wire radius = domain width in r"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "H_wire", "expression": "2*dx_cell", "description": "wire height in z (two cells: a 1D radial problem)"},
+    {"name": "w_contact", "expression": "20*nm", "description": "thickness of the ohmic shell contact at the rim"},
+    {"name": "r_f", "expression": "R_wire - w_contact", "description": "inner face of the contact shell in m (free cells r < r_f)"},
+    {"name": "r_b", "expression": "r_f + dx_cell/2", "description": "centre of the innermost held contact cell (excess electrons 0 there)"},
+    {"name": "p0", "expression": "N_A/2 + sqrt(N_A**2/4 + n_i**2)", "description": "equilibrium hole density in 1/m^3"},
+    {"name": "n0", "expression": "n_i**2/p0", "description": "equilibrium electron density in 1/m^3"},
+    {"name": "D_e", "expression": "mu_e*V_T", "description": "electron diffusion constant in m^2/s"},
+    {"name": "L_D", "expression": "sqrt(D_e*tau_srh)", "description": "electron diffusion length in m"},
+    {"name": "flux_factor", "expression": "L_D*r_f*i1(r_f/L_D)/i0(r_b/L_D)", "description": "L r_f I1(r_f / L) / I0(r_b / L) in m^2 (the integral of the collected fraction over r dr)"},
+    {"name": "I_n_ref", "expression": "q_e*G0*2*pi*H_wire*flux_factor", "description": "analytic electron current into the contact (whole ring) in A"},
+    {"name": "eta_ref", "expression": "2*flux_factor/r_f**2", "description": "analytic collection efficiency I_n / (q G pi r_f^2 H)"},
+    {"name": "R_total_ref", "expression": "G0*pi*r_f**2*H_wire*(1 - eta_ref)", "description": "analytic total recombination of the free cylinder in 1/s"},
+    {"name": "N_axis_ref", "expression": "n0 + G0*tau_srh*(1 - i0(dx_cell/(2*L_D))/i0(r_b/L_D))", "description": "electron density at the axis cell centre r = dr / 2 in 1/m^3"}
+  ],
+  "domain": {"size_x": "R_wire", "size_y": "H_wire"},
+  "geometry": [
+    {"name": "contact_shell", "kind": "rectangle", "params": {"x0": "r_f", "y0": 0.0, "x1": "R_wire", "y1": "H_wire"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "p_semiconductor", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": "mu_e", "mobility_p": "mu_h", "eps_dc": "eps_si",
+                    "lifetime": "tau_srh"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {"geometry": "axisymmetric", "temperature": "T_lat", "max_iterations": 100},
+      "features": [
+        {"name": "acceptors", "type": "doping", "selection": ["all"], "params": {"acceptors": "N_A"}, "enabled": true},
+        {"name": "light", "type": "generation", "selection": ["all"], "params": {"rate": "G0"}, "enabled": true},
+        {"name": "contact", "type": "ohmic_contact", "selection": ["contact_shell"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["semiconductor.N", "semiconductor.P", "semiconductor.recombination", "semiconductor.V"],
+            "sweep": {"parameter": "tau_srh", "values": [1e-11, 3e-11, 1e-10, 3e-10, 1e-9]}},
+  "derived_values": [
+    {"name": "I_electron", "expression": "electron_current", "operation": "last", "source": "semiconductor.contact",
+     "reference": "I_n_ref", "tolerance": 0.001},
+    {"name": "I_hole", "expression": "-hole_current", "operation": "last", "source": "semiconductor.contact",
+     "reference": "I_n_ref", "tolerance": 0.001},
+    {"name": "eta", "expression": "electron_current/(q_e*G0*pi*r_f**2*H_wire)", "operation": "last",
+     "source": "semiconductor.contact", "reference": "eta_ref", "tolerance": 0.001},
+    {"name": "R_total", "expression": "semiconductor_recombination", "selection": [], "operation": "integral",
+     "reference": "R_total_ref", "tolerance": 0.001},
+    {"name": "N_axis", "expression": "semiconductor_N", "selection": [], "operation": "max",
+     "reference": "N_axis_ref", "tolerance": 0.001}
+  ],
+  "analytic_curves": [
+    {"name": "I_electron_curve", "target": "sweep", "expression": "I_n_ref", "tolerance": 0.001, "series": "I_electron"},
+    {"name": "I_hole_curve", "target": "sweep", "expression": "I_n_ref", "tolerance": 0.001, "series": "I_hole"},
+    {"name": "eta_curve", "target": "sweep", "expression": "eta_ref", "tolerance": 0.001, "series": "eta"},
+    {"name": "R_total_curve", "target": "sweep", "expression": "R_total_ref", "tolerance": 0.001, "series": "R_total"},
+    {"name": "N_axis_curve", "target": "sweep", "expression": "N_axis_ref", "tolerance": 0.001, "series": "N_axis"},
+    {"name": "N_profile", "target": "line",
+     "expression": "n0 + G0*tau_srh*(1 - i0(x/L_D)/i0(r_b/L_D))", "tolerance": 0.001,
+     "line": ["dx_cell/4", "dx_cell/2", "r_f - dx_cell/4", "dx_cell/2"], "field": "semiconductor.N"}
+  ]
+}

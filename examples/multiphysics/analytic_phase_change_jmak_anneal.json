@@ -1,0 +1,90 @@
+{
+  "title": "Analytic: isothermal GST anneal, JMAK crystallinity and mixed permittivity (FDFD + transient heat)",
+  "description": "A y-periodic 0.4 x 0.1 um strip of GST-225 (phase_change_medium on every cell, GST-225 kinetics, linear mixing) is held at T_anneal: transient, insulated heat with T0 = T_anneal and no source, so T stays T_anneal exactly; heat_em_phase_change hands T and the heat time to the medium after every 10 ns heat step and the sourceless em_fdfd_ez re-solves (1 us run, sweep T_anneal = 560..620 K).\nAnalytic (JMAK with the capped Arrhenius rate): X(t) = 1 - exp(-(k t)^n), k(T) = exp(min(-Ea / kB (1/T - 1/T_fast), 0)) / tau_min for T_x <= T < T_melt (Ea 2.24 eV, T_fast 650 K, tau_min 50 ns, n 2.5): tau = 1/k runs from 31 us at 560 K to 0.35 us at 620 K, so X(1 us) sweeps from 2e-4 to ~1. Linear mix: eps_r = (1 - X)(n_a^2 - k_a^2) + X (n_c^2 - k_c^2), sigma_e = [(1 - X) 2 n_a k_a + X 2 n_c k_c] omega eps0 at 1.55 um.\nProbes tab: em.pcm (mean crystallinity at every heat step) with the dashed JMAK curve X(t) (Sweep tab, Result em.pcm: every T_anneal with its own dashed curve).\nSweep tab: X_end (sigmoid vs T_anneal), eps_mean and sigma_mean with their dashed references.\nLine profile tab: eps_profile (em.eps_r) and X_profile (em.crystallinity) across the strip.\nExpected: ~1e-4 relative or better (JMAK additivity makes the stepped X exact; float32 storage of X, eps and sigma_e).",
+  "version": 1,
+  "parameters": [
+    {"name": "T_anneal", "expression": 600.0, "description": "anneal temperature [K] (heat T0; sweep 560-620 K)"},
+    {"name": "t_run", "expression": "1*us", "description": "anneal time = study duration [s]"},
+    {"name": "dt_heat", "expression": "10*ns", "description": "heat time step [s] (100 crystallinity updates; JMAK is exact for any step)"},
+    {"name": "lambda_ref", "expression": "1.55*um", "description": "wavelength of the optical constants and of the FDFD solve"},
+    {"name": "n_amorph", "expression": 3.94, "description": "amorphous refractive index at 1.55 um"},
+    {"name": "k_amorph", "expression": 0.045, "description": "amorphous extinction coefficient"},
+    {"name": "n_cryst", "expression": 6.11, "description": "crystalline refractive index"},
+    {"name": "k_cryst", "expression": 0.83, "description": "crystalline extinction coefficient"},
+    {"name": "T_onset", "expression": 423.0, "description": "crystallisation onset temperature [K]"},
+    {"name": "T_fast", "expression": 650.0, "description": "fastest-crystallisation temperature [K] (rate cap above)"},
+    {"name": "T_melt", "expression": 889.0, "description": "melting temperature [K]"},
+    {"name": "tau_min", "expression": "50*ns", "description": "fastest crystallisation time [s]"},
+    {"name": "E_act", "expression": 2.24, "description": "activation energy [eV]"},
+    {"name": "n_avrami", "expression": 2.5, "description": "Avrami exponent"},
+    {"name": "kB_eV", "expression": 8.617333262e-5, "description": "Boltzmann constant [eV/K]"},
+    {"name": "k_rate", "expression": "exp(min(-E_act/kB_eV*(1/T_anneal - 1/T_fast), 0))/tau_min",
+     "description": "JMAK rate k(T_anneal) [1/s]: capped Arrhenius, valid for T_onset <= T_anneal < T_melt (0 below the onset)"},
+    {"name": "X_ref", "expression": "1 - exp(-(k_rate*t_run)**n_avrami)", "description": "analytic crystallinity at the end of the anneal"},
+    {"name": "eps_amorph", "expression": "n_amorph**2 - k_amorph**2", "description": "Re eps of the amorphous phase"},
+    {"name": "eps_cryst", "expression": "n_cryst**2 - k_cryst**2", "description": "Re eps of the crystalline phase"},
+    {"name": "omega_ref", "expression": "2*pi*c_const/lambda_ref", "description": "angular frequency of the reference wavelength [rad/s]"},
+    {"name": "eps_mix_ref", "expression": "(1 - X_ref)*eps_amorph + X_ref*eps_cryst", "description": "analytic eps_r of the linear mix at X_ref"},
+    {"name": "sigma_mix_ref", "expression": "((1 - X_ref)*2*n_amorph*k_amorph + X_ref*2*n_cryst*k_cryst)*omega_ref*eps0_const",
+     "description": "analytic sigma_e [S/m] = -Im eps omega eps0 of the linear mix at X_ref"},
+    {"name": "Lx", "expression": "0.4*um", "description": "strip length along x (CPML for the EM)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "gst", "library": "gst_225_amorphous", "properties": {}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda_ref", "bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "pcm", "type": "phase_change_medium", "selection": ["all"],
+         "params": {"n_amorphous": "n_amorph", "k_amorphous": "k_amorph", "n_crystalline": "n_cryst",
+                    "k_crystalline": "k_cryst", "wavelength": "lambda_ref", "mixing": "linear",
+                    "initial_crystallinity": 0.0, "crystallization_temperature": "T_onset",
+                    "fast_crystallization_temperature": "T_fast", "min_crystallization_time": "tau_min",
+                    "activation_energy": "E_act", "avrami_exponent": "n_avrami", "melting_temperature": "T_melt"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_heat", "T0": "T_anneal"},
+      "features": [],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "phase", "type": "heat_em_phase_change", "source": "heat", "target": "em", "every": null, "params": {},
+     "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "20*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_run", "output_interval": 0.0},
+            "stored_fields": ["em.crystallinity", "em.eps_r", "em.sigma_e", "heat.T"],
+            "sweep": {"parameter": "T_anneal", "values": [560.0, 570.0, 580.0, 590.0, 600.0, 610.0, 620.0]}},
+  "derived_values": [
+    {"name": "X_end", "expression": "values", "selection": [], "operation": "last", "source": "em.pcm",
+     "reference": "X_ref", "tolerance": 3e-4},
+    {"name": "eps_mean", "expression": "em_eps_r", "selection": ["all"], "operation": "mean", "reference": "eps_mix_ref",
+     "tolerance": 3e-4},
+    {"name": "sigma_mean", "expression": "em_sigma_e", "selection": ["all"], "operation": "mean",
+     "reference": "sigma_mix_ref", "tolerance": 3e-4},
+    {"name": "T_check", "expression": "heat_T", "selection": ["all"], "operation": "max", "reference": "T_anneal",
+     "tolerance": 1e-6}
+  ],
+  "analytic_curves": [
+    {"name": "jmak", "target": "em.pcm", "expression": "1 - exp(-(k_rate*t)**n_avrami)", "tolerance": 1e-3},
+    {"name": "eps_profile", "target": "line", "expression": "eps_mix_ref", "tolerance": 3e-4,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "em.eps_r"},
+    {"name": "X_profile", "target": "line", "expression": "X_ref", "tolerance": 3e-4,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"],
+     "field": "em.crystallinity"}
+  ]
+}

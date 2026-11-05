@@ -1,0 +1,110 @@
+{
+  "title": "Parallel-plate channel with uniform wall heat flux: Nu = 140/17 (analytic)",
+  "description": "Laminar flow + heat (fluid_heat_convection), time-dependent march to the steady state (steady flow, transient heat from T_in for 4 flow-through times; a stationary Picard loop diverges here: with only the inflow face holding T, the lagged advection has gain ~ 2 Pe L / (pi H) ~ 20 on the axial mode): a liquid enters a 21 um channel (21 cells, centre cell on the centreline) with the fully developed parabolic profile of mean U_m (velocity inlet x_lo, pressure 0 at x_hi, no-slip y faces; the steady flow march starts at that developed profile and linear pressure by initial_velocity, since from rest one pressure face makes it slow) at T_in (held on x_lo); both walls feed the same heat flux q (heat_flux on y_lo / y_hi), the outlet is insulated. L = 8 H, Pe = U_m H / a = 4.\nAnalytic (thermally fully developed: at Pe = 4 the entry modes decay within ~H, the outlet's within ~H upstream): dT/dx = G_T = 2 q / (rho cp U_m H) everywhere, T(x, eta) = T_b(x) + (q H / k) (17/70 + 2 eta^3 - eta^4 - eta), eta = y / H, T_b the mixing-cup (velocity-weighted) mean; so T_wall - T_b = (17/70) q H / k, Nu = q 2H / (k (T_wall - T_b)) = 140/17 = 8.235, and T_wall - T_centre = (5/16) q H / k. Axial conduction (Pe = 4) does not change the developed profile but lets heat leak back through the held inlet, so the level of T_b(x) has no closed form: every temperature check is a difference.\nDerived values tab (column at x = 4 H): dT_wall_centre (wall cell minus centre cell) vs (q H / k) (f(eta_w) + 5/16), and dT_wall_bulk (wall cell minus the discrete mixing-cup mean enthalpy_column / flow_column = sum u T / sum u of the column: the column's own flow rate, since the lattice Boltzmann flow rate there differs from U_m H by ~0.2 %, which times T_rise ~ 2 K would shift the 0.23 K difference by ~2 %) vs (q H / k) (f(eta_w) + 17/70) = the Nusselt check (Nu_wall-cell = 2 q H / (k dT_wall_bulk) vs 140/17 / (1 + (70/17) f(eta_w))), f(eta) = 2 eta^3 - eta^4 - eta at the wall-cell centre eta_w = dx / (2 H); dTdx_centre (centreline slope between x = 3 H and 5 H) vs G_T (the energy balance); p_inlet (pressure at the first cell centre) vs G_p (L - dx/2). Expected ~1e-3 (second-order FV conduction (dx/H)^2, the discrete inlet shape normalised to cell mean 1); tolerances 1 % / 0.5 % / 2 %.\nLine profile tab: u_profile (u_x across at x = 4 H: the discrete parabola U_m eta (1 - eta) / (1/6 + (dx/H)^2 / 12) of the inlet) and p_profile (linear pressure along the centreline, G_p = 2 mu U_m / ((1/6 + (dx/H)^2 / 12) H^2)).",
+  "version": 1,
+  "parameters": [
+    {"name": "Pe", "expression": 4.0, "description": "Peclet number U_m H / a"},
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "k_f", "expression": 0.6, "description": "liquid thermal conductivity in W/(m K)"},
+    {"name": "cp_f", "expression": 4000.0, "description": "liquid specific heat in J/(kg K)"},
+    {"name": "a_f", "expression": "k_f/(rho_f*cp_f)", "description": "thermal diffusivity in m^2/s (1.5e-7)"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_ch", "expression": "21*um", "description": "channel height (odd cell count: the centre cell sits on the centreline)"},
+    {"name": "L_ch", "expression": "8*H_ch", "description": "channel length"},
+    {"name": "U_m", "expression": "Pe*a_f/H_ch", "description": "mean inflow velocity in m/s (0.029; Reynolds ~0.6)"},
+    {"name": "q_w", "expression": 3.0e4, "description": "heat flux into the liquid through each wall in W/m^2"},
+    {"name": "T_in", "expression": 293.15, "description": "inflow temperature in K (held on x_lo; also the heat T0, so T_rise = T - T_in)"},
+    {"name": "qHk", "expression": "q_w*H_ch/k_f", "description": "temperature scale q H / k in K (1.05)"},
+    {"name": "G_T", "expression": "2*q_w/(rho_f*cp_f*U_m*H_ch)", "description": "developed axial temperature gradient in K/m (energy balance)"},
+    {"name": "shape_mean", "expression": "1/6 + (dx_cell/H_ch)**2/12", "description": "cell-centre mean of eta (1 - eta): the inlet's discrete parabola is normalised to it"},
+    {"name": "G_p", "expression": "2*mu_f*U_m/(shape_mean*H_ch**2)", "description": "pressure gradient magnitude of that parabola in Pa/m"},
+    {"name": "dt_heat", "expression": "0.6*dx_cell/U_m", "description": "transient heat step in s (peak u dt / dx = 0.9: the lagged advection stays stable)"},
+    {"name": "t_end", "expression": "4*L_ch/U_m", "description": "march duration in s (4 flow-through times: the start-up front has left the channel)"},
+    {"name": "x_c", "expression": "4*H_ch", "description": "lower edge of the checked cell column"},
+    {"name": "eta_w", "expression": "dx_cell/(2*H_ch)", "description": "eta of the wall-cell centre"},
+    {"name": "f_w", "expression": "2*eta_w**3 - eta_w**4 - eta_w", "description": "profile shape 2 eta^3 - eta^4 - eta at the wall-cell centre (0 at the wall, -5/16 at the centre)"},
+    {"name": "dT_wc_ref", "expression": "qHk*(f_w + 5/16)", "description": "analytic wall-cell minus centre-cell temperature in K"},
+    {"name": "dT_wb_ref", "expression": "qHk*(f_w + 17/70)", "description": "analytic wall-cell minus mixing-cup temperature in K"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [
+    {"name": "wall_cell", "kind": "rectangle", "params": {"x0": "x_c", "y0": 0.0, "x1": "x_c + dx_cell", "y1": "dx_cell"}},
+    {"name": "centre_cell", "kind": "rectangle", "params": {"x0": "x_c", "y0": "H_ch/2 - dx_cell/2", "x1": "x_c + dx_cell", "y1": "H_ch/2 + dx_cell/2"}},
+    {"name": "bulk_column", "kind": "rectangle", "params": {"x0": "x_c", "y0": 0.0, "x1": "x_c + dx_cell", "y1": "H_ch"}},
+    {"name": "centre_a", "kind": "rectangle", "params": {"x0": "x_c - H_ch", "y0": "H_ch/2 - dx_cell/2", "x1": "x_c - H_ch + dx_cell", "y1": "H_ch/2 + dx_cell/2"}},
+    {"name": "centre_b", "kind": "rectangle", "params": {"x0": "x_c + H_ch", "y0": "H_ch/2 - dx_cell/2", "x1": "x_c + H_ch + dx_cell", "y1": "H_ch/2 + dx_cell/2"}},
+    {"name": "inlet_point", "kind": "point", "params": {"x": "dx_cell/2", "y": "H_ch/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null,
+     "properties": {"viscosity": "mu_f", "rho": "rho_f", "k": "k_f", "cp": "cp_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "inlet", "type": "inlet_velocity", "selection": ["x_lo"],
+         "params": {"velocity": "U_m", "profile": "parabolic"}, "enabled": true},
+        {"name": "outlet", "type": "pressure", "selection": ["x_hi"], "params": {"pressure": 0.0}, "enabled": true},
+        {"name": "walls", "type": "wall", "selection": ["y_lo", "y_hi"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "p_probe", "type": "flow_probe", "selection": ["inlet_point"], "params": {"component": "pressure"},
+         "enabled": true},
+        {"name": "start_developed", "type": "initial_velocity", "selection": ["all"],
+         "params": {"u_x": "U_m*(y/H_ch)*(1 - y/H_ch)/shape_mean", "u_y": 0.0, "pressure": "G_p*(L_ch - x)"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_in", "time_mode": "transient", "time_step": "dt_heat"},
+      "features": [
+        {"name": "inflow", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_in"},
+         "enabled": true},
+        {"name": "heated_walls", "type": "heat_flux", "selection": ["y_lo", "y_hi"], "params": {"flux": "q_w"},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "convection", "type": "fluid_heat_convection", "source": "fluid", "target": "heat", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "time_dependent",
+            "settings": {"duration": "t_end", "output_interval": 0.0},
+            "stored_fields": ["heat.T", "heat.T_rise", "fluid.u_x", "fluid.pressure"],
+            "sweep": null},
+  "derived_values": [
+    {"name": "dT_wall_centre", "expression": "where(y < dx_cell, heat_T_rise, -heat_T_rise)/dx_cell**2",
+     "selection": ["wall_cell", "centre_cell"], "operation": "integral", "reference": "dT_wc_ref", "tolerance": 0.01},
+    {"name": "flow_column", "expression": "fluid_u_x/dx_cell", "selection": ["bulk_column"], "operation": "integral"},
+    {"name": "enthalpy_column", "expression": "fluid_u_x*heat_T_rise/dx_cell", "selection": ["bulk_column"],
+     "operation": "integral"},
+    {"name": "dT_wall_bulk", "expression": "heat_T_rise - enthalpy_column/flow_column",
+     "selection": ["wall_cell"], "operation": "mean", "reference": "dT_wb_ref", "tolerance": 0.01},
+    {"name": "dTdx_centre", "expression": "where(x < x_c, -heat_T_rise, heat_T_rise)/(dx_cell**2*2*H_ch)",
+     "selection": ["centre_a", "centre_b"], "operation": "integral", "reference": "G_T", "tolerance": 0.005},
+    {"name": "p_inlet", "expression": "values", "operation": "last", "source": "fluid.p_probe",
+     "reference": "G_p*(L_ch - dx_cell/2)", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "expression": "U_m*(y/H_ch)*(1 - y/H_ch)/shape_mean", "tolerance": 0.005,
+     "line": ["x_c + dx_cell/2", 0.0, "x_c + dx_cell/2", "H_ch"], "field": "fluid.u_x"},
+    {"name": "p_profile", "target": "line", "expression": "G_p*(L_ch - x)", "tolerance": 0.01,
+     "line": ["dx_cell/2", "H_ch/2", "L_ch - dx_cell/2", "H_ch/2"], "field": "fluid.pressure"}
+  ]
+}

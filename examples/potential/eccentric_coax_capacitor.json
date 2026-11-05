@@ -1,0 +1,82 @@
+{
+  "title": "Eccentric coaxial capacitor: two line charges (electrostatics, analytic)",
+  "description": "Coaxial line cross-section with the core (radius a) shifted by e from the shield axis: the core perimeter held at V0 by a voltage feature on the circle (its boundary cells; the interior follows), the shield (every cell with r > b about the shield axis) a 0 V terminal, fill eps_fill. The sweep runs e over 0-1 mm (the last value is the largest, so the line curves show a strongly eccentric field).\nAnalytic (image line charges at the common inverse points of both circles, p on the axis through the centres and b^2 / p): V = V0 ln(|p r - b^2 x_hat| / (b |r - p x_hat|)) / D, D = acosh((a^2 + b^2 - e^2) / (2 a b)) (= ln(b / a) at e = 0), C' = 2 pi eps0 eps_fill / D per m of depth.\nDerived values tab: C_per_m (core charge / voltage), Q_shield (= -C' V0), W_field (integral of E.D / 2 = C' V0^2 / 2) and V_wide (probe in the wide gap) with their references; expect ~1 % (staircased circles; the narrow gap concentrates the field).\nSweep tab: C_per_m vs e with the dashed acosh law (C' grows by 30 % at e = 1 mm).\nLine profile tab (e = 1 mm): V_axis (field V) and E_x_axis (field E_x) along the line through both centres.\nTwin: coax_capacitor_electrostatics (concentric, terminals).",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "core voltage [V]; the shield is held at 0 V"},
+    {"name": "a_core", "expression": "0.5*mm", "description": "core (inner conductor) radius, 20 cells"},
+    {"name": "b_shield", "expression": "2*mm", "description": "shield (outer conductor) inner radius"},
+    {"name": "e_off", "expression": "1.0*mm", "description": "core offset along +x from the shield axis (swept; a multiple of dx_cell)"},
+    {"name": "eps_fill", "expression": 2.1, "description": "static relative permittivity of the fill (PTFE ~2.1)"},
+    {"name": "L_box", "expression": "5*mm", "description": "domain side; the shield fills every cell with r > b"},
+    {"name": "x_c", "expression": "L_box/2", "description": "shield axis x (a cell vertex, so the staircase is symmetric)"},
+    {"name": "y_c", "expression": "L_box/2", "description": "shield axis y (a cell vertex)"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform cell size (a / dx = 20)"},
+    {"name": "u_ecc", "expression": "(a_core**2 + b_shield**2 - e_off**2)/(2*a_core*b_shield)",
+     "description": "acosh argument of the eccentric capacitance (2.125 at e = 0)"},
+    {"name": "D_ecc", "expression": "log(u_ecc + sqrt(u_ecc**2 - 1))",
+     "description": "acosh(u_ecc) = 2 pi eps0 eps_fill / C' (ln(b / a) = 1.386 at e = 0, 1.067 at e = 1 mm)"},
+    {"name": "N_ecc", "expression": "b_shield**2 + e_off**2 - a_core**2", "description": "helper of p_charge in m^2"},
+    {"name": "p_charge", "expression": "2*e_off*b_shield**2/(N_ecc + sqrt(N_ecc**2 - 4*e_off**2*b_shield**2))",
+     "description": "x offset of the inner image line charge from the shield axis (inside the core; 0 at e = 0; the outer one sits at b^2 / p_charge)"},
+    {"name": "x_wide", "expression": "-40.5*dx_cell", "description": "probe x relative to the shield axis: wide gap, a cell centre"},
+    {"name": "y_wide", "expression": "dx_cell/2", "description": "probe y relative to the shield axis (a cell centre)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "core", "kind": "circle", "params": {"cx": "x_c + e_off", "cy": "y_c", "r": "a_core"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "shield_disc", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "b_shield"}},
+    {"name": "shield", "kind": "difference", "params": {"base": "box", "subtract": ["shield_disc"]}},
+    {"name": "wide_point", "kind": "point", "params": {"x": "x_c + x_wide", "y": "y_c + y_wide"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fill", "library": null, "properties": {"eps_dc": "eps_fill"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "core", "type": "voltage", "selection": ["core"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "shield", "type": "terminal", "selection": ["shield"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "wide_probe", "type": "potential_probe", "selection": ["wide_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "e_off", "values": ["0*mm", "0.25*mm", "0.5*mm", "0.75*mm", "1.0*mm"]}},
+  "derived_values": [
+    {"name": "C_per_m", "expression": "charge/voltage", "operation": "last", "source": "electrostatics.core",
+     "reference": "2*pi*eps0_const*eps_fill/D_ecc", "tolerance": 0.03},
+    {"name": "Q_shield", "expression": "charge", "operation": "last", "source": "electrostatics.shield",
+     "reference": "-2*pi*eps0_const*eps_fill*V0/D_ecc", "tolerance": 0.03},
+    {"name": "W_field", "expression": "0.5*(E_x*D_x + E_y*D_y)", "selection": ["all"], "operation": "integral",
+     "reference": "pi*eps0_const*eps_fill*V0**2/D_ecc", "tolerance": 0.03},
+    {"name": "V_wide", "expression": "values", "operation": "last", "source": "electrostatics.wide_probe",
+     "reference": "V0*log(hypot(p_charge*x_wide - b_shield**2, p_charge*y_wide)/(b_shield*hypot(x_wide - p_charge, y_wide)))/D_ecc",
+     "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "C_vs_e", "target": "sweep", "series": "C_per_m", "expression": "2*pi*eps0_const*eps_fill/D_ecc",
+     "tolerance": 0.03},
+    {"name": "V_axis", "target": "line",
+     "expression": "where(hypot(x - x_c - e_off, y - y_c) <= a_core, V0, where(hypot(x - x_c, y - y_c) >= b_shield, 0, V0*log(hypot(p_charge*(x - x_c) - b_shield**2, p_charge*(y - y_c))/(b_shield*hypot(x - x_c - p_charge, y - y_c)))/D_ecc))",
+     "tolerance": 0.03,
+     "line": [0.0, "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "electrostatics.V"},
+    {"name": "E_x_axis", "target": "line",
+     "expression": "where((hypot(x - x_c - e_off, y - y_c) > a_core)*(hypot(x - x_c, y - y_c) < b_shield), V0*((x - x_c - p_charge)/((x - x_c - p_charge)**2 + (y - y_c)**2) - p_charge*(p_charge*(x - x_c) - b_shield**2)/((p_charge*(x - x_c) - b_shield**2)**2 + (p_charge*(y - y_c))**2))/D_ecc, 0)",
+     "tolerance": 0.05,
+     "line": [0.0, "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "electrostatics.E_x"}
+  ]
+}

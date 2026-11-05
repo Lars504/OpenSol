@@ -1,0 +1,89 @@
+{
+  "title": "Analytic: vertical dipole between parallel PEC plates, TM1 cutoff kink (3D FDTD)",
+  "description": "A z-oriented electric point dipole (current moment Il = 1e-12 A m, gaussian pulse at 1.33 um, bandwidth 0.5) between two perfectly conducting plates (em_fdtd_3d, 25 nm cells): bc_z_lo / bc_z_hi pec plus a pec_domain on the next cell layer of each, so each conductor is two cells thick and its surface (the pinned tangential E) lies at the centre of its inner layer: z = 1.5 dx and L_z - 1.5 dx, gap d = 30 dx = 0.75 um. CPML (16 cells) on the four side faces, the plates running into them. The dipole sits on the E_z face at z = 9 dx, z0 = 7.5 dx = d/4 above the lower surface. A flux box with its bottom and top faces inside the conductors (between their two layers: zero flux) and its side faces at 0.2 / 1.0 um collects the power guided away between the plates.\nAnalytic (mode sum: TEM plus the TM_n modes whose cutoff 2d/n lies above lambda; only n = 1 in this band): P / P0 = (3 lambda / (4 d)) [1 + 2 sum_n (1 - (n lambda / (2 d))^2) cos^2(n pi z0 / d)], P0 = eta0 k^2 (Il)^2 / (12 pi) of the free dipole; 1.556 at 1 um, 1.632 at 1.25 um, 1.5 at the TM1 cutoff 2 d = 1.5 um (slope -1 below, +1 above: a kink), 1.8 at 1.8 um (TEM only, 3 lambda / (4 d)).\nDerived values tab: P_ratio_1000, P_ratio_1250, P_ratio_1800 (power_per_cw / P0 at 1.0, 1.25, 1.8 um) with the references.\nCurves & tables tab: P_over_P0 (the flux box power_per_cw over P0(lambda)) with the dotted mode-sum reference: the kink at 1.5 um.\nSpectra tab: em.radiated_power quantity power_per_cw vs the dashed P0(lambda) P / P0 (no sample on the cutoff itself; the samples next to it, 1.487 / 1.513 um, ring longest).\nExpected agreement: ~0.5 % away from the cutoff (lattice dispersion and box quadrature as dipole_over_pec_ground_3d, the discrete TM1 cutoff ~5e-4 longer, CPML reflection of the guided waves); worse within ~2 % of the cutoff, where the TM1 group velocity goes to 0 (slow transit, weak CPML absorption, a long ring-down within the 300 fs run); to be confirmed by a first run.",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "25*nm", "description": "uniform cell size"},
+    {"name": "L_xy", "expression": "1.2*um", "description": "domain width along x and y (CPML outside, pml_cells 16 per side face)"},
+    {"name": "n_layers", "expression": 33, "description": "cell layers along z: two conductor layers at each plate plus the 30-cell gap"},
+    {"name": "L_z", "expression": "n_layers*dx_cell", "description": "domain height (pec z_lo and z_hi)"},
+    {"name": "d_gap", "expression": "(n_layers - 3)*dx_cell", "description": "plate separation between the two conductor surfaces (0.75 um)"},
+    {"name": "n_up", "expression": 9, "description": "dipole E_z face index: dipole at z = n_up dx"},
+    {"name": "z_dip", "expression": "n_up*dx_cell", "description": "dipole height (on an E_z face)"},
+    {"name": "z0_gap", "expression": "z_dip - 1.5*dx_cell", "description": "dipole height above the lower conductor surface (d/4)"},
+    {"name": "x_c", "expression": "L_xy/2 + dx_cell/2", "description": "dipole x = y (a cell centre)"},
+    {"name": "box_lo", "expression": "0.2*um", "description": "flux box lower x / y faces"},
+    {"name": "box_hi", "expression": "1.0*um", "description": "flux box upper x / y faces"},
+    {"name": "box_z0", "expression": "dx_cell", "description": "flux box bottom face: inside the lower conductor (between its two layers)"},
+    {"name": "box_z1", "expression": "L_z - dx_cell", "description": "flux box top face: inside the upper conductor"},
+    {"name": "lambda0", "expression": "4*um/3", "description": "centre wavelength of the gaussian pulse"},
+    {"name": "bw", "expression": 0.5, "description": "relative bandwidth of the pulse (covers 1-2 um)"},
+    {"name": "Il", "expression": 1e-12, "description": "peak current moment I l of the dipole [A m]"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "impedance of free space [Ohm]"},
+    {"name": "lam_a", "expression": "1.0*um", "description": "comparison wavelength (TEM + TM1)"},
+    {"name": "lam_b", "expression": "1.25*um", "description": "comparison wavelength near the maximum of P / P0 (TEM + TM1)"},
+    {"name": "lam_c", "expression": "1.8*um", "description": "comparison wavelength above the TM1 cutoff 2 d (TEM only)"},
+    {"name": "tm1_weight", "expression": "cos(pi*z0_gap/d_gap)**2", "description": "cos^2(pi z0 / d): TM1 coupling of the dipole position (0.5 at d/4)"},
+    {"name": "P0_a", "expression": "eta0*(2*pi/lam_a)**2*Il**2/(12*pi)", "description": "free-dipole cw power at lam_a [W]"},
+    {"name": "P0_b", "expression": "eta0*(2*pi/lam_b)**2*Il**2/(12*pi)", "description": "free-dipole cw power at lam_b [W]"},
+    {"name": "P0_c", "expression": "eta0*(2*pi/lam_c)**2*Il**2/(12*pi)", "description": "free-dipole cw power at lam_c [W]"},
+    {"name": "ratio_a", "expression": "(3*lam_a/(4*d_gap))*(1 + 2*max(0, 1 - (lam_a/(2*d_gap))**2)*tm1_weight)", "description": "analytic P / P0 at lam_a (1.556)"},
+    {"name": "ratio_b", "expression": "(3*lam_b/(4*d_gap))*(1 + 2*max(0, 1 - (lam_b/(2*d_gap))**2)*tm1_weight)", "description": "analytic P / P0 at lam_b (1.632)"},
+    {"name": "ratio_c", "expression": "(3*lam_c/(4*d_gap))*(1 + 2*max(0, 1 - (lam_c/(2*d_gap))**2)*tm1_weight)", "description": "analytic P / P0 at lam_c (1.8, TEM only)"},
+    {"name": "T_run", "expression": "300*fs", "description": "study duration: pulse (2 t0 ~25 fs) plus the slow TM1 transit near its cutoff"}
+  ],
+  "domain": {"size_x": "L_xy", "size_y": "L_xy", "size_z": "L_z"},
+  "geometry": [
+    {"name": "dipole_point", "kind": "point", "params": {"x": "x_c", "y": "x_c", "z": "z_dip"}},
+    {"name": "plate_lo", "kind": "box",
+     "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "L_xy", "y1": "L_xy", "z1": "2*dx_cell"}},
+    {"name": "plate_hi", "kind": "box",
+     "params": {"x0": 0.0, "y0": 0.0, "z0": "L_z - 2*dx_cell", "x1": "L_xy", "y1": "L_xy", "z1": "L_z"}},
+    {"name": "flux_surface", "kind": "box",
+     "params": {"x0": "box_lo", "y0": "box_lo", "z0": "box_z0", "x1": "box_hi", "y1": "box_hi", "z1": "box_z1"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_3d",
+      "settings": {"bc_z_lo": "pec", "bc_z_hi": "pec", "pml_cells": 16},
+      "features": [
+        {"name": "dipole", "type": "dipole_source", "selection": ["dipole_point"],
+         "params": {"dipole_axis": "z", "waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw",
+                    "current_moment": "Il"},
+         "enabled": true},
+        {"name": "plates", "type": "pec_domain", "selection": ["plate_lo", "plate_hi"], "params": {}, "enabled": true},
+        {"name": "radiated_power", "type": "flux_box", "selection": ["flux_surface"],
+         "params": {"wavelength_start": "1.0*um", "wavelength_stop": "2.0*um", "n_wavelengths": 40},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "P_ratio_1000", "expression": "power_per_cw/P0_a", "selection": [], "operation": "at",
+     "source": "em.radiated_power", "at": "lam_a", "reference": "ratio_a", "tolerance": 0.02},
+    {"name": "P_ratio_1250", "expression": "power_per_cw/P0_b", "selection": [], "operation": "at",
+     "source": "em.radiated_power", "at": "lam_b", "reference": "ratio_b", "tolerance": 0.02},
+    {"name": "P_ratio_1800", "expression": "power_per_cw/P0_c", "selection": [], "operation": "at",
+     "source": "em.radiated_power", "at": "lam_c", "reference": "ratio_c", "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "spectrum_mode_sum", "target": "em.radiated_power", "series": "power_per_cw",
+     "expression": "eta0*(2*pi/wavelength)**2*Il**2/(12*pi)*(3*wavelength/(4*d_gap))*(1 + 2*max(0, 1 - (wavelength/(2*d_gap))**2)*tm1_weight)",
+     "tolerance": 0.04}
+  ],
+  "derived_curves": [
+    {"name": "P_over_P0", "inputs": {"P": "em.radiated_power:power_per_cw"},
+     "expression": "P/(eta0*(2*pi/x)**2*Il**2/(12*pi))", "plot": "", "label": "P / P0", "unit": "1",
+     "log_x": false, "log_y": false,
+     "reference": "(3*x/(4*d_gap))*(1 + 2*max(0, 1 - (x/(2*d_gap))**2)*tm1_weight)", "tolerance": 0.04}
+  ]
+}

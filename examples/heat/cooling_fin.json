@@ -1,0 +1,66 @@
+{
+  "title": "Straight cooling fin with insulated tip (analytic)",
+  "description": "A thin aluminium plate fin (seen from above, thickness t_fin out of plane) held at T_base at x = 0, insulated tip, cooled on both faces (out-of-plane convection).\nAnalytic: theta = theta_b cosh(m (L - x)) / cosh(m L), m = sqrt(h sides / (k t)).\nDerived values tab: Q_fin (heat the fin sheds, W) vs t k W m theta_b tanh(mL), efficiency (mean theta / theta_b) vs tanh(mL)/(mL), tip_ratio vs 1/cosh(mL); errors ~1e-4 or below.\nLine profile tab: T_profile (shows the last sweep value, the base h_conv).\nSweep tab: efficiency and Q_fin vs h_conv with analytic curves.",
+  "version": 1,
+  "parameters": [
+    {"name": "h_conv", "expression": 25.0,
+     "description": "heat transfer coefficient of both fin faces in W/(m^2 K); swept"},
+    {"name": "L_fin", "expression": "100*mm", "description": "fin length along x"},
+    {"name": "W_fin", "expression": "10*mm", "description": "fin width along y (y edges insulated: only the faces cool)"},
+    {"name": "t_fin", "expression": "1*mm", "description": "fin thickness out of plane (z)"},
+    {"name": "n_sides", "expression": 2, "description": "cooled faces (2 = top and bottom)"},
+    {"name": "k_fin", "expression": 237.0, "description": "aluminium thermal conductivity in W/(m K)"},
+    {"name": "T_base", "expression": 373.15, "description": "fin base temperature in K"},
+    {"name": "T_inf", "expression": 293.15, "description": "ambient air temperature in K"},
+    {"name": "dx_mesh", "expression": "1*mm", "description": "uniform cell size (m dx ~ 0.015: discretisation error ~ (m dx)^2 / 12)"},
+    {"name": "theta_b", "expression": "T_base - T_inf", "description": "base excess temperature in K"},
+    {"name": "m_fin", "expression": "sqrt(h_conv*n_sides/(k_fin*t_fin))",
+     "description": "fin parameter m in 1/m (m L ~ 1.45 at the base values)"}
+  ],
+  "domain": {"size_x": "L_fin", "size_y": "W_fin"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "aluminium", "library": null, "properties": {"k": "k_fin"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_inf"},
+      "features": [
+        {"name": "base", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_base"},
+         "enabled": true},
+        {"name": "faces", "type": "out_of_plane_convection", "selection": ["all"],
+         "params": {"h": "h_conv", "T_ext": "T_inf", "thickness": "t_fin", "sides": "n_sides"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "h_conv", "values": ["h_conv/5", "h_conv/2", "2*h_conv", "4*h_conv", "h_conv"]}},
+  "derived_values": [
+    {"name": "Q_fin", "expression": "h_conv*n_sides*(T - T_inf)", "selection": [], "operation": "integral",
+     "reference": "t_fin*W_fin*k_fin*m_fin*theta_b*tanh(m_fin*L_fin)", "tolerance": 3e-4},
+    {"name": "efficiency", "expression": "(T - T_inf)/theta_b", "selection": [], "operation": "mean",
+     "reference": "tanh(m_fin*L_fin)/(m_fin*L_fin)", "tolerance": 3e-4},
+    {"name": "tip_ratio", "expression": "(T - T_inf)/theta_b", "selection": [], "operation": "min",
+     "reference": "1/cosh(m_fin*L_fin)", "tolerance": 3e-4}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line",
+     "expression": "T_inf + theta_b*cosh(m_fin*(L_fin - x))/cosh(m_fin*L_fin)", "tolerance": 0.003,
+     "line": [0.0, "W_fin/2", "L_fin", "W_fin/2"], "field": "heat.T"},
+    {"name": "efficiency_vs_h", "target": "sweep", "expression": "tanh(m_fin*L_fin)/(m_fin*L_fin)",
+     "tolerance": 3e-4, "series": "efficiency"},
+    {"name": "Q_fin_vs_h", "target": "sweep", "expression": "t_fin*W_fin*k_fin*m_fin*theta_b*tanh(m_fin*L_fin)",
+     "tolerance": 3e-4, "series": "Q_fin"}
+  ]
+}

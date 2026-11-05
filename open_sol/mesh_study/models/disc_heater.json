@@ -1,0 +1,68 @@
+{
+  "title": "Mesh study: disc heater on a half-space (axisymmetric heat, analytic)",
+  "description": "S7.8 mesh study copy of examples/heat/disc_heater_half_space.json with a separate base cell size: dx_mesh is the fine size (heater layer, centre probe), dx_base the coarse one of the graded variant (L_box pads R_out by 10 dx_base, so the held far region keeps cells below the hemisphere). References as in the example (Carslaw and Jaeger); in the graded variant the hemisphere R_out is staircased on coarse cells, which moves T_corr (5 % of the rise) by about dx_base / R_out of itself (the conformal variants cut it instead). theta_depth sits at a cell centre only on uniform meshes: the analysis uses theta_centre and heater_mean_rise.",
+  "version": 2,
+  "parameters": [
+    {"name": "q_flux", "expression": 1e4, "description": "heat flux into the disc in W/m^2"},
+    {"name": "k_med", "expression": 0.2, "description": "thermal conductivity of the solid in W/(m K)"},
+    {"name": "T_s", "expression": 293.15, "description": "temperature held beyond R_out in K"},
+    {"name": "a_heat", "expression": "1*mm", "description": "heater disc radius"},
+    {"name": "dx_mesh", "expression": "a_heat/20", "description": "fine cell size (heater layer thickness)"},
+    {"name": "dx_base", "expression": "dx_mesh", "description": "base cell size (graded variant: coarse)"},
+    {"name": "ref_margin", "expression": "1.5*a_heat", "description": "refinement margin around the heater layer"},
+    {"name": "R_out", "expression": "10*a_heat", "description": "radius of the held hemisphere"},
+    {"name": "L_box", "expression": "R_out + 10*dx_base", "description": "domain size along r and z"},
+    {"name": "z_depth", "expression": "a_heat + dx_mesh/2", "description": "depth of the second axis probe"},
+    {"name": "T_corr", "expression": "q_flux*a_heat**2/(2*k_med*R_out)", "description": "finite-R_out shift in K"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "heater", "kind": "rectangle", "params": {"x0": 0.0, "y0": "L_box - dx_mesh", "x1": "a_heat", "y1": "L_box"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "hemisphere", "kind": "circle", "params": {"cx": 0.0, "cy": "L_box", "r": "R_out"}},
+    {"name": "far_solid", "kind": "difference", "params": {"base": "box", "subtract": ["hemisphere"]}},
+    {"name": "centre_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "L_box - dx_mesh/2"}},
+    {"name": "depth_point", "kind": "point", "params": {"x": "dx_mesh/2", "y": "L_box - z_depth"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "solid", "library": null, "properties": {"k": "k_med"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"geometry": "axisymmetric", "T0": "T_s"},
+      "features": [
+        {"name": "far_field", "type": "fixed_temperature_domain", "selection": ["far_solid"],
+         "params": {"temperature": "T_s"}, "enabled": true},
+        {"name": "disc_flux", "type": "heat_source", "selection": ["heater"], "params": {"Q": "q_flux/dx_mesh"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true},
+        {"name": "depth", "type": "temperature_probe", "selection": ["depth_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_centre", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.centre",
+     "reference": "q_flux/k_med*(sqrt(a_heat**2 + (dx_mesh/2)**2) - dx_mesh/2) - T_corr", "tolerance": 0.03},
+    {"name": "theta_depth", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.depth", "reference": "q_flux/k_med*(sqrt(a_heat**2 + z_depth**2) - z_depth) - T_corr",
+     "tolerance": 0.03},
+    {"name": "heater_mean_rise", "expression": "T - T_s", "selection": ["heater"], "operation": "mean",
+     "reference": "8*q_flux*a_heat/(3*pi*k_med) - q_flux*dx_mesh/(2*k_med) - T_corr", "tolerance": 0.01},
+    {"name": "P_total", "expression": "Q_ext", "selection": [], "operation": "integral",
+     "reference": "q_flux*pi*a_heat**2", "tolerance": 1e-6}
+  ],
+  "analytic_curves": []
+}

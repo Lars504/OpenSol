@@ -1,0 +1,131 @@
+{
+  "title": "Pin photodiode lit by a cw FDTD wave: window-averaged generation and responsivity (analytic)",
+  "description": "The time-domain twin of semiconductor/pin_photodiode_fdfd: the same lateral p+ / i / n+ silicon diode (4 x 0.2 um, 10 nm cells, contacts on the outer 0.1 um, V_reverse = 3 V fully depleting the 2 um absorber with its artificial band-to-band loss sigma_e = c eps0 n alpha_nom), lit by a cw 1.55 um plane-wave mode (em_fdtd_ez mode_source, P_in after the ramp 1 - exp(-t / (3 T)), y periodic, CPML along x) in a time_dependent study. em_semiconductor_generation (photon_wavelength = lambda0, required for a time-stepped source) hands the absorbed power averaged over a window to drift_diffusion, which re-solves (quasi-static) every 6720 EM steps; the EM time step is set (courant_factor) to exactly T / 224, so a window is exactly 30 optical periods and its mean of sigma E^2 has no cw ripple. Three windows (90 periods, 0.47 ps): the first is the turn-on, the solve at the end uses the steady later window(s) (ramp and transit residue < 1e-4).\nAnalytic (as the FDFD model, with the attenuation a of the discrete FDTD wave: Yee dispersion in space and time and the time-averaged conductivity term sigma cos(omega dt / 2) / Omega): A = (1 - R) (1 - exp(-a d)); every pair is collected, so I_photo = q lambda / (h c) A P_in and the responsivity is 1.25 A/W times A. The cw flux spectra (power_per_cw over the whole run) carry the ramp and arrival delay: x ((t_end - tau - t_d) / (t_end - tau))^2.\nDerived values tab: P_front / P_trans (flux monitors, ~2e-3), G_total (integral of the coupled generation slot = photons per J times the window-mean absorbed power, ~2e-3), I_photo and responsivity from the cathode table, I_anode = -I_photo (~2e-3); tolerances 3e-3, to be confirmed by the first run.\nSweep tab: responsivity versus alpha_nom (0.5..2 per um) with its dashed curve.\nLine profile tab (last sweep value, 1 per um): G_profile (semiconductor.generation) along the diode, the Beer-Lambert decay over the absorber (tolerance 1e-2: the standing-wave ripple of the back-face reflection). Field tab: em.ez, semiconductor.generation, V, N, P.",
+  "version": 1,
+  "parameters": [
+    {"name": "V_reverse", "expression": 3.0, "description": "reverse bias of the cathode in V (anode at 0 V)"},
+    {"name": "alpha_nom", "expression": "1/um", "description": "nominal power absorption coefficient of the absorber in 1/m (the sweep runs 0.5..2 per um)"},
+    {"name": "P_in", "expression": 1e-3, "description": "cw mode source power in W per m of depth after the ramp (2D; low injection)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the cw source (also the photon wavelength)"},
+    {"name": "omega0", "expression": "2*pi*c_const/lambda0", "description": "angular frequency in rad/s"},
+    {"name": "n_si", "expression": 3.476, "description": "silicon index at 1.55 um (eps_r = n_si^2 = 12.08, the library value)"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "h_planck", "expression": 6.62607015e-34, "description": "Planck constant in J s"},
+    {"name": "Lx", "expression": "4*um", "description": "diode length along x"},
+    {"name": "Ly", "expression": "0.2*um", "description": "period along y (periodic EM faces, insulating semiconductor faces)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "x_a0", "expression": "1*um", "description": "absorber front face (a cell face)"},
+    {"name": "x_a1", "expression": "3*um", "description": "absorber back face"},
+    {"name": "d_abs", "expression": "x_a1 - x_a0", "description": "absorber length in m"},
+    {"name": "x_src", "expression": "0.505*um", "description": "mode source line (cell 50 centre, p+ region), launching toward +x"},
+    {"name": "x_flux_up", "expression": "0.805*um", "description": "flux monitor in front of the absorber (cell 80 centre)"},
+    {"name": "x_flux_down", "expression": "3.505*um", "description": "flux monitor behind the absorber (cell 350 centre)"},
+    {"name": "steps_half_period", "expression": 112, "description": "EM time steps per half optical period (sets the time step)"},
+    {"name": "courant_em", "expression": "lambda0*sqrt(2)/(2*steps_half_period*dx_cell)", "description": "courant_factor giving dt = T / 224 (0.979 of the 2D CFL limit)"},
+    {"name": "dt_em", "expression": "lambda0/(2*steps_half_period*c_const)", "description": "EM time step in s (23.1 as)"},
+    {"name": "window_steps", "expression": 6720, "description": "EM steps per drift-diffusion solve = 60 half periods (the semiconductor every)"},
+    {"name": "n_windows", "expression": 3, "description": "drift-diffusion windows in the run"},
+    {"name": "t_end", "expression": "n_windows*window_steps*dt_em", "description": "study duration in s (20160 EM steps, 0.47 ps)"},
+    {"name": "sigma_abs", "expression": "c_const*eps0_const*n_si*alpha_nom", "description": "optical conductivity sigma_e of the absorber in S/m (9.2e3 at 1 per um)"},
+    {"name": "Omega_d", "expression": "2/dt_em*sin(omega0*dt_em/2)", "description": "discrete-time frequency (2 / dt) sin(omega dt / 2) of the Yee update in rad/s"},
+    {"name": "k_time", "expression": "Omega_d/c_const", "description": "vacuum wavenumber seen by the time-discrete update in 1/m"},
+    {"name": "eps_imag", "expression": "sigma_abs*cos(omega0*dt_em/2)/(Omega_d*eps0_const)", "description": "Im eps of the absorber in the semi-implicit conductivity update"},
+    {"name": "eps_abs", "expression": "sqrt(n_si**4 + eps_imag**2)", "description": "|eps| of the absorber"},
+    {"name": "kappa", "expression": "sqrt((eps_abs - n_si**2)/2)", "description": "extinction coefficient Im sqrt(eps) of the absorber"},
+    {"name": "n_re", "expression": "sqrt((eps_abs + n_si**2)/2)", "description": "Re sqrt(eps) of the absorber"},
+    {"name": "ksi0", "expression": "n_si*k_time*dx_cell/2", "description": "half-cell phase n k dx / 2 (spatial grid-dispersion factor)"},
+    {"name": "a_att", "expression": "2*k_time*kappa/sqrt(1 - ksi0**2)", "description": "power attenuation coefficient of the discrete wave in 1/m"},
+    {"name": "R_front", "expression": "((n_si - n_re)**2 + kappa**2)/((n_si + n_re)**2 + kappa**2)", "description": "power reflection of the absorber front face"},
+    {"name": "exit_factor", "expression": "1 + kappa**2/n_re**2", "description": "back-face power transmission over (1 - R) for a wave leaving an absorbing medium"},
+    {"name": "A_ref", "expression": "(1 - R_front)*(1 - exp(-a_att*d_abs))", "description": "absorbed fraction (back-face reflection neglected)"},
+    {"name": "P_abs_ref", "expression": "A_ref*P_in", "description": "analytic cw absorbed power in W/m"},
+    {"name": "photons_per_J", "expression": "lambda0/(h_planck*c_const)", "description": "photons per joule at lambda0 (7.80e18)"},
+    {"name": "G_front", "expression": "a_att*P_in*(1 - R_front)/Ly*photons_per_J", "description": "generation rate at the absorber front in 1/(m^3 s)"},
+    {"name": "I_ref", "expression": "q_e*photons_per_J*P_abs_ref", "description": "analytic photocurrent in A/m (full collection)"},
+    {"name": "resp_ref", "expression": "I_ref/P_in", "description": "analytic responsivity in A/W"},
+    {"name": "tau_ramp", "expression": "3*lambda0/c_const", "description": "cw ramp time constant 3 T in s"},
+    {"name": "dft_up", "expression": "((t_end - tau_ramp - n_si*(x_flux_up - x_src)/c_const)/(t_end - tau_ramp))**2", "description": "whole-run DFT factor of the delayed wave at the up monitor"},
+    {"name": "dft_down", "expression": "((t_end - tau_ramp - n_si*(x_flux_down - x_src)/c_const)/(t_end - tau_ramp))**2", "description": "whole-run DFT factor of the delayed wave at the down monitor"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "p_region", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_a0", "y1": "Ly"}},
+    {"name": "n_region", "kind": "rectangle", "params": {"x0": "x_a1", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "absorber", "kind": "rectangle", "params": {"x0": "x_a0", "y0": 0.0, "x1": "x_a1", "y1": "Ly"}},
+    {"name": "anode_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "0.1*um", "y1": "Ly"}},
+    {"name": "cathode_pad", "kind": "rectangle", "params": {"x0": "Lx - 0.1*um", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "flux_up_line", "kind": "line", "params": {"x0": "x_flux_up", "y0": 0.0, "x1": "x_flux_up", "y1": "Ly"}},
+    {"name": "flux_down_line", "kind": "line",
+     "params": {"x0": "x_flux_down", "y0": 0.0, "x1": "x_flux_down", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": "silicon", "properties": {"eps_r": "n_si**2"}, "dispersion": [],
+     "selection": ["all"]},
+    {"name": "absorbing_silicon", "library": "silicon", "properties": {"eps_r": "n_si**2", "sigma_e": "sigma_abs"},
+     "dispersion": [], "selection": ["absorber"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "courant_factor": "courant_em"},
+      "features": [
+        {"name": "source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "waveform": "cw", "wavelength": "lambda0",
+                    "power": "P_in"}, "enabled": true},
+        {"name": "flux_up", "type": "flux_monitor", "selection": ["flux_up_line"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1}, "enabled": true},
+        {"name": "flux_down", "type": "flux_monitor", "selection": ["flux_down_line"],
+         "params": {"wavelength_start": "lambda0", "wavelength_stop": "lambda0", "n_wavelengths": 1}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "semiconductor",
+      "type": "drift_diffusion",
+      "settings": {"max_bias_step": 0.5},
+      "features": [
+        {"name": "background", "type": "doping", "selection": ["all"], "params": {"donors": 1e21}, "enabled": true},
+        {"name": "p_plus", "type": "doping", "selection": ["p_region"], "params": {"acceptors": 1e24}, "enabled": true},
+        {"name": "n_plus", "type": "doping", "selection": ["n_region"], "params": {"donors": 1e24}, "enabled": true},
+        {"name": "anode", "type": "ohmic_contact", "selection": ["anode_pad"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "cathode", "type": "ohmic_contact", "selection": ["cathode_pad"], "params": {"voltage": "V_reverse"},
+         "enabled": true}
+      ],
+      "every": 6720
+    }
+  ],
+  "couplings": [
+    {"name": "photogeneration", "type": "em_semiconductor_generation", "source": "em", "target": "semiconductor",
+     "every": null, "params": {"photon_wavelength": "lambda0", "quantum_efficiency": 1.0}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/3"},
+            "stored_fields": ["em.ez", "semiconductor.generation", "semiconductor.V", "semiconductor.N",
+                              "semiconductor.P"],
+            "sweep": {"parameter": "alpha_nom", "values": [5e5, 2e6, 1e6]}},
+  "derived_values": [
+    {"name": "P_front", "expression": "power_per_cw", "operation": "last", "source": "em.flux_up",
+     "reference": "P_in*(1 - R_front)*dft_up", "tolerance": 0.003},
+    {"name": "P_trans", "expression": "power_per_cw", "operation": "last", "source": "em.flux_down",
+     "reference": "P_in*(1 - R_front)**2*exit_factor*exp(-a_att*d_abs)*dft_down", "tolerance": 0.003},
+    {"name": "G_total", "expression": "semiconductor_generation", "selection": [], "operation": "integral",
+     "reference": "P_abs_ref*photons_per_J", "tolerance": 0.003},
+    {"name": "I_photo", "expression": "current", "operation": "last", "source": "semiconductor.cathode",
+     "reference": "I_ref", "tolerance": 0.003},
+    {"name": "responsivity", "expression": "current/P_in", "operation": "last", "source": "semiconductor.cathode",
+     "reference": "resp_ref", "tolerance": 0.003},
+    {"name": "I_anode", "expression": "current", "operation": "last", "source": "semiconductor.anode",
+     "reference": "-I_ref", "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "responsivity_curve", "target": "sweep", "expression": "resp_ref", "tolerance": 0.003,
+     "series": "responsivity"},
+    {"name": "G_profile", "target": "line",
+     "expression": "where((x > x_a0)*(x < x_a1), G_front*exp(-a_att*(x - x_a0)), 0)", "tolerance": 0.01,
+     "line": [0.0, "Ly/2", "Lx", "Ly/2"], "field": "semiconductor.generation"}
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "title": "Analytic: optical parametric amplification, cosh^2 signal gain (nonlinear FDFD)",
+  "description": "Non-degenerate parametric gain (em_fdfd_nonlinear, coupling_mode pump_depleted, Newton-Krylov): a y-periodic strip (4 rows of 10 nm, CPML along x) filled everywhere, PML included, with a birefringent medium: the H_z pump p (800 nm, E_y along x) sees eps_yy = eps_p, the E_z signal s (1300 nm) and the generated E_z idler i = p - s (2080 nm) see eps_zz = 2.25; eps_p is chosen so that the three 3-point lattice waves are exactly phase matched, K_p = K_s + K_i per cell (eps_p = 2.2482). A 20 um chi2 slab (chi2_medium, crystal_class general, d23 = d34 = 25 pm/V) couples them: P_z(s) = 2 eps0 d E_y(p) conj(E_z(i)), P_z(i) = 2 eps0 d E_y(p) conj(E_z(s)) (the conjugated slots of the DFG terms). Line sources launch the pump (amplitude A_p, set from the gain length product gL) and a weak signal A_s = 1e-3 A_p (no pump depletion). The sweep runs gL over 0.25-2.\nAnalytic (lattice coupled-mode theory): with kappa_s,i = k_s,i^2 d h / sin(K_s,i h), g L = |E_p| L sqrt(kappa_s kappa_i), |E_p| the pump at the cell centres (A_p cos(K_p h / 2)); the signal power gain is cosh^2(g L) and the idler conversion (|E_i| / A_s)^2 kappa_s / kappa_i = sinh^2(g L) (gain 2.38 at g L = 1, 14.1 at 2).\nSweep tab: G_signal and G_idler vs gL with the dashed cosh^2 / sinh^2 curves (log axis helps).\nDerived values tab: G_signal, G_idler and E_pump (the undepleted pump beyond the slab) against their references; expected ~1-2 % (coupled-mode accuracy and the backward waves; to be confirmed by a first run).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "800*nm", "description": "pump vacuum wavelength"},
+    {"name": "lam_s", "expression": "1300*nm", "description": "signal vacuum wavelength (idler p - s at 2080 nm)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "periodic y period (4 cells)"},
+    {"name": "omega_p", "expression": "2*pi*c_const/lam_p", "description": "pump angular frequency [rad/s]"},
+    {"name": "omega_s", "expression": "2*pi*c_const/lam_s", "description": "signal angular frequency [rad/s]"},
+    {"name": "omega_i", "expression": "omega_p - omega_s", "description": "idler angular frequency [rad/s]"},
+    {"name": "eps_zz_si", "expression": 2.25, "description": "eps_zz seen by the E_z signal and idler"},
+    {"name": "K_s", "expression": "2*asin(omega_s/c_const*sqrt(eps_zz_si)*dx_cell/2)", "description": "lattice phase per cell of the signal"},
+    {"name": "K_i", "expression": "2*asin(omega_i/c_const*sqrt(eps_zz_si)*dx_cell/2)", "description": "lattice phase per cell of the idler"},
+    {"name": "K_p", "expression": "K_s + K_i", "description": "phase-matched pump lattice phase per cell"},
+    {"name": "eps_p", "expression": "(2*c_const*sin(K_p/2)/(omega_p*dx_cell))**2", "description": "eps_yy whose pump lattice wave has K_p (2.2482)"},
+    {"name": "d_val", "expression": 25e-12, "description": "d23 = d34 of the general chi2 tensor [m/V]"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump and signal line sources (centre of cell 100)"},
+    {"name": "x_nl", "expression": "2*um", "description": "chi2 slab front face (a cell edge)"},
+    {"name": "L_nl", "expression": "20*um", "description": "chi2 slab length (2000 cells)"},
+    {"name": "x_fwd", "expression": "x_nl + L_nl + 1.005*um", "description": "forward probes (cell centre, 100 cells past the slab)"},
+    {"name": "Lx", "expression": "x_nl + L_nl + 2*um", "description": "strip length (CPML on both x faces, outside the window)"},
+    {"name": "kappa_s", "expression": "(omega_s/c_const)**2*d_val*dx_cell/sin(K_s)", "description": "signal coupling [1/V]"},
+    {"name": "kappa_i", "expression": "(omega_i/c_const)**2*d_val*dx_cell/sin(K_i)", "description": "idler coupling [1/V]"},
+    {"name": "G_opa", "expression": "L_nl*sqrt(kappa_s*kappa_i)", "description": "g L per unit centre pump amplitude [m/V] (1.27e-9)"},
+    {"name": "gL", "expression": 1.0, "description": "gain length product g L (swept 0.25-2)"},
+    {"name": "A_p", "expression": "gL/(G_opa*cos(K_p/2))", "description": "pump line-source amplitude [V/m] (face E_y; 7.9e8 at g L = 1)"},
+    {"name": "A_s", "expression": "1e-3*A_p", "description": "signal line-source amplitude [V/m]"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "chi2_slab", "kind": "rectangle", "params": {"x0": "x_nl", "y0": 0.0, "x1": "x_nl + L_nl", "y1": "Ly"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "1.5*dx_cell"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "birefringent_medium", "library": null, "properties": {"eps_r": "eps_p", "eps_zz": "eps_zz_si"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "pump_depleted",
+                   "iteration_method": "newton", "max_iterations": 30},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "hz"}, "enabled": true},
+        {"name": "s", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_s", "polarization": "ez"}, "enabled": true},
+        {"name": "i", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "p - s", "polarization": "ez"}, "enabled": true},
+        {"name": "chi2", "type": "chi2_medium", "selection": ["chi2_slab"],
+         "params": {"crystal_class": "general", "d23": "d_val", "d34": "d_val", "orientation": "z_cut"}, "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "A_p", "phase": 0.0}, "enabled": true},
+        {"name": "signal", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "s", "amplitude": "A_s", "phase": 0.0}, "enabled": true},
+        {"name": "pump_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "p", "component": "ey"}, "enabled": true},
+        {"name": "signal_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "s", "component": "ez"}, "enabled": true},
+        {"name": "idler_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "i", "component": "ez"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs"],
+            "sweep": {"parameter": "gL", "values": [0.25, 0.5, 1.0, 1.5, 2.0]}},
+  "derived_values": [
+    {"name": "G_signal", "expression": "(abs/A_s)**2", "selection": [], "operation": "mean",
+     "source": "nl.signal_forward", "at": null, "reference": "cosh(gL)**2", "tolerance": 0.03},
+    {"name": "G_idler", "expression": "(abs/A_s)**2*kappa_s/kappa_i", "selection": [], "operation": "mean",
+     "source": "nl.idler_forward", "at": null, "reference": "sinh(gL)**2", "tolerance": 0.03},
+    {"name": "E_pump", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_forward",
+     "at": null, "reference": "A_p*cos(K_p/2)", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "cmt_cosh2", "target": "sweep", "expression": "cosh(gL)**2", "tolerance": 0.03, "series": "G_signal"},
+    {"name": "cmt_sinh2", "target": "sweep", "expression": "sinh(gL)**2", "tolerance": 0.03, "series": "G_idler"}
+  ]
+}

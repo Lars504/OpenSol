@@ -1,0 +1,103 @@
+{
+  "title": "Photoconductor: photocurrent and gain of a uniformly lit n-type bar with two ohmic contacts (analytic)",
+  "description": "One n-type silicon bar (N_D = 1e22 1/m^3, n_i 1e16, 4 um long, two 5 nm cells high, SRH lifetime tau_srh for both carriers) with ohmic contacts on the outer 20 nm (anode V_bias = 1 mV on x_lo, cathode 0 V on x_hi), solved by two identical drift_diffusion physics on the same bar: dark without light, lit with a uniform generation G0 = G_tau / tau_srh (generation feature; contact cells generate nothing), so the excess density scale G0 tau_srh = 1e18 = 1e-4 N_D is the same for every lifetime (low injection). The photocurrent dI = I_lit - I_dark is the difference of the two anode scalar outputs, so the dark current and its float32 material rounding cancel. Two physics, not two bars: bars a few nm apart (thinner than the 41 nm Debye length) share the excess electrons electrostatically, so a dark neighbour bar would carry part of the photocurrent. Stationary sweep tau_srh = 1e-10..1e-8 s (hole diffusion length 0.35..3.5 um against L_eff = 3.965 um).\nAnalytic: the excess pairs (dn = dp, quasi-neutral) vanish at the innermost contact cell centres, L_eff = Lx - 2 w_contact + dx apart: dp = G tau (1 - cosh((x - Lx/2) / L) / cosh(L_eff / (2 L))), L = sqrt(D_p tau), D_p = mu_p V_T. To first order the conductance rises by the mean excess conductivity: dI = q h (V_bias / L_eff) (mu_n + mu_p) G tau [1 - (2 L / L_eff) tanh(L_eff / (2 L))] per m of depth; gain = dI / (q G h L_eff) = (mu_n + mu_p) tau V_bias / L_eff^2 [...] (the lifetime over the transit time). Corrections: low injection ~dp / N_D = 1e-4, drift of the minority holes (E L / (2 V_T))^2 <= 3e-4 at 1 mV (an even effect: the bar is symmetric), Debye length 41 nm << L.\nDerived values tab: I_dark (dark anode current = q h (V / L_eff)(mu_n n0 + mu_p p0), exact to ~1e-6), dI_photo and gain against the formulas (tolerance 2e-3), P_mean (mean hole density over the free part of the lit bar) against the averaged cosh profile.\nSweep tab: dI_photo, gain and P_mean versus tau_srh (log axis useful) with their dashed curves: the gain grows as tau until L reaches L_eff / 2, then the contacts sweep the pairs out and dI saturates toward q h (V / L_eff) (mu_n + mu_p) G0 L_eff^2 / (12 D_p).\nLine profile tab (last sweep value, 1e-9 s): P_profile along the lit bar, the cosh profile between the contacts. Field tab: N, P, generation, recombination, V of lit.",
+  "version": 1,
+  "parameters": [
+    {"name": "tau_srh", "expression": 1e-9, "description": "SRH lifetime of both carriers in s (the sweep runs 1e-10..1e-8 s)"},
+    {"name": "V_bias", "expression": 1e-3, "description": "anode voltage of both physics in V (cathodes at 0 V); small, so minority drift stays a second-order effect"},
+    {"name": "q_e", "expression": 1.602176634e-19, "description": "elementary charge in C"},
+    {"name": "k_B", "expression": 1.380649e-23, "description": "Boltzmann constant in J/K"},
+    {"name": "T_lat", "expression": 300.0, "description": "lattice temperature in K (the semiconductor temperature setting)"},
+    {"name": "V_T", "expression": "k_B*T_lat/q_e", "description": "thermal voltage in V (25.85 mV)"},
+    {"name": "n_i", "expression": 1e16, "description": "intrinsic carrier density in 1/m^3"},
+    {"name": "eps_si", "expression": 11.7, "description": "static relative permittivity"},
+    {"name": "N_D", "expression": 1e22, "description": "donor density of the bar in 1/m^3"},
+    {"name": "mu_e", "expression": 0.135, "description": "electron mobility in m^2/(V s)"},
+    {"name": "mu_h", "expression": 0.048, "description": "hole mobility in m^2/(V s)"},
+    {"name": "G_tau", "expression": 1e18, "description": "G0 tau_srh: the excess pair density scale in 1/m^3 (1e-4 N_D)"},
+    {"name": "G0", "expression": "G_tau/tau_srh", "description": "uniform generation rate of physics lit in 1/(m^3 s)"},
+    {"name": "Lx", "expression": "4*um", "description": "bar length along x"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "h_bar", "expression": "2*dx_cell", "description": "height of the bar = domain height (two cells: a 1D problem)"},
+    {"name": "w_contact", "expression": "20*nm", "description": "width of each ohmic contact at the bar ends"},
+    {"name": "L_eff", "expression": "Lx - 2*w_contact + dx_cell", "description": "distance between the innermost contact cell centres in m (3.965 um)"},
+    {"name": "L_core", "expression": "Lx - 2*w_contact", "description": "length of the free (non-contact) part of the bar in m"},
+    {"name": "n0", "expression": "N_D/2 + sqrt(N_D**2/4 + n_i**2)", "description": "dark electron density in 1/m^3"},
+    {"name": "p0", "expression": "n_i**2/n0", "description": "dark hole density in 1/m^3"},
+    {"name": "D_h", "expression": "mu_h*V_T", "description": "hole diffusion constant in m^2/s"},
+    {"name": "L_D", "expression": "sqrt(D_h*tau_srh)", "description": "hole diffusion length in m"},
+    {"name": "bracket", "expression": "1 - 2*L_D/L_eff*tanh(L_eff/(2*L_D))", "description": "mean excess density over G tau (contact sweep-out factor)"},
+    {"name": "I_dark_ref", "expression": "q_e*h_bar*V_bias/L_eff*(mu_e*n0 + mu_h*p0)", "description": "analytic dark current in A/m"},
+    {"name": "dI_ref", "expression": "q_e*h_bar*V_bias/L_eff*(mu_e + mu_h)*G_tau*bracket", "description": "analytic photocurrent in A/m"},
+    {"name": "gain_ref", "expression": "(mu_e + mu_h)*tau_srh*V_bias/L_eff**2*bracket", "description": "analytic photoconductive gain dI / (q G0 h L_eff)"},
+    {"name": "P_mean_ref", "expression": "p0 + G_tau*(1 - 2*L_D/L_core*sinh(L_core/(2*L_D))/cosh(L_eff/(2*L_D)))", "description": "analytic mean hole density over the free part of the lit bar in 1/m^3"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "h_bar"},
+  "geometry": [
+    {"name": "bar", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "h_bar"}},
+    {"name": "bar_core", "kind": "rectangle", "params": {"x0": "w_contact", "y0": 0.0, "x1": "Lx - w_contact", "y1": "h_bar"}},
+    {"name": "anode_pad", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "w_contact", "y1": "h_bar"}},
+    {"name": "cathode_pad", "kind": "rectangle", "params": {"x0": "Lx - w_contact", "y0": 0.0, "x1": "Lx", "y1": "h_bar"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null,
+     "properties": {"n_intrinsic": "n_i", "mobility_n": "mu_e", "mobility_p": "mu_h", "eps_dc": "eps_si",
+                    "lifetime": "tau_srh"},
+     "dispersion": null, "selection": ["bar"]}
+  ],
+  "physics": [
+    {
+      "name": "dark",
+      "type": "drift_diffusion",
+      "settings": {"temperature": "T_lat", "tolerance": 1e-10, "max_iterations": 100},
+      "features": [
+        {"name": "donors", "type": "doping", "selection": ["bar"], "params": {"donors": "N_D"}, "enabled": true},
+        {"name": "anode", "type": "ohmic_contact", "selection": ["anode_pad"], "params": {"voltage": "V_bias"},
+         "enabled": true},
+        {"name": "cathode", "type": "ohmic_contact", "selection": ["cathode_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "lit",
+      "type": "drift_diffusion",
+      "settings": {"temperature": "T_lat", "tolerance": 1e-10, "max_iterations": 100},
+      "features": [
+        {"name": "donors", "type": "doping", "selection": ["bar"], "params": {"donors": "N_D"}, "enabled": true},
+        {"name": "light", "type": "generation", "selection": ["bar"], "params": {"rate": "G0"}, "enabled": true},
+        {"name": "anode", "type": "ohmic_contact", "selection": ["anode_pad"], "params": {"voltage": "V_bias"},
+         "enabled": true},
+        {"name": "cathode", "type": "ohmic_contact", "selection": ["cathode_pad"], "params": {"voltage": 0.0},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["lit.N", "lit.P", "lit.generation", "lit.recombination", "lit.V"],
+            "sweep": {"parameter": "tau_srh", "values": [1e-10, 3e-10, 3e-9, 1e-8, 1e-9]}},
+  "derived_values": [
+    {"name": "I_dark", "expression": "dark_current_anode", "selection": [], "operation": "mean",
+     "reference": "I_dark_ref", "tolerance": 1e-5},
+    {"name": "dI_photo", "expression": "lit_current_anode - dark_current_anode",
+     "selection": [], "operation": "mean", "reference": "dI_ref", "tolerance": 0.002},
+    {"name": "gain", "expression": "(lit_current_anode - dark_current_anode)/(q_e*G0*h_bar*L_eff)",
+     "selection": [], "operation": "mean", "reference": "gain_ref", "tolerance": 0.002},
+    {"name": "P_mean", "expression": "lit_P", "selection": ["bar_core"], "operation": "mean",
+     "reference": "P_mean_ref", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "dI_curve", "target": "sweep", "expression": "dI_ref", "tolerance": 0.002, "series": "dI_photo"},
+    {"name": "gain_curve", "target": "sweep", "expression": "gain_ref", "tolerance": 0.002, "series": "gain"},
+    {"name": "P_mean_curve", "target": "sweep", "expression": "P_mean_ref", "tolerance": 0.002, "series": "P_mean"},
+    {"name": "P_profile", "target": "line",
+     "expression": "p0 + G_tau*(1 - cosh((x - Lx/2)/L_D)/cosh(L_eff/(2*L_D)))", "tolerance": 0.002,
+     "line": ["w_contact + dx_cell/4", "dx_cell/2", "Lx - w_contact - dx_cell/4", "dx_cell/2"],
+     "field": "lit.P"}
+  ]
+}

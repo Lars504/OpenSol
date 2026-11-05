@@ -1,0 +1,93 @@
+{
+  "title": "Lamb's problem: Rayleigh surface wave from a line force on a half-space (analytic)",
+  "description": "A downward line force on the free surface of an elastic half-space (nu = 1/4: cL = sqrt(3) cS, cS = 3000 m/s, rho 2700; 3 shear wavelengths of solid over a 100-cell absorbing layer, 2 vacuum cells above it with a rigid y_hi face behind them, absorbing x faces; 50 cells per shear wavelength at f0). The force is a gaussian pulse (sin carrier at f0 = 1 MHz under a gaussian envelope, relative bandwidth 0.3). The force_source sits in the vacuum cell above the surface and is split over its two y faces: the vacuum-vacuum face does not move, so half of it, F = force / 2, acts on the surface face itself (a traction F delta(x)); force = 2 F.\nAnalytic (Rayleigh pole of Lamb's 2D problem, frequency independent): the surface Rayleigh pulse does not decay with distance; for a downward F (per m of z), at x > 0: u_x = K_x (F / mu) s(t - x / cR), u_y = K_y (F / mu) H[s](t - x / cR), H the Hilbert transform, s the force waveform, cR = cS sqrt(2 - 2 / sqrt(3)) = 0.9194 cS; K = residues of the Rayleigh function r(s) = (2 s^2 - 1)^2 - 4 s^2 sqrt(s^2 - 1/3) sqrt(s^2 - 1) at s_R = cS / cR: K_x = (2 s_R^2 - 1) / (2 s_R r'(s_R)) = -1/8 (the static Flamant u_x = -(1 - 2 nu) F / (4 mu) after the pulse has passed), K_y = sqrt(s_R^2 - 1/3) / r'(s_R) = -0.1835 (|u_y / u_x| = 1.468, retrograde ellipse). Probes record v_y on the +y face of the top solid cell, i.e. on the surface (u_x would be read dx / 2 deep, where its steep depth profile changes it by ~15 %). For the narrow-band pulse H[s] = -envelope cos(w0 tau) (Bedrosian, error ~exp(-1 / bw^2) = 1e-5), so v_y = A (envelope (-w0 sin(w0 tau) - 2 tau / tau_g^2 cos(w0 tau))), A = -K_y F / mu. P and S contributions along the surface fall as (k r)^(-3/2) (< 1 % at 4 shear wavelengths).\nDerived values tab: m1_matched / m2_matched = in-phase matched filters of v_y on the predicted Rayleigh pulse at 4 and 8 shear wavelengths, over its energy (1 expected; a Rayleigh speed error of 0.1 % costs ~0.3 % at probe 2, the shear speed instead of cR gives ~0); e1_energy / e2_energy = window energy of v_y over the predicted one (1 expected, insensitive to the arrival time: the amplitude check). Tolerance 5 % (the plan's estimate; the staggered-grid free surface has its own Rayleigh dispersion, so a phase-only miss shows as m < 1 with e ~ 1), to be confirmed by the first run.\nProbes tab: probe_1 / probe_2 v_y with the dashed Rayleigh pulses (tolerance 5 % of the range) and the pulse at the shear speed (no tolerance).",
+  "version": 1,
+  "parameters": [
+    {"name": "f0", "expression": "1*MHz", "description": "carrier frequency of the gaussian force pulse"},
+    {"name": "bw", "expression": 0.3, "description": "relative bandwidth of the pulse (narrow: H[s] = -envelope cos)"},
+    {"name": "tau_g", "expression": "1/(pi*bw*f0)", "description": "1/e half-width of the pulse envelope in s (1.06 us)"},
+    {"name": "t0_g", "expression": "4.5*tau_g", "description": "time of the envelope maximum at the source in s"},
+    {"name": "w0", "expression": "2*pi*f0", "description": "angular carrier frequency in rad/s"},
+    {"name": "rho_s", "expression": 2700.0, "description": "solid density in kg/m^3"},
+    {"name": "cS_s", "expression": 3000.0, "description": "shear speed in m/s"},
+    {"name": "cL_s", "expression": "sqrt(3)*cS_s", "description": "longitudinal speed in m/s (nu = 1/4)"},
+    {"name": "mu_s", "expression": "rho_s*cS_s**2", "description": "shear modulus in Pa"},
+    {"name": "cR_s", "expression": "cS_s*sqrt(2 - 2/sqrt(3))", "description": "Rayleigh speed in m/s (0.9194 cS = 2758)"},
+    {"name": "sR2", "expression": "1/(2 - 2/sqrt(3))", "description": "s_R^2 = (cS / cR)^2"},
+    {"name": "sR", "expression": "sqrt(sR2)", "description": "s_R = cS / cR"},
+    {"name": "aR", "expression": "sqrt(sR2 - cS_s**2/cL_s**2)", "description": "alpha / kS at the Rayleigh pole"},
+    {"name": "bR", "expression": "sqrt(sR2 - 1)", "description": "beta / kS at the Rayleigh pole"},
+    {"name": "r_prime", "expression": "8*sR*(2*sR2 - 1) - 8*sR*aR*bR - 4*sR**3*(bR/aR + aR/bR)", "description": "derivative of the Rayleigh function at s_R (-5.024)"},
+    {"name": "K_x", "expression": "(2*sR2 - 1)/(2*sR*r_prime)", "description": "horizontal Rayleigh residue (-1/8; for reference, not measured)"},
+    {"name": "K_y", "expression": "aR/r_prime", "description": "vertical Rayleigh residue (-0.1835)"},
+    {"name": "F_line", "expression": 1000.0, "description": "downward surface line force in N/m (the force_source gets 2 F, see the description)"},
+    {"name": "A_uy", "expression": "-K_y*F_line/mu_s", "description": "amplitude of the u_y Rayleigh pulse in m (7.6e-9)"},
+    {"name": "dx_cell", "expression": "cS_s/(50*f0)", "description": "uniform cell size (50 cells per shear wavelength, 60 um)"},
+    {"name": "n_pml", "expression": 100, "description": "absorbing layer cells on the x faces and y_lo (2 shear wavelengths)"},
+    {"name": "Lx", "expression": "900*dx_cell", "description": "domain length (54 mm)"},
+    {"name": "y_surf", "expression": "250*dx_cell", "description": "free surface (solid below, 2 vacuum cells above)"},
+    {"name": "Ly", "expression": "252*dx_cell", "description": "domain height"},
+    {"name": "x_s", "expression": "250.5*dx_cell", "description": "source x (cell centre, 3 shear wavelengths from the x_lo layer)"},
+    {"name": "r1", "expression": "200*dx_cell", "description": "probe 1 distance (4 shear wavelengths, 12 mm)"},
+    {"name": "r2", "expression": "400*dx_cell", "description": "probe 2 distance (8 shear wavelengths, 24 mm)"},
+    {"name": "t_R1", "expression": "t0_g + r1/cR_s", "description": "Rayleigh pulse centre at probe 1 in s"},
+    {"name": "t_R2", "expression": "t0_g + r2/cR_s", "description": "Rayleigh pulse centre at probe 2 in s"},
+    {"name": "E_w", "expression": "A_uy**2*sqrt(pi/2)*(w0**2*tau_g/2 + 1/(2*tau_g))", "description": "time integral of the squared predicted v_y pulse in m^2/s"},
+    {"name": "S_courant", "expression": 0.9, "description": "courant setting"},
+    {"name": "T_run", "expression": "t_R2 + 4*tau_g", "description": "study duration (probe 2's window ends at t_R2 + 3.5 tau_g)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "half_space", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "y_surf"}},
+    {"name": "source_point", "kind": "point", "params": {"x": "x_s", "y": "y_surf + dx_cell/2"}},
+    {"name": "probe_1_point", "kind": "point", "params": {"x": "x_s + r1", "y": "y_surf - dx_cell/2"}},
+    {"name": "probe_2_point", "kind": "point", "params": {"x": "x_s + r2", "y": "y_surf - dx_cell/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "solid", "library": null, "properties": {"rho": "rho_s", "sound_speed": "cL_s", "shear_speed": "cS_s"},
+     "dispersion": null, "selection": ["half_space"]}
+  ],
+  "physics": [
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_hi": "rigid", "pml_cells": "n_pml", "courant": "S_courant"},
+      "features": [
+        {"name": "force", "type": "force_source", "selection": ["source_point"],
+         "params": {"waveform": "gaussian", "frequency": "f0", "bandwidth": "bw", "force": "2*F_line", "angle": -90.0},
+         "enabled": true},
+        {"name": "probe_1", "type": "field_probe", "selection": ["probe_1_point"], "params": {"component": "vy"},
+         "enabled": true},
+        {"name": "probe_2", "type": "field_probe", "selection": ["probe_2_point"], "params": {"component": "vy"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": "T_run/4"},
+            "stored_fields": ["acoustics.vx", "acoustics.vy"], "sweep": null},
+  "derived_values": [
+    {"name": "m1_matched", "source": "acoustics.probe_1", "operation": "integral", "reference": 1.0, "tolerance": 0.05,
+     "expression": "where(abs(t - t_R1) < 3.5*tau_g, values*A_uy*exp(-((t - t_R1)/tau_g)**2)*(-w0*sin(w0*(t - t_R1)) - 2*(t - t_R1)/tau_g**2*cos(w0*(t - t_R1))), 0)/E_w"},
+    {"name": "m2_matched", "source": "acoustics.probe_2", "operation": "integral", "reference": 1.0, "tolerance": 0.05,
+     "expression": "where(abs(t - t_R2) < 3.5*tau_g, values*A_uy*exp(-((t - t_R2)/tau_g)**2)*(-w0*sin(w0*(t - t_R2)) - 2*(t - t_R2)/tau_g**2*cos(w0*(t - t_R2))), 0)/E_w"},
+    {"name": "e1_energy", "source": "acoustics.probe_1", "operation": "integral", "reference": 1.0, "tolerance": 0.05,
+     "expression": "where(abs(t - t_R1) < 3.5*tau_g, values**2, 0)/E_w"},
+    {"name": "e2_energy", "source": "acoustics.probe_2", "operation": "integral", "reference": 1.0, "tolerance": 0.05,
+     "expression": "where(abs(t - t_R2) < 3.5*tau_g, values**2, 0)/E_w"}
+  ],
+  "analytic_curves": [
+    {"name": "probe_1_rayleigh", "target": "acoustics.probe_1",
+     "expression": "A_uy*exp(-((t - t_R1)/tau_g)**2)*(-w0*sin(w0*(t - t_R1)) - 2*(t - t_R1)/tau_g**2*cos(w0*(t - t_R1)))",
+     "tolerance": 0.05},
+    {"name": "probe_2_rayleigh", "target": "acoustics.probe_2",
+     "expression": "A_uy*exp(-((t - t_R2)/tau_g)**2)*(-w0*sin(w0*(t - t_R2)) - 2*(t - t_R2)/tau_g**2*cos(w0*(t - t_R2)))",
+     "tolerance": 0.05},
+    {"name": "probe_2_at_cS", "target": "acoustics.probe_2",
+     "expression": "A_uy*exp(-((t - t0_g - r2/cS_s)/tau_g)**2)*(-w0*sin(w0*(t - t0_g - r2/cS_s)) - 2*(t - t0_g - r2/cS_s)/tau_g**2*cos(w0*(t - t0_g - r2/cS_s)))"}
+  ]
+}

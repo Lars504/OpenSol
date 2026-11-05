@@ -1,0 +1,73 @@
+{
+  "title": "Two-layer Couette flow, viscosity contrast (analytic)",
+  "description": "Steady shear flow of two stacked liquids in a periodic channel (x period 4 cells) between a fixed wall (y_lo) and a wall sliding at U along +x (y_hi): liquid 1 (mu1) fills 0 < y < H1, liquid 2 (mu2 = mu_ratio mu1) H1 < y < H, interface on a cell edge (H1 = 10, H = 20 cells). The lattice relaxation time differs per cell (tau = 1 in the more viscous liquid, 0.5 + 0.5 / mu_ratio in the other).\nAnalytic: the shear stress is uniform, tau_s = U / (H1 / mu1 + H2 / mu2); u_x = tau_s y / mu1 below the interface, U - tau_s (H - y) / mu2 above (piecewise linear, kink at y = H1).\nDerived values tab: tau_lower / tau_upper = mu times the least-squares slope of u_x over the cell centres of each layer (mean of u_x (y - y_c) x 12 / (H_i^2 - dx^2)), u_lower_mean / u_upper_mean = layer means of u_x (their centre values), u_below_interface = probe in the last cell of liquid 1. With the interface on a cell edge the TRT lattice reproduces the kink exactly at linear order (a linearised steady-state analysis of the D2Q9 populations gives the exact half-cell velocity jumps on both sides), so all agree to the float32 steady-state floor (~1e-5..1e-4); tolerance 1e-3, below the ~1 % of an interface off by half a cell at mu_ratio 8.\nLine profile tab: u_profile across the channel at the last sweep value (mu_ratio 8) with the dashed piecewise-linear profile.\nSweep tab: tau_lower and u_below_interface versus mu_ratio (1..8; 1 = plain Couette) with the dashed closed forms.",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_1", "expression": 1e-3, "description": "viscosity of the lower liquid in Pa s"},
+    {"name": "mu_ratio", "expression": 8.0, "description": "viscosity ratio mu2 / mu1 (swept 1..8)"},
+    {"name": "mu_2", "expression": "mu_ratio*mu_1", "description": "viscosity of the upper liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "density of both liquids in kg/m^3"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_ch", "expression": "20*um", "description": "wall gap along y"},
+    {"name": "H_1", "expression": "10*um", "description": "lower layer thickness (interface on a cell edge)"},
+    {"name": "H_2", "expression": "H_ch - H_1", "description": "upper layer thickness"},
+    {"name": "L_ch", "expression": "4*dx_cell", "description": "length of the periodic cell along x (the flow is uniform in x)"},
+    {"name": "U_wall", "expression": 5e-3, "description": "speed of the upper wall along +x in m/s"},
+    {"name": "tau_ref", "expression": "U_wall/(H_1/mu_1 + H_2/mu_2)", "description": "uniform shear stress in Pa"},
+    {"name": "y_probe", "expression": "H_1 - dx_cell/2", "description": "probe height: centre of the last lower-layer cell"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [
+    {"name": "lower_layer", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_ch", "y1": "H_1"}},
+    {"name": "upper_layer", "kind": "rectangle", "params": {"x0": 0.0, "y0": "H_1", "x1": "L_ch", "y1": "H_ch"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "L_ch/2 + dx_cell/2", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid_1", "library": null, "properties": {"viscosity": "mu_1", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["lower_layer"]},
+    {"name": "liquid_2", "library": null, "properties": {"viscosity": "mu_2", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["upper_layer"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "fixed_wall", "type": "wall", "selection": ["y_lo"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "moving_wall", "type": "wall", "selection": ["y_hi"], "params": {"tangential_velocity": "U_wall"},
+         "enabled": true},
+        {"name": "probe", "type": "flow_probe", "selection": ["probe_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["fluid.u_x", "fluid.viscosity"],
+            "sweep": {"parameter": "mu_ratio", "values": [1.0, 2.0, 4.0, 8.0]}},
+  "derived_values": [
+    {"name": "tau_lower", "expression": "12*mu_1*fluid_u_x*(y - H_1/2)/(H_1**2 - dx_cell**2)",
+     "selection": ["lower_layer"], "operation": "mean", "reference": "tau_ref", "tolerance": 1e-3},
+    {"name": "tau_upper", "expression": "12*mu_2*fluid_u_x*(y - (H_1 + H_ch)/2)/(H_2**2 - dx_cell**2)",
+     "selection": ["upper_layer"], "operation": "mean", "reference": "tau_ref", "tolerance": 1e-3},
+    {"name": "u_lower_mean", "expression": "fluid_u_x", "selection": ["lower_layer"], "operation": "mean",
+     "reference": "tau_ref*H_1/(2*mu_1)", "tolerance": 1e-3},
+    {"name": "u_upper_mean", "expression": "fluid_u_x", "selection": ["upper_layer"], "operation": "mean",
+     "reference": "U_wall - tau_ref*H_2/(2*mu_2)", "tolerance": 1e-3},
+    {"name": "u_below_interface", "expression": "values", "operation": "last", "source": "fluid.probe",
+     "reference": "tau_ref*y_probe/mu_1", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "u_profile", "target": "line", "field": "fluid.u_x", "line": ["L_ch/2", 0.0, "L_ch/2", "H_ch"],
+     "expression": "where(y < H_1, tau_ref*y/mu_1, U_wall - tau_ref*(H_ch - y)/mu_2)", "tolerance": 1e-3},
+    {"name": "tau_vs_ratio", "target": "sweep", "series": "tau_lower", "expression": "tau_ref", "tolerance": 1e-3},
+    {"name": "interface_vs_ratio", "target": "sweep", "series": "u_below_interface",
+     "expression": "tau_ref*y_probe/mu_1", "tolerance": 1e-3}
+  ]
+}

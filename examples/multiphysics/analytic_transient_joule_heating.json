@@ -1,0 +1,112 @@
+{
+  "title": "Transient Joule heating of a strip: quasi-static currents into implicit-Euler heat (analytic)",
+  "description": "A 1 mm metal strip (constant sigma_dc, platinum-like) driven by V0 across its ends (electric_currents, quasi-static) heats up from T0 through currents_heat_joule in a time_dependent study (heat transient, implicit Euler, dt 0.1 ms, 20 ms ~ 5 thermal time constants); the ends are held at T0, the long faces are insulated (1D in x).\nAnalytic: uniform q = sigma V0^2 / L^2 (steady peak rise q L^2 / (8 k) = 40.8 K); the discrete solution is exact per sine mode: theta(x, t) = q x (L - x) / (2 k) - sum over odd n of (4 q L^2 / (k pi^3 n^3)) sin(n pi x / L) r_n^m, r_n = 1 / (1 + dt D (n pi / L)^2) (implicit Euler), D = k / (rho cp), m = t / dt - 1: the first heat step has no Joule source (the first transfer follows it), so the probe sample at t = dt is T0 (n <= 13 terms here).\nProbes tab: T_centre with the dashed exact_lagged curve (~1e-4), continuous_time (the exact PDE solution, exp(-D (n pi / L)^2 t), no lag: ~2 % above at t ~ tau_1 = 4 ms) and the steady limit.\nDerived values tab: theta_check at t = 4 ms (24.7 K; a one-step lag error is 1.6 %, the continuous-time value 2.3 % off), theta_end at 20 ms, P_joule (integral of q_joule = V0^2 sigma w / L, 1175 W/m); expected ~1e-4 or better (tolerances 1e-3, P_joule 1e-5).\nLine profile tab: T_profile along the strip at t_end with its lagged series.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 0.05, "description": "drive voltage in V (x_lo at V0, x_hi at 0 V)"},
+    {"name": "L", "expression": "1*mm", "description": "strip length along x (cold, held ends)"},
+    {"name": "w", "expression": "50*um", "description": "strip width along y (insulated faces: 1D in x)"},
+    {"name": "dx_cell", "expression": "L/200", "description": "uniform cell size (200 cells along the strip)"},
+    {"name": "sigma0", "expression": 9.4e6, "description": "DC conductivity in S/m (platinum-like, constant)"},
+    {"name": "k_th", "expression": 72.0, "description": "thermal conductivity in W/(m K)"},
+    {"name": "rho_th", "expression": 21450.0, "description": "density in kg/m^3"},
+    {"name": "cp_th", "expression": 133.0, "description": "specific heat in J/(kg K)"},
+    {"name": "T0", "expression": 293.15, "description": "initial, end and reference temperature in K"},
+    {"name": "dt_step", "expression": "0.1*ms", "description": "implicit-Euler heat time step in s"},
+    {"name": "t_end", "expression": "20*ms", "description": "study duration in s (200 steps)"},
+    {"name": "t_check", "expression": "4*ms", "description": "time of the derived value theta_check in s (~tau_1)"},
+    {"name": "D_th", "expression": "k_th/(rho_th*cp_th)", "description": "thermal diffusivity in m^2/s (2.52e-5)"},
+    {"name": "tau_1", "expression": "L**2/(pi**2*D_th)", "description": "first-mode time constant in s (4.01 ms)"},
+    {"name": "q_uniform", "expression": "sigma0*V0**2/L**2", "description": "uniform Joule power density in W/m^3 (2.35e10)"},
+    {"name": "A1", "expression": "4*q_uniform*L**2/(k_th*pi**3)", "description": "first sine-mode amplitude of the steady rise in K"},
+    {"name": "lam1", "expression": "dt_step*D_th*(pi/L)**2", "description": "dt D (pi/L)^2 of mode 1 (0.0249)"},
+    {"name": "r1", "expression": "1/(1 + lam1)", "description": "implicit-Euler step factor of mode 1"},
+    {"name": "r3", "expression": "1/(1 + 9*lam1)", "description": "implicit-Euler step factor of mode 3"},
+    {"name": "r5", "expression": "1/(1 + 25*lam1)", "description": "implicit-Euler step factor of mode 5"},
+    {"name": "r7", "expression": "1/(1 + 49*lam1)", "description": "implicit-Euler step factor of mode 7"},
+    {"name": "r9", "expression": "1/(1 + 81*lam1)", "description": "implicit-Euler step factor of mode 9"},
+    {"name": "r11", "expression": "1/(1 + 121*lam1)", "description": "implicit-Euler step factor of mode 11"},
+    {"name": "r13", "expression": "1/(1 + 169*lam1)", "description": "implicit-Euler step factor of mode 13"},
+    {"name": "x_probe", "expression": "L/2 + dx_cell/2", "description": "probe x: the cell centre just right of the strip centre"},
+    {"name": "s1", "expression": "sin(pi*x_probe/L)", "description": "mode 1 sine at the probe"},
+    {"name": "s3", "expression": "sin(3*pi*x_probe/L)", "description": "mode 3 sine at the probe"},
+    {"name": "s5", "expression": "sin(5*pi*x_probe/L)", "description": "mode 5 sine at the probe"},
+    {"name": "s7", "expression": "sin(7*pi*x_probe/L)", "description": "mode 7 sine at the probe"},
+    {"name": "s9", "expression": "sin(9*pi*x_probe/L)", "description": "mode 9 sine at the probe"},
+    {"name": "s11", "expression": "sin(11*pi*x_probe/L)", "description": "mode 11 sine at the probe"},
+    {"name": "s13", "expression": "sin(13*pi*x_probe/L)", "description": "mode 13 sine at the probe"},
+    {"name": "theta_ss_p", "expression": "q_uniform*x_probe*(L - x_probe)/(2*k_th)", "description": "steady rise at the probe in K (40.8)"},
+    {"name": "m_check", "expression": "t_check/dt_step - 1", "description": "heat steps with the Joule source by t_check"},
+    {"name": "m_end", "expression": "t_end/dt_step - 1", "description": "heat steps with the Joule source by t_end"},
+    {"name": "theta_check_ref", "expression": "theta_ss_p - A1*(s1*r1**m_check + s3*r3**m_check/27 + s5*r5**m_check/125 + s7*r7**m_check/343 + s9*r9**m_check/729 + s11*r11**m_check/1331 + s13*r13**m_check/2197)",
+     "description": "analytic probe rise at t_check in K (24.7)"},
+    {"name": "theta_end_ref", "expression": "theta_ss_p - A1*(s1*r1**m_end + s3*r3**m_end/27 + s5*r5**m_end/125 + s7*r7**m_end/343 + s9*r9**m_end/729 + s11*r11**m_end/1331 + s13*r13**m_end/2197)",
+     "description": "analytic probe rise at t_end in K (40.5)"}
+  ],
+  "domain": {"size_x": "L", "size_y": "w"},
+  "geometry": [
+    {"name": "centre", "kind": "point", "params": {"x": "x_probe", "y": "w/2 + dx_cell/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "strip", "library": null,
+     "properties": {"sigma_dc": "sigma0", "k": "k_th", "rho": "rho_th", "cp": "cp_th"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "drive", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_hi"], "params": {"voltage": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg_currents"}
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T0"},
+      "features": [
+        {"name": "cold_ends", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T0"},
+         "enabled": true},
+        {"name": "T_centre", "type": "temperature_probe", "selection": ["centre"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg_heat"}
+    }
+  ],
+  "couplings": [
+    {"name": "joule", "type": "currents_heat_joule", "source": "currents", "target": "heat", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg_currents", "type": "pcg", "settings": {"tolerance": 1e-11}},
+    {"name": "cg_heat", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": ["heat.T", "currents.q_joule"], "sweep": null},
+  "derived_values": [
+    {"name": "theta_check", "expression": "values - T0", "operation": "at", "at": "t_check",
+     "source": "heat.T_centre", "reference": "theta_check_ref", "tolerance": 0.001},
+    {"name": "theta_end", "expression": "values - T0", "operation": "last", "source": "heat.T_centre",
+     "reference": "theta_end_ref", "tolerance": 0.001},
+    {"name": "P_joule", "expression": "currents_q_joule", "selection": [], "operation": "integral",
+     "reference": "sigma0*V0**2*w/L", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "exact_lagged", "target": "heat.T_centre",
+     "expression": "T0 + where(t < 1.5*dt_step, 0, theta_ss_p - A1*(s1*r1**(t/dt_step - 1) + s3*r3**(t/dt_step - 1)/27 + s5*r5**(t/dt_step - 1)/125 + s7*r7**(t/dt_step - 1)/343 + s9*r9**(t/dt_step - 1)/729 + s11*r11**(t/dt_step - 1)/1331 + s13*r13**(t/dt_step - 1)/2197))",
+     "tolerance": 0.001},
+    {"name": "continuous_time", "target": "heat.T_centre",
+     "expression": "T0 + theta_ss_p - A1*(s1*exp(-t/tau_1) + s3*exp(-9*t/tau_1)/27 + s5*exp(-25*t/tau_1)/125 + s7*exp(-49*t/tau_1)/343 + s9*exp(-81*t/tau_1)/729 + s11*exp(-121*t/tau_1)/1331 + s13*exp(-169*t/tau_1)/2197)"},
+    {"name": "steady_limit", "target": "heat.T_centre", "expression": "T0 + theta_ss_p"},
+    {"name": "T_profile", "target": "line",
+     "expression": "T0 + q_uniform*x*(L - x)/(2*k_th) - A1*(sin(pi*x/L)*r1**m_end + sin(3*pi*x/L)*r3**m_end/27 + sin(5*pi*x/L)*r5**m_end/125 + sin(7*pi*x/L)*r7**m_end/343)",
+     "tolerance": 0.001, "line": [0.0, "w/2 + dx_cell/2", "L", "w/2 + dx_cell/2"], "field": "heat.T"}
+  ]
+}

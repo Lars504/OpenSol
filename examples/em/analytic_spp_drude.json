@@ -1,0 +1,94 @@
+{
+  "title": "Analytic: surface plasmon polariton on a Drude metal (H_z)",
+  "description": "An H_z mode source launches the surface plasmon polariton along a Drude metal / air interface toward +x; two mode monitors downstream (FDTD).\nAnalytic: n_spp = sqrt(eps_m / (eps_m + 1)); the mode power decays as exp(-4 pi |Im n| d / lambda), 1/e length L_spp.\nDerived values tab: n_eff_source, n_eff_imag_source, fraction_near / fraction_far and L_measured vs their references.\nSpectra tab: em.near_monitor / em.far_monitor quantity fraction_positive vs the dashed exp(-4 pi |Im n| d / lambda). The curve errors are relative to the curve's range over 520-580 nm (0.7 % near, 6 % far), so a ~0.5 % absolute deviation at the band ends (likely the off-centre mode-source launch) shows as ~0.8 (near) and ~0.08 (far); a lossless metal would give ~4 for both.\nFields tab: hz bound to the interface.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "550*nm", "description": "mode source centre wavelength"},
+    {"name": "wp_metal", "expression": 1.37e16, "description": "Drude plasma frequency [rad/s]"},
+    {"name": "gamma_metal", "expression": 2e14, "description": "Drude damping [rad/s]"},
+    {"name": "eps_inf_metal", "expression": 1.0, "description": "Drude background permittivity"},
+    {"name": "Lx", "expression": "6.5*um", "description": "domain width (CPML on x_lo, x_hi; the metal runs into both)"},
+    {"name": "Ly", "expression": "1.5*um", "description": "domain height (pec y_lo inside the metal, CPML y_hi in air)"},
+    {"name": "t_metal", "expression": "0.25*um", "description": "metal thickness (about 11 skin depths)"},
+    {"name": "dx_mesh", "expression": "2.5*nm", "description": "uniform cell size (about 9 cells per metal decay length)"},
+    {"name": "x_src", "expression": "0.5*um", "description": "mode source line x (launches toward +x)"},
+    {"name": "x_near", "expression": "1*um", "description": "near mode monitor line x"},
+    {"name": "x_far", "expression": "6*um", "description": "far mode monitor line x"},
+    {"name": "omega0", "expression": "2*pi*c_const/lambda0", "description": "angular frequency at lambda0 [rad/s]"},
+    {"name": "eps_m_re", "expression": "eps_inf_metal - wp_metal**2/(omega0**2 + gamma_metal**2)",
+     "description": "Re eps of the metal at lambda0 (Drude, exp(+j omega t))"},
+    {"name": "eps_m_im", "expression": "-wp_metal**2*gamma_metal/(omega0*(omega0**2 + gamma_metal**2))",
+     "description": "Im eps of the metal at lambda0 (< 0 = loss)"},
+    {"name": "n2_den", "expression": "(eps_m_re + 1)**2 + eps_m_im**2", "description": "|eps_m + 1|^2"},
+    {"name": "n2_re", "expression": "(eps_m_re*(eps_m_re + 1) + eps_m_im**2)/n2_den",
+     "description": "Re n_spp^2, n_spp^2 = eps_m eps_d / (eps_m + eps_d) with eps_d = 1"},
+    {"name": "n2_im", "expression": "eps_m_im/n2_den", "description": "Im n_spp^2"},
+    {"name": "n_spp", "expression": "sqrt((hypot(n2_re, n2_im) + n2_re)/2)",
+     "description": "analytic Re n_spp = Re sqrt(eps_m / (eps_m + 1))"},
+    {"name": "n_spp_imag", "expression": "n2_im/(2*n_spp)", "description": "analytic Im n_spp (< 0 = loss)"},
+    {"name": "L_spp", "expression": "lambda0/(4*pi*abs(n_spp_imag))",
+     "description": "analytic 1/e propagation length of the SPP power [m]"},
+    {"name": "decay_air", "expression": "lambda0/(2*pi*sqrt(n_spp**2 - 1))",
+     "description": "1/e field decay length into the air [m] (lossless estimate)"},
+    {"name": "decay_metal", "expression": "lambda0/(2*pi*sqrt(n_spp**2 - eps_m_re))",
+     "description": "1/e field decay length into the metal [m] (lossless estimate)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "metal", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "t_metal"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "near_line", "kind": "line", "params": {"x0": "x_near", "y0": 0.0, "x1": "x_near", "y1": "Ly"}},
+    {"name": "far_line", "kind": "line", "params": {"x0": "x_far", "y0": 0.0, "x1": "x_far", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "drude_metal", "library": null, "properties": {},
+     "dispersion": [{"model": "drude", "omega_p": "wp_metal", "gamma": "gamma_metal", "eps_inf": "eps_inf_metal"}],
+     "selection": ["metal"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_hz",
+      "settings": {"bc_y_lo": "pec", "pml_cells": 20},
+      "features": [
+        {"name": "spp_source", "type": "mode_source", "selection": ["source_line"],
+         "params": {"mode_number": 1, "direction": "positive", "waveform": "gaussian", "wavelength": "lambda0",
+                    "bandwidth": 0.2, "power": 1.0},
+         "enabled": true},
+        {"name": "near_monitor", "type": "mode_monitor", "selection": ["near_line"],
+         "params": {"mode_number": 1, "wavelength_start": "520*nm", "wavelength_stop": "580*nm", "n_wavelengths": 13},
+         "enabled": true},
+        {"name": "far_monitor", "type": "mode_monitor", "selection": ["far_line"],
+         "params": {"mode_number": 1, "wavelength_start": "520*nm", "wavelength_stop": "580*nm", "n_wavelengths": 13},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "70*fs", "output_interval": "10*fs"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "n_eff_source", "source": "em.spp_source", "expression": "n_eff", "operation": "at", "at": 0,
+     "reference": "n_spp", "tolerance": 0.02},
+    {"name": "n_eff_imag_source", "source": "em.spp_source", "expression": "n_eff_imag", "operation": "at", "at": 0,
+     "reference": "n_spp_imag", "tolerance": 0.2},
+    {"name": "fraction_near", "source": "em.near_monitor", "expression": "fraction_positive", "operation": "at",
+     "at": "lambda0", "reference": "exp(-(x_near - x_src)/L_spp)", "tolerance": 0.03},
+    {"name": "fraction_far", "source": "em.far_monitor", "expression": "fraction_positive", "operation": "at",
+     "at": "lambda0", "reference": "exp(-(x_far - x_src)/L_spp)", "tolerance": 0.06},
+    {"name": "L_measured", "source": "em.far_monitor", "expression": "-(x_far - x_src)/log(fraction_positive)",
+     "operation": "at", "at": "lambda0", "reference": "L_spp", "tolerance": 0.2}
+  ],
+  "analytic_curves": [
+    {"name": "decay_near", "target": "em.near_monitor", "series": "fraction_positive",
+     "expression": "exp(-4*pi*(x_near - x_src)/wavelength*(wp_metal**2*gamma_metal/((2*pi*c_const/wavelength)*((2*pi*c_const/wavelength)**2 + gamma_metal**2)))/(2*(eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2) + 1)**2*sqrt((eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2))/(eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2) + 1))))",
+     "tolerance": 1.5},
+    {"name": "decay_far", "target": "em.far_monitor", "series": "fraction_positive",
+     "expression": "exp(-4*pi*(x_far - x_src)/wavelength*(wp_metal**2*gamma_metal/((2*pi*c_const/wavelength)*((2*pi*c_const/wavelength)**2 + gamma_metal**2)))/(2*(eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2) + 1)**2*sqrt((eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2))/(eps_inf_metal - wp_metal**2/((2*pi*c_const/wavelength)**2 + gamma_metal**2) + 1))))",
+     "tolerance": 0.2}
+  ]
+}

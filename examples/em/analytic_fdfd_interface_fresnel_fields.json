@@ -1,0 +1,70 @@
+{
+  "title": "Analytic: one-sided interface fields at oblique incidence (H_z FDFD, interface sampling)",
+  "description": "A plane wave (em_fdfd_hz, H_z polarisation = p) hits a vacuum / glass interface at x = x_int at the angle theta_deg: a y-periodic strip with Bloch ky = k0 sin(theta), CPML along x, a line source in the vacuum, glass of index n_glass from x_int (on a cell edge). Two interface selections of the half space, inside (glass) and outside (vacuum), give one-sided outline samples: least-squares planes through the cells of one side only, extrapolated to the drawn interface, so the jump of E_n is resolved instead of smeared over the interface cells. normal_x / normal_y and tangent_x / tangent_y project the E_x / E_y phasors on the outline. The sweep runs theta_deg over 15-60 deg.\nAnalytic: D_n and E_t are continuous, so |E_n(vacuum)| / |E_n(glass)| = n^2 and |E_t(vacuum)| / |E_t(glass)| = 1 at every angle; the glass carries the transmitted wave only, so |E_t| / |E_n| there = k_x / k_y = sqrt(n^2 - sin^2(theta)) / sin(theta).\nDerived values tab: the one-sided means En2_vacuum, En2_glass, Et2_vacuum, Et2_glass (no reference), then En_jump, Et_ratio, Et_over_En_glass, computed from them (derived values may read the ones listed before them), vs their references; expect ~1 % or better (FDFD dispersion and the face-averaged interface permittivity, first order in k h, plus the one-sided extrapolation, ~0.3 % in the glass). A plain cell mean over the interface cells would miss the n^2 jump by tens of %.\nSweep tab: En_jump, Et_ratio and Et_over_En_glass vs theta_deg with the dashed analytic lines.",
+  "version": 2,
+  "parameters": [
+    {"name": "lambda0", "expression": "1*um", "description": "vacuum wavelength"},
+    {"name": "n_glass", "expression": 1.5, "description": "glass index"},
+    {"name": "theta_deg", "expression": 40.0, "description": "angle of incidence in degrees (swept 15-60)"},
+    {"name": "theta", "expression": "theta_deg*pi/180", "description": "angle of incidence [rad]"},
+    {"name": "ky", "expression": "2*pi*sin(theta)/lambda0", "description": "Bloch wave number along the interface [rad/m]"},
+    {"name": "L_x", "expression": "5*um", "description": "strip length along x (CPML at both ends)"},
+    {"name": "L_y", "expression": "0.1*um", "description": "periodic strip height (20 cells)"},
+    {"name": "x_src", "expression": "1*um", "description": "line source position"},
+    {"name": "x_int", "expression": "2.5*um", "description": "interface position (a cell edge)"},
+    {"name": "dx_cell", "expression": "5*nm", "description": "uniform cell size (133 cells per wavelength in the glass)"},
+    {"name": "En_jump_ref", "expression": "n_glass**2", "description": "|E_n| jump vacuum / glass (D_n continuity)"},
+    {"name": "Et_over_En_ref", "expression": "sqrt(n_glass**2 - sin(theta)**2)/sin(theta)", "description": "|E_t| / |E_n| of the transmitted wave in the glass"}
+  ],
+  "domain": {"size_x": "L_x", "size_y": "L_y"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "L_y"}},
+    {"name": "half_space", "kind": "rectangle", "params": {"x0": "x_int", "y0": 0.0, "x1": "L_x", "y1": "L_y"}}
+  ],
+  "selections": [
+    {"name": "face_glass", "kind": "interface", "entities": ["half_space"], "side": "inside"},
+    {"name": "face_vacuum", "kind": "interface", "entities": ["half_space"], "side": "outside"}
+  ],
+  "materials": [
+    {"name": "glass", "library": null, "properties": {"eps_r": "n_glass**2"}, "dispersion": null,
+     "selection": ["half_space"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_hz",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "bloch_ky": "ky", "wavelength": "lambda0"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"amplitude": 1.0, "phase": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": false, "conformal_boundaries": false},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "theta_deg", "values": [15.0, 25.0, 50.0, 60.0, 40.0]}},
+  "derived_values": [
+    {"name": "En2_vacuum", "selection": ["face_vacuum"], "operation": "mean",
+     "expression": "(em_ex_re*normal_x + em_ey_re*normal_y)**2 + (em_ex_im*normal_x + em_ey_im*normal_y)**2"},
+    {"name": "En2_glass", "selection": ["face_glass"], "operation": "mean",
+     "expression": "(em_ex_re*normal_x + em_ey_re*normal_y)**2 + (em_ex_im*normal_x + em_ey_im*normal_y)**2"},
+    {"name": "Et2_vacuum", "selection": ["face_vacuum"], "operation": "mean",
+     "expression": "(em_ex_re*tangent_x + em_ey_re*tangent_y)**2 + (em_ex_im*tangent_x + em_ey_im*tangent_y)**2"},
+    {"name": "Et2_glass", "selection": ["face_glass"], "operation": "mean",
+     "expression": "(em_ex_re*tangent_x + em_ey_re*tangent_y)**2 + (em_ex_im*tangent_x + em_ey_im*tangent_y)**2"},
+    {"name": "En_jump", "expression": "sqrt(En2_vacuum/En2_glass)", "reference": "En_jump_ref", "tolerance": 0.02},
+    {"name": "Et_ratio", "expression": "sqrt(Et2_vacuum/Et2_glass)", "reference": 1.0, "tolerance": 0.02},
+    {"name": "Et_over_En_glass", "expression": "sqrt(Et2_glass/En2_glass)", "reference": "Et_over_En_ref",
+     "tolerance": 0.02}
+  ],
+  "analytic_curves": [
+    {"name": "En_jump_vs_angle", "target": "sweep", "series": "En_jump", "expression": "En_jump_ref", "tolerance": 0.02},
+    {"name": "Et_ratio_vs_angle", "target": "sweep", "series": "Et_ratio", "expression": "1", "tolerance": 0.02},
+    {"name": "Et_over_En_vs_angle", "target": "sweep", "series": "Et_over_En_glass", "expression": "Et_over_En_ref",
+     "tolerance": 0.02}
+  ]
+}

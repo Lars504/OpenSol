@@ -1,0 +1,75 @@
+{
+  "title": "Lumped membrane heating: implicit-Euler time-step convergence (analytic)",
+  "description": "A thin silicon membrane (2D model of a 2 um layer, all in-plane faces insulated) heated uniformly by a heat_source Q and cooled through both faces by out_of_plane_convection (h * 2 / thickness). Every cell follows the same ODE rho cp dT/dt = Q - (2 h / t_z) (T - T_amb), so T stays uniform and conduction drops out: the run tests the time integration alone. Sweep over the steps per time constant n = tau / dt = 2..32.\nAnalytic: continuous theta = theta_ss (1 - exp(-t / tau)), theta_ss = Q t_z / (2 h) = 50 K, tau = rho cp t_z / (2 h) = 0.1 s; implicit Euler gives exactly theta_k = theta_ss (1 - (1 + dt / tau)^(-k)) at t = k dt, which lags the continuous curve by about theta_ss exp(-1) / (2 n) at t = tau (first order in dt).\nDerived values tab: theta_tau (t = tau) and theta_end (t = 3 tau) against the discrete formula (exact to float32 storage, tolerance 1e-4), lag_tau = theta(tau) - theta_ss (1 - exp(-1)) against its discrete value (-0.29 K at n = 32 down to -3.8 K at n = 2; tolerance 1e-3).\nSweep tab: theta_tau with the discrete (dashed, toleranced) and continuous curves, lag_tau with the discrete curve and the first-order estimate -theta_ss exp(-1) / (2 n) (halves per doubling of n).\nProbes tab (each sweep value): centre probe with the discrete curve (toleranced) and the continuous exponential.",
+  "version": 1,
+  "parameters": [
+    {"name": "n_tau", "expression": 32, "description": "implicit-Euler steps per time constant (swept 2..32)"},
+    {"name": "rho_si", "expression": 2329.0, "description": "silicon density in kg/m^3"},
+    {"name": "cp_si", "expression": 700.0, "description": "silicon specific heat in J/(kg K)"},
+    {"name": "k_si", "expression": 130.0, "description": "silicon thermal conductivity in W/(m K) (does not enter: T stays uniform)"},
+    {"name": "t_z", "expression": "2*um", "description": "membrane thickness the 2D model stands for"},
+    {"name": "tau_th", "expression": 0.1, "description": "thermal time constant rho cp t_z / (2 h) in s"},
+    {"name": "h_conv", "expression": "rho_si*cp_si*t_z/(2*tau_th)", "description": "heat transfer coefficient of each face in W/(m^2 K) (16.3)"},
+    {"name": "theta_ss", "expression": 50.0, "description": "steady temperature rise Q t_z / (2 h) in K"},
+    {"name": "Q_src", "expression": "rho_si*cp_si*theta_ss/tau_th", "description": "uniform power density in W/m^3 (8.15e8)"},
+    {"name": "T_amb", "expression": 293.15, "description": "ambient and initial temperature in K"},
+    {"name": "dt_step", "expression": "tau_th/n_tau", "description": "implicit-Euler time step in s"},
+    {"name": "t_end", "expression": "3*tau_th", "description": "study duration in s"},
+    {"name": "L_plate", "expression": "100*um", "description": "side of the square membrane (10 x 10 cells)"},
+    {"name": "theta_tau_ref", "expression": "theta_ss*(1 - (1 + 1/n_tau)**(-n_tau))", "description": "discrete rise at t = tau in K"},
+    {"name": "theta_end_ref", "expression": "theta_ss*(1 - (1 + 1/n_tau)**(-3*n_tau))", "description": "discrete rise at t = 3 tau in K"},
+    {"name": "lag_tau_ref", "expression": "theta_ss*(exp(-1) - (1 + 1/n_tau)**(-n_tau))", "description": "discrete minus continuous rise at t = tau in K (negative: the scheme lags)"}
+  ],
+  "domain": {"size_x": "L_plate", "size_y": "L_plate"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "0.55*L_plate", "y": "0.55*L_plate"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null, "properties": {"k": "k_si", "rho": "rho_si", "cp": "cp_si"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_amb"},
+      "features": [
+        {"name": "source", "type": "heat_source", "selection": ["all"], "params": {"Q": "Q_src"}, "enabled": true},
+        {"name": "faces_cooling", "type": "out_of_plane_convection", "selection": ["all"],
+         "params": {"h": "h_conv", "T_ext": "T_amb", "thickness": "t_z", "sides": 2}, "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "L_plate/10", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "tau_th"},
+            "stored_fields": ["heat.T_rise"], "sweep": {"parameter": "n_tau", "values": [2, 4, 8, 16, 32]}},
+  "derived_values": [
+    {"name": "theta_tau", "expression": "values - T_amb", "operation": "at", "source": "heat.centre", "at": "tau_th",
+     "reference": "theta_tau_ref", "tolerance": 1e-4},
+    {"name": "theta_end", "expression": "values - T_amb", "operation": "last", "source": "heat.centre",
+     "reference": "theta_end_ref", "tolerance": 1e-4},
+    {"name": "lag_tau", "expression": "values - T_amb - theta_ss*(1 - exp(-1))", "operation": "at",
+     "source": "heat.centre", "at": "tau_th", "reference": "lag_tau_ref", "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "theta_tau_discrete", "target": "sweep", "expression": "theta_tau_ref", "tolerance": 1e-4,
+     "series": "theta_tau"},
+    {"name": "theta_tau_continuous", "target": "sweep", "expression": "theta_ss*(1 - exp(-1)) + 0*n_tau",
+     "series": "theta_tau"},
+    {"name": "lag_discrete", "target": "sweep", "expression": "lag_tau_ref", "tolerance": 1e-3, "series": "lag_tau"},
+    {"name": "lag_first_order", "target": "sweep", "expression": "-theta_ss*exp(-1)/(2*n_tau)", "series": "lag_tau"},
+    {"name": "probe_discrete", "target": "heat.centre",
+     "expression": "T_amb + theta_ss*(1 - (1 + dt_step/tau_th)**(-t/dt_step))", "tolerance": 1e-4},
+    {"name": "probe_continuous", "target": "heat.centre", "expression": "T_amb + theta_ss*(1 - exp(-t/tau_th))"}
+  ]
+}

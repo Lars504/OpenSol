@@ -1,0 +1,47 @@
+{
+  "title": "Mesh study: silicon disk whispering-gallery resonance (FDFD eigenfrequency)",
+  "description": "S7.8 mesh study reference problem: the disk of the disk_resonator_eigenmodes template (eps_r 12.11, r = 1 um, 4 x 4 um CPML box), em_fdfd_ez eigenfrequency study near 1.55 um. Reference: the exact 2D dielectric-cylinder resonance n J_m'(n k R) / J_m(n k R) = H_m^(2)'(k R) / H_m^(2)(k R), solved by open_sol.mesh_study.analysis (scipy) from the measured wavelength. Each mode is a cos / sin pair split by the staircase: lambda_1 / lambda_2 are usually that pair (the split is a staircase measure itself).\nMesh variants (open_sol.mesh_study.accuracy): uniform dx_fine; graded_box = base dx_base in the air with the disk bounding box (+ ref_margin) refined to dx_fine; *_subpixel = the same with solver_defaults.subpixel_smoothing.",
+  "version": 1,
+  "parameters": [
+    {"name": "r_disk", "expression": "1*um", "description": "disk radius"},
+    {"name": "eps_disk", "expression": 12.11, "description": "disk relative permittivity (silicon)"},
+    {"name": "L_box", "expression": "4*um", "description": "domain side"},
+    {"name": "x_c", "expression": "L_box/2", "description": "disk centre x and y"},
+    {"name": "lambda_target", "expression": "1.55*um", "description": "eigenfrequency target wavelength"},
+    {"name": "dx_fine", "expression": "20*nm", "description": "finest cell size (uniform dx)"},
+    {"name": "dx_base", "expression": "50*nm", "description": "base cell size of the graded variant (air)"},
+    {"name": "ref_margin", "expression": "100*nm", "description": "refinement margin around the disk"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "disk", "kind": "circle", "params": {"cx": "x_c", "cy": "x_c", "r": "r_disk"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon_disk", "library": null, "properties": {"eps_r": "eps_disk"}, "dispersion": null,
+     "selection": ["disk"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_fine", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 4}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "Q_1", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "lambda_2", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances", "at": 1},
+    {"name": "Q_2", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances", "at": 1},
+    {"name": "pml_1", "expression": "pml_fraction", "selection": [], "operation": "at", "source": "em.resonances", "at": 0}
+  ],
+  "analytic_curves": []
+}

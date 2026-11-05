@@ -1,0 +1,74 @@
+{
+  "title": "Mesh study: planar strip heater above a waveguide (steady heat)",
+  "description": "S7.8 mesh study reference problem (planar heat): a 2.1 x 0.15 um gold heater strip 1.05 um above a 0.6 x 0.3 um silicon core in a 4.5 um silica layer on a substrate held at T_sub (y_lo), 10.5 um of air above (insulated faces), 60 um wide. P_heater per metre of length. Derived dT_core (core mean rise) and dT_heater. No closed form: the analysis takes a Richardson extrapolation of the finest uniform runs as reference. All edges lie on a 150 nm lattice, so every uniform dx of the study puts them on cell edges.\nMesh variants: uniform dx_fine; graded_box = base dx_base with heater and core boxes (+ ref_margin) refined; anisotropic = S7.1 axis bands: y rows over heater and core, x columns only around their side edges. The *_snap_* boxes put cell edges on the heater, core and oxide-top interfaces in the graded variants.",
+  "version": 1,
+  "parameters": [
+    {"name": "P_heater", "expression": 20.0, "description": "heater power per metre of length [W/m]"},
+    {"name": "k_oxide", "expression": 1.38, "description": "silica thermal conductivity [W/(m K)]"},
+    {"name": "k_air", "expression": 0.026, "description": "air thermal conductivity [W/(m K)]"},
+    {"name": "k_gold", "expression": 317.0, "description": "gold thermal conductivity [W/(m K)]"},
+    {"name": "k_si", "expression": 148.0, "description": "silicon thermal conductivity [W/(m K)]"},
+    {"name": "T_sub", "expression": 293.15, "description": "substrate temperature (y_lo face) [K]"},
+    {"name": "Lx", "expression": "60*um", "description": "domain width"},
+    {"name": "Ly", "expression": "15*um", "description": "domain height"},
+    {"name": "y_oxide_top", "expression": "4.5*um", "description": "top of the silica layer"},
+    {"name": "hx0", "expression": "28.95*um", "description": "heater left edge"},
+    {"name": "hx1", "expression": "31.05*um", "description": "heater right edge"},
+    {"name": "hy0", "expression": "3.3*um", "description": "heater bottom"},
+    {"name": "hy1", "expression": "3.45*um", "description": "heater top"},
+    {"name": "cx0", "expression": "29.7*um", "description": "core left edge"},
+    {"name": "cx1", "expression": "30.3*um", "description": "core right edge"},
+    {"name": "cy0", "expression": "1.95*um", "description": "core bottom"},
+    {"name": "cy1", "expression": "2.25*um", "description": "core top"},
+    {"name": "dx_fine", "expression": "25*nm", "description": "finest cell size (uniform dx)"},
+    {"name": "dx_base", "expression": "600*nm", "description": "base cell size of the graded variants"},
+    {"name": "ref_margin", "expression": "0.5*um", "description": "refinement margin around heater / core / edges"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "oxide", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "Lx", "y1": "y_oxide_top"}},
+    {"name": "heater", "kind": "rectangle", "params": {"x0": "hx0", "y0": "hy0", "x1": "hx1", "y1": "hy1"}},
+    {"name": "core", "kind": "rectangle", "params": {"x0": "cx0", "y0": "cy0", "x1": "cx1", "y1": "cy1"}},
+    {"name": "heater_snap_lo", "kind": "rectangle", "params": {"x0": "hx0", "y0": "hy0", "x1": "hx0 + dx_fine", "y1": "hy0 + dx_fine"}},
+    {"name": "heater_snap_hi", "kind": "rectangle", "params": {"x0": "hx1 - dx_fine", "y0": "hy1 - dx_fine", "x1": "hx1", "y1": "hy1"}},
+    {"name": "core_snap_lo", "kind": "rectangle", "params": {"x0": "cx0", "y0": "cy0", "x1": "cx0 + dx_fine", "y1": "cy0 + dx_fine"}},
+    {"name": "core_snap_hi", "kind": "rectangle", "params": {"x0": "cx1 - dx_fine", "y0": "cy1 - dx_fine", "x1": "cx1", "y1": "cy1"}},
+    {"name": "oxide_snap", "kind": "rectangle", "params": {"x0": 0.0, "y0": "y_oxide_top - dx_fine", "x1": "dx_fine", "y1": "y_oxide_top"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "air", "library": null, "properties": {"k": "k_air"}, "dispersion": null, "selection": ["all"]},
+    {"name": "silica", "library": null, "properties": {"k": "k_oxide"}, "dispersion": null, "selection": ["oxide"]},
+    {"name": "silicon_core", "library": null, "properties": {"k": "k_si"}, "dispersion": null, "selection": ["core"]},
+    {"name": "gold_heater", "library": null, "properties": {"k": "k_gold"}, "dispersion": null, "selection": ["heater"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_sub"},
+      "features": [
+        {"name": "substrate", "type": "temperature", "selection": ["y_lo"], "params": {"temperature": "T_sub"},
+         "enabled": true},
+        {"name": "heater_power", "type": "heat_source", "selection": ["heater"],
+         "params": {"Q": "P_heater/((hx1 - hx0)*(hy1 - hy0))"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_fine", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"precision": "double", "tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "dT_core", "expression": "T - T_sub", "selection": ["core"], "operation": "mean"},
+    {"name": "dT_heater", "expression": "T - T_sub", "selection": ["heater"], "operation": "mean"},
+    {"name": "P_total", "expression": "Q_ext", "selection": [], "operation": "integral", "reference": "P_heater",
+     "tolerance": 1e-6}
+  ],
+  "analytic_curves": []
+}

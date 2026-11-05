@@ -1,0 +1,66 @@
+{
+  "title": "Heated square plate on growing meshes: multigrid-preconditioned CG (2D Poisson series, analytic)",
+  "description": "A square plate (side a, conductivity k) with a uniform heat_source Q and all four faces held at T_wall: -k lap(T) = Q, a genuinely 2D problem. The linear solver is a pcg node with preconditioner 'multigrid' (smoothed-aggregation algebraic multigrid V-cycles). The sweep refines the mesh, N = a / dx in {101, 201, 401, 801} (odd, so the plate centre is a cell centre; up to 6.4e5 cells).\nWhat to look at: the CG iterations per solve stay roughly constant (typically 10-40) while N grows 8x; Jacobi-PCG would need ~10 per cell along the axis (~8000 at N = 801). The counts are in the run's summary.json, solvers -> heat -> roles -> linear -> counters (cg_iterations, multigrid_levels); set the 'mg' node's preconditioner to jacobi to compare.\nAnalytic: theta = T - T_wall = (Q / (2 k)) [x (a - x) - (8 a^2 / pi^3) sum_{n odd} sin(n pi x / a) cosh(n pi (y - a/2) / a) / (n^3 cosh(n pi / 2))] (n = 1..7 kept); theta_centre = 0.073671 Q a^2 / k; area mean theta = 0.035144 Q a^2 / k (series in tanh(n pi / 2) / n^5 with (31/32) zeta(5)).\nDerived values tab: theta_centre (probe at the plate centre) and theta_mean (mean of T - T_wall); second order in dx: expect ~1e-4 (centre) and ~3e-4 (mean) at N = 101, about 4x smaller per refinement.\nSweep tab: theta_centre vs N with the dashed analytic value.\nLine profile tab (N = 801): theta_mid_line (field T_rise) along y = a/2 against the series, ~1e-4 of the rise.",
+  "version": 2,
+  "parameters": [
+    {"name": "Q_vol", "expression": 1e9, "description": "uniform volumetric heat source in W/m^3"},
+    {"name": "k_plate", "expression": 1.5, "description": "thermal conductivity in W/(m K)"},
+    {"name": "T_wall", "expression": 300.0, "description": "temperature of the four faces in K"},
+    {"name": "a_plate", "expression": "1*mm", "description": "plate side length"},
+    {"name": "N_cells", "expression": 801, "description": "cells per side (swept; odd so the centre is a cell centre)"},
+    {"name": "dx_mesh", "expression": "a_plate/N_cells", "description": "uniform cell size"},
+    {"name": "theta_half", "expression": "Q_vol/(2*k_plate)", "description": "rise scale Q / (2 k) in K/m^2"},
+    {"name": "theta_centre_ref",
+     "expression": "theta_half*(a_plate**2/4 - 8*a_plate**2/pi**3*(1/cosh(pi/2) - 1/(27*cosh(3*pi/2)) + 1/(125*cosh(5*pi/2)) - 1/(343*cosh(7*pi/2))))",
+     "description": "analytic centre rise (0.073671 Q a^2 / k) in K"},
+    {"name": "tanh_sum", "expression": "1.0045237628 - (1 - tanh(pi/2)) - (1 - tanh(3*pi/2))/243 - (1 - tanh(5*pi/2))/3125",
+     "description": "sum over odd n of tanh(n pi / 2) / n^5: (31/32) zeta(5) minus the first deficits"},
+    {"name": "theta_mean_ref", "expression": "theta_half*a_plate**2*(1/6 - 32/pi**5*tanh_sum)",
+     "description": "analytic area-mean rise (0.035144 Q a^2 / k) in K"}
+  ],
+  "domain": {"size_x": "a_plate", "size_y": "a_plate"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "a_plate/2", "y": "a_plate/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "plate", "library": null, "properties": {"k": "k_plate"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_wall"},
+      "features": [
+        {"name": "walls", "type": "temperature", "selection": ["x_lo", "x_hi", "y_lo", "y_hi"],
+         "params": {"temperature": "T_wall"}, "enabled": true},
+        {"name": "source", "type": "heat_source", "selection": ["all"], "params": {"Q": "Q_vol"}, "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "mg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "mg", "type": "pcg",
+     "settings": {"precision": "double", "tolerance": 1e-11, "max_iterations": 0, "preconditioner": "multigrid"}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "N_cells", "values": [101, 201, 401, 801]}},
+  "derived_values": [
+    {"name": "theta_centre", "expression": "values - T_wall", "selection": [], "operation": "last",
+     "source": "heat.centre", "reference": "theta_centre_ref", "tolerance": 1e-3},
+    {"name": "theta_mean", "expression": "T - T_wall", "selection": [], "operation": "mean",
+     "reference": "theta_mean_ref", "tolerance": 2e-3}
+  ],
+  "analytic_curves": [
+    {"name": "theta_centre_vs_N", "target": "sweep", "series": "theta_centre", "expression": "theta_centre_ref",
+     "tolerance": 1e-3},
+    {"name": "theta_mid_line", "target": "line",
+     "expression": "theta_half*(x*(a_plate - x) - 8*a_plate**2/pi**3*(sin(pi*x/a_plate)*cosh(pi*(y - a_plate/2)/a_plate)/cosh(pi/2) + sin(3*pi*x/a_plate)*cosh(3*pi*(y - a_plate/2)/a_plate)/(27*cosh(3*pi/2)) + sin(5*pi*x/a_plate)*cosh(5*pi*(y - a_plate/2)/a_plate)/(125*cosh(5*pi/2)) + sin(7*pi*x/a_plate)*cosh(7*pi*(y - a_plate/2)/a_plate)/(343*cosh(7*pi/2))))",
+     "tolerance": 1e-3, "line": ["dx_mesh/4", "a_plate/2", "a_plate - dx_mesh/4", "a_plate/2"], "field": "heat.T_rise"}
+  ]
+}

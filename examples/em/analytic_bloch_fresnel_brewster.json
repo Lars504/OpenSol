@@ -1,0 +1,91 @@
+{
+  "title": "Analytic: oblique Fresnel transmission and Brewster angle (Bloch FDTD)",
+  "description": "A plane-wave pulse hits a vacuum / glass interface (n = 1.5) at oblique incidence, once in E_z (physics 'em_s', s-polarised) and once in H_z (physics 'em_p', p-polarised). The strip is y-periodic with Bloch wave vector ky = 2 pi sin(theta) / lambda0, so the vertical line source launches the wave at angle theta at lambda0 = 1 um; the sweep runs theta over 0-60 deg and the Brewster angle atan(1.5) = 56.31 deg.\nAnalytic (Fresnel): r_s = (cos_i - n cos_t) / (cos_i + n cos_t), r_p = (n cos_i - cos_t) / (n cos_i + cos_t), T = 1 - r^2; incident power per period P_s = A^2 Ly / (2 eta0 cos_i) (an E_z sheet radiates A / cos_i), P_p = A^2 Ly cos_i / (2 eta0) (an in-plane sheet radiates |E| = A).\nSweep tab: derived T_s, T_p (power_per_cw of the glass flux line at lambda0 / P) vs theta_deg with the dashed Fresnel references; R_p_excess = (1 - T_p) - r_p^2 against 0, an absolute reflectance error (r_p^2 goes to 0 at the Brewster angle, so a relative error of R_p is meaningless there).\nSpectra tab: at fixed ky the angle changes with wavelength, sin(theta) = ky lambda / (2 pi). Select em_p.trans with reference em_s.trans: the ratio plot shows P_p / P_s against the dashed cos_i^2 T_p / T_s curve (last sweep value, 60 deg).\nExpected agreement: ~1 % absolute in T (discrete dispersion at 66 cells per glass wavelength, CPML reflection of oblique waves, truncated ring-down near the grazing cutoff 2 pi / ky).",
+  "version": 1,
+  "parameters": [
+    {"name": "n_glass", "expression": 1.5, "description": "refractive index of the glass half space"},
+    {"name": "lambda0", "expression": "1*um", "description": "source centre wavelength = wavelength of the derived values"},
+    {"name": "theta_deg", "expression": 45.0, "description": "incidence angle at lambda0 [deg] (swept)"},
+    {"name": "th", "expression": "theta_deg*pi/180", "description": "incidence angle [rad]"},
+    {"name": "ky", "expression": "2*pi*sin(th)/lambda0", "description": "Bloch wave vector along y [rad/m]"},
+    {"name": "Lx", "expression": "5*um", "description": "domain length (cpml on both x faces)"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells; only the zeroth diffraction order)"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "x_src", "expression": "1.005*um", "description": "line source x (cell centre), in vacuum"},
+    {"name": "x_glass", "expression": "2.5*um", "description": "vacuum / glass interface (glass fills x >= x_glass into the PML)"},
+    {"name": "x_flux", "expression": "3.505*um", "description": "transmitted flux line x (cell centre), in the glass"},
+    {"name": "A_src", "expression": 1.0, "description": "line source amplitude [V/m] (normal-incidence calibration)"},
+    {"name": "bw", "expression": 0.05,
+     "description": "relative pulse bandwidth: narrow, so the spectrum is negligible at the grazing cutoff 2 pi / ky (1.155 um at 60 deg)"},
+    {"name": "T_run", "expression": "600*fs", "description": "study duration (pulse 2 t0 ~ 190 fs plus transit)"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "vacuum impedance [Ohm]"},
+    {"name": "cos_i", "expression": "cos(th)", "description": "cos of the incidence angle"},
+    {"name": "cos_t", "expression": "sqrt(1 - (sin(th)/n_glass)**2)", "description": "cos of the refraction angle"},
+    {"name": "r_s", "expression": "(cos_i - n_glass*cos_t)/(cos_i + n_glass*cos_t)", "description": "Fresnel r_s (E_z)"},
+    {"name": "r_p", "expression": "(n_glass*cos_i - cos_t)/(n_glass*cos_i + cos_t)", "description": "Fresnel r_p (H_z); 0 at Brewster"},
+    {"name": "T_s_fresnel", "expression": "1 - r_s**2", "description": "s power transmission"},
+    {"name": "T_p_fresnel", "expression": "1 - r_p**2", "description": "p power transmission"},
+    {"name": "P_s", "expression": "A_src**2*Ly/(2*eta0*cos_i)", "description": "incident E_z power per period [W/m] toward +x"},
+    {"name": "P_p", "expression": "A_src**2*Ly*cos_i/(2*eta0)", "description": "incident H_z power per period [W/m] toward +x"},
+    {"name": "theta_brewster_deg", "expression": "atan(n_glass)*180/pi", "description": "Brewster angle [deg] (56.31)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "glass", "kind": "rectangle", "params": {"x0": "x_glass", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "flux_line", "kind": "line", "params": {"x0": "x_flux", "y0": 0.0, "x1": "x_flux", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass_material", "library": null, "properties": {"eps_r": "n_glass**2"}, "dispersion": null,
+     "selection": ["glass"]}
+  ],
+  "physics": [
+    {
+      "name": "em_s",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "bloch_ky": "ky"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "trans", "type": "flux_monitor", "selection": ["flux_line"],
+         "params": {"wavelength_start": "0.95*um", "wavelength_stop": "1.05*um", "n_wavelengths": 21},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_p",
+      "type": "em_fdtd_hz",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "bloch_ky": "ky"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": "bw", "amplitude": "A_src"},
+         "enabled": true},
+        {"name": "trans", "type": "flux_monitor", "selection": ["flux_line"],
+         "params": {"wavelength_start": "0.95*um", "wavelength_stop": "1.05*um", "n_wavelengths": 21},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "theta_deg", "values": [0.0, 15.0, 30.0, 45.0, 56.30993, 60.0]}},
+  "derived_values": [
+    {"name": "T_s", "expression": "power_per_cw/P_s", "selection": [], "operation": "at", "source": "em_s.trans",
+     "at": "lambda0", "reference": "T_s_fresnel", "tolerance": 0.03},
+    {"name": "T_p", "expression": "power_per_cw/P_p", "selection": [], "operation": "at", "source": "em_p.trans",
+     "at": "lambda0", "reference": "T_p_fresnel", "tolerance": 0.03},
+    {"name": "R_p_excess", "expression": "1 - power_per_cw/P_p - r_p**2", "selection": [], "operation": "at",
+     "source": "em_p.trans", "at": "lambda0", "reference": 0.0, "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "p_over_s", "target": "em_p.trans", "series": "ratio",
+     "expression": "(sqrt(1 - (ky*wavelength/(2*pi))**2)*(sqrt(1 - (ky*wavelength/(2*pi))**2) + n_glass*sqrt(1 - (ky*wavelength/(2*pi*n_glass))**2))/(n_glass*sqrt(1 - (ky*wavelength/(2*pi))**2) + sqrt(1 - (ky*wavelength/(2*pi*n_glass))**2)))**2"}
+  ]
+}

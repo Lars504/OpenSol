@@ -1,0 +1,97 @@
+{
+  "title": "Analytic: SHG and THG radiated by nonlinear 2D sheets in glass (nonlinear FDFD)",
+  "description": "Undepleted sheet nonlinearities (em_fdfd_nonlinear, sheet_nonlinearity on two vertical lines): a y-periodic strip (4 rows of 10 nm, CPML along x) filled everywhere with n = 1.5 glass; an E_z line source launches the pump (1550 nm, amplitude A_p) through a D3h monolayer sheet (MoS2-like, chi_s = 1e-19 m^2/V, armchair along the line) at x = 2.005 um and a graphene-like sigma3 sheet (THG sigma3 = 1e-21 - 4e-22 j S m^2/V^2) at x = 2.505 um. Channels: p (E_z), sh = 2 p (H_z: the D3h sheet turns E_z^2 into an in-plane P_t = -(1/2) eps0 chi_s E_z^2 along the line), th = 3 p (E_z: K = sigma3 E_z^3 / 4). The sweep runs A_p over 2.5-20 MV/m.\nAnalytic (a uniform sheet current K radiates |E| = eta0 |K| / (2 n) to each side; K = j 2w P_t for the SH): |E_2w| = k0 chi_s A^2 / (2 n), |E_3w| = eta0 |sigma3| A^3 / (8 n). On the 3-point lattice the SH probed at a cell centre (mean of its two E_y faces) equals the continuum value exactly; the E_z harmonic is the continuum value / cos(K_3w h / 2) (+0.42 %, parameter E_th_cont is the continuum one).\nSweep tab: E_sh (forward |E_y| of the SH, ~ A^2) and E_th (forward |E_z| of the TH, ~ A^3) vs A_p with the dashed references (13.5 V/m and 33.9 V/m at 10 MV/m; use log axes for the power laws).\nDerived values tab: E_sh, E_th, E_th_back (the TH radiated toward -x, same modulus) and E_p (pump at the graphene line, = A_p) against their references; expected ~1e-3 (CPML floor; to be confirmed by a first run).\nLine profile tab (last sweep value, snapshot 'channel th'): |E_z| of the TH along the strip is flat on both sides of the sheet (a sheet radiates symmetrically).",
+  "version": 1,
+  "parameters": [
+    {"name": "lam_p", "expression": "1550*nm", "description": "pump vacuum wavelength"},
+    {"name": "dx_cell", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "4*dx_cell", "description": "periodic y period (4 cells)"},
+    {"name": "Lx", "expression": "4*um", "description": "strip length (400 cells, CPML on both x faces)"},
+    {"name": "n_bg", "expression": 1.5, "description": "refractive index of the glass filling the strip (PML included)"},
+    {"name": "A_p", "expression": 1e7, "description": "pump amplitude [V/m] launched into the glass (swept 2.5-20 MV/m)"},
+    {"name": "chi_s_tmd", "expression": 1e-19, "description": "D3h sheet susceptibility chi_s [m^2/V]"},
+    {"name": "sig3_re", "expression": 1e-21, "description": "Re sigma3 (THG) of the graphene-like sheet [S m^2/V^2]"},
+    {"name": "sig3_im", "expression": -4e-22, "description": "Im sigma3 (THG) [S m^2/V^2]"},
+    {"name": "x_src", "expression": "1.005*um", "description": "pump line source (centre of cell 100)"},
+    {"name": "x_tmd", "expression": "2.005*um", "description": "D3h sheet line (centre of cell 200)"},
+    {"name": "x_gr", "expression": "2.505*um", "description": "sigma3 sheet line (centre of cell 250)"},
+    {"name": "x_fwd", "expression": "3.505*um", "description": "forward harmonic probes (centre of cell 350)"},
+    {"name": "x_back", "expression": "0.505*um", "description": "backward TH probe (centre of cell 50, beyond the source)"},
+    {"name": "y_probe", "expression": "1.5*dx_cell", "description": "probe row (a cell centre)"},
+    {"name": "k_vac", "expression": "2*pi/lam_p", "description": "pump vacuum wavenumber k0 [1/m]"},
+    {"name": "eta0", "expression": "mu0_const*c_const", "description": "vacuum wave impedance [Ohm]"},
+    {"name": "abs_sig3", "expression": "hypot(sig3_re, sig3_im)", "description": "|sigma3| of the THG process"},
+    {"name": "K_th", "expression": "2*asin(3*k_vac*n_bg*dx_cell/2)", "description": "lattice phase per cell of the TH wave"},
+    {"name": "E_sh_ref", "expression": "k_vac*chi_s_tmd*A_p**2/(2*n_bg)",
+     "description": "|E_2w| [V/m] radiated by the D3h sheet (continuum = lattice centre value)"},
+    {"name": "E_th_cont", "expression": "eta0*abs_sig3*A_p**3/(8*n_bg)", "description": "continuum |E_3w| [V/m]"},
+    {"name": "E_th_ref", "expression": "E_th_cont/cos(K_th/2)",
+     "description": "lattice |E_3w| [V/m] = 3 k0 h eta0 |sigma3| A^3 / (8 sin K_th)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "tmd_line", "kind": "line", "params": {"x0": "x_tmd", "y0": 0.0, "x1": "x_tmd", "y1": "Ly"}},
+    {"name": "graphene_line", "kind": "line", "params": {"x0": "x_gr", "y0": 0.0, "x1": "x_gr", "y1": "Ly"}},
+    {"name": "graphene_point", "kind": "point", "params": {"x": "x_gr", "y": "y_probe"}},
+    {"name": "forward_point", "kind": "point", "params": {"x": "x_fwd", "y": "y_probe"}},
+    {"name": "backward_point", "kind": "point", "params": {"x": "x_back", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null, "properties": {"eps_r": "n_bg**2"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "nl",
+      "type": "em_fdfd_nonlinear",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "coupling_mode": "undepleted"},
+      "features": [
+        {"name": "p", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "wavelength", "wavelength": "lam_p", "polarization": "ez"}, "enabled": true},
+        {"name": "sh", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "2 p", "polarization": "hz"}, "enabled": true},
+        {"name": "th", "type": "harmonic_channel", "selection": [],
+         "params": {"definition": "combination", "combination": "3 p", "polarization": "ez"}, "enabled": true},
+        {"name": "tmd", "type": "sheet_nonlinearity", "selection": ["tmd_line"],
+         "params": {"sheet_model": "D3h", "chi_s": "chi_s_tmd", "armchair_angle": 0.0}, "enabled": true},
+        {"name": "graphene", "type": "sheet_nonlinearity", "selection": ["graphene_line"],
+         "params": {"sheet_model": "sigma3", "thg_sigma3_real": "sig3_re", "thg_sigma3_imag": "sig3_im"},
+         "enabled": true},
+        {"name": "pump", "type": "line_source", "selection": ["source_line"],
+         "params": {"channel": "p", "amplitude": "A_p", "phase": 0.0}, "enabled": true},
+        {"name": "pump_probe", "type": "field_probe", "selection": ["graphene_point"],
+         "params": {"channel": "p", "component": "ez"}, "enabled": true},
+        {"name": "sh_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "sh", "component": "ey"}, "enabled": true},
+        {"name": "th_forward", "type": "field_probe", "selection": ["forward_point"],
+         "params": {"channel": "th", "component": "ez"}, "enabled": true},
+        {"name": "th_backward", "type": "field_probe", "selection": ["backward_point"],
+         "params": {"channel": "th", "component": "ez"}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "nonlinear_frequency_domain", "settings": {},
+            "stored_fields": ["nl.e_abs", "nl.ez_abs"],
+            "sweep": {"parameter": "A_p", "values": [2.5e6, 5e6, 1e7, 2e7]}},
+  "derived_values": [
+    {"name": "E_sh", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.sh_forward",
+     "at": null, "reference": "E_sh_ref", "tolerance": 0.005},
+    {"name": "E_th", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.th_forward",
+     "at": null, "reference": "E_th_ref", "tolerance": 0.005},
+    {"name": "E_th_back", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.th_backward",
+     "at": null, "reference": "E_th_ref", "tolerance": 0.005},
+    {"name": "E_p", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.pump_probe",
+     "at": null, "reference": "A_p", "tolerance": 0.002}
+  ],
+  "analytic_curves": [
+    {"name": "sh_square_law", "target": "sweep", "expression": "E_sh_ref", "tolerance": 0.005, "series": "E_sh"},
+    {"name": "th_cube_law", "target": "sweep", "expression": "E_th_ref", "tolerance": 0.005, "series": "E_th"},
+    {"name": "th_flat_profile", "target": "line", "expression": "E_th_ref + 0*x", "tolerance": 0.005,
+     "line": ["0.205*um", "y_probe", "Lx - 0.205*um", "y_probe"], "field": "nl.ez_abs", "snapshot": "channel th"}
+  ]
+}

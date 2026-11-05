@@ -1,0 +1,93 @@
+{
+  "title": "Analytic: conformal PEC disk cavity, Bessel resonances (E_z and H_z FDTD, conformal boundaries)",
+  "description": "A vacuum disk of radius R cut out of a PEC block (pec_domain on box minus disk, pec outer faces, no PML), rung by a gaussian pulse once in E_z (physics 'em') and once in H_z (physics 'em_hz'). The disk centre sits (0.31, 0.17) cells off a cell centre and R = R_cells dx is no multiple of the cell, so each cell sees another sub-cell cut. solver_defaults.conformal_boundaries is on: E_z links to the drawn circle at the bisected wall distance, H_z uses Dey-Mittra cut-cell weights, both at the uncut-grid time step. courant_factor 0.7 (S_courant): the cut-cell stability floor keeps each corrected row within the leap-frog limit, which the vacuum row already fills at the default 0.99 (E_z wall fractions clamp to t >= ~0.5, measured TM01 / TE21 errors 4.2e-3 / 5.6e-3); at 0.7 the floor is t >= ~0.1-0.17 and small H_z areas >= ~0.25 of the cell. The sweep moves R over 19.62-20.89 cells.\nAnalytic: TM_mn (E_z) f = c j_mn / (2 pi R) with j01 = 2.404826, j11 = 3.831706 (zeros of J0, J1); TE_mn (H_z) with the zeros of J_m': j'11 = 1.841184, j'21 = 3.054237.\nDerived values tab: f_TM01, f_TM11 (em.modes) and f_TE11, f_TE21 (em_hz.modes), the resonance finder's frequency within 3 % of each Bessel value, vs their references; expect ~1e-3 or below (estimated, FDTD dispersion at 33-70 cells per wavelength, a few 1e-4, plus the remaining floored walls). The degenerate pairs (TM11, TE11, TE21) split slightly on the grid; the derived value takes the upper one.\nSweep tab: the four frequencies vs R_cells with the dashed Bessel curves, smooth in R. Switch Follow curved walls off (Solvers node) to compare: the staircase disk gives errors of several 1e-3 that jump irregularly with R_cells.\nProbes / Resonances: em.modes and em_hz.modes list frequency, wavelength and Q (lossless: Q limited by the record length).",
+  "version": 2,
+  "parameters": [
+    {"name": "dx_cell", "expression": "50*nm", "description": "uniform cell size"},
+    {"name": "L_box", "expression": "46*dx_cell", "description": "domain side (46 cells; the disk leaves >= 2 cells of metal)"},
+    {"name": "x_c", "expression": "23.31*dx_cell", "description": "disk centre x, off the cell centres"},
+    {"name": "y_c", "expression": "23.17*dx_cell", "description": "disk centre y, off the cell centres"},
+    {"name": "R_cells", "expression": 20.37, "description": "disk radius in cells (swept 19.62-20.89)"},
+    {"name": "R", "expression": "R_cells*dx_cell", "description": "disk radius"},
+    {"name": "x_src", "expression": "31.5*dx_cell", "description": "source x (cell centre, ~0.40 R right of the axis)"},
+    {"name": "y_src", "expression": "28.5*dx_cell", "description": "source y (cell centre, ~0.26 R above the axis)"},
+    {"name": "x_prb", "expression": "17.5*dx_cell", "description": "resonance finder x (cell centre, ~0.29 R left of the axis)"},
+    {"name": "y_prb", "expression": "32.5*dx_cell", "description": "resonance finder y (cell centre, ~0.46 R above the axis)"},
+    {"name": "S_courant", "expression": 0.7, "description": "time step factor (courant_factor; below 0.99 so the conformal walls are not clamped)"},
+    {"name": "T_run", "expression": "1*ps", "description": "study duration (~85 periods of TE11)"},
+    {"name": "j01", "expression": 2.404825557695773, "description": "first zero of J0 (TM01)"},
+    {"name": "j11", "expression": 3.831705970207512, "description": "first zero of J1 (TM11)"},
+    {"name": "jp11", "expression": 1.841183781340659, "description": "first zero of J1' (TE11)"},
+    {"name": "jp21", "expression": 3.054236928227140, "description": "first zero of J2' (TE21)"},
+    {"name": "f_TM01", "expression": "c_const*j01/(2*pi*R)", "description": "TM01 frequency [Hz] (E_z, lambda ~2.66 um at R_cells 20.37)"},
+    {"name": "f_TM11", "expression": "c_const*j11/(2*pi*R)", "description": "TM11 frequency [Hz] (E_z, lambda ~1.67 um)"},
+    {"name": "f_TE11", "expression": "c_const*jp11/(2*pi*R)", "description": "TE11 frequency [Hz] (H_z, lambda ~3.48 um)"},
+    {"name": "f_TE21", "expression": "c_const*jp21/(2*pi*R)", "description": "TE21 frequency [Hz] (H_z, lambda ~2.10 um)"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "disk", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "R"}},
+    {"name": "metal", "kind": "difference", "params": {"base": "box", "subtract": ["disk"]}},
+    {"name": "source_point", "kind": "point", "params": {"x": "x_src", "y": "y_src"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_prb", "y": "y_prb"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "courant_factor": "S_courant"},
+      "features": [
+        {"name": "metal", "type": "pec_domain", "selection": ["metal"], "params": {}, "enabled": true},
+        {"name": "source", "type": "point_source", "selection": ["source_point"],
+         "params": {"waveform": "gaussian", "wavelength": "2*um", "bandwidth": 0.5, "current": 0.001},
+         "enabled": true},
+        {"name": "modes", "type": "resonance_monitor", "selection": ["probe_point"],
+         "params": {"component": "ez", "wavelength_min": "1.45*um", "wavelength_max": "3.3*um"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "em_hz",
+      "type": "em_fdtd_hz",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "courant_factor": "S_courant"},
+      "features": [
+        {"name": "metal", "type": "pec_domain", "selection": ["metal"], "params": {}, "enabled": true},
+        {"name": "source", "type": "point_source", "selection": ["source_point"],
+         "params": {"excitation": "magnetic_current", "waveform": "gaussian", "wavelength": "2.6*um",
+                    "bandwidth": 0.5, "magnetic_current": 1.0},
+         "enabled": true},
+        {"name": "modes", "type": "resonance_monitor", "selection": ["probe_point"],
+         "params": {"component": "hz", "wavelength_min": "1.8*um", "wavelength_max": "4.2*um"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solver_defaults": {"backend": "auto", "subpixel_smoothing": false, "conformal_boundaries": true},
+  "study": {"type": "time_dependent", "settings": {"duration": "T_run", "output_interval": 0.0},
+            "stored_fields": [],
+            "sweep": {"parameter": "R_cells", "values": [19.62, 19.87, 20.13, 20.61, 20.89, 20.37]}},
+  "derived_values": [
+    {"name": "f_TM01_sim", "expression": "where(abs(frequency/f_TM01 - 1) < 0.03, frequency, 0)", "selection": [],
+     "operation": "max", "source": "em.modes", "reference": "f_TM01", "tolerance": 0.003},
+    {"name": "f_TM11_sim", "expression": "where(abs(frequency/f_TM11 - 1) < 0.03, frequency, 0)", "selection": [],
+     "operation": "max", "source": "em.modes", "reference": "f_TM11", "tolerance": 0.005},
+    {"name": "f_TE11_sim", "expression": "where(abs(frequency/f_TE11 - 1) < 0.03, frequency, 0)", "selection": [],
+     "operation": "max", "source": "em_hz.modes", "reference": "f_TE11", "tolerance": 0.005},
+    {"name": "f_TE21_sim", "expression": "where(abs(frequency/f_TE21 - 1) < 0.03, frequency, 0)", "selection": [],
+     "operation": "max", "source": "em_hz.modes", "reference": "f_TE21", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "TM01_vs_R", "target": "sweep", "series": "f_TM01_sim", "expression": "f_TM01", "tolerance": 0.003},
+    {"name": "TM11_vs_R", "target": "sweep", "series": "f_TM11_sim", "expression": "f_TM11", "tolerance": 0.005},
+    {"name": "TE11_vs_R", "target": "sweep", "series": "f_TE11_sim", "expression": "f_TE11", "tolerance": 0.005},
+    {"name": "TE21_vs_R", "target": "sweep", "series": "f_TE21_sim", "expression": "f_TE21", "tolerance": 0.005}
+  ]
+}

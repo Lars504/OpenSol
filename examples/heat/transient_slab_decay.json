@@ -1,0 +1,75 @@
+{
+  "title": "Transient slab: centre temperature decay (analytic)",
+  "description": "A silicon slab at T_i whose two x faces are suddenly held at T_s (implicit-Euler transient heat).\nAnalytic centre value (image series): theta_c / theta_i = 1 - 2 [erfc(u) - erfc(3u) + erfc(5u) - erfc(7u) + erfc(9u)], u = L / (4 sqrt(a t)); late times follow the first Fourier mode (4/pi) exp(-t/tau_1).\nProbes tab: the centre probe with the dashed curves centre_exact and first_mode.\nDerived values tab: theta_end (t_end, ~0.4 % implicit-Euler lag) and theta_check (t_check, ~0.1 %).\nLine profile tab: T_profile at t_end (Fourier modes 1 and 3; the same ~0.4 % implicit-Euler lag of the rise).",
+  "version": 1,
+  "parameters": [
+    {"name": "T_i", "expression": 373.15, "description": "initial slab temperature in K"},
+    {"name": "T_s", "expression": 293.15, "description": "surface temperature in K held on both x faces from t = 0"},
+    {"name": "L_slab", "expression": "10*mm", "description": "slab thickness along x"},
+    {"name": "dx_mesh", "expression": "L_slab/101", "description": "uniform cell size (odd cell count: the centre is a cell centre)"},
+    {"name": "H_slab", "expression": "10*dx_mesh", "description": "slab height along y (insulated y faces: 1D)"},
+    {"name": "k_si", "expression": 130.0, "description": "silicon thermal conductivity in W/(m K)"},
+    {"name": "rho_si", "expression": 2329.0, "description": "silicon density in kg/m^3"},
+    {"name": "cp_si", "expression": 700.0, "description": "silicon specific heat in J/(kg K)"},
+    {"name": "a_diff", "expression": "k_si/(rho_si*cp_si)", "description": "thermal diffusivity in m^2/s (~8e-5)"},
+    {"name": "tau_1", "expression": "L_slab**2/(pi**2*a_diff)", "description": "first-mode decay time in s (~0.127)"},
+    {"name": "dt_step", "expression": 2.5e-4,
+     "description": "implicit-Euler time step in s; the first-mode error grows as (t/dt) (dt/tau_1)^2 / 2"},
+    {"name": "t_end", "expression": 0.5, "description": "study duration in s (~4 tau_1)"},
+    {"name": "t_check", "expression": 0.1, "description": "time of the derived value theta_check in s"}
+  ],
+  "domain": {"size_x": "L_slab", "size_y": "H_slab"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "L_slab/2", "y": "H_slab/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "silicon", "library": null, "properties": {"k": "k_si", "rho": "rho_si", "cp": "cp_si"},
+     "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"time_mode": "transient", "time_step": "dt_step", "T0": "T_s"},
+      "features": [
+        {"name": "faces", "type": "temperature", "selection": ["x_lo", "x_hi"], "params": {"temperature": "T_s"},
+         "enabled": true},
+        {"name": "start", "type": "initial_temperature", "selection": ["all"], "params": {"temperature": "T_i"},
+         "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {},
+         "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/10"},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_end", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "last",
+     "source": "heat.centre",
+     "reference": "1 - 2*(erfc(L_slab/(4*sqrt(a_diff*t_end))) - erfc(3*L_slab/(4*sqrt(a_diff*t_end))) + erfc(5*L_slab/(4*sqrt(a_diff*t_end))) - erfc(7*L_slab/(4*sqrt(a_diff*t_end))) + erfc(9*L_slab/(4*sqrt(a_diff*t_end))))",
+     "tolerance": 0.012},
+    {"name": "theta_check", "expression": "(values - T_s)/(T_i - T_s)", "selection": [], "operation": "at",
+     "source": "heat.centre", "at": "t_check",
+     "reference": "1 - 2*(erfc(L_slab/(4*sqrt(a_diff*t_check))) - erfc(3*L_slab/(4*sqrt(a_diff*t_check))) + erfc(5*L_slab/(4*sqrt(a_diff*t_check))) - erfc(7*L_slab/(4*sqrt(a_diff*t_check))) + erfc(9*L_slab/(4*sqrt(a_diff*t_check))))",
+     "tolerance": 0.003}
+  ],
+  "analytic_curves": [
+    {"name": "centre_exact", "target": "heat.centre",
+     "expression": "T_s + (T_i - T_s)*(1 - 2*(erfc(L_slab/(4*sqrt(a_diff*t))) - erfc(3*L_slab/(4*sqrt(a_diff*t))) + erfc(5*L_slab/(4*sqrt(a_diff*t))) - erfc(7*L_slab/(4*sqrt(a_diff*t))) + erfc(9*L_slab/(4*sqrt(a_diff*t)))))",
+     "tolerance": 0.003},
+    {"name": "first_mode", "target": "heat.centre", "expression": "T_s + (T_i - T_s)*4/pi*exp(-t/tau_1)"},
+    {"name": "T_profile", "target": "line",
+     "expression": "T_s + (T_i - T_s)*4/pi*(sin(pi*x/L_slab)*exp(-t_end/tau_1) + sin(3*pi*x/L_slab)*exp(-9*t_end/tau_1)/3)",
+     "tolerance": 0.012,
+     "line": [0.0, "H_slab/2", "L_slab", "H_slab/2"], "field": "heat.T"}
+  ]
+}

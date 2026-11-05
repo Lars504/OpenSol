@@ -1,0 +1,108 @@
+{
+  "title": "Graetz problem with plug flow and axial conduction (analytic)",
+  "description": "Laminar flow + heat (fluid_heat_convection), stationary: a liquid enters a channel at T_in with a uniform (plug) velocity U (slip walls, velocity inlet x_lo, pressure 0 at x_hi) and is cooled by walls held at T_w (y faces); heat conducts along and across the channel.\nAnalytic (separation of variables, semi-infinite channel): T = T_w + (T_in - T_w) (4/pi) sum_odd n sin(n pi y / H) exp(-lam_n x) / n, lam_n = (sqrt(Pe^2 + 4 n^2 pi^2) - Pe) / (2H), Pe = U H / a, a = k / (rho cp); bulk mean theta_b(x) = (8/pi^2) sum_odd n exp(-lam_n x) / n^2.\nLine profile tab: T_centreline (T along y = H/2) and T_across (T across the channel at x = H), 9 terms (the series is slow only within ~0.1 H of the inlet corners); u_plug checks the plug flow u_x = U; the flow starts there (initial_velocity), a fixed point of correct face rules, so each steady march stops after a few checks instead of ~280k lattice steps from rest, while wrong face rules would move it. They show the last sweep value, the base Pe = 4.\nDerived values tab: theta_probe (centreline at x = H) and theta_bulk (mean over the cell column at x = H) against the series.\nSweep tab: theta_probe and theta_bulk versus Pe (1..6) with the dashed series.\nExpected agreement ~0.5 % (theta_bulk ~0.6 %; relative to each curve's range: T_centreline ~0.1 %, T_across ~0.5 %) (second-order central advection, the inlet corner, the insulated outlet at L = 5H where theta ~ 1e-3 at most). The coupled solve is a relaxed Picard loop (study relaxation 0.6, gain ~ Pe / (2 pi)); it slows above Pe ~ 6.",
+  "version": 1,
+  "parameters": [
+    {"name": "Pe", "expression": 4.0, "description": "Peclet number U H / a of the channel; swept"},
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "k_f", "expression": 0.6, "description": "liquid thermal conductivity in W/(m K)"},
+    {"name": "cp_f", "expression": 4000.0, "description": "liquid specific heat in J/(kg K)"},
+    {"name": "a_f", "expression": "k_f/(rho_f*cp_f)", "description": "thermal diffusivity in m^2/s (1.5e-7)"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_ch", "expression": "20*um", "description": "channel height along y"},
+    {"name": "L_ch", "expression": "5*H_ch", "description": "channel length along x (long enough to stand for a semi-infinite channel)"},
+    {"name": "U_in", "expression": "Pe*a_f/H_ch", "description": "plug velocity in m/s (0.03 at Pe = 4; Reynolds ~0.6, cell Peclet Pe dx / H = 0.2)"},
+    {"name": "T_in", "expression": 353.15, "description": "inflow temperature in K (held on x_lo)"},
+    {"name": "T_w", "expression": 293.15, "description": "wall temperature in K (held on y_lo and y_hi)"},
+    {"name": "x_p", "expression": "H_ch + dx_cell/2", "description": "x of the probe and of the bulk column: a cell centre one channel height downstream"},
+    {"name": "y_p", "expression": "H_ch/2 + dx_cell/2", "description": "y of the probe: the cell centre just above the centreline"},
+    {"name": "lam_1", "expression": "(sqrt(Pe**2 + 4*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 1 in 1/m"},
+    {"name": "lam_3", "expression": "(sqrt(Pe**2 + 36*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 3 in 1/m"},
+    {"name": "lam_5", "expression": "(sqrt(Pe**2 + 100*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 5 in 1/m"},
+    {"name": "lam_7", "expression": "(sqrt(Pe**2 + 196*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 7 in 1/m"},
+    {"name": "lam_9", "expression": "(sqrt(Pe**2 + 324*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 9 in 1/m"},
+    {"name": "lam_11", "expression": "(sqrt(Pe**2 + 484*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 11 in 1/m"},
+    {"name": "lam_13", "expression": "(sqrt(Pe**2 + 676*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 13 in 1/m"},
+    {"name": "lam_15", "expression": "(sqrt(Pe**2 + 900*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 15 in 1/m"},
+    {"name": "lam_17", "expression": "(sqrt(Pe**2 + 1156*pi**2) - Pe)/(2*H_ch)", "description": "decay rate of mode n = 17 in 1/m"},
+    {"name": "theta_probe_ref", "expression": "4/pi*(sin(pi*y_p/H_ch)*exp(-lam_1*x_p) + sin(3*pi*y_p/H_ch)*exp(-lam_3*x_p)/3 + sin(5*pi*y_p/H_ch)*exp(-lam_5*x_p)/5 + sin(7*pi*y_p/H_ch)*exp(-lam_7*x_p)/7)",
+     "description": "analytic (T - T_w) / (T_in - T_w) at the probe"},
+    {"name": "theta_bulk_ref", "expression": "8/pi**2*(exp(-lam_1*x_p) + exp(-lam_3*x_p)/9 + exp(-lam_5*x_p)/25 + exp(-lam_7*x_p)/49)",
+     "description": "analytic bulk (cross-section mean) dimensionless temperature at x_p"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_p", "y": "y_p"}},
+    {"name": "bulk_column", "kind": "rectangle", "params": {"x0": "H_ch", "y0": 0.0, "x1": "H_ch + dx_cell", "y1": "H_ch"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null,
+     "properties": {"viscosity": "mu_f", "rho": "rho_f", "k": "k_f", "cp": "cp_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {},
+      "features": [
+        {"name": "inlet", "type": "inlet_velocity", "selection": ["x_lo"],
+         "params": {"velocity": "U_in", "profile": "uniform"}, "enabled": true},
+        {"name": "outlet", "type": "pressure", "selection": ["x_hi"], "params": {"pressure": 0.0}, "enabled": true},
+        {"name": "slip_walls", "type": "slip_wall", "selection": ["y_lo", "y_hi"], "params": {}, "enabled": true},
+        {"name": "start_plug", "type": "initial_velocity", "selection": ["all"],
+         "params": {"u_x": "U_in", "u_y": 0.0, "pressure": 0.0}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_w"},
+      "features": [
+        {"name": "inflow", "type": "temperature", "selection": ["x_lo"], "params": {"temperature": "T_in"},
+         "enabled": true},
+        {"name": "cold_walls", "type": "temperature", "selection": ["y_lo", "y_hi"], "params": {"temperature": "T_w"},
+         "enabled": true},
+        {"name": "T_probe", "type": "temperature_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "convection", "type": "fluid_heat_convection", "source": "fluid", "target": "heat", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary",
+            "settings": {"max_iterations": 200, "tolerance": 1e-5, "relaxation": 0.6, "warm_start": true},
+            "stored_fields": ["heat.T", "fluid.u_x", "fluid.u_abs"],
+            "sweep": {"parameter": "Pe", "values": [1.0, 2.0, 3.0, 5.0, 6.0, 4.0]}},
+  "derived_values": [
+    {"name": "theta_probe", "expression": "(values - T_w)/(T_in - T_w)", "operation": "last", "source": "heat.T_probe",
+     "reference": "theta_probe_ref", "tolerance": 0.015},
+    {"name": "theta_bulk", "expression": "(heat_T - T_w)/(T_in - T_w)", "selection": ["bulk_column"],
+     "operation": "mean", "reference": "theta_bulk_ref", "tolerance": 0.015}
+  ],
+  "analytic_curves": [
+    {"name": "T_centreline", "target": "line",
+     "expression": "T_w + (T_in - T_w)*4/pi*(sin(pi*y/H_ch)*exp(-lam_1*x) + sin(3*pi*y/H_ch)*exp(-lam_3*x)/3 + sin(5*pi*y/H_ch)*exp(-lam_5*x)/5 + sin(7*pi*y/H_ch)*exp(-lam_7*x)/7 + sin(9*pi*y/H_ch)*exp(-lam_9*x)/9 + sin(11*pi*y/H_ch)*exp(-lam_11*x)/11 + sin(13*pi*y/H_ch)*exp(-lam_13*x)/13 + sin(15*pi*y/H_ch)*exp(-lam_15*x)/15 + sin(17*pi*y/H_ch)*exp(-lam_17*x)/17)",
+     "tolerance": 0.005, "line": [0.0, "H_ch/2", "L_ch", "H_ch/2"], "field": "heat.T"},
+    {"name": "T_across", "target": "line",
+     "expression": "T_w + (T_in - T_w)*4/pi*(sin(pi*y/H_ch)*exp(-lam_1*x) + sin(3*pi*y/H_ch)*exp(-lam_3*x)/3 + sin(5*pi*y/H_ch)*exp(-lam_5*x)/5 + sin(7*pi*y/H_ch)*exp(-lam_7*x)/7 + sin(9*pi*y/H_ch)*exp(-lam_9*x)/9 + sin(11*pi*y/H_ch)*exp(-lam_11*x)/11 + sin(13*pi*y/H_ch)*exp(-lam_13*x)/13 + sin(15*pi*y/H_ch)*exp(-lam_15*x)/15 + sin(17*pi*y/H_ch)*exp(-lam_17*x)/17)",
+     "tolerance": 0.015, "line": ["x_p", 0.0, "x_p", "H_ch"], "field": "heat.T"},
+    {"name": "u_plug", "target": "line", "expression": "U_in + 0*x", "tolerance": 1e-3,
+     "line": [0.0, "H_ch/2", "L_ch", "H_ch/2"], "field": "fluid.u_x"},
+    {"name": "theta_probe_vs_Pe", "target": "sweep", "expression": "theta_probe_ref", "tolerance": 0.015,
+     "series": "theta_probe"},
+    {"name": "theta_bulk_vs_Pe", "target": "sweep", "expression": "theta_bulk_ref", "tolerance": 0.015,
+     "series": "theta_bulk"}
+  ]
+}

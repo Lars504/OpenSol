@@ -1,0 +1,86 @@
+{
+  "title": "Analytic: Gaussian beam waist growth and Gouy phase, E_z (FDFD)",
+  "description": "An E_z gaussian_beam (waist w0 = 1.5 um on its line, lambda 1 um, vacuum, stationary FDFD solve) launched from a vertical line at x_src toward +x (the -x half is absorbed by the x_lo CPML). The beam axis lies on the y_lo symmetric mirror plane (E_z even; the plane is the window edge y = 0, the inner face of the padded ghost cell, so the beam centre is 0 and the probes and lines run along the first window row, dx / 2 off the axis; a centre off the plane folds the profile into exp(-((|y| - c) / w0)^2), whose far field is 1 + erf(c / w0) stronger: +3 % at c = dx), which halves the unknowns (~9e4 incl. PML, host SuperLU).\nAnalytic (2D beam: half the 3D Gouy phase), u = (x - x_src) / zR: |E| = A (1 + u^2)^(-1/4) exp(-y^2 / w^2), w = w0 sqrt(1 + u^2), on-axis phase -k_num (x - x_src) + atan(u) / 2. With first-order non-paraxial terms (angular spectrum, eps = 1 / (k0 w0)^2 = 0.011; the k / k_x factor of a sheet source and the k_y^4 term of k_x) the axis field is multiplied by C(u): Re C = 1 + eps / (1 + u^2) - 1.5 eps u^2 / (1 + u^2)^2, arg C = eps u / (1 + u^2) + 0.75 eps u (1 - u^2) / (1 + u^2)^2 (so the field on the line is A (1 + eps), as the waist help text says). Discrete: k_num = (2 / dx) asin(k0 dx / 2) and zR = k0 cos(k_num dx / 2) w0^2 / 2 (the paraxial curvature of the 5-point stencil), 7.01 um.\nDerived values tab: E_line (|E_z| on the source line, 1.011 A: the paraxial A would miss by 1.1 %, tolerance 0.5 %), E_zR / E_2zR (|E_z| at one and two Rayleigh lengths, 0.842 / 0.668 A, tolerance 1 %), gouy_zR / gouy_2zR (probe phase plus k_num (x - x_src), wrapped: the Gouy phase pi / 8 / atan(2) / 2 plus arg C, 0.398 / 0.556 rad, tolerance 5 %; a plane wave gives 0).\nLine profile tab: E_axis (|E_z| along the axis from 0.5 um to 2 zR), Re_axis (Re E_z there: the Gouy phase shifts the carrier by up to 0.56 rad, so without it the curve misses by ~half its range) and E_transverse (|E_z| across the beam at x_src + zR, paraxial Gaussian of width w0 sqrt(2)); tolerances 2 % / 3 % / 3 % of the curve range, to be confirmed by the first run. Field tab: |E_z| and Re E_z.",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "1*um", "description": "vacuum wavelength of the solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m (k0 is the Bessel K_0 function)"},
+    {"name": "w0", "expression": "1.5*um", "description": "beam waist radius (1/e of the field) on the source line"},
+    {"name": "A_beam", "expression": 1.0, "description": "beam amplitude parameter in V/m (paraxial peak E_z on the line)"},
+    {"name": "dx_cell", "expression": "40*nm", "description": "uniform cell size (25 cells per wavelength)"},
+    {"name": "k_num", "expression": "2/dx_cell*asin(k_vac*dx_cell/2)", "description": "discrete axial wavenumber of the 5-point stencil in 1/m"},
+    {"name": "k_par", "expression": "k_vac*cos(k_num*dx_cell/2)", "description": "wavenumber of the discrete paraxial curvature dk_x / d(k_y^2) = -1 / (2 k_par)"},
+    {"name": "zR", "expression": "k_par*w0**2/2", "description": "Rayleigh length in m (7.01 um)"},
+    {"name": "eps_np", "expression": "1/(k_vac*w0)**2", "description": "non-paraxial parameter 1 / (k0 w0)^2 (0.011)"},
+    {"name": "Lx", "expression": "15.6*um", "description": "domain length along x (390 cells; CPML outside)"},
+    {"name": "Ly", "expression": "8.4*um", "description": "domain height above the mirror plane region (210 cells; CPML above)"},
+    {"name": "x_src", "expression": "12.5*dx_cell", "description": "source line x (a cell centre, 0.5 um)"},
+    {"name": "y_row", "expression": "0.5*dx_cell", "description": "centre of the first window row, dx / 2 above the mirror plane y = 0"},
+    {"name": "x_1", "expression": "floor(zR/dx_cell + 0.5)*dx_cell", "description": "probe 1 distance from the source line: whole cells nearest zR"},
+    {"name": "x_2", "expression": "floor(2*zR/dx_cell + 0.5)*dx_cell", "description": "probe 2 distance: whole cells nearest 2 zR"},
+    {"name": "u_1", "expression": "x_1/zR", "description": "probe 1 distance in Rayleigh lengths"},
+    {"name": "u_2", "expression": "x_2/zR", "description": "probe 2 distance in Rayleigh lengths"},
+    {"name": "E_line_ref", "expression": "A_beam*(1 + eps_np)*exp(-(dx_cell/2)**2/w0**2)", "description": "|E_z| on the source line cell in V/m"},
+    {"name": "E_1_ref", "expression": "A_beam*(1 + u_1**2)**(-0.25)*(1 + eps_np/(1 + u_1**2) - 1.5*eps_np*u_1**2/(1 + u_1**2)**2)*exp(-(dx_cell/2)**2/(w0**2*(1 + u_1**2)))", "description": "|E_z| at probe 1 in V/m"},
+    {"name": "E_2_ref", "expression": "A_beam*(1 + u_2**2)**(-0.25)*(1 + eps_np/(1 + u_2**2) - 1.5*eps_np*u_2**2/(1 + u_2**2)**2)*exp(-(dx_cell/2)**2/(w0**2*(1 + u_2**2)))", "description": "|E_z| at probe 2 in V/m"},
+    {"name": "gouy_1_ref", "expression": "atan(u_1)/2 + eps_np*u_1/(1 + u_1**2) + 0.75*eps_np*u_1*(1 - u_1**2)/(1 + u_1**2)**2", "description": "Gouy phase plus arg C at probe 1 in rad"},
+    {"name": "gouy_2_ref", "expression": "atan(u_2)/2 + eps_np*u_2/(1 + u_2**2) + 0.75*eps_np*u_2*(1 - u_2**2)/(1 + u_2**2)**2", "description": "Gouy phase plus arg C at probe 2 in rad"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "beam_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "line_point", "kind": "point", "params": {"x": "x_src", "y": "y_row"}},
+    {"name": "probe_1_point", "kind": "point", "params": {"x": "x_src + x_1", "y": "y_row"}},
+    {"name": "probe_2_point", "kind": "point", "params": {"x": "x_src + x_2", "y": "y_row"}}
+  ],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "symmetric"},
+      "features": [
+        {"name": "beam", "type": "gaussian_beam", "selection": ["beam_line"],
+         "params": {"amplitude": "A_beam", "phase": 0.0, "waist": "w0", "center": 0.0}, "enabled": true},
+        {"name": "probe_line", "type": "field_probe", "selection": ["line_point"], "params": {"component": "ez"},
+         "enabled": true},
+        {"name": "probe_1", "type": "field_probe", "selection": ["probe_1_point"], "params": {"component": "ez"},
+         "enabled": true},
+        {"name": "probe_2", "type": "field_probe", "selection": ["probe_2_point"], "params": {"component": "ez"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["em.ez_abs", "em.ez_re"], "sweep": null},
+  "derived_values": [
+    {"name": "E_line", "expression": "abs", "operation": "last", "source": "em.probe_line",
+     "reference": "E_line_ref", "tolerance": 0.005},
+    {"name": "E_zR", "expression": "abs", "operation": "last", "source": "em.probe_1",
+     "reference": "E_1_ref", "tolerance": 0.01},
+    {"name": "E_2zR", "expression": "abs", "operation": "last", "source": "em.probe_2",
+     "reference": "E_2_ref", "tolerance": 0.01},
+    {"name": "gouy_zR", "expression": "atan2(sin(phase + k_num*x_1), cos(phase + k_num*x_1))", "operation": "last",
+     "source": "em.probe_1", "reference": "gouy_1_ref", "tolerance": 0.05},
+    {"name": "gouy_2zR", "expression": "atan2(sin(phase + k_num*x_2), cos(phase + k_num*x_2))", "operation": "last",
+     "source": "em.probe_2", "reference": "gouy_2_ref", "tolerance": 0.05}
+  ],
+  "analytic_curves": [
+    {"name": "E_axis", "target": "line", "field": "em.ez_abs",
+     "line": ["x_src + 0.5*um", "y_row", "x_src + x_2", "y_row"],
+     "expression": "A_beam*(1 + ((x - x_src)/zR)**2)**(-0.25)*(1 + eps_np/(1 + ((x - x_src)/zR)**2) - 1.5*eps_np*((x - x_src)/zR)**2/(1 + ((x - x_src)/zR)**2)**2)*exp(-y**2/(w0**2*(1 + ((x - x_src)/zR)**2)))",
+     "tolerance": 0.02},
+    {"name": "Re_axis", "target": "line", "field": "em.ez_re",
+     "line": ["x_src + 0.5*um", "y_row", "x_src + x_2", "y_row"],
+     "expression": "A_beam*(1 + ((x - x_src)/zR)**2)**(-0.25)*(1 + eps_np/(1 + ((x - x_src)/zR)**2) - 1.5*eps_np*((x - x_src)/zR)**2/(1 + ((x - x_src)/zR)**2)**2)*exp(-y**2/(w0**2*(1 + ((x - x_src)/zR)**2)))*cos(-k_num*(x - x_src) + atan((x - x_src)/zR)/2 + eps_np*((x - x_src)/zR)/(1 + ((x - x_src)/zR)**2) + 0.75*eps_np*((x - x_src)/zR)*(1 - ((x - x_src)/zR)**2)/(1 + ((x - x_src)/zR)**2)**2)",
+     "tolerance": 0.03},
+    {"name": "E_transverse", "target": "line", "field": "em.ez_abs",
+     "line": ["x_src + x_1", "y_row", "x_src + x_1", "Ly - 0.5*um"],
+     "expression": "A_beam*(1 + ((x - x_src)/zR)**2)**(-0.25)*exp(-y**2/(w0**2*(1 + ((x - x_src)/zR)**2)))",
+     "tolerance": 0.03}
+  ]
+}

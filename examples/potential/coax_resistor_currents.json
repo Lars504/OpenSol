@@ -1,0 +1,69 @@
+{
+  "title": "Coaxial resistor (electric currents, analytic)",
+  "description": "Coaxial resistor cross-section: core (radius a) at V0, shield (every cell with r > b) at 0 V, resistive fill sigma_fill.\nAnalytic: V = V0 ln(b/r)/ln(b/a), J_r = sigma_fill V0/(r ln(b/a)), G' = 2 pi sigma_fill/ln(b/a) (S per m of depth).\nDerived values tab: G_per_m (core current / voltage), I_shield (= -G' V0), P_joule (integral of q_joule = G' V0^2) and V_mid (probe next to r = sqrt(a b), about V0/2) with their references; expect ~0.5 % from the staircased circles (one cell of radius is ~3.6 %).\nLine profile tab: V_radial (field V) and J_radial (field J_x) against the analytic curves. Field tab: V, J and q_joule maps.\nTwin: coax_capacitor_electrostatics.",
+  "version": 1,
+  "parameters": [
+    {"name": "V0", "expression": 1.0, "description": "core voltage [V]; the shield is held at 0 V"},
+    {"name": "a", "expression": "0.5*mm", "description": "core (inner electrode) radius"},
+    {"name": "b", "expression": "2*mm", "description": "shield (outer electrode) inner radius"},
+    {"name": "sigma_fill", "expression": 1.0, "description": "DC conductivity of the resistive fill [S/m]"},
+    {"name": "L_box", "expression": "5*mm", "description": "domain side; the shield fills every cell with r > b"},
+    {"name": "x_c", "expression": "L_box/2", "description": "axis x (a cell vertex, so the staircase is symmetric)"},
+    {"name": "y_c", "expression": "L_box/2", "description": "axis y (a cell vertex)"},
+    {"name": "dx_cell", "expression": "25*um", "description": "uniform cell size (a / dx = 20)"},
+    {"name": "r_probe", "expression": "sqrt(a*b) + dx_cell/2",
+     "description": "probe radius: the cell centre just outside sqrt(a b), where V = V0/2"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box"},
+  "geometry": [
+    {"name": "core", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "a"}},
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_box", "y1": "L_box"}},
+    {"name": "shield_disc", "kind": "circle", "params": {"cx": "x_c", "cy": "y_c", "r": "b"}},
+    {"name": "shield", "kind": "difference", "params": {"base": "box", "subtract": ["shield_disc"]}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_c + r_probe", "y": "y_c + dx_cell/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fill", "library": null, "properties": {"sigma_dc": "sigma_fill"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "currents",
+      "type": "electric_currents",
+      "settings": {},
+      "features": [
+        {"name": "core", "type": "terminal", "selection": ["core"], "params": {"voltage": "V0"}, "enabled": true},
+        {"name": "shield", "type": "terminal", "selection": ["shield"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "mid_probe", "type": "potential_probe", "selection": ["probe_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "G_per_m", "expression": "current/voltage", "operation": "last", "source": "currents.core",
+     "reference": "2*pi*sigma_fill/log(b/a)", "tolerance": 0.015},
+    {"name": "I_shield", "expression": "current", "operation": "last", "source": "currents.shield",
+     "reference": "-2*pi*sigma_fill*V0/log(b/a)", "tolerance": 0.015},
+    {"name": "P_joule", "expression": "q_joule", "selection": ["all"], "operation": "integral",
+     "reference": "2*pi*sigma_fill*V0**2/log(b/a)", "tolerance": 0.015},
+    {"name": "V_mid", "expression": "values", "operation": "last", "source": "currents.mid_probe",
+     "reference": "V0*log(b/hypot(r_probe, dx_cell/2))/log(b/a)", "tolerance": 0.015}
+  ],
+  "analytic_curves": [
+    {"name": "V_radial", "target": "line",
+     "expression": "V0*log(b/min(max(hypot(x - x_c, y - y_c), a), b))/log(b/a)", "tolerance": 0.01,
+     "line": ["x_c", "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "currents.V"},
+    {"name": "J_radial", "target": "line",
+     "expression": "where((hypot(x - x_c, y - y_c) > a)*(hypot(x - x_c, y - y_c) < b), sigma_fill*V0*(x - x_c)/(hypot(x - x_c, y - y_c)**2*log(b/a)), 0)",
+     "line": ["x_c", "y_c + dx_cell/2", "L_box", "y_c + dx_cell/2"], "field": "currents.J_x"}
+  ]
+}

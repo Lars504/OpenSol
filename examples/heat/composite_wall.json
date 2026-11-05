@@ -1,0 +1,69 @@
+{
+  "title": "Composite wall with convection on both sides (analytic)",
+  "description": "Steady 1D conduction through brick + insulation with convection on both faces.\nAnalytic: q_wall = (T_in - T_out) / (1/h_in + L1/k_brick + L2/k_ins + 1/h_out); T(x) is piecewise linear.\nDerived values tab: q_brick and q_insulation (mean heat_flux_abs per layer) and the mean rises per layer against their references; exact up to float precision (error < 1e-5).\nLine profile tab: T_profile (T along the wall vs the piecewise-linear exact profile; shows the last sweep value, the base k_ins).\nSweep tab: q_insulation vs k_ins with the analytic curve q_vs_k_ins.",
+  "version": 1,
+  "parameters": [
+    {"name": "T_in", "expression": 293.15, "description": "inside air temperature in K"},
+    {"name": "T_out", "expression": 263.15, "description": "outside air temperature in K"},
+    {"name": "h_in", "expression": 8.0, "description": "inside heat transfer coefficient in W/(m^2 K)"},
+    {"name": "h_out", "expression": 25.0, "description": "outside heat transfer coefficient in W/(m^2 K)"},
+    {"name": "L1", "expression": 0.2, "description": "brick thickness in m (x from 0 to L1; must be a multiple of dx_mesh so the interface lies on a cell edge)"},
+    {"name": "L2", "expression": 0.1, "description": "insulation thickness in m (x from L1 to L1 + L2)"},
+    {"name": "k_brick", "expression": 0.72, "description": "brick thermal conductivity in W/(m K)"},
+    {"name": "k_ins", "expression": 0.04, "description": "insulation thermal conductivity in W/(m K); swept"},
+    {"name": "H_wall", "expression": 0.03, "description": "wall height in m (y faces insulated, so the solution is 1D)"},
+    {"name": "dx_mesh", "expression": "2*mm", "description": "uniform cell size"},
+    {"name": "q_wall", "expression": "(T_in - T_out)/(1/h_in + L1/k_brick + L2/k_ins + 1/h_out)",
+     "description": "analytic heat flux through the wall in W/m^2 (about 10.19 at the base values)"}
+  ],
+  "domain": {"size_x": "L1 + L2", "size_y": "H_wall"},
+  "geometry": [
+    {"name": "brick", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L1", "y1": "H_wall"}},
+    {"name": "insulation", "kind": "rectangle", "params": {"x0": "L1", "y0": 0.0, "x1": "L1 + L2", "y1": "H_wall"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "brick", "library": null, "properties": {"k": "k_brick"}, "dispersion": null, "selection": ["brick"]},
+    {"name": "insulation", "library": null, "properties": {"k": "k_ins"}, "dispersion": null,
+     "selection": ["insulation"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_in"},
+      "features": [
+        {"name": "inside_air", "type": "convection", "selection": ["x_lo"],
+         "params": {"h": "h_in", "T_ext": "T_in"}, "enabled": true},
+        {"name": "outside_air", "type": "convection", "selection": ["x_hi"],
+         "params": {"h": "h_out", "T_ext": "T_out"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["heat.T", "heat.heat_flux_abs"],
+            "sweep": {"parameter": "k_ins", "values": ["k_ins/4", "k_ins/2", "2*k_ins", "4*k_ins", "k_ins"]}},
+  "derived_values": [
+    {"name": "q_brick", "expression": "heat_flux_abs", "selection": ["brick"], "operation": "mean",
+     "reference": "q_wall", "tolerance": 3e-5},
+    {"name": "q_insulation", "expression": "heat_flux_abs", "selection": ["insulation"], "operation": "mean",
+     "reference": "q_wall", "tolerance": 3e-5},
+    {"name": "rise_brick", "expression": "T - T_out", "selection": ["brick"], "operation": "mean",
+     "reference": "T_in - T_out - q_wall*(1/h_in + L1/(2*k_brick))", "tolerance": 3e-5},
+    {"name": "rise_insulation", "expression": "T - T_out", "selection": ["insulation"], "operation": "mean",
+     "reference": "q_wall*(L2/(2*k_ins) + 1/h_out)", "tolerance": 3e-5}
+  ],
+  "analytic_curves": [
+    {"name": "T_profile", "target": "line",
+     "expression": "T_in - q_wall*(1/h_in + where(x < L1, x/k_brick, L1/k_brick + (x - L1)/k_ins))",
+     "tolerance": 0.002, "line": [0.0, "H_wall/2", "L1 + L2", "H_wall/2"], "field": "heat.T"},
+    {"name": "q_vs_k_ins", "target": "sweep", "expression": "q_wall", "tolerance": 3e-5, "series": "q_insulation"}
+  ]
+}

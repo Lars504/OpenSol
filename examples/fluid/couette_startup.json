@@ -1,0 +1,69 @@
+{
+  "title": "Start-up of Couette flow by a moving wall (transient, analytic)",
+  "description": "A liquid at rest in a periodic channel; at t = 0 the upper wall (y_hi) starts sliding at U_wall along +x, the lower wall stays fixed (transient laminar flow, no body force). Momentum diffuses in from the moving wall.\nAnalytic, two equivalent forms: Fourier series u(y, t) = U y / H + (2 U / pi) sum_n (-1)^n sin(n pi y / H) exp(-n^2 t / tau_v) / n, tau_v = H^2 / (pi^2 nu) (fast at late times), and the image series u / U = sum_m [erfc(((2m+1) H - y) / (2 sqrt(nu t))) - erfc(((2m+1) H + y) / (2 sqrt(nu t)))] (fast at early times, m = 0..2 exact to ~1e-12 up to t_end); at the centre u_c(t) = U / 2 - (2 U / pi) sum_odd n (-1)^((n-1)/2) exp(-n^2 t / tau_v) / n.\nProbes tab: centre probe u_x(t) with the dashed image series u_centre_exact (the delayed start while momentum diffuses to the centre) and the steady value u_steady = U / 2.\nLine profile tab: u_profile_tau (snapshot 1, t = tau_v) and u_profile_end (final state, t_end = 3 tau_v, still 3 % of U from linear at the centre).\nDerived values tab: u_c_tau (t = tau_v, 0.266 U) and u_c_end (last sample, 0.468 U) against the Fourier series.\nExpected agreement: a few 1e-3 of U (lattice diffusion of the lowest mode ~(pi dx / H)^2 / 12 = 2e-3 of its decay rate, the impulsive wall start resolved in one lattice step); tolerances 1 % (u_c_tau, curves) and 0.5 % (u_c_end), to be confirmed by the first run. The steady answer misses u_c_end by 6 %.",
+  "version": 1,
+  "parameters": [
+    {"name": "mu_f", "expression": 1e-3, "description": "dynamic viscosity of the liquid in Pa s"},
+    {"name": "rho_f", "expression": 1000.0, "description": "liquid density in kg/m^3"},
+    {"name": "nu_f", "expression": "mu_f/rho_f", "description": "kinematic viscosity in m^2/s"},
+    {"name": "dx_cell", "expression": "1*um", "description": "uniform square cell size"},
+    {"name": "H_ch", "expression": "21*um", "description": "wall gap (odd cell count: the centreline is a cell centre)"},
+    {"name": "L_ch", "expression": "10*um", "description": "length of the periodic cell along x (the flow is uniform in x)"},
+    {"name": "U_wall", "expression": 5e-3, "description": "speed of the upper wall along +x in m/s from t = 0"},
+    {"name": "tau_v", "expression": "H_ch**2/(pi**2*nu_f)", "description": "decay time of the slowest viscous mode in s (~4.5e-5)"},
+    {"name": "t_end", "expression": "3*tau_v", "description": "study duration in s"},
+    {"name": "u_c_tau_ref", "expression": "U_wall/2 - 2*U_wall/pi*(exp(-1) - exp(-9)/3 + exp(-25)/5)", "description": "analytic centre speed at t = tau_v in m/s"},
+    {"name": "u_c_end_ref", "expression": "U_wall/2 - 2*U_wall/pi*(exp(-t_end/tau_v) - exp(-9*t_end/tau_v)/3)", "description": "analytic centre speed at t_end in m/s"}
+  ],
+  "domain": {"size_x": "L_ch", "size_y": "H_ch"},
+  "geometry": [
+    {"name": "centre_point", "kind": "point", "params": {"x": "L_ch/2 + dx_cell/2", "y": "H_ch/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "liquid", "library": null, "properties": {"viscosity": "mu_f", "rho": "rho_f"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "fluid",
+      "type": "laminar_flow",
+      "settings": {"time_mode": "transient"},
+      "features": [
+        {"name": "periodic_x", "type": "periodic", "selection": ["x_lo", "x_hi"], "params": {}, "enabled": true},
+        {"name": "fixed_wall", "type": "wall", "selection": ["y_lo"], "params": {"tangential_velocity": 0.0},
+         "enabled": true},
+        {"name": "moving_wall", "type": "wall", "selection": ["y_hi"], "params": {"tangential_velocity": "U_wall"},
+         "enabled": true},
+        {"name": "centre", "type": "flow_probe", "selection": ["centre_point"], "params": {"component": "u_x"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "tau_v"},
+            "stored_fields": ["fluid.u_x", "fluid.u_abs"], "sweep": null},
+  "derived_values": [
+    {"name": "u_c_tau", "expression": "values", "operation": "at", "source": "fluid.centre", "at": "tau_v",
+     "reference": "u_c_tau_ref", "tolerance": 0.01},
+    {"name": "u_c_end", "expression": "values", "operation": "last", "source": "fluid.centre",
+     "reference": "u_c_end_ref", "tolerance": 0.005}
+  ],
+  "analytic_curves": [
+    {"name": "u_centre_exact", "target": "fluid.centre",
+     "expression": "U_wall*(erfc(0.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)) - erfc(1.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)) + erfc(2.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)) - erfc(3.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)) + erfc(4.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)) - erfc(5.5*H_ch/(2*sqrt(nu_f*t) + 1e-30)))",
+     "tolerance": 0.01},
+    {"name": "u_steady", "target": "fluid.centre", "expression": "U_wall/2 + 0*t"},
+    {"name": "u_profile_tau", "target": "line",
+     "expression": "U_wall*y/H_ch + 2*U_wall/pi*(-sin(pi*y/H_ch)*exp(-1) + sin(2*pi*y/H_ch)*exp(-4)/2 - sin(3*pi*y/H_ch)*exp(-9)/3)",
+     "tolerance": 0.01,
+     "line": ["L_ch/2", 0.0, "L_ch/2", "H_ch"], "field": "fluid.u_x", "snapshot": 1},
+    {"name": "u_profile_end", "target": "line",
+     "expression": "U_wall*y/H_ch + 2*U_wall/pi*(-sin(pi*y/H_ch)*exp(-t_end/tau_v) + sin(2*pi*y/H_ch)*exp(-4*t_end/tau_v)/2)",
+     "tolerance": 0.01,
+     "line": ["L_ch/2", 0.0, "L_ch/2", "H_ch"], "field": "fluid.u_x"}
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "title": "Heated sphere in a large medium (3D, analytic)",
+  "description": "3D steady conduction: a bead of radius a (conductivity k_bead) with uniform heat source Q inside a medium (k_med) held at T_s beyond a sphere of radius R_out; 65^3 cubic cells, bead radius 8.18 cells.\nAnalytic: outside T = T_s + Q a^3 / (3 k_med) (1/r - 1/R_out); inside T = T(a) + Q (a^2 - r^2) / (6 k_bead); bead mean T(a) + Q a^2 / (15 k_bead).\nDerived values tab: theta_centre and theta_outside (probes at r = 0 and r = 16 cells), bead_mean_rise, P_total (integral of the applied source vs Q 4/3 pi a^3: the voxel bead holds 2301 cells against 2292.7, +0.36 %). Expect ~1 % (voxel bead and staircase outer sphere).\nLine profile tab (mid-height cut): T_x_axis through the centre and T_diagonal at 45 degrees (staircase surfaces, nearest-cell sampling).",
+  "version": 2,
+  "parameters": [
+    {"name": "Q_vol", "expression": 1e8, "description": "heat source in the bead in W/m^3 (0.23 W in total)"},
+    {"name": "k_med", "expression": 1.0, "description": "conductivity of the surrounding medium in W/(m K)"},
+    {"name": "k_bead", "expression": 2.0, "description": "conductivity of the bead in W/(m K)"},
+    {"name": "T_s", "expression": 293.15, "description": "temperature held beyond R_out in K"},
+    {"name": "dx_mesh", "expression": "0.1*mm", "description": "uniform cubic cell size"},
+    {"name": "L_box", "expression": "65*dx_mesh", "description": "cube side (odd cell count: the centre is a cell centre)"},
+    {"name": "xc", "expression": "L_box/2", "description": "centre coordinate (x, y and z)"},
+    {"name": "a_bead", "expression": "8.18*dx_mesh",
+     "description": "bead radius; 8.18 cells keeps lattice points off the surface and the voxel volume within 0.4 %"},
+    {"name": "R_out", "expression": "30.5*dx_mesh", "description": "radius beyond which the medium is held at T_s"},
+    {"name": "r_probe", "expression": "16*dx_mesh", "description": "distance of the outside probe from the centre along x"},
+    {"name": "rise_surface", "expression": "Q_vol*a_bead**2/(3*k_med)*(1 - a_bead/R_out)",
+     "description": "analytic T(a) - T_s in K"}
+  ],
+  "domain": {"size_x": "L_box", "size_y": "L_box", "size_z": "L_box"},
+  "geometry": [
+    {"name": "bead", "kind": "sphere", "params": {"cx": "xc", "cy": "xc", "cz": "xc", "r": "a_bead"}},
+    {"name": "box", "kind": "box", "params": {"x0": 0.0, "y0": 0.0, "z0": 0.0, "x1": "L_box", "y1": "L_box", "z1": "L_box"}},
+    {"name": "inner_ball", "kind": "sphere", "params": {"cx": "xc", "cy": "xc", "cz": "xc", "r": "R_out"}},
+    {"name": "far_medium", "kind": "difference", "params": {"base": "box", "subtract": ["inner_ball"]}},
+    {"name": "centre_point", "kind": "point", "params": {"x": "xc", "y": "xc", "z": "xc"}},
+    {"name": "outside_point", "kind": "point", "params": {"x": "xc + r_probe", "y": "xc", "z": "xc"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "medium", "library": null, "properties": {"k": "k_med"}, "dispersion": null, "selection": ["all"]},
+    {"name": "bead_material", "library": null, "properties": {"k": "k_bead"}, "dispersion": null, "selection": ["bead"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_s"},
+      "features": [
+        {"name": "far_field", "type": "fixed_temperature_domain", "selection": ["far_medium"],
+         "params": {"temperature": "T_s"}, "enabled": true},
+        {"name": "bead_power", "type": "heat_source", "selection": ["bead"], "params": {"Q": "Q_vol"}, "enabled": true},
+        {"name": "centre", "type": "temperature_probe", "selection": ["centre_point"], "params": {}, "enabled": true},
+        {"name": "outside", "type": "temperature_probe", "selection": ["outside_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "theta_centre", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.centre", "reference": "rise_surface + Q_vol*a_bead**2/(6*k_bead)", "tolerance": 0.03},
+    {"name": "theta_outside", "expression": "values - T_s", "selection": [], "operation": "last",
+     "source": "heat.outside", "reference": "Q_vol*a_bead**3/(3*k_med)*(1/r_probe - 1/R_out)", "tolerance": 0.03},
+    {"name": "bead_mean_rise", "expression": "T - T_s", "selection": ["bead"], "operation": "mean",
+     "reference": "rise_surface + Q_vol*a_bead**2/(15*k_bead)", "tolerance": 0.03},
+    {"name": "P_total", "expression": "Q_ext", "selection": [], "operation": "integral",
+     "reference": "Q_vol*4/3*pi*a_bead**3", "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "T_x_axis", "target": "line",
+     "expression": "T_s + Q_vol*a_bead**3/(3*k_med)*(1/max(abs(x - xc), a_bead) - 1/R_out) + Q_vol*max(a_bead**2 - (x - xc)**2, 0)/(6*k_bead)",
+     "tolerance": 0.02,
+     "line": ["xc - R_out", "xc", "xc + R_out", "xc"], "field": "heat.T", "plane": "xc"},
+    {"name": "T_diagonal", "target": "line",
+     "expression": "T_s + Q_vol*a_bead**3/(3*k_med)*(1/max(hypot(x - xc, y - xc), a_bead) - 1/R_out) + Q_vol*max(a_bead**2 - (x - xc)**2 - (y - xc)**2, 0)/(6*k_bead)",
+     "tolerance": 0.015,
+     "line": ["xc", "xc", "xc + R_out*sqrt(0.5)", "xc + R_out*sqrt(0.5)"], "field": "heat.T", "plane": "xc"}
+  ]
+}

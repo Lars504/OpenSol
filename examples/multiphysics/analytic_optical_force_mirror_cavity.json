@@ -1,0 +1,95 @@
+{
+  "title": "Optical force on a slab in front of a mirror: sign change with the gap (analytic)",
+  "description": "The radiation_force_slab set-up (em_fdfd_ez at 1550 nm, a y-periodic line source, a lossless 260 nm glass slab n = 1.5 held by a Fixed (domain) support on itself, em_solid_optical_force) with a perfect metal wall (bc_x_hi = pec, E_z = 0 at the centre of the outermost cell) a gap g behind the slab: everything is reflected (|r| = 1) and the slab sits in the standing wave of a lossless cavity. Stationary study swept over g (105..855 nm, more than half a wavelength; the base 705 nm runs last).\nAnalytic (transfer matrix from the mirror, phi = k g, delta = n k d with the discrete wavenumbers 2 asin(n k0 dx / 2) / dx): P = -(sin phi cos delta + cos phi sin delta / n), Q = cos phi cos delta - n sin phi sin delta; the gap carries travelling waves of amplitude A / sqrt(P^2 + Q^2), so the momentum balance gives F_x = eps0 A^2 Ly (1 - 1 / (P^2 + Q^2)) (eps0 A^2 Ly = 2 P_inc / c, the push on a perfect mirror). Near the quarter wave delta ~ pi / 2 the force swings from +0.56 to -1.25 eps0 A^2 Ly: positive (pushed toward the mirror) when the gap is anti-resonant, negative (pulled back toward the source by the strong cavity field) near g = m lambda / 2, zero near g = 145 nm and 630 nm.\nDerived values tab: force_x (N/m, minus the anchor reaction) with its reference (no tolerance: it crosses 0), force_deviation = force_x / (eps0 A^2 Ly) minus the analytic value (reference 0, so an absolute error; the face form of the force carries O((n k0 dx)^2 / 2) of each interface term, which the cavity field enhances: expect a few 1e-3, tolerance 0.02) and net_flux = upstream power / P_inc (reference 0: a lossless closed cavity reflects everything, ~1e-6).\nSweep tab: force_x vs gap with the dashed analytic curve (sign change). Line profile tab (base gap 705 nm): E_gap = |E_z| between slab and mirror vs 2 A / sqrt(P^2 + Q^2) |sin(k (x_mirror - x))| (~2e-3). Field tab: em.ez_abs and solid.body_force_x.",
+  "version": 1,
+  "parameters": [
+    {"name": "gap", "expression": "705*nm", "description": "vacuum gap between the slab back face and the mirror plane (a cell edge to a cell centre: (m + 0.5) dx); swept"},
+    {"name": "d_slab", "expression": "260*nm", "description": "slab thickness (26 cells, ~a quarter wave)"},
+    {"name": "n_slab", "expression": 1.5, "description": "slab refractive index (eps_r = n^2, lossless)"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "dx_mesh", "expression": "10*nm", "description": "uniform cell size"},
+    {"name": "Ly", "expression": "0.1*um", "description": "periodic y period (10 cells)"},
+    {"name": "x_slab", "expression": "1.5*um", "description": "slab front face (on a cell edge)"},
+    {"name": "x_back", "expression": "x_slab + d_slab", "description": "slab back face (on a cell edge)"},
+    {"name": "x_mirror", "expression": "x_back + gap", "description": "E_z = 0 plane of the pec x_hi wall: the centre of the outermost window cell"},
+    {"name": "Lx", "expression": "x_mirror + dx_mesh/2", "description": "strip length along x (CPML outside x_lo, pec wall at x_hi)"},
+    {"name": "x_source", "expression": "0.505*um", "description": "line source x (cell centre), in vacuum"},
+    {"name": "x_upstream", "expression": "1.005*um", "description": "net-flux line x (cell centre) between the source and the slab"},
+    {"name": "A_src", "expression": 1e7, "description": "line source amplitude in V/m (radiated to each side)"},
+    {"name": "P_inc", "expression": "A_src**2*Ly/(2*mu0_const*c_const)", "description": "incident power in W/m the source sends toward +x: A^2 Ly / (2 eta0)"},
+    {"name": "F_unit", "expression": "eps0_const*A_src**2*Ly", "description": "force unit eps0 A^2 Ly = 2 P_inc / c in N/m (a perfect mirror alone)"},
+    {"name": "k_gap", "expression": "2/dx_mesh*asin(k_vac*dx_mesh/2)", "description": "discrete vacuum wavenumber of the Yee grid in 1/m"},
+    {"name": "k_slab", "expression": "2/dx_mesh*asin(n_slab*k_vac*dx_mesh/2)", "description": "discrete wavenumber in the slab in 1/m"},
+    {"name": "phi_gap", "expression": "k_gap*gap", "description": "phase k g across the gap in rad"},
+    {"name": "delta_slab", "expression": "k_slab*d_slab", "description": "single-pass phase n k d of the slab in rad (~pi / 2)"},
+    {"name": "P_tm", "expression": "-(sin(phi_gap)*cos(delta_slab) + cos(phi_gap)*sin(delta_slab)/n_slab)", "description": "E at the slab front over the gap standing-wave amplitude (transfer matrix from the mirror)"},
+    {"name": "Q_tm", "expression": "cos(phi_gap)*cos(delta_slab) - n_slab*sin(phi_gap)*sin(delta_slab)", "description": "dE/(k ds) at the slab front over the gap standing-wave amplitude"},
+    {"name": "gain_gap", "expression": "P_tm**2 + Q_tm**2", "description": "(incident amplitude / gap travelling amplitude)^2: 4/9..9/4 at the quarter wave"},
+    {"name": "F_norm_ref", "expression": "1 - 1/gain_gap", "description": "analytic force over eps0 A^2 Ly (momentum flux in front minus in the gap)"},
+    {"name": "F_ref", "expression": "F_unit*F_norm_ref", "description": "analytic optical force on the slab along +x in N/m"},
+    {"name": "E_gap_peak", "expression": "2*A_src/sqrt(gain_gap)", "description": "peak |E_z| of the gap standing wave in V/m"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle", "params": {"x0": "x_slab", "y0": 0.0, "x1": "x_back", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_source", "y0": 0.0, "x1": "x_source", "y1": "Ly"}},
+    {"name": "upstream_line", "kind": "line", "params": {"x0": "x_upstream", "y0": 0.0, "x1": "x_upstream", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "glass", "library": null,
+     "properties": {"eps_r": "n_slab**2", "youngs_modulus": 1e10, "poisson_ratio": 0.2},
+     "dispersion": null, "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic", "bc_x_hi": "pec"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"amplitude": "A_src", "phase": 0.0}, "enabled": true},
+        {"name": "upstream", "type": "flux_monitor", "selection": ["upstream_line"], "params": {}, "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "anchor", "type": "fixed_domain", "selection": ["slab"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [
+    {"name": "optical_force", "type": "em_solid_optical_force", "source": "em", "target": "solid", "every": null,
+     "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["em.ez_re", "em.ez_abs", "solid.body_force_x"],
+            "sweep": {"parameter": "gap", "values": [1.05e-07, 1.55e-07, 2.05e-07, 2.55e-07, 3.05e-07, 3.55e-07,
+                                                     4.05e-07, 4.55e-07, 5.05e-07, 5.55e-07, 6.05e-07, 6.55e-07,
+                                                     7.55e-07, 8.05e-07, 8.55e-07, 7.05e-07]}},
+  "derived_values": [
+    {"name": "force_x", "expression": "-F_x", "selection": [], "operation": "last", "source": "solid.anchor",
+     "reference": "F_ref"},
+    {"name": "force_deviation", "expression": "-F_x/F_unit - F_norm_ref", "selection": [], "operation": "last",
+     "source": "solid.anchor", "reference": 0.0, "tolerance": 0.02},
+    {"name": "net_flux", "expression": "power/P_inc", "selection": [], "operation": "last", "source": "em.upstream",
+     "reference": 0.0, "tolerance": 0.001}
+  ],
+  "analytic_curves": [
+    {"name": "force_vs_gap", "target": "sweep", "expression": "F_ref", "series": "force_x"},
+    {"name": "E_gap", "target": "line", "expression": "E_gap_peak*abs(sin(k_gap*(x_mirror - x)))", "tolerance": 0.01,
+     "line": ["x_back", "Ly/2", "x_mirror", "Ly/2"], "field": "em.ez_abs"}
+  ]
+}

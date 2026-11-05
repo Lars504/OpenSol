@@ -1,0 +1,70 @@
+{
+  "title": "Analytic: hollow PEC rectangular waveguide modes and cutoffs (em_modes)",
+  "description": "A hollow (vacuum) 2.0 x 0.9 um rectangular metal pipe seen in cross-section: em_modes with pec on all four faces (no PML), uniform 20 nm cells; frequency_domain study over 1.0-3.9 um (30 wavelengths, 5 modes each); mode_dispersion follows TE10 (mode 1), TE01 (mode 3) and TE11 (mode 4; TE11 and TM11 are degenerate, so it follows either or a mix of the two, with the same n_eff).\nWall plane: every wall sits on the inner face of the outermost cell (a ghost cell), so the guide is a_guide x b_guide = size - 2 dx_cell per axis.\nAnalytic: n_eff^2 = 1 - (m lambda / (2 a))^2 - (n lambda / (2 b))^2; cutoffs 2 a = 4.0 um (TE10), 2 b = 1.8 um (TE01), 1.64 um (TE11); beyond its cutoff a mode is evanescent (Re n_eff 0, dashed curve 0).\nSpectra tab: modes.te10 / te01 / te11, quantity n_eff vs wavelength with the analytic curve dashed (overlap stays 1: the hollow-guide mode shapes do not depend on the wavelength).\nDerived values tab at lambda0 = 1.5 um: expected relative n_eff error ~7e-6 (TE10), ~5e-4 (TE01), ~9e-4 (TE11): the finite-difference transverse wavenumber (2/h) sin(m pi h / (2 a)) lies below m pi / a, which matters most for the modes near cutoff; n_eff_TE10_discrete uses that discrete wavenumber and agrees to ~1e-6 (eigen-solve and round-off only); te_fraction 0 for TE10 (E_y only) and 1 for TE01 (E_x only).\nCurves & tables / Field tab: the last wavelength (3.9 um: TE10 close to its cutoff, the others evanescent); switch the study to Mode analysis for all five modes at the wavelength setting (1.55 um).",
+  "version": 1,
+  "parameters": [
+    {"name": "a_guide", "expression": "2*um", "description": "guide width between the x wall planes (100 cells)"},
+    {"name": "b_guide", "expression": "0.9*um", "description": "guide height between the y wall planes (45 cells)"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "lambda0", "expression": "1.5*um", "description": "wavelength of the derived values (one of the study wavelengths)"},
+    {"name": "n_te10", "expression": "sqrt(max(0, 1 - (lambda0/(2*a_guide))**2))",
+     "description": "analytic n_eff of TE10 at lambda0"},
+    {"name": "n_te01", "expression": "sqrt(max(0, 1 - (lambda0/(2*b_guide))**2))",
+     "description": "analytic n_eff of TE01 at lambda0"},
+    {"name": "n_te11", "expression": "sqrt(max(0, 1 - (lambda0/(2*a_guide))**2 - (lambda0/(2*b_guide))**2))",
+     "description": "analytic n_eff of TE11 / TM11 at lambda0"},
+    {"name": "K_x1_discrete", "expression": "2/dx_cell*sin(pi*dx_cell/(2*a_guide))",
+     "description": "discrete transverse wavenumber of m = 1 between the wall planes [1/m]"},
+    {"name": "n_te10_discrete", "expression": "sqrt(1 - (K_x1_discrete*lambda0/(2*pi))**2)",
+     "description": "TE10 n_eff of the discrete (Yee) cross-section at lambda0"},
+    {"name": "lambda_cut_te11", "expression": "2/sqrt(1/a_guide**2 + 1/b_guide**2)",
+     "description": "cutoff wavelength of TE11 / TM11 [m]"}
+  ],
+  "domain": {"size_x": "a_guide + 2*dx_cell", "size_y": "b_guide + 2*dx_cell"},
+  "geometry": [],
+  "selections": [],
+  "materials": [],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {"bc_x_lo": "pec", "bc_x_hi": "pec", "bc_y_lo": "pec", "bc_y_hi": "pec", "n_modes": 5},
+      "features": [
+        {"name": "table", "type": "mode_table", "selection": [], "params": {}, "enabled": true},
+        {"name": "te10", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 1}, "enabled": true},
+        {"name": "te01", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 3}, "enabled": true},
+        {"name": "te11", "type": "mode_dispersion", "selection": [], "params": {"mode_number": 4}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "frequency_domain",
+            "settings": {"wavelength_start": 1e-06, "wavelength_stop": 3.9e-06, "n_wavelengths": 30},
+            "stored_fields": [], "sweep": null},
+  "derived_values": [
+    {"name": "n_eff_TE10", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te10",
+     "at": "lambda0", "reference": "n_te10", "tolerance": 2e-5},
+    {"name": "n_eff_TE10_discrete", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te10",
+     "at": "lambda0", "reference": "n_te10_discrete", "tolerance": 3e-6},
+    {"name": "n_eff_TE01", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te01",
+     "at": "lambda0", "reference": "n_te01", "tolerance": 1.5e-3},
+    {"name": "n_eff_TE11", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.te11",
+     "at": "lambda0", "reference": "n_te11", "tolerance": 2.5e-3},
+    {"name": "te_fraction_TE10", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.te10", "at": "lambda0", "reference": 0.0, "tolerance": 1e-3},
+    {"name": "te_fraction_TE01", "expression": "te_fraction", "selection": [], "operation": "at",
+     "source": "modes.te01", "at": "lambda0", "reference": 1.0, "tolerance": 1e-3}
+  ],
+  "analytic_curves": [
+    {"name": "te10_analytic", "target": "modes.te10", "series": "n_eff",
+     "expression": "sqrt(max(0, 1 - (wavelength/(2*a_guide))**2))", "tolerance": 1e-3},
+    {"name": "te01_analytic", "target": "modes.te01", "series": "n_eff",
+     "expression": "sqrt(max(0, 1 - (wavelength/(2*b_guide))**2))", "tolerance": 0.05},
+    {"name": "te11_analytic", "target": "modes.te11", "series": "n_eff",
+     "expression": "sqrt(max(0, 1 - (wavelength/(2*a_guide))**2 - (wavelength/(2*b_guide))**2))",
+     "tolerance": 5e-3}
+  ]
+}

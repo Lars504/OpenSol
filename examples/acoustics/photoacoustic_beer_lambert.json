@@ -1,0 +1,109 @@
+{
+  "title": "Photoacoustic pulse from Beer-Lambert absorption (analytic)",
+  "description": "A 1.55 um plane wave (em_fdfd_ez line source, y-periodic strip) enters an absorbing fluid at x0 = 6 um (sigma_e = 4e3 S/m: power decay mu ~ 1e6 /m) and decays as exp(-mu (x - x0)); em_acoustics_photoacoustic hands the absorbed power q(x) to elastic_waves, which multiplies it by a gaussian heating envelope (width w = 0.1 ns, centre t_h = 0.4 ns). Both physics share one fluid acoustically (rho 1000, c 1500, Grueneisen 0.11), so sound crosses x0 without reflection; the acoustic absorbing layers lie in the EM CPML padding (40 cells).\nAnalytic: q0 = sigma |t|^2 A^2 / 2 (|t|^2 = 4 n1^2 / ((n1 + n')^2 + kappa^2)), mu = 2 k0 kappa (with the discrete-grid factor 1/sqrt(1 - (n1 k0 dx/2)^2)); 1D wave equation with source G dq/dt: before the absorber p(x, t) = (G q0 sqrt(pi) w / 4) exp(b^2 - mu c T) erfc(b - T / w), b = mu c w / 2, T = t - t_h - (x0 - x) / c; inside it the left- and right-going parts add (see pressure_profile).\nProbes tab: acoustics.probe (0.49 um before x0) against the dashed curve: a rise over ~w, then the exp(-mu c T) tail of the light profile.\nLine profile tab (final state, t_end = 3.8 ns): absorbed_profile on em.absorbed_power and pressure_profile on acoustics.pressure (left-going exponential near x = 1 um, right-going front near x = 11 um).\nDerived values tab: q_front (first absorber cell, q0 exp(-mu dx/2)), P_abs_total (q0 Ly / mu), p_at_arrival (T = 0) and p_one_decay (T = 1 / (mu c)); expected ~0.5-2 % (grid dispersion of mu, front-face reflection, ~7.5-cell pulse rise).",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "1550*nm", "description": "vacuum wavelength of the FDFD solve"},
+    {"name": "k_vac", "expression": "2*pi/lambda0", "description": "vacuum wavenumber k0 in 1/m"},
+    {"name": "w_opt", "expression": "2*pi*c_const/lambda0", "description": "optical angular frequency in rad/s"},
+    {"name": "eps_fl", "expression": 2.25, "description": "relative permittivity of the fluid (n1 = 1.5)"},
+    {"name": "n_fl", "expression": "sqrt(eps_fl)", "description": "index of the lossless fluid"},
+    {"name": "sigma_abs", "expression": 4.0e3, "description": "optical conductivity of the absorbing part in S/m"},
+    {"name": "eps_im", "expression": "sigma_abs/(w_opt*eps0_const)", "description": "-Im eps = sigma / (omega eps0) of the absorber (0.372)"},
+    {"name": "eps_mag", "expression": "hypot(eps_fl, eps_im)", "description": "|eps| of the absorber"},
+    {"name": "kappa_abs", "expression": "sqrt((eps_mag - eps_fl)/2)", "description": "extinction coefficient Im sqrt(eps) (0.123)"},
+    {"name": "n_abs", "expression": "sqrt((eps_mag + eps_fl)/2)", "description": "Re sqrt(eps) of the absorber"},
+    {"name": "dx_cell", "expression": "20*nm", "description": "uniform cell size"},
+    {"name": "ksi_grid", "expression": "n_fl*k_vac*dx_cell/2", "description": "half-cell optical phase (grid dispersion factor of mu)"},
+    {"name": "mu_abs", "expression": "2*k_vac*kappa_abs/sqrt(1 - ksi_grid**2)", "description": "power attenuation of the discrete wave in 1/m (~1.0e6)"},
+    {"name": "trans2", "expression": "4*eps_fl/((n_fl + n_abs)**2 + kappa_abs**2)", "description": "|t|^2 of the fluid / absorber face (0.995)"},
+    {"name": "A_src", "expression": 1.0e6, "description": "E_z amplitude the line source radiates to each side in V/m"},
+    {"name": "q0", "expression": "sigma_abs*trans2*A_src**2/2", "description": "absorbed power density just inside x0 in W/m^3"},
+    {"name": "rho_fl", "expression": 1000.0, "description": "fluid density in kg/m^3"},
+    {"name": "c_fl", "expression": 1500.0, "description": "sound speed in m/s"},
+    {"name": "G_fl", "expression": 0.11, "description": "Grueneisen parameter"},
+    {"name": "w_heat", "expression": "1e-10", "description": "1/e half-width of the gaussian heating envelope in s (c w = 7.5 cells)"},
+    {"name": "t_heat", "expression": "4*w_heat", "description": "centre time of the heating envelope"},
+    {"name": "a_dec", "expression": "mu_abs*c_fl", "description": "decay rate mu c of the pressure tail in 1/s"},
+    {"name": "b_par", "expression": "a_dec*w_heat/2", "description": "b = mu c w / 2 (0.075)"},
+    {"name": "p_scale", "expression": "G_fl*q0*sqrt(pi)*w_heat/4", "description": "pressure scale G q0 sqrt(pi) w / 4 in Pa (half the initial pressure G H at x0 is 2 p_scale)"},
+    {"name": "Lx", "expression": "16*um", "description": "window length (mu (Lx - x0) = 10: the light is gone at the far edge)"},
+    {"name": "Ly", "expression": "10*dx_cell", "description": "strip height (periodic y)"},
+    {"name": "y_mid", "expression": "5.5*dx_cell", "description": "y of the probe and the profile lines (a cell centre)"},
+    {"name": "x_src", "expression": "50.5*dx_cell", "description": "optical line source (cell centre)"},
+    {"name": "x_p", "expression": "275.5*dx_cell", "description": "pressure probe (cell centre, 0.49 um before x0)"},
+    {"name": "x0_abs", "expression": "300*dx_cell", "description": "absorber front face x0 (a cell face, 6 um)"},
+    {"name": "t_arr", "expression": "t_heat + (x0_abs - x_p)/c_fl", "description": "time T = 0 at the probe"},
+    {"name": "t_end", "expression": "3.8*ns", "description": "study duration (probe tail down to ~1 %)"},
+    {"name": "Tr_end", "expression": "t_end - t_heat", "description": "time since the heating centre at t_end"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "absorber", "kind": "rectangle", "params": {"x0": "x0_abs", "y0": 0.0, "x1": "Lx", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "x_src", "y0": 0.0, "x1": "x_src", "y1": "Ly"}},
+    {"name": "probe_point", "kind": "point", "params": {"x": "x_p", "y": "y_mid"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "fluid", "library": null,
+     "properties": {"eps_r": "eps_fl", "rho": "rho_fl", "sound_speed": "c_fl", "gruneisen": "G_fl"},
+     "dispersion": null, "selection": ["all"]},
+    {"name": "absorbing_fluid", "library": null,
+     "properties": {"eps_r": "eps_fl", "sigma_e": "sigma_abs", "rho": "rho_fl", "sound_speed": "c_fl",
+                    "gruneisen": "G_fl"},
+     "dispersion": null, "selection": ["absorber"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"wavelength": "lambda0", "bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 40},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"], "params": {"amplitude": "A_src"},
+         "enabled": true}
+      ],
+      "every": 1
+    },
+    {
+      "name": "acoustics",
+      "type": "elastic_waves",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 40, "heating_envelope": "gaussian",
+                   "heating_pulse_width": "w_heat", "heating_pulse_delay": "t_heat"},
+      "features": [
+        {"name": "probe", "type": "field_probe", "selection": ["probe_point"], "params": {"component": "pressure"},
+         "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [
+    {"name": "photoacoustic", "type": "em_acoustics_photoacoustic", "source": "em", "target": "acoustics",
+     "every": null, "params": {}, "enabled": true}
+  ],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "t_end", "output_interval": "t_end/8"},
+            "stored_fields": ["acoustics.pressure", "em.absorbed_power", "em.ez_abs"], "sweep": null},
+  "derived_values": [
+    {"name": "q_front", "expression": "em_absorbed_power", "selection": ["absorber"], "operation": "max",
+     "reference": "q0*exp(-mu_abs*dx_cell/2)", "tolerance": 0.015},
+    {"name": "P_abs_total", "expression": "em_absorbed_power", "selection": ["absorber"], "operation": "integral",
+     "reference": "q0*Ly/mu_abs*(1 - exp(-mu_abs*(Lx - x0_abs)))", "tolerance": 0.015},
+    {"name": "p_at_arrival", "source": "acoustics.probe", "operation": "at", "at": "t_arr", "expression": "values",
+     "reference": "p_scale*exp(b_par**2)*erfc(b_par)", "tolerance": 0.05},
+    {"name": "p_one_decay", "source": "acoustics.probe", "operation": "at", "at": "t_arr + 1/a_dec",
+     "expression": "values", "reference": "p_scale*exp(b_par**2 - 1)*erfc(b_par - 1/(a_dec*w_heat))",
+     "tolerance": 0.05}
+  ],
+  "analytic_curves": [
+    {"name": "probe_pressure", "target": "acoustics.probe",
+     "expression": "p_scale*exp(b_par**2 - a_dec*(t - t_arr))*erfc(b_par - (t - t_arr)/w_heat)", "tolerance": 0.02},
+    {"name": "absorbed_profile", "target": "line",
+     "expression": "where(x > x0_abs, q0*exp(-mu_abs*(x - x0_abs)), 0)", "tolerance": 0.002,
+     "line": [0.0, "y_mid", "Lx", "y_mid"], "field": "em.absorbed_power"},
+    {"name": "pressure_profile", "target": "line",
+     "expression": "p_scale*where(x < x0_abs, exp(b_par**2 - a_dec*(Tr_end - (x0_abs - x)/c_fl))*erfc(b_par - (Tr_end - (x0_abs - x)/c_fl)/w_heat), exp(-mu_abs*(x - x0_abs))*(exp(b_par**2 - a_dec*Tr_end)*erfc(b_par - Tr_end/w_heat) + exp(b_par**2 + a_dec*Tr_end)*(erf(Tr_end/w_heat + b_par) + erf((x - x0_abs)/(c_fl*w_heat) - Tr_end/w_heat - b_par))))",
+     "tolerance": 0.03,
+     "line": [0.0, "y_mid", "Lx", "y_mid"], "field": "acoustics.pressure"}
+  ]
+}

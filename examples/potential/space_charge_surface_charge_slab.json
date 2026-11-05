@@ -1,0 +1,76 @@
+{
+  "title": "Space charge with a surface-charged face (electrostatics, analytic)",
+  "description": "A dielectric slab (eps_r = 4, 1 mm along x, insulated y faces: 1D) filled with a uniform free charge rho0 (charge_density feature), grounded (voltage 0) on x_lo and carrying a surface charge sigma_s on x_hi (surface_charge feature, a Neumann condition D.n = sigma_s into the domain). The sweep runs sigma_s / (rho0 L) over -1, -0.75, 0 and -0.25.\nAnalytic: V = ((sigma_s + rho0 L) x - rho0 x^2 / 2) / eps, D_x = rho0 x - sigma_s - rho0 L, E_x = D_x / eps (eps = eps0 eps_r); maximum V_max = (sigma_s + rho0 L)^2 / (2 rho0 eps) at x = (sigma_s + rho0 L) / rho0 (3L/4 at the last value; 0 and L at -1 and 0); charge on the grounded plate Q = -(sigma_s + rho0 L) w (Gauss: the plate, the space charge and the face charge sum to 0).\nDerived values tab: Q_plate (exact, Gauss), V_max (maximum cell value: exact here, the scheme's uniform offset rho0 dx^2 / (8 eps) cancels against the half-cell distance of the cell centres from the maximum, which lies on a cell edge or a face), V_end (probe in the last cell, x = L - dx/2: offset rho0 dx^2 / (8 eps), ~5e-5), D_mean (exact: the face fluxes are exact by charge conservation).\nSweep tab: V_end and Q_plate vs sigma_ratio with the dashed references (Q_plate_vs_ratio is drawn, not toleranced: its per-point relative error is undefined at the exact zero of sigma_ratio = -1; the derived Q_plate checks every value).\nLine profile tab (last sweep value): V (parabola), E_x and D_x (straight lines through 0 at the maximum of V).",
+  "version": 1,
+  "parameters": [
+    {"name": "rho0", "expression": 0.01, "description": "uniform free charge density in C/m^3"},
+    {"name": "eps_slab", "expression": 4.0, "description": "static relative permittivity of the slab"},
+    {"name": "L_slab", "expression": "1*mm", "description": "slab length along x"},
+    {"name": "w_slab", "expression": "0.1*mm", "description": "slab height along y (insulated y faces: 1D)"},
+    {"name": "dx_mesh", "expression": "10*um", "description": "uniform cell size (100 cells along x)"},
+    {"name": "sigma_ratio", "expression": -0.25, "description": "surface charge in units of rho0 L (swept)"},
+    {"name": "sigma_s", "expression": "sigma_ratio*rho0*L_slab", "description": "surface charge on x_hi in C/m^2"},
+    {"name": "eps_abs", "expression": "eps0_const*eps_slab", "description": "absolute permittivity in F/m"},
+    {"name": "D_lo", "expression": "sigma_s + rho0*L_slab", "description": "minus D_x at the grounded face, C/m^2"},
+    {"name": "x_peak", "expression": "min(max(D_lo/rho0, 0), L_slab)", "description": "position of the maximum of V in [0, L]"},
+    {"name": "V_max_ref", "expression": "(D_lo*x_peak - rho0*x_peak**2/2)/eps_abs", "description": "analytic maximum of V in V"},
+    {"name": "x_end", "expression": "L_slab - dx_mesh/2", "description": "probe position: centre of the last cell"},
+    {"name": "V_end_ref", "expression": "(D_lo*x_end - rho0*x_end**2/2)/eps_abs", "description": "analytic V at the probe"}
+  ],
+  "domain": {"size_x": "L_slab", "size_y": "w_slab"},
+  "geometry": [
+    {"name": "end_point", "kind": "point", "params": {"x": "x_end", "y": "w_slab/2 + dx_mesh/2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "dielectric", "library": null, "properties": {"eps_dc": "eps_slab"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "electrostatics",
+      "type": "electrostatics",
+      "settings": {},
+      "features": [
+        {"name": "space_charge", "type": "charge_density", "selection": ["all"], "params": {"density": "rho0"},
+         "enabled": true},
+        {"name": "ground", "type": "voltage", "selection": ["x_lo"], "params": {"voltage": 0.0}, "enabled": true},
+        {"name": "face_charge", "type": "surface_charge", "selection": ["x_hi"],
+         "params": {"surface_charge": "sigma_s"}, "enabled": true},
+        {"name": "end_probe", "type": "potential_probe", "selection": ["end_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": [],
+            "sweep": {"parameter": "sigma_ratio", "values": [-1.0, -0.75, 0.0, -0.25]}},
+  "derived_values": [
+    {"name": "Q_plate", "expression": "charge", "operation": "last", "source": "electrostatics.ground",
+     "reference": "-D_lo*w_slab", "tolerance": 1e-6},
+    {"name": "V_max", "expression": "V", "selection": [], "operation": "max",
+     "reference": "V_max_ref", "tolerance": 1e-5},
+    {"name": "V_end", "expression": "values", "operation": "last", "source": "electrostatics.end_probe",
+     "reference": "V_end_ref", "tolerance": 2e-4},
+    {"name": "D_mean", "expression": "D_x", "selection": [], "operation": "mean",
+     "reference": "rho0*L_slab/2 - D_lo", "tolerance": 1e-5}
+  ],
+  "analytic_curves": [
+    {"name": "V_end_vs_ratio", "target": "sweep", "series": "V_end",
+     "expression": "((sigma_ratio + 1)*rho0*L_slab*x_end - rho0*x_end**2/2)/eps_abs", "tolerance": 2e-4},
+    {"name": "Q_plate_vs_ratio", "target": "sweep", "series": "Q_plate",
+     "expression": "-(sigma_ratio + 1)*rho0*L_slab*w_slab"},
+    {"name": "V_profile", "target": "line", "expression": "(D_lo*x - rho0*x**2/2)/eps_abs", "tolerance": 1e-4,
+     "line": [0.0, "w_slab/2 + dx_mesh/2", "L_slab", "w_slab/2 + dx_mesh/2"], "field": "electrostatics.V"},
+    {"name": "E_profile", "target": "line", "expression": "(rho0*x - D_lo)/eps_abs", "tolerance": 1e-4,
+     "line": [0.0, "w_slab/2 + dx_mesh/2", "L_slab", "w_slab/2 + dx_mesh/2"], "field": "electrostatics.E_x"},
+    {"name": "D_profile", "target": "line", "expression": "rho0*x - D_lo", "tolerance": 1e-4,
+     "line": [0.0, "w_slab/2 + dx_mesh/2", "L_slab", "w_slab/2 + dx_mesh/2"], "field": "electrostatics.D_x"}
+  ]
+}

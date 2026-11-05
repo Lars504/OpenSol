@@ -1,0 +1,76 @@
+{
+  "title": "Line heat source in an orthotropic solid: elliptic isotherms (analytic)",
+  "description": "Steady conduction from a line source (point_heat_source) in an orthotropic solid (k_xx = 4 k_yy, no cross term); everything outside an ellipse with semi-axes R sqrt(k_xx / k_bar) along x and R sqrt(k_yy / k_bar) along y (k_bar = sqrt(k_xx k_yy)) is held at T_wall (fixed_temperature_domain), so the wall is an isotherm.\nAnalytic (stretched coordinates x / sqrt(k_xx), y / sqrt(k_yy)): T - T_wall = P / (2 pi k_bar) ln(R / rho), rho = sqrt(k_bar ((x - xc)^2 / k_xx + (y - yc)^2 / k_yy)); isotherms are ellipses twice as long along x as along y.\nDerived values tab: theta_x (probe 16 cells along x) and theta_y (probe 8 cells along y) lie on the same isotherm, so both have the same reference (~2.3 K); an isotropic k would put them 2x apart in rho. Expect ~1 % (staircase ellipse, lattice Green's function).\nLine profile tab: T_rise_x and T_rise_y from 4 / 2 cells beside the source out to the domain edge (0 in the held region).",
+  "version": 1,
+  "parameters": [
+    {"name": "P_line", "expression": 100.0, "description": "line source power in W per m of z"},
+    {"name": "k_x_med", "expression": 20.0, "description": "thermal conductivity along x in W/(m K)"},
+    {"name": "k_y_med", "expression": 5.0, "description": "thermal conductivity along y in W/(m K)"},
+    {"name": "k_bar", "expression": "sqrt(k_x_med*k_y_med)", "description": "geometric-mean conductivity in W/(m K) (10)"},
+    {"name": "T_wall", "expression": 293.15, "description": "temperature held outside the ellipse in K (also T0)"},
+    {"name": "L_x", "expression": "40*mm", "description": "domain size along x"},
+    {"name": "L_y", "expression": "24*mm", "description": "domain size along y"},
+    {"name": "dx_mesh", "expression": "0.25*mm", "description": "uniform cell size"},
+    {"name": "xc", "expression": "L_x/2 + dx_mesh/2", "description": "source x: a cell centre near the domain centre"},
+    {"name": "yc", "expression": "L_y/2 + dx_mesh/2", "description": "source y: a cell centre"},
+    {"name": "R_iso", "expression": "12*mm", "description": "isotherm radius R in the stretched metric (rho = R on the wall)"},
+    {"name": "R_x", "expression": "R_iso*sqrt(k_x_med/k_bar)", "description": "wall semi-axis along x (16.97 mm)"},
+    {"name": "R_y", "expression": "R_iso*sqrt(k_y_med/k_bar)", "description": "wall semi-axis along y (8.49 mm)"},
+    {"name": "x_probe", "expression": "xc + 16*dx_mesh", "description": "x of the probe on the x axis (a cell centre)"},
+    {"name": "y_probe", "expression": "yc + 8*dx_mesh", "description": "y of the probe on the y axis (a cell centre)"},
+    {"name": "rho_probe", "expression": "16*dx_mesh*sqrt(k_bar/k_x_med)",
+     "description": "stretched radius of both probes (equal: 8 dx sqrt(k_bar / k_y) = 16 dx sqrt(k_bar / k_x))"}
+  ],
+  "domain": {"size_x": "L_x", "size_y": "L_y"},
+  "geometry": [
+    {"name": "box", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "L_x", "y1": "L_y"}},
+    {"name": "isotherm", "kind": "ellipse", "params": {"cx": "xc", "cy": "yc", "a": "R_x", "b": "R_y", "angle": 0.0}},
+    {"name": "held_region", "kind": "difference", "params": {"base": "box", "subtract": ["isotherm"]}},
+    {"name": "source_point", "kind": "point", "params": {"x": "xc", "y": "yc"}},
+    {"name": "x_axis_point", "kind": "point", "params": {"x": "x_probe", "y": "yc"}},
+    {"name": "y_axis_point", "kind": "point", "params": {"x": "xc", "y": "y_probe"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "orthotropic", "library": null, "properties": {"k_xx": "k_x_med", "k_yy": "k_y_med"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "heat",
+      "type": "heat",
+      "settings": {"T0": "T_wall"},
+      "features": [
+        {"name": "wall", "type": "fixed_temperature_domain", "selection": ["held_region"],
+         "params": {"temperature": "T_wall"}, "enabled": true},
+        {"name": "source", "type": "point_heat_source", "selection": ["source_point"], "params": {"P": "P_line"},
+         "enabled": true},
+        {"name": "x_axis", "type": "temperature_probe", "selection": ["x_axis_point"], "params": {}, "enabled": true},
+        {"name": "y_axis", "type": "temperature_probe", "selection": ["y_axis_point"], "params": {}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
+  ],
+  "study": {"type": "stationary", "settings": {}, "stored_fields": ["heat.T", "heat.T_rise"], "sweep": null},
+  "derived_values": [
+    {"name": "theta_x", "expression": "values - T_wall", "selection": [], "operation": "last",
+     "source": "heat.x_axis", "reference": "P_line/(2*pi*k_bar)*log(R_iso/rho_probe)", "tolerance": 0.03},
+    {"name": "theta_y", "expression": "values - T_wall", "selection": [], "operation": "last",
+     "source": "heat.y_axis", "reference": "P_line/(2*pi*k_bar)*log(R_iso/rho_probe)", "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "T_rise_x", "target": "line",
+     "expression": "P_line/(2*pi*k_bar)*log(R_iso/min(R_iso, sqrt(k_bar*((x - xc)**2/k_x_med + (y - yc)**2/k_y_med))))",
+     "tolerance": 0.03, "line": ["xc + 4*dx_mesh", "yc", "L_x", "yc"], "field": "heat.T_rise"},
+    {"name": "T_rise_y", "target": "line",
+     "expression": "P_line/(2*pi*k_bar)*log(R_iso/min(R_iso, sqrt(k_bar*((x - xc)**2/k_x_med + (y - yc)**2/k_y_med))))",
+     "tolerance": 0.03, "line": ["xc", "yc + 2*dx_mesh", "xc", "L_y"], "field": "heat.T_rise"}
+  ]
+}

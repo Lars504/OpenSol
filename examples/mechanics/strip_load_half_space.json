@@ -1,0 +1,100 @@
+{
+  "title": "Strip load on an elastic half-space: stresses under the load (analytic)",
+  "description": "A uniform pressure p on a surface strip |x| < a pressing on a deep elastic block (plane strain), modelled as the half x > 0 (x_lo roller = the symmetry plane) of a 160 a x 160 a box with rollers on x_hi and y_lo (y_hi is the loaded free surface), graded: uniform dx = a / 8 over the 10 a x 10 a block near_field at the load (every probe and line), cells growing (ratio 1.15) to a beyond it. Outer-face loads cover whole faces, so the strip load is applied as body forces in the two top cell rows under the strip: f_y = -1.5 p / dx in the top row and +0.5 p / dx in the row below. Their sum is the load p a (per m of depth, half model) and their nodal forces (-3/4, -1/2, +1/4 of p dx at depths 0, dx, 2 dx) have zero first moment in depth, so the burial of the load is a second-order effect ((dx / a)^2); a single row at -p / dx would act dx / 2 below the surface (~2-3 % at z = a for a = 8 cells).\nAnalytic (Flamant strip, independent of E and nu): with theta_1,2 = atan((x +- a) / z), alpha = theta_1 - theta_2, z the depth below the surface: sigma_yy = -(p / pi) (alpha + sin(alpha) cos(theta_1 + theta_2)), sigma_xx = -(p / pi) (alpha - sin(alpha) cos(theta_1 + theta_2)); on the axis sigma_yy = -(2 p / pi) (atan(a / z) + a z / (a^2 + z^2)) (-0.818 p at z = a).\nDerived values tab: F_y_bottom (bottom roller reaction = p a, exact equilibrium, 1e-6), syy_a / syy_2a (axis cell centres at z = a + dx/2 and 2 a + dx/2) and sxx_a against the formulas.\nLine profile tab: syy_axis / sxx_axis down the axis from z = 3 dx to 8 a, syy_depth_a across at z = a + dx/2 from x = 0 to 4 a.\nExpected agreement: the finite box (the rigid smooth base D below bends the layer: sigma_xx shifted by ~+P / (pi D) = 2 p a / (pi D) all down the axis; measured in a 40 a box: +0.016 p, i.e. -10 % of sxx_a = -0.16 p, while syy matched to 7e-4) and Q1 stresses ~(dx / a)^2; in the 160 a box the shift is ~0.004 p (~2.5 % of sxx_a). Tolerance 5 % (sxx_a 10 %: an offset of 1 % of p is already 6 % of its small value).",
+  "version": 1,
+  "parameters": [
+    {"name": "E_solid", "expression": 7e10, "description": "Young's modulus in Pa (the stresses do not depend on it)"},
+    {"name": "nu_solid", "expression": 0.3, "description": "Poisson ratio (the stresses do not depend on it in plane strain)"},
+    {"name": "p_load", "expression": 1e6, "description": "strip pressure in Pa"},
+    {"name": "a_half", "expression": "0.4*mm", "description": "half width of the loaded strip"},
+    {"name": "n_a", "expression": 8, "description": "cells over the half width"},
+    {"name": "dx_mesh", "expression": "a_half/n_a", "description": "cell size over near_field (50 um)"},
+    {"name": "W_box", "expression": "160*a_half", "description": "box half width along x (graded: dx_mesh over near_field, then up to a_half)"},
+    {"name": "D_box", "expression": "160*a_half", "description": "box depth along y (graded like x); the loaded surface is y = D_box"},
+    {"name": "R_near", "expression": "10*a_half", "description": "side of the uniform dx_mesh block at the load (holds every probe and line)"},
+    {"name": "x_p", "expression": "dx_mesh/2", "description": "probe x: the first cell column centre (next to the axis)"},
+    {"name": "z_1", "expression": "a_half + dx_mesh/2", "description": "depth of probe 1 (a cell centre)"},
+    {"name": "z_2", "expression": "2*a_half + dx_mesh/2", "description": "depth of probe 2 (a cell centre)"},
+    {"name": "th1_1", "expression": "atan((x_p + a_half)/z_1)", "description": "angle to the far strip edge at probe 1"},
+    {"name": "th2_1", "expression": "atan((x_p - a_half)/z_1)", "description": "angle to the near strip edge at probe 1"},
+    {"name": "th1_2", "expression": "atan((x_p + a_half)/z_2)", "description": "angle to the far strip edge at probe 2"},
+    {"name": "th2_2", "expression": "atan((x_p - a_half)/z_2)", "description": "angle to the near strip edge at probe 2"},
+    {"name": "syy_1_ref", "expression": "-p_load/pi*((th1_1 - th2_1) + sin(th1_1 - th2_1)*cos(th1_1 + th2_1))", "description": "analytic sigma_yy at probe 1 in Pa (-0.80 p)"},
+    {"name": "sxx_1_ref", "expression": "-p_load/pi*((th1_1 - th2_1) - sin(th1_1 - th2_1)*cos(th1_1 + th2_1))", "description": "analytic sigma_xx at probe 1 in Pa (-0.16 p)"},
+    {"name": "syy_2_ref", "expression": "-p_load/pi*((th1_2 - th2_2) + sin(th1_2 - th2_2)*cos(th1_2 + th2_2))", "description": "analytic sigma_yy at probe 2 in Pa (-0.54 p)"}
+  ],
+  "domain": {"size_x": "W_box", "size_y": "D_box"},
+  "geometry": [
+    {"name": "near_field", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "D_box - R_near", "x1": "R_near", "y1": "D_box"}},
+    {"name": "load_row_top", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "D_box - dx_mesh", "x1": "a_half", "y1": "D_box"}},
+    {"name": "load_row_below", "kind": "rectangle",
+     "params": {"x0": 0.0, "y0": "D_box - 2*dx_mesh", "x1": "a_half", "y1": "D_box - dx_mesh"}},
+    {"name": "probe_1_point", "kind": "point", "params": {"x": "x_p", "y": "D_box - z_1"}},
+    {"name": "probe_2_point", "kind": "point", "params": {"x": "x_p", "y": "D_box - z_2"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "solid", "library": null,
+     "properties": {"youngs_modulus": "E_solid", "poisson_ratio": "nu_solid"}, "dispersion": null,
+     "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {},
+      "features": [
+        {"name": "symmetry", "type": "roller", "selection": ["x_lo"], "params": {}, "enabled": true},
+        {"name": "far_side", "type": "roller", "selection": ["x_hi"], "params": {}, "enabled": true},
+        {"name": "bottom", "type": "roller", "selection": ["y_lo"], "params": {}, "enabled": true},
+        {"name": "load_top", "type": "body_force", "selection": ["load_row_top"],
+         "params": {"f_x": 0.0, "f_y": "-1.5*p_load/dx_mesh"}, "enabled": true},
+        {"name": "load_below", "type": "body_force", "selection": ["load_row_below"],
+         "params": {"f_x": 0.0, "f_y": "0.5*p_load/dx_mesh"}, "enabled": true},
+        {"name": "syy_probe_1", "type": "solid_probe", "selection": ["probe_1_point"],
+         "params": {"component": "stress_yy"}, "enabled": true},
+        {"name": "sxx_probe_1", "type": "solid_probe", "selection": ["probe_1_point"],
+         "params": {"component": "stress_xx"}, "enabled": true},
+        {"name": "syy_probe_2", "type": "solid_probe", "selection": ["probe_2_point"],
+         "params": {"component": "stress_yy"}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"linear": "cg"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "nonuniform", "dx": "a_half", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0,
+           "refinements": [{"object": "near_field", "dx": "dx_mesh", "margin": 0.0}]},
+  "solvers": [
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-9, "max_iterations": 200000}}
+  ],
+  "study": {"type": "stationary", "settings": {},
+            "stored_fields": ["solid.stress_yy", "solid.stress_xx", "solid.u_y", "solid.von_mises"], "sweep": null},
+  "derived_values": [
+    {"name": "F_y_bottom", "expression": "F_y", "operation": "last", "source": "solid.bottom",
+     "reference": "p_load*a_half", "tolerance": 1e-6},
+    {"name": "syy_a", "expression": "values", "operation": "last", "source": "solid.syy_probe_1",
+     "reference": "syy_1_ref", "tolerance": 0.05},
+    {"name": "sxx_a", "expression": "values", "operation": "last", "source": "solid.sxx_probe_1",
+     "reference": "sxx_1_ref", "tolerance": 0.1},
+    {"name": "syy_2a", "expression": "values", "operation": "last", "source": "solid.syy_probe_2",
+     "reference": "syy_2_ref", "tolerance": 0.05}
+  ],
+  "analytic_curves": [
+    {"name": "syy_axis", "target": "line", "field": "solid.stress_yy",
+     "line": ["x_p", "D_box - 3*dx_mesh", "x_p", "D_box - 8*a_half"],
+     "expression": "-p_load/pi*((atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y))) + sin(atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y)))*cos(atan((x + a_half)/(D_box - y)) + atan((x - a_half)/(D_box - y))))",
+     "tolerance": 0.05},
+    {"name": "sxx_axis", "target": "line", "field": "solid.stress_xx",
+     "line": ["x_p", "D_box - 3*dx_mesh", "x_p", "D_box - 8*a_half"],
+     "expression": "-p_load/pi*((atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y))) - sin(atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y)))*cos(atan((x + a_half)/(D_box - y)) + atan((x - a_half)/(D_box - y))))",
+     "tolerance": 0.05},
+    {"name": "syy_depth_a", "target": "line", "field": "solid.stress_yy",
+     "line": [0.0, "D_box - z_1", "4*a_half", "D_box - z_1"],
+     "expression": "-p_load/pi*((atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y))) + sin(atan((x + a_half)/(D_box - y)) - atan((x - a_half)/(D_box - y)))*cos(atan((x + a_half)/(D_box - y)) + atan((x - a_half)/(D_box - y))))",
+     "tolerance": 0.05}
+  ]
+}

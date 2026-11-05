@@ -1,0 +1,50 @@
+{
+  "title": "Thin-film interference (Fabry-Pérot)",
+  "version": 1,
+  "parameters": [
+    {"name": "lambda0", "expression": "600*nm", "description": "source centre wavelength"},
+    {"name": "Lx", "expression": "6*um", "description": "domain length along x (propagation)"},
+    {"name": "Ly", "expression": "3*um", "description": "domain height (one period in y)"},
+    {"name": "n_film", "expression": 1.5,
+     "description": "film refractive index; the sweep runs 1 (empty reference) then this value"},
+    {"name": "d_film", "expression": "500*nm", "description": "film thickness"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "slab", "kind": "rectangle",
+     "params": {"x0": "Lx/2 - d_film/2", "y0": 0.0, "x1": "Lx/2 + d_film/2", "y1": "Ly"}},
+    {"name": "source_line", "kind": "line", "params": {"x0": "0.2*Lx", "y0": 0.0, "x1": "0.2*Lx", "y1": "Ly"}},
+    {"name": "reflection_line", "kind": "line",
+     "params": {"x0": "0.3*Lx", "y0": 0.0, "x1": "0.3*Lx", "y1": "Ly"}},
+    {"name": "transmission_line", "kind": "line",
+     "params": {"x0": "0.75*Lx", "y0": 0.0, "x1": "0.75*Lx", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "film", "library": null, "properties": {"eps_r": "n_film**2"}, "dispersion": null,
+     "selection": ["slab"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdtd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic"},
+      "features": [
+        {"name": "source", "type": "line_source", "selection": ["source_line"],
+         "params": {"waveform": "gaussian", "wavelength": "lambda0", "bandwidth": 0.8, "amplitude": 1.0},
+         "enabled": true},
+        {"name": "reflection_side_flux", "type": "flux_monitor", "selection": ["reflection_line"],
+         "params": {"wavelength_start": 4e-07, "wavelength_stop": 8e-07, "n_wavelengths": 50}, "enabled": true},
+        {"name": "transmitted_flux", "type": "flux_monitor", "selection": ["transmission_line"],
+         "params": {"wavelength_start": 4e-07, "wavelength_stop": 8e-07, "n_wavelengths": 50}, "enabled": true}
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "25*nm", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "time_dependent", "settings": {"duration": "4*Lx/c_const", "output_interval": "2*fs"},
+            "stored_fields": [], "sweep": {"parameter": "n_film", "values": [1.0, "n_film"]}},
+  "derived_values": []
+}
