@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "OpenSol: GPU multiphysics simulation"
+version: 0.3.0
+license: BSD-3-Clause
+repository-code: "https://github.com/Lars504/OpenSol"
+authors:
+  - family-names: Madsen
+    given-names: Lars S.
+    affiliation: The University of Queensland
+abstract: >-
+  GPU (cupy) and CPU 1D / 2D / 3D multiphysics simulation: FDTD and FDFD
+  electromagnetics, eigenmode expansion, waveguide modes, heat conduction,
+  electric currents and electrostatics, magnetostatics and AC magnetic fields,
+  semiconductor drift-diffusion, solid mechanics, elastic waves and laminar
+  flow, and their couplings. Models are JSON files that a GUI, a headless API
+  and a CLI all read; FEM on triangles and tetrahedra for the physics that
+  declare them.
+keywords:
+  - multiphysics
+  - GPU
+  - FDTD
+  - FDFD
+  - finite element method
+  - electromagnetics
+  - optomechanics
+  - photonics
