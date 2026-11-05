@@ -33,6 +33,8 @@ Step-by-step conda setup (separate environment, optional cupy / GPU): `INSTALL.m
 
 ## Quickstarts
 
+GUI: `python -m open_sol.gui`.
+
 1. Template, check, run (headless, the path for agents; the same as `examples/headless_run.py`):
 
    ```
@@ -69,7 +71,7 @@ Step-by-step conda setup (separate environment, optional cupy / GPU): `INSTALL.m
    print(flux.flux())   # a.u., > 0 toward +x: divide by an empty-domain run for transmission
    ```
 
-GUI: `python -m open_sol.gui [model.json]` (File > New from template, Examples menu).
+
 
 ## Which API when
 
