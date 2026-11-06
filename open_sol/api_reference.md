@@ -14,171 +14,171 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. A line "Help: shared `<key>`" stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text, the first included, points there.
 
-- lines 183-525: Model spec
-- lines 527-644: Expressions
-- lines 646-911: Geometry
-- lines 913-1068: Materials
-- lines 1070-1116: Mesh
-- lines 1118-1236: Solvers
-- lines 1238-2068: Shared help texts
-- lines 2070-2235: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2237-2490: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2492-2623: Physics type `electric_currents` - Electric Currents
-- lines 2625-2827: Physics type `electrostatics` - Electrostatics
-- lines 2829-3053: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3055-3243: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3245-3358: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3360-3557: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3559-3731: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3733-4075: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4077-4439: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4441-4961: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4453-4480: Settings (PhysicsSpec.settings)
-  - lines 4482-4497: Material properties (MaterialSpec.properties)
-  - lines 4499-4540: Fields
-  - lines 4542-4546: Source slots
-  - lines 4548-4568: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4570-4630: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4632-4680: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4682-4702: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4704-4738: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4740-4749: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4751-4771: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4773-4793: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4795-4817: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4819-4833: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4835-4853: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4855-4869: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4871-4889: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4891-4903: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4905-4915: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4917-4929: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 4931-4943: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 4945-4961: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 4963-5270: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5272-5505: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5507-5910: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5519-5540: Settings (PhysicsSpec.settings)
-  - lines 5542-5553: Material properties (MaterialSpec.properties)
-  - lines 5555-5585: Fields
-  - lines 5587-5590: Source slots
-  - lines 5592-5608: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5610-5626: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5628-5648: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5650-5666: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5668-5688: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5690-5699: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5701-5719: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5721-5746: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5748-5773: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5775-5809: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5811-5821: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5823-5840: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5842-5856: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5858-5874: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5876-5892: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5894-5910: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5912-6323: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5924-5945: Settings (PhysicsSpec.settings)
-  - lines 5947-5960: Material properties (MaterialSpec.properties)
-  - lines 5962-5991: Fields
-  - lines 5993-5997: Source slots
-  - lines 5999-6021: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6023-6039: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6041-6061: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6063-6079: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6081-6101: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6103-6112: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6114-6132: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6134-6159: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6161-6186: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6188-6222: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6224-6234: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6236-6253: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6255-6269: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6271-6287: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6289-6305: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6307-6323: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6325-6530: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6532-6832: Physics type `heat` - Heat Transfer in Solids
-- lines 6834-6992: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 6994-7188: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7190-7358: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7360-7532: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7534-7841: Physics type `membrane` - Membrane
-- lines 7843-8076: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8078-8531: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8090-8139: Settings (PhysicsSpec.settings)
-  - lines 8141-8218: Material properties (MaterialSpec.properties)
-  - lines 8220-8277: Fields
-  - lines 8279-8283: Source slots
-  - lines 8285-8295: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8297-8307: Feature `solid_mechanics.roller` - Roller
-  - lines 8309-8322: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8324-8334: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8336-8349: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8351-8364: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8366-8379: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8381-8394: Feature `solid_mechanics.body_force` - Body force
-  - lines 8396-8407: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8409-8420: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8422-8432: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8434-8444: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8446-8481: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8483-8497: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8499-8513: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8515-8531: Feature `solid_mechanics.admittance` - Admittance
-- lines 8533-9075: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8545-8594: Settings (PhysicsSpec.settings)
-  - lines 8596-8723: Material properties (MaterialSpec.properties)
-  - lines 8725-8795: Fields
-  - lines 8797-8802: Source slots
-  - lines 8804-8814: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8816-8826: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8828-8843: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8845-8855: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8857-8872: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8874-8889: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 8891-8906: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 8908-8919: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 8921-8932: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 8934-8944: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 8946-8956: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 8958-8981: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 8983-9000: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9002-9019: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9021-9038: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9040-9075: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9077-9085: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9087-9095: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9097-9106: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9108-9117: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9119-9127: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9129-9137: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9139-9150: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9152-9160: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9162-9175: Coupling type `field_transfer` - Field transfer
-- lines 9177-9185: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9187-9195: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9197-9205: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9207-9215: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9217-9225: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9227-9235: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9237-9250: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9252-9261: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9263-9272: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9274-9308: Study type `eigenfrequency` - Eigenfrequency
-- lines 9310-9345: Study type `frequency_domain` - Frequency domain
-- lines 9347-9390: Study type `frequency_response` - Frequency response
-- lines 9392-9414: Study type `mode_analysis` - Mode analysis
-- lines 9416-9438: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9440-9456: Study type `optimization` - Optimization
-- lines 9458-9481: Study type `optomechanics` - Optomechanics
-- lines 9483-9504: Study type `stationary` - Stationary
-- lines 9506-9535: Study type `thermal_noise` - Thermal noise
-- lines 9537-9551: Study type `time_dependent` - Time dependent
-- lines 9553-9619: Templates
-- lines 9621-9839: Results, reports and files
+- lines 183-526: Model spec
+- lines 528-645: Expressions
+- lines 647-912: Geometry
+- lines 914-1069: Materials
+- lines 1071-1117: Mesh
+- lines 1119-1237: Solvers
+- lines 1239-2069: Shared help texts
+- lines 2071-2236: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2238-2491: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2493-2624: Physics type `electric_currents` - Electric Currents
+- lines 2626-2828: Physics type `electrostatics` - Electrostatics
+- lines 2830-3054: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3056-3244: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3246-3359: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3361-3558: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3560-3732: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3734-4076: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4078-4440: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4442-4962: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4454-4481: Settings (PhysicsSpec.settings)
+  - lines 4483-4498: Material properties (MaterialSpec.properties)
+  - lines 4500-4541: Fields
+  - lines 4543-4547: Source slots
+  - lines 4549-4569: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4571-4631: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4633-4681: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4683-4703: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4705-4739: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4741-4750: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4752-4772: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4774-4794: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4796-4818: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4820-4834: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4836-4854: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4856-4870: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4872-4890: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4892-4904: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4906-4916: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4918-4930: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 4932-4944: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 4946-4962: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 4964-5271: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5273-5506: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5508-5911: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5520-5541: Settings (PhysicsSpec.settings)
+  - lines 5543-5554: Material properties (MaterialSpec.properties)
+  - lines 5556-5586: Fields
+  - lines 5588-5591: Source slots
+  - lines 5593-5609: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5611-5627: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5629-5649: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5651-5667: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5669-5689: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5691-5700: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5702-5720: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5722-5747: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5749-5774: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5776-5810: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5812-5822: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5824-5841: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5843-5857: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5859-5875: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5877-5893: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5895-5911: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5913-6324: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5925-5946: Settings (PhysicsSpec.settings)
+  - lines 5948-5961: Material properties (MaterialSpec.properties)
+  - lines 5963-5992: Fields
+  - lines 5994-5998: Source slots
+  - lines 6000-6022: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6024-6040: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6042-6062: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6064-6080: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6082-6102: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6104-6113: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6115-6133: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6135-6160: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6162-6187: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6189-6223: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6225-6235: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6237-6254: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6256-6270: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6272-6288: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6290-6306: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6308-6324: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6326-6531: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6533-6833: Physics type `heat` - Heat Transfer in Solids
+- lines 6835-6993: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 6995-7189: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7191-7359: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7361-7533: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7535-7842: Physics type `membrane` - Membrane
+- lines 7844-8077: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8079-8532: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8091-8140: Settings (PhysicsSpec.settings)
+  - lines 8142-8219: Material properties (MaterialSpec.properties)
+  - lines 8221-8278: Fields
+  - lines 8280-8284: Source slots
+  - lines 8286-8296: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8298-8308: Feature `solid_mechanics.roller` - Roller
+  - lines 8310-8323: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8325-8335: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8337-8350: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8352-8365: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8367-8380: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8382-8395: Feature `solid_mechanics.body_force` - Body force
+  - lines 8397-8408: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8410-8421: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8423-8433: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8435-8445: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8447-8482: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8484-8498: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8500-8514: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8516-8532: Feature `solid_mechanics.admittance` - Admittance
+- lines 8534-9076: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8546-8595: Settings (PhysicsSpec.settings)
+  - lines 8597-8724: Material properties (MaterialSpec.properties)
+  - lines 8726-8796: Fields
+  - lines 8798-8803: Source slots
+  - lines 8805-8815: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8817-8827: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8829-8844: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8846-8856: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8858-8873: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8875-8890: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 8892-8907: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 8909-8920: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 8922-8933: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 8935-8945: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 8947-8957: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 8959-8982: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 8984-9001: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9003-9020: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9022-9039: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9041-9076: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9078-9086: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9088-9096: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9098-9107: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9109-9118: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9120-9128: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9130-9138: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9140-9151: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9153-9161: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9163-9176: Coupling type `field_transfer` - Field transfer
+- lines 9178-9186: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9188-9196: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9198-9206: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9208-9216: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9218-9226: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9228-9236: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9238-9251: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9253-9262: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9264-9273: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9275-9309: Study type `eigenfrequency` - Eigenfrequency
+- lines 9311-9346: Study type `frequency_domain` - Frequency domain
+- lines 9348-9391: Study type `frequency_response` - Frequency response
+- lines 9393-9415: Study type `mode_analysis` - Mode analysis
+- lines 9417-9439: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9441-9457: Study type `optimization` - Optimization
+- lines 9459-9482: Study type `optomechanics` - Optomechanics
+- lines 9484-9505: Study type `stationary` - Stationary
+- lines 9507-9536: Study type `thermal_noise` - Thermal noise
+- lines 9538-9552: Study type `time_dependent` - Time dependent
+- lines 9554-9620: Templates
+- lines 9622-9840: Results, reports and files
 
 ## Model spec
 
@@ -200,7 +200,7 @@ A model is one JSON object (ModelSpec.to_dict(); api.save / api.load) made of th
 - `couplings` (list; default []): Couplings (CouplingSpec) that feed a field of one physics into a source slot of another.
 - `meshes` (list; default [{"name": "mesh", "kind": "tensor", "mode": "uniform", "dx": 2e-08, "max_ratio": null, "wavelength_min": null, "points_per_wavelength": null, "refinements": [], "outer_dx": null, "outer_ratio": null, "axes": [], "h_min": null, "curvature_factor": 0.3, "mesher": "builtin", "sweep_axis": "none", "pml_layers": 8, "mirror_x": false, "mirror_y": false, "size_points": [], "face_sizes": []}]): Named meshes (MeshSpec, at least one, unique names; the first is the default): tensor (uniform, nonuniform or auto cells plus refinements), triangles (2D) or tetrahedra (3D). Each physics runs on one (PhysicsSpec.mesh); see mesh. A legacy "mesh" object (one MeshSpec) loads as [that mesh]; ModelSpec(mesh=...) and spec.mesh in scripts mean meshes[0].
 - `solvers` (list; default []): Solver nodes (SolverSpec), each a solver type with its settings, used by the physics roles that name it in PhysicsSpec.solvers; [] = every physics on Automatic (the default solver of each role). A node no physics uses is a warning.
-- `solver_defaults` (SolverDefaultsSpec; default {"backend": "auto", "precision": "auto", "subpixel_smoothing": false, "conformal_boundaries": false}): Model-wide solver choices (SolverDefaultsSpec).
+- `solver_defaults` (SolverDefaultsSpec; default {"backend": "auto", "precision": "auto", "subpixel_smoothing": false, "conformal_boundaries": false, "memory_check": "error"}): Model-wide solver choices (SolverDefaultsSpec).
 - `study` (StudySpec; default {"type": "time_dependent", "settings": {}, "stored_fields": [], "sweep": null, "stored_cuts": [], "adaptation": null, "estimation": null, "solved_physics": []}): What to compute (StudySpec): study type, its settings, stored fields and an optional sweep.
 - `derived_values` (list; default []): Scalars evaluated at the end of the run (DerivedValueSpec), reported in summary.json derived (with derived_reference / derived_error when they have a reference).
 - `analytic_curves` (list; default []): Analytic curves (AnalyticCurveSpec) the GUI draws dashed over a simulated curve (a feature result, the sweep plot or a line profile); figures=True draws them into the feature result figures and adds figures/curve_<name>.png per line curve and figures/<key>_vs_<x_column or row>.png per table target. They do not change the run.
@@ -345,6 +345,7 @@ A model is one JSON object (ModelSpec.to_dict(); api.save / api.load) made of th
 - `precision` (str; default "auto"): auto (default) | single | double | mixed | half_storage: model-wide solver precision. auto = each solver's own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role offer that precision takes it, unless its solver node sets a precision of its own (the per-solver override): Automatic roles and nodes without a precision setting. Solvers that do not offer it keep their default (a validation info names them), e.g. double makes pcg and the time steppers double while sparse_direct / arpack_shift_invert / banded are double anyway; mixed reaches only pcg nodes and Automatic pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block nodes. A node with pcg preconditioner multigrid and no precision of its own fails with mixed (set the node precision). check.json / summary.json solvers record the precision each role resolved to.
 - `subpixel_smoothing` (bool; default false): false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour). Fill fraction and normal of every E_z cell / E_x and E_y face whose volume two materials share come once at build from 64 x 4 and 4 x 64 sample rasters per cell of the drawn material regions (each location takes the one whose fine axis is nearer its normal); the averaging (E_z and the field component along an interface: mean eps; across it: the harmonic mean, the diagonal of the inverse tensor) is reapplied to the current eps of two neighbouring cells of those materials after every change, so thermo-optic and other eps couplings keep working. Honoured by em_fdtd_ez / _hz, em_fdfd_ez / _hz, em_modes (E_x / E_y faces with the in-plane normal, E_z cells the area mean) and em_fdtd_3d outside an optimization study (incl. their mode ports); every other physics ignores it (validation info). em_fdtd_3d: the in-plane geometry per run of z cells sharing one cross-section (vertical walls: exact for z prisms; tapers and spheres are smoothed per layer, staircased along z) plus horizontal interfaces (prism tops / bottoms) sampled at 16 heights per half cell; the averaged face eps are re-quantised into a uint16 face index (2 bytes per cell). Only the background eps is averaged: sigma_e, mu_r and Drude / Lorentz poles keep their cell membership, and expression-defined eps jumps inside one material stay staircased. Restores second order on curved E_z interfaces; on slanted H_z interfaces it is better than staircasing, not second order.
 - `conformal_boundaries` (bool; default false): false (default) | true: curved walls at their drawn position instead of staircased to the cells, located once at build from the drawn geometry (bisection along the cell links and faces). em_fdtd_ez / _hz pec_domain: E_z puts E_z = 0 at the exact wall distance along each H link to a PEC cell; H_z (Dey-Mittra) updates H_z of each cut cell from the free lengths of its faces and its free area, and only faces wholly inside the metal are PEC. Each corrected cell is limited so its update stays within the stability limit of the unchanged time step (the smallest cut never sets dt; a very small cut is then partly staircased). em_fdtd_ez / _hz dispersive materials (Drude / Lorentz poles): each pole current is weighted by the share of its control area inside the drawn material (E_z: the cell, exact for E tangential to the interface; H_z: the dual cell of each E_x / E_y face) instead of 0 / 1, the Courant check with those shares; the background eps keeps the cell mask (subpixel_smoothing averages it). em_fdfd_ez / _hz pec_domain: the same E_z wall distances (t >= 0.02) and H_z free face lengths, the H_z free area (>= 0.02 of the cell) entering the k0^2 mu term, so the operator stays reciprocal; no time-step limit. Mode ports, sources and the FDFD poles keep the cell mask. laminar_flow: interpolated (Bouzidi, linear) bounce-back on the links from fluid to solid cells, with the wall where the solid material is drawn (a material counts as solid when most of its cells have viscosity 0); outer faces keep their face rules. heat, electric_currents, electrostatics (cut cells): held regions (temperature / voltage on object perimeters, fixed_temperature_domain, terminal) put their value on the drawn outline: the free neighbour conducts c A / (t d) to it, t d its distance from the free centre along the link (t >= 0.02, Shortley-Weller), instead of the half cell 2 c A / w; walls of non-conducting materials (a material counts as closed when most of its cells conduct neither) get fractional face apertures and merged cut-cell volumes (>= 0.02), re-located whenever an assembly's conducting cells change (k(T), sigma(T)); perimeter heat_flux / current_density / surface_charge feed their value times each cut cell's chord of the drawn outline into the object cell owning it, convection loses h L / (1 + h delta / k_n) there (delta the owner centre's distance to the chord). em_modes pec_domain (Dey-Mittra on the projected Yee cell): E_z = 0 at the wall distance along each centre link into the metal, H_z from the free lengths of its E_x / E_y edges over the free area of its dual cell (fractions >= 0.02). em_fdtd_3d pec_domain (3D models, Dey-Mittra): every H face between four cell centres the drawn surface cuts takes the free lengths of its four E edges over its free area, floored so its update row stays within its uncut row at the time step (heuristic 3D Courant floor; E faces between two metal cells stay pinned). 2D Cartesian models only otherwise; heat / potential also (r, z) and polar / spherical domains (the cut fractions along the logical (r, angle) links / faces / cells, outline chords in the local (dr, r d_angle) frame; links across an angle_wrap seam stay staircased); every other physics ignores it (validation info). Features thinner than 1/16 of a cell face, or that no cell centre sees, stay invisible.
+- `memory_check` (str; default "error"): error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS factors outside the pool included, against the GPU budget; the host estimate against the available RAM; also per sweep value and per mesh refinement level). error refuses the model before the build (a triangle / tetrahedron mesh is built first when the estimate from its sizes is over: the judgement is on the built element count; the issue is reported at the mesh with the largest part); warning builds and runs it anyway with a validation warning, for a model whose estimate is known to be high (the cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The runtime guards stay: the GPU pool limit raises OutOfMemoryError, and each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises).
 
 #### `StudySpec` - ModelSpec.study
 
@@ -9635,7 +9636,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - show PATH [--out DIR] [--figures] [--series NAME] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--json]: outline and check counts of a model file, or the summary of a results directory (--figures re-renders its figures into <out>/figures/*.png, by default the run directory's figures/, a sweep also its sweep_*.png overlays; --series NAME draws only that series of xy results and sweep overlays; a 3D run directory draws scene_3d.png with its saved cut planes: the mid-height z cut and the stored cuts of the last snapshot) -> show.json. A 3D model file with --figures gets <out>/figures/scene_3d.png, the objects only (CPU, no run; api.scene_figure).
 - --set NAME=EXPR (repeatable) replaces the expression of the model parameter NAME for this command only (the file is not changed; run records it in model.json), e.g. --set P_in=2e3 --set "w=450*nm"; an unknown NAME is a model error at the parameters node. --backend (check, run, show) overrides the model's solver_defaults.backend for this command only (run records it in model.json).
 - mesh-study [PART ...] [--out DIR] [--case CASE ...] [--fine] [--force | --retry-failed] [--max-cells N] [--max-wall-time S]: the mesh study (parts per_physics, audit, prototypes (CPU), accuracy, pcg, line_block (GPU), analyse; default all, in this order) -> DIR (default ./mesh_study_out) records/, runs/, tables/, figures/ and mesh_study_report.json; recorded variants are skipped unless --force (all) or --retry-failed (those that did not complete); --max-cells skips larger variants (default 2e7); exit 1 when a part raised.
-- selftest [NAME ...] [--heavy | --all] [--out DIR] [--reset] [--json] [--list]: the built-in checks, then the registered analytic cases (the named ones, heavy or not; else the non-heavy ones, with --heavy only the heavy ones, with --all every one) -> selftest_report_light.json, selftest_report_heavy.json (--all: both) or selftest_report_named.json (names given), plus one <case>/<run>/ run directory per run; a run rewrites only its own report files. A case is heavy when it took >= 5 s (--list marks them). --all (no NAMEs) runs everything: every case with its gpu runs and variants (with a usable GPU), then the --examples run once on the cpu and once on the gpu backend -> also selftest_report_analytic_cpu.json / _gpu.json and examples_cpu/ / examples_gpu/ run directories (an example that validates only on its own backend is not run on the other; the gpu examples are skipped without a usable GPU); exit 1 unless the cases and both example runs passed.
+- selftest [NAME ...] [--heavy | --all] [--out DIR] [--reset] [--json] [--list]: the built-in checks, then the registered analytic cases (the named ones, heavy or not; else the non-heavy ones, with --heavy only the heavy ones, with --all every one) -> selftest_report_light.json, selftest_report_heavy.json (--all: both) or selftest_report_named.json (names given), plus one <case>/<run>/ run directory per run; a run rewrites only its own report files. A case is heavy when it took >= 5 s (--list marks them). --all (no NAMEs) runs everything: every case with its gpu runs and variants (with a usable GPU), then the --examples run (each example once, on its own backend) -> also selftest_report_analytic.json and examples/ run directories; exit 1 unless the cases and the examples passed.
 - Reuse: <out>/selftest_cache.json keeps per case / example its last passing record (example: also no_tolerance), the hashes of the package code units that run depended on (each top-level function and class with methods, and each file's module-level code incl. data classes, compared without comments and docstrings: the units that ran, those they name, and the module-level code of every file touched) and the environment (Python, numpy, scipy, cupy, backends, device); an unnamed case or example whose units, model file and environment are unchanged is not rerun: its stored record enters the report with reused true, reused_from [time], and is not printed. --reset reruns every selected one; named ones always rerun. Run under a debugger or coverage tracer nothing is traced and nothing new is cached. The cache also keeps the last run time of every case / example.
 - Output: per phase (the cases, each examples run) one line with the number to run and the number cached; per run test a start line "i/n  ~T left  name  (last T)" (i over every phase of the call, T left = the summed last run times of it and every later test, "+ k untimed" for those never timed) and a result line (PASS / FAIL / ERROR / NOTOL, error and tolerance or worst error / tolerance, wall seconds), plus the message of a test that did not pass.
 - selftest --examples [NAME ...] [--out DIR] [--reset] [--json]: instead of the cases, run every examples/**/*.json of a repository checkout that has a derived value with a reference or an analytic curve on its own backend (NAMEs: only these, relative path with or without .json, or stem), two lines per example (Output) -> selftest_report_analytic.json plus one examples/<path>/ run directory each (no arrays, no figures); exit 1 when an example fails a tolerance or does not complete.
@@ -9661,19 +9662,19 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - solvers {physics: {role: {type, solver (the solver node, null = Automatic), backend, precision, settings}} of the roles the study uses, or null when they do not resolve (see the issues)}, or null when the model does not load.
 - mesh = the first used mesh: {nx, ny, nz (1 in 2D), name, kind, n_cells, dx_min, dx_max, dt, npml_sides, uniform, note, wavelength_min, wavelength_source, auto_rule, custom_axes, line_blocks, line_block_hint} (triangles: nx / ny null plus n_elements, n_nodes, n_edges, pml_widths; counts include the PML cells; auto mode: auto_rule wavelength / physics / uniform_flow, the resolved wavelength_min in m and its source, "mesh" for the setting or the physics name, else null and ""; custom_axes = the axes whose cells come from MeshSpec.axes edges / segments; line_blocks {block axis: [n_blocks, block_size]} of the window cells for the line_block solver, a block along x = one grid row, and line_block_hint its cost n_blocks * block_size^3 per block axis with the cheaper one; both empty in 3D), or null with mesh_error giving the reason.
 - study {type, dt_estimate (s or null: the smallest of the mesh Courant dt and the time_step of every time-stepping physics), n_steps (round(duration / dt_estimate) when the study has a duration, else null), n_sweep_values (1 without a sweep), total_steps (n_steps * n_sweep_values, or null), n_wavelengths (frequency_domain: the number of wavelengths solved per sweep value, else null)}.
-- memory_estimate {gpu_steady (bytes of GPU pool memory the build keeps), gpu_build_peak (bytes at the build high-water mark), gpu_run (bytes the study adds while it runs: run_items kept once allocated, e.g. harmonic FDTD accumulators, growing point traces, plus largest_phase: the transient_items of one phase, e.g. one solve or one adjoint, freed when it ends; phases never overlap), gpu_peak (max of gpu_build_peak and gpu_steady + gpu_run), gpu_external (cuDSS direct-solver factors, outside the pool: a fill-in rule), external_extra (the largest factorisation peak on top), device_peak (gpu_peak + gpu_external + external_extra: checked against the GPU budget), host (bytes of CPU factorisations and analyses: a fill-in heuristic), items / host_items / run_items / external_items [{label, bytes}] and transient_items [{phase, label, bytes}] largest first, largest_phase {phase, bytes} or null, budget (the check memory_budget argument in bytes, or null), host_budget (the check host_budget argument: available host RAM in bytes, or null)}, or null when the mesh or the estimate fails. CPU estimates counted per physics and feature type (approximate; summary.json compares gpu_steady and gpu_build_peak with the measured build); validation errors when device_peak exceeds a known GPU budget or host exceeds the available host RAM (a run: both always; CLI check: the host RAM), warns above 80 % of either; without a host budget it warns above 8 GiB of host memory.
+- memory_estimate {gpu_steady (bytes of GPU pool memory the build keeps), gpu_build_peak (bytes at the build high-water mark), gpu_run (bytes the study adds while it runs: run_items kept once allocated, e.g. harmonic FDTD accumulators, growing point traces, plus largest_phase: the transient_items of one phase, e.g. one solve or one adjoint, freed when it ends; phases never overlap), gpu_peak (max of gpu_build_peak and gpu_steady + gpu_run), gpu_external (cuDSS direct-solver factors alive through the run, outside the pool: a fill-in rule), external_transient_items [{phase, label, bytes}] (factors alive only in that transient phase, a factor once per phase it lives in), external_extra (the largest factorisation peak on top), external_peak (gpu_external + the largest phase of external_transient_items + external_extra), device_peak (max of gpu_build_peak and gpu_steady + run_items + the largest phase of its transient_items plus the factors alive in it, + gpu_external + external_extra: checked against the GPU budget), host (bytes of CPU factorisations and analyses: a fill-in heuristic), items / host_items / run_items / external_items [{label, bytes}] and transient_items [{phase, label, bytes}] largest first, largest_phase {phase, bytes} or null, budget (the check memory_budget argument in bytes, or null), host_budget (the check host_budget argument: available host RAM in bytes, or null)}, or null when the mesh or the estimate fails. CPU estimates counted per physics and feature type (approximate; summary.json compares gpu_steady and gpu_build_peak with the measured build); validation errors when device_peak exceeds a known GPU budget or host exceeds the available host RAM (a run: both always; CLI check: the host RAM), warns above 80 % of either; without a host budget it warns above 8 GiB of host memory.
 
 ### summary.json
 
 - open_sol_version, status (completed | partial | timeout | cancelled | failed), message, model {title, file, study_type}, wall_time (s).
-- build {nx, ny, nz (1 in 2D), n_cells, dt, dx_min, dx_max, npml_sides, build_seconds, gpu_bytes, session_gpu_bytes, gpu_breakdown [[build stage, bytes]] (pool use added by each stage; "build temporaries freed" is negative), stage_seconds [[build stage, wall s]] (validation + estimates first; also the "Build time by stage" log line), gpu_peak_bytes (build high-water mark of the pool), gpu_budget, gpu_estimate}, or null when no build succeeded. gpu_estimate is null or {gpu_steady, gpu_build_peak, gpu_run, gpu_external, external_extra, host, items / run_items / external_items [[label, bytes]], transient_items [[phase, label, bytes]], steady_deviation, peak_deviation (measured / estimated - 1)}; a deviation above 25 % is also a warning.
+- build {nx, ny, nz (1 in 2D), n_cells, dt, dx_min, dx_max, npml_sides, build_seconds, gpu_bytes, session_gpu_bytes, gpu_breakdown [[build stage, bytes]] (pool use added by each stage; "build temporaries freed" is negative), stage_seconds [[build stage, wall s]] (validation + estimates first; also the "Build time by stage" log line), gpu_peak_bytes (build high-water mark of the pool), gpu_budget, gpu_estimate}, or null when no build succeeded. gpu_estimate is null or {gpu_steady, gpu_build_peak, gpu_run, gpu_external, external_extra, external_peak, host, items / run_items / external_items [[label, bytes]], transient_items / external_transient_items [[phase, label, bytes]], steady_deviation, peak_deviation (measured / estimated - 1), peak_unseen_bytes (free pool blocks stranded before the build by arrays of open Results: build temporaries placed there do not raise the pool mark, so an estimate up to this far above gpu_peak_bytes has deviation 0)}; a deviation above 25 % is also a warning.
 - build_seconds_total (s: every build of the study summed: sweep values, refinement levels, parity sectors; one build: build.build_seconds) or null; study_seconds (s: the study runs on the built sessions, without build and post-processing; summed over sweep values, refinement levels and parity sectors) or null; time_check (null without a machine profile) the run-time estimate against the runs, merged over sweep values / levels / sectors with item labels "<run>: <item>"; solvers {physics: {roles {role: {type, solver (the solver node, null = Automatic), backend, precision, settings (the resolved solver settings), counters}}, counters}} of the last run, how each result was computed: role counters pcg {solves, cg_iterations, unconverged_solves} (linear: heat, electric_currents, electrostatics, magnetostatics, solid_mechanics, solid_mechanics_3d), sparse_direct {back_end, factorizations, factor_seconds, recycled_solves, gmres_iterations} (linear: em_fdfd_*, em_fdfd_nonlinear, drift_diffusion, magnetic_fields_ac; shifted: heat in a thermal_noise study), line_block {batches, shifts, refinement_sweeps, rejected_shifts (re-solved by SuperLU), kept_factors, factor_solves, rejected_factor_solves, batched_operators, worst_accepted_residual} (shifted: heat thermal noise, em_fdfd_bor, em_modes; linear: em_fdfd_ez / _hz), arpack_shift_invert {eigen_solves, eigen_factorizations, operator_applications (group-index solves included), eigen_unconverged, eigen_seconds} (eigen: em_modes, em_fdfd_* in an eigenfrequency study), explicit_kernels {} (stepper); the physics' own counters (loops and solves outside a role) em_fdfd_* {solves}; em_fdfd_nonlinear {channels, sweeps, solves}; magnetic_fields_ac {solves}; em_modes {solves, modes_found, solve_seconds, line_block_fallbacks with a line_block shifted node}; drift_diffusion {newton_iterations, continuation_steps, cold_starts, rejected_predictions (continuation steps whose secant prediction did not converge), solve_seconds}; laminar_flow {lattice_steps, solves}; a damped nonlinear loop (electric_currents / electrostatics nonlinear electrolyte, magnetostatics saturation) {nonlinear_runs, nonlinear_iterations, nonlinear_unconverged; the electrolyte also diagonal_refreshes} once it ran; physics with neither are left out (ticks counts the steps of time-stepped ones).
 - ticks and tick_unit, what one tick is (time_dependent: runner ticks, step; stationary and optimization: iterations, iteration; frequency_domain: wavelengths solved, wavelength; mode_analysis: mode snapshots, mode; eigenfrequency and optomechanics: resonance snapshots, resonance; thermal_noise: factorisations, factorisation; nonlinear_frequency_domain: channel snapshots, channel; frequency_response: frequencies solved, frequency), t_end (s; 0 in studies without time steps), warnings [text], errors [text], issues [issue records of a failed build], traceback (text).
 - memory {pool_used, pool_reserved, device_free, device_total, budget, other, host_available (available host RAM, null when unknown), build_gpu_bytes, session_gpu_bytes} in bytes, or null: pool_used and gpu_bytes are process-wide, session_gpu_bytes is the share of this build. failed_build_memory: null, or of the last failed build {breakdown [[build stage, bytes]], total_bytes, peak_bytes, budget, failed_owner (the stage that raised), estimate}.
 - derived {name: value}; derived_reference {name: reference} and derived_error {name: relative error} of the derived values with a reference; sweep null or {parameter, values, derived {name: [value per sweep value]}, reference {name: [reference per sweep value]} and error {name: [relative error per sweep value]} (derived values with a reference; a failed value keeps its reference), results [{"physics.feature": digest} per sweep value], failed [{index, value, message} per value whose build or run failed], converged [true | false | null per sweep value: fixed_point.converged, null for a failed value or no fixed point], curve_error {name: [curve_error record per sweep value]} of the analytic curves on a feature result, derived_series [derived_series record or null per sweep value], builds (model builds of the sweep: 1 with SweepSpec.reuse_build, else one per value), with SweepSpec.keep_fields also snapshot_times [[s] per value] and snapshot_labels [[text or null] per value] of the kept snapshots (results.npz sweep_snapshot)}.
 - derived_series null or {kind xy, x [time s or wavelength m per stored snapshot, in record order], x_label Time | Wavelength, x_unit, y_label, series {name: [value per point]}, series_units}: every derived value without a source evaluated on the live state at each snapshot of a time_dependent or frequency_domain run (also once the 1 GB snapshot limit stops storing fields; NaN and one warning where it fails), null below 2 points; parity-sector runs give null.
 - wavelength_fixed_points (frequency_domain coupled wavelength scan only) [{wavelength, converged, iterations, relative_change, tolerance} per solved wavelength with a fixed-point loop]; fixed_point then holds converged = all of them, the largest iterations and relative_change.
-- run_memory null or {measured_bytes (pool high-water mark of the run since its build), estimated_bytes (gpu_steady + gpu_run of the estimate), deviation (measured / estimated - 1)}; external_memory null or the same record of the cuDSS factors outside the pool (measured_bytes: high-water mark of the live factors since the build started, a plan counting its peak estimate; estimated_bytes: gpu_external + external_extra; null when neither side has any); parameters {name: value} of the built session (a sweep: the value the run ended on) or null; sweep_index (0-based) of the sweep value that top-level derived, fields and results belong to, or null.
+- run_memory null or {measured_bytes (pool high-water mark of the run since its build), estimated_bytes (gpu_steady + gpu_run of the estimate), unseen_bytes (as peak_unseen_bytes of the build), deviation (measured / estimated - 1)}; external_memory null or the same record of the cuDSS factors outside the pool (measured_bytes: high-water mark of the live factors since the build started, a plan counting its peak estimate; estimated_bytes: the estimate's external_peak; null when neither side has any); parameters {name: value} of the built session (a sweep: the value the run ended on) or null; sweep_index (0-based) of the sweep value that top-level derived, fields and results belong to, or null.
 - Study-specific keys, present only when that study ran: optimization {iterations, evaluations, design_cells, objective_initial, objective_final, continuation_stages, message} (optimization); noise_frequencies [Hz] (thermal_noise, empty unless completed); n_modes (mode_analysis: mode snapshots); n_resonances (eigenfrequency, optomechanics: resonance snapshots); response_frequencies [Hz] (frequency_response: the solved ones in solve order) and frequency_sweep {method, physics: {name: reduced-model info}} (frequency_response with sweep_method adaptive / modal; see that setting); n_channels (channel snapshots), nonlinear_solve {physics: {mode, order, channel_solves, sweeps, converged, residual, tolerance, residual_history, continuation_steps, method, gmres_iterations, backtracks}} and feedback (solution-feedback record or absent) (nonlinear_frequency_domain).
 - convergence (StudySpec.adaptation; also convergence.json, Results.convergence()) {target, method, tolerance, max_levels, growth, max_cells, anisotropic, meshes [refined], levels [{level, cells {mesh: cells incl. padding}, window_cells {mesh: n}, n_cells, refined_cells (window cells of the refined meshes), value (target), relative_change, derived {name: value}, study_seconds, gpu_steady (estimate, bytes), status}], richardson null or {cells, values, levels, order_cells q, order (q x dimensions), dimensions, extrapolated, error_estimate, relative_error_estimate, coefficient C} of v = v_inf + C N^-q over the last three levels, richardson_note, converged, stop_reason (converged | max_levels | max_cells | memory | no_refinement | not_finite | cancelled | failed), message, adapted_meshes [MeshSpec objects of the last level]}; fields, results and derived are the last computed level's, ticks and study_seconds sum the levels; StudySpec.adaptation keep_levels adds the earlier levels' snapshots labelled 'level k: ...'.
 - estimation (StudySpec.estimation) {method, parameters [names], initial / lower / upper (null = unbounded) / fitted {name: value}, standard_errors {name: value} or null, correlation [[...]] or null, rank, reduced_chi_square, statistics_note, absolute_sigma, cost (0.5 sum r^2 at the best point), cost_initial, best_evaluation, evaluations, max_evaluations, targets [{derived, measured, sigma, model, residual}], curves [{source, n_points, rms_residual, max_abs_residual}], history {evaluation [k], cost [per evaluation], parameters {name: [value per evaluation]}}, live_is_best, converged, stop_reason (converged | max_evaluations | not_finite | failed | cancelled), message}; fields, results and derived are those of the best-point run (a cancelled search: the last run), ticks = evaluations (tick_unit evaluation), study_seconds sums every run.
@@ -9692,21 +9693,21 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 
 ### selftest_report_<subset>.json
 
-- {open_sol_version, passed (bool), n_cases, n_passed, n_failed, n_error (cases with status error, not in n_failed), subset (light | heavy | named: which registered cases the file holds), n_skipped (registered cases not in it), n_reused, reused [case names whose stored record was reused, counted as passed], wall_time, device {device_id, name, kind (gpu | cpu), device_total, device_free, budget} [bytes] or null, warnings [text], cases [{name, label, description, status (passed | failed | error), measured, expected, error, tolerance, details, message, wall_time, vram_deviation, vram_part, vram_verdict, count_deviation, count_item, runs {run name: {status, wall_time, message, out_dir, timing, vram, counts}}, variants (cases with variants only) {variant name: {status (passed | failed | error | skipped), backend, precision, measured, expected, error, tolerance, details, message, wall_time, runs}}}]}.
+- {open_sol_version, passed (bool), n_cases, n_passed, n_failed, n_error (cases with status error, not in n_failed), subset (light | heavy | named: which registered cases the file holds), n_skipped (registered cases not in it), n_reused, reused [case names whose stored record was reused, counted as passed], wall_time, device {device_id, name, kind (gpu | cpu), device_total, device_free, budget} [bytes] or null, warnings [text], cases [{name, label, description, status (passed | failed | error), measured, expected, error, tolerance, details, message, wall_time, vram_deviation, vram_part, vram_verdict, vram_max_bytes, count_deviation, count_item, runs {run name: {status, wall_time, message, out_dir, timing, vram, counts}}, variants (cases with variants only) {variant name: {status (passed | failed | error | skipped), backend, precision, measured, expected, error, tolerance, details, message, wall_time, runs}}}]}.
 - A variant repeats the case's runs on another backend and / or solver precision (run directories <case>/variant_<name>/<run>/) and judges the same check against its own tolerance; a failed or erroring variant fails the case, a gpu variant without a usable GPU is skipped.
 - timing {build_seconds (summary build_seconds_total), study_seconds, output_seconds (run() after the study: summary, host copies, files), n_cells, ticks, cell_ticks_per_second (time_dependent: n_cells * ticks / study_seconds, else null), solvers} from the run summary, or null when the run raised: a performance baseline, comparable only between reports of one machine (the first run of an engine in a process also loads its compiled kernels); the solvers counters are machine-independent.
-- vram (gpu runs with a memory estimate, else null) {kept, build_peak, run, external: {measured_bytes, estimated_bytes, deviation (measured / estimated - 1), verdict, beyond_floor (differ by more than 1 MiB)} or null, deviation, part, verdict, beyond_floor}: kept / build_peak from the summary build ledger, run = summary run_memory, external = summary external_memory. The estimate counts the big arrays held at the same time, so it sits just below the measured bytes: verdict over (it books more than was held: the estimator misreads the solver), unaccounted (more than 25 % held beyond it: an array no item lists, or memory the code could free) or empty; deviation / part / verdict = the worst part (one with a verdict first, then one beyond the floor, then the largest |deviation|). counts (null without a run-time estimate or counted items) {deviation, item}: the time_check item (predicted count with a summary counter, e.g. CG iterations) whose measured / predicted - 1 is the largest, signed, and its label (0 and null when none is off by more than one). vram_deviation, vram_part, vram_verdict, count_deviation / count_item (case and example records) = the worst / largest over its runs (null without one): the memory estimators / time recipes to update (CLI: "vram -40%  counts +200% (item)" after the time split; - = the estimate books too much, + = more held than estimated).
+- vram (gpu runs with a memory estimate, else null) {kept, build_peak, run, external: {measured_bytes, estimated_bytes, deviation (measured / estimated - 1), verdict, beyond_floor (differ by more than 1 MiB)} or null, deviation, part, verdict, beyond_floor}: kept / build_peak from the summary build ledger, run = summary run_memory, external = summary external_memory. The estimate counts the big arrays held at the same time, so it sits just below the measured bytes: verdict over (it books more than was held: the estimator misreads the solver), unaccounted (more than 25 % held beyond it: an array no item lists, or memory the code could free) or empty; deviation / part / verdict = the worst part (one with a verdict first, then one beyond the floor, then the largest |deviation|). counts (null without a run-time estimate or counted items) {deviation, item}: the time_check item (predicted count with a summary counter, e.g. CG iterations) whose measured / predicted - 1 is the largest, signed, and its label (0 and null when none is off by more than one). vram_deviation, vram_part, vram_verdict, count_deviation / count_item (case and example records) = the worst / largest over its runs (null without one), vram_max_bytes the largest measured_bytes of any vram part over its runs: the memory estimators / time recipes to update (CLI: "vram -40% max 1200 MB  counts +200% (item)" after the time split; - = the estimate books too much, + = more held than estimated).
 - A case passes when its error is finite and error <= tolerance; a run that does not complete fails its case, and an exception in the comparison makes it an error.
 - An interrupted selftest writes the cases already run (passed false, a warning says so); a failing progress callback is dropped with a warning.
 - Built-in cases, run first: templates_validate (every template validates without errors), examples_validate (every examples/**/*.json of a repository checkout loads and validates without errors), api_reference_current (api_reference.md and api_templates.md equal the text describe generates), import_contracts (every package import keeps the layering rules of model/import_contracts.py) and structure_index_current (the repository module index equals the text generated from the module docstrings); they run in the light, heavy and all subsets and appear in each of their report files; a named run (names) runs only the built-ins it names.
-- A selftest --all run writes the light and the heavy file from one run (wall_time, device and warnings are the whole run's), then the examples files per backend; api.selftest returns the combined dict with subset all, report_files [names] and examples {cpu, gpu: {passed, n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped, n_skipped_backend, n_reused, wall_time, warnings}}; its passed also needs both example runs.
-- Before a report file (this one or an examples file) is overwritten, its timing summary goes to <file stem>_prev.json {source, written (file time), open_sol_version, subset / backend, passed, counts, n_reused, wall_time, device, cases {case name or example path: {status, wall_time, reused}}}: the previous run to compare run times with (a reused case keeps its stored wall_time; compare --reset runs).
+- A selftest --all run writes the light and the heavy file from one run (wall_time, device and warnings are the whole run's), then the examples file; api.selftest returns the combined dict with subset all, report_files [names] and examples {passed, n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped_backend, n_reused, wall_time, warnings}; its passed also needs the examples run.
+- Before a report file (this one or an examples file) is overwritten, its timing summary goes to <file stem>_prev.json {source, written (file time), open_sol_version, subset, passed, counts, n_reused, wall_time, device, cases {case name or example path: {status, wall_time, reused}}}: the previous run to compare run times with (a reused case keeps its stored wall_time; compare --reset runs).
 
 ### selftest_report_analytic.json
 
-- Also selftest_report_analytic_cpu.json / _gpu.json (selftest --all, api.selftest_examples backend=): the same content for the examples forced onto that backend.
-- {open_sol_version, passed (no failed or erroring example), backend (null: each example on its own), n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped, skipped [example paths without a comparison], n_skipped_backend, skipped_backend [example paths validating only on their own backend, not run on the forced one], n_reused, reused [example paths whose stored record was reused], wall_time, device, warnings, ranking [{example, kind (derived | curve), name, error, tolerance, ratio, flags}] of the entries with a tolerance by ratio = error / tolerance (non-finite first, then descending), without_tolerance [the same rows] by error, examples [...], report_files [its own file name; [] without out_dir]}.
-- Example: {example (path under examples/), title, status (passed | failed | error | no_tolerance), run_status, message, wall_time, out_dir, worst_ratio, flags, backend (the run's; null when the file did not load), timing, vram, counts, vram_deviation, vram_part, vram_verdict, count_deviation, count_item (as a selftest run / case), derived [{kind, name, value, reference, error, tolerance, ratio, flags (+ per_value_error in a sweep)}], curves [{kind, name, target, series, error (the curve_error max; a sweep: the worst value), rms, n_points, tolerance, ratio, flags, note (+ per_value_error)}]}. A sweep derived value: value / reference lists per value, error the worst value.
+- Only examples with a derived value with a reference or an analytic curve are selftest examples (the others are not run or listed; naming one is a usage error); each runs once, on its own backend (solver_defaults.backend).
+- {open_sol_version, passed (no failed or erroring example), n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped_backend, skipped_backend [example paths setting backend gpu, not run without a usable GPU], n_reused, reused [example paths whose stored record was reused], wall_time, device, warnings, ranking [{example, kind (derived | curve), name, error, tolerance, ratio, flags}] of the entries with a tolerance by ratio = error / tolerance (non-finite first, then descending), without_tolerance [the same rows] by error, examples [...], report_files [its own file name; [] without out_dir]}.
+- Example: {example (path under examples/), title, status (passed | failed | error | no_tolerance), run_status, message, wall_time, out_dir, worst_ratio, flags, backend (the run's; null when the file did not load), timing, vram, counts, vram_deviation, vram_part, vram_verdict, vram_max_bytes, count_deviation, count_item (as a selftest run / case), derived [{kind, name, value, reference, error, tolerance, ratio, flags (+ per_value_error in a sweep)}], curves [{kind, name, target, series, error (the curve_error max; a sweep: the worst value), rms, n_points, tolerance, ratio, flags, note (+ per_value_error)}]}. A sweep derived value: value / reference lists per value, error the worst value.
 - Flags: over_tolerance, nonfinite, not_compared (curve without simulated counterpart), suspicious_exact (error < 1e-9 for a simulated quantity with a non-zero reference: the reference likely reads the result), sweep_not_converging (the sweep changes the mesh dx, auto mode points_per_wavelength, and the error at the finest mesh is not below the one at the coarsest; not when every error is below 1e-9). An entry with a tolerance fails on over_tolerance, nonfinite or not_compared; error: the run did not complete (failed, partial, timeout) or raised.
 
 ### Digests
@@ -9741,7 +9742,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - describe(topic=None, as_dict=False) -> this reference as text (templates as an index; describe('templates') has their JSON), or as a dict; template(key) -> ModelSpec; load(path) -> ModelSpec; save(spec, path).
 - spec arguments may be a ModelSpec (copied), a dict (ModelSpec.from_dict) or a model file path; invalid content is a model error, an unreadable file raises OSError.
 - parameters={name: expression string or number} (check and run) overrides parameter expressions of the spec copy (numbers stored as repr(float); run records them in model.json); an unknown name is an error issue at ("parameters",) (run without out_dir: KeyError listing the known names).
-- check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=None, backend=None, max_wall_time=None) -> the check.json dict (also written with out_dir); memory_budget [bytes] (e.g. a run summary build.gpu_budget) adds the GPU memory check, host_budget [bytes] (e.g. open_sol.core.host_memory.available_bytes()) the host RAM check; backend ('auto' | 'gpu' | 'cpu') overrides solver_defaults.backend; max_wall_time [s] adds a warning when even the shortest estimated run time exceeds it.
+- check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=None, backend=None, max_wall_time=None) -> the check.json dict (also written with out_dir); memory_budget [bytes] (e.g. a run summary build.gpu_budget) adds the GPU memory check, host_budget [bytes] (e.g. open_sol.core.host_memory.available_bytes()) the host RAM check (an estimate over a budget on size-based element counts: check builds the triangle / tetrahedron meshes first and reports on their counts, as a build judges); backend ('auto' | 'gpu' | 'cpu') overrides solver_defaults.backend; max_wall_time [s] adds a warning when even the shortest estimated run time exceeds it.
 - profile_machine(backend=None, quick=False, progress=print) -> {key, date, quick, text, path}: measures and stores the machine profile of the run-time estimates (CLI profile; backend None = the default backend).
 - scene_figure(spec, path, parameters=None, highlight=(), z_stretch=1.0, view=None) -> path: CPU-only perspective picture of a 3D model (.png / .pdf / .svg by the suffix; ValueError in 2D) as the GUI 3D preview draws it: translucent objects in their material colours, points / lines as markers, highlight = entity names drawn in the highlight colour, z_stretch scales the box height only (thin layers), view = (elevation, azimuth) in degrees; objects that do not resolve are left out with a RuntimeWarning.
 - run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, save_arrays=True, parameters=None, backend=None) -> Results: blocking, runs on the calling thread on the model's backend (backend 'auto' | 'gpu' | 'cpu' overrides solver_defaults.backend, kept in model.json); progress(event) receives every event except live frames. With out_dir it always writes summary.json and log.txt and never raises (except KeyboardInterrupt); without out_dir a failed build re-raises its exception (ModelError with .issues), a failed run raises RunError(message, traceback), and a timeout returns normally. progress=True prints to stdout through ProgressPrinter(stream=None, period=2.0) (the CLI printer: build, log and sweep lines, Progress lines at most every period s). Events, in open_sol.api: LogEvent(level, message), SweepStep(index (0-based), count, parameter, value), Built(summary: BuildSummary with nx, ny, n_cells, dt, build_seconds, ...), BuildFailed(message, traceback, issues, out_of_memory, build_memory), StudyStarted(), Progress(fraction, t, t_end [s], tick, wall_elapsed, ticks_per_second, message, tick_unit 'step' | 'iteration' | 'wavelength' | 'mode solve' | 'eigen solve' | 'factorisation' | 'channel solve', stages (stage names of the run in order, e.g. Background solve, Wavelength solves), stage_index (0-based), stage_fraction, stage_elapsed [s]; fraction and wall_elapsed cover the whole run, each stage an equal share), SweepValueDone(index, count, parameter, value, sweep: a copy of the study sweep table so far, after each computed or failed sweep value), StudyFinished(summary dict), StudyFailed(message, traceback, out_of_memory, session_live, build_memory). build_memory: the build ledger record (summary.json failed_build_memory layout) or null.
@@ -9751,7 +9752,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - export_field(field_data, path) and export_result(result, path) (open_sol, from open_sol.io) write a FieldData / result dict as .npz or .csv (field metadata: plane of a 3D cut, axes, resampled / native_shape; a native polar / spherical field adds x_mapped / y_mapped arrays (.npz) or x / y columns after r and the angle (.csv)); export_volume(volume_data, path) a VolumeData as .npz only.
 - A live Results holds the GPU session: close() (or a with block) copies the stored fields and feature results to host memory and frees the GPU (copy_to_host=False skips the host copy); a closed or loaded Results is CPU-only (saved fields and results only; result() options other than freq_index raise ValueError). Close it before the next run: r = run(...) in a loop keeps the old session on the GPU while the next one builds (run warns while earlier Results are live); use "with run(spec) as r:" instead.
 - selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) -> the selftest report dict (+ report_files: the files written to out_dir); heavy False runs the light registered cases, True the heavy ones (>= 5 s each), None everything (all cases, then selftest_examples with backend cpu and gpu; progress also gets the example records); names overrides it. With out_dir, unchanged passing cases are reused from out_dir/selftest_cache.json (CLI selftest Reuse); reset=True reruns them. progress(dict) gets events and records: {event: begin, phase, n_run, n_reused, n_total} per phase, {event: start, index, n_total, name, last_wall_time (s or None), remaining (s, summed last run times of it and every later test), n_untimed, time_estimate ({seconds_low, seconds_guess, seconds_high (build + study + output), phases {build, study, output: the same keys}, n_runs, n_estimated, message, not_estimated} of its runs on the stored machine profile, or None)} before each test, then its case / example record (time_estimate: {before, n_checked_runs, split {total, build, study, output, other: {seconds, estimate}, study_work_at_build}}: study estimated at the runs' measured counts, its counter-timed work done at build (e.g. a factorisation in finalize; study_work_at_build s) moved from build to study seconds, build / output the guesses before, other (checks, run set-up) never estimated; {event: skipped, name, message} for a case this machine cannot run).
-- selftest_examples(out_dir=None, names=None, progress=None, backend=None, reset=False) (open_sol.api) -> the selftest_report_analytic.json dict (written with out_dir); backend 'cpu' / 'gpu' forces every example onto it (selftest_report_analytic_<backend>.json, examples_<backend>/ run directories); progress gets the events of selftest and each example record; reuse and reset as selftest.
+- selftest_examples(out_dir=None, names=None, progress=None, reset=False) (open_sol.api) -> the selftest_report_analytic.json dict (written with out_dir; each example once, on its own backend, examples/ run directories); progress gets the events of selftest and each example record; reuse and reset as selftest.
 - save_session_run(directory, spec, session, build_summary, study_summary, log_entries, model_file=None, save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].
 - Never mix api.run with the GUI worker in one process.
 

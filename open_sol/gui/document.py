@@ -13,10 +13,12 @@ from ..io.model_io import load_model, save_model
 from ..materials import REGISTRY as MATERIAL_LIBRARY
 from ..model.analytic import CURVE_RESULT_KINDS
 from ..model.expressions import RESERVED_NAMES, error_message, evaluate_parameters, is_identifier
-from ..model.geometry import GEOMETRY_KINDS, Z_PARAM_NAMES, domain_extent, domain_size_z, z_param_set
-from ..model.meshing import MESH_ESTIMATE_ERRORS, estimate_memory, estimate_mesh, physics_settings
-from ..model.schema import (GLOBAL_DERIVED_OPERATION, INTERFACE_SIDES, MESH_KINDS, SELECTION_KINDS, SOLVER_ROLES,
-                            coupling_role_text,
+from ..model.geometry import (GEOMETRY_KINDS, Z_PARAM_NAMES, domain_extent, domain_size_z, resolve_geometry,
+                              z_param_set)
+from ..model.meshing import (MESH_ESTIMATE_ERRORS, element_mesh_key, element_window_size, estimate_memory,
+                             estimate_mesh, physics_settings, with_built_counts)
+from ..model.schema import (FREE_MESH_KINDS, GLOBAL_DERIVED_OPERATION, INTERFACE_SIDES, MESH_KINDS, SELECTION_KINDS,
+                            SOLVER_ROLES, coupling_role_text,
                             coupling_type_accepts, fill_defaults, new_physics_space, output_field_names,
                             scalar_output_names, solver_backend, solver_misfit, state_field_names,
                             with_default_precision)
@@ -25,13 +27,15 @@ from ..model.spec import (RESERVED_ENTITY_NAMES, AnalyticCurveSpec, CouplingSpec
                           ParameterSpec, PhysicsSpec, SelectionSpec, SolverSpec, StudySpec, SweepSpec)
 from ..model.templates import make_template
 from ..model.time_estimate import estimate_time
-from ..model.validate import internal_error_text, validate
+from ..model.validate import internal_error_text, memory_verdict, validate
 from ..solvers.roles import BACKENDS
 
 SECTIONS = ('all', 'model', 'parameters', 'geometry', 'selections', 'materials', 'physics', 'couplings', 'mesh',
             'solvers', 'study', 'results')
 MAX_UNDO_STEPS = 200
 MEMORY_BUDGET_TOLERANCE = 0.05   # relative GPU budget / available host RAM change that re-runs validation
+_KEPT_ELEMENT_COUNTS = 4         # built element counts kept per mesh name (the latest inputs: undo / redo find theirs)
+_KEY_ERRORS = (ValueError, KeyError, TypeError, ArithmeticError)   # element_mesh_key of a model with errors
 
 # the tree's 'Results' node of the last build / run (not part of the spec; ('results',) is 'Result settings')
 COMPUTED_RESULTS_NODE = ('computed_results',)
@@ -85,7 +89,8 @@ class ModelDocument(QtCore.QObject):
     path_changed = QtCore.Signal(str)        # '' when the model has no file
     undo_state_changed = QtCore.Signal()
     notice = QtCore.Signal(str)              # side effect of an edit worth telling the user (status bar)
-    issues_invalidated = QtCore.Signal()     # issues() changes without an edit (a new GPU budget)
+    # issues() and the estimates change without an edit (a new GPU budget, the counts of a built element mesh)
+    issues_invalidated = QtCore.Signal()
 
     def __init__(self, registry, spec=None):
         super().__init__()
@@ -105,6 +110,7 @@ class ModelDocument(QtCore.QObject):
         self._in_mutation = False
         self.memory_budget = None            # last GPU budget [bytes] the worker reported (set_memory_budget)
         self.host_memory_budget = None       # last available host RAM [bytes] the worker reported (likewise)
+        self._element_counts = {}            # mesh name -> {element_mesh_key: built_mesh_counts} (set_element_counts)
         self.set_spec(spec if spec is not None else ModelSpec())
 
     # ---- whole-model state ----
@@ -125,6 +131,7 @@ class ModelDocument(QtCore.QObject):
             self.revision += 1
             self.current_node = ('model',)   # already valid when changed fires, as after every edit
             self.geometry_group = ()
+            self._element_counts = {}
             self._set_path(path)
             self._set_dirty(False)
             self.replaced.emit()
@@ -256,9 +263,19 @@ class ModelDocument(QtCore.QObject):
 
     def mesh_estimate(self, name=None):
         """(MeshEstimate or TriangleMeshEstimate, None) of one mesh (its name; None = the default mesh), or (None,
-        message) when it cannot be estimated (CPU only)."""
+        message) when it cannot be estimated (CPU only). An element mesh built from the current inputs
+        (set_element_counts) gives its built counts (estimate.counts_built)."""
         name = self.default_mesh_name() if name is None else name
 
+        def estimate():
+            sized, problem = self._sized_mesh_estimate(name)
+            kept = self._element_counts.get(name)   # the key is worked out only for a mesh that was built
+            counts = kept.get(self.element_mesh_key(name)[0]) if kept and sized is not None else None
+            return (sized if counts is None else with_built_counts(sized, counts)), problem
+        return self._cached(('mesh_estimate', name), estimate)
+
+    def _sized_mesh_estimate(self, name):
+        """mesh_estimate(name) from the mesh settings alone (element counts from the sizes)."""
         def estimate():
             if name is None:
                 return None, 'the model has no mesh'
@@ -269,7 +286,40 @@ class ModelDocument(QtCore.QObject):
             except Exception as exc:   # crashing definition callback: traceback to the log, views get a message
                 sys.excepthook(*sys.exc_info())
                 return None, internal_error_text('the mesh estimate', exc)
-        return self._cached(('mesh_estimate', name), estimate)
+        return self._cached(('sized_mesh_estimate', name), estimate)
+
+    def element_mesh_key(self, name) -> tuple:
+        """(meshing.element_mesh_key or None, problem text) of the triangle / tetrahedron mesh `name`: what its
+        elements are made from, so a built mesh belongs to the model only while its key is this one."""
+        def key():
+            estimate, problem = self._sized_mesh_estimate(name)
+            if estimate is None:
+                return None, problem or 'no mesh estimate'
+            if estimate.kind not in FREE_MESH_KINDS:
+                return None, 'it is not a triangle or tetrahedron mesh'
+            try:
+                parameters = self.parameters()
+                return element_mesh_key(estimate.sizing, element_window_size(self.spec, parameters, estimate.kind),
+                                        resolve_geometry(self.spec, parameters)), ''
+            except _KEY_ERRORS as exc:
+                return None, error_message(exc)
+        return self._cached(('element_mesh_key', name), key)
+
+    def set_element_counts(self, name, key, counts):
+        """Keep the counts (meshing.built_mesh_counts) of an element mesh built from the inputs `key` (Build mesh, a
+        model build): while the mesh still has that key its estimate, the memory / time estimates and the memory
+        check use them; emits issues_invalidated when they apply now."""
+        kept = self._element_counts.setdefault(name, {})
+        if kept.get(key) == counts:
+            return
+        kept.pop(key, None)
+        kept[key] = dict(counts)
+        while len(kept) > _KEPT_ELEMENT_COUNTS:   # the oldest inputs first (dicts keep insertion order)
+            del kept[next(iter(kept))]
+        if self.element_mesh_key(name)[0] == key:
+            for cached in (('mesh_estimate', name), 'memory_estimate', 'time_estimate', 'issues'):
+                self._cache.pop(cached, None)
+            self.issues_invalidated.emit()
 
     def used_mesh_estimates(self):
         """({used mesh name: estimate or None}, {name: failure message or None}) in spec.used_meshes() order."""
@@ -341,10 +391,21 @@ class ModelDocument(QtCore.QObject):
         message) and checking against the last known GPU budget and available host RAM."""
         def check():
             meshes, mesh_errors = self.used_mesh_estimates()
+            memory, memory_parts = self._memory_estimates()
             return validate(self.spec, self.registry, mesh_estimate=meshes, mesh_error=mesh_errors,
-                            memory_budget=self.memory_budget, memory_estimate=self.memory_estimate(),
-                            host_budget=self.host_memory_budget)
+                            memory_budget=self.memory_budget, memory_estimate=memory,
+                            host_budget=self.host_memory_budget,
+                            memory_parts=None if memory is None else memory_parts)
         return list(self._cached('issues', check))
+
+    def memory_verdict(self):
+        """validate.memory_verdict of the cached estimates against the last budgets (the mesh a budget issue is
+        reported at, over or not, element meshes still to build); None without a memory estimate."""
+        memory, memory_parts = self._memory_estimates()
+        if memory is None:
+            return None
+        return memory_verdict(self.spec, self.used_mesh_estimates()[0], memory, self.memory_budget,
+                              self.host_memory_budget, memory_parts)
 
     def state_names(self) -> frozenset:
         """Physics state-field names usable in material / coupling expressions (keys of state_field_names)."""

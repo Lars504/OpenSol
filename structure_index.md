@@ -7,28 +7,28 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/: lines 33-38
 - open_sol/core/: lines 40-75
 - open_sol/coupling/: lines 77-103
-- open_sol/fem/: lines 105-167
-- open_sol/gui/: lines 169-189
-- open_sol/io/: lines 191-195
-- open_sol/materials/: lines 197-212
-- open_sol/mesh_study/: lines 214-224
-- open_sol/model/: lines 226-294
-- open_sol/physics/: lines 296-298
-- open_sol/physics/acoustics/: lines 300-318
-- open_sol/physics/em/: lines 320-433
-- open_sol/physics/em/solvers/: lines 435-457
-- open_sol/physics/em3d/: lines 459-495
-- open_sol/physics/eme/: lines 497-514
-- open_sol/physics/fluid/: lines 516-527
-- open_sol/physics/heat/: lines 529-554
-- open_sol/physics/magnetic/: lines 556-585
-- open_sol/physics/mechanics/: lines 587-665
-- open_sol/physics/membrane/: lines 667-685
-- open_sol/physics/nlfd/: lines 687-706
-- open_sol/physics/potential/: lines 708-725
-- open_sol/physics/semiconductor/: lines 727-740
-- open_sol/solvers/: lines 742-755
-- open_sol/viz/: lines 757-764
+- open_sol/fem/: lines 105-168
+- open_sol/gui/: lines 170-190
+- open_sol/io/: lines 192-196
+- open_sol/materials/: lines 198-213
+- open_sol/mesh_study/: lines 215-225
+- open_sol/model/: lines 227-295
+- open_sol/physics/: lines 297-299
+- open_sol/physics/acoustics/: lines 301-319
+- open_sol/physics/em/: lines 321-434
+- open_sol/physics/em/solvers/: lines 436-458
+- open_sol/physics/em3d/: lines 460-496
+- open_sol/physics/eme/: lines 498-515
+- open_sol/physics/fluid/: lines 517-528
+- open_sol/physics/heat/: lines 530-555
+- open_sol/physics/magnetic/: lines 557-586
+- open_sol/physics/mechanics/: lines 588-666
+- open_sol/physics/membrane/: lines 668-686
+- open_sol/physics/nlfd/: lines 688-707
+- open_sol/physics/potential/: lines 709-726
+- open_sol/physics/semiconductor/: lines 728-741
+- open_sol/solvers/: lines 743-756
+- open_sol/viz/: lines 758-765
 
 ## open_sol/
 
@@ -109,6 +109,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `assembly3d.py`: Assembly on a TetrahedronMesh (igor3d_plan section 7, T6): the Nedelec curl-curl and vector mass matrices with diagonal-tensor coefficients at quadrature points (PML stretch tensors, diagonal anisotropy); Lagrange P1 / P2 stiffness (full 3 ...
 - `diffusion.py`: FEM scalar diffusion on triangle meshes (mesh plan 2.7, stage T4): -div(C grad u) + a u (+ c du/dt) = f by Lagrange P1 / P2 on the conducting window elements
 - `diffusion3d.py`: FEM scalar diffusion on tetrahedron meshes (the 2D fem.diffusion analogue, igor3d_plan T4b): -div(C grad u) + a u (+ c du/dt) = f by Lagrange P1 / P2 on the active window elements (full 3 x 3 tensor C)
+- `dissection.py`: Factor entry counts of a built element mesh from an elimination order made on it: nested dissection of the elements with every region either cut again or swept front by front, whichever stores less; the a-priori size of a sparse direct ...
 - `dofs.py`: Degree-of-freedom maps of the FEM path (mesh plan 2.4): Lagrange P0 / P1 / P2 and Nedelec degree 1 / 2 on all elements or an element subset (a region of the mesh), global numbering compressed to the subset; periodic dof partners, Bloch ...
 - `dofs3d.py`: Degree-of-freedom maps on a TetrahedronMesh (igor3d_plan section 7, T5): Lagrange P1 / P2 and Nedelec first kind degree 1 / 2 over the whole mesh, a dof = its mesh entity; periodic dof partners and the Bloch masters / phases (em3d, the ...
 - `domain.py`: TriangleDomain (mesh plan 2.5): the Domain of a 'triangles' mesh: TriangleMesh + per-element MaterialGrid (shape (n_elements,)) on the run backend

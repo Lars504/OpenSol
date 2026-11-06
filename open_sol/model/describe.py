@@ -107,6 +107,17 @@ _SPEC_FIELD_HELP = {
         "pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block nodes. A node with "
         "pcg preconditioner multigrid and no precision of its own fails with mixed (set the node precision). "
         "check.json / summary.json solvers record the precision each role resolved to."),
+    'SolverDefaultsSpec.memory_check': (
+        "error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS "
+        "factors outside the pool included, against the GPU budget; the host estimate against the available RAM; "
+        "also per sweep value and per mesh refinement level). error refuses the model before the build (a triangle / "
+        "tetrahedron mesh is built first when the estimate from its sizes is over: the judgement is on the built "
+        "element count; the issue is reported at the mesh with the largest part); warning "
+        "builds and runs it anyway with a validation warning, for a model whose estimate is known to be high (the "
+        "cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The "
+        "runtime guards stay: the GPU pool limit raises OutOfMemoryError, and "
+        "each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an "
+        "Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises)."),
     'SolverDefaultsSpec.subpixel_smoothing': (
         'false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour). '
         'Fill fraction and normal of every E_z cell / E_x and E_y face whose volume two materials share come once '
@@ -832,10 +843,8 @@ _RESULTS_NOTES = (
         'or selftest_report_named.json (names given), plus one <case>/<run>/ run directory per run; a run '
         'rewrites only its own report files. A case is heavy when it took >= 5 s (--list marks them). --all (no '
         'NAMEs) runs everything: every case with its gpu runs and variants (with a usable GPU), then the --examples '
-        'run once on the cpu and once on the gpu backend -> also selftest_report_analytic_cpu.json / _gpu.json and '
-        'examples_cpu/ / examples_gpu/ run directories (an example that validates only on its own backend is not run '
-        'on the other; the gpu examples are skipped without a usable GPU); exit 1 unless the cases and both example '
-        'runs passed.',
+        'run (each example once, on its own backend) -> also selftest_report_analytic.json and examples/ run '
+        'directories; exit 1 unless the cases and the examples passed.',
         'Reuse: <out>/selftest_cache.json keeps per case / example its last passing record (example: also '
         'no_tolerance), the hashes of the package code units that run depended on (each top-level function and '
         'class with methods, and each file\'s module-level code incl. data classes, compared without comments and '
@@ -908,11 +917,14 @@ _RESULTS_NOTES = (
         'high-water mark), gpu_run (bytes the study adds while it runs: run_items kept once allocated, e.g. harmonic '
         'FDTD accumulators, growing point traces, plus largest_phase: the transient_items of one phase, e.g. one '
         'solve or one adjoint, freed when it ends; phases never overlap), gpu_peak (max of gpu_build_peak and '
-        'gpu_steady + gpu_run), gpu_external (cuDSS direct-solver factors, outside the pool: a fill-in rule), '
-        'external_extra (the largest factorisation peak on top), device_peak (gpu_peak + gpu_external + '
-        'external_extra: checked against the GPU budget), host (bytes of CPU factorisations and analyses: a fill-in '
-        'heuristic), items / host_items / run_items / external_items [{label, bytes}] and transient_items [{phase, '
-        'label, bytes}] largest first, largest_phase {phase, bytes} or null, budget (the '
+        'gpu_steady + gpu_run), gpu_external (cuDSS direct-solver factors alive through the run, outside the pool: a '
+        'fill-in rule), external_transient_items [{phase, label, bytes}] (factors alive only in that transient phase, '
+        'a factor once per phase it lives in), external_extra (the largest factorisation peak on top), external_peak '
+        '(gpu_external + the largest phase of external_transient_items + external_extra), device_peak (max of '
+        'gpu_build_peak and gpu_steady + run_items + the largest phase of its transient_items plus the factors alive '
+        'in it, + gpu_external + external_extra: checked against the GPU budget), host (bytes of CPU factorisations '
+        'and analyses: a fill-in heuristic), items / host_items / run_items / external_items [{label, bytes}] and '
+        'transient_items [{phase, label, bytes}] largest first, largest_phase {phase, bytes} or null, budget (the '
         'check memory_budget argument in bytes, or null), host_budget (the check host_budget argument: available host '
         'RAM in bytes, or null)}, or null when the mesh or the estimate fails. CPU estimates counted per physics and '
         'feature type (approximate; summary.json compares gpu_steady and gpu_build_peak with the measured build); '
@@ -930,8 +942,11 @@ _RESULTS_NOTES = (
         'line), '
         'gpu_peak_bytes (build high-water mark of the pool), gpu_budget, gpu_estimate}, or null when no build '
         'succeeded. gpu_estimate is null or {gpu_steady, gpu_build_peak, gpu_run, gpu_external, external_extra, '
-        'host, items / run_items / external_items [[label, bytes]], transient_items [[phase, label, bytes]], '
-        'steady_deviation, peak_deviation (measured / estimated - 1)}; a deviation above 25 % is also a warning.',
+        'external_peak, host, items / run_items / external_items [[label, bytes]], transient_items / '
+        'external_transient_items [[phase, label, bytes]], '
+        'steady_deviation, peak_deviation (measured / estimated - 1), peak_unseen_bytes (free pool blocks stranded '
+        'before the build by arrays of open Results: build temporaries placed there do not raise the pool mark, so '
+        'an estimate up to this far above gpu_peak_bytes has deviation 0)}; a deviation above 25 % is also a warning.',
         'build_seconds_total (s: every build of the study summed: sweep values, refinement levels, parity sectors; '
         'one build: build.build_seconds) or null; study_seconds (s: the study runs on the built sessions, without '
         'build and post-processing; summed over sweep values, refinement levels and parity sectors) or null; '
@@ -986,9 +1001,10 @@ _RESULTS_NOTES = (
         'iterations, relative_change, tolerance} per solved wavelength with a fixed-point loop]; fixed_point then '
         'holds converged = all of them, the largest iterations and relative_change.',
         'run_memory null or {measured_bytes (pool high-water mark of the run since its build), estimated_bytes '
-        '(gpu_steady + gpu_run of the estimate), deviation (measured / estimated - 1)}; external_memory null or the '
+        '(gpu_steady + gpu_run of the estimate), unseen_bytes (as peak_unseen_bytes of the build), deviation '
+        '(measured / estimated - 1)}; external_memory null or the '
         'same record of the cuDSS factors outside the pool (measured_bytes: high-water mark of the live factors since '
-        'the build started, a plan counting its peak estimate; estimated_bytes: gpu_external + external_extra; null '
+        'the build started, a plan counting its peak estimate; estimated_bytes: the estimate\'s external_peak; null '
         'when neither side has any); parameters {name: value} '
         'of the built session (a sweep: the value the run ended on) or null; sweep_index (0-based) of the sweep value '
         'that top-level derived, fields and results belong to, or null.',
@@ -1093,7 +1109,7 @@ _RESULTS_NOTES = (
         'kind (gpu | cpu), device_total, device_free, budget} [bytes] or null, warnings [text], cases [{name, label, '
         'description, status '
         '(passed | failed | error), measured, expected, error, tolerance, details, message, wall_time, '
-        'vram_deviation, vram_part, vram_verdict, count_deviation, count_item, runs {run name: {status, wall_time, message, out_dir, timing, '
+        'vram_deviation, vram_part, vram_verdict, vram_max_bytes, count_deviation, count_item, runs {run name: {status, wall_time, message, out_dir, timing, '
         'vram, counts}}, variants (cases with '
         'variants only) {variant name: '
         '{status (passed | failed | error | skipped), backend, precision, measured, expected, error, tolerance, '
@@ -1118,7 +1134,8 @@ _RESULTS_NOTES = (
         'item (predicted count with a summary counter, e.g. CG iterations) whose measured / predicted - 1 is the '
         'largest, signed, and its label (0 and null when none is off by more than one). vram_deviation, vram_part, '
         'vram_verdict, count_deviation / count_item (case and example records) = the worst / largest over its runs '
-        '(null without one): the memory estimators / time recipes to update (CLI: "vram -40%  counts +200% (item)" '
+        '(null without one), vram_max_bytes the largest measured_bytes of any vram part over its runs: the memory '
+        'estimators / time recipes to update (CLI: "vram -40% max 1200 MB  counts +200% (item)" '
         'after the time split; - = the estimate books too much, + = more held than estimated).',
         'A case passes when its error is finite and error <= tolerance; a run that does not complete fails its '
         'case, and an exception in the comparison makes it an error.',
@@ -1132,29 +1149,28 @@ _RESULTS_NOTES = (
         'docstrings); they run in the light, heavy and all subsets and appear in each of their report files; a '
         'named run (names) runs only the built-ins it names.',
         'A selftest --all run writes the light and the heavy file from one run (wall_time, device and warnings are '
-        'the whole run\'s), then the examples files per backend; api.selftest returns the combined dict with subset '
-        'all, report_files [names] and examples {cpu, gpu: {passed, n_examples, n_passed, n_failed, n_error, '
-        'n_no_tolerance, n_skipped, n_skipped_backend, n_reused, wall_time, warnings}}; its passed also needs both '
-        'example runs.',
+        'the whole run\'s), then the examples file; api.selftest returns the combined dict with subset all, '
+        'report_files [names] and examples {passed, n_examples, n_passed, n_failed, n_error, n_no_tolerance, '
+        'n_skipped_backend, n_reused, wall_time, warnings}; its passed also needs the examples run.',
         'Before a report file (this one or an examples file) is overwritten, its timing summary goes to '
-        '<file stem>_prev.json {source, written (file time), open_sol_version, subset / backend, passed, counts, '
+        '<file stem>_prev.json {source, written (file time), open_sol_version, subset, passed, counts, '
         'n_reused, wall_time, device, cases {case name or example path: {status, wall_time, reused}}}: the previous '
         'run to compare run times with (a reused case keeps its stored wall_time; compare --reset runs).',
     )),
     ('selftest_report_analytic.json', (
-        'Also selftest_report_analytic_cpu.json / _gpu.json (selftest --all, api.selftest_examples backend=): the '
-        'same content for the examples forced onto that backend.',
-        '{open_sol_version, passed (no failed or erroring example), backend (null: each example on its own), '
-        'n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped, skipped [example paths without a '
-        'comparison], n_skipped_backend, skipped_backend [example paths validating only on their own backend, not '
-        'run on the forced one], n_reused, reused [example paths whose stored record was reused], wall_time, device, '
+        'Only examples with a derived value with a reference or an analytic curve are selftest examples (the others '
+        'are not run or listed; naming one is a usage error); each runs once, on its own backend '
+        '(solver_defaults.backend).',
+        '{open_sol_version, passed (no failed or erroring example), '
+        'n_examples, n_passed, n_failed, n_error, n_no_tolerance, n_skipped_backend, skipped_backend [example paths setting backend gpu, not run without a usable '
+        'GPU], n_reused, reused [example paths whose stored record was reused], wall_time, device, '
         'warnings, ranking '
         '[{example, kind (derived | curve), name, error, tolerance, ratio, flags}] of the entries with a tolerance by '
         'ratio = error / tolerance (non-finite first, then descending), without_tolerance [the same rows] by error, '
         'examples [...], report_files [its own file name; [] without out_dir]}.',
         'Example: {example (path under examples/), title, status (passed | failed | error | no_tolerance), '
         'run_status, message, wall_time, out_dir, worst_ratio, flags, backend (the run\'s; null when the file did not '
-        'load), timing, vram, counts, vram_deviation, vram_part, vram_verdict, count_deviation, count_item (as a selftest run / case), derived '
+        'load), timing, vram, counts, vram_deviation, vram_part, vram_verdict, vram_max_bytes, count_deviation, count_item (as a selftest run / case), derived '
         '[{kind, name, value, reference, error, '
         'tolerance, ratio, flags (+ per_value_error in a sweep)}], curves [{kind, name, target, series, error (the '
         'curve_error max; a sweep: the worst value), rms, n_points, tolerance, ratio, flags, note (+ '
@@ -1238,7 +1254,9 @@ _RESULTS_NOTES = (
         'check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=None, backend=None, '
         'max_wall_time=None) -> the check.json dict (also written with out_dir); memory_budget [bytes] (e.g. a run '
         'summary build.gpu_budget) adds the GPU memory check, host_budget [bytes] (e.g. '
-        'open_sol.core.host_memory.available_bytes()) the host RAM check; backend (\'auto\' | \'gpu\' | \'cpu\') '
+        'open_sol.core.host_memory.available_bytes()) the host RAM check (an estimate over a budget on size-based '
+        'element counts: check builds the triangle / tetrahedron meshes first and reports on their counts, as a build '
+        'judges); backend (\'auto\' | \'gpu\' | \'cpu\') '
         'overrides solver_defaults.backend; max_wall_time [s] adds a warning when even the shortest estimated run '
         'time exceeds it.',
         'profile_machine(backend=None, quick=False, progress=print) -> {key, date, quick, text, path}: measures and '
@@ -1351,10 +1369,10 @@ _RESULTS_NOTES = (
         'in finalize; study_work_at_build s) moved from build to study seconds, build / output the guesses before, '
         'other (checks, run set-up) never estimated; '
         '{event: skipped, name, message} for a case this machine cannot run).',
-        'selftest_examples(out_dir=None, names=None, progress=None, backend=None, reset=False) (open_sol.api) -> the '
-        'selftest_report_analytic.json dict (written with out_dir); backend \'cpu\' / \'gpu\' forces every example '
-        'onto it (selftest_report_analytic_<backend>.json, examples_<backend>/ run directories); progress gets the '
-        'events of selftest and each example record; reuse and reset as selftest.',
+        'selftest_examples(out_dir=None, names=None, progress=None, reset=False) (open_sol.api) -> the '
+        'selftest_report_analytic.json dict (written with out_dir; each example once, on its own backend, examples/ '
+        'run directories); progress gets the events of selftest and each example record; reuse and reset as '
+        'selftest.',
         'save_session_run(directory, spec, session, build_summary, study_summary, log_entries, model_file=None, '
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',

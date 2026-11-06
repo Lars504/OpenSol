@@ -13,7 +13,9 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   (as `_refresh_wall_links`). Every kernel a `core.kernels` twin; a change to `_STEP_SOURCE` changes `_step_host` and
   `_step_numba` in the same edit (`_face_velocity_gradient_host` mirrors the kernel's if / else chain by `np.select`).
   `_step_numba` (single only) uses float32 constants / tables: a float64 literal or int table entry promotes to
-  float64 in numba. half_storage stays gpu-only.
+  float64 in numba. It compiles with `cache=True` (uncached, the ~9 s compile lands in whichever of fluid_step_numba /
+  the cpu_gpu parities runs first, so their wall times swap with the selftest order; a "Cannot cache" NumbaWarning = a
+  closure value stopped pickling). half_storage stays gpu-only.
 - Stepper precision (`FluidPhysics(precision=)`): half_storage stores g x POPULATION_SCALE (1024) as float16 via
   POP_LOAD / POP_STORE, everything else float32. Transient only (raises, validate errors). Host code writing
   populations goes through `_store_populations`; masking multiplies the uint16 bits (`stored = half_bits(array);

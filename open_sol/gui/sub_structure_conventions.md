@@ -130,7 +130,16 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   greys out types without the model's `solver_backend`). Only the physics present restrict it: `add_physics` switches
   2D <-> 3D in the same edit when the picked space needs it (3D: size_z = size_x; 2D: size_z and every object's z params
   cleared). The Solvers form's 'Run on' Automatic label follows `cupy_installed()`; mesh memory lines on the cpu are one
-  processor total (gpu_peak + host).
+  processor total (gpu_peak + host). `solver_defaults.memory_check` is edited only by the mesh form's tick box 'Override
+  memory warning' (`_MEMORY_OVERRIDE`: ticked = 'warning') in its Estimate group, shown on the mesh the budget issue is
+  reported at (`document.memory_verdict()`) while the estimate is over a budget or the override is on. Mesh form order:
+  Build mesh group, Estimate (+ tick box), the node's issues. Built element counts: the store hands
+  `built_mesh_counts` of every preview / built mesh, and after BuildFailed of the meshes the worker kept
+  (`meshing.kept_element_mesh_counts`: a build that meshed, then refused the model), to
+  `document.set_element_counts(name, key, counts)`; while `document.element_mesh_key(name)` is that key,
+  `mesh_estimate` carries them (`counts_built`), so the memory / time estimates and issues follow
+  (`issues_invalidated`, which SettingsPanel refreshes on, as for a budget change). Compute stays refused on an
+  over-budget error until the override is ticked or the built counts fit.
 - Meshes (S7.2; it must always be clear which mesh a physics uses): `MESHES_NODE` ('meshes',) between Couplings and
   Solvers, one ('mesh', name) child per ModelSpec.meshes entry (section 'mesh'; rename / delete / move are 'all' edits:
   `ModelSpec.rename_mesh` / `remove_mesh`; `delete_mesh(move_physics=True)` first moves its physics to the remaining
@@ -261,7 +270,10 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   'target_slot' become choice Params from the endpoints' state_fields / source_slots (`_coupling_params`), so a source
   / target change rebuilds the coupling form; likewise a feature's text 'channel' param becomes a choice of
   `document.harmonic_channel_names(physics)` (`_feature_params`; `add_feature` defaults it to the first channel). An
-  optional 'choice' Param lists None as '(default)' first (`make_param_editor`).
+  optional 'choice' Param lists None as '(default)' first (`make_param_editor`). Text a user may want to copy (hints,
+  errors, issues, estimates, banners, notes) is a `forms.hint_label` / `error_label` or a QLabel wrapped in
+  `forms.selectable` (it takes click focus, so a click on it commits a pending edit like any other click); form row
+  labels and the status bar stay plain.
 - Polar / spherical domains (an 'all' edit): the canvas keeps the drawing plane; `_EvaluatedModel.domain_map` (None on
   Cartesian) drives `plane_extent` / `face_segments` (rays joined by `angle_wrap` dropped: not drawn, labelled, picked
   or highlighted) / `inside_domain`, outline and mesh view (`_draw_mapped_mesh`); `model.cells` is None there (no cell
@@ -315,5 +327,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   `PhysicsType.mesh_method`. Mode edits go through `_set_mesh_mode` (rebuilds): leaving auto writes the estimate's
   `auto_dx` (and, to graded, `auto_refinements` as automatic=True RefinementSpecs) at 4 digits; entering auto drops the
   automatic refinements. `_show_mesh_numbers` (every refresh, before `ParamForm.refresh`) shows the auto cell size read
-  only, greys the wavelength rows outside auto and puts resolved numbers in the placeholders. Estimate adds
+  only, greys the wavelength rows outside auto and puts resolved numbers in the placeholders; an empty 'Minimum
+  element size' reads back '= maximum size / 100' like a typed value (`ParamForm.set_empty_value`; the maximum from the
+  estimate, else dx outside auto, so it shows when the estimate fails). Estimate adds
   `meshing.line_block_hint` only when a line_block solver fits a role (`_line_block_fits`).

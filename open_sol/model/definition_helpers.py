@@ -540,16 +540,23 @@ def reduced_sweep_memory_items(context, unknowns, csr_entries) -> list:
     return items
 
 
-def cudss_external(factors, one_at_a_time=False) -> dict:
-    """MemoryEstimate.from_items kwargs external_items / external_extra of cuDSS factors outside the cupy pool, factors
-    = ((label, n_unknowns, entries, value_bytes, dimensions, mixed[, symmetric]), ...) by
-    cudss_factor.factor_device_bytes; one_at_a_time: each is released before the next is planned (largest booked)."""
+def cudss_external(factors, one_at_a_time=False, phases=None) -> dict:
+    """MemoryEstimate.from_items kwargs external_items / external_transient_items / external_extra of cuDSS factors
+    outside the cupy pool, factors = ((label, n_unknowns, entries, value_bytes, dimensions, mixed[, symmetric]), ...)
+    by cudss_factor.factor_device_bytes; phases {label: run phase or tuple of phases}: a factor alive only in those
+    transient phases (paired with their pool items in device_peak); one_at_a_time: each of the others is released
+    before the next is planned (largest booked)."""
     from ..solvers.cudss_factor import factor_device_bytes
+    phases = phases or {}
     sized = [(factor[0], *factor_device_bytes(*factor[1:6], symmetric=factor[6] if len(factor) > 6 else True))
              for factor in factors]
-    if one_at_a_time and sized:
-        sized = [max(sized, key=lambda entry: entry[1])]
-    return {'external_items': tuple((label, permanent) for label, permanent, _ in sized),
+    run_long = [entry for entry in sized if entry[0] not in phases]
+    if one_at_a_time and run_long:
+        run_long = [max(run_long, key=lambda entry: entry[1])]
+    phased = tuple((phase, label, permanent) for label, permanent, _ in sized if label in phases
+                   for phase in ((phases[label],) if isinstance(phases[label], str) else phases[label]))
+    return {'external_items': tuple((label, permanent) for label, permanent, _ in run_long),
+            'external_transient_items': phased,
             'external_extra': max((extra for _, _, extra in sized), default=0)}
 
 

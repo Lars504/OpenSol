@@ -1,20 +1,19 @@
 """Element meshes for display (mesh plan T6, igor3d_plan T4b): the worker session's built triangle / tetrahedron meshes
 and mesher previews of the mesh form ('Build mesh'), kept as host data (viz.common.TriangleMeshLines, or
 TetrahedronMeshData the canvas cuts by its shown plane) with a key of the inputs they were made from, so a view shows a
-mesh only while the model would still give it. GUI thread; work runs on the worker."""
+mesh only while the model would still give it. Their element counts go to the document (set_element_counts), whose
+memory estimate is then that of the built mesh. GUI thread; work runs on the worker."""
 import time
 from dataclasses import dataclass
 
 from PySide6 import QtCore
 
 from ..core.gpu_memory import ledger_time_text
-from ..model.expressions import error_message
 from ..model.geometry import resolve_geometry
-from ..model.meshing import element_mesh_key, element_window_size
+from ..model.meshing import built_mesh_counts, element_mesh_key, element_window_size, kept_element_mesh_counts
 from ..model.schema import FREE_MESH_KINDS
 from ..viz.common import tetrahedron_mesh_data, triangle_mesh_lines
 
-_KEY_ERRORS = (ValueError, KeyError, TypeError, ArithmeticError)
 AUTO_PREVIEW_MAX_ELEMENTS = 200_000   # the mesh view meshes triangle estimates up to this size by itself; larger: Build
 AUTO_PREVIEW_MAX_TETRAHEDRA = 50_000  # ... tetrahedron estimates (gmsh -3 is slower)
 _AUTO_PREVIEW_DELAY_MS = 400          # quiet time after the last edit before an automatic preview starts
@@ -30,6 +29,7 @@ class MeshDrawing:
     source: str                 # 'built' (the worker session's mesh) | 'preview' (the mesh form's Build mesh)
     seconds: float | None = None   # mesher wall time of a preview
     kind: str = 'triangles'
+    counts: dict | None = None  # meshing.built_mesh_counts (the document's memory estimate uses them)
 
 
 def _mesh_data(mesh, kind):
@@ -37,7 +37,8 @@ def _mesh_data(mesh, kind):
 
 
 def _built_mesh_drawings(session) -> dict:
-    """{mesh name: (key, kind, drawing data)} of the session's element meshes (worker thread, host data only)."""
+    """{mesh name: (key, kind, drawing data, built_mesh_counts)} of the session's element meshes (worker thread, host
+    data only)."""
     from ..model.meshing import tetrahedron_sizing, triangle_sizing
 
     drawings, shapes = {}, None
@@ -50,7 +51,8 @@ def _built_mesh_drawings(session) -> dict:
         sizing = (tetrahedron_sizing if kind == 'tetrahedra' else triangle_sizing)(
             session.spec, session.spec.mesh_by_name(name), session.parameters, session.registry, shapes)
         size = element_window_size(session.spec, session.parameters, kind)
-        drawings[name] = (element_mesh_key(sizing, size, shapes), kind, _mesh_data(domain.mesh, kind))
+        drawings[name] = (element_mesh_key(sizing, size, shapes), kind, _mesh_data(domain.mesh, kind),
+                          built_mesh_counts(domain.mesh))
     return drawings
 
 
@@ -76,7 +78,6 @@ class ElementMeshStore(QtCore.QObject):
         self._pending = {}            # mesh name -> key of the preview running now
         self._failures = {}           # mesh name -> (key, message) of the last failed preview
         self._log_requests = {}       # mesh name -> key of the preview Build mesh asked to log
-        self._keys = (None, {})       # (document revision, {mesh name: (key or None, problem text)})
         self._auto_names = set()      # mesh names the mesh view asked to mesh once edits pause
         self._auto_timer = QtCore.QTimer(self)
         self._auto_timer.setSingleShot(True)
@@ -84,20 +85,14 @@ class ElementMeshStore(QtCore.QObject):
         self._auto_timer.timeout.connect(self._run_auto_previews)
         document.replaced.connect(self._on_document_replaced)
         bridge.built.connect(self._on_built)
-        bridge.build_failed.connect(lambda _failure: self._clear_built())
+        bridge.build_failed.connect(self._on_build_failed)
         bridge.study_finished.connect(self._on_study_finished)
         bridge.study_failed.connect(lambda _message, _traceback: self._on_study_failed())
 
     # ---- queries ----
     def current_key(self, mesh_name) -> tuple:
-        """(key or None, problem text) of the document's element mesh mesh_name (cached per revision)."""
-        revision = self._document.revision
-        if self._keys[0] != revision:
-            self._keys = (revision, {})
-        cache = self._keys[1]
-        if mesh_name not in cache:
-            cache[mesh_name] = self._document_key(mesh_name)
-        return cache[mesh_name]
+        """(key or None, problem text) of the document's element mesh mesh_name (document.element_mesh_key)."""
+        return self._document.element_mesh_key(mesh_name)
 
     def drawing(self, mesh_name):
         """The built mesh when the document still gives it, else such a preview; None otherwise."""
@@ -152,14 +147,15 @@ class ElementMeshStore(QtCore.QObject):
             data = _mesh_data(mesh, kind)
             seconds = [['geometry', resolved - start], ['mesh', meshed - resolved],
                        ['display data', time.perf_counter() - meshed]]
-            return data, meshed - start, seconds, reused
+            return data, meshed - start, seconds, reused, built_mesh_counts(mesh)
 
         def done(result):
             if self._bridge.generation != generation:
                 return
-            data, seconds, stage_seconds, reused = result
+            data, seconds, stage_seconds, reused, counts = result
             self._finish_preview(mesh_name, key)
-            self._previews[mesh_name] = MeshDrawing(mesh_name, key, data, 'preview', seconds, kind)
+            self._previews[mesh_name] = MeshDrawing(mesh_name, key, data, 'preview', seconds, kind, counts)
+            self._document.set_element_counts(mesh_name, key, counts)   # before changed: views read the new estimate
             self.changed.emit(mesh_name)
             text = (f"Mesh '{mesh_name}': {data.n_elements:,} {_ELEMENT_NAMES[kind]}, {data.n_points:,} nodes"
                     + (' (reused: made earlier from the same mesh settings and geometry)' if reused else ''))
@@ -240,6 +236,19 @@ class ElementMeshStore(QtCore.QObject):
         if self._bridge.results_spec is None:
             self._clear_built()
 
+    def _on_build_failed(self, _failure):
+        """No session, but the worker keeps the element meshes a failed build made (e.g. one refused for memory on
+        their counts): their counts make the document's estimate and memory issue those of the built meshes."""
+        self._clear_built()
+        generation = self._bridge.generation
+
+        def done(kept):
+            if self._bridge.generation != generation:
+                return
+            for name, (key, counts) in kept.items():
+                self._document.set_element_counts(name, key, counts)
+        self._bridge.call_without_session(kept_element_mesh_counts, on_result=done, on_error=lambda _error: None)
+
     def _fetch_built(self):
         generation = self._bridge.generation
 
@@ -247,8 +256,10 @@ class ElementMeshStore(QtCore.QObject):
             if self._bridge.generation != generation:
                 return
             names = set(self._built) | set(drawings)
-            self._built = {name: MeshDrawing(name, key, data, 'built', kind=kind)
-                           for name, (key, kind, data) in drawings.items()}
+            self._built = {name: MeshDrawing(name, key, data, 'built', kind=kind, counts=counts)
+                           for name, (key, kind, data, counts) in drawings.items()}
+            for name, drawing in self._built.items():
+                self._document.set_element_counts(name, drawing.key, drawing.counts)
             for name in sorted(names):
                 self.changed.emit(name)
 
@@ -266,23 +277,7 @@ class ElementMeshStore(QtCore.QObject):
     def _on_document_replaced(self):
         names = sorted(set(self._built) | set(self._previews) | set(self._pending) | set(self._failures))
         self._built, self._previews, self._pending, self._failures, self._log_requests = {}, {}, {}, {}, {}
-        self._keys = (None, {})
         self._auto_names = set()
         self._auto_timer.stop()
         for name in names:
             self.changed.emit(name)
-
-    # ---- helpers ----
-    def _document_key(self, mesh_name):
-        estimate, problem = self._document.mesh_estimate(mesh_name)
-        if estimate is None:
-            return None, problem or 'no mesh estimate'
-        if estimate.kind not in FREE_MESH_KINDS:
-            return None, 'it is not a triangle or tetrahedron mesh'
-        try:
-            parameters = self._document.parameters()
-            spec = self._document.spec
-            return element_mesh_key(estimate.sizing, element_window_size(spec, parameters, estimate.kind),
-                                    resolve_geometry(spec, parameters)), ''
-        except _KEY_ERRORS as exc:
-            return None, error_message(exc)

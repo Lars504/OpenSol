@@ -257,6 +257,25 @@ all but drift_diffusion.
   `cudss_back_end(solvers)` reads the resolved 'linear' back end. `fem_time_system` = (dofs, CSR entries per row) handed to `diffusion_time_estimate(entries_per_row=)`:
   real unknowns x entries / stencil entries, never inflated "equivalent cells" (LU curves grow ~n^1.5 / ~n^2).
 
+## Factor entry count (`dissection.py`)
+- `element_dissection_pairs(connectivity, node_points)`: the entries of an elimination order built on the mesh, per
+  region the smaller of two (bottom up over the cut tree; per level by bincounts / reduceat, no Python loop over
+  regions). Cut: the plane through the mean centroid, normal to the axis of largest spread; upper half = the elements
+  wholly above it (their lowest coordinate), never by centroid: the tetrahedra of one swept prism column share a
+  footprint but not a centroid, so a centroid split tears the column (and zigzags through a structured row) and
+  the separator thickens (1.56x cuDSS's entries on sin_square_membrane_modes_3d, with or without sweeps). Separator
+  = unmarked nodes both halves share (for P2 one surface of nodes; upper-side nodes next to a lower-side node are
+  two node layers: 2.0x), border = earlier separator nodes the region's elements touch, S (S + 1) / 2 + S B. Sweep:
+  the region's nodes in coordinate order along that axis, border last, envelope rows (first neighbour to the node;
+  border node: first neighbour to the end), both directions; it wins on a strip without borders, little on a slice
+  between two cuts (the border at the sweep's start is carried to its end). Node pairs of one factor triangle: a vector operator stores (dofs per
+  node)^2 per pair. Both orders are ones a solver could use, so the count bounds a good ordering from above and
+  nothing in it is fitted; a count below cudss_lu_entries / eigen_lu_entries (summary.json) would mean cuDSS orders
+  worse than this, a lead on its ordering options.
+- `MeshDissection(mesh)` (triangles and tetrahedra; order 2 = nodes + edges through `element_edges`) counts per
+  element order on first use; `meshing.built_mesh_estimates` attaches it as `estimate.dissection` (None on size-based
+  counts), consumers: `physics/mechanics/definition.factor_fill` -> `cudss_factor.FactorFill`.
+
 ## Error indicators (`indicators.py`, mesh plan A3)
 - eta^2 per mesh element (float64), energy-norm weighted like the tensor A2 hooks (1 / c, 0 where c is 0); hooks
   `error_indicator()` of FEMHeatPhysics / FEMPotentialPhysics (`diffusion_indicator`), FEMModePhysics

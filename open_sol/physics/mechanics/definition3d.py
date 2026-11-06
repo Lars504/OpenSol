@@ -1179,6 +1179,17 @@ def _estimated_rigid_motions(settings_values, context) -> int:
     return 0 if _pml_faces(settings_values) else 6
 
 
+def _static_state_solved(settings_values, context, with_loads) -> bool:
+    """stress_stiffening on tetrahedra: solve_static_state factorises K by the 'linear' role before the pencils (every
+    load with_loads, else an initial stress to relax), unless a Bloch cell, an elastic PML or a free body refuses it."""
+    if not settings_values.get('stress_stiffening'):
+        return False
+    initial = any(context.material_sets(name) for name in OPTIONAL_PRESTRESS_SCHEMA_3D)
+    supported = any(feature.enabled and feature.type in SUPPORT_FEATURES for feature in context.physics_spec.features)
+    refused = bool(_periodic_axes(settings_values)) or bool(_pml_faces(settings_values)) or not supported
+    return (with_loads or initial) and not refused
+
+
 def _tetrahedra_time_estimate(settings_values, mesh, context):
     """Tetrahedra: the host factor recipes at the vector unknowns on the 7-point 3D curves times _TET_LU_TIME_SCALE /
     _TET_SOLVE_TIME_SCALE: static = 'linear' factorisations (one per assembly; per solve when the stiffness follows a
@@ -1201,8 +1212,9 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
                           solve_scale=_COMPLEX_SOLVE_BYTES * scales['solve_scale'])
     nonlinear = bool(settings_values.get('geometric_nonlinearity'))
     if nonlinear and context.study.type in (*_MODAL_STUDIES, FREQUENCY_RESPONSE_STUDY):
-        # the nonlinear static state of the pencils (once), then the linear recipe of the study
-        linear = _tetrahedra_time_estimate(dict(settings_values, geometric_nonlinearity=False), mesh, context)
+        # the nonlinear static state of the pencils (once, in place of the linear one), then the study's linear recipe
+        linear = _tetrahedra_time_estimate(dict(settings_values, geometric_nonlinearity=False,
+                                                stress_stiffening=False), mesh, context)
         return te.combine((linear, _newton_time(settings_values, mesh, context, unknowns, scales, 1.0, 'exact',
                                                 False)))
     if context.study.type in _MODAL_STUDIES:
@@ -1217,6 +1229,11 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
         shift_work, _ = eigen_search_counts(context)   # one shift-invert per shift of the eigenfrequency search
         parts = [context.solver_work('eigen', unknowns=unknowns, eigenpairs=eigenpairs, plan_reused=True,
                                      pencil_terms=3 if loaded else 2, **shift_work, **factor)]
+        if _static_state_solved(settings_values, context, context.study.type == EIGENFREQUENCY_STUDY):
+            # stress stiffening: solve_static_state factorises K_ff and solves once before the pencils
+            parts.append(context.solver_work('linear', unknowns=unknowns, solves=1.0, solves_kind='exact',
+                                             factorizations=1.0, factorizations_kind='exact', device_values=True,
+                                             **scales))
         films = _squeeze_film_time(mesh, context)
         return te.combine(parts + ([] if films is None else [films]))
     if context.study.type == FREQUENCY_RESPONSE_STUDY:   # the study's harmonic_factorizations (sweep_method)
@@ -1335,7 +1352,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     per study, the cuDSS 'linear' / 'eigen' pool items (kept or per solve) and factors outside the pool (body notes)."""
     # piezoelectric: the coupled operator (not K) is factored, Lanczos vectors span the coupled unknowns; a Bloch cell
     # with bloch_k != 0, an elastic PML, a loss or a resistive_load electrode: a complex pencil (x 2 host items)
-    from .definition import eigen_device_items, harmonic_pencil_items, linear_factor_items   # definition imports us
+    from .definition import (LINEAR_STATIC_STATE_PHASE, eigen_basis_counts, eigen_device_items,   # definition imports
+                             factor_fill, harmonic_pencil_items, linear_factor_items)             # us
     order = element_order(settings_values)
     local = 10 if order == 2 else 4
     elements = int(mesh.n_elements)
@@ -1356,8 +1374,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     run_items = [('output copies', 2 * FLOAT32_BYTES * elements)]
     frequency_response = context.spec.study.type == FREQUENCY_RESPONSE_STUDY
     # static / Newton solves by the 'linear' runtime: every study but frequency_response, an eigenfrequency study only
-    # for its geometrically nonlinear static state
-    static_solve = not frequency_response and (not eigenfrequency or bool(settings_values.get('geometric_nonlinearity')))
+    # for the static state of its pencils (geometric nonlinearity, or stress stiffening: solve_static_state)
+    static_solve = not frequency_response and (
+        not eigenfrequency or bool(settings_values.get('geometric_nonlinearity'))
+        or _static_state_solved(settings_values, context, context.spec.study.type == EIGENFREQUENCY_STUDY))
     resolved = (context.solvers or {}).get('linear')
     linear_back_end = None if resolved is None else resolved.values.get('back_end')
     factorization = eigen_factorization(context.solvers) if eigenfrequency else None
@@ -1367,17 +1387,20 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     factored_entries = _tetrahedra_entries(settings_values, mesh, spec)
     on_gpu = context.spec.solver_defaults.backend != 'cpu'
     transient_items, factors = [], []
+    # cuDSS fill of every factor of this operator: counted on the built mesh (a film of a few layers or a refined band
+    # fills far less than a compact 3D mesh), else the 3D growth law
+    fill = factor_fill(mesh, order, factored, 4 if piezoelectric else 3, 3)
     if static_solve:
         # system_fem3d uploads the reduced K_ff (or tangent) CSR with the first solve; in an eigenfrequency study
         # solve_static_state releases that factor before the pencil's is planned
-        held, passing, factors = linear_factor_items(factored, factored_entries, linear_back_end, on_gpu, 3,
+        held, passing, factors = linear_factor_items(factored, factored_entries, linear_back_end, on_gpu, fill,
                                                      kept=not eigenfrequency)
         run_items += held
         transient_items += passing
     if frequency_response and linear_back_end in CUDSS_BACK_ENDS:   # the kept HarmonicSystem: K + j L, M (+ load)
         run_items += harmonic_pencil_items(factored, factored_entries, linear_back_end,
                                            (_COMPLEX_BYTES, FLOAT64_BYTES, FLOAT64_BYTES))
-        factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, 3,
+        factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, fill,
                         linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
     # Newton tangents on the GPU (plan G5): system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
@@ -1438,19 +1461,27 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         if factorization not in CUDSS_FACTORIZATIONS:
             kind = 'complex128' if complex_factor > 1 else 'float64'
             host_items.append((f'SuperLU factor of {pencil} ({kind}, heuristic)', complex_factor * factor_bytes))
-        host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
-            context, factored, _estimated_rigid_motions(settings_values, context)))
+        # a PML, loss or resistive load: the complex symmetric pencil runs eigs_shifted (device Krylov-Schur on a
+        # DevicePencil); a real or Hermitian (Bloch phase) one eigsh_shifted
+        pml = bool(_pml_faces(settings_values))
+        complex_eigs = pml or loaded or _lossy_pencil(settings_values, context)
+        rigid_motions = _estimated_rigid_motions(settings_values, context)
+        _, n_basis = eigen_basis_counts(context, factored, rigid_motions, pml)
         # the ShiftPencil (DevicePencil, mass product, factor), released after each solve
-        eigen_transient, eigen_host_items, eigen_factors = eigen_device_items(
+        eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
             context, factored, factored_entries, eigen_bytes, terms=3 if loaded else 2,
             term_bytes=FLOAT64_BYTES if loaded else eigen_bytes,
             # a Bloch phase: Hermitian or not vouched (the device check runs and fails), full terms
             symmetric=_trivial_bloch_phase(settings_values), checked=not _trivial_bloch_phase(settings_values),
-            dimensions=3)
+            dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis)
+        host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
+            context, factored, rigid_motions, pml, basis_on_device))
         host_items.extend(eigen_host_items)
+        # the static factor's phase (solve_static_state releases it before the pencil's is planned)
+        phases = {**{factor[0]: LINEAR_STATIC_STATE_PHASE for factor in factors}, **eigen_phases}
         return MemoryEstimate.from_items(device_items, host_items=host_items, run_items=run_items,
                                          transient_items=transient_items + list(eigen_transient),
-                                         **cudss_external(factors + list(eigen_factors), one_at_a_time=True))
+                                         **cudss_external(factors + list(eigen_factors), phases=phases))
     host_factor = linear_back_end not in CUDSS_BACK_ENDS
     if frequency_response:
         # mass and loss CSR, the reduced K / loss / M of the free dofs, the complex sum and its factor copy
@@ -1521,16 +1552,20 @@ def _memory_estimate(settings_values, mesh, context):
     return combine((fields, system))
 
 
-def _eigen_host_items(context, dofs, rigid_motions=0):
-    """Host items of ElasticSystem3D.lowest_modes: the Lanczos basis and eigenvectors (eigsh ncv), ARPACK work vectors,
-    the free-dof index copy and the kept mode shapes (float64 over every dof); rigid_motions asked on top."""
+def _eigen_host_items(context, dofs, rigid_motions=0, pml=False, basis_on_device=False):
+    """Host items of ElasticSystem3D.lowest_modes / the tetrahedra ModalPencil: the Lanczos basis and eigenvectors
+    (eigsh ncv; basis_on_device: the device Krylov-Schur holds the basis, the eigenvectors stay), ARPACK work vectors,
+    the free-dof index copy and the kept mode shapes (float64 over every dof); rigid_motions asked on top (pml: the
+    shell doubles the asked eigenvalues, ModalPencil._n_wanted)."""
     n_resonances = modal_resonance_count(context)
-    n_wanted = max(min(n_resonances + EXTRA_EIGENVALUES + int(rigid_motions), dofs - 1), 1)
+    n_wanted = max(min(n_resonances * (2 if pml else 1) + EXTRA_EIGENVALUES + int(rigid_motions), dofs - 1), 1)
     n_basis = arnoldi_basis_size(n_wanted, dofs, eigen_subspace_size(context.solvers))
     n_resonances = modal_kept_count(context)   # several targets / a band keep more mode shapes
-    return ((f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',
-             (n_basis + n_wanted + 4) * FLOAT64_BYTES * dofs),
-            (f'mode shapes ({n_resonances} x float64)', n_resonances * FLOAT64_BYTES * dofs))
+    basis = ((f'eigenvectors ({n_wanted} vectors; the basis is on the device)', n_wanted * FLOAT64_BYTES * dofs)
+             if basis_on_device else
+             (f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',
+              (n_basis + n_wanted + 4) * FLOAT64_BYTES * dofs))
+    return (basis, (f'mode shapes ({n_resonances} x float64)', n_resonances * FLOAT64_BYTES * dofs))
 
 
 def _support_memory(values, n_selected_cells, mesh):

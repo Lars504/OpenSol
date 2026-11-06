@@ -1,6 +1,6 @@
 {
   "title": "Prestressed silicon nitride square membrane: drum modes vs side length (3D, analytic)",
-  "description": "3D eigenfrequency study (solid_mechanics_3d on swept prism tetrahedra, quadratic elements) of a 100 nm thick high-stress silicon nitride membrane (E = 250 GPa, nu = 0.23, rho = 3200 kg/m^3, equibiaxial built-in stress sigma0 = 1 GPa as initial_stress_xx = initial_stress_yy) clamped on all four edges of an L x L square, swept over L = 50 and 100 um (two values to keep the selftest short). Quarter model: the two clamped edges on x_lo and y_lo (fixed), the symmetry planes through the centre on x_hi and y_hi (rollers: u_z free, so only modes even about both centre lines, (m, n) odd). Stress stiffening is on: the static state keeps u = 0 and the stress sigma0 (the clamps and rollers take the in-plane force), and its geometric stiffness carries the drum modes.\nAnalytic: an ideal membrane has f_mn = sqrt(sigma0 / rho) sqrt(m^2 + n^2) / (2 L) (f_11 = 7.91 MHz at L = 50 um). The film also has a little bending stiffness D = E h^3 / (12 (1 - nu^2)); next to a clamped edge it bends over the length l_b = sqrt(D / (sigma0 h)) = 0.47 um, which shortens the vibrating span by about 2 l_b and adds D k^4 to sigma0 h k^2: f_mn = f_mn(membrane) (1 + 2 lam + (4 + (m^2 + n^2) pi^2 / 2) lam^2), lam = l_b / L (Euler-Bernoulli string-with-bending expansion applied per direction; terms of order lam^2 from the corners and of order lam^3 are left out, below ~5e-4 here). The bending rise is 2.0 % at 50 um and 1.0 % at 100 um.\nMesh: in-plane triangles of at most L / 5 (cell size), refined to l_b / 2 in a band 4 l_b wide along the two clamped edges (refinement boxes clamp_band_x / clamp_band_y) so the bending boundary layer is resolved, graded at 1.3; two prism layers across the 100 nm thickness.\nDerived values tab: f_11, f_13 (one of the degenerate (1,3) / (3,1) pair) and f_33 against the bending-corrected formula (expected within ~1e-3; tolerances 3e-3 / 3e-3 / 4e-3 are first estimates: the 3D clamp and the shear of the 0.47 um boundary layer differ slightly from plate theory); f_11_membrane against the ideal membrane, 1-2 % high (the bending stiffness).\nSweep tab: f_11 vs L_mem with the dashed bending-corrected curve f11_ref and the ideal membrane f11_mem (f ~ 1 / L).\nLine profile tab (last sweep value, L = 100 um; mid-plane cut): u_z of snapshot 'resonance 1' along the line y = 0.98 L / 2 from the clamped edge to the centre against the shortened-span shape sin(pi (x - l_b) / (L - 2 l_b)) sin(pi (y - l_b) / (L - 2 l_b)) (peak node |u| = 1 m at the centre); within ~1e-2 of the peak (the boundary layer itself is set to 0 within l_b).",
+  "description": "3D eigenfrequency study (solid_mechanics_3d on swept prism tetrahedra, quadratic elements) of a 100 nm thick high-stress silicon nitride membrane (E = 250 GPa, nu = 0.23, rho = 3200 kg/m^3, equibiaxial built-in stress sigma0 = 1 GPa as initial_stress_xx = initial_stress_yy) clamped on all four edges of an L x L square, L = 50 um (one value: the fine clamp-edge mesh grows with L, and 100 um no longer fits an 8 GB GPU). Quarter model: the two clamped edges on x_lo and y_lo (fixed), the symmetry planes through the centre on x_hi and y_hi (rollers: u_z free, so only modes even about both centre lines, (m, n) odd). Stress stiffening is on: the static state keeps u = 0 and the stress sigma0 (the clamps and rollers take the in-plane force), and its geometric stiffness carries the drum modes.\nAnalytic: an ideal membrane has f_mn = sqrt(sigma0 / rho) sqrt(m^2 + n^2) / (2 L) (f_11 = 7.91 MHz at L = 50 um). The film also has a little bending stiffness D = E h^3 / (12 (1 - nu^2)); next to a clamped edge it bends over the length l_b = sqrt(D / (sigma0 h)) = 0.47 um, which shortens the vibrating span by about 2 l_b and adds D k^4 to sigma0 h k^2: f_mn = f_mn(membrane) (1 + 2 lam + (4 + (m^2 + n^2) pi^2 / 2) lam^2), lam = l_b / L (Euler-Bernoulli string-with-bending expansion applied per direction; terms of order lam^2 from the corners and of order lam^3 are left out, below ~5e-4 here). The bending rise is 2.0 % at 50 um.\nMesh: in-plane triangles of at most L / 5 (cell size), refined to l_b / 2 in a band 4 l_b wide along the two clamped edges (refinement boxes clamp_band_x / clamp_band_y) so the bending boundary layer is resolved, graded at 1.3; two prism layers across the 100 nm thickness.\nSolvers: double-precision cuDSS on both roles (the automatic cudss_mixed fails its accuracy probe on the static K of the tension-free 100 nm film and needs ~17 refinement solves per Arnoldi step on the pencil).\nDerived values tab: f_11, f_13 (one of the degenerate (1,3) / (3,1) pair) and f_33 against the bending-corrected formula (expected within ~1e-3; tolerances 3e-3 / 3e-3 / 4e-3 are first estimates: the 3D clamp and the shear of the 0.47 um boundary layer differ slightly from plate theory); f_11_membrane against the ideal membrane, 2 % high (the bending stiffness).\nLine profile tab (mid-plane cut): u_z of snapshot 'resonance 1' along the line y = 0.98 L / 2 from the clamped edge to the centre against the shortened-span shape sin(pi (x - l_b) / (L - 2 l_b)) sin(pi (y - l_b) / (L - 2 l_b)) (peak node |u| = 1 m at the centre); within ~1e-2 of the peak (the boundary layer itself is set to 0 within l_b).",
   "version": 2,
   "parameters": [
     {"name": "E_sin", "expression": 2.5e11, "description": "Young's modulus of silicon nitride in Pa"},
@@ -8,7 +8,7 @@
     {"name": "rho_sin", "expression": 3200.0, "description": "density of silicon nitride in kg/m^3"},
     {"name": "sigma_0", "expression": 1e9, "description": "equibiaxial built-in tensile stress in Pa (high-stress LPCVD nitride)"},
     {"name": "t_mem", "expression": "100*nm", "description": "membrane thickness"},
-    {"name": "L_mem", "expression": "50*um", "description": "membrane side length (swept 50-100 um)"},
+    {"name": "L_mem", "expression": "50*um", "description": "membrane side length"},
     {"name": "L_half", "expression": "L_mem/2", "description": "side of the modelled quarter"},
     {"name": "D_flex", "expression": "E_sin*t_mem**3/(12*(1 - nu_sin**2))", "description": "flexural rigidity in N m"},
     {"name": "l_b", "expression": "sqrt(D_flex/(sigma_0*t_mem))", "description": "bending boundary-layer length at a clamped edge (0.47 um)"},
@@ -49,18 +49,24 @@
         {"name": "symmetry", "type": "roller", "selection": ["x_hi", "y_hi"], "params": {}, "enabled": true},
         {"name": "modes", "type": "resonance_table", "selection": [], "params": {}, "enabled": true}
       ],
-      "every": 1
+      "every": 1,
+      "solvers": {"linear": "linear_solver", "eigen": "eigen_solver"}
     }
   ],
   "couplings": [],
+  "solvers": [
+    {"name": "linear_solver", "type": "sparse_direct", "settings": {"back_end": "cudss"}},
+    {"name": "eigen_solver", "type": "arpack_shift_invert",
+     "settings": {"tolerance": 0.0, "subspace_size": 0, "factorization": "cudss"}}
+  ],
+  "solver_defaults": {"backend": "gpu"},
   "mesh": {"kind": "tetrahedra", "mode": "nonuniform", "dx": "h_in_plane", "max_ratio": 1.3, "wavelength_min": null,
            "points_per_wavelength": null, "mesher": "builtin", "sweep_axis": "z",
            "refinements": [{"object": "clamp_band_x", "dx": "h_edge", "dx_z": "h_edge"},
                            {"object": "clamp_band_y", "dx": "h_edge", "dx_z": "h_edge"}],
            "axes": [{"axis": "z", "max_ratio": null, "edges": ["t_mem/2"], "bands": [], "segments": []}]},
   "study": {"type": "eigenfrequency", "settings": {"n_resonances": 4},
-            "stored_fields": ["solid.u_z", "solid.u_abs"],
-            "sweep": {"parameter": "L_mem", "values": ["50*um", "100*um"]}},
+            "stored_fields": ["solid.u_z", "solid.u_abs"]},
   "derived_values": [
     {"name": "f_11", "expression": "where(abs(frequency/f11_ref - 1) < 0.02, frequency, 0)", "selection": [],
      "operation": "max", "source": "solid.modes", "at": null, "reference": "f11_ref", "tolerance": 3e-3},
@@ -72,8 +78,6 @@
      "operation": "max", "source": "solid.modes", "at": null, "reference": "f11_mem", "tolerance": 0.025}
   ],
   "analytic_curves": [
-    {"name": "f_11_vs_L", "target": "sweep", "expression": "f11_ref", "tolerance": 3e-3, "series": "f_11"},
-    {"name": "f_11_membrane_vs_L", "target": "sweep", "expression": "f11_mem", "tolerance": 0.025, "series": "f_11"},
     {"name": "mode_11_u_z", "target": "line",
      "expression": "where(x > l_b, sin(pi*(x - l_b)/(L_mem - 2*l_b)), 0)*sin(pi*(y - l_b)/(L_mem - 2*l_b))",
      "tolerance": 1e-2, "line": [0.0, "y_line", "L_half", "y_line"], "field": "solid.u_z",

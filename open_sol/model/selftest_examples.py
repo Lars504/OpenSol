@@ -6,17 +6,11 @@ from .analytic import parameters_with
 from .expressions import ExpressionError, evaluate_scalar
 from .schema import MESH_KIND_DEFAULTS
 
-ANALYTIC_REPORT_FILE = 'selftest_report_analytic.json'   # each example on its own backend
+ANALYTIC_REPORT_FILE = 'selftest_report_analytic.json'   # each example once, on its own backend
 EXACT_ERROR = 1e-9   # below this a simulated quantity matches its reference suspiciously well
 EXAMPLE_STATUSES = ('passed', 'failed', 'error', 'no_tolerance')
 FLAGS = ('over_tolerance', 'nonfinite', 'not_compared', 'suspicious_exact', 'sweep_not_converging')
 _FAILING_FLAGS = ('over_tolerance', 'nonfinite', 'not_compared')   # fail an entry that has a tolerance
-
-
-def analytic_report_file(backend=None):
-    """Report file name of an examples run: ANALYTIC_REPORT_FILE (own backends, None), else
-    selftest_report_analytic_<backend>.json."""
-    return ANALYTIC_REPORT_FILE if backend is None else f'selftest_report_analytic_{backend}.json'
 
 
 def has_analytic_comparison(spec):
@@ -60,11 +54,9 @@ def example_record(name, spec, summary, wall_time, out_dir=None):
             'derived': derived, 'curves': curves}
 
 
-def analytic_report(records, skipped, wall_time, all_ran, warnings, device, version, backend=None,
-                    skipped_backend=()):
-    """analytic_report_file(backend) content: counts, the examples without a comparison (and those not run on the
-    forced backend), the toleranced entries ranked by error / tolerance (non-finite first), the others ranked by
-    error, and every example record."""
+def analytic_report(records, wall_time, all_ran, warnings, device, version, skipped_backend=()):
+    """ANALYTIC_REPORT_FILE content: counts, the gpu examples skipped without a usable GPU, the toleranced entries
+    ranked by error / tolerance (non-finite first), the others by error, and every example record."""
     counts = {status: sum(1 for record in records if record['status'] == status) for status in EXAMPLE_STATUSES}
     ranked, untoleranced = [], []
     for record in records:
@@ -75,9 +67,8 @@ def analytic_report(records, skipped, wall_time, all_ran, warnings, device, vers
     ranked.sort(key=lambda row: _rank_key(row['ratio']))
     untoleranced.sort(key=lambda row: _rank_key(row['error']))
     return {'open_sol_version': version, 'passed': all_ran and counts['failed'] == 0 and counts['error'] == 0,
-            'backend': backend, 'n_examples': len(records), 'n_passed': counts['passed'], 'n_failed': counts['failed'],
-            'n_error': counts['error'], 'n_no_tolerance': counts['no_tolerance'], 'n_skipped': len(skipped),
-            'skipped': list(skipped), 'n_skipped_backend': len(skipped_backend),
+            'n_examples': len(records), 'n_passed': counts['passed'], 'n_failed': counts['failed'],
+            'n_error': counts['error'], 'n_no_tolerance': counts['no_tolerance'], 'n_skipped_backend': len(skipped_backend),
             'skipped_backend': list(skipped_backend), 'wall_time': wall_time, 'device': device, 'warnings': list(warnings),
             'ranking': ranked, 'without_tolerance': untoleranced, 'examples': records}
 

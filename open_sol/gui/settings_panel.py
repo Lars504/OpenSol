@@ -25,11 +25,12 @@ from ..model.analytic import (CURVE_FUNCTION_ARITY, CURVE_RESULT_KINDS, CURVE_TA
 from ..model.geometry import GEOMETRY_KINDS, PRISM_KINDS, Z_PARAM_NAMES, plane_axes
 from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE_FREE_DERIVED_OPERATIONS,
                             INTERFACE_OPERATIONS, INTERFACE_SIDES,
-                            INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS, MESH_KINDS, MESH_PARAMS,
-                            PRECISIONS, SELECTION_KINDS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
+                            INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS, MESH_KINDS,
+                            MESH_PARAMS, PRECISIONS, SELECTION_KINDS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                             SOURCE_DERIVED_OPERATIONS, SOLVER_ROLES, Param, coupling_type_accepts, feature_precision_note, fill_defaults,
                             instance_space, output_field_names, param_in_space,
-                            scalar_output_names, solver_backend, solver_grid, solver_misfit, with_default_precision)
+                            memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
+                            with_default_precision)
 from ..model.meshing import PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR, line_block_hint, mesh_values
 from ..model.spec import AdaptationSpec, MeshAxisSpec, MeshBandSpec, MeshSegmentSpec, RefinementSpec, SweepSpec
 from ..physics.em.definition import DISPERSION_POLE_PARAMS
@@ -37,7 +38,7 @@ from .forms import (DERIVED_OPERATION_LABELS, ERROR_COLOR, HINT_COLOR, SELECTION
                     CommitTextEdit, CurveInputsEdit, ExpressionEdit, FormContext, IntSpinBox, NameEdit, NumberEdit,
                     ParamForm, SelectionPicker, StoredCutsEdit, TableEdit, ValueComboBox, display_number, error_label,
                     face_cell_counts_text, format_number, format_quantity, growing_form, hint_label, make_param_editor,
-                    mark_invalid, param_row_label, parse_number_or_text, rich_tooltip, selection_entries,
+                    mark_invalid, param_row_label, parse_number_or_text, rich_tooltip, selectable, selection_entries,
                     set_param_help, tip_label, value_text)
 from .canvas import DRAGGABLE_KINDS
 from .document import ESTIMATION_NODE, MESHES_NODE, harmonic_channel_names, issue_node_path, solver_fits, solver_users
@@ -464,6 +465,15 @@ _SOLVER_PRECISION = Param(
     tip='Number precision of every solver that offers it, for example double precision everywhere.\n\n'
         'A solver you added keeps the precision set in its own settings. Solvers without that precision keep '
         'their own, and the check lists them. Each solver its own: every solver uses its usual precision.')
+# the mesh form's tick box of solver_defaults.memory_check: ticked = 'warning', clear = 'error'
+_MEMORY_OVERRIDE = Param(
+    'memory_override', 'bool', False, label='Override memory warning',
+    help="Ticked: solver_defaults.memory_check 'warning' (describe SolverDefaultsSpec.memory_check), else 'error'",
+    tip='The check estimates the memory a model needs before it is built and refuses a model that would not fit.\n\n'
+        'Ticked, the model is built and run anyway and the error becomes a warning: for a model whose estimate is '
+        'known to be too high. The solvers still stop cleanly when the graphics card really runs out of memory.\n\n'
+        'The estimate of a triangle or tetrahedron mesh from its sizes is only approximate: Build mesh makes it '
+        'that of the real mesh.')
 _SUBPIXEL_SMOOTHING = Param(
     'subpixel_smoothing', 'bool', False, label='Smooth material interfaces',
     help='Anisotropic permittivity averaging at material interfaces (describe SolverDefaultsSpec.subpixel_smoothing)',
@@ -1155,7 +1165,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._expanded_details = set()           # type keys whose 'Technical details' group was opened
         self._mesh_store = None                  # mesh_preview.ElementMeshStore (element mesh forms: Build mesh)
 
-        self._header = QtWidgets.QLabel()
+        self._header = selectable(QtWidgets.QLabel())
         self._header.setWordWrap(True)
         self._header.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         header_font = self._header.font()
@@ -1170,6 +1180,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self.setMinimumWidth(320)
 
         document.changed.connect(self._on_document_changed)
+        # a new memory budget or a built element mesh: the estimates, the node's issues and the override follow
+        document.issues_invalidated.connect(partial(self._schedule, False))
         document.node_selected.connect(self._on_node_selected)
         self._schedule(rebuild=True)
 
@@ -1200,7 +1212,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             layout.addWidget(hint_label('Select a node in the model tree.'))
         else:
             fills_height = bool(self._build_node(path, layout))
-            self._issues_label = QtWidgets.QLabel()
+            self._issues_label = selectable(QtWidgets.QLabel())
             self._issues_label.setWordWrap(True)
             self._issues_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
             layout.addWidget(self._issues_label)
@@ -1359,7 +1371,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             row = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            value_label = QtWidgets.QLabel(value_text(values[key]))
+            value_label = selectable(QtWidgets.QLabel(value_text(values[key])))
             value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             value_label.setWordWrap(True)
             remove_button = QtWidgets.QToolButton()
@@ -2091,7 +2103,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                                     combo.set_value(getattr(self._document.spec.coupling(name), role)))
             form.addRow(tip_label(row_label, _COUPLING_ROLE_TIPS[role]), combo)
         if several_meshes(spec):
-            meshes_label = QtWidgets.QLabel()
+            meshes_label = selectable(QtWidgets.QLabel())
             meshes_label.setWordWrap(True)
             meshes_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
 
@@ -2169,9 +2181,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _build_meshes_root(self, path, layout):
         """Intro, one line per mesh (swatch, kind, size, the physics on it), Add mesh buttons and the model's memory
-        estimate (each mesh node shows its own part)."""
+        estimate (each mesh node shows its own part, the over-budget issue and its override)."""
         layout.addWidget(hint_label(_MESHES_INTRO))
-        overview = QtWidgets.QLabel()
+        overview = selectable(QtWidgets.QLabel())
         overview.setWordWrap(True)
         overview.setTextFormat(QtCore.Qt.TextFormat.RichText)
         layout.addWidget(_group('Meshes', overview))
@@ -2189,7 +2201,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
-        memory_label = QtWidgets.QLabel()
+        memory_label = selectable(QtWidgets.QLabel())
         memory_label.setWordWrap(True)
         memory_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         layout.addWidget(_group('Estimate (whole model)', memory_label))
@@ -2219,7 +2231,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
     def _build_mesh(self, path, layout):
         spec = self._document.spec
         mesh_spec = spec.mesh_by_name(path[1])
-        badge = QtWidgets.QLabel()
+        badge = selectable(QtWidgets.QLabel())
         badge.setTextFormat(QtCore.Qt.TextFormat.RichText)
         badge.setWordWrap(True)
         layout.addWidget(badge)
@@ -2247,6 +2259,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                             if param.name == 'kind' else param for param in MESH_PARAMS)
         mesh_form = ParamForm(mesh_params, self._mesh_values(), ctx, self._set_mesh_value)
         mesh_form.set_placeholder('outer_dx', 'off')
+        mesh_form.set_placeholder('h_min', 'maximum size / 100')   # its number: _show_mesh_numbers
         layout.addWidget(_group('Mesh', mesh_form))
 
         def refresh_mesh_form():
@@ -2256,7 +2269,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._refreshers.append(refresh_mesh_form)
         if mesh_spec.mode == 'auto':   # a mode edit rebuilds the form
             layout.addWidget(self._automatic_sizes_group())
-        size_points_label = QtWidgets.QLabel()   # MeshSpec.size_points, read only (adaptive refinement writes them)
+        size_points_label = selectable(QtWidgets.QLabel())   # MeshSpec.size_points, read only (adaptive refinement writes them)
         size_points_label.setWordWrap(True)
         size_points_label.setToolTip(rich_tooltip(
             'Element sizes the adaptive mesh refinement placed at the nodes of the elements it refined (kept with '
@@ -2277,7 +2290,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             self._refreshers.append(partial(
                 lambda box: box.setEnabled(self._form_mesh(self._document.spec).mode in _REFINED_MESH_MODES),
                 graded_box))
-        methods_label = QtWidgets.QLabel()
+        methods_label = selectable(QtWidgets.QLabel())
         methods_label.setWordWrap(True)
         methods_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
         methods_group = _group('Methods on this mesh', methods_label)
@@ -2289,14 +2302,38 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             methods_group.setVisible(bool(text))
         refresh_methods()
         self._refreshers.append(refresh_methods)
-        estimate_label = QtWidgets.QLabel()
-        estimate_label.setWordWrap(True)
-        estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-        layout.addWidget(_group('Estimate', estimate_label))
-        self._update_mesh_estimate(estimate_label)
-        self._refreshers.append(partial(self._update_mesh_estimate, estimate_label))
+        # top-down as it is used: Build mesh (element meshes), the estimate it makes final, then the over-budget
+        # override, right above the node's issues
         if mesh_spec.kind in FREE_MESH_KINDS and self._mesh_store is not None:
             layout.addWidget(self._element_build_group(mesh_spec.kind))
+        estimate_label = selectable(QtWidgets.QLabel())
+        estimate_label.setWordWrap(True)
+        estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        override_form = ParamForm((_MEMORY_OVERRIDE,), self._memory_override_values(), self._context(),
+                                  self._set_memory_override)
+        layout.addWidget(_group('Estimate', estimate_label, override_form))
+
+        def refresh_estimate():
+            self._update_mesh_estimate(estimate_label)
+            override_form.refresh(self._memory_override_values())
+            override_form.setVisible(self._memory_override_offered())
+        refresh_estimate()
+        self._refreshers.append(refresh_estimate)
+
+    def _memory_override_values(self):
+        return {'memory_override': memory_check_level(self._document.spec) != 'error'}
+
+    def _set_memory_override(self, _name, overridden):
+        """The mesh form's tick box: solver_defaults.memory_check 'warning' (ticked) / 'error'."""
+        self._set_solver_default('memory_check', 'warning' if overridden else 'error')
+
+    def _memory_override_offered(self) -> bool:
+        """True on the form of the mesh the memory budget issue is reported at (document.memory_verdict), while the
+        estimate is over a budget or the override is on (so it can be taken back)."""
+        verdict = self._document.memory_verdict()
+        if verdict is None or verdict.mesh != self._form_mesh(self._document.spec).name:
+            return False
+        return verdict.over or memory_check_level(self._document.spec) != 'error'
 
     def _mesh_methods_html(self, mesh_spec):
         """'Methods on this mesh' rich text: per physics on the mesh whose type has a mesh_method, how it solves on this
@@ -2322,8 +2359,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _show_mesh_numbers(self, mesh_form):
         """Numbers of the mesh form's derived and empty fields: the automatic cell size (read only), the defaults and
-        resolved values as placeholders; the wavelength rows greyed out outside auto mode (points per wavelength also
-        under a rule without a wavelength)."""
+        resolved values as placeholders, the empty minimum element size as '= value'; the wavelength rows greyed out
+        outside auto mode (points per wavelength also under a rule without a wavelength)."""
         document = self._document
         mesh_spec = self._form_mesh(document.spec)
         estimate, _error = document.mesh_estimate(mesh_spec.name)
@@ -2353,14 +2390,19 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         else:
             wavelength_text = 'from the physics'
         mesh_form.set_placeholder('wavelength_min', wavelength_text)
-        h_min = estimate.sizing.h_min if estimate is not None and estimate.kind != 'tensor' else None
-        mesh_form.set_placeholder('h_min', 'the maximum element size / 100' if h_min is None
-                                  else f"{format_quantity(h_min, 'm')}  (the maximum element size / 100)")
+        # an empty minimum element size reads back '= maximum size / 100' (the sizing rule): the maximum from the
+        # estimate, else (estimate failed, e.g. too many elements) the cell size itself outside auto mode
+        maximum_size = None
+        if estimate is not None and estimate.kind in FREE_MESH_KINDS:
+            maximum_size = estimate.sizing.h_max
+        elif mesh_spec.kind in FREE_MESH_KINDS and not auto:
+            maximum_size = resolved.get('dx')
+        mesh_form.set_empty_value('h_min', None if maximum_size is None else maximum_size / 100.0)
 
     def _automatic_sizes_group(self):
         """'Automatic sizes' of an auto-mode mesh form: the base and object sizes its rule chose (read only) and Edit
         these sizes (Graded, or Uniform for lattice Boltzmann flow, with them filled in)."""
-        sizes_label = QtWidgets.QLabel()
+        sizes_label = selectable(QtWidgets.QLabel())
         sizes_label.setWordWrap(True)
         sizes_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         button = QtWidgets.QPushButton('Edit these sizes')
@@ -2405,7 +2447,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             f'Make the {noun} of this mesh now and show them in the mesh view, without building the model'
             + (' (cut by the shown layer or cut plane).' if kind == 'tetrahedra' else '.')
             + f'\n\nBuilding the model makes the same {noun} (the mesher gives the same mesh for the same model).'))
-        status = QtWidgets.QLabel()
+        status = selectable(QtWidgets.QLabel())
         status.setWordWrap(True)
         status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         box = QtWidgets.QGroupBox(noun.capitalize())
@@ -2703,25 +2745,32 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             memory_lines.insert(0, 'Not built: no physics runs on this mesh.')
         if estimate.kind == 'triangles':
             sizing = estimate.sizing
-            lines = [f'About {estimate.n_elements:,} triangles, {estimate.n_nodes:,} nodes (estimate from the sizes)',
+            lines = [f'{estimate.n_elements:,} triangles, {estimate.n_nodes:,} nodes (the built mesh)'
+                     if estimate.counts_built else
+                     f'About {estimate.n_elements:,} triangles, {estimate.n_nodes:,} nodes (estimate from the sizes)',
                      *memory_lines,
                      f"Element size {format_quantity(sizing.h_min, 'm')} (minimum) to "
                      f"{format_quantity(sizing.h_max, 'm')} (maximum), growth rate {sizing.growth:g}",
-                     'The triangles themselves are made when the model is built.']
+                     'The memory estimate is that of these triangles.' if estimate.counts_built else
+                     'The triangles themselves are made by Build mesh or when the model is built; the memory '
+                     'estimate then uses their real number.']
         elif estimate.kind == 'tetrahedra':
             sizing = estimate.sizing
             swept = bool(sizing.sweep_axis)
             builtin = sizing.mesher == 'builtin' and not swept
-            counted = ('exact: grid boxes split into 6' if builtin else
+            counted = ('the built mesh' if estimate.counts_built else
+                       'exact: grid boxes split into 6' if builtin else
                        f'estimate: triangles x 3 x {len(sizing.layer_edges) - 1} z layers' if swept
                        else 'estimate from the sizes')
             # builtin: its finest grid cell (h_min unused); swept: the thinnest layer or smallest triangle
             smallest = estimate.dx_min if builtin or swept else sizing.h_min
-            lines = [f'About {estimate.n_elements:,} tetrahedra, {estimate.n_nodes:,} nodes, {estimate.n_edges:,} '
-                     f'edges ({counted})', *memory_lines,
+            lines = [f"{'' if estimate.counts_built else 'About '}{estimate.n_elements:,} tetrahedra, "
+                     f'{estimate.n_nodes:,} nodes, {estimate.n_edges:,} edges ({counted})', *memory_lines,
                      f"Element size {format_quantity(smallest, 'm')} (minimum) to "
                      f"{format_quantity(sizing.h_max, 'm')} (maximum), growth rate {sizing.growth:g}",
-                     'The tetrahedra themselves are made when the model is built.']
+                     'The memory estimate is that of these tetrahedra.' if estimate.counts_built else
+                     'The tetrahedra themselves are made by Build mesh or when the model is built; the memory '
+                     'estimate then uses their real number.']
         else:
             z_text = f' × {estimate.nz}' if estimate.dz_cells is not None else ''   # 3D
             lines = [f'Grid {estimate.nx} × {estimate.ny}{z_text} = {estimate.n_cells:,} cells', *memory_lines,
@@ -2817,7 +2866,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             layout.addWidget(error_label(error_message(exc)))
             return
         form.addRow('Type', QtWidgets.QLabel(solver_type.label))
-        used_by = QtWidgets.QLabel()
+        used_by = selectable(QtWidgets.QLabel())
         used_by.setWordWrap(True)
         used_by.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         used_by.setToolTip(rich_tooltip('Physics roles this solver fills. Assign it in the Solver group of a '

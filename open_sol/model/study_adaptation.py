@@ -16,7 +16,7 @@ from .geometry import resolve_geometry
 from .mesh_refinement import (adaptive_mesh_spec, frozen_mesh_spec, refined_axes, uniform_mesh_spec, window_cells,
                               window_widths)
 from .meshing import backend_memory, estimate_memory, estimate_mesh
-from .schema import solver_backend
+from .schema import memory_check_level, solver_backend
 from .session import live_snapshot_index
 from .solver_hooks import ErrorIndicatorSolver
 from .study import (Cancelled, LogEvent, StudyFailed, StudyStarted, _StageProgress, _failure_message, _fail_sweep_setup,
@@ -229,7 +229,10 @@ def _built_counts(session, estimates) -> tuple:
 
 def _memory_problem(spec, memory):
     """Text when the estimate exceeds the GPU budget (gpu backend with a budget set) or the available host RAM (cpu
-    backend: device arrays included, meshing.backend_memory), else ''."""
+    backend: device arrays included, meshing.backend_memory), else '' (always with solver_defaults.memory_check
+    'warning': the next level's build warns and the runtime guards decide)."""
+    if memory_check_level(spec) != 'error':
+        return ''
     budget = gpu_memory.budget_bytes()
     memory = backend_memory(spec, memory)
     if solver_backend(spec) == 'gpu' and budget is not None and memory.device_peak > budget:

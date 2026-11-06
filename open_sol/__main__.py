@@ -120,11 +120,11 @@ def _build_parser():
     subset_group.add_argument('--all', action='store_true',
                               help='run everything (unchanged passing ones reused unless --reset): every registered '
                                    'case, heavy or not (gpu runs and variants with a '
-                                   'usable GPU), then the --examples run on the cpu and on the gpu backend -> the light '
-                                   'and heavy reports + selftest_report_analytic_cpu.json / _gpu.json')
+                                   'usable GPU), then the --examples run -> the light and heavy reports + '
+                                   'selftest_report_analytic.json')
     subset_group.add_argument('--examples', action='store_true',
-                              help='instead: run every examples/**/*.json with a reference or analytic curve on its '
-                                   'own backend (NAMEs: only these, relative path or stem) -> '
+                              help='instead: run every examples/**/*.json with a reference or analytic curve once, on '
+                                   'its own backend (NAMEs: only these, relative path or stem) -> '
                                    'selftest_report_analytic.json')
     selftest_parser.add_argument('--out', metavar='DIR', default='selftest_out',
                                  help='report directory (default ./selftest_out); its selftest_cache.json lets a case '
@@ -393,8 +393,8 @@ def _selftest(args):
     print(f"{report['n_passed']}/{report['n_cases']} passed ({report['subset']} cases, {report['n_skipped']} "
           f"registered cases not run, {report['n_reused']} unchanged since passing: reused, --reset reruns them)",
           file=stream)
-    for backend, counts in report.get('examples', {}).items():
-        print(f"examples on {backend}: {_examples_counts_text(counts)}", file=stream)
+    if 'examples' in report:
+        print(f"examples: {_examples_counts_text(report['examples'])}", file=stream)
     print(f'report: {files}', file=stream)
     return 0 if report['passed'] else 1
 
@@ -429,19 +429,19 @@ def _print_interrupted_counts(report):
     if 'n_cases' in report:   # api.selftest (an 'all' run may hold the examples finished so far too)
         print(f"interrupted after {report['n_cases']} cases: {report['n_passed']} passed, {report['n_failed']} "
               f"failed, {report['n_error']} errors", file=sys.stderr)
-        for backend, counts in report.get('examples', {}).items():
-            print(f"examples on {backend}: {_examples_counts_text(counts)}", file=sys.stderr)
+        if 'examples' in report:
+            print(f"examples: {_examples_counts_text(report['examples'])}", file=sys.stderr)
     else:   # api.selftest_examples
         print(f'interrupted: {_examples_counts_text(report)}', file=sys.stderr)
 
 
 def _examples_counts_text(counts):
-    """'N/M examples passed, ... skipped' of an analytic report (or its counts in a selftest --all report)."""
-    not_run_here = (f", {counts['n_skipped_backend']} validating only on their own backend not run"
+    """'N/M examples passed, ... reused' of an analytic report (or its counts in a selftest --all report)."""
+    not_run_here = (f"{counts['n_skipped_backend']} gpu examples not run: no usable GPU; "
                     if counts['n_skipped_backend'] else '')
     return (f"{counts['n_passed']}/{counts['n_examples']} examples passed, {counts['n_failed']} failed, "
-            f"{counts['n_error']} errors, {counts['n_no_tolerance']} without a tolerance ({counts['n_skipped']} "
-            f"without a comparison skipped{not_run_here}; {counts['n_reused']} unchanged: reused)")
+            f"{counts['n_error']} errors, {counts['n_no_tolerance']} without a tolerance ({not_run_here}"
+            f"{counts['n_reused']} unchanged: reused)")
 
 
 def _mesh_study(args):
@@ -539,13 +539,16 @@ def _time_split_text(record):
 
 
 def _deviations_text(record):
-    """'  vram -40%  counts +200% (CG iterations)': the worst measured / estimated - 1 of the GPU memory (- the
-    estimate books too much, + more held than estimated) and of the predicted solver counts over the runs; each when
-    measured."""
+    """'  vram -40% max 1200 MB  counts +200% (CG iterations)': the worst measured / estimated - 1 of the GPU memory (-
+    the estimate books too much, + more held), its largest measured part and the worst solver count; each when measured."""
     vram, counts = record.get('vram_deviation'), record.get('count_deviation')
     text = ''
     if vram is not None:
         text = f'  vram {vram:+.0%}'
+        max_bytes = record.get('vram_max_bytes')
+        if max_bytes is not None:
+            max_megabytes = max_bytes / 2 ** 20
+            text += f' max {max_megabytes:.1f} MB' if max_megabytes < 1.0 else f' max {max_megabytes:.0f} MB'
     if counts is not None:
         item = record.get('count_item')
         text += f'  counts {counts:+.0%}' + ('' if item is None else f' ({item})')

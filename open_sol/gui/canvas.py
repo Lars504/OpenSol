@@ -26,7 +26,7 @@ from ..viz.common import (color_limits, containing_cells, edges_from_centers, le
                           tetrahedron_mesh_cut)
 from ..viz.visualization import DARK_CMAPS
 from .document import COMPUTED_RESULTS_NODE, MESHES_NODE, harmonic_channel_polarizations, mesh_of_node
-from .forms import display_label, face_cell_counts_text, format_quantity, rich_tooltip
+from .forms import display_label, face_cell_counts_text, format_quantity, rich_tooltip, selectable
 from .helpers import (coupling_mesh_text, field_mesh_name, mesh_badge_html, mesh_color, mesh_summary_text,
                       several_meshes)
 from .mesh_preview import AUTO_PREVIEW_MAX_ELEMENTS, AUTO_PREVIEW_MAX_TETRAHEDRA
@@ -597,16 +597,16 @@ class ModelCanvas(QtWidgets.QWidget):
         self._polygon_vertices = []            # scene coordinates of the polygon being drawn
         self._polygon_preview = None           # (edge curve, vertex markers) while a polygon is drawn
 
-        self._banner = QtWidgets.QLabel()
+        self._banner = selectable(QtWidgets.QLabel())
         self._banner.setWordWrap(True)
         self._banner.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self._banner.setStyleSheet('background:#fff3cd; color:#664d03; border:1px solid #ffe69c; padding:4px;')
         self._banner.hide()
-        self._legend = QtWidgets.QLabel()
+        self._legend = selectable(QtWidgets.QLabel())
         self._legend.setWordWrap(True)
         self._legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._legend.setStyleSheet('color:#333; padding:2px;')
-        self._mesh_badge = QtWidgets.QLabel()   # names the active mesh (mesh view; every view with several meshes)
+        self._mesh_badge = selectable(QtWidgets.QLabel())   # names the active mesh (mesh view; every view with several meshes)
         self._mesh_badge.setWordWrap(True)
         self._mesh_badge.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self._mesh_badge.hide()

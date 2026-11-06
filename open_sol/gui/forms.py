@@ -256,9 +256,15 @@ class _FocusWheelMixin:
             event.ignore()
 
 
+def selectable(label):
+    """Lets the mouse select the label's text (Ctrl+C or the context menu copies it); returns the label."""
+    label.setTextInteractionFlags(label.textInteractionFlags() | QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+    return label
+
+
 def hint_label(text):
-    """Grey, word-wrapped plain-text label."""
-    label = QtWidgets.QLabel(text)
+    """Grey, word-wrapped plain-text label whose text can be selected and copied."""
+    label = selectable(QtWidgets.QLabel(text))
     label.setWordWrap(True)
     label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
     label.setStyleSheet(f'QLabel {{ color: {HINT_COLOR}; }}')
@@ -654,9 +660,14 @@ class ExpressionEdit(_ParamLineEdit):
         self._readback.setStyleSheet(f'QLabel {{ color: {HINT_COLOR}; background: transparent; }}')
         self._readback.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self._readback.hide()
+        self._empty_value = None   # number the model uses while the editor is empty (set_empty_value)
         if param.optional:
             self.setPlaceholderText('optional' if param.default is None else value_text(param.default))
         self.refresh_check()
+
+    def set_empty_value(self, value):
+        """Number the model resolves an empty editor to (None: none), read back as '= value' at the next check."""
+        self._empty_value = value
 
     def _show_check(self, problem, info):
         super()._show_check(problem, info)
@@ -686,8 +697,11 @@ class ExpressionEdit(_ParamLineEdit):
 
     def _describe(self, value):
         """'= 220 nm' (SI prefix in a _PREFIXED_UNITS unit) or '= value unit' of every number and parameter expression,
-        6 significant digits; 'depends on ...' for field expressions, '' otherwise."""
+        6 significant digits (an empty editor: of its set_empty_value); 'depends on ...' for field expressions, ''
+        otherwise."""
         unit = self._param.unit
+        if value is None:
+            value = self._empty_value
         if isinstance(value, str):
             try:
                 depends_on = sorted(referenced_names(value).difference(self._ctx.parameters))
@@ -1139,6 +1153,13 @@ class ParamForm(QtWidgets.QWidget):
         for param, _label, editor in self._rows:
             if param.name == name:
                 editor.setPlaceholderText(text)
+
+    def set_empty_value(self, name, value):
+        """Number the model resolves the empty number editor of param `name` to, read back as '= value' (None: no
+        readback); takes effect at the next refresh."""
+        for param, _label, editor in self._rows:
+            if param.name == name:
+                editor.set_empty_value(value)
 
     def _commit(self, name, value):
         self._on_commit(name, value)

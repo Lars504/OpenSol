@@ -1031,6 +1031,16 @@ def scalar_output_names(spec, registry, parameters=None):
 
 
 SOLVER_BACKENDS = ('auto', 'gpu', 'cpu')   # SolverDefaultsSpec.backend
+# SolverDefaultsSpec.memory_check: the issue level of a memory estimate over the GPU / host budget ('warning': the
+# runtime guards decide, i.e. the cupy pool limit and the cuDSS plan check)
+MEMORY_CHECKS = ('error', 'warning')
+
+
+def memory_check_level(spec) -> str:
+    """Issue level of an over-budget memory estimate: solver_defaults.memory_check ('error' for an unknown value,
+    which validate reports)."""
+    level = spec.solver_defaults.memory_check
+    return level if level in MEMORY_CHECKS else 'error'
 
 
 def solver_backend(spec) -> str:

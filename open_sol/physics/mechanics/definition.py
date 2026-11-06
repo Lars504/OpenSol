@@ -24,7 +24,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          linear_solver_precision, on_triangles, point_cells, reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
-from ...model.schema import CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path,
+                             solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
 from ...solvers.pcg import workspace_bytes
 from . import definition3d
@@ -983,37 +984,67 @@ def _prestress_solved(settings_values, context, with_loads) -> bool:
     return _static_state_solved(dict(settings_values, stress_stiffening=prestressed), context, with_loads)
 
 
+LINEAR_STATIC_STATE_PHASE = 'static state'   # the 'linear' factor solve_static_state releases before the pencils
+
+
+def factor_fill(mesh, order, unknowns, components, dimensions):
+    """The fill argument of cudss_factor.factor_device_bytes for a Lagrange operator of `unknowns` dofs (components per
+    node) on an element mesh: a FactorFill counted on the built mesh (MeshEstimate.dissection: nested-dissection node
+    pairs at this element order x components^2, scaled by the factored share of the mesh's dofs), else `dimensions`
+    (the growth law: size-based counts have no mesh to count on; also used by definition3d)."""
+    dissection = getattr(mesh, 'dissection', None)
+    if dissection is None:
+        return dimensions
+    from ...solvers.cudss_factor import FactorFill
+    share = min(float(unknowns) / max(components * dissection.n_nodes(order), 1), 1.0)
+    return FactorFill(components ** 2 * dissection.node_pairs(order) * share)
+
+
 def linear_factor_items(dofs, entries, back_end, on_gpu, dimensions, kept=True) -> tuple:
     """(run items, transient items, cuDSS factors) of system_fem.DirectElasticSystem's 'linear' K_ff / tangent factor;
     kept False: solve_static_state releases it before the pencils (phase 'static state'; also used by definition3d)."""
     if not on_gpu:
         return [], [], []
-    from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, index_map_bytes, operator_copy_bytes, refresh_peak_bytes,
-                                         solve_buffer_bytes, solve_peak_bytes)
+    from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, index_map_bytes, refresh_peak_bytes, solve_buffer_bytes,
+                                         solve_peak_bytes)
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS
-    phase = 'static factorisation' if kept else 'static state'
+    phase = 'static factorisation' if kept else LINEAR_STATIC_STATE_PHASE
     # _solve_free uploads the reduced K_ff CSR for the factorize call only; the free-dof solution vector stays
-    passing = [('reduced K_ff CSR uploaded for the factor (float64)',
-                (FLOAT64_BYTES + INT32_BYTES) * entries + INT32_BYTES * (dofs + 1))]
-    held = [('linear free-dof solution vector (float64)', FLOAT64_BYTES * dofs)]
-    factors, solving = [], []
-    if back_end in CUDSS_BACK_ENDS:   # CudssFactorization kept by the DiffusionDirectSolver until the next assembly
-        mixed = back_end == 'cudss_mixed'
-        held += [('linear cuDSS lower-triangle CSR copies, rhs buffer and row scale',
-                  operator_copy_bytes(dofs, entries, FLOAT64_BYTES, mixed=mixed)
-                  + solve_buffer_bytes(dofs, FLOAT64_BYTES, mixed)),
-                 ('linear cuDSS index maps of the planned pattern', index_map_bytes(dofs, entries))]
-        passing.append(('linear cuDSS refresh peak (uploaded and equilibrated values, or the probe on them)',
-                        refresh_peak_bytes(entries, FLOAT64_BYTES, n_unknowns=dofs, mixed=mixed)))
-        solving.append(('linear cuDSS solve vectors (mixed: the GMRES basis)',
-                        solve_peak_bytes(dofs, FLOAT64_BYTES, mixed)))
-        factors.append(('linear cuDSS factor of K_ff', dofs, entries, FLOAT64_BYTES, dimensions, mixed))
-    if kept:   # the factorisation's transients and a solve's vectors are phases of their own
-        return held, ([(phase, label, size) for label, size in passing]
-                      + [(CUDSS_SOLVE_PHASE, label, size) for label, size in solving]), factors
-    # released before the pencils: its whole life is one phase, its factorisation and solves one after another
-    larger = passing if sum(size for _, size in passing) >= sum(size for _, size in solving) else solving
-    return [], [(phase, label, size) for label, size in held + larger], factors
+    csr_index_bytes = INT32_BYTES * (entries + dofs + 1)
+    csr = ('reduced K_ff CSR uploaded for the factor (float64)', FLOAT64_BYTES * entries + csr_index_bytes)
+    solution = ('linear free-dof solution vector (float64)', FLOAT64_BYTES * dofs)
+    if back_end not in CUDSS_BACK_ENDS:   # host SuperLU of a downloaded copy
+        return ([solution], [(phase, *csr)], []) if kept else ([], [(phase, *csr), (phase, *solution)], [])
+    # CudssFactorization kept by the DiffusionDirectSolver until the next assembly, planned from the device CSR
+    # (factorize_device_csr -> from_device_values(check_symmetry=True)). In the order it allocates: the pattern's index
+    # maps; the refresh on the uploaded values (equilibrated copy, int64 keys of the symmetry check:
+    # refresh_peak_bytes counts the uploaded values, so only the CSR's index arrays come on top); then the kept arrays:
+    # the transpose map, the equilibrated lower triangle + diagonal (their CSR shares the maps' index arrays; mixed: +
+    # the float32 factor copy), rhs buffer and row scale, with the equilibrated full values alive through the probe
+    mixed = back_end == 'cudss_mixed'
+    lower = (entries + dofs) // 2
+    pattern_maps = index_map_bytes(dofs, entries, symmetry_check=False)
+    transpose_map = index_map_bytes(dofs, entries) - pattern_maps
+    values = ('linear cuDSS equilibrated lower-triangle values, diagonal, rhs buffer and row scale',
+              (FLOAT64_BYTES + (FLOAT32_BYTES if mixed else 0)) * lower + FLOAT64_BYTES * dofs
+              + solve_buffer_bytes(dofs, FLOAT64_BYTES, mixed))
+    solving = ('linear cuDSS solve vectors (mixed: the GMRES basis)', solve_peak_bytes(dofs, FLOAT64_BYTES, mixed))
+    checking = [('reduced K_ff CSR index arrays (uploaded for the factor)', csr_index_bytes),
+                ('linear cuDSS index maps of the planned pattern', pattern_maps),
+                ('linear cuDSS first factorisation (uploaded and equilibrated values, symmetry check keys)',
+                 refresh_peak_bytes(entries, FLOAT64_BYTES))]
+    probing = [csr, ('linear cuDSS index maps of the planned pattern', pattern_maps + transpose_map),
+               ('linear cuDSS equilibrated full values held through the probe', FLOAT64_BYTES * entries), values,
+               solving]
+    larger = max(checking, probing, key=lambda group: sum(size for _, size in group))
+    factors = [('linear cuDSS factor of K_ff', dofs, entries, FLOAT64_BYTES, dimensions, mixed)]
+    if kept:   # the first factorisation's peak beyond the kept arrays and a solve's vectors are phases of their own
+        held = [solution, values, ('linear cuDSS index maps of the planned pattern', pattern_maps + transpose_map)]
+        beyond = sum(size for _, size in larger) - sum(size for _, size in held[1:])
+        return held, [(phase, 'linear cuDSS factorisation peak beyond the kept arrays (uploaded K_ff CSR, equilibrated '
+                              'values, symmetry check keys)', beyond), (CUDSS_SOLVE_PHASE, *solving)], factors
+    # released before the pencils: its whole life is one phase, the larger moment of its factorisation
+    return [], [(phase, label, size) for label, size in larger + [solution]], factors
 
 
 def _fem_memory_estimate(settings_values, mesh, context):
@@ -1038,12 +1069,17 @@ def _fem_memory_estimate(settings_values, mesh, context):
     host_factor = linear_back_end not in CUDSS_BACK_ENDS   # cuDSS: device, outside the pool
     # finalize assembles on the host; the device sees K_ff only at the first solve of the run (linear_factor_items)
     run_items = [('output copies', 2 * FLOAT32_BYTES * elements)]
-    transient_items, factors, one_at_a_time = [], [], False
+    transient_items, factors, one_at_a_time, factor_phases = [], [], False, {}
+    # cuDSS fill of K_ff and of the pencil: counted on the built mesh, else the 2D growth law
+    fill = factor_fill(mesh, 2 if discretization == 'quadratic' else 1, vector_dofs, components, 2)
     if static or _prestress_solved(settings_values, context, study == EIGENFREQUENCY_STUDY):
-        held, passing, factors = linear_factor_items(vector_dofs, entries, linear_back_end, on_gpu, 2, kept=static)
+        held, passing, factors = linear_factor_items(vector_dofs, entries, linear_back_end, on_gpu, fill,
+                                                     kept=static)
         run_items += held
         transient_items += passing
         one_at_a_time = not static   # released before the pencil's factor is planned
+        if not static and study == EIGENFREQUENCY_STUDY:   # its phase, never live with the pencil phases
+            factor_phases = {factor[0]: LINEAR_STATIC_STATE_PHASE for factor in factors}
     host_items = [('dof maps (full and solid)', 2 * (_INT64_BYTES * local * elements + 2 * _INT64_BYTES * scalar_dofs)),
                   ('element stiffness / body force / held arrays', 20 * FLOAT64_BYTES * elements
                    + 3 * FLOAT64_BYTES * vector_dofs),
@@ -1054,14 +1090,19 @@ def _fem_memory_estimate(settings_values, mesh, context):
     if study == EIGENFREQUENCY_STUDY:
         host_items.append(('consistent mass CSR', csr_entry_bytes * entries))
         pml = bool(_pml_faces(settings_values))
-        complex_pencil = context.material_sets(LOSS_ARRAYS[0]) or pml   # complex pencil, factor and vectors
+        complex_pencil = bool(context.material_sets(LOSS_ARRAYS[0]) or pml)   # complex pencil, factor and vectors
+        rigid_motions = _estimated_rigid_motions(settings_values, context)
+        _, n_basis = eigen_basis_counts(context, vector_dofs, rigid_motions, pml)
+        # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve; a complex pencil
+        # runs eigs_shifted (the device Krylov-Schur on a DevicePencil), a real one eigsh_shifted
+        eigen_transient, eigen_host_items, eigen_factors, eigen_phases, basis_on_device = eigen_device_items(
+            context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=fill,
+            complex_eigs=complex_pencil, n_basis=n_basis)
         host_items.extend((name, (2 if complex_pencil else 1) * value) for name, value in _eigen_host_items(
-            context, vector_dofs, entries, _estimated_rigid_motions(settings_values, context)))
-        # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve
-        eigen_transient, eigen_host_items, eigen_factors = eigen_device_items(
-            context, vector_dofs, entries, 16 if complex_pencil else FLOAT64_BYTES, dimensions=2)
+            context, vector_dofs, entries, rigid_motions, pml, basis_on_device))
         transient_items += eigen_transient
         factors += eigen_factors
+        factor_phases.update(eigen_phases)
         host_items.extend(eigen_host_items)
         if pml:
             host_items.append(('stretched PML stiffness and mass (complex CSR)', 2 * (16 + INT32_BYTES) * entries))
@@ -1108,7 +1149,7 @@ def _fem_memory_estimate(settings_values, mesh, context):
                                        n_fields * FLOAT32_BYTES * elements),
                                       ('window element mask', BOOL_BYTES * elements)),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
-                                     **cudss_external(factors, one_at_a_time=one_at_a_time))
+                                     **cudss_external(factors, one_at_a_time=one_at_a_time, phases=factor_phases))
 
 
 def _window_elements(mesh):
@@ -1146,7 +1187,7 @@ def _memory_estimate(settings_values, mesh, context):
     build_extra = (BOOL_BYTES + 2 * _INT64_BYTES + value_bytes) * entries + 40 * dofs + 10 * value_bytes * elements
     # load copy, SpMV and output temporaries of one static solve
     transient_items = [('static solve', 'solve temporaries', (2 * dofs + 20 * elements) * value_bytes)]
-    run_items, factors = [], ()
+    run_items, factors, factor_phases = [], (), {}
     if (settings_values.get('out_of_plane') == GENERALIZED_PLANE_STRAIN
             and not is_axisymmetric(settings_values)):
         # kept load and solution per free eps_zz term (_unit_axial_solve until the next _assemble), the summed load
@@ -1168,8 +1209,8 @@ def _memory_estimate(settings_values, mesh, context):
         run_items.append(('guided shown u_z amplitude', value_bytes * (dofs // 2)))
         transient_items.append(('eigen assembly', 'guided density / Lame temporaries of the host copies',
                                 4 * value_bytes * elements))
-        eigen_transient, eigen_host_items, factors = eigen_device_items(context, guided_dofs, guided_entries,
-                                                                        FLOAT64_BYTES)
+        eigen_transient, eigen_host_items, factors, factor_phases, _ = eigen_device_items(
+            context, guided_dofs, guided_entries, FLOAT64_BYTES)
         transient_items += eigen_transient
         host_items = (('guided 2.5D host assembly (pattern, stencil, K and M)',
                        _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * guided_entries),
@@ -1178,7 +1219,7 @@ def _memory_estimate(settings_values, mesh, context):
         host_items = _piezo_host_items(context, dofs // 2, study in _MODAL_STUDIES)
         if study in _MODAL_STUDIES:   # the coupled (K, M) ShiftPencil
             coupled_dofs = PIEZO_COMPONENTS * (dofs // 2)
-            eigen_transient, eigen_host_items, factors = eigen_device_items(
+            eigen_transient, eigen_host_items, factors, factor_phases, _ = eigen_device_items(
                 context, coupled_dofs, _GUIDED_ENTRIES_PER_DOF * coupled_dofs, FLOAT64_BYTES)
             transient_items += eigen_transient
             host_items += eigen_host_items
@@ -1188,7 +1229,8 @@ def _memory_estimate(settings_values, mesh, context):
         # mass stencil, its gathered data and CSR copy, density temporaries: freed once M is on the host
         transient_items.append(('eigen assembly', 'eigen mass assembly',
                                 3 * value_bytes * entries + 4 * value_bytes * elements))
-        eigen_transient, eigen_host_items, factors = eigen_device_items(context, dofs, entries, FLOAT64_BYTES)
+        eigen_transient, eigen_host_items, factors, factor_phases, _ = eigen_device_items(context, dofs, entries,
+                                                                                          FLOAT64_BYTES)
         transient_items += eigen_transient
         host_items = (*_eigen_host_items(context, dofs, entries), *eigen_host_items)
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
@@ -1209,7 +1251,7 @@ def _memory_estimate(settings_values, mesh, context):
                                  added * FLOAT32_BYTES * int(mesh.n_cells)))
     system = MemoryEstimate.from_items(system_items, build_extra=build_extra, host_items=host_items,
                                        run_items=run_items, transient_items=transient_items,
-                                       **cudss_external(factors))
+                                       **cudss_external(factors, phases=factor_phases))
     return combine((fields, system))
 
 
@@ -1229,69 +1271,114 @@ def _piezo_host_items(context, nodes, modal):
     return tuple(items)
 
 
-def _eigen_host_items(context, dofs, entries, rigid_motions=0):
-    """Host items of modal.solve_modes: K, M, K - sigma M copies, the SuperLU factor (cuDSS: eigen_device_items), the
-    Lanczos basis (eigsh ncv of the 'eigen' solver) and the kept modes; rigid_motions asked on top."""
+def eigen_basis_counts(context, dofs, rigid_motions=0, pml=False) -> tuple:
+    """(n_wanted, n_basis) of one modal.ModalPencil shift solve: n_resonances + EXTRA_EIGENVALUES + rigid motions (+
+    n_resonances again with an elastic PML shell, ModalPencil._n_wanted) and the eigs / eigsh basis (also definition3d)."""
     n_resonances = modal_resonance_count(context)
-    n_wanted = max(min(n_resonances + EXTRA_EIGENVALUES + int(rigid_motions), dofs - 1), 1)
-    n_basis = arnoldi_basis_size(n_wanted, dofs, eigen_subspace_size(context.solvers))
+    n_wanted = max(min(n_resonances * (2 if pml else 1) + EXTRA_EIGENVALUES + int(rigid_motions), dofs - 1), 1)
+    return n_wanted, arnoldi_basis_size(n_wanted, dofs, eigen_subspace_size(context.solvers))
+
+
+def _eigen_host_items(context, dofs, entries, rigid_motions=0, pml=False, basis_on_device=False):
+    """Host items of modal.solve_modes: K, M, K - sigma M copies, the SuperLU factor (cuDSS: eigen_device_items), the
+    Arnoldi / Lanczos basis (the 'eigen' solver's ncv; basis_on_device: the device Krylov-Schur holds it, booked by
+    eigen_device_items), the eigenvectors and the kept modes; rigid_motions asked on top."""
+    n_wanted, n_basis = eigen_basis_counts(context, dofs, rigid_motions, pml)
     n_resonances = modal_kept_count(context)   # several targets / a band keep more mode shapes
     csr_entry_bytes = FLOAT64_BYTES + INT32_BYTES
     factor = (() if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
               else (('eigen SuperLU L + U factors (float64, heuristic)', host_real_lu_bytes(dofs)),))
-    return (('eigen host K, M and shifted copies (float64 CSR)', 5 * csr_entry_bytes * entries), *factor,
-            (f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',
-             (n_basis + n_wanted) * FLOAT64_BYTES * dofs),
+    basis = (((f'eigenvectors ({n_wanted} vectors; the basis is on the device)', n_wanted * FLOAT64_BYTES * dofs),)
+             if basis_on_device else
+             ((f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',
+               (n_basis + n_wanted) * FLOAT64_BYTES * dofs),))
+    return (('eigen host K, M and shifted copies (float64 CSR)', 5 * csr_entry_bytes * entries), *factor, *basis,
             (f'mode shapes ({n_resonances} x float64)', n_resonances * FLOAT64_BYTES * dofs))
 
 
-# DevicePencil set-up transients per stored entry beside the term uploads (sparse_direct.DevicePencil.__init__ /
-# full_values): the int64 lower take; the device symmetry check (int64 rows, columns, keys and argsort permutation);
-# the mirror of a lower-stored M for the device mass product, live at its searchsorted peak (int64 rows, columns,
-# lower rank, both key arrays, the bool mask; the later mirror / gather indices reuse freed blocks)
-_LOWER_TAKE_BYTES = 8 * 0.55
+# DevicePencil set-up transients per stored entry beside the term uploads and the int64 lower take
+# (sparse_direct.DevicePencil.__init__ / full_values): the device symmetry check (int64 rows, columns, keys and
+# argsort permutation); the mirror of a lower-stored M for the device mass product, live at its searchsorted peak
+# (int64 rows, columns, lower rank, both key arrays, the bool mask; the later mirror / gather indices reuse freed blocks)
 _SYMMETRY_CHECK_BYTES = 32
 _MIRROR_BYTES = 48
 
 
-EIGEN_PHASE = 'eigen solve'   # transient phase of a modal pencil: ModalPencil.release() after each solve / search
+# Transient phases of a modal pencil (ModalPencil.release() after each solve / search), in the order the code runs
+# them (arpack_shift_invert eigsh_shifted / eigs_shifted): the DevicePencil upload before the factor is planned; eigs
+# only: the M mirror of ShiftPencil.device_mass after the factor (eigsh mirrors before it, in the set-up phase); the
+# Arnoldi solve with the factor, the mass product and (eigs) the device Krylov-Schur basis
+EIGEN_SETUP_PHASE = 'eigen pencil set-up'
+EIGEN_MIRROR_PHASE = 'eigen mass mirror'
+EIGEN_PHASE = 'eigen solve'
 
 
 def eigen_device_items(context, dofs, entries, value_bytes, terms=2, term_bytes=None, symmetric=True, checked=False,
-                       dimensions=2) -> tuple:
-    """(transient items of EIGEN_PHASE, host items, cuDSS factors) of the eigen ShiftPencil (modal.ModalPencil) on a
-    cuDSS factorization; ((), (), ()) on SuperLU (also used by definition3d)."""
-    from ...solvers.arpack_shift_invert import DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS
-    from ...solvers.cudss_factor import operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
-    from ...solvers.sparse_direct import device_pencil_bytes
+                       dimensions=2, complex_eigs=False, n_basis=0) -> tuple:
+    """(transient items by phase, host items, cuDSS factors, {factor label: its phases}, basis_on_device) of the eigen
+    ShiftPencil (modal.ModalPencil) on a cuDSS factorization; ((), (), (), {}, False) on SuperLU. complex_eigs: the
+    eigs_shifted path (a complex pencil: PML, loss, loaded electrodes; else eigsh_shifted), whose device matvec runs the
+    device Krylov-Schur on n_basis vectors when device_arnoldi_fits (also used by definition3d)."""
+    from ...solvers.arpack_shift_invert import (DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
+                                                arnoldi_basis_bytes)
+    from ...solvers.cudss_factor import index_map_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
     factorization = eigen_factorization(context.solvers)
     if factorization not in CUDSS_FACTORIZATIONS:
-        return (), (), ()
+        return (), (), (), {}, False
     term_bytes = value_bytes if term_bytes is None else term_bytes
     # S5c (ArpackShiftInvertSolver.factorization_for): a small cudss_mixed pencil factors in double on the host route
     switched = factorization == 'cudss_mixed' and dofs < MIXED_EIGEN_MIN_UNKNOWNS
     mixed = factorization == 'cudss_mixed' and not switched
-    items = [('eigen cuDSS rhs buffer, row scale and one solve\'s vectors',
-              solve_buffer_bytes(dofs, value_bytes, mixed) + solve_peak_bytes(dofs, value_bytes, mixed))]
-    if entries >= DEVICE_PENCIL_MIN_ENTRIES and not switched:
-        # DevicePencil (terms of term_bytes, lower-stored when symmetric, R4): its maps / refresh transients hold the
-        # factor's planned values (measured: membrane_guide_pml, pressure_acoustics_rigid_disk), so no CSR copies on top;
-        # set-up peak (full-term upload + lower take + checked: device symmetry check, or the mirror of M), mass product
-        upload = (terms * term_bytes + (_LOWER_TAKE_BYTES if symmetric else 0.0)
-                  + (_SYMMETRY_CHECK_BYTES + 2 * term_bytes if checked else 0.0))
-        transient = max(upload, _MIRROR_BYTES if symmetric else 0.0)
-        items += [('eigen DevicePencil terms, index maps and refresh transients',
-                   device_pencil_bytes(entries, (term_bytes,) * terms, symmetric=symmetric)),
-                  ('eigen DevicePencil set-up transients (full-term upload / M mirror, peak)', transient * entries),
-                  ('eigen device mass product (M values, int32 indices, vectors)',
-                   (term_bytes if symmetric else 0) * entries + INT32_BYTES * (entries + dofs + 1)
-                   + 3 * value_bytes * dofs)]
-    else:   # a factor of the host K - sigma M: its lower-triangle (LU: full) CSR copies in the pool
-        items.append(('eigen cuDSS lower-triangle CSR copies',
-                      operator_copy_bytes(dofs, entries, value_bytes, symmetric=symmetric, mixed=mixed)))
+    buffers = ('eigen cuDSS rhs buffer and row scale', solve_buffer_bytes(dofs, value_bytes, mixed))
+    solve_vectors = ('eigen cuDSS one solve\'s vectors', solve_peak_bytes(dofs, value_bytes, mixed))
+    factor_label = 'eigen cuDSS factor of K - sigma M'
+    factors = ((factor_label, dofs, entries, value_bytes, dimensions, mixed),)
     host_items = (('eigen shift pencil term values and diagonals', terms * term_bytes * (entries + dofs)),)
-    factors = (('eigen cuDSS factor of K - sigma M', dofs, entries, value_bytes, dimensions, mixed),)
-    return tuple((EIGEN_PHASE, label, size) for label, size in items), host_items, factors
+    if not (entries >= DEVICE_PENCIL_MIN_ENTRIES and not switched):
+        # a factor of the host K - sigma M: its lower-triangle (LU: full) CSR copies in the pool; host ARPACK
+        copies = ('eigen cuDSS lower-triangle CSR copies',
+                  operator_copy_bytes(dofs, entries, value_bytes, symmetric=symmetric, mixed=mixed))
+        items = tuple((EIGEN_PHASE, label, size) for label, size in (buffers, solve_vectors, copies))
+        return items, host_items, factors, {factor_label: EIGEN_PHASE}, False
+    # DevicePencil (terms of term_bytes, R4: a symmetric one keeps the lower triangle with its diagonal, (entries +
+    # dofs) / 2 values per term), counted array by array; DevicePencil.__init__ holds the full terms, the int64 lower
+    # take and the new lower terms together
+    lower = (entries + dofs) // 2 if symmetric else entries
+    stored = ('eigen DevicePencil stored terms', terms * term_bytes * lower)
+    upload = ('eigen DevicePencil upload transients (full terms, lower take, symmetry check)',
+              terms * term_bytes * entries + (8 * lower if symmetric else 0)
+              + (int((_SYMMETRY_CHECK_BYTES + 2 * term_bytes) * entries) if checked else 0))
+    # the CudssFactorization planned from the pencil's device values (refactorize_device_lower / _device_values): the
+    # index maps of the pattern (the planned CSR shares their index arrays: no CSR copies on top), the equilibrated
+    # values (symmetric: lower triangle + diagonal; mixed: + the half-size factor copy)
+    maps = ('eigen cuDSS index maps of the pencil pattern', index_map_bytes(dofs, entries, symmetry_check=False))
+    values = ('eigen cuDSS equilibrated values (symmetric: lower triangle and diagonal)',
+              (value_bytes + (value_bytes // 2 if mixed else 0)) * lower + (value_bytes * dofs if symmetric else 0))
+    # factorize_pencil keeps the combined pencil values until the new factor is probed (a full-pattern pencil: or the
+    # float64 row-scale gathers and their product of its equilibration, if larger)
+    combined = ('eigen combined pencil values of one factorisation',
+                value_bytes * lower if symmetric else max(value_bytes, 3 * FLOAT64_BYTES) * entries)
+    mirror = ('eigen M mirror of the device mass product (searchsorted peak)', int(_MIRROR_BYTES * entries))
+    # ShiftPencil.device_mass: M on the full pattern (a lower-stored pencil: new values + the kept int64 full take),
+    # int32 indices / indptr; the product vectors
+    mass = ('eigen device mass product (M values, full take, int32 indices, vectors)',
+            ((term_bytes + 8) if symmetric else 0) * entries + INT32_BYTES * (entries + dofs + 1)
+            + 3 * value_bytes * dofs)
+    basis_on_device, basis_bytes = (arnoldi_basis_bytes(dofs, n_basis, solver_backend(context.spec),
+                                                        device_matvec=True) if complex_eigs else (False, 0))
+    basis = (f'eigen device Krylov-Schur basis ({n_basis} + 3 x complex128)', basis_bytes if basis_on_device else 0)
+    setup = [stored, upload]
+    if symmetric and not complex_eigs:   # eigsh: mass_operator() mirrors M after the upload, before the factor
+        setup = [stored, (upload[0] + ' / M mirror', max(upload[1], mirror[1]))]
+    phases = {EIGEN_SETUP_PHASE: setup, EIGEN_PHASE: [stored, maps, values, buffers, solve_vectors, mass, basis]}
+    factor_phases = [EIGEN_PHASE]
+    if symmetric and complex_eigs:   # eigs: device_mass() after _factorize_shift, before the Arnoldi basis
+        phases[EIGEN_MIRROR_PHASE] = [stored, maps, values, buffers, mirror]
+        factor_phases.append(EIGEN_MIRROR_PHASE)
+    else:   # the factorisation runs with the mass product already built (eigs with a mirror: below the mirror phase)
+        phases[EIGEN_PHASE].append(combined)
+    items = tuple((phase, label, size) for phase, group in phases.items() for label, size in group)
+    return items, host_items, factors, {factor_label: tuple(factor_phases)}, basis_on_device
 
 
 def harmonic_pencil_items(dofs, entries, back_end, term_value_bytes) -> list:

@@ -13,7 +13,7 @@ from ..io.model_io import export_curve_plots, read_curve_data
 from ..model.analytic import is_wavelength_xy
 from ..model.expressions import error_message
 from ..viz.result_plots import xy_series_groups
-from .forms import ERROR_COLOR, rich_tooltip
+from .forms import ERROR_COLOR, rich_tooltip, selectable
 from .helpers import ask_save_path, remember_directory, start_directory
 from .plot_controls import PlotPanel
 
@@ -245,7 +245,7 @@ class ResultPlotView(QtWidgets.QWidget):
         self._compare_clear_action.triggered.connect(lambda checked=False: self._clear_compared())
         compare_menu.aboutToShow.connect(self._fill_compare_menu)
         compare_button.setMenu(compare_menu)
-        self._note_label = QtWidgets.QLabel()
+        self._note_label = selectable(QtWidgets.QLabel())
         self._note_label.setWordWrap(True)
         self._note_label.hide()
         self._error_label = QtWidgets.QLabel()

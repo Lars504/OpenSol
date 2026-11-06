@@ -32,20 +32,20 @@ from .model.analytic import (CURVE_RESULT_KINDS, FFT_SERIES, RATIO_SERIES, built
                              line_plane, parameters_with, snapshot_index, split_key, sweep_curve_values,
                              sweep_overlay_xy, sweep_richardson, sweep_simulated, sweep_table_xy, sweep_value_curve,
                              table_xy)
-from .model.builder import ESTIMATE_FLOOR_BYTES, build as build_model, estimate_verdict
+from .model.builder import ESTIMATE_FLOOR_BYTES, build as build_model, estimate_gap, estimate_verdict
 from .model.describe import REFERENCE_FILE, REGENERATE_COMMAND, TEMPLATES_FILE, describe, reference_files
 from .model.expressions import error_message, evaluate_parameters
 from .model.import_contracts import check as check_import_contracts, rule_text
 from .model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
-from .model.meshing import (MESH_ESTIMATE_ERRORS, estimate_memory, estimate_mesh, estimate_meshes, line_block_hint,
-                            mesh_transfers,
+from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate_memory, estimate_mesh,
+                            estimate_meshes, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
 from .model.scene_3d import build_scene
 from .model.schema import (ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values, resolved_solvers,
                            solver_backend, solver_grid)
 from .solvers.roles import resolved_precision
 from .model.selftest_cache import CACHE_FILE, DependencyTrace, SelftestCache, environment_key, file_hash
-from .model.selftest_examples import (analytic_report, analytic_report_file, example_record, failed_example_record,
+from .model.selftest_examples import (ANALYTIC_REPORT_FILE, analytic_report, example_record, failed_example_record,
                                       has_analytic_comparison)
 from .model.session import VOLUME_MAX_BYTES
 from .model.spec import ModelSpec, SolverSpec
@@ -56,7 +56,7 @@ from .model.study import (BuildFailed, Built, LiveFrame, LiveResults, LogEvent, 
 from .model.study_sectors import ordered_sector_specs
 from .model.time_estimate import estimate_overheads, estimate_time, estimated_runs, stored_profile
 from .model.templates import make_template, template_entries
-from .model.validate import internal_error_text, validate
+from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
@@ -74,10 +74,9 @@ API_TEMPLATES_PATH = API_REFERENCE_PATH.parent / TEMPLATES_FILE   # template JSO
 BUILTIN_SELFTESTS = ('templates_validate', 'examples_validate', 'api_reference_current', 'import_contracts',
                      'structure_index_current')   # CPU, run first (a named run: only those named)
 # report subset -> report file in out_dir; a run of subset 'all' writes the 'light' and the 'heavy' file, then the
-# examples on each SELFTEST_ALL_EXAMPLE_BACKENDS backend (analytic_report_file(backend)).
+# examples run once (ANALYTIC_REPORT_FILE).
 SELFTEST_REPORT_FILES = {'light': 'selftest_report_light.json', 'heavy': 'selftest_report_heavy.json',
                          'named': 'selftest_report_named.json'}
-SELFTEST_ALL_EXAMPLE_BACKENDS = ('cpu', 'gpu')
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / 'examples'   # repository checkout only (examples/README.md)
 _REGENERATE_REFERENCE = f'regenerate it with: {REGENERATE_COMMAND}'
 _CHECK_KEYS = ('measured', 'expected', 'error', 'tolerance', 'details')     # SelfTestCase.check() result
@@ -161,9 +160,10 @@ def check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=N
     """CPU-only report of a spec (issues, mesh, memory and run-time estimates, time step and step count); out_dir ->
     <out_dir>/check.json. parameters {name: expression} overrides parameter expressions (an unknown name is an issue
     at ('parameters',)); memory_budget [bytes] (e.g. a run's summary gpu_budget) adds the GPU memory check,
-    host_budget [bytes] (e.g. core.host_memory.available_bytes(); the CLI passes it) the host RAM check; backend
-    ('auto' | 'gpu' | 'cpu') overrides solver_defaults.backend; max_wall_time [s]: a warning when even the shortest
-    estimated run time exceeds it."""
+    host_budget [bytes] (e.g. core.host_memory.available_bytes(); the CLI passes it) the host RAM check (an estimate
+    over a budget on size-based element counts: the triangle / tetrahedron meshes are built first and the report is
+    on their counts, as a build judges); backend ('auto' | 'gpu' | 'cpu') overrides solver_defaults.backend;
+    max_wall_time [s]: a warning when even the shortest estimated run time exceeds it."""
     registry = get_registry()
     meshes, mesh_errors, study, memory, solvers, transfers = {}, {}, None, None, None, []
     time_record = None
@@ -194,9 +194,12 @@ def check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=N
             except Exception:   # model errors and crashing estimators: validate reports them
                 memory, by_mesh = None, {}
             transfers = mesh_transfers(model_spec, registry, meshes)
+        if not mesh_errors and refused_on_estimated_counts(model_spec, meshes, memory, memory_budget, host_budget):
+            meshes, memory, by_mesh, override_issues = _judged_estimates(
+                model_spec, registry, parameter_values, meshes, memory, by_mesh, override_issues)
         issues = override_issues + validate(model_spec, registry, mesh_estimate=meshes, mesh_error=mesh_errors,
                                             memory_budget=memory_budget, memory_estimate=memory,
-                                            host_budget=host_budget)
+                                            host_budget=host_budget, memory_parts=by_mesh or None)
         study = _study_estimate(model_spec, registry, parameter_values, list(meshes.values()))
         solvers = _solver_report(model_spec, registry, parameter_values)
         if meshes and not mesh_errors and memory is not None:
@@ -225,6 +228,21 @@ def check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=N
     if out_dir is not None:
         write_json(Path(out_dir) / 'check.json', report)
     return report
+
+
+def _judged_estimates(spec, registry, parameters, meshes, memory, by_mesh, issues):
+    """(meshes, memory, by_mesh, issues) for the final memory judgement of check: the element meshes built and counted
+    (meshing.built_mesh_estimates) unless the model has another error; a mesher failure keeps the estimates and adds
+    its error Issue."""
+    if any(issue.level == 'error' for issue in validate(spec, registry, mesh_estimate=meshes, memory_estimate=memory)):
+        return meshes, memory, by_mesh, issues   # no mesher run for a model that fails anyway
+    try:
+        built = built_mesh_estimates(spec, parameters, registry, meshes)
+        built_parts = {}
+        return built, estimate_memory(spec, parameters, registry, built, by_mesh=built_parts), built_parts, issues
+    except Exception as exc:
+        return meshes, memory, by_mesh, issues + [Issue('error', ('meshes',), 'the element meshes could not be built '
+                                                        f'for the memory check: {error_message(exc)}')]
 
 
 def _time_report(spec, parameters, registry, meshes, max_wall_time=None):
@@ -1799,8 +1817,7 @@ class _SelftestPlan:
 def selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) -> dict:
     """Built-in CPU cases, then the registered cases, never timed first, then by last wall time (names: only those,
     built-ins included only when named; else every built-in and by heavy: False light, True heavy, None all, which
-    then also runs selftest_examples per
-    SELFTEST_ALL_EXAMPLE_BACKENDS) -> report dict; out_dir -> the subset's
+    then also runs the selftest_examples run) -> report dict; out_dir -> the subset's
     report files + run directories (also partial on an interrupt) + CACHE_FILE: an unnamed case that passed with
     unchanged dependencies is reused, not rerun (reset True: rerun all); progress(event): 'begin' per phase, 'start'
     per test, then its case or example record (_SelftestPlan). Estimates price on an out-of-date stored machine profile
@@ -1828,8 +1845,7 @@ def selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) 
     phase = plan.add_phase(f'{subset} cases', [('cases', name, name) for name, _ in builtins]
                            + [('cases', case.name, case.name) for case in cases if case.name not in reusable],
                            len(reusable))
-    example_plans = [(backend, _plan_examples(None, backend, registry, cache, cache is not None and not reset, plan))
-                     for backend in (SELFTEST_ALL_EXAMPLE_BACKENDS if subset == 'all' else ())]
+    examples_plan = _plan_examples(None, cache, cache is not None and not reset, plan) if subset == 'all' else None
     skipped_backend = []   # cases whose every run needs a backend this machine lacks (no usable GPU)
     interrupt = None   # the KeyboardInterrupt in flight: gets the partial report as .partial_report (CLI counts)
     plan.begin(phase)
@@ -1893,8 +1909,8 @@ def selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) 
                                   else _write_selftest_reports(out_dir, report, registry, all_cases_ran))
         if interrupt is not None:
             interrupt.partial_report = report
-    if subset == 'all':   # everything: then the examples on each backend (the case reports are already written)
-        _add_example_runs(report, out_dir, plan, example_plans, cache)
+    if examples_plan is not None:   # everything: then the examples (the case reports are already written)
+        _add_example_run(report, out_dir, plan, examples_plan, cache)
     return report
 
 
@@ -1906,25 +1922,23 @@ def _selftest_cache(out_dir, available_backends):
     return SelftestCache(out_dir / CACHE_FILE, environment_key(available_backends, device and device['name']))
 
 
-def _add_example_runs(report, out_dir, plan, example_plans, cache):
-    """selftest all mode: the planned examples run on each SELFTEST_ALL_EXAMPLE_BACKENDS backend -> report 'examples'
-    {backend: counts}, their report files appended; passed only when every examples run passed too."""
-    count_keys = ('passed', 'n_examples', 'n_passed', 'n_failed', 'n_error', 'n_no_tolerance', 'n_skipped',
-                  'n_skipped_backend', 'n_reused', 'wall_time', 'warnings')
-    report['examples'] = {}
-    for backend, examples_plan in example_plans:
-        try:
-            examples_report = _run_examples(out_dir, backend, examples_plan, plan, cache, time.perf_counter())
-        except KeyboardInterrupt as interrupt:   # the CLI prints the case counts and this backend's partial counts
-            examples_report = interrupt.partial_report
-            report['examples'][backend] = {key: examples_report[key] for key in count_keys}
-            report['report_files'] = report['report_files'] + examples_report['report_files']
-            report['passed'] = False
-            interrupt.partial_report = report
-            raise
-        report['examples'][backend] = {key: examples_report[key] for key in count_keys}
+def _add_example_run(report, out_dir, plan, examples_plan, cache):
+    """selftest all mode: the planned examples run once -> report 'examples' (its counts), its report file appended;
+    passed only when the examples run passed too."""
+    count_keys = ('passed', 'n_examples', 'n_passed', 'n_failed', 'n_error', 'n_no_tolerance', 'n_skipped_backend',
+                  'n_reused', 'wall_time', 'warnings')
+    try:
+        examples_report = _run_examples(out_dir, examples_plan, plan, cache, time.perf_counter())
+    except KeyboardInterrupt as interrupt:   # the CLI prints the case counts and the partial examples counts
+        examples_report = interrupt.partial_report
+        report['examples'] = {key: examples_report[key] for key in count_keys}
         report['report_files'] = report['report_files'] + examples_report['report_files']
-        report['passed'] = report['passed'] and examples_report['passed']
+        report['passed'] = False
+        interrupt.partial_report = report
+        raise
+    report['examples'] = {key: examples_report[key] for key in count_keys}
+    report['report_files'] = report['report_files'] + examples_report['report_files']
+    report['passed'] = report['passed'] and examples_report['passed']
 
 
 def _write_selftest_reports(out_dir, report, registry, all_cases_ran):
@@ -1964,8 +1978,8 @@ def _write_report_keeping_timings(path, report):
 
 
 def _report_timings(path):
-    """Timing summary of a report file: file time, version, subset / backend, counts, wall_time, device and per case
-    (or example) {status, wall_time, reused}."""
+    """Timing summary of a report file: file time, version, subset, counts, wall_time, device and per case (or
+    example) {status, wall_time, reused}."""
     old_report = read_json(path)
     reused_names = set(old_report.get('reused') or [])
     records = old_report['cases'] if 'cases' in old_report else old_report.get('examples', [])
@@ -1974,7 +1988,7 @@ def _report_timings(path):
         name = record.get('name', record.get('example'))
         case_timings[name] = {'status': record.get('status'), 'wall_time': record.get('wall_time'),
                               'reused': name in reused_names}
-    summary_keys = ('open_sol_version', 'subset', 'backend', 'passed', 'n_cases', 'n_examples', 'n_passed',
+    summary_keys = ('open_sol_version', 'subset', 'passed', 'n_cases', 'n_examples', 'n_passed',
                     'n_failed', 'n_error', 'n_reused', 'wall_time', 'device')
     file_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(path.stat().st_mtime))
     return {'source': path.name, 'written': file_time, **{key: old_report[key] for key in summary_keys
@@ -2403,27 +2417,33 @@ def _run_vram(summary, backend):
     if backend == 'cpu' or not estimate:   # the cpu ledger traces host numpy: not VRAM
         return None
 
-    def part(measured_bytes, estimated_bytes, deviation):
+    def part(measured_bytes, estimated_bytes, deviation, unseen_bytes=0):
         if measured_bytes is None or estimated_bytes is None or deviation is None:
             return None
-        return {'measured_bytes': int(measured_bytes), 'estimated_bytes': int(estimated_bytes), 'deviation': deviation}
+        return {'measured_bytes': int(measured_bytes), 'estimated_bytes': int(estimated_bytes),
+                'unseen_bytes': int(unseen_bytes or 0), 'deviation': deviation}
 
     breakdown = build.get('gpu_breakdown') or []
     parts = {'kept': part(sum(size for _, size in breakdown) if breakdown else None, estimate.get('gpu_steady'),
                           estimate.get('steady_deviation')),
              'build_peak': part(build.get('gpu_peak_bytes'), estimate.get('gpu_build_peak'),
-                                estimate.get('peak_deviation')),
+                                estimate.get('peak_deviation'), estimate.get('peak_unseen_bytes')),
              'run': summary.get('run_memory'), 'external': summary.get('external_memory')}
     if all(value is None for value in parts.values()):
         return None
     for value in parts.values():
-        if value is not None:
-            value['verdict'] = estimate_verdict(value['measured_bytes'], value['estimated_bytes'])
-            value['beyond_floor'] = abs(value['measured_bytes'] - value['estimated_bytes']) > ESTIMATE_FLOOR_BYTES
+        if value is not None:   # a pool mark misses up to unseen_bytes (free blocks stranded before it started)
+            unseen_bytes = value.get('unseen_bytes') or 0
+            value['verdict'] = estimate_verdict(value['measured_bytes'], value['estimated_bytes'], unseen_bytes)
+            value['beyond_floor'] = abs(estimate_gap(value['measured_bytes'], value['estimated_bytes'],
+                                                     unseen_bytes)) > ESTIMATE_FLOOR_BYTES
     worst_name, worst = max(((name, value) for name, value in parts.items() if value is not None),
                             key=lambda item: _vram_rank(item[1]))
     return dict(parts, deviation=worst['deviation'], part=worst_name, verdict=worst['verdict'],
                 beyond_floor=worst['beyond_floor'])
+
+
+_VRAM_PART_NAMES = ('kept', 'build_peak', 'run', 'external')
 
 
 def _vram_rank(part):
@@ -2447,10 +2467,13 @@ def _run_counts(summary):
 
 
 def _set_worst_deviations(record, run_records):
-    """Case / example record vram_deviation / vram_part / vram_verdict (the worst run vram: _vram_rank), count_deviation
-    and count_item (the largest by size, signed); None when no run has one."""
+    """Case / example record vram_deviation / vram_part / vram_verdict (the worst run vram: _vram_rank), vram_max_bytes
+    (largest measured part over the runs), count_deviation and count_item (the largest by size); None when no run has one."""
     worst_vram = max((run['vram'] for run in run_records if run.get('vram') and run['vram']['deviation'] is not None),
                      key=_vram_rank, default=None)
+    measured_part_bytes = [part['measured_bytes'] for run in run_records if run.get('vram')
+                           for part in (run['vram'].get(name) for name in _VRAM_PART_NAMES) if part is not None]
+    record['vram_max_bytes'] = max(measured_part_bytes, default=None)
     worst_counts = max((run['counts'] for run in run_records if run.get('counts')),
                        key=lambda part: abs(part['deviation']), default=None)
     record['vram_deviation'] = None if worst_vram is None else worst_vram['deviation']
@@ -2560,70 +2583,64 @@ def _device_record(backend=None):
 
 
 # ---- analytic examples (selftest --examples) ----
-def selftest_examples(out_dir=None, names=None, progress=None, backend=None, reset=False) -> dict:
+def selftest_examples(out_dir=None, names=None, progress=None, reset=False) -> dict:
     """run() every examples/**/*.json with a derived reference or an analytic curve (names: only these, relative
-    paths or stems) on its own backend (backend None) or on backend 'cpu' / 'gpu' (an example that validates only off
-    it is skipped; 'gpu' without a usable GPU runs none) -> the analytic_report_file(backend) dict; out_dir -> that
-    file + examples[_<backend>]/<path>/ run directories (also partial on an interrupt) + CACHE_FILE: without names an
-    example that passed with unchanged file and dependencies is reused (reset True: rerun all); progress(event):
-    'begin', then per example run 'start' and its record (_SelftestPlan; dropped with a warning if it raises).
-    Estimates price on an out-of-date stored machine profile too."""
-    if backend not in (None, 'cpu', 'gpu'):
-        raise ValueError(f"backend must be None, 'cpu' or 'gpu', got {backend!r}")
+    paths or stems) once, on its own backend (one setting backend 'gpu' is skipped without a usable GPU) -> the
+    ANALYTIC_REPORT_FILE dict; out_dir -> that file + examples/<path>/ run directories (also partial on an interrupt)
+    + CACHE_FILE: without names an example that passed with unchanged file and dependencies is reused (reset True:
+    rerun all); progress(event): 'begin', then per example run 'start' and its record (_SelftestPlan; dropped with a
+    warning if it raises). Estimates price on an out-of-date stored machine profile too."""
     out_dir = None if out_dir is None else Path(out_dir)
     start = time.perf_counter()
     cache = _selftest_cache(out_dir, _available_backends())
     plan = _SelftestPlan(progress, cache)
-    examples_plan = _plan_examples(names, backend, get_registry(), cache,
-                                   cache is not None and not reset and names is None, plan)
-    return _run_examples(out_dir, backend, examples_plan, plan, cache, start)
+    examples_plan = _plan_examples(names, cache, cache is not None and not reset and names is None, plan)
+    return _run_examples(out_dir, examples_plan, plan, cache, start)
 
 
-def _plan_examples(names, backend, registry, cache, reuse, plan):
-    """Load and sort the selected examples of one examples run (no analytic comparison: skipped; validating only off a
-    forced backend: skipped_backend; cache hits: reused) and add its phase to plan -> the plan dict of _run_examples."""
+def _plan_examples(names, cache, reuse, plan):
+    """Load and sort the selftest examples (those with an analytic comparison; a named one without: KeyError) of the
+    examples run (backend 'gpu' without a usable GPU: skipped_backend; cache hits: reused) and add its phase to plan
+    -> the plan dict of _run_examples."""
     model_paths = _selected_example_paths(names)
-    warnings = []
-    if backend == 'gpu' and 'gpu' not in _available_backends():
-        model_paths = []
-        warnings.append('gpu examples skipped: no usable GPU (cupy and a CUDA device)')
-    entries, skipped, skipped_backend = [], [], []
+    gpu_usable = 'gpu' in _available_backends()
+    entries, skipped_backend, named_without_reference = [], [], []
     for path in model_paths:
         relative_path = path.relative_to(EXAMPLES_DIR).as_posix()
         entry = {'path': path, 'relative_path': relative_path, 'spec': None, 'load_error': None, 'reused': None,
-                 'cache_key': f"{backend or 'own'}/{relative_path}", 'model_hash': None}
+                 'cache_key': relative_path, 'model_hash': None}
         try:
             entry['spec'] = load_model(path)
         except Exception as exc:   # an unloadable example is an 'error' entry, not a selftest crash
             entry['load_error'] = failed_example_record(relative_path, None, f'loading failed: {_error_text(exc)}', 0.0)
-            entry['load_error']['backend'] = backend
+            entry['load_error']['backend'] = None
             entries.append(entry)
             continue
-        if not has_analytic_comparison(entry['spec']):
-            skipped.append(relative_path)
+        if not has_analytic_comparison(entry['spec']):   # not a selftest example
+            if names is not None:
+                named_without_reference.append(relative_path)
             continue
-        if backend is not None and not _example_runs_on(entry['spec'], backend, registry):
+        if entry['spec'].solver_defaults.backend == 'gpu' and not gpu_usable:
             skipped_backend.append(relative_path)
             continue
         entry['model_hash'] = file_hash(path)
         if reuse:
             entry['reused'] = cache.reusable_record('examples', entry['cache_key'], entry['model_hash'])
         entries.append(entry)
+    if named_without_reference:
+        raise KeyError(f"not a selftest example (no derived value with a reference, no analytic curve): "
+                       f"{', '.join(named_without_reference)}; run it with: python -m open_sol run <model file>")
     entries = _untimed_then_fastest(entries, cache, 'examples', lambda entry: entry['cache_key'])
-    label = f'examples on {backend}' if backend else 'examples (own backends)'
-    tests = [('examples', entry['cache_key'], f"{entry['relative_path']} ({backend})" if backend
-              else entry['relative_path']) for entry in entries if entry['reused'] is None]
-    phase = plan.add_phase(label, tests, len(entries) - len(tests))
-    return {'phase': phase, 'entries': entries, 'skipped': skipped, 'skipped_backend': skipped_backend,
-            'warnings': warnings}
+    tests = [('examples', entry['cache_key'], entry['relative_path']) for entry in entries if entry['reused'] is None]
+    phase = plan.add_phase('examples', tests, len(entries) - len(tests))
+    return {'phase': phase, 'entries': entries, 'skipped_backend': skipped_backend}
 
 
-def _run_examples(out_dir, backend, examples_plan, plan, cache, start):
-    """Run the examples of a _plan_examples plan (reused records kept) -> the analytic_report_file(backend) dict;
-    out_dir -> that file + run directories (also partial on an interrupt) + the cache file."""
-    records, reused = [], []
-    report_warnings = list(examples_plan['warnings'])
-    skipped, skipped_backend = examples_plan['skipped'], examples_plan['skipped_backend']
+def _run_examples(out_dir, examples_plan, plan, cache, start):
+    """Run the examples of a _plan_examples plan (reused records kept) -> the ANALYTIC_REPORT_FILE dict; out_dir ->
+    that file + run directories (also partial on an interrupt) + the cache file."""
+    records, reused, report_warnings = [], [], []
+    skipped_backend = examples_plan['skipped_backend']
     all_ran = False
     interrupt = None   # the KeyboardInterrupt in flight: gets the partial report as .partial_report (CLI counts)
     plan.begin(examples_plan['phase'])
@@ -2637,13 +2654,11 @@ def _run_examples(out_dir, backend, examples_plan, plan, cache, start):
             if record is not None:
                 plan.start()
             else:
-                moved = entry['spec'].copy()
-                _apply_backend(moved, backend)
-                before = _specs_time_estimate([moved], get_registry(), save_arrays=False)
+                before = _specs_time_estimate([entry['spec'].copy()], get_registry(), save_arrays=False)
                 plan.start(before)
                 with DependencyTrace() as trace:
                     record = _example_run_record(entry['path'], entry['relative_path'], entry['spec'], out_dir,
-                                                 time.perf_counter(), backend)
+                                                 time.perf_counter())
                 record['time_estimate'] = _time_estimate_after(before, [record], record['wall_time'])
                 _set_worst_deviations(record, [record])
                 if cache is not None:
@@ -2661,30 +2676,17 @@ def _run_examples(out_dir, backend, examples_plan, plan, cache, start):
         if not all_ran:
             report_warnings.append(f'interrupted after {len(records)} examples; the report is partial')
         if skipped_backend:
-            report_warnings.append(f'{len(skipped_backend)} examples not run on the {backend} backend: they validate '
-                                   f'only on their own')
-        report = analytic_report(records, skipped, time.perf_counter() - start, all_ran, report_warnings,
-                                 _device_record(backend), __version__, backend, skipped_backend)
+            report_warnings.append(f'{len(skipped_backend)} examples skipped: they set backend gpu, and there is no '
+                                   f'usable GPU (cupy and a CUDA device) here')
+        report = analytic_report(records, time.perf_counter() - start, all_ran, report_warnings,
+                                 _device_record(), __version__, skipped_backend)
         report.update(n_reused=len(reused), reused=reused)
-        report['report_files'] = [] if out_dir is None else [analytic_report_file(backend)]
+        report['report_files'] = [] if out_dir is None else [ANALYTIC_REPORT_FILE]
         if out_dir is not None:
             _write_report_keeping_timings(out_dir / report['report_files'][0], report)
         if interrupt is not None:
             interrupt.partial_report = report
     return report
-
-
-def _example_runs_on(spec, backend, registry):
-    """True when an example spec validates on backend with no more errors than on its own (resolved) backend."""
-    if solver_backend(spec) == backend:
-        return True
-    moved = spec.copy()
-    moved.solver_defaults.backend = backend
-
-    def n_errors(model_spec):
-        return sum(1 for issue in validate(model_spec, registry) if issue.level == 'error')
-
-    return n_errors(moved) <= n_errors(spec)
 
 
 def _selected_example_paths(names):
@@ -2706,15 +2708,14 @@ def _selected_example_paths(names):
     return [path for path in model_paths if any(name in keys(path) for name in names)]
 
 
-def _example_run_record(path, relative_path, spec, out_dir, start, backend=None):
-    """Report entry of one example: run() on backend (None: its own) into out_dir/examples[_<backend>]/<path>/ (no
-    arrays, no figures), then its summary compared with the spec's tolerances; a raising run is an 'error' entry."""
-    examples_folder = 'examples' if backend is None else f'examples_{backend}'
-    run_dir = None if out_dir is None else out_dir / examples_folder / relative_path[:-len('.json')]
-    run_backend = solver_backend(spec) if backend is None else backend
+def _example_run_record(path, relative_path, spec, out_dir, start):
+    """Report entry of one example: run() on its own backend into out_dir/examples/<path>/ (no arrays, no figures),
+    then its summary compared with the spec's tolerances; a raising run is an 'error' entry."""
+    run_dir = None if out_dir is None else out_dir / 'examples' / relative_path[:-len('.json')]
+    run_backend = solver_backend(spec)
     run_start = time.perf_counter()
     try:
-        results = run(path, out_dir=run_dir, save_arrays=False, backend=backend)
+        results = run(path, out_dir=run_dir, save_arrays=False)
     except Exception as exc:   # text only (run() cleared the frames of what it re-raises)
         record = failed_example_record(relative_path, spec.title, _error_text(exc), time.perf_counter() - start)
     else:

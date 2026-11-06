@@ -258,6 +258,8 @@ class SolverDefaultsSpec:
     precision: str = 'auto'
     subpixel_smoothing: bool = False   # material-interface averaging (igor 1.5), honoured per PhysicsType flag
     conformal_boundaries: bool = False   # exact curved walls (solver_plan S7.6), honoured per PhysicsType flag
+    # 'error' | 'warning': a memory estimate over the GPU / host budget refuses the model or only warns (schema.MEMORY_CHECKS)
+    memory_check: str = 'error'
 
 
 SWEEP_SPACINGS = ('list', 'linear', 'log')   # SweepSpec.spacing: the values as listed, or count points lower..upper

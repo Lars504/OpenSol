@@ -358,7 +358,14 @@ def refresh_bytes(n_unknowns, entries, value_bytes=16, symmetry_check=True) -> i
 # per row) +3 / -23 % (2026-11 profile). Open, to settle from cudss_lu_entries (summary.json solvers counters, the
 # vram profiler's plan table): the fit is in bytes, so it books real values at half the complex bytes although the
 # index part does not halve, and it lumps cuDSS's per-row part (~300 B / row in the BOR plans) into the fill constant
-# (BOR m = 0 predicts 1.7x its lu entries, m >= 1 within 3 %).
+# (BOR m = 0 predicts 1.7x its lu entries, m >= 1 within 3 %). Known double count: those counters are device_bytes =
+# permanent + the in-pool operator copies, rhs, scales and index maps, which the estimators also book as pool items
+# (cudss_permanent_bytes / device_bytes 0.77 .. 0.89 on the 2D FDFD runs); the rule is to be rebuilt as factor entries
+# x the bytes each entry stores (no rescaling to measured bytes: hides an extra copy instead of showing it). The growth
+# law is the other open point: n^(4/3) holds for a mesh that is thick in all three directions; a film of a few swept
+# prism layers has line separators (a 2D mesh of node columns) and fills far less (sin_square_membrane_modes_3d, 2
+# quadratic layers, 355,555 unknowns, 73 entries per row: 138.5e6 factor entries where the rule counts 369e6;
+# float64 LDL^T permanent bytes / factor entry 10.5).
 CUDSS_FILL_2D = 3.4                   # factor values per n log2 n at CUDSS_REFERENCE_ROWS[2] stored entries per row
 CUDSS_FILL_3D = 6.0                   # factor values per n^(4/3) at CUDSS_REFERENCE_ROWS[3] entries per row
 CUDSS_REFERENCE_ROWS = {2: 5.0, 3: 13.0}
@@ -366,13 +373,37 @@ CUDSS_FIXED_BYTES = 256 * 1024        # per factor, any size (workspace, plan da
 CUDSS_PEAK_RATIO = 1.0                # peak_device_memory / permanent_device_memory: equal in every 2026-11 selftest run
 CUDSS_LU_OVER_LDLT = 2.0              # a general LU stores L and U: twice the entries of one triangle
 CUDSS_INDEX_BYTES = 8                 # per factor entry beyond its value (BOR plans: double - mixed = the value bytes alone)
+# Counted rule (a FactorFill in place of the growth law): permanent = factor entries x the factor's value bytes + the
+# matrix copy cuDSS keeps as given (lower triangle of a symmetric kind; factor value bytes + int32 column per stored
+# entry) + CUDSS_ROW_BYTES per row (index lists, permutations, solve workspace). The first two are what the plan
+# stores; the row part is what cudss_permanent_bytes leaves beyond them: 458 / 374 B on the 110^2 / 190^2 complex
+# 5-point FDFD grids, 560 B on the 355,555-unknown float64 film (hankel cudss - cudss_mixed = 8 B x (factor entries +
+# stored lower entries) exactly: values and matrix copy halve, nothing else does).
+CUDSS_ROW_BYTES = 450
+
+
+class FactorFill:
+    """Counted fill for factor_device_bytes, given in place of `dimensions`: entries of one triangle of the factor
+    (diagonal included) in unknowns, e.g. fem.dissection node pairs x (dofs per node)^2 on a built element mesh."""
+
+    def __init__(self, entries):
+        self.entries = float(entries)
 
 
 def factor_device_bytes(n_unknowns, entries, value_bytes=16, dimensions=2, mixed=False, symmetric=True) -> tuple:
     """(permanent, peak extra) estimated device bytes of a cuDSS factor outside the cupy pool: n_unknowns rows,
     `entries` stored operator entries (full pattern), value_bytes of the operator values (mixed: half-size values, the
     CUDSS_INDEX_BYTES unchanged); dimensions 2 (n log2 n fill: tensor 2D, triangles, BOR) or 3 (n^(4/3): 3D grids,
-    tetrahedra); symmetric False: a general LU (CUDSS_LU_OVER_LDLT). Fit: module notes."""
+    tetrahedra), or a FactorFill: its counted entries x the factor value bytes + the kept matrix copy + CUDSS_ROW_BYTES
+    per row (no growth law, no fitted fill); symmetric False: a general LU (CUDSS_LU_OVER_LDLT). Fit: module notes."""
+    if isinstance(dimensions, FactorFill):
+        n_unknowns, entries = max(int(n_unknowns), 2), int(entries)
+        factor_value_bytes = int(value_bytes) // 2 if mixed else int(value_bytes)
+        stored = (entries + n_unknowns) // 2 if symmetric else entries
+        factor_entries = max(dimensions.entries * (1.0 if symmetric else CUDSS_LU_OVER_LDLT), float(stored))
+        permanent = int(CUDSS_FIXED_BYTES + factor_value_bytes * factor_entries
+                        + (factor_value_bytes + 4) * stored + CUDSS_ROW_BYTES * n_unknowns)
+        return permanent, int((CUDSS_PEAK_RATIO - 1.0) * permanent)
     n_unknowns = max(int(n_unknowns), 2)
     dimensions = 3 if dimensions == 3 else 2
     rows = max(float(entries) / n_unknowns, 1.0)

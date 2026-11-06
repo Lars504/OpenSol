@@ -29,7 +29,7 @@ Step-by-step conda setup (separate environment, optional cupy / GPU): `INSTALL.m
   use it.
 - Check the install: `python -m open_sol selftest templates_validate` (CPU), or `python -m open_sol selftest` for the
   quick analytic validation cases (GPU, minutes; `--heavy` the slow ones, `--examples` the analytic examples, `--all`
-  everything: every case, then the examples on the cpu and the gpu backend).
+  everything: every case, then the examples, each on its own backend).
 
 ## Quickstarts
 

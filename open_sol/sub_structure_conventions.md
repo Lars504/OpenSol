@@ -49,9 +49,7 @@ Sub file of the root `structure_conventions.md` (read that first). Gotchas of ap
   The study estimate uses the runs' measured counts, build / output the guesses before. Estimates never stop a
   selftest (failures become its message). A sweep run's time_check covers one value, the estimate every value.
 - `selftest_examples` runs each example with `save_arrays=False` and closes its Results before the next; run
-  directories `<out_dir>/examples/<path without .json>/` (`examples_<backend>/` with a forced backend). A forced
-  backend skips an example only when it validates with more errors there than on its own (`_example_runs_on`; e.g.
-  the em3d Mie examples (gpu-only cudss_mixed) are `skipped_backend` in `_analytic_cpu.json`: intended); records carry
-  the run's `backend`; the report's `device` is the host for backend 'cpu', else the GPU.
+  directories `<out_dir>/examples/<path without .json>/`, each example once on its own backend (records carry the
+  run's `backend`; one setting 'gpu' is `skipped_backend` without a usable GPU).
 - A new argument in `api.py` / `__main__.py` is added to `model/describe.py` by hand (`api_reference_current` only
   compares the .md with describe's text), then `describe --update-reference`.

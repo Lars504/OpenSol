@@ -596,18 +596,36 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 
 ## Memory estimates (definition.py, definition3d.py; model sub file "Memory estimate parts")
 - Phases (transient items, the largest one counts): 'static solve' (tensor solve temporaries), 'stiffness
-  re-assembly', 'static factorisation' (the reduced K_ff CSR `_solve_free` uploads for one factorize), 'static state'
-  (everything of the 'linear' factor in a modal / response study: `solve_static_state` ends with `release_factor`),
-  'eigen assembly' (tensor mass / guided temporaries before the host copy), 'eigen solve' (`EIGEN_PHASE`: the
-  ModalPencil's DevicePencil, mass product, factor copies and vectors, released after each solve / search),
+  re-assembly', 'static factorisation' (the first factorize's peak beyond the kept arrays), 'static state'
+  (everything of the 'linear' factor in a modal / response study: `solve_static_state` ends with `release_factor`;
+  tetrahedra book it for stress stiffening too, definition3d `_static_state_solved`, memory and time). Both come from
+  `linear_factor_items`, which follows `factorize_device_csr` in allocation order and takes the larger of two moments:
+  the symmetry check (CSR index arrays + pattern maps + `refresh_peak_bytes`, which already counts the uploaded
+  values) and the probe (whole CSR + maps with the transpose map + equilibrated full values + the kept lower values);
+  the planned CSR shares the maps' index arrays, so no `operator_copy_bytes` on a device-values plan,
+  'eigen assembly' (tensor mass / guided temporaries before the host copy), the ModalPencil phases (released after
+  each solve / search) in the order `arpack_shift_invert` allocates: 'eigen pencil set-up' (`EIGEN_SETUP_PHASE`:
+  stored terms + the upload transients, before the factor; eigsh_shifted also mirrors M here), 'eigen mass mirror'
+  (`EIGEN_MIRROR_PHASE`, eigs_shifted only: `device_mass()` runs after `_factorize_shift`), 'eigen solve'
+  (`EIGEN_PHASE`: the stored terms, the factor's index maps and equilibrated values, the combined values of the
+  factorisation (eigsh: the mass product is built before it), mass product incl. the kept int64 full take, vectors
+  and, on the eigs path, the device Krylov-Schur basis); the eigen factor is phase-bound to the last two. Pencil
+  items are counted array by array at the stored layout ((entries + dofs) / 2 values per term when lower-stored,
+  value size of the pencil), not through `sparse_direct.device_pencil_bytes` (sized for a complex full-pattern
+  refresh: 2.5x the arrays of a real lower-stored pencil),
   'Newton tangent assembly' (device chunk temporaries), 'frequency response' (tensor device temporaries). Kept: the
   static factor's copies / vectors / solution while the assembly holds, the frequency-response HarmonicSystem
   (`harmonic_pencil_items`), device tangent caches, generalized-plane-strain unit solves.
 - Shared helpers in definition.py (definition3d imports them inside its estimator): `linear_factor_items` (FEM
-  'linear' factor, kept or 'static state'), `eigen_device_items` (-> transient items, host items, factor tuples),
+  'linear' factor, kept or 'static state'), `eigen_basis_counts` (n_wanted, basis: a PML doubles the asked modes),
+  `eigen_device_items` (-> transient items by phase, host items, factor tuples, {factor: phases}, basis_on_device:
+  the caller's `_eigen_host_items` then books only the eigenvectors on the host; complex_eigs = the eigs path: PML,
+  loss, loaded electrodes; a real or Hermitian Bloch pencil is eigsh with a host Lanczos basis),
   `harmonic_pencil_items`. Every cuDSS factor is an external item through `definition_helpers.cudss_external`
-  (dimensions 2 on triangles / tensor 2D, 3 on tetrahedra); a modal or prestressed study books one_at_a_time (the
-  static factor is released before the pencil's). A factor refreshed from a DevicePencil gets no CSR copies on top
+  (dimensions 2 on triangles / tensor 2D, 3 on tetrahedra; on a built element mesh `factor_fill` gives the counted
+  `FactorFill` of `mesh.dissection` instead: node pairs at the element order x components^2 x the factored share); in an eigenfrequency study the static factor is
+  phase-bound to 'static state' (`LINEAR_STATIC_STATE_PHASE`, released before the pencil's) and the eigen factor to
+  its phases; a prestressed frequency response still books one_at_a_time. A factor refreshed from a DevicePencil gets no CSR copies on top
   (its maps / transients hold the planned values: membrane_guide_pml and pressure_acoustics_rigid_disk measured);
   a factor of a host CSR (below DEVICE_PENCIL_MIN_ENTRIES, the static K_ff) does (`operator_copy_bytes`). S5c: a
   cudss_mixed eigen pencil below MIXED_EIGEN_MIN_UNKNOWNS factors in double on the host route (no DevicePencil):

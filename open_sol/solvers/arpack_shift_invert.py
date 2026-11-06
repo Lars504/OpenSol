@@ -330,6 +330,8 @@ class ArpackShiftInvertSolver:
         self.total_factor_seconds = 0.0
         self.host_bytes = 0     # L + U of the last SuperLU factorisation (the consumer keeps the factor)
         self.device_bytes = 0   # cuDSS factor + operator copy of the last cudss factorisation
+        self.permanent_bytes = 0   # cuDSS permanent device memory alone (outside the pool) of the last cudss factor and
+        self.lu_entries = 0        # its factor entries: the data of cudss_factor.factor_device_bytes' fit
         self.refinement_steps = 0   # cuDSS iterative refinement steps per solve of the last cudss factorisation
         self.symmetric_factor = False   # the last cudss factorisation is an LDL^T
         self.double_fallbacks = 0   # cudss_mixed factors rejected by their probe and replaced by double ones
@@ -412,6 +414,7 @@ class ArpackShiftInvertSolver:
             self.total_factor_seconds += time.perf_counter() - start
             return self._factorize_shift(pencil, coefficients)   # the host route (SuperLU) now
         self.device_bytes = factor.device_bytes
+        self.permanent_bytes, self.lu_entries = factor.permanent_bytes, factor.lu_entries
         self.refinement_steps = factor.refinement_steps
         self.symmetric_factor = factor.symmetric
         self.total_factor_seconds += time.perf_counter() - start
@@ -440,6 +443,7 @@ class ArpackShiftInvertSolver:
                     raise
             else:
                 self.device_bytes = factor.device_bytes
+                self.permanent_bytes, self.lu_entries = factor.permanent_bytes, factor.lu_entries
                 self.refinement_steps = factor.refinement_steps
                 self.symmetric_factor = factor.symmetric
                 self.double_fallbacks += int(factor.last_double_fallback)
@@ -731,7 +735,8 @@ class ArpackShiftInvertSolver:
         if self.factorization in CUDSS_FACTORIZATIONS or self.n_auto_fallbacks:
             runtime = self._pencil_runtime   # its plans (deferred fallbacks included); factorisations counted here
             plans, fallbacks = (0, 0) if runtime is None else (runtime.n_cudss_plans, runtime.n_cudss_double_fallbacks)
-            counters.update(eigen_factor_device_bytes=self.device_bytes, eigen_refinement_steps=self.refinement_steps,
+            counters.update(eigen_factor_device_bytes=self.device_bytes, eigen_permanent_bytes=self.permanent_bytes,
+                            eigen_lu_entries=self.lu_entries, eigen_refinement_steps=self.refinement_steps,
                             eigen_factor_symmetric=int(self.symmetric_factor),
                             eigen_double_fallbacks=self.double_fallbacks + fallbacks,
                             eigen_cudss_plans=self.n_cudss_plans + plans)

@@ -138,16 +138,15 @@ templates, describe. Current state, no changelog.
   `package_units` is one snapshot per process (an edit mid-run makes a case stale next time, never falsely fresh);
   unit ids 'normcase'd path::name'; its own file is in no dependency set. Overhead: one Python callback per Python call
   (3.11 has no sys.monitoring). `wall_times` keep every key's last run time (any status) for the progress estimate:
-  api.selftest / selftest_examples decide reuse for every phase up front (`api._SelftestPlan`; --all plans both
-  example runs before the first case), so a new run path must go through the plan's start / finish or the numbering
+  api.selftest / selftest_examples decide reuse for every phase up front (`api._SelftestPlan`; --all plans the
+  examples run before the first case), so a new run path must go through the plan's start / finish or the numbering
   and estimates drift.
-- Selftest subsets and reports: api `selftest(heavy=False | True | None)`; `--all` = both, then
-  `api.selftest_examples(backend=)` per `api.SELFTEST_ALL_EXAMPLE_BACKENDS` (an example validating only on its own
-  backend is not run on the other); named cases run whatever their flag; built-ins run in every unnamed subset, in a
-  named run only when named; the report records `subset` / `n_skipped`. Files (`api.SELFTEST_REPORT_FILES`):
-  `selftest_report_light.json`, `_heavy.json` (`--all` writes both, split by case), `_named.json`; examples
-  `selftest_report_analytic.json` (`--examples`, own backend) / `_analytic_cpu.json` / `_analytic_gpu.json` (`--all`,
-  `selftest_examples.analytic_report_file`); a run rewrites only its own files. Every report write goes through
+- Selftest subsets and reports: api `selftest(heavy=False | True | None)`; `--all` = both, then the examples run
+  once (each on its own backend; one setting backend 'gpu' is `skipped_backend` without a usable GPU); named cases run
+  whatever their flag; built-ins run in every unnamed subset, in a named run only when named; the report records
+  `subset` / `n_skipped`. Files (`api.SELFTEST_REPORT_FILES`): `selftest_report_light.json`, `_heavy.json` (`--all`
+  writes both, split by case), `_named.json`; examples `selftest_report_analytic.json` (`--examples` and `--all`); a
+  run rewrites only its own files. Every report write goes through
   `api._write_report_keeping_timings`: the old file's per-case status / wall_time first lands in `<stem>_prev.json`
   (one run back only), so run times can be compared across branches; a reused case keeps its old wall_time, so
   compare `--reset` runs.
@@ -171,7 +170,8 @@ templates, describe. Current state, no changelog.
   gpu runs only) and `counts` (`_run_counts`: the time_check item most off its prediction; needs a machine profile);
   case / example records keep the worst as `vram_deviation` / `count_deviation` + `count_item`. The vram worst is
   picked over every part (verdict first, then beyond the 1 MiB floor), so a gpu run with an estimate always prints
-  `vram ±xx%` (sign = direction; the verdict / part stay in the record, not the CLI line).
+  `vram ±xx% max N MB` (sign = direction; max = `vram_max_bytes`, the largest measured part over the runs, MiB; the
+  verdict / part stay in the record, not the CLI line). Reused cache records from before the field print no max.
 - Schema: Param min/max checked only for values evaluating over the parameters (field- / state-dependent floats
   become Expressions). The builder range-checks material properties instead (`eval_field(bounds_param=)` under the
   region, one sync; DynamicMaterialUpdate evaluators keep device running extremes, read on the host when every source
@@ -299,7 +299,7 @@ templates, describe. Current state, no changelog.
   (`physics_objects` / `smallest_side`; laminar_flow uniform); `MeshEstimate.auto_rule` says which, `auto_dx` /
   `auto_refinements` what it chose (the GUI's fill-in); `RefinementSpec.automatic` refinements are skipped by
   `_explicit_refinements` in auto mode only. Validation: `ValidationContext.meshes` / `mesh_errors`; physics / feature / coupling (source
-  physics) callbacks run inside `vctx.on_mesh(name)`; mesh issues at ('mesh', name), memory at ('meshes',). One-mesh
+  physics) callbacks run inside `vctx.on_mesh(name)`; mesh issues at ('mesh', name), memory at the ('mesh', name) of the largest part. One-mesh
   rules (`_check_one_mesh_rules`, coupling / feature-ref checks): family 'em', `CouplingType.mesh_transfer` None,
   `_ONE_MESH_STUDIES`, Param ref_kind 'physics'.
 - Per-mesh build: `builder._build_on_gpu` makes one Domain (`domain.mesh_name` set) and BuildContext per used mesh;
@@ -461,14 +461,34 @@ templates, describe. Current state, no changelog.
   `phase_before_items(phase, later run items)`, so the sum stays the true peak); post-solve
   field updates (DiffusionSystem flux: `diffusion_system_estimate(flux=, dissipation=)`); Session reads cache no
   pixel-sized device arrays (a polar display image is gathered on the host); gpu_external = cuDSS factors outside the
-  cupy pool (`cudss_factor.factor_device_bytes`, never a local formula; physics estimators go through
-  `definition_helpers.cudss_external`, one_at_a_time for factors released before the next is planned;
-  external_extra = the largest factorisation's peak on top); the budget check uses `device_peak` = gpu_peak + gpu_external + external_extra) = model arrays
+  cupy pool alive through the run, external_transient_items ((phase, label, bytes)) = factors alive only in a transient
+  phase, listed once per phase they live in (`cudss_factor.factor_device_bytes`, never a local formula; physics
+  estimators go through `definition_helpers.cudss_external(phases={label: phase(s)})`, one_at_a_time for unphased
+  factors released before the next is planned; external_extra = the largest factorisation's peak on top). The budget
+  check uses `device_peak` = max(build peak, steady + run items + the largest phase of (its pool transients + the
+  factors alive in it)) + gpu_external + external_extra, `external_peak` (the external_memory record) = gpu_external +
+  the largest phase of phase-bound factors + external_extra: split a solve into phases in the order the code allocates
+  (mechanics `eigen_device_items`: pencil set-up before the factor, the eigs M mirror and the Arnoldi solve with it),
+  never one phase holding arrays that are never live together) = model arrays
   (MaterialGrid union of `material_schema`, dynamic material updates, couplings) + every `PhysicsType.memory_estimate(
   settings, mesh, MemoryContext)` + every enabled `FeatureType.memory_estimate(values, n_selected_cells, mesh)`
   (bounding-box cells), combined as parts built in sequence plus the build caches. `validate(..., memory_budget=,
-  host_budget=)` errors when gpu_peak / host exceeds its budget and warns above `MEMORY_WARN_FRACTION` (80 %); without
-  a host budget the fixed 8 GiB host warning applies. Budgets: builder = `gpu_memory.budget_bytes()` minus the pool
+  host_budget=)` errors when device_peak / host exceeds its budget and warns above `MEMORY_WARN_FRACTION` (80 %); without
+  a host budget the fixed 8 GiB host warning applies. `solver_defaults.memory_check` 'warning' turns every over-budget
+  error into a warning (check_memory, `_sweep_value_problem` returning (text, level), study_adaptation `_memory_problem`
+  never stopping a refinement for memory): a new budget check takes its level from `schema.memory_check_level(spec)`.
+  The budget issues sit at ('mesh', name) of `validate.memory_verdict` (the used mesh with the largest part:
+  `validate(memory_parts=)` = estimate_memory's by_mesh, else computed when an issue is reported). An over-budget error
+  is final only on built element counts: a triangle / gmsh or swept tetrahedron estimate is a size-field integral
+  (`meshing.has_estimated_counts`; tensor and builtin tetrahedra are exact; it is too low as well as too high, e.g.
+  0.36x on the graded 5 mm hirsch2025 mesh), so build, whenever a used mesh has size-based counts, and api.check, when
+  `refused_on_estimated_counts`, first validate without budgets (other errors come before a mesher run), mesh
+  (`meshing.built_mesh_estimates` -> `with_built_counts`, `counts_built`, + `estimate.dissection`: the built mesh's
+  fem.dissection.MeshDissection, from which a physics estimator counts its cuDSS factor entries instead of using a
+  growth law; build keeps the meshes for its domain stage
+  through `element_meshes_kept`, so no second mesher run) and judge those counts (build: also its ledger check);
+  plain validate reports the error with a note naming the meshes still to build. Per sweep value and per refinement level the check is still on the size-based estimate.
+  The runtime guards stay either way (pool limit, the cuDSS plan check of its own estimate against free memory). Budgets: builder = `gpu_memory.budget_bytes()` minus the pool
   bytes other live sessions hold and `core.host_memory.available_bytes()` (None when unknown); GUI = the worker's last
   MemoryStatus `budget` / `host_available` (5 % tolerance); CLI check / show = host RAM (api.check only its arguments).
 - Build: an exception in a step becomes ModelError with one Issue at that step's path ('parameters', 'geometry',
@@ -493,7 +513,11 @@ templates, describe. Current state, no changelog.
   since `build_session` (`cudss_factor.external_high_water_bytes` minus `Session.external_baseline_bytes`) with
   gpu_external + external_extra (`builder.external_memory_record`, summary `external_memory`). Free bytes `free_all_blocks` cannot return (chunk remainders
   around arrays of earlier open Results) are left out of build peak and run memory (`start_free_bytes`,
-  `pool_baseline_free_bytes`), floored at the used-bytes growth.
+  `pool_baseline_free_bytes`), floored at the used-bytes growth. Temporaries placed in those blocks do not raise
+  the reserved mark, so the held bytes lie in [measured, measured + those free bytes] (`peak_unseen_bytes`,
+  run_memory `unseen_bytes`): verdict and deviation use the point of that interval nearest the estimate
+  (`builder.estimate_gap`; an estimate inside it is not judged). adaptation_tensor_strip_heater: its second run
+  starts beside the first run's open Results and read build peak -61 % where the same model alone reads -12 %.
 - Session lifetime: `Session.close()` (idempotent) clears solvers, couplings, features, renderers and caches
   (`Simulation.clear()` / `MultiphysicsRunner.clear()`); a cleared Simulation is dead. Snapshots, spec, registry,
   parameters stay; other accessors raise RuntimeError. `study.release_session(on_session, session, emit,

@@ -366,14 +366,22 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   n_unknowns=, mixed=)` (a refresh, or the probe on the still-held uploaded / equilibrated values: a transient item;
   `refresh_bytes` = maps + refresh) and the factor itself as MemoryEstimate external_items / external_extra from
   `cudss_factor.factor_device_bytes(n, entries, value_bytes, dimensions, mixed, symmetric)` (permanent, peak extra;
-  `definition_helpers.cudss_external` wraps several): fill 2D n log2 n, 3D n^(4/3), scaled by sqrt(rows per reference
+  `definition_helpers.cudss_external` wraps several, `phases=` binds a factor released after its solve to the
+  transient phases it lives in): fill 2D n log2 n, 3D n^(4/3), scaled by sqrt(rows per reference
   row), a general LU x CUDSS_LU_OVER_LDLT (L and U), a mixed factor halves only the values (CUDSS_INDEX_BYTES per
-  entry stay), peak = permanent (CUDSS_PEAK_RATIO 1: cuDSS reports them equal), the fill fitted to the selftest
-  counters (constants, data and open points in the cudss_factor notes above it). The pool items are counted from the
+  entry stay), peak = permanent (CUDSS_PEAK_RATIO 1: cuDSS reports them equal); a `FactorFill(entries)` given as
+  `dimensions` replaces the growth law by counted factor entries (fem.dissection on a built element mesh; mechanics
+  triangles / tetrahedra so far: `definition.factor_fill`) x the factor value bytes + the kept matrix copy +
+  CUDSS_ROW_BYTES per row; the growth-law fill fitted to the selftest
+  counters (constants, data, the known double count and open points in the cudss_factor notes above it). The pool items are counted from the
   arrays the code makes (an estimate above the measured bytes misreads the code); a wrong entries-per-row count is the
   usual miss, as every per-entry item scales with it; refit the fill
-  from summary.json counters cudss_permanent_bytes / cudss_peak_bytes / cudss_lu_entries (sparse_direct) and the run's
-  external_memory record. `CudssFactorization._plan_solver` / `_free_solver` book every planned solver in the
+  from summary.json counters cudss_permanent_bytes / cudss_peak_bytes / cudss_lu_entries (sparse_direct),
+  eigen_permanent_bytes / eigen_lu_entries (arpack_shift_invert) and the run's external_memory record, never from
+  cudss_factor_device_bytes / eigen_factor_device_bytes (`CudssFactorization.device_bytes` = permanent + the in-pool
+  copies, rhs, scales and index maps the estimators already book as pool items: fitting to it counts them twice).
+  Estimates are counts of what the code and cuDSS should hold, never constants scaled to measured bytes: a scaled
+  constant absorbs an extra copy that the estimate-vs-measured verdict should expose. `CudssFactorization._plan_solver` / `_free_solver` book every planned solver in the
   process-wide `external_live_bytes` / `external_high_water_bytes` (reset per build by study.build_session): free a
   DirectSolver only through `_free_solver`. em_fdfd_3d's host size rule is skipped; 2D callers keep their SuperLU size
   rules and items.

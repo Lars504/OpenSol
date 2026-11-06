@@ -4,6 +4,7 @@ import math
 import os
 import traceback
 from collections import Counter
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -27,17 +28,17 @@ from .geometry import (DOMAIN_COORDINATES, GEOMETRY_KINDS, array_overlap, bounda
                        z_param_set)
 from .meshing import (MESH_ESTIMATE_ERRORS, PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR,
                       backend_memory, boundary_config_difference_text, estimate_memory, estimate_mesh, estimate_meshes,
-                      largest_adjacent_ratio, size_points_problem)
+                      has_estimated_counts, largest_adjacent_ratio, size_points_problem)
 from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DERIVED_OPERATIONS,
                      GLOBAL_DERIVED_OPERATION, INTERFACE_OPERATIONS, SOURCE_FREE_DERIVED_OPERATIONS,
                      INTERFACE_PROJECTIONS, INTERFACE_SIDES, INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS,
-                     MESH_KINDS, MESH_PARAMS,
+                     MEMORY_CHECKS, MESH_KINDS, MESH_PARAMS,
                      PERMITTIVITY_PROPERTY_NAMES,
                      PRECISIONS, SELECTION_KINDS, SOURCE_DERIVED_OPERATIONS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                      SOLVER_ROLES, Issue, ValidationContext, check_value,
                      conformal_boundaries_physics, coupling_role_text, coupling_type_accepts, coupling_writes,
                      default_precision_ignored, effective_coupling_every, with_default_precision,
-                     feature_precision_misfit, fill_defaults, get_registry,
+                     feature_precision_misfit, fill_defaults, get_registry, memory_check_level,
                      output_field_names, param_visible, short_repr, solver_backend, solver_grid, solver_misfit,
                      state_field_names,
                      subpixel_smoothing_physics, valid_every)
@@ -62,27 +63,73 @@ _GMSH_ENVIRONMENT = 'OPEN_SOL_GMSH'   # path of the gmsh program (MeshSpec.meshe
 
 
 def validate(spec, registry=None, mesh_estimate=None, mesh_error=None, memory_budget=None, memory_estimate=None,
-             host_budget=None):
+             host_budget=None, memory_parts=None):
     """Issues of the model in GUI tree order (errors block building); CPU only, never raises for model errors.
     mesh_estimate / mesh_error: cached meshing estimates {mesh name: estimate} / failure messages {mesh name: text}, or
     one estimate / message of the default mesh; the missing used meshes are estimated here; memory_budget: GPU pool
     budget [bytes] (None: no GPU memory check); memory_estimate: a cached meshing.estimate_memory result of those
     meshes (else computed); host_budget: available host RAM [bytes] (core.host_memory.available_bytes; None: only the
-    fixed LARGE_HOST_BYTES warning)."""
+    fixed LARGE_HOST_BYTES warning); memory_parts: that estimate's by_mesh parts, naming the mesh a budget issue is
+    reported at (None: computed when one is reported)."""
     registry = get_registry() if registry is None else registry
-    return _Validator(spec, registry, mesh_estimate, mesh_error, memory_budget, memory_estimate, host_budget).run()
+    return _Validator(spec, registry, mesh_estimate, mesh_error, memory_budget, memory_estimate, host_budget,
+                      memory_parts).run()
+
+
+@dataclass(frozen=True)
+class MemoryVerdict:
+    """Budget judgement of a memory estimate: the used mesh its issues are reported at (the largest part), the budgets
+    it exceeds, and the used element meshes whose counts are still size-based (pending: a build meshes them first
+    and judges on the built counts)."""
+    mesh: str
+    gpu_over: bool
+    host_over: bool
+    pending: tuple
+
+    @property
+    def over(self) -> bool:
+        return self.gpu_over or self.host_over
+
+
+def memory_verdict(spec, mesh_estimates, estimate, memory_budget=None, host_budget=None, parts=None) -> MemoryVerdict:
+    """MemoryVerdict of a meshing.estimate_memory result of the used meshes {name: estimate} against the GPU budget
+    (gpu backend) and the available host RAM (None: not judged); parts: its by_mesh ({} / None: the first mesh)."""
+    held = backend_memory(spec, estimate)
+    budget = None if solver_backend(spec) == 'cpu' else memory_budget
+    gpu_over = bool(budget) and held.device_peak > budget
+    host_over = host_budget is not None and held.host > host_budget
+    by_device = bool(budget) and (gpu_over or not host_over)
+    part_bytes = {}
+    for name, part in (parts or {}).items():
+        if name in mesh_estimates:
+            held_part = backend_memory(spec, part)
+            part_bytes[name] = held_part.device_peak if by_device else held_part.host
+    mesh = max(part_bytes, key=part_bytes.get) if part_bytes else next(iter(mesh_estimates), '')
+    pending = tuple(name for name, mesh_estimate in mesh_estimates.items() if has_estimated_counts(mesh_estimate))
+    return MemoryVerdict(mesh, gpu_over, host_over, pending)
+
+
+def refused_on_estimated_counts(spec, mesh_estimates, estimate, memory_budget=None, host_budget=None) -> bool:
+    """True when the budget check would refuse the model (memory_check 'error') on element counts that are only
+    size-based: the caller builds those meshes (meshing.built_mesh_estimates) and judges on their counts."""
+    if (not mesh_estimates or estimate is None or memory_check_level(spec) != 'error'
+            or any(mesh is None for mesh in mesh_estimates.values())):
+        return False
+    verdict = memory_verdict(spec, mesh_estimates, estimate, memory_budget, host_budget)
+    return verdict.over and bool(verdict.pending)
 
 
 class _Validator:
     """One validation pass: partial evaluation (parameters, geometry, mesh) in __init__, the checks in run()."""
 
     def __init__(self, spec, registry, mesh_estimate, mesh_error, memory_budget=None, memory_estimate=None,
-                 host_budget=None):
+                 host_budget=None, memory_parts=None):
         self.spec = spec
         self.registry = registry
         self.memory_budget = memory_budget
         self.host_budget = host_budget
         self.memory_estimate = memory_estimate
+        self.memory_parts = memory_parts
         self.issues = []
         self.n_errors = 0
         parameter_errors, geometry_errors = {}, {}
@@ -1280,26 +1327,46 @@ class _Validator:
                                    f"physics on one mesh (now: {', '.join(sorted(set(meshes.values())))})")
 
     def check_memory(self):
-        """meshing.estimate_memory of every used mesh against memory_budget and host_budget (error above, warning
-        above MEMORY_WARN_FRACTION; no GPU budget: no GPU check; no host budget: LARGE_HOST_BYTES warning), at
-        ('meshes',); on the cpu backend the device estimate counts against host_budget too."""
+        """meshing.estimate_memory of every used mesh against memory_budget and host_budget (above: an issue at
+        memory_check_level, error by default; warning above MEMORY_WARN_FRACTION; no GPU budget: no GPU check; no host
+        budget: LARGE_HOST_BYTES warning), at the ('mesh', name) of memory_verdict (the largest part); on the cpu
+        backend the device estimate counts against host_budget too. An error on size-based element counts says so:
+        build always meshes first and judges the built counts, api.check when refused_on_estimated_counts."""
         if not self.vctx.meshes or any(mesh is None for mesh in self.vctx.meshes.values()):
             return
-        path = ('meshes',)
-        estimate = self.memory_estimate
-        if estimate is None:
+        whole_estimate = self.memory_estimate
+        if whole_estimate is None:
             try:
-                estimate = estimate_memory(self.spec, self.vctx.parameters, self.registry, self.vctx.meshes,
-                                           shapes=self.vctx.shapes)
+                whole_estimate = estimate_memory(self.spec, self.vctx.parameters, self.registry, self.vctx.meshes,
+                                                 shapes=self.vctx.shapes)
             except MESH_ESTIMATE_ERRORS:
                 return   # the failing input is reported at its own node
             except Exception as exc:   # a crashing memory_estimate callback must not take down validation
-                self.error(path, internal_error_text('the memory estimate', exc))
+                self.error(('meshes',), internal_error_text('the memory estimate', exc))
                 return
-        estimate = backend_memory(self.spec, estimate)   # cpu: the device arrays live in RAM, one host budget
+        estimate = backend_memory(self.spec, whole_estimate)   # cpu: the device arrays live in RAM, one host budget
         budget = None if solver_backend(self.spec) == 'cpu' else self.memory_budget
-        if budget and estimate.device_peak > MEMORY_WARN_FRACTION * budget:
-            over = estimate.device_peak > budget
+        host_budget = self.host_budget
+        gpu_close = bool(budget) and estimate.device_peak > MEMORY_WARN_FRACTION * budget
+        host_close = host_budget is not None and estimate.host > MEMORY_WARN_FRACTION * host_budget
+        host_large = host_budget is None and estimate.host > LARGE_HOST_BYTES
+        if not (gpu_close or host_close or host_large):
+            return
+        verdict = memory_verdict(self.spec, self.vctx.meshes, whole_estimate, self.memory_budget, host_budget,
+                                 self._memory_parts())
+        path = ('mesh', verdict.mesh)
+        refuses = memory_check_level(self.spec) == 'error'
+        over_issue = self.error if refuses else self.warning
+        if not refuses:
+            override = " (Solvers memory_check 'warning': running anyway, the runtime memory guards decide)"
+        elif verdict.pending:   # not final yet: the element counts come from the sizes
+            pending_names = ', '.join(f"'{name}'" for name in verdict.pending)
+            override = (f'. The element count of mesh {pending_names} is estimated from its sizes: a build makes the '
+                        f'mesh first and judges on its real count (GUI: Build mesh on the mesh node)')
+        else:
+            override = ''
+        if gpu_close:
+            over = verdict.gpu_over
             largest = '; '.join(f'{label} {format_bytes(size)}' for label, size in sorted(
                 estimate.device_items(), key=lambda item: -item[1])[:3])
             external = (f', cuDSS factors outside the pool {format_bytes(estimate.external_peak)}'
@@ -1309,14 +1376,28 @@ class _Validator:
                     f'while running{external}) '
                     f"{'exceeds' if over else 'is close to'} the GPU budget {format_bytes(budget)}; largest: "
                     f'{largest}. Reduce the cell count (mesh cell size, domain size), DFT / far-field boxes or their '
-                    f'n_wavelengths, or close other GPU programs')
-            (self.error if over else self.warning)(path, text)
-        host_budget = self.host_budget
-        if host_budget is not None and estimate.host > MEMORY_WARN_FRACTION * host_budget:
-            over = estimate.host > host_budget
-            (self.error if over else self.warning)(path, _host_memory_text(estimate, host_budget))
-        elif host_budget is None and estimate.host > LARGE_HOST_BYTES:
+                    f'n_wavelengths, close other GPU programs, or set the Solvers memory_check to warning (GUI: '
+                    f'Override memory warning, on this mesh node) when the estimate is known to be high')
+            (over_issue if over else self.warning)(path, text + (override if over else ''))
+        if host_close:
+            over = verdict.host_over
+            (over_issue if over else self.warning)(path, _host_memory_text(estimate, host_budget)
+                                                   + (override if over else ''))
+        elif host_large:
             self.warning(path, _host_memory_text(estimate, None))
+
+    def _memory_parts(self):
+        """{used mesh name: its part of the memory estimate} for memory_verdict: the caller's memory_parts, {} with
+        one mesh (the issue is its own), else estimated here ({} when that fails: the first used mesh)."""
+        if self.memory_parts is not None or len(self.vctx.meshes) < 2:
+            return self.memory_parts or {}
+        parts = {}
+        try:
+            estimate_memory(self.spec, self.vctx.parameters, self.registry, self.vctx.meshes, by_mesh=parts,
+                            shapes=self.vctx.shapes)
+        except Exception:   # check_memory already has the whole estimate: only the node of its issue is at stake
+            return {}
+        return parts
 
     def _check_refinement(self, path, index, refinement, element_kind=None):
         """One mesh refinement; element_kind 'triangles' / 'tetrahedra': a maximum element size (no per-axis sizes,
@@ -1397,6 +1478,9 @@ class _Validator:
                                      f"{', '.join(SOLVER_BACKENDS)}")
             return
         backend = solver_backend(spec)
+        if spec.solver_defaults.memory_check not in MEMORY_CHECKS:
+            self.error(('solvers',), f'memory_check {short_repr(spec.solver_defaults.memory_check)} is not one of '
+                                     f"{', '.join(MEMORY_CHECKS)}")
         self._check_default_precision()
         self._check_subpixel_smoothing()
         self._check_conformal_boundaries()
@@ -1895,7 +1979,9 @@ class _Validator:
                 problem, ok = self._call(path, 'the sweep value check', self._sweep_value_problem, sweep.parameter,
                                          value)
                 if ok and problem is not None:
-                    self.error(path, f'sweep value {index + 1} ({sweep.parameter} = {value:g}): {problem}')
+                    text, level = problem
+                    (self.error if level == 'error' else self.warning)(
+                        path, f'sweep value {index + 1} ({sweep.parameter} = {value:g}): {text}')
 
     def _sweep_range_ok(self, path, sweep):
         """Report a bad linear / log sweep range (count, lower / upper, a log range through or at zero); True when ok."""
@@ -1920,27 +2006,27 @@ class _Validator:
         return True
 
     def _sweep_value_problem(self, parameter, value):
-        """First model error the sweep value brings to a valid base model (parameters, geometry, domain size, mesh
-        estimate, memory estimate over memory_budget / host_budget), as the study builds it (expression replaced by
-        the value)."""
+        """(text, issue level) of the first model problem the sweep value brings to a valid base model (parameters,
+        geometry, domain size, mesh estimate: 'error'; memory estimate over memory_budget / host_budget:
+        memory_check_level), as the study builds it (expression replaced by the value); None without one."""
         parameter_errors, geometry_errors = {}, {}
         parameters = evaluate_parameters([(item.name, repr(float(value)) if item.name == parameter else item.expression)
                                           for item in self.spec.parameters], errors=parameter_errors)
         if parameter_errors:
             name, message = next(iter(parameter_errors.items()))
-            return f"parameter '{name}': {message}"
+            return f"parameter '{name}': {message}", 'error'
         shapes = resolve_geometry(self.spec, parameters, errors=geometry_errors)
         if geometry_errors:
             name, message = next(iter(geometry_errors.items()))
-            return f"geometry object '{name}': {message}"
+            return f"geometry object '{name}': {message}", 'error'
         try:
             domain_map(self.spec, parameters)   # the size, and a polar / spherical angle range
         except ValueError as exc:   # ExpressionError included
-            return error_message(exc)
+            return error_message(exc), 'error'
         try:
             meshes = estimate_meshes(self.spec, parameters, self.registry, shapes)
         except MESH_ESTIMATE_ERRORS as exc:
-            return f'mesh estimate failed: {error_message(exc)}'
+            return f'mesh estimate failed: {error_message(exc)}', 'error'
         gpu_budget = None if solver_backend(self.spec) == 'cpu' else self.memory_budget   # check_memory's rule
         if not gpu_budget and self.host_budget is None:
             return None
@@ -1948,15 +2034,16 @@ class _Validator:
             estimate = backend_memory(self.spec, estimate_memory(self.spec, parameters, self.registry, meshes,
                                                                  shapes=shapes))
         except MESH_ESTIMATE_ERRORS as exc:
-            return f'memory estimate failed: {error_message(exc)}'
+            return f'memory estimate failed: {error_message(exc)}', 'error'
+        level = memory_check_level(self.spec)
         if gpu_budget and estimate.device_peak > gpu_budget:
             largest = '; '.join(f'{label} {format_bytes(size)}' for label, size in sorted(
                 estimate.device_items(), key=lambda item: -item[1])[:2])
             return (f'estimated GPU memory {format_bytes(estimate.device_peak)} at the peak exceeds the GPU budget '
                     f'{format_bytes(self.memory_budget)} (largest: {largest}); narrow the sweep range or reduce the '
-                    f'cell count')
+                    f'cell count'), level
         if self.host_budget is not None and estimate.host > self.host_budget:
-            return f'{_host_memory_text(estimate, self.host_budget)}, or narrow the sweep range'
+            return f'{_host_memory_text(estimate, self.host_budget)}, or narrow the sweep range', level
         return None
 
     # ---- derived values and analytic curves ----

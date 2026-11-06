@@ -29,12 +29,17 @@ def phase_before_items(phase_bytes, later_bytes) -> int:
     return max(int(phase_bytes) - int(later_bytes), 0)
 
 
-def largest_phase(transient_items) -> tuple:
-    """(phase, bytes) of the run phase whose transient items sum largest (('', 0) without any)."""
+def phase_totals(transient_items) -> dict:
+    """{phase: summed bytes} of (phase, label, bytes) items."""
     totals = {}
     for phase, _, size in transient_items:
         totals[phase] = totals.get(phase, 0) + int(size)
-    return max(totals.items(), key=lambda entry: entry[1], default=('', 0))
+    return totals
+
+
+def largest_phase(transient_items) -> tuple:
+    """(phase, bytes) of the run phase whose transient items sum largest (('', 0) without any)."""
+    return max(phase_totals(transient_items).items(), key=lambda entry: entry[1], default=('', 0))
 
 
 @dataclass(frozen=True)
@@ -42,8 +47,9 @@ class MemoryEstimate:
     """Estimated bytes: device (cupy pool) kept by the build (gpu_steady), its build high-water mark (gpu_build_peak,
     >= gpu_steady), device the study adds while it runs (gpu_run = run_items, kept once allocated, + the largest phase of
     transient_items ((phase, label, bytes): freed when the phase ends; phases never overlap), never seen by the build
-    ledger), device outside the pool (gpu_external: cuDSS factors, + external_extra: the largest factorisation's peak on
-    top), host (CPU factorisations, analyses); items / host_items / run_items / external_items = ((label, bytes), ...)."""
+    ledger), device outside the pool (gpu_external: cuDSS factors alive through the run, external_transient_items:
+    factors alive only in one run phase, + external_extra: the largest factorisation's peak on top), host (CPU
+    factorisations, analyses); items / host_items / run_items / external_items = ((label, bytes), ...)."""
     gpu_steady: int = 0
     gpu_build_peak: int = 0
     host: int = 0
@@ -55,6 +61,7 @@ class MemoryEstimate:
     gpu_external: int = 0
     external_extra: int = 0
     external_items: tuple = ()
+    external_transient_items: tuple = ()
 
     def __post_init__(self):
         object.__setattr__(self, 'gpu_steady', int(self.gpu_steady))
@@ -63,23 +70,29 @@ class MemoryEstimate:
             object.__setattr__(self, name, int(getattr(self, name)))
         for name in ('items', 'host_items', 'run_items', 'external_items'):
             object.__setattr__(self, name, tuple((str(label), int(size)) for label, size in getattr(self, name)))
-        object.__setattr__(self, 'transient_items', tuple((str(phase), str(label), int(size))
-                                                          for phase, label, size in self.transient_items))
+        for name in ('transient_items', 'external_transient_items'):
+            object.__setattr__(self, name, tuple((str(phase), str(label), int(size))
+                                                 for phase, label, size in getattr(self, name)))
 
     @classmethod
     def from_items(cls, items=(), build_extra=0, host_items=(), run_items=(), transient_items=(), external_items=(),
-                   external_extra=0):
+                   external_extra=0, external_transient_items=()):
         """Estimate whose gpu_steady / host / gpu_external are the sums of the items (zero-byte items dropped), gpu_run
         = run_items + the largest transient phase; gpu_build_peak = gpu_steady + build_extra, the transient device bytes
-        of this part's own build step; external_extra = the transient cuDSS bytes of its largest factorisation."""
+        of this part's own build step; external_extra = the transient cuDSS bytes of its largest factorisation;
+        external_transient_items ((phase, label, bytes)): factors alive only in that run phase (a factor alive in
+        several phases is listed once per phase)."""
         items, host_items, run_items, external_items = (
             tuple((label, int(size)) for label, size in group if int(size) > 0)
             for group in (items, host_items, run_items, external_items))
-        transient_items = tuple((phase, label, int(size)) for phase, label, size in transient_items if int(size) > 0)
+        transient_items, external_transient_items = (
+            tuple((phase, label, int(size)) for phase, label, size in group if int(size) > 0)
+            for group in (transient_items, external_transient_items))
         steady = sum(size for _, size in items)
         return cls(steady, steady + max(int(build_extra), 0), sum(size for _, size in host_items), items, host_items,
                    sum(size for _, size in run_items) + largest_phase(transient_items)[1], run_items, transient_items,
-                   sum(size for _, size in external_items), max(int(external_extra), 0), external_items)
+                   sum(size for _, size in external_items), max(int(external_extra), 0), external_items,
+                   external_transient_items)
 
     @property
     def build_extra(self) -> int:
@@ -93,35 +106,57 @@ class MemoryEstimate:
 
     @property
     def external_peak(self) -> int:
-        """Device bytes outside the pool at their high-water mark: gpu_external + external_extra."""
-        return self.gpu_external + self.external_extra
+        """Device bytes outside the pool at their high-water mark: gpu_external + the largest phase of
+        external_transient_items + external_extra."""
+        return (self.gpu_external + max(phase_totals(self.external_transient_items).values(), default=0)
+                + self.external_extra)
 
     @property
     def device_peak(self) -> int:
-        """Device high-water mark the GPU budget is checked against: gpu_peak + external_peak."""
-        return self.gpu_peak + self.external_peak
+        """Device high-water mark the GPU budget is checked against: the build peak, or steady + run items + per run
+        phase its pool transients and the factors alive in it (the largest phase), + the run-long factors and
+        external_extra."""
+        pool, external = phase_totals(self.transient_items), phase_totals(self.external_transient_items)
+        run_phase = max((pool.get(phase, 0) + external.get(phase, 0) for phase in set(pool) | set(external)),
+                        default=0)
+        run = self.gpu_steady + sum(size for _, size in self.run_items) + run_phase
+        return max(self.gpu_build_peak, run) + self.gpu_external + self.external_extra
 
     def labelled(self, prefix):
         """Copy with every item label (and transient phase) prefixed by '<prefix>: '."""
         def prefixed(group):
             return tuple((f'{prefix}: {label}', size) for label, size in group)
+
+        def phased(group):
+            return tuple((f'{prefix}: {phase}', f'{prefix}: {label}', size) for phase, label, size in group)
         return replace(self, items=prefixed(self.items), host_items=prefixed(self.host_items),
                        run_items=prefixed(self.run_items), external_items=prefixed(self.external_items),
-                       transient_items=tuple((f'{prefix}: {phase}', f'{prefix}: {label}', size)
-                                             for phase, label, size in self.transient_items))
+                       transient_items=phased(self.transient_items),
+                       external_transient_items=phased(self.external_transient_items))
 
     def largest_items(self, count=3, host=False, run=False, external=False):
         """The `count` largest (label, bytes) items (host / run (transient items included) / external items with host
         / run / external), largest first."""
         group = (self.host_items if host else self.run_items + tuple((label, size) for _, label, size in
                                                                      self.transient_items) if run
-                 else self.external_items if external else self.items)
+                 else self.external_items + self._external_transient_once() if external else self.items)
         return sorted(group, key=lambda item: -item[1])[:count]
 
+    def _external_transient_once(self):
+        """(label, bytes) of every phase-bound factor once (a factor listed in several phases: its largest entry)."""
+        sizes = {}
+        for _, label, size in self.external_transient_items:
+            sizes[label] = max(sizes.get(label, 0), size)
+        return tuple(sizes.items())
+
     def device_items(self):
-        """Every device item (kept, run, transient and outside the pool) as (label, bytes)."""
-        return (self.items + self.run_items + tuple((label, size) for _, label, size in self.transient_items)
-                + self.external_items)
+        """Every device item (kept, run, transient and outside the pool) as (label, bytes), a factor of several
+        phases once."""
+        transient = {}
+        for _, label, size in self.transient_items:   # an item listed in several phases (the pencil) once
+            transient[label] = max(transient.get(label, 0), size)
+        return (self.items + self.run_items + tuple(transient.items()) + self.external_items
+                + self._external_transient_once())
 
     def as_dict(self) -> dict:
         """JSON-ready record (check.json memory_estimate): byte totals and the items, largest first."""
@@ -135,13 +170,18 @@ class MemoryEstimate:
                 'transient_items': [{'phase': phase_name, 'label': label, 'bytes': size} for phase_name, label, size
                                     in sorted(self.transient_items, key=lambda item: -item[2])],
                 'largest_phase': {'phase': phase, 'bytes': phase_bytes} if phase_bytes else None,
-                'external_items': records(self.external_items)}
+                'external_items': records(self.external_items),
+                'external_transient_items': [{'phase': phase_name, 'label': label, 'bytes': size}
+                                             for phase_name, label, size in sorted(self.external_transient_items,
+                                                                                   key=lambda item: -item[2])],
+                'external_peak': self.external_peak}
 
 
 def combine(estimates, build_cache_bytes=0) -> MemoryEstimate:
     """Sum of parts built one after another: steady, host, run, external and items add; the build peak = total steady +
     the build caches alive during the whole build (build_cache_bytes) + the largest transient extra of a single part;
-    transient run phases and the external factorisation extra: the largest of all parts (they never overlap)."""
+    transient run phases (pool and phase-bound factors) and the external factorisation extra: the largest of all parts
+    (they never overlap)."""
     estimates = list(estimates)
     steady = sum(estimate.gpu_steady for estimate in estimates)
     largest_extra = max((estimate.build_extra for estimate in estimates), default=0)
@@ -155,7 +195,8 @@ def combine(estimates, build_cache_bytes=0) -> MemoryEstimate:
                           sum(size for _, size in run_items) + largest_phase(transient_items)[1],
                           run_items, transient_items,
                           sum(size for _, size in external_items),
-                          max((estimate.external_extra for estimate in estimates), default=0), external_items)
+                          max((estimate.external_extra for estimate in estimates), default=0), external_items,
+                          tuple(item for estimate in estimates for item in estimate.external_transient_items))
 
 
 def grid_transfer_estimate(source_edges, target_edges, kind) -> tuple:

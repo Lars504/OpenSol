@@ -513,7 +513,9 @@ def _step_numba(bouzidi):
         c45, c15 = np.float32(4.5), np.float32(1.5)
         bouzidi_links = bool(bouzidi)
 
-        @numba.njit(cache=False)
+        # cache=True: an uncached compile (~9 s) lands in whichever case first steps on the cpu (bouzidi True / False
+        # are separate cache entries: numba keys closures by their cell values)
+        @numba.njit(cache=True)
         def neighbour_velocity(g_in, fluid, force_x, force_y, i, j, wx, wy, periodic_x, periodic_y):
             if periodic_x:
                 i = ((i % wx) + wx) % wx
@@ -529,7 +531,7 @@ def _step_numba(bouzidi):
                   - half * force_y[i, j])
             return True, ux, uy
 
-        @numba.njit(cache=False)
+        @numba.njit(cache=True)
         def face_velocity_gradient(g_in, fluid, force_x, force_y, face, i, j, side, u0x, u0y, wx, wy, periodic_x,
                                    periodic_y):
             x_face = face < 2
@@ -586,7 +588,7 @@ def _step_numba(bouzidi):
                 return -tangential_y, normal_y, tangential_x, tangential_y
             return tangential_x, tangential_y, normal_x, -tangential_x
 
-        @numba.njit(parallel=True, cache=False)
+        @numba.njit(parallel=True, cache=True)
         def kernel(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus, force_x,
                    force_y, face_kind, face_values, wx, wy, wall_row, wall_fraction):
             periodic_x = face_kind[0] == FACE_PERIODIC

@@ -7,7 +7,7 @@ from ..model.expressions import error_message
 from ..model.scene_3d import build_scene
 from ..viz.scene_figure import DEFAULT_VIEW, PLANE_CELLS, draw_scene_3d, new_scene_axes
 from .canvas import _CATEGORY_COLORS, _HIGHLIGHT_COLOR, _MATERIAL_COLORS
-from .forms import rich_tooltip
+from .forms import rich_tooltip, selectable
 from .helpers import ask_save_path, remember_directory
 
 _REDRAW_DELAY_MS = 300
@@ -68,7 +68,7 @@ class Preview3DPanel(QtWidgets.QWidget):
         for widget in (self._stretch_check, self._planes_check, reset_button, export_button):
             controls.addWidget(widget)
         controls.addStretch()
-        self._note = QtWidgets.QLabel()
+        self._note = selectable(QtWidgets.QLabel())
         self._note.setWordWrap(True)
         self._note.setStyleSheet('color:#555; padding:2px 4px;')
         self._layout = QtWidgets.QVBoxLayout(self)

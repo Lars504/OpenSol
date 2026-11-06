@@ -875,9 +875,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   set (thermo-optic Picard) GMRES on the old factor runs first (sparse_direct RECYCLE_*). `centre_phasors` (host) feeds
   the probes, `yee()` (cached per driven solve) the flux / far-field monitors. Point currents (`point_current_rhs`)
   use the FDTD sign as the 2D FDFD. Estimator `memory_estimates.bor_memory_estimate` (host factor
-  2 x host_lu_bytes(3 n); cudss: operator copies (eigen: EIGEN_PHASE) and an external factor item; line_block:
-  `bor_line_block.line_block_bytes` run items with min(orders, MAX_CHUNK_SHIFTS) factors); its time recipe leaves a
-  cudss eigen node "not estimated".
+  2 x host_lu_bytes(3 n); cudss: operator copies (eigen: EIGEN_PHASE) and an external factor item; line_block by
+  the path the study takes: eigen and driven order sums bind the order family, `bor_line_block.line_block_bytes`
+  run items (K0 / K1 / K2 caches, min(orders, MAX_CHUNK_SHIFTS) factors); single-order driven solves hold whole
+  operators, `driven_line_block_bytes` (one operator and factor, or the batch of min(study wavelengths,
+  MAX_BATCH_WAVELENGTHS) operators with a factor each; no K1 / K2 caches)); its time recipe leaves a cudss eigen
+  node "not estimated". Open: the tensor cuDSS factor still takes the n log2 n growth law, which holds no per-row
+  part (em_bor_cpu_gpu ports, 19,200 unknowns: 812,107 entries x 16 B = 13.0 MB of 25.6 MB permanent, the rest the
+  kept matrix and ~540 B / row; the law books 1.5x the entries and still lands 27 % low).
 - Flux (module header): `box_flux` (closed cell box) equals `source_power` = pi / (omega mu0) Im(x^H b) to solver
   precision when its faces lie in lossless PML-free cells. r-face weights: inner cell centre r for E_phi H_z, edge
   rbar for E_z H_phi. `line_flux` (flux_monitor): share-weighted span ends (axis edge weight 0); exact for a line from
@@ -1061,8 +1066,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - Backend of the analytic FDFD / BOR self-tests: every FDFD path factorises on the host, so the analytic model cases
   run on the cpu (`selftests_fdfd.cpu_specs` in their case `specs`, never in the shared spec builders, which
   em_fdfd_cpu_gpu / em_bor_cpu_gpu / em_fdfd_adjoint_cpu_gpu reuse per backend); line_block runs keep the default
-  backend. The gpu assembly of a feature is covered only by those parity cases: a new FDFD feature tested only in a cpu
-  case gets one small model in em_fdfd_cpu_gpu (`_groups`; its physics named 'em'). Not covered: conformal PEC in a
+  backend. The gpu runs of the FDFD types are those parity cases (`_groups`; physics named 'em'); a new feature needs
+  no gpu model of its own (root file "Selftest structure"). Not covered: conformal PEC in a
   driven run (the reciprocity pair names its physics from_a / from_b).
 - Memory estimators (`memory_estimates.py`, E8): FDTD / FDFD / em_modes physics, the FDTD dft / flux / mode / far-field
   monitors and every pec_domain, each counted from the engine code it names (SuperLU host factor by

@@ -236,12 +236,12 @@ def mesh_kind_problem(spec, kind) -> str:
 
 
 def mesh_size_text(estimate) -> str:
-    """'412 × 210 cells' (3D: × nz) of a tensor estimate, '~18,340 elements' of a triangle / tetrahedron one; '' for
-    None."""
+    """'412 × 210 cells' (3D: × nz) of a tensor estimate, '~18,340 elements' of a triangle / tetrahedron one (no '~'
+    with the built mesh's counts); '' for None."""
     if estimate is None:
         return ''
     if estimate.kind != 'tensor':
-        return f'~{int(estimate.n_elements):,} elements'
+        return f"{'' if estimate.counts_built else '~'}{int(estimate.n_elements):,} elements"
     z_count = f' × {estimate.nz}' if estimate.dz_cells is not None else ''
     return f'{estimate.nx} × {estimate.ny}{z_count} cells'
 

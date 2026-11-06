@@ -514,6 +514,14 @@ class BuildContext:
 def build(spec, registry=None, log=None, live_parameters=()) -> Session:
     """Validate and build spec into a Session (GPU); ModelError lists the problems at their node paths.
     live_parameters: a reused sweep build's swept parameter and its dependents (BuildContext.follow_parameters)."""
+    from .meshing import element_meshes_kept
+    with element_meshes_kept():   # an element mesh made for the memory judgement is the one the domain stage uses
+        return _build(spec, registry, log, live_parameters)
+
+
+def _build(spec, registry, log, live_parameters):
+    """build() inside its element mesh scope."""
+    from .meshing import has_estimated_counts
     from .validate import validate
     start = time.perf_counter()
     registry = registry if registry is not None else get_registry()
@@ -522,14 +530,24 @@ def build(spec, registry=None, log=None, live_parameters=()) -> Session:
     budget = gpu_memory.budget_bytes()
     if budget is not None:   # arrays of other live sessions (an earlier api Results) already hold part of the pool
         budget = max(budget - gpu_memory.pool_used_bytes(), 0)
+    host_budget = host_memory.available_bytes()
     # refuse a model that does not fit; the available RAM already excludes what live sessions hold on the host.
     # One mesh / memory estimate serves validate and the ledger check (None: validate estimates and reports).
     mesh_estimate, memory_estimate, cached_shapes = _cached_estimates(spec, registry)
+    meshing_seconds = 0.0
+    if (memory_estimate is not None and mesh_estimate
+            and all(estimate is not None for estimate in mesh_estimate.values())
+            and any(has_estimated_counts(estimate) for estimate in mesh_estimate.values())):
+        # size-based element counts (a size-field integral: too high or too low, e.g. 0.36x on a graded 5 mm mesh):
+        # every other error first (no mesher run for a model that fails anyway), then the meshes are built (kept for
+        # the domain stage, so no second mesher run) and the memory judgement and ledger check are on their counts
+        _raise_errors(validate(spec, registry, mesh_estimate=mesh_estimate, memory_estimate=memory_estimate))
+        meshing_start = time.perf_counter()
+        mesh_estimate, memory_estimate = _built_estimates(spec, registry, mesh_estimate, cached_shapes, log)
+        meshing_seconds = time.perf_counter() - meshing_start
     issues = validate(spec, registry, mesh_estimate=mesh_estimate, memory_budget=budget,
-                      memory_estimate=memory_estimate, host_budget=host_memory.available_bytes())
-    errors = [issue for issue in issues if issue.level == 'error']
-    if errors:
-        raise ModelError(errors)
+                      memory_estimate=memory_estimate, host_budget=host_budget)
+    _raise_errors(issues)
     for issue in issues:
         log(issue.level, f'{node_label(issue.path)}: {issue.message}')
     validated = time.perf_counter()
@@ -546,7 +564,9 @@ def build(spec, registry=None, log=None, live_parameters=()) -> Session:
     from .meshing import kept_element_mesh_keys
     kept_mesh_keys = kept_element_mesh_keys()   # before meshing: the build estimate skips a mesher run reusing one
     ledger = gpu_memory.MemoryLedger(backend=solver_backend(spec))   # cpu: traced numpy bytes (tracemalloc)
-    ledger.add_time('validation + mesh / memory estimates', validated - start)
+    ledger.add_time('validation + mesh / memory estimates', validated - start - meshing_seconds)
+    if meshing_seconds:
+        ledger.add_time('element meshes for the memory check', meshing_seconds)
     ledger.add_time('parameters, geometry + memory record', time.perf_counter() - validated)
     try:
         session = _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_parameters)
@@ -1094,9 +1114,39 @@ def _cached_estimates(spec, registry):
         return mesh_estimate, None, shapes
 
 
+def _raise_errors(issues):
+    """ModelError of the error-level issues, if any."""
+    errors = [issue for issue in issues if issue.level == 'error']
+    if errors:
+        raise ModelError(errors)
+
+
+def _built_estimates(spec, registry, mesh_estimate, shapes, log):
+    """({mesh name: estimate with its element mesh built and counted}, their MemoryEstimate or None when it fails:
+    validate reports why): the numbers the memory judgement and the build ledger check are on; the meshes stay kept
+    for the domain stage."""
+    from . import meshing
+    with _issue_at(('parameters',)):
+        parameters = evaluate_parameters(spec.parameters)
+    with _issue_at(('geometry',)):
+        shapes = resolve_geometry(spec, parameters) if shapes is None else shapes
+    built = {}
+    for name, estimate in mesh_estimate.items():
+        with _issue_at(('mesh', name)):
+            built.update(meshing.built_mesh_estimates(spec, parameters, registry, {name: estimate}, shapes, log))
+        if built[name] is not estimate:
+            log('info', f"mesh '{name}': {built[name].n_elements:,} {estimate.kind} built before the memory check (the "
+                        f'sizes gave an estimate of {estimate.n_elements:,})')
+    try:
+        return built, meshing.estimate_memory(spec, parameters, registry, built, shapes=shapes)
+    except Exception:
+        return built, None
+
+
 def _memory_estimate(spec, parameters, registry, log, estimate=None):
-    """{gpu_steady, gpu_build_peak, gpu_run, gpu_external, external_extra, host, items / run_items / external_items
-    [[label, bytes]], transient_items [[phase, label, bytes]]} of meshing.estimate_memory (CPU; estimate: an already
+    """{gpu_steady, gpu_build_peak, gpu_run, gpu_external, external_extra, external_peak, host, items / run_items /
+    external_items [[label, bytes]], transient_items / external_transient_items [[phase, label, bytes]]} of
+    meshing.estimate_memory (CPU; estimate: an already
     computed one); a failing estimate is logged as a warning (an estimator bug), never stops the build (None then)."""
     from . import meshing
     try:
@@ -1114,7 +1164,10 @@ def _memory_estimate(spec, parameters, registry, log, estimate=None):
                 'transient_items': [[str(phase), str(label), _optional_bytes(size)]
                                     for phase, label, size in (estimate.transient_items or ())],
                 'external_items': [[str(label), _optional_bytes(size)]
-                                   for label, size in (estimate.external_items or ())]}
+                                   for label, size in (estimate.external_items or ())],
+                'external_transient_items': [[str(phase), str(label), _optional_bytes(size)]
+                                             for phase, label, size in (estimate.external_transient_items or ())],
+                'external_peak': _optional_bytes(estimate.external_peak)}
     except Exception as exc:
         log('warning', f'GPU memory estimate failed (no estimate check for this build): {_exception_message(exc)}')
         return None
@@ -1127,17 +1180,28 @@ def _memory_record(ledger, estimate, compare):
     if estimate is None:
         record['estimate'] = None
         return record
+    unseen_bytes = int(record.get('start_free_bytes') or 0)   # the pool peak cannot see temporaries placed there
     record['estimate'] = dict(
-        estimate,
+        estimate, peak_unseen_bytes=unseen_bytes,
         steady_deviation=_deviation(record['total_bytes'], estimate['gpu_steady']) if compare else None,
-        peak_deviation=_deviation(record['peak_bytes'], estimate['gpu_build_peak']) if compare else None)
+        peak_deviation=(_deviation(record['peak_bytes'], estimate['gpu_build_peak'], unseen_bytes) if compare
+                        else None))
     return record
 
 
-def estimate_verdict(measured_bytes, estimated_bytes) -> str:
+def estimate_gap(measured_bytes, estimated_bytes, unseen_bytes=0) -> int:
+    """Held minus estimated bytes, the held bytes taken within [measured, measured + unseen_bytes] nearest the
+    estimate (0 inside): a pool high-water mark misses up to the free blocks stranded before it started."""
+    measured, estimated = int(measured_bytes), int(estimated_bytes)
+    if estimated <= measured:
+        return measured - estimated
+    return min(measured + max(int(unseen_bytes), 0) - estimated, 0)
+
+
+def estimate_verdict(measured_bytes, estimated_bytes, unseen_bytes=0) -> str:
     """'over' (the estimate books more than was held), 'unaccounted' (more held than ESTIMATE_SMALL_ITEMS beyond it)
-    or '' (just below the measured bytes, or within ESTIMATE_FLOOR_BYTES); module constants."""
-    difference = int(measured_bytes) - int(estimated_bytes)
+    or '' (just below the held bytes, or within ESTIMATE_FLOOR_BYTES); estimate_gap, module constants."""
+    difference = estimate_gap(measured_bytes, estimated_bytes, unseen_bytes)
     if abs(difference) <= ESTIMATE_FLOOR_BYTES:
         return ''
     if difference < 0:
@@ -1164,12 +1228,13 @@ def _estimate_check_message(record):
     if not estimate:
         return ''
     mismatches = []
-    for label, measured_bytes, estimated_bytes, deviation in (
-            ('kept', record['total_bytes'], estimate['gpu_steady'], estimate['steady_deviation']),
-            ('build peak', record['peak_bytes'], estimate['gpu_build_peak'], estimate['peak_deviation'])):
+    for label, measured_bytes, estimated_bytes, deviation, unseen_bytes in (
+            ('kept', record['total_bytes'], estimate['gpu_steady'], estimate['steady_deviation'], 0),
+            ('build peak', record['peak_bytes'], estimate['gpu_build_peak'], estimate['peak_deviation'],
+             estimate.get('peak_unseen_bytes') or 0)):
         if deviation is not None:
             text = _verdict_text(label, measured_bytes, estimated_bytes, deviation,
-                                 estimate_verdict(measured_bytes, estimated_bytes))
+                                 estimate_verdict(measured_bytes, estimated_bytes, unseen_bytes))
             if text:
                 mismatches.append(text)
     if not mismatches:
@@ -1179,17 +1244,19 @@ def _estimate_check_message(record):
             "misreads its solver (summary.json build.gpu_breakdown and build.gpu_estimate list both sides)")
 
 
-def run_memory_record(build_memory, measured_bytes):
-    """({measured_bytes, estimated_bytes, deviation, verdict}, warning text or '') of a study run's pool high-water mark
-    since its build against the estimate's gpu_steady + gpu_run (estimate_verdict); (None, '') without an estimate."""
+def run_memory_record(build_memory, measured_bytes, unseen_bytes=0):
+    """({measured_bytes, estimated_bytes, unseen_bytes, deviation, verdict}, warning text or '') of a study run's pool
+    high-water mark since its build against the estimate's gpu_steady + gpu_run (estimate_verdict; unseen_bytes: the
+    free pool blocks stranded before the build, which the mark misses when the run reuses them); (None, '') without
+    an estimate."""
     estimate = (build_memory or {}).get('estimate')
     if not estimate or estimate.get('gpu_steady') is None:
         return None, ''
     estimated_bytes = estimate['gpu_steady'] + (estimate.get('gpu_run') or 0)
-    deviation = _deviation(measured_bytes, estimated_bytes)
-    verdict = estimate_verdict(measured_bytes, estimated_bytes)
-    record = {'measured_bytes': int(measured_bytes), 'estimated_bytes': int(estimated_bytes), 'deviation': deviation,
-              'verdict': verdict}
+    deviation = _deviation(measured_bytes, estimated_bytes, unseen_bytes)
+    verdict = estimate_verdict(measured_bytes, estimated_bytes, unseen_bytes)
+    record = {'measured_bytes': int(measured_bytes), 'estimated_bytes': int(estimated_bytes),
+              'unseen_bytes': int(unseen_bytes), 'deviation': deviation, 'verdict': verdict}
     if not verdict:
         return record, ''
     return record, ('GPU memory of the run (pool high-water mark since the build vs kept + run items): '
@@ -1201,11 +1268,12 @@ def run_memory_record(build_memory, measured_bytes):
 def external_memory_record(build_memory, measured_bytes):
     """({measured_bytes, estimated_bytes, deviation, verdict}, warning text or '') of the cuDSS high-water mark outside
     the pool since the build started (cudss_factor.external_high_water_bytes minus the bytes live then) against the
-    estimate's gpu_external + external_extra; (None, '') without an estimate or when neither side has any."""
+    estimate's external_peak (run-long factors + the largest phase of phase-bound ones + external_extra); (None, '')
+    without an estimate or when neither side has any."""
     estimate = (build_memory or {}).get('estimate')
     if not estimate or estimate.get('gpu_external') is None:
         return None, ''
-    estimated_bytes = int(estimate['gpu_external']) + int(estimate.get('external_extra') or 0)
+    estimated_bytes = int(estimate['external_peak'])
     if not estimated_bytes and not measured_bytes:
         return None, ''
     deviation = _deviation(measured_bytes, estimated_bytes)
@@ -1226,11 +1294,12 @@ def _optional_bytes(value):
     return None if value is None else int(round(float(value)))
 
 
-def _deviation(measured_bytes, estimated_bytes):
-    """measured / estimated - 1 (estimate floored at 1 byte), None without an estimate."""
+def _deviation(measured_bytes, estimated_bytes, unseen_bytes=0):
+    """estimate_gap / estimated: measured / estimated - 1 when nothing is unseen (estimate floored at 1 byte), None
+    without an estimate."""
     if estimated_bytes is None:
         return None
-    return (measured_bytes - estimated_bytes) / max(estimated_bytes, 1)
+    return estimate_gap(measured_bytes, estimated_bytes, unseen_bytes) / max(estimated_bytes, 1)
 
 
 # ---- error reporting ----

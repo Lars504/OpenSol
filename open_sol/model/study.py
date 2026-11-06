@@ -674,7 +674,8 @@ def _run_built(session, spec, registry, emit, control, service):
     run_memory, run_memory_message = (None, '') if unmeasured else run_memory_record(
         session.build_memory,
         max(gpu_memory.pool_reserved_bytes() - session.pool_baseline_bytes - session.pool_baseline_free_bytes,
-            gpu_memory.pool_used_bytes() - session.pool_baseline_bytes))
+            gpu_memory.pool_used_bytes() - session.pool_baseline_bytes),
+        unseen_bytes=session.pool_baseline_free_bytes)
     if run_memory_message:
         emit(LogEvent('warning', run_memory_message))
     external_memory, external_memory_message = None, ''

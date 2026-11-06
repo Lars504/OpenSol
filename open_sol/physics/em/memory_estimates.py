@@ -739,7 +739,7 @@ def bor_memory_estimate(settings_values, mesh, context):
                              later_factorisations(context) or (order_sum and n_listed > 1))
         external_items, external_extra = cudss_factor_items('the BOR curl-curl operator', unknowns, entries,
                                                             mixed=mixed)
-    if line_block:   # bor_line_block device factors
+    if line_block and (eigen or order_sum):   # bor_line_block.order_factorizations: the bound order family, its factors
         from .bor_line_block import line_block_bytes
         from ...solvers.line_block import MAX_CHUNK_SHIFTS
         operator, factors = line_block_bytes((int(mesh.nx), int(mesh.ny)), shifted.values['precision'],
@@ -747,6 +747,14 @@ def bor_memory_estimate(settings_values, mesh, context):
         run_items += [('line_block operator caches (K0 - k0^2 M, K1, K2)', operator),
                       (f'line_block kept factors ({min(n_orders, MAX_CHUNK_SHIFTS)} orders, chunked to the budget)',
                        factors)]
+    elif line_block:   # fdfd_bor._solve_line_block: whole operators, no order family (K1 / K2 caches) bound
+        from .bor_line_block import driven_line_block_bytes
+        from .fdfd_line_block import MAX_BATCH_WAVELENGTHS
+        n_operators = max(min(_harmonic_wavelength_count(context), MAX_BATCH_WAVELENGTHS), 1)
+        label = (f'line_block wavelength batch ({n_operators} operators: block caches, residual CSRs, factors; sized '
+                 'to the free memory at run time)' if n_operators > 1 else 'line_block bound operator and its factor')
+        run_items.append((label, driven_line_block_bytes((int(mesh.nx), int(mesh.ny)), shifted.values['precision'],
+                                                         n_operators, entries)))
     return MemoryEstimate.from_items((('centre fields (15 x float32)', 15 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)

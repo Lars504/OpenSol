@@ -330,6 +330,16 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   (the documentation rules of describe: model sub file). The same command rewrites `structure_index.md`: after adding,
   moving or removing a module or changing the first sentence of a module docstring, else selftest
   `structure_index_current` fails. Every new module starts with a docstring whose first sentence says what it holds.
+- Selftest structure:
+  - Cases span each module as light as possible: every physics type, feature, solver role and mesh kind it supports.
+  - Each case runs once, on its natural backend; each example once, on its own (`solver_defaults.backend`: an
+    example that needs the GPU sets 'gpu').
+  - Examples are included only if they have a sufficiently accurate analytical solution (a derived value with a
+    reference or an analytic curve); the others are not selftests and are not run or listed.
+  - Each physics type and solver runtime has at least one cpu run and one gpu run; a `*_cpu_gpu` parity case counts
+    as both.
+  - A backend variant is only for a module with no other case on that backend. Precision variants are a separate
+    question and stay.
 - Self-tests (E12): `physics/<name>/selftests*.py` and `coupling/selftests.py` hold SelfTestCases and template
   factories; `definition.register` registers types, templates, then its selftest loader
   (`registry.register_selftests(_selftest_cases)`: a module-level function that imports the selftests modules inside
@@ -338,15 +348,15 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   selftests module) pair to `TEMPLATE_SOURCES`. api built-ins templates_validate, examples_validate (every examples/**/*.json of a
   repository checkout), api_reference_current, import_contracts and structure_index_current run first (a named run:
   only the built-ins it names); the
-  registered cases (and the examples of each examples run) then run never-timed first, then by the cache's last
+  registered cases (and the examples of an examples run) then run never-timed first, then by the cache's last
   wall time, ties in registration (example: path) order. A
   case with `specs()` {} runs `check({})` directly. `check` gets each run's live Results (closed afterwards), may use
   only `status`, `summary()`, `field(name[, plane=, unfold=True, native=True])`, `snapshot_field(index, name[, plane=])`,
   `volume(name)`, `result(physics, feature, **options)`, `sector_result(physics, feature[, combined=True])`,
   `sweep_field(index, name)`, and returns {'measured', 'expected', 'error', 'tolerance', 'details'} (passed when error
-  <= tolerance). Backends of a case: `SelfTestCase.backends` (model sub file). To repeat a case per backend / solver
-  precision with its own tolerance use `SelfTestCase.variants` (`SelfTestVariant`, solvers sub file), not a copied
-  case. Case and template notes live in the sub files.
+  <= tolerance). Backends of a case: `SelfTestCase.backends` (model sub file). A variant (another backend / solver
+  precision with its own tolerance, within the rules above) is a `SelfTestCase.variants` entry (`SelfTestVariant`,
+  solvers sub file), not a copied case. Case and template notes live in the sub files.
 - `SelfTestCase.heavy`: set True on a case that took >= 5 s in a selftest run (record wall_time). CLI `selftest`
   runs the non-heavy cases, `--heavy` the heavy ones, `--all` everything (subsets and report files: model sub file).
 - Selftest reuse (`model.selftest_cache`): with an out_dir, an unnamed case whose last run passed (an example: passed or
@@ -391,7 +401,10 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   them); only the operator links at the wall change, each correction limited so the time step / conditioning is
   unchanged (the smallest cut never sets dt); honouring types and the locator: core sub file "Cut geometry".
 - Estimates mirror the solver: a setting where 0 = auto is resolved through the solver's own resolver (e.g.
-  `fluid.solver.steady_march_steps`), never used raw. Every memory budget check goes through `meshing.backend_memory`.
+  `fluid.solver.steady_march_steps`), never used raw. Every memory budget check goes through `meshing.backend_memory`
+  and takes its issue level from `schema.memory_check_level(spec)` (`solver_defaults.memory_check` 'warning' runs an
+  over-budget model anyway; a refusal is final only on built element counts, so build / api.check mesh first when the
+  size-based estimate of a triangle / tetrahedron mesh is over; model sub file "Memory estimate parts").
   A new physics / allocating feature MUST add its memory estimator (`PhysicsType.memory_estimate` /
   `FeatureType.memory_estimate`), counted from its own allocations (not the MaterialGrid arrays): the big arrays the
   solver holds, summed where they are held together, sizes derived from the code (stencil entry counts, dtypes),
@@ -400,8 +413,10 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   lists: a missing item or memory the code could free; both are leads on the solver (`builder.estimate_verdict`); a new allocation in
   an engine updates its estimator (else the build ledger warns), and anything allocated lazily after `finalize` is a
   run item, or a transient item of its phase when it is freed again (arrays of one solve / adjoint / refactorisation:
-  phases never overlap, the estimate takes the largest; build temporaries are the part's build_extra); a cuDSS factor
-  (outside the cupy pool) is an external item from `cudss_factor.factor_device_bytes`. A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` /
+  phases never overlap, the estimate takes the largest; split a solve into phases in the order the code allocates, so
+  no phase sums arrays that are never live together; build temporaries are the part's build_extra); a cuDSS factor
+  (outside the cupy pool) is an external item from `cudss_factor.factor_device_bytes`, bound to the phases it lives in
+  when it is released after its solve (`cudss_external(phases=)`). A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` /
   `SolverType.time_estimate`: machine-independent op counts, never seconds; iteration counts derived a priori, never
   fitted to run counters: a count deviation is a lead on the solver; a kernel bound by arithmetic, not bytes, also
   counts its `Elementwise.flops`, since float64 runs at 1/64 rate on consumer GPUs: core sub file "Run-time

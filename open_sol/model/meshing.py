@@ -188,6 +188,10 @@ class TriangleMeshEstimate:
     line_blocks: dict = field(default_factory=dict)
     npml_sides: dict = field(default_factory=lambda: {face: 0 for face in FACES})
     material_elements: dict = field(default_factory=dict)
+    counts_built: bool = False    # True: the counts are those of the built mesh (with_built_counts), not size-based
+    # fem.dissection.MeshDissection of the built mesh (built_mesh_estimates; None on size-based counts): the factor
+    # entries a sparse direct solver needs on this mesh, counted lazily per element order by the estimators that ask
+    dissection: object = field(default=None, compare=False, repr=False)
 
     @property
     def n_cells(self):
@@ -484,6 +488,14 @@ def kept_element_mesh_keys() -> dict:
     return {} if _kept_element_meshes is None else {name: kept[0] for name, kept in _kept_element_meshes.items()}
 
 
+def kept_element_mesh_counts() -> dict:
+    """{mesh name: (element_mesh_key, built_mesh_counts)} of the meshes kept now ({} while remember_element_meshes
+    is off): the GUI reads them after a build that meshed and then failed."""
+    if _kept_element_meshes is None:
+        return {}
+    return {name: (key, built_mesh_counts(mesh)) for name, (key, mesh) in _kept_element_meshes.items()}
+
+
 def element_meshes_kept():
     """Context manager: remember_element_meshes inside the block, the previous state restored after (run_study: sweep
     values / parity sectors with the same mesh settings and geometry mesh once)."""
@@ -547,6 +559,48 @@ def element_mesh(spec, parameters, registry=None, mesh=None, *, shapes=None, log
     built = mesher(spec, parameters, registry, mesh_spec.name, shapes=shapes, sizing=sizing)
     _kept_element_meshes[mesh_spec.name] = (key, built)
     return built, False
+
+
+def built_mesh_counts(mesh) -> dict:
+    """{'n_elements', 'n_nodes', 'n_edges'(, 'n_faces': tetrahedra)} of a built fem TriangleMesh / TetrahedronMesh
+    (plain ints)."""
+    counts = {'n_elements': int(mesh.n_elements), 'n_nodes': int(mesh.n_points), 'n_edges': int(mesh.n_edges)}
+    n_faces = getattr(mesh, 'n_faces', None)
+    if n_faces is not None:
+        counts['n_faces'] = int(n_faces)
+    return counts
+
+
+def with_built_counts(estimate, counts):
+    """The element mesh estimate with its built mesh's counts (built_mesh_counts) in place of the size-based ones:
+    counts_built True, material_elements scaled by the element ratio."""
+    element_ratio = counts['n_elements'] / max(estimate.n_elements, 1)
+    material_elements = {name: count * element_ratio for name, count in estimate.material_elements.items()}
+    built = {name: int(count) for name, count in counts.items() if hasattr(estimate, name)}
+    return replace(estimate, **built, material_elements=material_elements, counts_built=True)
+
+
+def has_estimated_counts(estimate) -> bool:
+    """True for an element mesh estimate whose counts are still size-based; tensor estimates and the builtin
+    tetrahedra (grid boxes split into 6) are exact."""
+    kind = getattr(estimate, 'kind', 'tensor')
+    if kind not in ('triangles', 'tetrahedra') or estimate.counts_built:
+        return False
+    return not (kind == 'tetrahedra' and estimate.sizing.mesher == 'builtin' and not estimate.sizing.sweep_axis)
+
+
+def built_mesh_estimates(spec, parameters, registry, mesh_estimates, shapes=None, log=None) -> dict:
+    """mesh_estimates {mesh name: estimate} with every element mesh built (element_mesh: a kept one is reused) and
+    its counts in place (with_built_counts) and its MeshDissection attached: the numbers a memory judgement is final
+    on."""
+    from ..fem.dissection import MeshDissection
+    built = {}
+    for name, estimate in mesh_estimates.items():
+        if has_estimated_counts(estimate):
+            mesh, _reused = element_mesh(spec, parameters, registry, name, shapes=shapes, log=log)
+            estimate = replace(with_built_counts(estimate, built_mesh_counts(mesh)), dissection=MeshDissection(mesh))
+        built[name] = estimate
+    return built
 
 
 def make_domain(spec, parameters, registry=None, *, resolved_geometry=None, mesh=None, log=None):
