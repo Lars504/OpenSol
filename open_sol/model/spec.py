@@ -267,12 +267,12 @@ SWEEP_SPACINGS = ('list', 'linear', 'log')   # SweepSpec.spacing: the values as 
 
 @dataclass
 class SweepSpec:
-    """spacing 'list': the values in order; 'linear' / 'log': count points from lower to upper. keep_fields: keep the
-    snapshots of every sweep value (summary sweep 'snapshots'), not only the last one's. reuse_build: build once and
-    re-set the following feature values per value (model.sweep_reuse)."""
+    """spacing 'list': the values in order; 'linear' / 'log': count points from lower to upper. keep_fields (default
+    True): keep the snapshots of every sweep value (summary sweep 'snapshots'), False only the last one's. reuse_build:
+    build once and re-set the following feature values per value (model.sweep_reuse)."""
     parameter: str
     values: list = field(default_factory=list)
-    keep_fields: bool = False
+    keep_fields: bool = True
     spacing: str = 'list'
     lower: float | int | str | None = None
     upper: float | int | str | None = None
@@ -303,7 +303,7 @@ class SweepSpec:
 
 @dataclass
 class StudySpec:
-    """settings = values of the StudyType params; stored_fields 'physics.component' ([] -> primary fields);
+    """settings = values of the StudyType params; stored_fields 'physics.component' ([] -> every output field);
     stored_cuts: 3D cut planes [axis, position] snapshots store besides the mid-height z cut."""
     type: str = 'time_dependent'
     settings: dict = field(default_factory=dict)

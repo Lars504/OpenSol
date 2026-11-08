@@ -296,8 +296,12 @@ templates, describe. Current state, no changelog.
   parameter-free specs. `estimate_memory(mesh_estimate=)` takes {name: estimate} or one estimate, one part per used
   mesh (labels "mesh '<name>': ..." only when several) plus `mesh_transfers` of cross-mesh couplings. Auto mode per
   mesh: with an EM physics (family 'em') or wavelength_min the wavelength rule, else physics-controlled
-  (`physics_objects` / `smallest_side`; laminar_flow uniform); `MeshEstimate.auto_rule` says which, `auto_dx` /
-  `auto_refinements` what it chose (the GUI's fill-in); `RefinementSpec.automatic` refinements are skipped by
+  (`physics_objects` / `smallest_side`; laminar_flow uniform) (`_auto_rule_sizes`); a set dx is the smallest cell
+  size: `_auto_sizes` scales every rule size by one factor so the finest applied one equals it (points_per_wavelength
+  then unused), dx None = the rule alone (MeshSpec.dx is optional only in auto: `mesh_values` and validate refuse
+  None elsewhere; an auto MeshSpec / JSON that should follow the rule sets dx None / null explicitly, the dataclass
+  default 20e-9 counts as set); `MeshEstimate.auto_rule` says which, `auto_dx` /
+  `auto_refinements` what it chose, scaled (the GUI's fill-in); `RefinementSpec.automatic` refinements are skipped by
   `_explicit_refinements` in auto mode only. Validation: `ValidationContext.meshes` / `mesh_errors`; physics / feature / coupling (source
   physics) callbacks run inside `vctx.on_mesh(name)`; mesh issues at ('mesh', name), memory at the ('mesh', name) of the largest part. One-mesh
   rules (`_check_one_mesh_rules`, coupling / feature-ref checks): family 'em', `CouplingType.mesh_transfer` None,
@@ -479,9 +483,11 @@ templates, describe. Current state, no changelog.
   never stopping a refinement for memory): a new budget check takes its level from `schema.memory_check_level(spec)`.
   The budget issues sit at ('mesh', name) of `validate.memory_verdict` (the used mesh with the largest part:
   `validate(memory_parts=)` = estimate_memory's by_mesh, else computed when an issue is reported). An over-budget error
-  is final only on built element counts: a triangle / gmsh or swept tetrahedron estimate is a size-field integral
-  (`meshing.has_estimated_counts`; tensor and builtin tetrahedra are exact; it is too low as well as too high, e.g.
-  0.36x on the graded 5 mm hirsch2025 mesh), so build, whenever a used mesh has size-based counts, and api.check, when
+  is final only on a built element mesh (`meshing.awaits_built_mesh`: any triangle / tetrahedron estimate not yet
+  counts_built): a triangle / gmsh or swept tetrahedron estimate is a size-field integral
+  (`meshing.has_estimated_counts`; builtin tetrahedra counts are exact, but their factor fill still needs the built
+  mesh; the size integral is too low as well as too high, e.g. 0.36x on the graded 5 mm hirsch2025 mesh), so build,
+  whenever a used element mesh is not built, and api.check, when
   `refused_on_estimated_counts`, first validate without budgets (other errors come before a mesher run), mesh
   (`meshing.built_mesh_estimates` -> `with_built_counts`, `counts_built`, + `estimate.dissection`: the built mesh's
   fem.dissection.MeshDissection, from which a physics estimator counts its cuDSS factor entries instead of using a
@@ -820,6 +826,9 @@ templates, describe. Current state, no changelog.
   the previous result with beta = feature value x beta_growth^(s - n); a beta change invalidates the cached point
   (`problem.last = None`). Default stored fields add `<physics>.design_density` (`StudyType.default_stored_fields(spec)`,
   used only when StudySpec.stored_fields is []).
+- StudySpec.stored_fields [] (the default) stores every `session.available_fields()` entry in each snapshot
+  (`_stored_field_keys`: primaries first): a new renderer field must be readable after every study solve its
+  `requires_study` allows, else every default run of that type fails at its first snapshot.
 - thermal_noise (`study_thermal_noise.py`, background 'stationary'): roles by Protocol, not `_solver_roles` (noise =
   ThermalNoiseSolver = every heat; modes = ModeSolver; the rest background, dt_limit inf), background solve +
   `_apply_background_couplings`, `study._solve_mode_snapshots(..., final_last=False)`, then

@@ -599,8 +599,8 @@ class StudyType:
     coupled_points: bool = False
     run: Callable | None = None            # run(session, values, emit, control, service) -> dict
     validate: Callable | None = None       # validate(vctx, values) -> list[Issue], after the generic param checks
-    # default_stored_fields(spec) -> 'physics.component' keys snapshots store besides the primary fields when
-    # StudySpec.stored_fields is [] (None = the primary fields only)
+    # default_stored_fields(spec) -> 'physics.component' keys stored right after the primary fields when
+    # StudySpec.stored_fields is [] (every available field follows them; None = no extra keys)
     default_stored_fields: Callable | None = None
     # StudySpec.adaptation allowed (S7.7: mesh refinement levels, model.study_adaptation); validate refuses it else
     supports_adaptation: bool = False
@@ -1413,9 +1413,12 @@ MESH_PARAMS = (
               'of the smallest side of every object its physics use; plus the refinements.\n\n'
               'Automatic does not work with material values that depend on position or on other fields: use Graded '
               'there.\n\n'
+              "A 'Cell size' in Automatic mode is the smallest cell size: the automatic sizes are scaled to it "
+              "instead of following 'Points per wavelength'; empty, the rule above alone sizes the cells.\n\n"
               'Automatic shows the sizes it chose. Switching from Automatic to Graded fills them into the cell size '
               'and the refinements (marked automatic) so you can change them; choosing Automatic again recalculates '
-              'them.',
+              'them. Switching from Automatic to Uniform keeps the cell size (empty: fills in the smallest automatic '
+              'size).',
           help='uniform: one cell size dx; nonuniform: base size dx plus the mesh refinements, graded by max_ratio; '
                'auto with an EM physics (family em) on this mesh or wavelength_min set: cell size wavelength_min / '
                '(points_per_wavelength * n) in each material, n = |sqrt(eps * mu_r)| '
@@ -1426,7 +1429,8 @@ MESH_PARAMS = (
                'size = the longest domain side / 50, every domain object the mesh\'s physics use (material '
                'selections setting one of their properties, their feature selections) refined to its smallest '
                'bounding-box side / 4, plus the refinements; with laminar_flow on the mesh a uniform grid at the '
-               'smallest such side / 16 (lattice Boltzmann). auto raises for a permittivity, sigma_e, mu_r or pole '
+               'smallest such side / 16 (lattice Boltzmann); a set dx scales every auto size so the finest equals '
+               'it (see dx; null = the rule alone). auto raises for a permittivity, sigma_e, mu_r or pole '
                'value it uses that depends on x, y, z or a field (use nonuniform there). '
                'Graded meshes are rectilinear (one width per grid column and per row): a refinement refines every '
                'column and row its object plus margin spans, across the whole domain, so a waveguide crossing the '
@@ -1440,13 +1444,20 @@ MESH_PARAMS = (
                'faces of prisms are exact cell edges, and z cells away from refinements take the base size. '
                'nonuniform and auto fall back to a uniform grid when no refinement is finer than the base size, or '
                '(at the finest size) when a feature needs a uniform mesh (FDFD plane wave, laminar flow faces).'),
-    Param('dx', 'float', 20e-9, label='Cell size', unit='m', min=0.0, min_exclusive=True,
+    Param('dx', 'float', 20e-9, label='Cell size', unit='m', min=0.0, min_exclusive=True, optional=True,
           tip='Size of every cell of a uniform mesh, or of the largest cells of a graded mesh (on triangles: the '
               'maximum element size).\n\n'
               'For waves use about a twentieth of the wavelength inside the material with the highest refractive '
-              'index. In Automatic mode it shows the size the mesh chose (read only).',
-          help='Cell size of a uniform mesh, or the base (coarsest) size of a nonuniform one; typically '
-               'lambda / (20 n) for EM, n the largest refractive index. The grid is limited to 400e6 cells and '
+              "index.\n\n"
+              "In Automatic mode it is the smallest cell size: the automatic sizes are scaled so the finest cells "
+              "get it, which replaces 'Points per wavelength'. Empty: the automatic rule alone sizes the cells.",
+          help='Cell size of a uniform mesh, or the base (coarsest) size of a nonuniform one (required in both); '
+               'typically lambda / (20 n) for EM, n the largest refractive index. In auto mode the smallest cell '
+               'size: every auto size (base and object refinements, of the wavelength or the physics-controlled '
+               'rule) is scaled by one factor so the finest equals dx, replacing points_per_wavelength (the '
+               'wavelength rule still sets the size ratios between materials); the lattice Boltzmann rule takes it '
+               'as its uniform size; null = the auto rule alone. Explicit refinements are not scaled. The grid is '
+               'limited to 400e6 cells and '
                '50,000 cells per axis, counting the PML cells that are added outside the domain; a uniform mesh '
                'rounds size_x / size_y up to whole cells, so the meshed window can be one cell larger. Validation '
                'previews materials on float64 centres while the build tests float32 clamped cell centres, so a '
@@ -1479,11 +1490,12 @@ MESH_PARAMS = (
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Cells per wavelength inside each material, for the automatic mesh (used in Automatic mode only).\n\n'
               '15 to 30 is typical for rectangular cells, about 5 for triangles. Too few cause phase errors that grow '
-              'with the distance travelled. Empty: 20 for rectangular cells, 5 for triangles.',
+              "with the distance travelled. Empty: 20 for rectangular cells, 5 for triangles. Not used while 'Cell "
+              "size' is set: it fixes the smallest cells instead.",
           help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
                'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
                "distance). null = the kind default: 20 (tensor), 5 (triangles: COMSOL's five quadratic elements "
-               'per wavelength).'),
+               'per wavelength). Unused while dx is set (the finest cells take dx).'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Largest cell size far from the structure. Leave empty to keep the main cell size everywhere.\n\n'

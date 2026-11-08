@@ -146,7 +146,7 @@ _PHYSICS_DESCRIPTION = (
     'their secant permeability, each iteration one assembly and one warm-started solve (settings nonlinear_*; '
     "'newton' is not available on this grid); field mu_eff shows the assembled permeability. Scalars: energy and per "
     'coil flux linkage and inductance. The Lorentz force is not available yet (magnetostatics_3d_plan stage 4); eddy '
-    'currents in 3D are out of scope. Linear solver: pcg (Automatic: multigrid on the gpu, host SuperLU on the cpu). A '
+    'currents in 3D are out of scope. Linear solver: pcg (Automatic: multigrid on both backends). A '
     'time-dependent study re-solves only when mu_dc, a saturation or a remanence changed. Fields are edge-extended into '
     'an EM PML shell. On a tetrahedron mesh (MeshSpec kind tetrahedra; 3D Cartesian) the same model by finite elements '
     '(setting discretization: quadratic or linear Lagrange phi_m on affine tetrahedra), solved by the sparse direct '

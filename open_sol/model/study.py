@@ -1775,8 +1775,8 @@ _TIME_DEPENDENT_PARAMS = (
                'mode or far-field monitor); transient heat takes ms to s.'),
     Param('output_interval', 'float', 0.0, label='Output interval', unit='s', min=0.0,
           tip='Simulated time between stored field snapshots; 0 stores only the final state.',
-          help="Time in s between snapshots of the stored fields (study stored_fields, default each physics' "
-               'primary field), from t = 0; 0 stores only the final state. Intermediate snapshots stop once they '
+          help='Time in s between snapshots of the stored fields (study stored_fields, default every output '
+               'field), from t = 0; 0 stores only the final state. Intermediate snapshots stop once they '
                'exceed 1 GB; the final state is always stored. Snapshots hold the native window cells (graded '
                'included) up to 250,000 cells, else nearest-cell values on square pixels of max(finest cell, '
                'sqrt(window area / 250,000)) (native_shape set): fine features can then be skipped.'),
@@ -1972,8 +1972,8 @@ def register(registry):
                     'relative_change the largest) and wavelength_fixed_points [{wavelength, converged, iterations, '
                     'relative_change, tolerance}]; a cancel inside a wavelength leaves its monitors holding the last '
                     'iterate. Needs at least one harmonic physics. Stores one snapshot per wavelength '
-                    'of the stored fields (default each primary field, plus <field>_im next to an FDFD <field>_re, so '
-                    '|field|^2 per wavelength can be rebuilt; native window cells up to 250,000 cells, else '
+                    'of the stored fields (default every output field, so <field>_re and <field>_im rebuild '
+                    '|field|^2 per wavelength; native window cells up to 250,000 cells, else '
                     'nearest-cell resampled), labelled "lambda = <nm> nm"; the last '
                     'wavelength stays the live state (Results.field), and feature results (probes, flux spectra) '
                     'hold every solved wavelength (sorted by wavelength; snapshot labels keep the solve order).',
@@ -1995,7 +1995,7 @@ def register(registry):
                     'material properties depending on background fields such as T) is applied once before the mode '
                     'solve. Couplings or material properties that read a mode physics are a validation error (mode '
                     'solutions are not fed back). Stores one snapshot per mode number k of the stored fields (default '
-                    'each primary field: em_modes e_intensity), labelled "mode k: n_eff = <value>" (a complex value '
+                    'every output field), labelled "mode k: n_eff = <value>" (a complex value '
                     'when lossy; with several em_modes physics their names and values joined; mirror faces add the '
                     'parity, "mode k [x_lo symmetric]: ..."), in the em_modes rank '
                     'order (descending Re(beta^2)); afterwards each em_modes physics shows the mode of its mode_number setting (Results.field). ticks = the '
@@ -2552,10 +2552,9 @@ def _restored_value(flat, shape, dtype, module):
 
 
 def _stored_field_keys(session):
-    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or each physics' primary field plus
-    its '<base>_im' partner of a '<base>_re' primary (harmonic physics), so |field|^2 can be rebuilt; a frequency_domain
-    study takes a renderer's harmonic_primary instead (harmonic FDTD: ez_abs / hz_abs); then the StudyType's
-    default_stored_fields (e.g. optimization: design_density)."""
+    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or ([], COMSOL's 'all') every available
+    output field: first each physics' primary (frequency_domain: a renderer's harmonic_primary) and its '<base>_im'
+    partner, then the StudyType's default_stored_fields (e.g. optimization: design_density), then the rest."""
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested
@@ -2571,6 +2570,8 @@ def _stored_field_keys(session):
     default_stored_fields = session.registry.study_type(session.spec.study.type).default_stored_fields
     if default_stored_fields is not None:
         keys += [key for key in default_stored_fields(session.spec) if key not in keys]
+    available_keys = [f'{physics}.{info.name}' for physics, info in session.available_fields()]
+    keys += [key for key in available_keys if key not in keys]
     return keys
 
 

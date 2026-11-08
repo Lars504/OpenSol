@@ -234,6 +234,13 @@ def host_lu_bytes(n_unknowns, dimensions=2) -> int:
     return int(entries * COMPLEX128_CSR_ENTRY_BYTES)
 
 
+def host_counted_lu_bytes(triangle_entries, n_unknowns) -> int:
+    """Host bytes of a complex128 SuperLU factor (L + U) from counted entries of one factor triangle (diagonal
+    included, e.g. fem.dissection pairs x dofs per site^2): both triangles, the diagonal once."""
+    n_unknowns = int(n_unknowns)
+    return int(max(2.0 * float(triangle_entries) - n_unknowns, n_unknowns) * COMPLEX128_CSR_ENTRY_BYTES)
+
+
 def host_real_lu_bytes(n_unknowns, dimensions=2) -> int:
     """Heuristic host bytes of a float64 SuperLU factor (L + U) of a 2D 5-point (n log2 n fill) or 3D 7-point (n^(4/3)
     fill) diffusion system."""

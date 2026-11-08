@@ -1050,6 +1050,11 @@ def _rounded_size(size):
     return float(f'{size:.4g}')
 
 
+def _smallest_automatic_size(estimate):
+    """Finest size [m] an auto-mode estimate applies: its base size or its finest refinement."""
+    return min([estimate.auto_dx] + [size for _object_name, size in estimate.auto_refinements])
+
+
 def _automatic_sizes_text(estimate):
     """Lines of the 'Automatic sizes' group: the base size, each refined object's size and how much finer, the rule."""
     size_name = 'Maximum element size' if estimate.kind != 'tensor' else 'Cell size'
@@ -1065,6 +1070,8 @@ def _automatic_sizes_text(estimate):
 
 def _base_cell_size(mesh_spec, parameters):
     """Evaluated 'Cell size' of a MeshSpec, else four times the default refinement size."""
+    if mesh_spec.dx is None:   # auto mode without a smallest cell size
+        return _REFINEMENT_DX.default * 4
     try:
         return evaluate_scalar(mesh_spec.dx, parameters)
     except ExpressionError:
@@ -2358,9 +2365,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         return '<br>'.join(lines)
 
     def _show_mesh_numbers(self, mesh_form):
-        """Numbers of the mesh form's derived and empty fields: the automatic cell size (read only), the defaults and
-        resolved values as placeholders, the empty minimum element size as '= value'; the wavelength rows greyed out
-        outside auto mode (points per wavelength also under a rule without a wavelength)."""
+        """Numbers of the mesh form's derived and empty fields: the defaults and resolved values as placeholders, an
+        empty auto cell size / minimum element size as '= value'; the wavelength rows greyed out outside auto mode
+        (points per wavelength also under a rule without a wavelength or while the cell size is set)."""
         document = self._document
         mesh_spec = self._form_mesh(document.spec)
         estimate, _error = document.mesh_estimate(mesh_spec.name)
@@ -2369,13 +2376,14 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         except (ValueError, KeyError, TypeError, ExpressionError):   # reported by the editors / validation
             resolved = {}
         auto = mesh_spec.mode == 'auto'
-        auto_dx = estimate.auto_dx if auto and estimate is not None else None
-        mesh_form.set_shown_value('dx', None if auto_dx is None else _rounded_size(auto_dx))
-        mesh_form.set_row_enabled('dx', not auto)
+        # auto: dx is the smallest cell size, empty = the rule alone (read back as its finest size)
+        auto_sizes = auto and estimate is not None and estimate.auto_dx is not None
+        mesh_form.set_placeholder('dx', 'from the automatic rule' if auto else 'required')
+        mesh_form.set_empty_value('dx', _smallest_automatic_size(estimate) if auto_sizes else None)
         # the physics-controlled / uniform-flow rules resolve no wavelength (a wavelength_min value switches to it)
         by_wavelength = estimate is None or estimate.auto_rule in ('', 'wavelength')
         mesh_form.set_row_enabled('wavelength_min', auto)
-        mesh_form.set_row_enabled('points_per_wavelength', auto and by_wavelength)
+        mesh_form.set_row_enabled('points_per_wavelength', auto and by_wavelength and mesh_spec.dx is None)
         kind_defaults = MESH_KIND_DEFAULTS.get(mesh_spec.kind, MESH_KIND_DEFAULTS['tensor'])
         for name in ('max_ratio', 'points_per_wavelength'):
             mesh_form.set_placeholder(name, f'{kind_defaults[name]:g}  (default)')
@@ -2929,8 +2937,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         stored = CheckList(entries, spec.study.stored_fields)
         stored.value_committed.connect(self._set_stored_fields)
         self._refreshers.append(lambda: stored.set_value(self._document.spec.study.stored_fields))
-        layout.addWidget(_group('Stored fields', hint_label('Fields saved at each output time. With none checked, the '
-                                                            'main field of each physics is saved.'), stored))
+        layout.addWidget(_group('Stored fields', hint_label('Fields saved at each output time. With none checked, '
+                                                            'every field is saved; check some to save memory.'),
+                                stored))
 
     def _add_stored_cuts(self, layout, spec):
         cuts_editor = StoredCutsEdit(_STORED_CUTS, spec.study.stored_cuts, self._context())
@@ -3614,26 +3623,31 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                      rebuild=attribute in ('kind', 'mesher', 'sweep_axis'))
 
     def _set_mesh_mode(self, mode):
-        """Set the mesh mode: leaving auto fills its sizes in (cell size; to graded also refinements marked automatic),
-        entering auto drops those refinements (it recalculates them)."""
-        mesh_name = self._form_mesh(self._document.spec).name
-        estimate, error = self._document.mesh_estimate(mesh_name)
+        """Set the mesh mode: entering auto keeps the cell size (auto's smallest cell size) and drops the automatic
+        refinements; leaving auto to graded fills in its sizes (refinements marked automatic), to uniform keeps a set
+        cell size, else fills in the smallest automatic size."""
+        form_mesh = self._form_mesh(self._document.spec)
+        estimate, error = self._document.mesh_estimate(form_mesh.name)
         auto_dx = None if estimate is None else estimate.auto_dx
-        leaving_auto = self._form_mesh(self._document.spec).mode == 'auto' and mode != 'auto'
+        leaving_auto = form_mesh.mode == 'auto' and mode != 'auto'
+        keeps_dx = mode == 'uniform' and form_mesh.dx is not None   # auto's smallest size = the uniform size
+        fills_in = leaving_auto and not keeps_dx
 
         def apply(spec):
             mesh_spec = self._form_mesh(spec)
             own_refinements = [refinement for refinement in mesh_spec.refinements if not refinement.automatic]
             if mode == 'auto':
                 mesh_spec.refinements = own_refinements
-            elif leaving_auto and auto_dx is not None:
-                mesh_spec.dx = _rounded_size(auto_dx)
+            elif fills_in and auto_dx is not None:
                 if mode == 'nonuniform':   # uniform meshes ignore refinements
+                    mesh_spec.dx = _rounded_size(auto_dx)
                     mesh_spec.refinements = [RefinementSpec(object_name, _rounded_size(size), automatic=True)
                                              for object_name, size in estimate.auto_refinements] + own_refinements
+                else:
+                    mesh_spec.dx = _rounded_size(_smallest_automatic_size(estimate))
             mesh_spec.mode = mode
         changed = self._commit('mesh', apply, f"Set mesh: {_form_label_of(MESH_PARAMS, 'mode')}", rebuild=True)
-        if changed and leaving_auto and auto_dx is None:
+        if changed and fills_in and auto_dx is None:
             self._report(f'Automatic sizes not filled in: {error or "no mesh estimate"}')
 
     def _set_refinement(self, index, object_name, attribute, value):

@@ -53,7 +53,7 @@
     }
   ],
   "couplings": [],
-  "mesh": {"mode": "auto", "max_ratio": 1.15, "wavelength_min": null, "points_per_wavelength": 40.0,
+  "mesh": {"mode": "auto", "dx": null, "max_ratio": 1.15, "wavelength_min": null, "points_per_wavelength": 40.0,
            "refinements": []},
   "solvers": [
     {"name": "eigen_solver", "type": "arpack_shift_invert",

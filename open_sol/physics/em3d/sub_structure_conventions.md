@@ -210,8 +210,11 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   node order both sides; gmsh periodic surfaces do not keep it; swept z sides do). Size rule on `nedelec_unknowns`;
   estimates `_tetrahedra_memory_estimate` (Bloch: cuDSS copy = whole LU matrix; as the tensor estimate, the own eigen
   factor's pool copies are EIGEN_PHASE transient items and the factor an external item via `_cudss_eigen_items`,
-  dimensions 3, the em sub file's "Memory estimators" phases) and the Yee recipe at Yee-equivalent
-  unknowns (uncalibrated). Field derived values via the Session's `_evaluate_tetrahedra`: mode volumes need a point
+  the em sub file's "Memory estimators" phases) and the Yee recipe at Yee-equivalent unknowns (uncalibrated) for the
+  run time. Factor size (SuperLU and cuDSS): on a built mesh `nedelec_factor_entries` = `MeshDissection.nedelec_pairs`
+  (dof sites: edges, + faces at degree 2) x (dofs per site)^2, a FactorFill / `host_counted_lu_bytes`; size-based counts
+  only fall back to the n^(4/3) law at the Yee-equivalent unknowns (~5x high at degree 2: the 3.5 x unknowns inside
+  n^(4/3)). The host SuperLU here orders by MMD, not the counted dissection: compare factor_host_bytes in the log. Field derived values via the Session's `_evaluate_tetrahedra`: mode volumes need a point
   object when the selection touches a mirror face.
 - Formulation (fem3d header): unconjugated Galerkin, K and M complex symmetric with PML and loss
   (`solve_resonances(symmetric=True)`); B = -M sparse (`_PencilMass`). Equilibration (|diag K| + k_t^2 |diag M|)^-1/2,

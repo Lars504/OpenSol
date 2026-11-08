@@ -51,6 +51,7 @@
       "name": "mesh",
       "kind": "tensor",
       "mode": "auto",
+      "dx": null,
       "refinements": [],
       "axes": [
         {"axis": "x", "max_ratio": null, "edges": [], "segments": [],

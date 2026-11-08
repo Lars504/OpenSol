@@ -381,9 +381,9 @@ _SPEC_FIELD_HELP = {
                                 'allowed. [] = every physics whose solver has the study\'s solve. Only frequency_domain, '
                                 'mode_analysis, eigenfrequency, frequency_response and optomechanics (validation error '
                                 'elsewhere).',
-    'StudySpec.stored_fields': "Output fields stored in snapshots, as 'physics.component' (e.g. 'em.ez'); [] = "
-                               'the primary field of each physics (FDFD: <field>_re and <field>_im, so |field|^2 '
-                               'can be rebuilt).',
+    'StudySpec.stored_fields': "Output fields stored in snapshots, as 'physics.component' (e.g. 'em.ez'); [] "
+                               '(default) = every output field of every physics (primary fields first); list fields '
+                               'to store fewer and save memory (snapshots past 1 GB keep only the final state).',
     'StudySpec.sweep': 'Optional parameter sweep (SweepSpec): one build and run per value; null = no sweep.',
     'StudySpec.stored_cuts': "3D models only: extra cut planes [axis 'x' | 'y' | 'z', position in m (number or "
                              'parameter expression)] each snapshot stores besides the mid-height z cut (the window '
@@ -457,11 +457,11 @@ _SPEC_FIELD_HELP = {
                        '(a descending sweep).',
     'SweepSpec.upper': "spacing 'linear' / 'log': last value (number or parameter expression).",
     'SweepSpec.count': "spacing 'linear' / 'log': number of values including both end points (1 = lower only).",
-    'SweepSpec.keep_fields': 'true: keep the snapshots of every sweep value (summary sweep snapshot_times / '
+    'SweepSpec.keep_fields': 'true (default): keep the snapshots of every sweep value (summary sweep snapshot_times / '
                              'snapshot_labels per value, results.npz sweep_snapshot/..., Results.sweep_field), not '
                              'only those of the last value; past 1 GB in total only each value\'s final snapshot is '
-                             'kept (a warning). false (default): earlier values keep their derived values and results '
-                             'only.',
+                             'kept (a warning). false: only the last value keeps its snapshots, earlier values keep '
+                             'their derived values and results only.',
     'SweepSpec.reuse_build': 'true: build once and run every value on that build: the swept parameter (and the '
                              'parameters depending on it) may reach only feature values that follow a reused build '
                              '(solid_mechanics on triangles / solid_mechanics_3d on tetrahedra: body_force, '
@@ -1704,7 +1704,7 @@ def _spec_notes():
             'Physics type entries: "Default study" is the study the GUI applies when the physics is the first one. '
             'State fields are the solver state: expressions name them <physics>_<field>, or <field> when one physics '
             'alone provides it; field_transfer source_field. Output fields are what Results.field, study '
-            'stored_fields (<physics>.<field>) and derived values read; the primary one is stored when stored_fields '
+            'stored_fields (<physics>.<field>) and derived values read; all of them are stored when stored_fields '
             'is []. Scalar outputs are numbers after a run; derived-value expressions name them <physics>_<name>.',
             'Source slots (physics type entries) are the coupling targets (CouplingSpec.target; field_transfer '
             'target_slot), with unit and meaning; a slot takes one overwriting coupling, or several additive ones '

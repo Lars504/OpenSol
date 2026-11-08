@@ -1,0 +1,100 @@
+{
+  "title": "Analytic: high-Q Bragg-mirror microcavity, Q vs mirror pairs (FDFD eigenfrequency)",
+  "description": "A half-wave defect between two quarter-wave Bragg mirrors (N_pairs high / low index pairs each side, high index next to the defect, low index facing the vacuum), y-periodic strip with CPML along x, solved by the eigenfrequency study (em_fdfd_ez) on the cpu backend with host SuperLU. The sweep runs N_pairs over 3-12, which takes Q from ~2e2 to ~1e9: a test of how well the eigen solve and the PML resolve a tiny Im omega (the mirror leakage falls like rho^(-2 N)).\nDesign exact on the Yee grid: uniform h = 5 nm cells, every interface on a cell edge, and the indices chosen so the layers are discrete quarter waves at lambda0 = 1550 nm: n_i = sin(pi / (4 N_i)) / s0, s0 = pi h / lambda0 (N_H = 22, N_L = 53 cells: n_H 3.52, n_L 1.46; defect 2 N_L cells of n_L = a discrete half wave). On the grid each layer is then exactly a transmission line of phase K N h and admittance Y = tan(K h / 2) (E_z of the two cells beside a face continue each other's wave), so the resonance sits at lambda0 and the closed form below is the grid-exact pole to first order in Im omega (the next Im term is ~ 1 / Q^2 relative).\nAnalytic (exp(+j omega t)): mirror input admittance Y_in = rho^(2N) Y_0, rho = Y_H / Y_L, so the defect-side reflectance R = ((1 - b) / (1 + b))^2 with b = Y_L / Y_in, and Q = omega0 tau / (-ln R), tau = one-way cavity delay 2 N_C tan(pi / (2 N_C)) / omega0 plus the mirror reflection delay (finite-N quarter-wave stack sum, parameter tau_mirror; Babic-Corzine penetration depth in the continuum limit). Re lambda is lambda0 up to ~ 1 / Q^2.\nSweep tab: lambda_1 and Q_1 (row 0 of em.resonances) vs N_pairs with the dashed exact references (plot Q_1 on a log axis); the extra dashed curve Q_continuum on Q_1 is the same formula with continuum quarter waves (Y ~ n), which drifts from the grid-exact Q by ~0.1 % per pair (rho^(2N) of the discrete admittances). pml_1 = the resonance's share of |E_z|^2 in the PML. leak_1 = its share in the two vacuum gaps (resonance_table region gap_left + gap_right, column region_energy_fraction; the PML lies outside them) against f_leak_exact: E_z has nodes on the defect faces, its amplitude falls by 1 / rho per pair, every half / quarter wave sums to exactly N / 2 cells on the grid, and the outgoing wave in the gaps has amplitude rho^-N / u_0, so the share falls from ~6e-2 at 3 pairs to ~8e-9 at 12 by rho^-2 per pair, as 1 / Q does (plot on a log axis: Q_1 x leak_1 ~ constant). A mode confined to the defect lands on it over the whole sweep; a mirror band-edge or PML mode puts a share of order 1 in the gaps. Tolerance 3e-2, set by 3 pairs (Q ~ 2e2): the leaky growth of |E_z|^2 across the gap (k0 gap / Q, ~1 % on average), the first-order leakage terms (~2 b) and the CPML ripple (~2 |r_pml|); from ~5 pairs on the agreement should be well inside 1e-2.\nThe target sits target_offset (2e-4 relative, ~0.3 nm) beside the resonance so the shift-invert factor is not near-singular; set target_offset to 0 to test the shift right on a 1e9-Q pole.\nExpected agreement: lambda_1 ~1e-7 (float32 permittivity), Q_1 limited by the CPML reflection (~2 |r_pml| relative, flat in N_pairs; tolerance 2e-3). A Q error that grows with N_pairs points at the eigen solve, not the PML. GPU: set solver_defaults backend 'gpu' and the eigen_solver factorization 'GPU cuDSS' (needs nvmath-python); 'GPU cuDSS, mixed precision' (float32 factor + refinement) is the stress case at large N_pairs.\nField tab: the Snapshot slider shows each resonance (|E_z| decays into both mirrors).",
+  "version": 1,
+  "parameters": [
+    {"name": "N_pairs", "expression": 6, "description": "high / low index pairs of each mirror (swept)"},
+    {"name": "h_cell", "expression": "5*nm", "description": "uniform cell size"},
+    {"name": "lambda0", "expression": "1550*nm", "description": "design (Bragg) wavelength = analytic resonance"},
+    {"name": "s0", "expression": "pi*h_cell/lambda0", "description": "k0 h / 2"},
+    {"name": "N_H", "expression": 22, "description": "cells per high-index layer (a discrete quarter wave)"},
+    {"name": "N_L", "expression": 53, "description": "cells per low-index layer (a discrete quarter wave)"},
+    {"name": "N_C", "expression": "2*N_L", "description": "cells of the low-index defect (a discrete half wave)"},
+    {"name": "n_H", "expression": "sin(pi/(4*N_H))/s0", "description": "high index: discrete quarter wave in N_H cells at lambda0 (3.52)"},
+    {"name": "n_L", "expression": "sin(pi/(4*N_L))/s0", "description": "low index: discrete quarter wave in N_L cells at lambda0 (1.46)"},
+    {"name": "t_H", "expression": "N_H*h_cell", "description": "high-index layer thickness"},
+    {"name": "t_L", "expression": "N_L*h_cell", "description": "low-index layer thickness"},
+    {"name": "period", "expression": "t_H + t_L", "description": "mirror period"},
+    {"name": "L_cav", "expression": "N_C*h_cell", "description": "defect thickness"},
+    {"name": "L_mirror", "expression": "N_pairs*period", "description": "one mirror"},
+    {"name": "gap", "expression": "1*um", "description": "vacuum between mirror and PML on each side (200 cells)"},
+    {"name": "Lx", "expression": "2*gap + 2*L_mirror + L_cav", "description": "domain length (cpml on both x faces)"},
+    {"name": "Ly", "expression": "4*h_cell", "description": "periodic y period (4 cells)"},
+    {"name": "x_cav", "expression": "gap + L_mirror", "description": "left edge of the defect"},
+    {"name": "target_offset", "expression": 2e-4, "description": "relative offset of the eigen target from lambda0 (0 = shift on the pole)"},
+    {"name": "lambda_target", "expression": "lambda0*(1 + target_offset)", "description": "eigenfrequency target"},
+    {"name": "Y_H", "expression": "tan(pi/(4*N_H))", "description": "discrete admittance tan(K h / 2) of the high-index layers (x h / 2)"},
+    {"name": "Y_L", "expression": "tan(pi/(4*N_L))", "description": "discrete admittance of the low-index layers and the defect"},
+    {"name": "Y_0", "expression": "s0/sqrt(1 - s0**2)", "description": "discrete admittance of the vacuum"},
+    {"name": "rho", "expression": "Y_H/Y_L", "description": "admittance ratio of a pair"},
+    {"name": "u_0", "expression": "Y_0/Y_L", "description": "vacuum / low-index admittance ratio"},
+    {"name": "b_leak", "expression": "1/(u_0*rho**(2*N_pairs))", "description": "Y_L / Y_in: R = ((1 - b) / (1 + b))^2"},
+    {"name": "d_H", "expression": "2*N_H*Y_H", "description": "omega0 d(K_H N_H h)/d omega (pi/2 in the continuum)"},
+    {"name": "d_L", "expression": "2*N_L*Y_L", "description": "omega0 d(K_L N_L h)/d omega"},
+    {"name": "S_plus", "expression": "(rho**(2*N_pairs) - 1)/(rho**2 - 1)", "description": "sum of rho^(2m), m < N_pairs"},
+    {"name": "S_minus", "expression": "(1 - rho**(-2*N_pairs))/(1 - rho**(-2))", "description": "sum of rho^(-2m), m < N_pairs"},
+    {"name": "psi_N", "expression": "-u_0*(d_L + rho*d_H)*S_plus + (d_L + d_H/rho)*S_minus/u_0", "description": "omega0 d(arg Y_in)/d omega of the mirror"},
+    {"name": "tau_mirror", "expression": "-2*b_leak*psi_N/(1 - b_leak**2)", "description": "omega0 x mirror reflection delay"},
+    {"name": "tau_cavity", "expression": "2*N_C*tan(pi/(2*N_C))", "description": "omega0 x one-way defect delay (pi in the continuum)"},
+    {"name": "Q_exact", "expression": "(tau_cavity + tau_mirror)/(2*log((1 + b_leak)/(1 - b_leak)))", "description": "grid-exact Q = omega0 tau / (-ln R)"},
+    {"name": "cells_mirrors", "expression": "2*(N_H + N_L)/2*rho**(-2)*S_minus", "description": "sum |E_z|^2 of both mirrors in defect-peak cells (pair m: amplitude rho^-m, N/2 per layer)"},
+    {"name": "cells_vacuum", "expression": "2*(gap/h_cell)*rho**(-2*N_pairs)/u_0**2", "description": "sum |E_z|^2 of both vacuum gaps (outgoing wave of amplitude rho^-N / u_0)"},
+    {"name": "f_leak_exact", "expression": "cells_vacuum/(N_C/2 + cells_mirrors + cells_vacuum)", "description": "share of |E_z|^2 dA in the vacuum gaps (6e-2 at 3 pairs to 8e-9 at 12: x rho^-2 per pair, like 1 / Q)"},
+    {"name": "rho_c", "expression": "n_H/n_L", "description": "continuum admittance ratio"},
+    {"name": "b_c", "expression": "n_L/rho_c**(2*N_pairs)", "description": "continuum Y_L / Y_in"},
+    {"name": "psi_c", "expression": "-(pi/2)*((1 + rho_c)*(rho_c**(2*N_pairs) - 1)/(rho_c**2 - 1)/n_L - n_L*(1 + 1/rho_c)*(1 - rho_c**(-2*N_pairs))/(1 - rho_c**(-2)))", "description": "continuum omega0 d(arg Y_in)/d omega"},
+    {"name": "Q_continuum", "expression": "(pi - 2*b_c*psi_c/(1 - b_c**2))/(2*log((1 + b_c)/(1 - b_c)))", "description": "continuum quarter-wave Q (same indices)"}
+  ],
+  "domain": {"size_x": "Lx", "size_y": "Ly"},
+  "geometry": [
+    {"name": "stack", "kind": "rectangle", "params": {"x0": "gap", "y0": 0.0, "x1": "Lx - gap", "y1": "Ly"}},
+    {"name": "high_left_base", "kind": "rectangle", "params": {"x0": "gap + t_L", "y0": 0.0, "x1": "gap + period", "y1": "Ly"}},
+    {"name": "high_left", "kind": "array", "params": {"base": "high_left_base", "nx": "N_pairs", "ny": 1, "pitch_x": "period", "pitch_y": "Ly"}},
+    {"name": "high_right_base", "kind": "rectangle", "params": {"x0": "x_cav + L_cav", "y0": 0.0, "x1": "x_cav + L_cav + t_H", "y1": "Ly"}},
+    {"name": "high_right", "kind": "array", "params": {"base": "high_right_base", "nx": "N_pairs", "ny": 1, "pitch_x": "period", "pitch_y": "Ly"}},
+    {"name": "gap_left", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "gap", "y1": "Ly"}},
+    {"name": "gap_right", "kind": "rectangle", "params": {"x0": "Lx - gap", "y0": 0.0, "x1": "Lx", "y1": "Ly"}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "low_index", "library": null, "properties": {"eps_r": "n_L**2"}, "dispersion": null,
+     "selection": ["stack"]},
+    {"name": "high_index", "library": null, "properties": {"eps_r": "n_H**2"}, "dispersion": null,
+     "selection": ["high_left", "high_right"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_ez",
+      "settings": {"bc_y_lo": "periodic", "bc_y_hi": "periodic", "pml_cells": 40, "wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": ["gap_left", "gap_right"], "params": {"min_region_fraction": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"eigen": "eigen_solver"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "h_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "eigen_solver", "type": "arpack_shift_invert",
+     "settings": {"tolerance": 0.0, "subspace_size": 0, "factorization": "superlu"}}
+  ],
+  "solver_defaults": {"backend": "cpu", "subpixel_smoothing": false, "conformal_boundaries": false},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 3}, "stored_fields": [],
+            "sweep": {"parameter": "N_pairs", "values": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12]}},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "lambda0", "tolerance": 1e-6},
+    {"name": "Q_1", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0, "reference": "Q_exact", "tolerance": 0.002},
+    {"name": "pml_1", "expression": "pml_fraction", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0},
+    {"name": "leak_1", "expression": "region_energy_fraction", "selection": [], "operation": "at",
+     "source": "em.resonances", "at": 0, "reference": "f_leak_exact", "tolerance": 0.03}
+  ],
+  "analytic_curves": [
+    {"name": "Q_continuum_formula", "target": "sweep", "series": "Q_1", "expression": "Q_continuum"}
+  ]
+}

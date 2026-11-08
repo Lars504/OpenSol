@@ -563,21 +563,24 @@ def element_mesh(spec, parameters, registry=None, mesh=None, *, shapes=None, log
 
 def built_mesh_counts(mesh) -> dict:
     """{'n_elements', 'n_nodes', 'n_edges'(, 'n_faces': tetrahedra)} of a built fem TriangleMesh / TetrahedronMesh
-    (plain ints)."""
+    (plain ints) + 'dissection': its fem.dissection.MeshDissection (factor entries counted lazily on first ask)."""
+    from ..fem.dissection import MeshDissection
     counts = {'n_elements': int(mesh.n_elements), 'n_nodes': int(mesh.n_points), 'n_edges': int(mesh.n_edges)}
     n_faces = getattr(mesh, 'n_faces', None)
     if n_faces is not None:
         counts['n_faces'] = int(n_faces)
+    counts['dissection'] = MeshDissection(mesh)
     return counts
 
 
 def with_built_counts(estimate, counts):
     """The element mesh estimate with its built mesh's counts (built_mesh_counts) in place of the size-based ones:
-    counts_built True, material_elements scaled by the element ratio."""
+    counts_built True, material_elements scaled by the element ratio, the dissection attached."""
     element_ratio = counts['n_elements'] / max(estimate.n_elements, 1)
     material_elements = {name: count * element_ratio for name, count in estimate.material_elements.items()}
-    built = {name: int(count) for name, count in counts.items() if hasattr(estimate, name)}
-    return replace(estimate, **built, material_elements=material_elements, counts_built=True)
+    built = {name: int(count) for name, count in counts.items() if name != 'dissection' and hasattr(estimate, name)}
+    return replace(estimate, **built, material_elements=material_elements, counts_built=True,
+                   dissection=counts.get('dissection'))
 
 
 def has_estimated_counts(estimate) -> bool:
@@ -589,16 +592,21 @@ def has_estimated_counts(estimate) -> bool:
     return not (kind == 'tetrahedra' and estimate.sizing.mesher == 'builtin' and not estimate.sizing.sweep_axis)
 
 
+def awaits_built_mesh(estimate) -> bool:
+    """True for an element mesh estimate not yet counted on its built mesh: size-based counts, or exact builtin
+    tetrahedra counts still without the built mesh's factor count (MeshEstimate.dissection)."""
+    return getattr(estimate, 'kind', 'tensor') in ('triangles', 'tetrahedra') and not estimate.counts_built
+
+
 def built_mesh_estimates(spec, parameters, registry, mesh_estimates, shapes=None, log=None) -> dict:
     """mesh_estimates {mesh name: estimate} with every element mesh built (element_mesh: a kept one is reused) and
-    its counts in place (with_built_counts) and its MeshDissection attached: the numbers a memory judgement is final
+    its counts in place (with_built_counts: its MeshDissection attached): the numbers a memory judgement is final
     on."""
-    from ..fem.dissection import MeshDissection
     built = {}
     for name, estimate in mesh_estimates.items():
-        if has_estimated_counts(estimate):
+        if awaits_built_mesh(estimate):
             mesh, _reused = element_mesh(spec, parameters, registry, name, shapes=shapes, log=log)
-            estimate = replace(with_built_counts(estimate, built_mesh_counts(mesh)), dissection=MeshDissection(mesh))
+            estimate = with_built_counts(estimate, built_mesh_counts(mesh))
         built[name] = estimate
     return built
 
@@ -910,6 +918,9 @@ def mesh_values(mesh_spec, parameters) -> dict:
         values = resolve_values(MESH_PARAMS, raw, parameters)
     except ValueError as exc:
         raise ValueError(f"mesh '{mesh_spec.name}': {exc}") from exc
+    if values['dx'] is None and values['mode'] != 'auto':
+        raise ValueError(f"mesh '{mesh_spec.name}': dx (cell size) is required in mode {values['mode']} (empty only "
+                         'in auto mode)')
     for name, default in MESH_KIND_DEFAULTS[values['kind']].items():
         if values[name] is None:
             values[name] = default
@@ -1041,10 +1052,27 @@ class _AutoSizes:
         return tuple((refinement.object_name, float(refinement.dx)) for refinement in self.refinements
                      if refinement.dx < self.base_dx * (1.0 - _REFINEMENT_RTOL))
 
+    def scaled_to_smallest(self, smallest_dx):
+        """These sizes scaled by one factor so the finest applied size (base or finer refinement) is smallest_dx."""
+        finest_dx = min([self.base_dx] + [size for _name, size in self.finer_refinements()])
+        factor = float(smallest_dx) / finest_dx
+        refinements = [replace(refinement, dx=refinement.dx * factor) for refinement in self.refinements]
+        note = self.note
+        if self.rule == 'uniform_flow':
+            note = f'Automatic mesh: uniform cells at the cell size {float(smallest_dx):.4g} m'
+        return replace(self, base_dx=self.base_dx * factor, refinements=refinements, note=note)
+
 
 def _auto_sizes(spec, on_mesh, parameters, registry, shapes, mesh):
-    """_AutoSizes of auto mode on a mesh holding the physics on_mesh: the wavelength rule with an EM physics (family
-    'em') on it or wavelength_min set, else the S7.8 physics-controlled rule (lattice Boltzmann types: uniform)."""
+    """_AutoSizes of auto mode on a mesh holding the physics on_mesh (_auto_rule_sizes), scaled so the finest cells
+    take the mesh dx when it is set (the smallest cell size)."""
+    sizes = _auto_rule_sizes(spec, on_mesh, parameters, registry, shapes, mesh)
+    return sizes if mesh['dx'] is None else sizes.scaled_to_smallest(mesh['dx'])
+
+
+def _auto_rule_sizes(spec, on_mesh, parameters, registry, shapes, mesh):
+    """_AutoSizes of the auto rule alone: the wavelength rule with an EM physics (family 'em') on the mesh or
+    wavelength_min set, else the S7.8 physics-controlled rule (lattice Boltzmann types: uniform)."""
     present_types = _present_physics_types(on_mesh, registry)
     if mesh['wavelength_min'] is not None or any(physics_type.family == 'em' for physics_type in present_types):
         wavelength_min, source = _auto_wavelength(spec, on_mesh, parameters, registry, mesh['wavelength_min'])

@@ -521,7 +521,7 @@ def build(spec, registry=None, log=None, live_parameters=()) -> Session:
 
 def _build(spec, registry, log, live_parameters):
     """build() inside its element mesh scope."""
-    from .meshing import has_estimated_counts
+    from .meshing import awaits_built_mesh
     from .validate import validate
     start = time.perf_counter()
     registry = registry if registry is not None else get_registry()
@@ -537,10 +537,11 @@ def _build(spec, registry, log, live_parameters):
     meshing_seconds = 0.0
     if (memory_estimate is not None and mesh_estimate
             and all(estimate is not None for estimate in mesh_estimate.values())
-            and any(has_estimated_counts(estimate) for estimate in mesh_estimate.values())):
-        # size-based element counts (a size-field integral: too high or too low, e.g. 0.36x on a graded 5 mm mesh):
-        # every other error first (no mesher run for a model that fails anyway), then the meshes are built (kept for
-        # the domain stage, so no second mesher run) and the memory judgement and ledger check are on their counts
+            and any(awaits_built_mesh(estimate) for estimate in mesh_estimate.values())):
+        # element meshes not yet built: size-based counts (a size-field integral: too high or too low, e.g. 0.36x on a
+        # graded 5 mm mesh) and factor fills without a mesh to count on (MeshEstimate.dissection): every other error
+        # first (no mesher run for a model that fails anyway), then the meshes are built (kept for the domain stage, so
+        # no second mesher run) and the memory judgement and ledger check are on their counts
         _raise_errors(validate(spec, registry, mesh_estimate=mesh_estimate, memory_estimate=memory_estimate))
         meshing_start = time.perf_counter()
         mesh_estimate, memory_estimate = _built_estimates(spec, registry, mesh_estimate, cached_shapes, log)
@@ -1134,7 +1135,7 @@ def _built_estimates(spec, registry, mesh_estimate, shapes, log):
     for name, estimate in mesh_estimate.items():
         with _issue_at(('mesh', name)):
             built.update(meshing.built_mesh_estimates(spec, parameters, registry, {name: estimate}, shapes, log))
-        if built[name] is not estimate:
+        if built[name] is not estimate and meshing.has_estimated_counts(estimate):
             log('info', f"mesh '{name}': {built[name].n_elements:,} {estimate.kind} built before the memory check (the "
                         f'sizes gave an estimate of {estimate.n_elements:,})')
     try:

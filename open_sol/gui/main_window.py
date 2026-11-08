@@ -1151,9 +1151,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _populate_example_folder_menu(self, folder_menu, folder_name):
         """Scan one example folder into its submenu, a folded submenu per physics combination when there are several
-        (single physics first, a separator before the combinations); files that are not ready are logged."""
-        examples, newly_skipped = self._example_catalog.scan(folder_name)
-        for relative_path, reason in newly_skipped:
+        (single physics first, a separator before the combinations); unreadable files are logged, none is validated."""
+        examples, newly_unreadable = self._example_catalog.scan(folder_name)
+        for relative_path, reason in newly_unreadable:
             self.log_message('info', f'Example {relative_path} is not listed in the Examples menu: {reason}')
         for submenu in folder_menu.findChildren(QtWidgets.QMenu):   # clear() keeps addMenu's QMenu objects
             submenu.deleteLater()
@@ -1172,9 +1172,9 @@ class MainWindow(QtWidgets.QMainWindow):
             action.setStatusTip(f'Open the example {example.relative_path} as an untitled model')
             action.triggered.connect(lambda _checked=False, path=example.path: self._open_example(path))
         if not examples:
-            placeholder = folder_menu.addAction('(no examples ready to open)')
-            placeholder.setToolTip(f'Model files (*.json) in {self._example_catalog.directory / folder_name} that '
-                                   'open and check without errors are listed here.')
+            placeholder = folder_menu.addAction('(no examples)')
+            placeholder.setToolTip(f'Model files (*.json) in {self._example_catalog.directory / folder_name} are '
+                                   'listed here; they are checked when opened.')
             placeholder.setEnabled(False)
 
     def _open_example(self, path):

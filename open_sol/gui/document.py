@@ -677,7 +677,7 @@ class ModelDocument(QtCore.QObject):
         mesher = 'gmsh' if kind == 'tetrahedra' and find_gmsh() is not None else 'builtin'
 
         def add(spec):
-            spec.meshes.append(MeshSpec(name=name, kind=kind, mode='auto', mesher=mesher))
+            spec.meshes.append(MeshSpec(name=name, kind=kind, mode='auto', dx=None, mesher=mesher))   # the rule alone
             if physics is not None:
                 spec.physics_by_name(physics).mesh = name
         label = f'New mesh for {physics}' if physics is not None else 'Add mesh'

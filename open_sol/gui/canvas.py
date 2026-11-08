@@ -77,6 +77,7 @@ _GRID_LINES_MAX = 300          # mesh grid lines drawn per axis
 _DISPLAY_PIXELS_MAX = 4_000_000
 _DETAIL_DELAY_MS = 60          # zoom / pan settle time before the field detail image is resampled
 _INFO_BOX_MIN_LINES = 2        # text lines always kept below the plot (banner, mesh badge, legend; more scroll)
+_MIN_FRAME_FRACTION = 0.5      # fitted view frame: each side at least this fraction of the largest it can be
 _COLORBAR_AXIS_WIDTH = 64     # px of the colour bar's tick labels, fixed so new levels do not resize the plot
 _DETAIL_MARGIN = 0.25          # detail image: the visible range padded by this fraction of the view per side
 _NATIVE_PROFILE_SAMPLES = 20_000   # drawn line profiles (exact field cells): at most this many samples
@@ -614,6 +615,7 @@ class ModelCanvas(QtWidgets.QWidget):
         self._results_meshes = {}              # mesh refinement: {mesh name: estimate} of the results' last level
         self._results_level_text = ''          # 'mesh refinement level k' of _results_meshes ('' without)
         self._sweep_value = None               # (parameter, value) of the running sweep's value, None = the document's
+        self._results_sweep_value = None       # (parameter, value) the shown results belong to (field view only)
         self._mesh_store = None               # mesh_preview.ElementMeshStore: built / previewed element meshes
         self._tetrahedron_cut_cache = None    # (data id, axis, position, scene axes) -> cut segments of the last draw
         self._layer = None                     # 3D: (z_lo, z_hi) of the edited layer, None = all layers
@@ -662,7 +664,8 @@ class ModelCanvas(QtWidgets.QWidget):
         self._graphics = pg.GraphicsLayoutWidget()
         self._view_box = _CanvasViewBox(self)
         self._plot = self._graphics.addPlot(row=0, col=0, viewBox=self._view_box)
-        self._plot.setAspectLocked(True)
+        # never locked: the fit gives equal scales where the frame allows (_place_plot); a wheel over an axis zooms it
+        self._plot.setAspectLocked(False)
         title_label = self._plot.titleLabel
         fit_title = title_label.updateMin
 
@@ -859,6 +862,22 @@ class ModelCanvas(QtWidgets.QWidget):
             self._sweep_value = sweep_value
             self._schedule_refresh()
 
+    def set_results_sweep_value(self, parameter=None, value=None):
+        """Evaluate the field view's geometry with `parameter` at the sweep value of the shown results (a finished
+        sweep); a running sweep's value (set_sweep_value) wins; None = the document's parameters."""
+        sweep_value = None if parameter is None else (parameter, float(value))
+        if sweep_value != self._results_sweep_value:
+            self._results_sweep_value = sweep_value
+            if self.mode == 'field':
+                self._schedule_refresh()
+
+    def _shown_sweep_value(self):
+        """(parameter, value) the geometry is evaluated at: the running sweep's, else in the field view the shown
+        results' sweep value, else None (the document's parameters)."""
+        if self._sweep_value is not None:
+            return self._sweep_value
+        return self._results_sweep_value if self.mode == 'field' else None
+
     def set_mesh_store(self, store):
         """Source of the elements drawn in the mesh view and by 'Show mesh' (mesh_preview.ElementMeshStore)."""
         self._mesh_store = store
@@ -878,6 +897,7 @@ class ModelCanvas(QtWidgets.QWidget):
         self._color_range = None
         self._view_key = None
         self._sweep_value = None
+        self._results_sweep_value = None
         self._cancel_drawing()
         if self._tool == 'profile':
             self.set_tool('select')
@@ -945,7 +965,7 @@ class ModelCanvas(QtWidgets.QWidget):
     def _view_is_stale(self):
         """True when the model was evaluated for another mesh than the active one or another sweep value, or (3D) for
         another view than the mode shows (the field view: the view and cut of the shown field's plane, _field_view)."""
-        if self._model.mesh_name != self._active_mesh_name() or self._model.sweep_value != self._sweep_value:
+        if self._model.mesh_name != self._active_mesh_name() or self._model.sweep_value != self._shown_sweep_value():
             return True
         if self._model.size_z is None:
             return False
@@ -991,14 +1011,15 @@ class ModelCanvas(QtWidgets.QWidget):
 
     # ---- evaluation (CPU) ----
     def _evaluate(self):
-        """Evaluate the document's geometry (at the running sweep value, set_sweep_value), mesh estimate and material
-        preview; problems go to the banner."""
+        """Evaluate the document's geometry (at the running / shown results' sweep value, _shown_sweep_value), mesh
+        estimate and material preview; problems go to the banner."""
         document = self._document
         spec = document.spec
-        model = _EvaluatedModel(revision=document.revision, sweep_value=self._sweep_value,
+        sweep_value = self._shown_sweep_value()
+        model = _EvaluatedModel(revision=document.revision, sweep_value=sweep_value,
                                 mesh_name=self._active_mesh_name())
-        parameters = (document.parameters() if self._sweep_value is None
-                      else parameters_with(spec, *self._sweep_value))
+        parameters = (document.parameters() if sweep_value is None
+                      else parameters_with(spec, *sweep_value))
         model.problems.extend(f'Parameter {name!r}: {message}'
                               for name, message in document.evaluation_errors().items())
         try:
@@ -1225,7 +1246,6 @@ class ModelCanvas(QtWidgets.QWidget):
         self._sync_view_row(model)
         u_axis, v_axis = self._shown_axes(model)
         stretched = model.view != 'xy' and self._stretch_z
-        self._plot.setAspectLocked(not stretched)
         self._plot.setLabel('bottom', f'{u_axis} ({model.unit})')
         self._plot.setLabel('left', f'{v_axis} ({model.unit}, stretched)' if stretched else f'{v_axis} ({model.unit})')
         self._update_mesh_badge(model)
@@ -2178,8 +2198,8 @@ class ModelCanvas(QtWidgets.QWidget):
         self._plot.setRange(xRange=(x0, x1), yRange=(y0, y1), padding=0.04)
 
     def _place_plot(self):
-        """Plot frame at the top of the plot area, tight to `_box_aspect` (the whole area without one); the text box
-        takes the rest below it."""
+        """Plot frame at the top of the plot area, tight to `_box_aspect` (the whole area without one) but each view
+        side at least _MIN_FRAME_FRACTION of its largest (unequal scales then); the text box takes the rest below."""
         area_width, area_height = self._plot_area.width(), self._plot_area.height()
         spacing = 2
         max_height = max(area_height - self._info_min_height - spacing, 1)
@@ -2188,11 +2208,15 @@ class ModelCanvas(QtWidgets.QWidget):
         if self._box_aspect is not None and view_rect.width() > 1 and view_rect.height() > 1:
             extra_width = self._graphics.width() - view_rect.width()     # axes, title and colour bar around the view
             extra_height = self._graphics.height() - view_rect.height()
-            view_width = max(area_width - extra_width, 1.0)
+            largest_view_width = max(area_width - extra_width, 1.0)
+            largest_view_height = max(max_height - extra_height, 1.0)
+            view_width = largest_view_width
             view_height = view_width * self._box_aspect
-            if view_height + extra_height > max_height:
-                view_height = max(max_height - extra_height, 1.0)
+            if view_height > largest_view_height:
+                view_height = largest_view_height
                 view_width = view_height / self._box_aspect
+            view_width = max(view_width, _MIN_FRAME_FRACTION * largest_view_width)
+            view_height = max(view_height, _MIN_FRAME_FRACTION * largest_view_height)
             width = min(round(view_width + extra_width), area_width)
             height = min(round(view_height + extra_height), max_height)
         old = self._graphics.geometry()

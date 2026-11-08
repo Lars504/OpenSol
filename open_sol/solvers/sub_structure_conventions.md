@@ -371,7 +371,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   row), a general LU x CUDSS_LU_OVER_LDLT (L and U), a mixed factor halves only the values (CUDSS_INDEX_BYTES per
   entry stay), peak = permanent (CUDSS_PEAK_RATIO 1: cuDSS reports them equal); a `FactorFill(entries)` given as
   `dimensions` replaces the growth law by counted factor entries (fem.dissection on a built element mesh; mechanics
-  triangles / tetrahedra so far: `definition.factor_fill`) x the factor value bytes + the kept matrix copy +
+  triangles / tetrahedra: `definition.factor_fill`; em_fdfd_3d tetrahedra: `definition_fdfd3d.nedelec_factor_entries`,
+  also for its host SuperLU via `core.memory_estimate.host_counted_lu_bytes`) x the factor value bytes + the kept matrix copy +
   CUDSS_ROW_BYTES per row; the growth-law fill fitted to the selftest
   counters (constants, data, the known double count and open points in the cudss_factor notes above it). The pool items are counted from the
   arrays the code makes (an estimate above the measured bytes misreads the code); a wrong entries-per-row count is the

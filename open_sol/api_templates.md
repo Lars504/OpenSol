@@ -6876,7 +6876,7 @@ Nonlinear FDFD (undepleted): a 1550 nm mode pumps a periodically poled z-cut lit
     },
     {
       "name": "C_cmt",
-      "expression": 8.746875191738596e+20,
+      "expression": 8.746875191738601e+20,
       "description": "coupled-mode prefactor of P_2w / (d33^2 P_w^2 L^2)"
     },
     {"name": "u_qpm", "expression": "(dbeta - 2*pi/Lambda)*L_pp/2", "description": "QPM detuning phase [rad]"}

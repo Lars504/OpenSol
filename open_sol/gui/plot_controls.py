@@ -455,16 +455,51 @@ class _ArticleAxis(pg.AxisItem):
         self._painted_levels = []   # tick levels of the paint in progress
 
     def tickSpacing(self, minVal, maxVal, size):
-        """pyqtgraph's spacing; a fixed tick step giving more than _MAX_FIXED_TICKS major ticks on this range (e.g. kept
-        across a plot switch) is ignored (automatic), else a step of 5 on a 1e24 axis allocates 1e23 ticks."""
+        """pyqtgraph's spacing, automatic steps raised until labels do not overlap; a fixed tick step giving more than
+        _MAX_FIXED_TICKS major ticks on this range (e.g. kept across a plot switch) is ignored (automatic)."""
         fixed = self._tickSpacing
-        if fixed is None or abs(maxVal - minVal) <= _MAX_FIXED_TICKS * fixed[0][0]:
+        if fixed is not None and abs(maxVal - minVal) <= _MAX_FIXED_TICKS * fixed[0][0]:
             return super().tickSpacing(minVal, maxVal, size)
         self._tickSpacing = None
         try:
-            return super().tickSpacing(minVal, maxVal, size)
+            levels = super().tickSpacing(minVal, maxVal, size)
         finally:
             self._tickSpacing = fixed
+        return self._uncrowded_levels(levels, minVal, maxVal, size)
+
+    def _uncrowded_levels(self, levels, minVal, maxVal, size):
+        """Automatic levels with the major step raised along 1-2-5 until its labels fit `size` pixels apart (pyqtgraph
+        always labels the major level, so a short axis of a thin geometry stacked its labels)."""
+        low, high = min(minVal, maxVal), max(minVal, maxVal)
+        if not levels or self.logMode or size <= 0 or high <= low:
+            return levels
+        metrics = QtGui.QFontMetricsF(self.style['tickFont'] or self.font())
+        gap_px = 0.6 * metrics.height()
+        along_text = self.orientation in ('bottom', 'top')
+        step = levels[0][0]
+        raised = False
+        for _attempt in range(64):
+            first, last = math.ceil(low / step), math.floor(high / step)
+            if last - first < 1:   # one tick or none: nothing can overlap
+                break
+            values = [index * step for index in range(first, last + 1)]
+            if along_text:
+                texts = self.tickStrings(values, self.autoSIPrefixScale * self.scale, step)
+                label_px = max(metrics.horizontalAdvance(text) for text in texts)
+            else:
+                label_px = metrics.height()
+            if step * size / (high - low) >= label_px + gap_px:
+                break
+            leading = round(step / 10.0 ** math.floor(math.log10(step)))
+            step *= 2.5 if leading == 2 else 2.0   # 1 -> 2 -> 5 -> 10
+            raised = True
+        if not raised:
+            return levels
+        leading = round(step / 10.0 ** math.floor(math.log10(step)))
+        raised_levels = [(step, 0)]
+        if self.style['maxTickLevel'] >= 1:
+            raised_levels.append((step / (4 if leading == 2 else 5), 0))
+        return raised_levels
 
     def tickValues(self, minVal, maxVal, size):
         levels = super().tickValues(minVal, maxVal, size)

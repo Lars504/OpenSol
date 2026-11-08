@@ -1,0 +1,93 @@
+{
+  "title": "2D L3 photonic crystal cavity in air, quarter model with two mirror planes (FDFD eigenfrequency)",
+  "description": "An L3 cavity (three missing holes in a row) in a finite triangular lattice of air holes (a = 420 nm, r = 0.29 a) cut into a dielectric patch of eps_eff 8.12 (n 2.85, the TE effective index of a 220 nm silicon slab at 1550 nm, as nanobeam_cavity_fdfd), with air all around the patch and CPML beyond the air. The two holes closing the cavity are shifted outward by s_end (0.15 a, Akahane's L3; 0 = the plain L3). Solved by the eigenfrequency study in em_fdfd_hz (E in the plane, the TE-like slab modes) on the cpu backend with host SuperLU. In 2D the mode leaks only in the plane, through the hole rows into the air and the PML, so Q grows roughly exponentially with the crystal size; the patch edges can also hold edge (surface) modes, which the probes below tell apart from the cavity.\nQuarter model: the cavity centre is the origin, the domain holds x, y >= 0, x_lo is a symmetric mirror plane (E mirror-even: E_y even and H_z odd about x = 0) and y_lo an antisymmetric one (E mirror-odd: E_x odd, E_y even and H_z even about the cavity axis y = 0). That is the parity of the fundamental L3 mode (dominant E_y, even about both planes); the holes on x = 0 and y = 0 are drawn about the edges and halved by them. For the other parities flip bc_x_lo / bc_y_lo (the second-order L3 mode has E_y odd along the axis: bc_x_lo antisymmetric).\nCrystal size: n_rows hole rows above the cavity row (the unfolded crystal has 2 n_rows + 1 rows) and n_side holes on each side of the cavity in the cavity row (default n_rows + 1, so one parameter grows the crystal both ways; set a number to decouple). The rows alternate between two arrays (holes_a on y = 0, 2 h, ..., holes_b offset by a / 2 on y = h, 3 h, ...; h = sqrt(3) a / 2); ny_a / ny_b split n_rows by parity without floor ((-1)^n = cos(pi n)). The patch ends a / 2 beyond the outermost hole centres. The cavity holes are filled back with the patch material (defect_fill, after the hole arrays: later materials win) and the end hole is drawn again at (2 + s_end) a.\nTarget: f_target = a / lambda = 0.265 is an estimate (the 3D L3 sits near 0.26-0.27), not from a run: the study returns the 6 resonances nearest it. If the cavity row is not row 0, set f_target to its a_over_lambda (the PML stretch and materials are frozen at the target) and run again.\nProbes (field derived values read resonance 1, the one nearest the target, with H_z scaled to 1 at its peak): cavity_1 = its region_energy_fraction in cavity_region (the three missing holes plus a, out to the first-row hole centres: the cavity mode keeps a large share, an edge or band-edge mode almost none; set the resonance_table's min_region_fraction to e.g. 0.3 to drop those from the solve); centre_ratio = |E| at the cavity centre / its maximum over the solid core of the cavity (the fundamental mode has its E_y antinode at the centre, close to 1); side_ratio = Re E_y at x = a (the next missing hole) / Re E_y at the centre (sign and size are a fingerprint of the mode: note them for a run you trust, a jump in them flags another mode); V_norm = mode area of eps |E|^2 over the unfolded crystal / (lambda / n)^2. Q_max (largest Q of the 6 rows) flags a high-Q cavity mode that is not row 0.\nSweep tab: lambda_1, Q_1 (log axis), cavity_1, centre_ratio and side_ratio vs n_rows = 3-8 (n_side follows): Q should grow steadily while the probes stay put; a step in a probe means the solve picked another mode.\nMesh: uniform, 30 cells per a (14 nm, ~38 per wavelength in the patch), ~1e5 unknowns at n_rows 6. GPU: set solver_defaults backend 'gpu' and the eigen_solver factorization 'GPU cuDSS' (needs nvmath-python). No closed-form reference: a demonstration, not a self-test.\nField tab: |H_z|, Re H_z and |E| of each resonance (Snapshot slider; the GUI shows the unfolded crystal).",
+  "version": 1,
+  "parameters": [
+    {"name": "a_lat", "expression": "420*nm", "description": "lattice constant (hole spacing)"},
+    {"name": "r_hole", "expression": "0.29*a_lat", "description": "hole radius"},
+    {"name": "h_row", "expression": "sqrt(3)/2*a_lat", "description": "row spacing of the triangular lattice"},
+    {"name": "eps_slab", "expression": 8.12, "description": "patch permittivity (TE effective index 2.85 of a 220 nm silicon slab)"},
+    {"name": "n_slab", "expression": "sqrt(eps_slab)", "description": "patch index"},
+    {"name": "s_end", "expression": 0.15, "description": "outward shift of the two holes closing the cavity, in units of a (0 = plain L3)"},
+    {"name": "n_rows", "expression": 6, "description": "hole rows above (and below) the cavity row (swept)"},
+    {"name": "n_side", "expression": "n_rows + 1", "description": "holes on each side of the cavity in the cavity row"},
+    {"name": "ny_a", "expression": "1 + n_rows/2 - (1 - cos(pi*n_rows))/4", "description": "rows of holes_a (y = 0, 2 h, ...): 1 + floor(n_rows / 2)"},
+    {"name": "ny_b", "expression": "(n_rows + (1 - cos(pi*n_rows))/2)/2", "description": "rows of holes_b (y = h, 3 h, ...): ceil(n_rows / 2)"},
+    {"name": "x_patch", "expression": "(n_side + 1.5)*a_lat", "description": "patch half-length: a / 2 beyond the outermost hole centre"},
+    {"name": "y_patch", "expression": "n_rows*h_row + a_lat/2", "description": "patch half-height: a / 2 beyond the outermost row"},
+    {"name": "margin", "expression": "1*um", "description": "air between the patch and the CPML"},
+    {"name": "cells_per_a", "expression": 30.0, "description": "cells per lattice constant"},
+    {"name": "dx_cell", "expression": "a_lat/cells_per_a", "description": "uniform cell size"},
+    {"name": "f_target", "expression": 0.265, "description": "target a / lambda (estimate; set it to the cavity's a_over_lambda after a first run)"},
+    {"name": "lambda_target", "expression": "a_lat/f_target", "description": "eigenfrequency target wavelength (1585 nm)"}
+  ],
+  "domain": {"size_x": "x_patch + margin", "size_y": "y_patch + margin"},
+  "geometry": [
+    {"name": "patch", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "x_patch", "y1": "y_patch"}},
+    {"name": "hole_a", "kind": "circle", "params": {"cx": 0.0, "cy": 0.0, "r": "r_hole"}},
+    {"name": "holes_a", "kind": "array", "params": {"base": "hole_a", "nx": "n_side + 2", "ny": "ny_a", "pitch_x": "a_lat", "pitch_y": "2*h_row"}},
+    {"name": "hole_b", "kind": "circle", "params": {"cx": "a_lat/2", "cy": "h_row", "r": "r_hole"}},
+    {"name": "holes_b", "kind": "array", "params": {"base": "hole_b", "nx": "n_side + 1", "ny": "ny_b", "pitch_x": "a_lat", "pitch_y": "2*h_row"}},
+    {"name": "defect_fill", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "2.5*a_lat", "y1": "0.45*a_lat"}},
+    {"name": "end_hole", "kind": "circle", "params": {"cx": "(2 + s_end)*a_lat", "cy": 0.0, "r": "r_hole"}},
+    {"name": "core", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "1.5*a_lat", "y1": "0.4*a_lat"}},
+    {"name": "cavity_region", "kind": "rectangle", "params": {"x0": 0.0, "y0": 0.0, "x1": "3*a_lat", "y1": "h_row"}},
+    {"name": "p_centre", "kind": "point", "params": {"x": 0.0, "y": 0.0}},
+    {"name": "p_side", "kind": "point", "params": {"x": "a_lat", "y": 0.0}}
+  ],
+  "selections": [],
+  "materials": [
+    {"name": "patch_material", "library": null, "properties": {"eps_r": "eps_slab"}, "dispersion": null,
+     "selection": ["patch"]},
+    {"name": "hole_air", "library": null, "properties": {"eps_r": 1.0}, "dispersion": null,
+     "selection": ["holes_a", "holes_b"]},
+    {"name": "defect_material", "library": null, "properties": {"eps_r": "eps_slab"}, "dispersion": null,
+     "selection": ["defect_fill"]},
+    {"name": "end_hole_air", "library": null, "properties": {"eps_r": 1.0}, "dispersion": null,
+     "selection": ["end_hole"]}
+  ],
+  "physics": [
+    {
+      "name": "em",
+      "type": "em_fdfd_hz",
+      "settings": {"bc_x_lo": "symmetric", "bc_y_lo": "antisymmetric", "pml_cells": 20, "wavelength": "lambda_target"},
+      "features": [
+        {"name": "resonances", "type": "resonance_table", "selection": ["cavity_region"],
+         "params": {"min_region_fraction": 0.0}, "enabled": true}
+      ],
+      "every": 1,
+      "solvers": {"eigen": "eigen_solver"}
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
+           "points_per_wavelength": 20.0, "refinements": []},
+  "solvers": [
+    {"name": "eigen_solver", "type": "arpack_shift_invert",
+     "settings": {"tolerance": 0.0, "subspace_size": 0, "factorization": "superlu"}}
+  ],
+  "solver_defaults": {"backend": "cpu", "subpixel_smoothing": true, "conformal_boundaries": false},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 6},
+            "stored_fields": ["em.hz_re", "em.hz_abs", "em.e_abs"],
+            "sweep": {"parameter": "n_rows", "values": [3, 4, 5, 6, 7, 8]}},
+  "derived_values": [
+    {"name": "lambda_1", "expression": "wavelength", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0},
+    {"name": "a_over_lambda_1", "expression": "a_lat/wavelength", "selection": [], "operation": "at",
+     "source": "em.resonances", "at": 0},
+    {"name": "Q_1", "expression": "q_factor", "selection": [], "operation": "at", "source": "em.resonances", "at": 0},
+    {"name": "Q_max", "expression": "q_factor", "selection": [], "operation": "max", "source": "em.resonances"},
+    {"name": "pml_1", "expression": "pml_fraction", "selection": [], "operation": "at", "source": "em.resonances",
+     "at": 0},
+    {"name": "cavity_1", "expression": "region_energy_fraction", "selection": [], "operation": "at",
+     "source": "em.resonances", "at": 0},
+    {"name": "E_centre", "expression": "em_e_abs", "selection": [], "operation": "at", "point": "p_centre"},
+    {"name": "E_core_max", "expression": "em_e_abs", "selection": ["core"], "operation": "max"},
+    {"name": "centre_ratio", "expression": "E_centre/E_core_max", "selection": [], "operation": "expression"},
+    {"name": "Ey_centre", "expression": "em_ey_re", "selection": [], "operation": "at", "point": "p_centre"},
+    {"name": "Ey_side", "expression": "em_ey_re", "selection": [], "operation": "at", "point": "p_side"},
+    {"name": "side_ratio", "expression": "Ey_side/Ey_centre", "selection": [], "operation": "expression"},
+    {"name": "mode_area", "expression": "em_eps_xx*em_e_intensity", "selection": [], "operation": "mode_volume"},
+    {"name": "V_norm", "expression": "mode_area/(lambda_1/n_slab)**2", "selection": [], "operation": "expression"}
+  ]
+}

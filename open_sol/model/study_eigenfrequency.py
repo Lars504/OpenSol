@@ -201,7 +201,7 @@ _DESCRIPTION = (
     'factors. Results: complex omega with '
     'Im > 0 for a decaying resonance (exp(+j omega t)), Q = Re(omega) / (2 Im(omega)) (radiation into the PML plus '
     'material loss), the resonance_table feature, and one snapshot per resonance number k of the stored fields '
-    '(default each primary field and its _im partner) labelled "resonance k: lambda = <nm> nm, Q = <value>" (several '
+    '(default every output field) labelled "resonance k: lambda = <nm> nm, Q = <value>" (several '
     'physics: their names and values joined; mirror faces add the parity, "resonance k [x_lo symmetric]: ..."), '
     'nearest the target first; each field is scaled to 1 (V/m for E_z, A/m '
     'for H_z) real at its peak, and its in-plane fields come from the curl at omega_t. Afterwards each physics shows '

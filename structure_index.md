@@ -176,7 +176,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `document.py`: Qt model document: the edited ModelSpec with undo/redo, file state, the current tree node and node operations
 - `estimation_form.py`: Parameter estimation node (StudySpec.estimation): the study form's group, the node's form (a SettingsPanel mixin), its editors and texts (GUI thread, CPU only).
 - `estimation_results.py`: Results panel 'Estimation' tab (summary 'estimation' of a parameter estimation): fitted values with standard errors, measured versus model values, and plots of the misfit and the parameters over the runs (GUI thread).
-- `examples.py`: Examples menu catalog: one entry per <repo>/examples subfolder; a folder's model files that load and validate without errors, grouped by their physics types; CPU only (GUI-thread safe).
+- `examples.py`: Examples menu catalog: one entry per <repo>/examples subfolder; a folder's model files read only for title, description and physics types (no model load, no validation), grouped by their physics types; GUI-thread safe.
 - `forms.py`: Qt editors for model values (GUI thread, CPU only): ExpressionEdit, per-Param editors, ParamForm, SelectionPicker
 - `helpers.py`: Small GUI helpers shared by main_window, model_tree, settings_panel, canvas and results: user-error handling, file-dialog folders, the study-finished text and the mesh colours / texts (S7.2: which mesh a physics or field uses).
 - `main_window.py`: Main window: model canvas in the centre, model tree / settings / results / 3D preview docks, Messages / Validation / Progress tabs, menus and a toolbar with progress + ETA; every GPU job goes through the WorkerBridge.

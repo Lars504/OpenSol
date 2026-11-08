@@ -28,7 +28,7 @@ from .geometry import (DOMAIN_COORDINATES, GEOMETRY_KINDS, array_overlap, bounda
                        z_param_set)
 from .meshing import (MESH_ESTIMATE_ERRORS, PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR,
                       backend_memory, boundary_config_difference_text, estimate_memory, estimate_mesh, estimate_meshes,
-                      has_estimated_counts, largest_adjacent_ratio, size_points_problem)
+                      awaits_built_mesh, has_estimated_counts, largest_adjacent_ratio, size_points_problem)
 from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DERIVED_OPERATIONS,
                      GLOBAL_DERIVED_OPERATION, INTERFACE_OPERATIONS, SOURCE_FREE_DERIVED_OPERATIONS,
                      INTERFACE_PROJECTIONS, INTERFACE_SIDES, INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS,
@@ -79,8 +79,8 @@ def validate(spec, registry=None, mesh_estimate=None, mesh_error=None, memory_bu
 @dataclass(frozen=True)
 class MemoryVerdict:
     """Budget judgement of a memory estimate: the used mesh its issues are reported at (the largest part), the budgets
-    it exceeds, and the used element meshes whose counts are still size-based (pending: a build meshes them first
-    and judges on the built counts)."""
+    it exceeds, and the used element meshes not yet counted on their built mesh (pending, meshing.awaits_built_mesh:
+    a build meshes them first and judges on the built counts and factor fills)."""
     mesh: str
     gpu_over: bool
     host_over: bool
@@ -105,7 +105,7 @@ def memory_verdict(spec, mesh_estimates, estimate, memory_budget=None, host_budg
             held_part = backend_memory(spec, part)
             part_bytes[name] = held_part.device_peak if by_device else held_part.host
     mesh = max(part_bytes, key=part_bytes.get) if part_bytes else next(iter(mesh_estimates), '')
-    pending = tuple(name for name, mesh_estimate in mesh_estimates.items() if has_estimated_counts(mesh_estimate))
+    pending = tuple(name for name, mesh_estimate in mesh_estimates.items() if awaits_built_mesh(mesh_estimate))
     return MemoryVerdict(mesh, gpu_over, host_over, pending)
 
 
@@ -1129,6 +1129,9 @@ class _Validator:
         errors_before = self.n_errors
         raw_values = {param.name: getattr(mesh_spec, param.name) for param in MESH_PARAMS}
         self._check_values(path, MESH_PARAMS, raw_values, 'mesh setting', frozenset(), check_refs=False)
+        if mesh_spec.dx is None and mesh_spec.mode != 'auto':
+            self.error(path, f"the cell size (dx) is required in mode {mesh_spec.mode} (empty only in auto mode, where "
+                             'the automatic rule alone then sizes the cells)')
         triangles = mesh_spec.kind == 'triangles'
         element_kind = mesh_spec.kind if mesh_spec.kind in FREE_MESH_KINDS else None
         # builtin tetrahedra are graded by the tensor planner (meshing.graded_window_edges): tensor refinement rules
@@ -1359,10 +1362,12 @@ class _Validator:
         over_issue = self.error if refuses else self.warning
         if not refuses:
             override = " (Solvers memory_check 'warning': running anyway, the runtime memory guards decide)"
-        elif verdict.pending:   # not final yet: the element counts come from the sizes
+        elif verdict.pending:   # not final yet: element counts from the sizes or factor fills without the mesh
             pending_names = ', '.join(f"'{name}'" for name in verdict.pending)
-            override = (f'. The element count of mesh {pending_names} is estimated from its sizes: a build makes the '
-                        f'mesh first and judges on its real count (GUI: Build mesh on the mesh node)')
+            sized = any(has_estimated_counts(self.vctx.meshes[name]) for name in verdict.pending)
+            what = ('element count' if sized else 'direct-solver factor size')
+            override = (f'. The {what} of mesh {pending_names} is estimated without the built mesh: a build makes the '
+                        f'mesh first and judges on its real counts (GUI: Build mesh on the mesh node)')
         else:
             override = ''
         if gpu_close:
@@ -2635,8 +2640,8 @@ def _host_memory_text(estimate, host_budget):
     else:
         verb = 'exceeds' if estimate.host > host_budget else 'is close to'
         judged = f' {verb} the available RAM {format_bytes(host_budget)}: the CPU factorisation may fail or swap'
-    return (f'estimated host memory {format_bytes(estimate.host)} ({largest}; a fill-in heuristic){judged}; reduce '
-            f'the cell count, use a GPU linear solver where offered or close other programs')
+    return (f'estimated host memory {format_bytes(estimate.host)} ({largest}; factor fill estimated a priori)'
+            f'{judged}; reduce the cell count, use a GPU linear solver where offered or close other programs')
 
 
 def _name_list(names):

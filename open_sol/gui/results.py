@@ -1461,6 +1461,7 @@ class ResultsPanel(QtWidgets.QWidget):
 
     def _on_session_parameters(self, parameters):
         self._session_parameters = parameters
+        self._show_results_sweep_value()   # a finished sweep's session: its last value's geometry
         self._schedule_derived_table()   # references, analytic curves and profiles follow the parameters
         self._update_all_result_views()
         if self._current_profile_curve() is not None:
@@ -2003,6 +2004,22 @@ class ResultsPanel(QtWidgets.QWidget):
         shown = len(labels) > 1
         self._sweep_value_label.setVisible(shown)
         self._sweep_value_combo.setVisible(shown)
+        self._show_results_sweep_value()
+
+    def _show_results_sweep_value(self):
+        """Hand the canvas field view the sweep value of the shown results: the chosen kept value, else the session's
+        value of a finished sweep (its last value; unknown until the session parameters arrive), else none."""
+        sweep = (self._study_summary or {}).get('sweep') or {}
+        parameter, values, value = sweep.get('parameter'), sweep.get('values') or [], None
+        if parameter is not None:
+            if self._sweep_field_value is not None and self._sweep_field_value < len(values):
+                value = values[self._sweep_field_value]
+            elif self._session_parameters is not None:
+                value = self._session_parameters.get(parameter)
+        if value is None:
+            self._canvas.set_results_sweep_value()
+        else:
+            self._canvas.set_results_sweep_value(parameter, value)
 
     def _on_sweep_value_selected(self):
         """Point the snapshot slider at the chosen sweep value's kept snapshots (or back at the session's) and show
@@ -2010,6 +2027,7 @@ class ResultsPanel(QtWidgets.QWidget):
         index = self._sweep_value_combo.currentIndex()
         self._sweep_field_value = (self._sweep_value_indices[index]
                                    if 0 <= index < len(self._sweep_value_indices) else None)
+        self._show_results_sweep_value()   # the outlines over the field follow the chosen value's geometry
         kept = self._kept_snapshots()
         if kept is None:
             summary = self._study_summary or {}

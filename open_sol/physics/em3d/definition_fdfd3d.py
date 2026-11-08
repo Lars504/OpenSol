@@ -10,7 +10,7 @@ from ...core import time_estimate as te
 from ...core.backend import to_host
 from ...core.constants import FACE_LABELS, FACES_3D
 from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT64_BYTES,
-                                     INT32_BYTES, MemoryEstimate, host_lu_bytes)
+                                     INT32_BYTES, MemoryEstimate, host_counted_lu_bytes, host_lu_bytes)
 from ...model.definition_helpers import (DISCRETIZATION_PARAM, eigen_factorization, eigen_role, eigen_subspace_size,
                                          element_order)
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, solver_backend
@@ -338,9 +338,10 @@ def _memory_estimate(settings_values, mesh, context):
                                      external_items=external_items, external_extra=external_extra)
 
 
-def _cudss_eigen_items(factorization, unknowns, entries, general, label):
+def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3):
     """(EIGEN_PHASE items, external items, external extra) of solve_resonances' own cuDSS factor (freed after the
-    solve): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) and solve vectors; nothing without cuDSS."""
+    solve): CSR copies (LDL^T lower triangle; Bloch: the whole LU matrix) and solve vectors; nothing without cuDSS.
+    fill: the 3D growth law (3) or a counted cudss_factor.FactorFill."""
     if factorization not in CUDSS_FACTORIZATIONS:
         return (), [], 0
     mixed = eigen_mixed(factorization, unknowns)
@@ -348,16 +349,29 @@ def _cudss_eigen_items(factorization, unknowns, entries, general, label):
     items = ((EIGEN_PHASE, 'cuDSS operator copies, rhs buffer, row scale and one solve\'s vectors',
               cudss_own_factor_bytes(unknowns, entries, mixed, symmetric=not general)),
              (EIGEN_PHASE, 'eigen B diagonal and applied vector (complex128)', 2 * vector_bytes))
-    external_items, external_extra = cudss_factor_items(label, unknowns, entries, dimensions=3, mixed=mixed,
+    external_items, external_extra = cudss_factor_items(label, unknowns, entries, dimensions=fill, mixed=mixed,
                                                         general=general)
     return items, external_items, external_extra
 
 
+def nedelec_factor_entries(mesh, order, unknowns):
+    """Counted entries of one factor triangle of the Nedelec operator on a built mesh (MeshEstimate.dissection: dof-site
+    pairs x dofs per site^2, scaled by the factored share of the dofs); None on size-based counts (no mesh to count)."""
+    dissection = getattr(mesh, 'dissection', None)
+    if dissection is None:
+        return None
+    dofs_per_site = 2 if order == 2 else 1
+    share = min(float(unknowns) / max(dofs_per_site * dissection.n_nedelec_sites(order), 1), 1.0)
+    return dofs_per_site ** 2 * dissection.nedelec_pairs(order) * share
+
+
 def _tetrahedra_memory_estimate(settings_values, mesh, context):
-    """Host (Nedelec unknowns, _NEDELEC_ROW_ENTRIES per row; uncalibrated): SuperLU at the Yee-equivalent unknowns (or
-    a cuDSS factor: external, copies EIGEN_PHASE items), assembly blocks, CSR matrices, Arnoldi work, vectors."""
+    """Host (Nedelec unknowns, _NEDELEC_ROW_ENTRIES per row): SuperLU counted on the built mesh (nedelec_factor_entries;
+    size-based counts: the 3D heuristic at the Yee-equivalent unknowns) or a cuDSS factor (external, copies EIGEN_PHASE
+    items), assembly blocks, CSR matrices, Arnoldi work, vectors."""
     order = element_order(settings_values)
     unknowns = nedelec_unknowns(mesh, settings_values)
+    counted = nedelec_factor_entries(mesh, order, unknowns)
     row_entries = _NEDELEC_ROW_ENTRIES[order]
     n_local = 6 if order == 1 else 20
     n_elements = int(mesh.n_elements)
@@ -368,13 +382,22 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     vector_bytes = COMPLEX128_BYTES * unknowns
     matrix_bytes = row_entries * COMPLEX128_CSR_ENTRY_BYTES * unknowns + INT32_BYTES * unknowns
     factorization = eigen_factorization(context.solvers)
-    factor_items = () if factorization in CUDSS_FACTORIZATIONS else (
-        ('eigen SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
-         host_lu_bytes(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]), dimensions=3)),)
+    if factorization in CUDSS_FACTORIZATIONS:
+        factor_items = ()
+    elif counted is not None:
+        factor_items = (('eigen SuperLU L + U factors (counted on the built mesh: nested dissection of the Nedelec dof '
+                         'sites)', host_counted_lu_bytes(counted, unknowns)),)
+    else:
+        factor_items = (('eigen SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
+                         host_lu_bytes(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]), dimensions=3)),)
+    fill = 3
+    if counted is not None:
+        from ...solvers.cudss_factor import FactorFill
+        fill = FactorFill(counted)
     # a Bloch phase makes A nonsymmetric: the LU keeps the whole matrix, not the LDL^T lower triangle
     cudss_items, external_items, external_extra = _cudss_eigen_items(
         factorization, unknowns, row_entries * unknowns, _boundary_config(settings_values).has_bloch_phase,
-        'the Nedelec curl-curl operator')
+        'the Nedelec curl-curl operator', fill)
     # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's A, M, W copies
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,

@@ -403,8 +403,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - Estimates mirror the solver: a setting where 0 = auto is resolved through the solver's own resolver (e.g.
   `fluid.solver.steady_march_steps`), never used raw. Every memory budget check goes through `meshing.backend_memory`
   and takes its issue level from `schema.memory_check_level(spec)` (`solver_defaults.memory_check` 'warning' runs an
-  over-budget model anyway; a refusal is final only on built element counts, so build / api.check mesh first when the
-  size-based estimate of a triangle / tetrahedron mesh is over; model sub file "Memory estimate parts").
+  over-budget model anyway; a refusal is final only on a built element mesh (its counts and `estimate.dissection`, the
+  counted factor fill), so build / api.check mesh first when the estimate of an unbuilt triangle / tetrahedron mesh is
+  over; model sub file "Memory estimate parts").
   A new physics / allocating feature MUST add its memory estimator (`PhysicsType.memory_estimate` /
   `FeatureType.memory_estimate`), counted from its own allocations (not the MaterialGrid arrays): the big arrays the
   solver holds, summed where they are held together, sizes derived from the code (stencil entry counts, dtypes),

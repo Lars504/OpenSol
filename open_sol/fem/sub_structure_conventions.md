@@ -272,9 +272,12 @@ all but drift_diffusion.
   node)^2 per pair. Both orders are ones a solver could use, so the count bounds a good ordering from above and
   nothing in it is fitted; a count below cudss_lu_entries / eigen_lu_entries (summary.json) would mean cuDSS orders
   worse than this, a lead on its ordering options.
-- `MeshDissection(mesh)` (triangles and tetrahedra; order 2 = nodes + edges through `element_edges`) counts per
-  element order on first use; `meshing.built_mesh_estimates` attaches it as `estimate.dissection` (None on size-based
-  counts), consumers: `physics/mechanics/definition.factor_fill` -> `cudss_factor.FactorFill`.
+- `MeshDissection(mesh)` (triangles and tetrahedra; order 2 = nodes + edges through `element_edges`; `nedelec_pairs`
+  on tetrahedra: edge midpoints, + face centroids at degree 2, as the dof sites) counts per element order on first
+  use; equal per mesh digest. `meshing.built_mesh_counts` carries it ('dissection'), `with_built_counts` attaches it as
+  `estimate.dissection` (None on unbuilt meshes; the GUI's built counts carry it too, so its first count runs on the GUI
+  thread), consumers: `physics/mechanics/definition.factor_fill` -> `cudss_factor.FactorFill`,
+  `physics/em3d/definition_fdfd3d.nedelec_factor_entries` (FactorFill and host SuperLU bytes).
 
 ## Error indicators (`indicators.py`, mesh plan A3)
 - eta^2 per mesh element (float64), energy-norm weighted like the tensor A2 hooks (1 / c, 0 where c is 0); hooks

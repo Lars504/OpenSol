@@ -66,7 +66,8 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   ('curve_plot_style') shared by every panel (`_SharedPlotStyle.changed` refreshes all), so a style value must suit
   every plot: data-dependent settings go to the Axes / Curves tables.
 - PlotPanel screen preview: `_ArticleAxis` items (a fixed tick step giving more than `_MAX_FIXED_TICKS` falls back to
-  automatic in `tickSpacing`, else pyqtgraph allocates range / step ticks; tickAlpha 1 unless the grid is on, as
+  automatic in `tickSpacing`, else pyqtgraph allocates range / step ticks; automatic steps are raised 1-2-5 until the
+  major labels fit, since pyqtgraph always labels the major level; tickAlpha 1 unless the grid is on, as
   pyqtgraph draws grid lines with the ticks); legend in a view-box corner ('best' re-placed on zoom / resize and handed
   to the export as that corner) or 'outside right' in a widened layout margin; curves restyled from the owner's look
   (kept per item in a WeakKeyDictionary), axis labels overridden while the owner's (text, units) are remembered; SI
@@ -88,8 +89,13 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   'cpu' (no usable GPU) host RAM. The build-memory table is filled from Built (`BuildSummary.gpu_*`) and BuildFailed
   (`build_memory`). Examples menu: one submenu per `<repo>/examples` subfolder (`ExampleCatalog.folders()`, no file
   read; json directly in examples/ is not listed); aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
-  hidden folders; validation cached per file version), listing files that load and validate cleanly; menus are rebuilt
+  hidden folders; raw JSON title / description / physics types only, cached per file version), listing every readable
+  file: never load_model / validate there (on a CPU-only machine validation probes cuDSS / gmsh per file and stalls the
+  hover); a model is checked only when opened, like any file; menus are rebuilt
   on every aboutToShow and old submenus deleteLater'd (`clear()` keeps them). An example opens as an untitled copy.
+  Entries show `ModelSpec.title`, never the file stem (examples/README.md indexes stems: its "Naming" paragraph has the
+  menu path folder label (`examples._FOLDER_LABELS`) -> physics type label(s) -> title, and the title convention
+  'Analytic: ...' for benchmarks); the tooltip ends with the relative path. A folder without a `_FOLDER_LABELS` entry shows its name capitalised.
 - PySide6 is imported before pyqtgraph (`gui/__init__`). `app.main` sets `imageAxisOrder='col-major'` (images are
   `[i, j]`) and the QSettings names ('open_sol', 'open_sol') that results.py relies on.
 - Views: defer rebuilds with `QTimer.singleShot(0)` and a pending flag; block an editor's signals before deleting it;
@@ -202,10 +208,15 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   it refits on a change of view plane, plane extent, scale, stretch, or the geometry / mesh view's PML cells / triangle
   ring; a new field (live frames, each sweep value's build) never refits. While a sweep runs the canvas evaluates
   geometry / material preview at the current value (`set_sweep_value` from SweepStep, cleared by StudyFinished /
-  StudyFailed / a replaced document); mesh estimates and the 3D preview stay the document's.
+  StudyFailed / a replaced document); after it the field view alone evaluates them at the shown results' value
+  (`set_results_sweep_value` from `ResultsPanel._show_results_sweep_value`: the 'Sweep value' combo's kept value, else
+  the session's value = the last computed); mesh estimates and the 3D preview stay the document's.
 - Canvas layout: the plot never changes size with the mode or the text (colour bar stays in the layout, opacity 0
   without a field; fixed tick-axis widths; the title sets no minimum width; `_place_plot` puts the widget at the top of
-  the layout-free `_PlotArea` at the last fit's aspect); banner / mesh badge / legend live in the scroll box below: a
+  the layout-free `_PlotArea` at the last fit's aspect, each view side at least `_MIN_FRAME_FRACTION` of its largest).
+  The aspect is never locked: equal x / y scales only where the fitted frame allows (a thin geometry gets unequal
+  ones), a wheel over an axis zooms that axis alone (pyqtgraph AxisItem), so code needing a pixel size takes both
+  `viewPixelSize()` components. Banner / mesh badge / legend live in the scroll box below: a
   new canvas text line goes there, never above or below the plot.
 - Canvas figure style: `canvas.plot_panel` = a PlotPanel on the canvas PlotItem (own QSettings key
   'canvas_plot_style'; placed by ResultsPanel at the end of the Field tab); fixed colour limits override the field's /
@@ -324,10 +335,12 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   located by (index, axis) via `_mesh_axis_at`, bands / segments by index via `_mesh_axis_item`; the Cells combo is
   derived from the data, so a switch or an emptied edge list rebuilds (switching copies the current cells as edges, <=
   `_EDGE_LIST_MAX_CELLS`, or one even segment). 'Methods on this mesh' (`_mesh_methods_html`): per physics with
-  `PhysicsType.mesh_method`. Mode edits go through `_set_mesh_mode` (rebuilds): leaving auto writes the estimate's
-  `auto_dx` (and, to graded, `auto_refinements` as automatic=True RefinementSpecs) at 4 digits; entering auto drops the
-  automatic refinements. `_show_mesh_numbers` (every refresh, before `ParamForm.refresh`) shows the auto cell size read
-  only, greys the wavelength rows outside auto and puts resolved numbers in the placeholders; an empty 'Minimum
+  `PhysicsType.mesh_method`. Mode edits go through `_set_mesh_mode` (rebuilds): entering auto keeps dx (there the
+  smallest cell size, meshing `_auto_sizes`) and drops the automatic refinements; leaving auto to graded writes the
+  estimate's `auto_dx` + `auto_refinements` (automatic=True RefinementSpecs) at 4 digits, to uniform keeps a set dx
+  (e.g. an example's swept cell-size parameter), else writes the smallest auto size. `_show_mesh_numbers` (every
+  refresh, before `ParamForm.refresh`) reads an empty auto dx back as the rule's finest size, greys points per
+  wavelength while dx is set, greys the wavelength rows outside auto and puts resolved numbers in the placeholders; an empty 'Minimum
   element size' reads back '= maximum size / 100' like a typed value (`ParamForm.set_empty_value`; the maximum from the
   estimate, else dx outside auto, so it shows when the estimate fails). Estimate adds
   `meshing.line_block_hint` only when a line_block solver fits a role (`_line_block_fits`).

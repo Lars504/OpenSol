@@ -162,16 +162,26 @@ def element_dissection_pairs(connectivity, node_points) -> int:
 
 class MeshDissection:
     """element_dissection_pairs of a built TriangleMesh / TetrahedronMesh per Lagrange order (1: its nodes, 2: nodes
-    and edge midpoints), counted on first use and kept; holds the mesh's point, element and edge arrays."""
+    and edge midpoints) or Nedelec degree (tetrahedra), counted on first use and kept; holds the mesh's arrays."""
 
     def __init__(self, mesh):
         self._cells = mesh.tets if hasattr(mesh, 'tets') else mesh.triangles
         self._element_edges = mesh.element_edges
         self._edges = mesh.edges
         self._points = mesh.points
+        self._faces = getattr(mesh, 'faces', None)                   # tetrahedra only
+        self._element_faces = getattr(mesh, 'element_faces', None)
         self.n_points = int(mesh.n_points)
         self.n_edges = int(mesh.n_edges)
+        self.n_faces = 0 if self._faces is None else int(self._faces.shape[0])
+        self.digest = mesh.digest
         self._pairs = {}
+
+    def __eq__(self, other):
+        """Equal for the same mesh (its digest): GUI built counts delivered twice compare equal."""
+        return isinstance(other, MeshDissection) and other.digest == self.digest
+
+    __hash__ = None
 
     def n_nodes(self, order) -> int:
         """Lagrange nodes of the mesh at this order."""
@@ -188,3 +198,23 @@ class MeshDissection:
                 points = np.vstack([points, points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)])
             self._pairs[order] = element_dissection_pairs(cells, points)
         return self._pairs[order]
+
+    def n_nedelec_sites(self, order) -> int:
+        """Nedelec dof sites of the mesh: its edges (degree 1), edges and faces (degree 2)."""
+        return self.n_edges + (self.n_faces if int(order) == 2 else 0)
+
+    def nedelec_pairs(self, order) -> int:
+        """Factor entries of one triangle in dof-site pairs for Nedelec elements of this degree (1: edge sites, 2: edge
+        and face sites, at edge midpoints / face centroids; dofs couple exactly when their sites share an element)."""
+        key = ('nedelec', 2 if int(order) == 2 else 1)
+        if key not in self._pairs:
+            points = np.asarray(self._points, dtype=np.float64)
+            cells = np.asarray(self._element_edges, dtype=np.int64)
+            sites = points[np.asarray(self._edges, dtype=np.int64)].mean(axis=1)
+            if key[1] == 2:
+                if self._element_faces is None:
+                    raise ValueError('Nedelec degree 2 dof sites need a tetrahedron mesh (its faces)')
+                cells = np.hstack([cells, self.n_edges + np.asarray(self._element_faces, dtype=np.int64)])
+                sites = np.vstack([sites, points[np.asarray(self._faces, dtype=np.int64)].mean(axis=1)])
+            self._pairs[key] = element_dissection_pairs(cells, sites)
+        return self._pairs[key]
