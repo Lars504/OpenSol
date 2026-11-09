@@ -4,6 +4,9 @@ Gotchas and cross-file code flow only; signatures and help texts live in the cod
 Examples live outside the package (`examples/README.md`); `experiments/` holds the user's research models in the same
 format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
 `gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
+`dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it, not shipped):
+`dev_tools/time_profilers/cpu_solvers` benchmarks every CPU solver choice (enumerated from the registry) on problems
+assembled by open_sol's own operator code; it is not `python -m open_sol profile` (the run-time estimate's profile).
 User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
 `INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
 cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
@@ -563,3 +566,5 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure.
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
+- `dev_tools/time_profilers/`: CPU solver profiler (parent / child layout, imports, solver enumeration rule, result
+  line); usage in its README.md.
