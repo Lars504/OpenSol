@@ -242,7 +242,10 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   cuDSS factor is not recyclable, so an operator change refactorises on its plan. complex64 'mixed' is doubtful at mu
   contrasts 1e3-1e5 plus circuit rows, so the role offers the host direct back ends in double only
   (HOST_DIRECT_DOUBLE_BACK_ENDS): a MUMPS / PARDISO LDL^T is recyclable like SuperLU (an operator change: GMRES on the
-  old factor), keeps the SuperLU size rule, and the cusolver_qr refusal text lists the role's back ends.
+  old factor), keeps the SuperLU size rule (`circuit.triangle_size_issue(back_end=)`, tensor `size_issue` of the host
+  back end: texts name the library by `host_direct.factor_label`; validation and the solvers alike), and the
+  cusolver_qr refusal text lists the role's back ends. Solve summaries name the factor's library (tensor
+  `solver_ac.solve_summary`; triangles print the back end).
 - Memory (`definition_ac._cudss_estimate`): the factor is made at the first solve, so its pool copies
   (`operator_copy_bytes`, complex128), rhs buffer and row scale are run items, the factor external
   (`factor_device_bytes`, value_bytes 16, dimensions 2); an operator following a state adds the device route's index

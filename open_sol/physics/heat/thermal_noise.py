@@ -13,6 +13,7 @@ import numpy as np
 
 from ...core.backend import array_module_of, to_host
 from ...core.constants import C0, EPS0, FACES, K_B
+from ...solvers.host_direct import is_host_direct_factor
 from ...solvers.line_block import LineBlockLayout, LineBlockSolver
 from ...solvers.sparse_direct import SparseDirectSolver
 from ..em.boundaries import MIRROR_TYPES, BCType
@@ -103,6 +104,12 @@ class _HarmonicDiffusionOperator:
     _init_solver."""
 
     _components = None   # (labels, floating flags, axial sums) of the link graph of K, built on first use
+    # K is symmetric by construction in both subclasses: the planar FV operator in conductance form (face conductances,
+    # the energy-based k_xy cross term, diagonal boundary / loss terms; axisymmetric heat is refused) restricted to the
+    # solved cells, so K + diag(j omega C + q^2 a) is complex symmetric. A subclass whose K is not sets False; the host
+    # factor's asymmetry check (relative_asymmetry) falls back to LU anyway.
+    SHIFTED_OPERATOR_SYMMETRIC = True
+    _shift_factor = None   # the kept MUMPS / PARDISO factor of the last shift (previous= of the next), else None
 
     def _init_solver(self, grid_shape, shifted_solver):
         """Solver state: the window shape of `index` and the shifted solver (solvers.sparse_direct.SparseDirectSolver
@@ -124,7 +131,20 @@ class _HarmonicDiffusionOperator:
 
     def shifted_spectral_densities(self, weights, shifts, on_shift=None):
         """(combined (n_shifts,), parts (n_shifts, n_weights)) of spectral_densities at every (omega, q) of shifts: SuperLU
-        per shift, or batched line-block solves (rejected shifts by SuperLU); on_shift() after each shift."""
+        per shift, or batched line-block solves (rejected shifts by SuperLU); on_shift() after each shift. A kept
+        MUMPS / PARDISO shift factor is released at the end (release_shift_factor)."""
+        try:
+            return self._shifted_spectral_densities(weights, shifts, on_shift)
+        finally:
+            self.release_shift_factor()
+
+    def release_shift_factor(self) -> None:
+        """Free the kept MUMPS / PARDISO factor of the last shift (memory outside numpy); idempotent."""
+        factor, self._shift_factor = self._shift_factor, None
+        if factor is not None:
+            factor.release()
+
+    def _shifted_spectral_densities(self, weights, shifts, on_shift):
         n_shifts = len(shifts)
         combined, parts = np.zeros(n_shifts), np.zeros((n_shifts, len(weights)))
         if not isinstance(self.shifted_solver, LineBlockSolver):
@@ -161,10 +181,17 @@ class _HarmonicDiffusionOperator:
 
     def spectral_densities(self, weights, omega, axial_wavenumber):
         """(PSD of sum(weights), [PSD of each weight alone]): per-unit-length one-sided 4 s Re sum conj(w) u A
-        [X^2 / (Hz m)] at omega [rad/s] and q [1/m]; one factorisation, one back substitution per weight."""
+        [X^2 / (Hz m)] at omega [rad/s] and q [1/m]; one factorisation, one back substitution per weight. The shifted
+        operator K + diag(j omega C + q^2 a) is complex symmetric (SHIFTED_OPERATOR_SYMMETRIC), so factorize_host gets
+        symmetric=True (a MUMPS / PARDISO LDL^T; SuperLU ignores it); a MUMPS / PARDISO factor is kept and passed as
+        previous= to the next shift (analysis reused while the pattern holds) until release_shift_factor; a SuperLU
+        factor is dropped after its shift as before (previous None, so never two factors alive)."""
         import scipy.sparse
         diagonal = 1j * omega * self.capacity + axial_wavenumber ** 2 * self.axial
-        factor = self.reference_solver.factorize_host(self.conduction + scipy.sparse.diags(diagonal, format='csc'))
+        factor = self.reference_solver.factorize_host(self.conduction + scipy.sparse.diags(diagonal, format='csc'),
+                                                      symmetric=self.SHIFTED_OPERATOR_SYMMETRIC,
+                                                      previous=self._shift_factor)
+        self._shift_factor = factor if is_host_direct_factor(factor) else None
         self.factorizations += 1
         scale = 4.0 * self.fluctuation_strength
         total_drive, total_response, parts = 0.0, 0.0, []

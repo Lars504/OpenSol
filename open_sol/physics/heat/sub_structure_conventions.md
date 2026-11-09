@@ -114,9 +114,14 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   cells with neither a conductance diagonal nor rho cp drop out. The heat 'shifted' solver role (thermal_noise only,
   `HeatPhysics(shifted_solver=)`): Automatic 'sparse_direct' = one host SuperLU per (frequency, distinct |q|): cost
   grows with n_frequencies x axial samples, never per weighting cell. Its setting_choices offer back_end auto / scipy_splu
-  / cusolver_qr and the host direct back ends (HOST_DIRECT_BACK_ENDS): `spectral_densities` calls the generic
-  `factorize_host` / `solve_host` (a MUMPS / PARDISO LU of the complex symmetric shifted operator; symmetric= is not
-  passed yet, so no LDL^T, and no previous=: one analysis per shift).
+  / cusolver_qr and the host direct back ends (HOST_DIRECT_BACK_ENDS). `spectral_densities` calls
+  `factorize_host(symmetric=SHIFTED_OPERATOR_SYMMETRIC, previous=)`: K is symmetric by construction (planar FV
+  conductance form, energy-based k_xy term; the particle operator too), so the shifted operator is complex symmetric
+  and a MUMPS / PARDISO back end factors LDL^T (its asymmetry check falls back to LU). Only a host direct factor is
+  kept (`_shift_factor`) and passed as previous= to the next shift (analysis reused while the K + diag pattern holds;
+  a pattern change re-analyses); `shifted_spectral_densities` releases it at the end (`release_shift_factor`). SuperLU
+  ignores both options and its factor is still dropped after each shift (never two alive). A new subclass with an
+  unsymmetric K sets SHIFTED_OPERATOR_SYMMETRIC False.
 - A 'line_block' node as the shifted solver: every (frequency, axial sample) shift of a channel goes to the one
   LineBlockSolver of the role, shared by every noise operator (re-bound by `set_operator(owner=)`; contribution parts as
   rhs rows); rejected shifts go through `spectral_densities` on a private SparseDirectSolver. Device state is released

@@ -212,13 +212,14 @@ def _solver_issues(vctx, physics_spec, settings_values, path):
     mesh = vctx.mesh
     if mesh is None or linear_solver_cudss(solvers):
         return []
+    back_end = host_direct_back_end(solvers) or 'scipy_splu'   # MUMPS / PARDISO: the SuperLU limits, named by library
     if mesh.kind == 'triangles':
         order = element_order(settings_values)
         dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
-        issue = triangle_size_issue(dofs + _circuit_rows(physics_spec), order)
+        issue = triangle_size_issue(dofs + _circuit_rows(physics_spec), order, back_end)
         return [] if issue is None else [Issue(issue[0], path, issue[1])]
     sides = mesh.npml_sides
-    issue = size_issue('scipy_splu', mesh.nx - sides['x_lo'] - sides['x_hi'], mesh.ny - sides['y_lo'] - sides['y_hi'],
+    issue = size_issue(back_end, mesh.nx - sides['x_lo'] - sides['x_hi'], mesh.ny - sides['y_lo'] - sides['y_hi'],
                        False, False, remedy='coarsen the mesh away from the conductors or shrink the domain')
     return [] if issue is None else [Issue(issue[0], path, issue[1])]
 

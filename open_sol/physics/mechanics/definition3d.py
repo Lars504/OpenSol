@@ -24,7 +24,7 @@ from ...model.geometry import expand_entities
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
-                                    superlu_bytes_scale)
+                                    solver_host_bytes, superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
@@ -686,17 +686,24 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
     return issues
 
 
-def host_factor_item(name, superlu_label, superlu_bytes, symmetric=True, complex_values=False) -> tuple:
-    """(label, bytes) of a host factor booked by its SuperLU heuristic: for a MUMPS / PARDISO back end / factorization
-    name (host_direct.HOST_DIRECT_BACK_ENDS; eigen names through eigen_host_direct first) the bytes x
-    host_direct.superlu_bytes_scale and the library's factor kind in place of 'SuperLU L + U' in the label
-    (uncalibrated); any other name keeps label and bytes (also used by definition)."""
+def host_factor_items(name, superlu_label, superlu_bytes, n_unknowns, entries, symmetric=True,
+                      complex_values=False) -> tuple:
+    """Host items of a factor booked by its SuperLU heuristic: ((superlu_label, bytes),) for any name but a MUMPS /
+    PARDISO back end / factorization (host_direct.HOST_DIRECT_BACK_ENDS; eigen names through eigen_host_direct first),
+    which gets the bytes x host_direct.superlu_bytes_scale with the library's factor kind in place of 'SuperLU L + U'
+    in the label, plus its own copies beside the library factor (host_direct.solver_host_bytes of n_unknowns and the
+    stored entries: equilibrated operator, row scale; mixed: GMRES vectors), as fem_system_estimate books them
+    (uncalibrated; also used by definition)."""
     if name not in HOST_DIRECT_BACK_ENDS:
-        return superlu_label, int(superlu_bytes)
-    kind = f"{factor_label(name)} {'LDL^T' if symmetric else 'LU'}"
+        return ((superlu_label, int(superlu_bytes)),)
+    library = factor_label(name)
+    kind = f"{library} {'LDL^T' if symmetric else 'LU'}"
     label = superlu_label.replace('SuperLU L + U', kind).replace('SuperLU', kind)
-    return (f'{label} (SuperLU heuristic scaled, uncalibrated)',
-            int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=complex_values)))
+    return ((f'{label} (SuperLU heuristic scaled, uncalibrated)',
+             int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=complex_values))),
+            (f'{library} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+             solver_host_bytes(n_unknowns, entries, complex_values=complex_values, symmetric=symmetric,
+                               mixed=host_direct_precision(name) == 'mixed')))
 
 
 def eigen_host_direct(solvers, unknowns):
@@ -1489,10 +1496,11 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                * factored))
         if factorization not in CUDSS_FACTORIZATIONS:
             kind = 'complex128' if complex_factor > 1 else 'float64'
-            host_items.append(host_factor_item(eigen_host_direct(context.solvers, factored),
-                                               f'SuperLU factor of {pencil} ({kind}, heuristic)',
-                                               complex_factor * factor_bytes, complex_values=complex_factor > 1,
-                                               symmetric=_trivial_bloch_phase(settings_values)))
+            host_items.extend(host_factor_items(eigen_host_direct(context.solvers, factored),
+                                                f'SuperLU factor of {pencil} ({kind}, heuristic)',
+                                                complex_factor * factor_bytes, factored, factored_entries,
+                                                complex_values=complex_factor > 1,
+                                                symmetric=_trivial_bloch_phase(settings_values)))
         # a PML, loss or resistive load: the complex symmetric pencil runs eigs_shifted (device Krylov-Schur on a
         # DevicePencil); a real or Hermitian (Bloch phase) one eigsh_shifted
         pml = bool(_pml_faces(settings_values))
@@ -1527,14 +1535,14 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                            ('frequency response solution, rhs and product vectors (complex)',
                             6 * _COMPLEX_BYTES * factored)])
         if host_factor:
-            host_items.append(host_factor_item(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
-                                               2 * factor_bytes, complex_values=True))
+            host_items.extend(host_factor_items(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
+                                                2 * factor_bytes, factored, factored_entries, complex_values=True))
         host_items.extend(reduced_sweep_memory_items(context, factored, factored_entries))   # adaptive / modal
     elif host_factor:
         what = 'the coupled operator' if piezoelectric else 'K'
         # piezoelectric: the coupled operator is real symmetric indefinite (LDL^T on MUMPS / PARDISO as well)
-        host_items.append(host_factor_item(linear_back_end, f'SuperLU factor of {what} (float64, heuristic)',
-                                           factor_bytes))
+        host_items.extend(host_factor_items(linear_back_end, f'SuperLU factor of {what} (float64, heuristic)',
+                                            factor_bytes, factored, factored_entries))
     return MemoryEstimate.from_items(device_items, host_items=host_items, run_items=run_items,
                                      transient_items=transient_items, **cudss_external(factors))
 

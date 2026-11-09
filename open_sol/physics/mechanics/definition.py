@@ -31,7 +31,7 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICA
 from ...solvers.host_direct import factor_label
 from ...solvers.pcg import workspace_bytes
 from . import definition3d
-from .definition3d import eigen_host_direct, host_factor_item
+from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES,
@@ -1119,9 +1119,10 @@ def _fem_memory_estimate(settings_values, mesh, context):
                            ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
                            ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
         if host_factor:
-            host_items.append(host_factor_item(linear_back_end, 'frequency response complex SuperLU L + U (heuristic)',
-                                               2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs),
-                                               complex_values=True))
+            host_items.extend(host_factor_items(linear_back_end,
+                                                'frequency response complex SuperLU L + U (heuristic)',
+                                                2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
+                                                entries, complex_values=True))
         else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
             run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end, (16, FLOAT64_BYTES))
             factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16, 2,
@@ -1129,8 +1130,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
     else:
         if host_factor:
-            host_items.append(host_factor_item(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
-                                               _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs)))
+            host_items.extend(host_factor_items(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
+                                                _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
+                                                entries))
         if settings_values.get('out_of_plane') == GENERALIZED_PLANE_STRAIN and not is_axisymmetric(settings_values):
             host_items.append(('generalized plane strain unit loads and solutions (3 + 3 x float64)',
                                6 * FLOAT64_BYTES * vector_dofs))
@@ -1149,9 +1151,10 @@ def _fem_memory_estimate(settings_values, mesh, context):
         if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
             host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
         if not static and host_factor:   # the static state of the pencil is factorised too
-            host_items.append(host_factor_item(linear_back_end,
-                                               'SuperLU L + U factors of the Newton tangent (float64, heuristic)',
-                                               _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs)))
+            host_items.extend(host_factor_items(linear_back_end,
+                                                'SuperLU L + U factors of the Newton tangent (float64, heuristic)',
+                                                _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs), vector_dofs,
+                                                entries))
     return MemoryEstimate.from_items(((f'fields ({n_fields} x float32 per element)',
                                        n_fields * FLOAT32_BYTES * elements),
                                       ('window element mask', BOOL_BYTES * elements)),
@@ -1294,8 +1297,9 @@ def _eigen_host_items(context, dofs, entries, rigid_motions=0, pml=False, basis_
     n_resonances = modal_kept_count(context)   # several targets / a band keep more mode shapes
     csr_entry_bytes = FLOAT64_BYTES + INT32_BYTES
     factor = (() if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
-              else (host_factor_item(eigen_host_direct(context.solvers, dofs),
-                                     'eigen SuperLU L + U factors (float64, heuristic)', host_real_lu_bytes(dofs)),))
+              else host_factor_items(eigen_host_direct(context.solvers, dofs),
+                                     'eigen SuperLU L + U factors (float64, heuristic)', host_real_lu_bytes(dofs), dofs,
+                                     entries))
     basis = (((f'eigenvectors ({n_wanted} vectors; the basis is on the device)', n_wanted * FLOAT64_BYTES * dofs),)
              if basis_on_device else
              ((f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',

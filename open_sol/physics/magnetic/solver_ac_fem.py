@@ -379,7 +379,7 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         sigma_eddy = np.where(held | stranded, 0.0, sigma)
         n_rows = sum(1 for coil in self.coils if coil.conductor == 'solid' and coil.drive == 'current')
         on_cudss = self.host_solver.back_end in CUDSS_BACK_ENDS   # cuDSS: its own estimate after planning guards it
-        issue = None if on_cudss else triangle_size_issue(free.size + n_rows, self.order)
+        issue = None if on_cudss else triangle_size_issue(free.size + n_rows, self.order, self.host_solver.back_end)
         if issue is not None and issue[0] == 'error':
             raise ValueError(f'{self._label()}: {issue[1]}')
         kept = self._kept_curl   # (nu_xx, nu_yy, free, curl): a sigma-only change (sigma(T) coupling) reuses it

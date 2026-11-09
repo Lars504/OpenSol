@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ...solvers.host_direct import factor_label
 from ...solvers.sparse_direct import SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS
 
 CONDUCTORS = ('stranded', 'solid')   # coil kinds of magnetic_fields_ac
@@ -90,15 +91,18 @@ def stranded_resistance(turns, fill_factor, area, path, sigma) -> float:
             * float(np.sum(np.where(sigma > 0.0, path / np.where(sigma > 0.0, sigma, 1.0), 0.0))))
 
 
-def triangle_size_issue(n_unknowns, order):
-    """(level, text) of the complex FEM system of n_unknowns (dofs + circuit rows, Lagrange order) on host SuperLU near
-    ('warning') or over ('error') its limits, else None. CPU only; a cuDSS back end skips it."""
+def triangle_size_issue(n_unknowns, order, back_end='scipy_splu'):
+    """(level, text) of the complex FEM system of n_unknowns (dofs + circuit rows, Lagrange order) on the host factor of
+    `back_end` (SuperLU; a MUMPS / PARDISO back end keeps the same limits, uncalibrated, the text naming its library)
+    near ('warning') or over ('error') its limits, else None. CPU only; a cuDSS back end skips it."""
     text = f'{int(n_unknowns):,} complex unknowns (P{order} vector potential dofs and circuit rows)'
+    library = factor_label(back_end)
+    factors = 'its L + U factors' if library == 'SuperLU' else f'its {library} factors'
     if n_unknowns > SPLU_LIMIT_UNKNOWNS:
-        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host SuperLU solver: its L + U factors '
+        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host {library} solver: {factors} '
                          f'would fill the host memory; {_SMALLER_TRIANGLE_MODEL}')
     if n_unknowns > SPLU_WARN_UNKNOWNS:
-        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of host SuperLU; '
+        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of host {library}; '
                            f'{_SMALLER_TRIANGLE_MODEL}')
     return None
 

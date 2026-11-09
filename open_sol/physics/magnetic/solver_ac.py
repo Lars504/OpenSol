@@ -12,7 +12,8 @@ from ...core.backend import to_host
 from ...core.constants import DTYPE, FACES, MU0
 from ...core.fv_diffusion import edge_extension_views
 from ...core.gpu_memory import format_bytes
-from ...solvers.sparse_direct import SparseDirectSolver, size_issue
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, factor_label
+from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver, size_issue
 from .ac_operator import HostOperator, assemble_operator, face_fluxes_at_centres, face_power
 from .circuit import (COIL_RESULT_KEYS, ConductorRow, RecycledFactor, bordered_system,
                       coil_drive, coil_result_values, stranded_resistance)
@@ -212,8 +213,10 @@ class MagneticACPhysics(MagneticPhysics):
         n_rows = sum(1 for conductor in self._host.conductors if conductor.drive == 'current')
         factor = '' if self.host_factor_bytes is None else f', last factor {format_bytes(self.host_factor_bytes)}'
         solver = self.host_solver
-        return (f'host SuperLU at {self.frequency:.4g} Hz, {self._host.free_index.size:,} unknowns + {n_rows} circuit '
-                f'rows, {self._n_harmonic_solves} solves, {solver.n_factorizations} factorisations, '
+        library = factor_label(solver.back_end)   # SuperLU, MUMPS, PARDISO (host) or cuDSS
+        where = '' if solver.back_end in CUDSS_BACK_ENDS else 'host '
+        return (f'{where}{library} at {self.frequency:.4g} Hz, {self._host.free_index.size:,} unknowns + {n_rows} '
+                f'circuit rows, {self._n_harmonic_solves} solves, {solver.n_factorizations} factorisations, '
                 f'{solver.n_recycled_solves} recycled ({solver.total_recycled_iterations} GMRES iterations){factor}')
 
     # --- magnetics API ------------------------------------------------------------
@@ -319,7 +322,10 @@ class MagneticACPhysics(MagneticPhysics):
     def _build_host_system(self):
         """Host operator K(nu) / r-form + j omega sigma A / r, held-cell elimination and the conductor rows."""
         system = self.system
-        issue = size_issue('scipy_splu', *system.window_shape, False, False)
+        # MUMPS / PARDISO keep the SuperLU limits (uncalibrated), the text naming the library; cuDSS: SuperLU's rule
+        back_end = self.host_solver.back_end
+        rule = back_end if back_end in HOST_DIRECT_BACK_ENDS else 'scipy_splu'
+        issue = size_issue(rule, *system.window_shape, False, False)
         if issue is not None and issue[0] == 'error':
             raise ValueError(f"magnetic_fields_ac '{self.name}': {issue[1]}")
         dx, dy = system.dx_window, system.dy_window

@@ -638,12 +638,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   a factor of a host CSR (below DEVICE_PENCIL_MIN_ENTRIES, the static K_ff) does (`operator_copy_bytes`). S5c: a
   cudss_mixed eigen pencil below MIXED_EIGEN_MIN_UNKNOWNS factors in double on the host route (no DevicePencil):
   solid_fem3d_pml_bar_radiation (gpu, 6e3 unknowns) measured 5 MB pool where the DevicePencil items gave 84 MB.
-- Host factors of a MUMPS / PARDISO back end / factorization: `definition3d.host_factor_item(name, superlu_label,
-  superlu_bytes, symmetric=, complex_values=)` (definition imports it at module level, as `eigen_host_direct`) scales a
-  SuperLU heuristic item by `host_direct.superlu_bytes_scale` and relabels it (uncalibrated; any other name keeps
-  the SuperLU item): static K / Newton tangent / piezo coupled operator and the frequency-response pencil (LDL^T), the
-  eigen factor (`eigen_host_direct`: S5c, a small *_mixed pencil factors in double; a Bloch phase: LU). The
-  library's own copies (solver_host_bytes) are not booked here yet. Size rules keep the SPLU / SPLU_3D limits
+- Host factors of a MUMPS / PARDISO back end / factorization: `definition3d.host_factor_items(name, superlu_label,
+  superlu_bytes, n_unknowns, entries, symmetric=, complex_values=)` (definition imports it at module level, as
+  `eigen_host_direct`) scales a SuperLU heuristic item by `host_direct.superlu_bytes_scale`, relabels it and adds the
+  factor object's own copies (`host_direct.solver_host_bytes`, as `fem_system_estimate`; uncalibrated; any other
+  name keeps the one SuperLU item): static K / Newton tangent / piezo coupled operator and the frequency-response
+  pencil (LDL^T), the eigen factor (`eigen_host_direct`: S5c, a small *_mixed pencil factors in double; a Bloch
+  phase: LU; the 2D caller doubles every item of a complex pencil, copies included). Size rules keep the SPLU / SPLU_3D limits
   (uncalibrated) with the library named; time recipes price them as SuperLU (`backend` 'cpu').
 - Unverified against counters (no gpu run in selftest_out): the static 'linear' cuDSS items, the solid
   frequency-response HarmonicSystem, solid DevicePencils, device Newton tangents.
