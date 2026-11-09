@@ -148,7 +148,8 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
             text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
                      f'GMRES-preconditioned by an earlier factor; last solve {last}')
         if self.last_factor_seconds is not None:
-            text += (f" (factorisation {self.last_factor_seconds:.3g} s, {'factor' if host_direct else 'L + U factors'} "
+            factors = 'factor' if host_direct else 'L + U factors'
+            text += (f' (factorisation {self.last_factor_seconds:.3g} s, {factors} '
                      f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
         return text
 

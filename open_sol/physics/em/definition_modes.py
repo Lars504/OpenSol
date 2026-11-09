@@ -143,7 +143,8 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
                'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (the pencil is complex symmetric), '
                f'with {HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host, '
                'the _mixed ones their complex64 form: one float64 refinement step per solve, ARPACK to 1e-6, then '
-               'beta^2 from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector error). '
+               'beta^2 from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector '
+               'error). '
                'Materials are one value per element (an element takes the material at its centroid; the mesh '
                'follows every drawn outline). On triangles: pec / antisymmetric faces fix tangential E on the window '
                'edge, pmc / symmetric faces are natural (mirror planes are the window edge, no ghost cell); a cpml '
@@ -590,9 +591,10 @@ def _solver_issues(vctx, physics_spec, settings_values, path):
     issues = []
     factorization = eigen_factorization(vctx.solvers(physics_spec))
     if factorization in MIXED_FACTORIZATIONS and mesh_kind(vctx) == 'tensor':
-        issues.append(Issue('error', path, f"the eigen factorization {factorization} needs the complex symmetric pencil "
-                                           "of a triangles mesh (its loose complex64 solves are polished by Rayleigh "
-                                           "quotients); the Yee cross-section operator is not complex symmetric: use "
+        issues.append(Issue('error', path, f'the eigen factorization {factorization} needs the complex symmetric '
+                                           'pencil of a triangles mesh (its loose complex64 solves are polished by '
+                                           'Rayleigh quotients); the Yee cross-section operator is not complex '
+                                           'symmetric: use '
                                            f"'{factorization.removesuffix('_mixed')}' (double) or a triangles mesh"))
     issues.extend(scipy_issues('em_modes', 'host sparse eigensolver', path))
     if settings_values['mode_number'] > settings_values['n_modes']:

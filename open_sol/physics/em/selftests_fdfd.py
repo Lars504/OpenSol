@@ -486,6 +486,114 @@ def _cudss_specs():
     return specs
 
 
+def _host_direct_back_ends() -> tuple:
+    """solvers.host_direct.HOST_DIRECT_BACK_ENDS of every library installed here (python-mumps / pydiso), in order."""
+    from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, library_of
+    libraries = available_host_direct()
+    return tuple(name for name in HOST_DIRECT_BACK_ENDS if library_of(name) in libraries)
+
+
+def _host_precision(back_end) -> str:
+    return 'mixed' if back_end.endswith('_mixed') else 'double'
+
+
+def _host_direct_specs():
+    """cpu runs per back end b of _HOST_REFERENCE + _host_direct_back_ends(): '<model>_<b>' (the em_fdfd_cudss
+    frequency_domain models, _DIRECT_NODE on b) and 'adjoint_<b>' (em_fdfd_adjoint_gradient's ez reflection gradient
+    run, a _DIRECT_NODE of b as 'linear'); per host back end 'cavity_<b>' (the lossy ez PEC cavity of its precision's
+    _HOST_CAVITIES, an arpack_shift_invert node of factorization b as 'eigen'); {} without either library."""
+    back_ends = _host_direct_back_ends()
+    if not back_ends:
+        return {}
+    from .selftests_adjoint import _adjoint_spec
+    from .selftests_eigenfrequency import _RUNS, _cavity_spec
+    specs = {}
+    for back_end in (_HOST_REFERENCE,) + back_ends:
+        for name, spec in _line_block_wavelength_specs().items():
+            if not name.endswith('_sparse_direct'):
+                continue
+            next(node for node in spec.solvers if node.name == _DIRECT_NODE).settings['back_end'] = back_end
+            specs[f"{name[:-len('_sparse_direct')]}_{back_end}"] = spec
+        specs[f'{_HOST_ADJOINT_RUN}_{back_end}'] = with_direct_node(_adjoint_spec('ez', _SILICON_EPS_R, 1.0, 0.0),
+                                                                     back_end, node_name=_DIRECT_NODE)
+    polarization, _, sigma_e = _RUNS[_HOST_CAVITY_RUN]
+    for back_end in back_ends:
+        cells, cell = _HOST_CAVITIES[_host_precision(back_end)]
+        specs[f'cavity_{back_end}'] = with_direct_node(_cavity_spec(polarization, cells, sigma_e, cell), back_end,
+                                                       role='eigen')
+    return cpu_specs(specs)
+
+
+def _role_record(results, role):
+    """(type, settings, counters) of the summary 'solvers' record of role `role` of physics 'em' (('', {}, {}) when
+    missing)."""
+    roles = ((results.summary().get('solvers') or {}).get(_PHYSICS_NAME) or {}).get('roles') or {}
+    record = roles.get(role) or {}
+    return record.get('type', ''), record.get('settings') or {}, record.get('counters') or {}
+
+
+def _check_host_direct(results_by_name):
+    """Per host back end: max |host - SuperLU| / max |SuperLU| of the em_fdfd_cudss models over every wavelength and
+    |host - SuperLU| / |SuperLU| of the adjoint block gradient in _HOST_TOLERANCES units, the lossy cavity's omega / Q
+    against the closed form (selftests_eigenfrequency tolerances), and the role records (sparse_direct on that back end:
+    one symmetric factorisation per wavelength, no mixed -> double fallback; the eigen node: a symmetric factor, no
+    fallback); skipped without python-mumps and pydiso."""
+    if not results_by_name:
+        return skip_without_host_direct() or skip_result('no host direct back end installed')
+    from .selftests_eigenfrequency import _OMEGA_TOLERANCE, _Q_TOLERANCE, _cavity_errors
+    back_ends = tuple(name[len('cavity_'):] for name in results_by_name if name.startswith('cavity_'))
+    n_wavelengths = int(_BATCH_STUDY['n_wavelengths'])
+    errors, tolerances, details = {}, {}, {}
+    gradient = 'block_gradient'   # selftests_adjoint._GRADIENT_VALUE
+    reference_gradient = float(results_by_name[f'{_HOST_ADJOINT_RUN}_{_HOST_REFERENCE}'].summary()['derived'][gradient])
+    for back_end in back_ends:
+        tolerance = _HOST_TOLERANCES[_host_precision(back_end)]
+        for model in _BATCH_MODELS:   # driven solves, LDL^T of D A refactorised per wavelength
+            reference = _wavelength_values(results_by_name[f'{model}_{_HOST_REFERENCE}'], model)
+            expected_size = n_wavelengths * (len(_LINE_BLOCK_PROBE_OFFSETS) if model.startswith('hankel') else 1)
+            scale = float(np.max(np.abs(reference))) if reference.size == expected_size else math.nan
+            results = results_by_name[f'{model}_{back_end}']
+            values = _wavelength_values(results, model)
+            deviation = (float(np.max(np.abs(values - reference))) / scale if values.shape == reference.shape
+                         else math.inf)   # NaN propagates
+            solver_type, _, counters = _role_record(results, 'linear')
+            record = {name: counters.get(name) for name in ('back_end', 'factorizations',
+                                                            'host_direct_symmetric_factors',
+                                                            'host_direct_double_fallbacks')}
+            expected_record = {'back_end': back_end, 'factorizations': n_wavelengths,
+                               'host_direct_symmetric_factors': n_wavelengths, 'host_direct_double_fallbacks': 0}
+            errors[f'{model} {back_end}'], tolerances[f'{model} {back_end}'] = deviation, tolerance
+            errors[f'{model} {back_end} record'] = (
+                0.0 if solver_type == 'sparse_direct' and record == expected_record else math.inf)
+            tolerances[f'{model} {back_end} record'] = 1.0
+            details[f'{model}_{back_end}'] = {'deviation': deviation, 'counters': dict(counters)}
+        results = results_by_name[f'{_HOST_ADJOINT_RUN}_{back_end}']   # the transposed solve of eps_sensitivity
+        value = float(results.summary()['derived'][gradient])   # float() also reads 'nan'
+        errors[f'adjoint {back_end}'] = (abs(value - reference_gradient) / abs(reference_gradient)
+                                         if reference_gradient != 0.0 else math.nan)
+        tolerances[f'adjoint {back_end}'] = tolerance
+        _, _, counters = _role_record(results, 'linear')
+        errors[f'adjoint {back_end} record'] = 0.0 if counters.get('back_end') == back_end else math.inf
+        tolerances[f'adjoint {back_end} record'] = 1.0
+        details[f'adjoint_{back_end}'] = {'gradient': value, 'superlu_gradient': reference_gradient}
+        cells, cell = _HOST_CAVITIES[_host_precision(back_end)]   # shift-invert by the eigen node's own factor
+        results = results_by_name[f'cavity_{back_end}']
+        part_errors, part_tolerances, part_details = _cavity_errors({_HOST_CAVITY_RUN: results}, _OMEGA_TOLERANCE,
+                                                                    _Q_TOLERANCE, cell, {_HOST_CAVITY_RUN: cells})
+        errors.update({f'{back_end} {item}': error for item, error in part_errors.items()})
+        tolerances.update({f'{back_end} {item}': part for item, part in part_tolerances.items()})
+        _, settings, counters = _role_record(results, 'eigen')
+        used = (settings.get('factorization') == back_end and counters.get('eigen_factor_symmetric') == 1
+                and counters.get('eigen_double_fallbacks') == 0)
+        errors[f'{back_end} eigen record'], tolerances[f'{back_end} eigen record'] = (0.0 if used else math.inf), 1.0
+        details[f'cavity_{back_end}'] = {**part_details, 'counters': dict(counters)}
+    normalized = {item: error / tolerances[item] for item, error in errors.items()}
+    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
+    details.update(back_ends=list(back_ends), normalized_errors=normalized, worst_item=worst_item)
+    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
+            'details': details}
+
+
 def fd_joule_heating_spec():
     """Template 'fd_joule_heating' (em_fdfd_ez + heat, stationary study): a 530 nm gaussian beam heats a gold
     nanowire in water; Joule and thermo-optic couplings iterate to the steady state."""
@@ -1097,4 +1205,30 @@ FDFD_SELFTEST_CASES = (
                     'per run, 4.5 s.',
         specs=_cudss_specs,
         check=_check_cudss),
+    SelfTestCase(
+        name='em_fdfd_host_direct',
+        label="EM FDFD MUMPS / PARDISO 'linear' and 'eigen' back ends vs SuperLU",
+        description='cpu backend; per sparse_direct back end / eigen factorization of every installed host direct '
+                    'library (python-mumps: mumps, mumps_mixed; pydiso: pardiso, pardiso_mixed): (1) the em_fdfd_cudss '
+                    'models (Hankel ez box, Fresnel ez / hz glass strips) in its frequency_domain study of '
+                    f"{_BATCH_STUDY['n_wavelengths']} wavelengths with that back end on the 'linear' node, against "
+                    f"the same runs on a '{_HOST_REFERENCE}' node: the host factor is the LDL^T of D A (D the stretched "
+                    'cell areas), one per wavelength; (2) the em_fdfd_adjoint_gradient ez run weighting the reflection '
+                    'objective (eps_sensitivity: the transposed solve x = D R solve(R b) on that factor) against its '
+                    f"'{_HOST_REFERENCE}' twin; (3) the lossy ez PEC cavity of em_fdfd_eigenfrequency_pec_cavity "
+                    "(sigma_e 10 S/m) with an arpack_shift_invert node of that factorization as 'eigen' (its own "
+                    'LDL^T of D A; the mixed ones on 10 nm cells, 24,321 unknowns, above the 20,000 below which a '
+                    'mixed request factors in double, so the loose solves and Rayleigh quotients run), against the '
+                    'discrete closed form. Errors: max |host - SuperLU| / max |SuperLU| of the probe phasors / '
+                    'transmitted flux over every wavelength and the relative adjoint block-gradient difference, below '
+                    f"{_HOST_TOLERANCES['double']:g} (double) / {_HOST_TOLERANCES['mixed']:g} (mixed: complex64 "
+                    'factor + float64 GMRES refinement); the cavity omega / Q to the em_fdfd_eigenfrequency_pec_cavity '
+                    'tolerances; the run summaries must record the linear role as sparse_direct on that back end with '
+                    'factorizations = host_direct_symmetric_factors = the wavelength count and no double fallback, the '
+                    'eigen role with that factorization, eigen_factor_symmetric 1 and no double fallback. measured = '
+                    'error = the worst item in tolerance units, tolerance 1; passes as skipped without both '
+                    'libraries. Not yet confirmed by a run (heavy by estimate: 5 runs per back end plus 4 references; '
+                    'record the wall time).',
+        specs=_host_direct_specs,
+        check=_check_host_direct, heavy=True),
 )

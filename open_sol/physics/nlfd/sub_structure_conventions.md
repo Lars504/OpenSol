@@ -195,8 +195,13 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   (D = `channel_symmetrizer`) and checks the residual against SYMMETRIZED_TRANSPOSE_RESIDUAL (1e-8) -> RuntimeError
   naming scipy_splu. A Bloch phase re-raises NotImplementedError. A back end without a transposed solve must raise
   NotImplementedError (any other exception skips the route). CPU self-test `nlfd_symmetrized_transpose`.
-- Validation: a back end other than scipy_splu / cusolver_qr with picard + Kerr gives an info (refactorises every
-  sweep; newton reuses one factor per channel).
+- Validation: a back end other than scipy_splu / cusolver_qr / the host direct ones with picard + Kerr gives an info
+  (refactorises every sweep; newton reuses one factor per channel).
+- MUMPS / PARDISO (DIRECT_LINEAR_ROLE lists `HOST_DIRECT_BACK_ENDS`; opt-in, either backend): the channels are
+  FDFDPhysics, so they factor the LDL^T of D A on the host (physics/em sub file "MUMPS / PARDISO"), recycled by GMRES
+  like SuperLU (picard Kerr / carrier sweeps keep the factor, the time items' SuperLU recycling holds) and solved
+  transposed natively (`transposed_channel_solve` never needs the symmetrizer route for them); the symmetrizer-route
+  error text names them beside scipy_splu. Memory: fdfd_memory_estimate's host factor items per channel.
 - Verdict: candidate, strongest for pump_depleted newton and the depleted adjoint; LDL^T of D A (Bloch / eps_xy: LU),
   'mixed' once the 2D Yee single_residual is below the 1e-3 gate, else double. Picard Kerr / carriers refactor per
   sweep unless plan reuse is used.

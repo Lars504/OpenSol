@@ -847,7 +847,7 @@ def solve_bor_resonances(system, n_resonances, eigen_solver=None, factorization=
     factors an LDL^T, a mixed one (cudss_mixed, mumps_mixed, pardiso_mixed) adds the float64 Rayleigh polish."""
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     warnings = []
-    # host SuperLU size rule: only for an own SuperLU / MUMPS / PARDISO factor (a passed line-block factor has no host LU)
+    # host SuperLU size rule: only for an own SuperLU / MUMPS / PARDISO factor (a passed line-block factor: no host LU)
     if factorization is None and eigen_solver.factorization not in CUDSS_FACTORIZATIONS:
         issue = size_issue_for(*system.shape)
         if issue is not None:

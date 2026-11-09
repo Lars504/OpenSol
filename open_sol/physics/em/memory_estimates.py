@@ -329,7 +329,7 @@ def fdfd_memory_estimate(polarization):
             transient_items += eigen_transient
             run_items += line_block_items
         elif back_end == 'scipy_splu' or back_end in HOST_DIRECT_BACK_ENDS:
-            # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (_factorization only)
+            # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (one kept factor)
             host_items = [*host_factor_items(back_end, 'SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
                                              n_cells, entries, symmetric=not bloch_active_axes(settings_values)),
                           ('host operator copy', operator_copy)]

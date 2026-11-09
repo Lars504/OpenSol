@@ -96,7 +96,10 @@ ports, 'eigen' solver role).
   `eigen_solver.factorize_host` (one plan + general LU per distinct section: the transverse-H operator has no known
   symmetriser); 'cudss_mixed' not offered (ARPACK at machine precision would need full refinement, not repaid). With
   cudss the SuperLU size rule is skipped and the memory estimate drops the SuperLU item. Not done: plan reuse across
-  sections (same pattern).
+  sections (same pattern). The role is `eigen_role()` without mixed factorizations, so it offers the double host
+  direct factorizations (`HOST_DIRECT_DOUBLE_BACK_ENDS`: mumps, pardiso; opt-in, either backend): a general LU per
+  section on the host, under the SuperLU size rule (`size_issue_for`), booked by `memory_estimates.host_factor_items`
+  (LU, SuperLU heuristic x superlu_bytes_scale); `host_factor_bytes` is then the library's factor bytes.
 - Mesh kinds: tensor Domain3D only. Tetrahedra do not fit (no planar cross-section per z layer); the conforming route
   (one shared xy triangle mesh, prism mesh kind, FEM versions of reconstruction / absorption / adjoint / bends / PEC)
   is not done.

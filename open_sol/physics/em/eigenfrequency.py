@@ -227,7 +227,7 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         factorization = eigen_solver.factorize_host(factor_operator, ordering=ordering,
                                                     symmetric=symmetrized or bool(symmetric), row_scale=equilibration)
         on_device = factorization.back_end == 'cudss'
-        # cudss_mixed on the device, mumps_mixed / pardiso_mixed on the host (factor_precision 'double' after a fallback)
+        # a mixed LDL^T: cuDSS on the device, MUMPS / PARDISO on the host (factor_precision 'double' after a fallback)
         polish = (getattr(factorization, 'factor_precision', 'double') == 'mixed'
                   and getattr(factorization, 'symmetric', False))
         if polish:

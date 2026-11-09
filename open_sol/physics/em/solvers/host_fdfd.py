@@ -81,7 +81,7 @@ class HostFDFDBase:
         self.solved_omega = None
         self.eigen_solve = None       # EigenSolve of the last solve_eigenfrequencies
         self.selected_resonance = None   # 1-based resonance shown, None = the driven solve
-        self.host_factor_bytes = None   # host bytes of the driven factor (SuperLU L + U, MUMPS / PARDISO; memory_report)
+        self.host_factor_bytes = None   # host bytes of the driven factor (SuperLU L + U, MUMPS, PARDISO)
         self.last_solve_seconds = None
         self.last_factor_seconds = None
         self.last_recycled_iterations = None   # GMRES iterations of the last solve if it reused an older factor

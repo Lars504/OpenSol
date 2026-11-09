@@ -61,8 +61,8 @@ CURL_CURL_LU_GROWTH_EXPONENT = 0.3
 # the target get denser on finer grids; 5 k basis: 457 / 80 at 26^3 cells (Mie sphere example), 307 / 80 at 19^3 (its
 # staircase eighth-sphere test grid), ~240 / 80 at 18^3 (from 263 with a 3 k basis); linear fits within the guess range)
 APPLICATIONS_PER_BASIS_PER_AXIS_CELL = 0.22
-# ... with a mixed factorization (measured on cudss_mixed; the host _mixed ones assumed alike) and no Bloch phase (ARPACK
-# stopped at 1e-6, then Rayleigh quotients): 1.0 on the
+# ... with a mixed factorization (measured on cudss_mixed; the host _mixed ones assumed alike) and no Bloch phase
+# (ARPACK stopped at 1e-6, then Rayleigh quotients): 1.0 on the
 # eighth nanobeam (14 and 30 eigenpairs), 2.4 on the Mie sphere (16). Since S5a the PML widening (solve_resonances:
 # eigenpairs doubled, the device decomposition resumed) is counted in: 4.0 on the Mie example (320 / 80, two passes),
 # 2.4 on its tetrahedral twin (192 / 80, two passes); a guess between, per basis of the first pass

@@ -13,8 +13,8 @@ omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
 # (boundaries._grading_values at depth = distance beyond the window / ring width, sigma_max at pml_dx = width /
 # cpml_npml), folded into eps and mu as Lambda = diag(s_y / s_x, s_x / s_y, s_x s_y) at the quadrature points.
 # Shift-invert: (A + sigma B)^-1 B x = theta x, beta^2 = sigma - 1 / theta, sigma = (k0 n_guess)^2 (1 + 1e-6). A + sigma
-# B is complex symmetric (unconjugated Galerkin, diagonal Lambda): a cudss / mumps / pardiso eigen node factors an LDL^T,
-# equilibrated by the parts' |diagonals| (S - k0^2 T_eps + sigma T_nu nearly cancels on its diagonal, as fem3d's
+# B is complex symmetric (unconjugated Galerkin, diagonal Lambda): a cudss / mumps / pardiso eigen node factors an
+# LDL^T, equilibrated by the parts' |diagonals| (S - k0^2 T_eps + sigma T_nu nearly cancels on its diagonal, as fem3d's
 # curl-curl minus mass). A mixed LDL^T (cudss_mixed on the device, mumps_mixed / pardiso_mixed on the host; complex64)
 # runs ARPACK on loose solves (eigenfrequency.MIXED_EIGS_REFINEMENTS float64 steps, ARPACK
 # to MIXED_ARPACK_TOLERANCE) and then replaces beta^2 by the float64 Rayleigh quotient sigma - x^T (A + sigma B) x /

@@ -402,6 +402,27 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (solvers sub file B1b) and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free `_cudss_previous`. Self-tests
   comparing with "SuperLU" (em_fdfd_cudss, selftests_fdfd line_block, em_bor_cudss_driven, em_fdfd_conical_cudss)
   must give the reference an explicit scipy_splu node, never Automatic.
+- MUMPS / PARDISO (solvers.host_direct; 'linear' back_end and 'eigen' factorization mumps / pardiso (+ _mixed), opt-in,
+  either backend, optional python-mumps / pydiso; every EM type, solvers sub file "host_direct"): code tests the
+  tuples / predicates, never the names (`HOST_DIRECT_BACK_ENDS`, `sparse_direct.SYMMETRIC_OPTION_BACK_ENDS` /
+  `MIXED_BACK_ENDS`, `arpack_shift_invert.LDLT_FACTORIZATIONS` / `MIXED_FACTORIZATIONS`, `is_host_direct_factor`,
+  `factor_label`; help texts take `definition_common.HOST_DIRECT_NAMES`). They get the cuDSS factor options (fdfd_2d:
+  symmetric + `_symmetrizer` D, so the LDL^T of D A, LU when the asymmetry check fails; host_fdfd
+  `_linear_symmetric_options`: BOR / conical row scale / symmetrizer; fdfd_2d_fem: symmetric + equilibration), but
+  are recyclable and transpose natively like SuperLU: no `_transposed_solve`, GMRES recycling at an unchanged omega,
+  no `_cudss_previous` on tensor meshes (fdfd_2d_fem keeps one as previous: analysis reused on the same pattern). Size
+  rules: SuperLU's everywhere (`size_issue` / `fem_*_size_issue` / `size_issue_for_unknowns` take the host names;
+  `fem_modes.host_solver_label` names the library), plus the library's own memory check after the analysis.
+  Eigen: `_eigen_symmetrizer` returns D for every LDLT_FACTORIZATIONS entry; `solve_resonances` polishes every own
+  mixed LDL^T (factor_precision 'mixed' and symmetric: cuDSS on the device, host `solve_host(refinement_steps=
+  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; an own host factor logs `_host_direct_factor_text`; elimination
+  orders (em3d) are skipped. Texts: solve_summary / direct_text / `HOST_DIRECT_KINDS` (em_modes factor_kind prefixes)
+  name the description and the library's factor bytes. Estimates: `memory_estimates.host_factor_items` (the SuperLU
+  heuristic x `superlu_bytes_scale`, LDL^T where D A / the pencil is symmetric, + `solver_host_bytes`; an eigen mixed
+  request below MIXED_EIGEN_MIN_UNKNOWNS booked double) at every place a SuperLU factor item was booked (2D FDFD,
+  triangles, BOR, conical, em_modes, em3d, eme); the hz eps_xy extra fill stays at SuperLU size; time recipes are the
+  role's (sparse_direct / arpack host items). Self-test em_fdfd_host_direct (selftests_fdfd, cpu, heavy, skipped
+  without both libraries).
 - line_block 'linear' node (opt-in, Automatic stays sparse_direct): one host operator copy (`set_operator(owner=)`,
   block axis = the periodic one; two periodic axes: ValueError / validation error) and one kept factor, no GMRES
   recycling. An adjoint solve runs on the kept factor as x = D solve(g / D) when D A is complex symmetric
@@ -464,7 +485,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - Eigenfrequency (A6, `eigenfrequency.py`, host only): `solve_resonances` is dimension-free ('shift_invert' 2D,
   'squared_cayley' for curl-curl with a gradient null space; sparse mass / energy weights via `_PencilMass`, a pinned
   row absent, not zero; em_eigen_sparse_mass). 2D shift-invert factor: host SuperLU (`_eigen_size_warnings`), a
-  line_block node's kept factor, or cudss / cudss_mixed (`_eigen_symmetrizer`, LDL^T of D A). Own factor at sigma =
+  line_block node's kept factor, or cudss / cudss_mixed / the host direct ones (`_eigen_symmetrizer`, LDL^T of D A).
+  Own factor at sigma =
   k_t^2 (1 + SHIFT_RELATIVE_OFFSET): a target on a lossless resonance gave a singular factor cuDSS refused. Drops Re
   omega <= 1e-6 omega_t (hz Neumann constant) and PML resonances (> 0.5 energy outside `physical_window`); too few
   left: ARPACK with 2x the eigenpairs, `MAX_WIDENINGS` times (estimates size the first pass only; cost ~
@@ -533,7 +555,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   with eps_xy keeps the operator complex symmetric. The operator is -(Yee operator), so loads keep the Yee source
   amplitudes.
 - `_solve`: `factorize_host(symmetric=True, row_scale=system.equilibration, previous=)` (host SuperLU, or cuDSS LDL^T
-  refactorising `_cudss_previous`); no GMRES recycling (a Picard step refactorises). Eigenfrequency
+  refactorising `_cudss_previous`, which also keeps a MUMPS / PARDISO factor for its analysis); no GMRES recycling (a
+  Picard step refactorises). Eigenfrequency
   `solve_fem_fdfd_resonances` (A = K - k_t^2 M, mass -M, symmetric, equilibration). State = centroid values, q_abs =
   element means. Renderer: FEMFieldRenderer with `_TRIANGLE_FIELDS`; `nodal_fields` averages over non-PEC elements.
   Subpixel smoothing / conformal boundaries accepted and ignored. `error_indicator` = Kelly jumps, as em_modes.
@@ -679,7 +702,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   problem on SuperLU (warning, counter line_block_fallbacks). `solve_detached` (shg_overlap, bend_overlap) uses the
   eigen solver's own factor. Two periodic axes: ValueError at finalize, validation error. Estimator:
   `cross_section_modes.line_block_bytes`, no SuperLU item. Selftest em_modes_line_block.
-- Eigen factorization (`eigen_role(mixed_factorization=True)`): superlu, cudss (both meshes), cudss_mixed (triangles
+- Eigen factorization (`eigen_role(mixed_factorization=True)`): superlu, cudss and the host direct doubles (both
+  meshes), the MIXED_FACTORIZATIONS (triangles
   only: `_solver_issues` refuses it on tensor meshes because A_xx mixes eps^-1 on both sides (ezz^-1 and eyy^-1 terms):
   no diagonal D makes D A symmetric, so no LDL^T / polish, and 2D factors are cheap anyway). A symmetric Yee form (the
   mixed [E_t; E_z] pencil): not done. With a cudss node (`ModePhysics._on_device`) every solve prepares with

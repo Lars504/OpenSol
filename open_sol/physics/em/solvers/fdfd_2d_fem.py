@@ -108,7 +108,7 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         self.selected_resonance = None
         self.last_factor_seconds = None
         self._factorization = None
-        # cuDSS / MUMPS / PARDISO factor of an older system, refactorised in place by the next one (plan / analysis kept)
+        # cuDSS / MUMPS / PARDISO factor of an older system, refactorised in place by the next one (plan / analysis)
         self._cudss_previous = None
         self._system_dirty = True
         self._solution_dirty = True

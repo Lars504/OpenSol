@@ -176,6 +176,12 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   `sparse_direct.vector_3d_size_issue`, `host_lu_bytes(n, dimensions=3)`: uncalibrated. Factorization cudss skips both
   (`definition_helpers.eigen_factorization`, `eigen_solver.factorization`) and the ND ordering. `FDFDSystem3D.symmetrizer`
   D makes D A complex symmetric (None with a Bloch phase) -> cuDSS LDL^T; the eigen role accepts cudss_mixed.
+  Factorization mumps / pardiso (+ _mixed; solvers.host_direct, opt-in, either backend): the same LDL^T of D A on the
+  host, no ND ordering (`elimination_order` None for every `LDLT_FACTORIZATIONS` entry: the libraries order
+  themselves), but SuperLU's `vector_3d_size_issue` still applies (uncalibrated for them) plus the library's own
+  memory check; a mixed one takes the polished path of `solve_resonances` (host solves with MIXED_EIGS_REFINEMENTS)
+  and the time estimate's MIXED_APPLICATIONS_PER_BASIS (measured on cudss_mixed only). Host factor items:
+  `memory_estimates.host_factor_items` on the SuperLU heuristic (tensor and tetrahedra, counted fill included).
 - Subpixel: every assembly adds `fdfd3d.smoothing_deltas` (background eps only; none at PEC) to the face eps; FDFD
   reads MaterialGrid values, FDTD its index tables: they agree unless the FDTD re-quantises. The subpixel memory
   estimate still counts the FDTD face index (small overestimate).
@@ -227,7 +233,8 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   does; gmsh would need renumbering or dof signs). Axes chain (corner dofs get both phases), period = node extent (no
   shell on a periodic axis). A_free = P^H A P; `symmetric` False with a complex phase -> cuDSS LU, no Rayleigh polish.
   A PEC element or wall on either side pins the master.
-- Size rule: host SuperLU under `vector_3d_size_issue(n x YEE_EQUIVALENT_UNKNOWNS)` (uncalibrated).
+- Size rule: host SuperLU (and MUMPS / PARDISO) under `vector_3d_size_issue(n x YEE_EQUIVALENT_UNKNOWNS)`
+  (uncalibrated).
 - Self-tests `selftests_fem3d` (tolerances first estimates); Mie sphere example examples/em3d/fem_mie_sphere_resonance_3d
   (gpu).
 - Open: cudss_mixed refinements per caller (belongs in physics/em/eigenfrequency.py), periodic gmsh meshes, driven

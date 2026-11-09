@@ -303,8 +303,8 @@ def _memory_estimate(settings_values, mesh, context):
     entries = _CROSS_SECTION_ENTRIES * unknowns
     # eigen mumps / pardiso: a host LU (not complex symmetric) at the SuperLU heuristic x superlu_bytes_scale
     factor_items = () if on_device else tuple(host_factor_items(
-        eigen_factorization(context.solvers), 'cross-section SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns),
-        unknowns, entries, symmetric=False, eigen=True))
+        eigen_factorization(context.solvers), 'cross-section SuperLU L + U factors (heuristic)',
+        host_lu_bytes(unknowns), unknowns, entries, symmetric=False, eigen=True))
     # one mode solve at a time (cross_section_modes.solve_prepared_modes: the factor is local, freed on return), so its
     # device vectors are one transient phase. cuDSS general LU in double (the transverse-H operator is not complex
     # symmetric): the equilibrated complex128 CSR copy, rhs / equilibration / solution / applied vectors and the
