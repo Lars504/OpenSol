@@ -157,7 +157,8 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   `refactorizes` when a material saturates (transient 'refactorisation' per iteration / Newton step). 3D tensor field
   update and energy / linkage temporaries are transient phases. magnet3d_*_sphere coarse (149k cells, pcg multigrid):
   the estimated build peak is ~1.5x the measured one, from `solvers.multigrid.setup_extra_bytes` (products n x 7^2 x
-  32 B, ~2x what that setup takes); the fine variant (593k, products capped) is ~10 % low.
+  32 B, ~2x what that setup takes); the fine variant (593k, products capped) is ~10 % low. Both figures predate
+  `setup_extra_bytes` taking the largest setup step instead of the sum of three (lower on both: re-measure).
 
 ## Triangle meshes (MagneticFEMPhysics, magnetic plan section 10)
 - `solver_fem.TriangleMagneticBase` holds what MagneticFEMPhysics and MagneticACFEMPhysics share (faces, node probes,

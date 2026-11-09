@@ -49,9 +49,9 @@ PRODUCT_WORKSPACE_BYTES = PRODUCT_BYTES_PER_PRODUCT * PRODUCT_BLOCK_PRODUCTS
 # 149k unknowns at 7 per row: the bound gave ~2x the measured setup peak; the capped fine case is unaffected)
 SETUP_PRODUCT_SHARE = 0.5
 # _filtered_rows peak per entry of its row block (at most PRODUCT_BLOCK_PRODUCTS entries: A T has one product per
-# entry): int64 row index, float64 diagonal product and its gather, strength bools (28), plus the block's own copy
-# when it is not the whole operator (float64 value + int32 index)
-FILTER_BYTES_PER_ENTRY = 40
+# entry): int64 row index, float64 diagonal product and its gather, strength bools; a block that is not the whole
+# operator adds its own copy (value + int32 index: setup_extra_bytes)
+FILTER_BYTES_PER_ENTRY = 28
 # T, P, R, the coarse operators and every coarse-level vector, whatever the fine precision: the cycle is SPD for any
 # symmetric A_c (l1 weights from the same A_c, coarsest pseudo-inverse keeps positive eigenvalues only), so the
 # float32 rounding changes the preconditioner, not CG's float64 answer
@@ -69,16 +69,26 @@ def hierarchy_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
 
 
 def setup_extra_bytes(n_unknowns, value_bytes, entries_per_row) -> int:
-    """Transient device bytes of one setup on top of hierarchy_bytes: the stacked P blocks and coarse products, one
-    product block's workspace (a small operator's whole product: n entries_per_row^2 bounds it), the fine level's
-    strength filter of one row block, the l1 row sums and the block planning (4-byte pattern data per entry)."""
+    """Transient device bytes of one setup on top of hierarchy_bytes: the stacked P blocks and coarse products, the l1
+    row sums and the block planning (4-byte pattern data per entry), plus the largest of the fine level's three steps
+    on one row block, which follow each other (_build_level): the strength filter, the smoothing product A_F T on the
+    filtered block it returns, the Galerkin product (a small operator's whole A @ P: n entries_per_row^2 bounds it)."""
+    n_unknowns, entries_per_row = int(n_unknowns), int(entries_per_row)
     per_unknown = (SETUP_ENTRIES_PER_UNKNOWN * (HIERARCHY_VALUE_BYTES + 4) + 2 * value_bytes
-                   + 4 * int(entries_per_row) + 12)
-    # A @ P: P rows hold no more entries than A's (SETUP_PRODUCT_SHARE of that bound)
-    products = SETUP_PRODUCT_SHARE * int(n_unknowns) * int(entries_per_row) ** 2
-    filter_entries = min(int(n_unknowns) * int(entries_per_row), PRODUCT_BLOCK_PRODUCTS)
-    return (int(n_unknowns) * per_unknown + min(PRODUCT_WORKSPACE_BYTES, int(PRODUCT_BYTES_PER_PRODUCT * products))
-            + FILTER_BYTES_PER_ENTRY * filter_entries)
+                   + 4 * entries_per_row + 12)
+    entries = n_unknowns * entries_per_row
+    block_entries = min(entries, PRODUCT_BLOCK_PRODUCTS)
+    sliced = block_entries < entries   # a row slice is a copy, the whole operator is taken as it is (_rows)
+    strength_filter = (FILTER_BYTES_PER_ENTRY + ((value_bytes + 4) if sliced else 0)) * block_entries
+    # the filter's temporaries are gone: its block (values, int32 columns), the HIERARCHY_DTYPE copy, one partial
+    # product per entry (T holds one entry per row)
+    smoothing = (value_bytes + 4 + HIERARCHY_VALUE_BYTES + PRODUCT_BYTES_PER_PRODUCT) * block_entries
+    # A @ P on the block's HIERARCHY_DTYPE copy (a slice: with its own columns); P rows hold no more entries than A's
+    # (SETUP_PRODUCT_SHARE of that bound)
+    products = SETUP_PRODUCT_SHARE * n_unknowns * entries_per_row ** 2
+    galerkin = (min(PRODUCT_WORKSPACE_BYTES, int(PRODUCT_BYTES_PER_PRODUCT * products))
+                + (HIERARCHY_VALUE_BYTES + (4 if sliced else 0)) * block_entries)
+    return n_unknowns * per_unknown + max(strength_filter, smoothing, galerkin)
 
 
 def aggregation_host_bytes(n_unknowns, entries_per_row) -> int:
@@ -695,21 +705,31 @@ class MultigridPreconditioner:
         del diagonal
         prolongation = self._stack_rows(blocks, tentative.shape[1])
         del blocks
-        row_blocks = self._row_blocks(operator, prolongation.indptr)
-        # a single block's left factor is R itself (no second transpose); several blocks transpose their own rows
-        restriction = prolongation.T.tocsr() if len(row_blocks) == 1 else None
+        xp = self._xp
+        restriction = None
         # binary-counter sum of the block contributions: merging only partial sums of equal block counts costs
         # O(nnz log blocks); a running sum recopies the whole coarse operator per block (297 s of a 303 s 3D build)
         partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
-        for start, stop in row_blocks:
-            left = restriction if restriction is not None else prolongation[start:stop].T.tocsr()
-            partial_sum = left @ (self._low(self._rows(operator, start, stop)) @ prolongation)
-            del left
-            n_blocks = 1
-            while partial_sums and partial_sums[-1][1] == n_blocks:
-                earlier_sum, earlier_blocks = partial_sums.pop()
-                partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
-            partial_sums.append((partial_sum, n_blocks))
+        for start, stop in self._row_blocks(operator, prolongation.indptr):
+            block_product = self._low(self._rows(operator, start, stop)) @ prolongation   # A_b P
+            # R_b (A_b P) takes nnz(P_i) nnz((A P)_i) partial products per row, more than A_b P's nnz(A_i) nnz(P_i)
+            # (carey2026 E2, 5.6e6 cells: INSUFFICIENT_RESOURCES in that SpGEMM), so it runs in its own sub-blocks
+            outer_products = (xp.diff(prolongation.indptr[start:stop + 1]).astype(np.int64)
+                              * xp.diff(block_product.indptr).astype(np.int64))
+            for sub_start, sub_stop in self._blocks_of(outer_products):
+                first, last = start + sub_start, start + sub_stop
+                if first == 0 and last == n_unknowns:   # a single block's left factor is R itself (no 2nd transpose)
+                    restriction = left = prolongation.T.tocsr()
+                else:
+                    left = prolongation[first:last].T.tocsr()
+                partial_sum = left @ self._rows(block_product, sub_start, sub_stop)
+                del left
+                n_blocks = 1
+                while partial_sums and partial_sums[-1][1] == n_blocks:
+                    earlier_sum, earlier_blocks = partial_sums.pop()
+                    partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
+                partial_sums.append((partial_sum, n_blocks))
+            del block_product, outer_products
         coarse_operator = partial_sums.pop()[0]
         while partial_sums:
             coarse_operator = partial_sums.pop()[0] + coarse_operator
@@ -721,18 +741,23 @@ class MultigridPreconditioner:
     def _row_blocks(self, left, right_indptr):
         """Host [(start, stop)] row blocks of left @ right (right's CSR indptr) with about PRODUCT_BLOCK_PRODUCTS
         partial products each (a longer single row stays one block)."""
-        from ..core.backend import to_host
         xp = self._xp
-        n_rows = left.shape[0]
         # per-row counts as one float32 SpMV of left's pattern (exact: rows hold far fewer than 2^24 products), so the
         # only entry-sized temporary is the 4-byte pattern data, not int64 per-entry cumulative sums
         pattern = self._sparse.csr_matrix((xp.ones(left.nnz, dtype=np.float32), left.indices, left.indptr),
                                           shape=left.shape)
         products_per_row = pattern.dot(xp.diff(right_indptr).astype(np.float32))
         del pattern
+        return self._blocks_of(products_per_row)
+
+    def _blocks_of(self, products_per_row):
+        """Host [(start, stop)] row blocks of about PRODUCT_BLOCK_PRODUCTS products each from backend per-row counts
+        (a longer single row stays one block)."""
+        from ..core.backend import to_host
+        xp = self._xp
+        n_rows = products_per_row.shape[0]
         row_products = xp.zeros(n_rows + 1, dtype=np.int64)
         xp.cumsum(products_per_row.astype(np.int64), out=row_products[1:])
-        del products_per_row
         targets = xp.arange(PRODUCT_BLOCK_PRODUCTS, int(row_products[-1]), PRODUCT_BLOCK_PRODUCTS, dtype=np.int64)
         boundaries = np.asarray(to_host(xp.searchsorted(row_products, targets, side='right') - 1), dtype=np.int64)
         boundaries = np.unique(np.concatenate(([0], boundaries, [n_rows])))

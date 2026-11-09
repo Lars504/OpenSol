@@ -165,7 +165,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host eigh pseudo-inverse (raises on a non-finite
   inverse). Rounding only weakens the preconditioner (SPD holds for any symmetric A_c).
 - Products run in row blocks of ~PRODUCT_BLOCK_PRODUCTS (`_row_blocks`): one SpGEMM over a 5e6-row 3D operator needs a
-  workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. The block sum merges
+  workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. Both Galerkin products
+  are bounded: R_b (A_b P) has nnz(P_i) nnz((A P)_i) products per row, several times A_b P's, and runs in its own
+  sub-blocks (`_blocks_of`; unbounded it raised INSUFFICIENT_RESOURCES at 5.6e6 cells). The block sum merges
   only equal block counts (binary counter): a running sum recopies A_c per block. A cupyx / scipy CSR row slice copies
   the matrix even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
 - Hierarchy (T, P, R, coarse operators / vectors) is HIERARCHY_DTYPE float32 at every precision; a float64 fine level
@@ -188,7 +190,13 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (machine-dependent: never pin them in a selftest). Memory: `hierarchy_bytes` / `setup_extra_bytes` /
   `aggregation_host_bytes`, counted by `diffusion_system_estimate(multigrid=)`: a hierarchy layout change updates those
   constants. The product workspace is one block's (PRODUCT_WORKSPACE_BYTES) capped by a small operator's whole A @ P
-  (a fixed block booked 256 MiB on 1e3-cell models); FILTER_BYTES_PER_ENTRY booked there too.
+  (a fixed block booked 256 MiB on 1e3-cell models). `setup_extra_bytes` books the largest of the fine level's
+  three steps on a row block, never their sum: `_filtered_rows` frees its temporaries on return (only the filtered
+  block lives into A_F T), and the Galerkin product starts after the blocks are stacked (the sum read the 2D
+  adaptation_tensor_strip_heater build peak 12 % high at 4e4 .. 6.4e5 cells and 22 % at 2.56e6). Open:
+  HIERARCHY_ENTRIES_PER_UNKNOWN = 12 is the 3D 7-point figure (11.96); the 2D 5-point strip heater holds 8.47
+  (complexity 1.355: P rows ~2.8 in both, the coarse operators differ), kept ~7 % high there; a 3D setup's A @ P
+  result (more than SETUP_ENTRIES_PER_UNKNOWN entries per row) is not counted apart.
 - Level vectors are preallocated; on the gpu each V-cycle allocates its SpMV products, on the cpu `_product` writes into
   level vectors by `pcg.host_csr_matvec` (falls back to `dot` when dtypes differ).
 - Measured: 3D iterations to 1e-8 (20-35 at 40^3-60^3) exceed the ~12 of MULTIGRID_RESIDUAL_REDUCTION (3D run-time

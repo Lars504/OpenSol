@@ -10,7 +10,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import materials as material_library
 from ..core.backend import cupy_installed
-from ..core.gpu_memory import format_bytes
 from ..core.mesh import SEGMENT_PROFILES
 from ..core.time_estimate import format_seconds
 from ..materials.crystal_tensors import (CRYSTAL_MODEL, CRYSTALS, FULL_PIEZO_PROPERTIES, FULL_PLANE,
@@ -43,8 +42,9 @@ from .forms import (DERIVED_OPERATION_LABELS, ERROR_COLOR, HINT_COLOR, SELECTION
 from .canvas import DRAGGABLE_KINDS
 from .document import ESTIMATION_NODE, MESHES_NODE, harmonic_channel_names, issue_node_path, solver_fits, solver_users
 from .estimation_form import EstimationFormMixin
-from .helpers import (coupling_mesh_text, evaluation_mesh, mesh_badge_html, mesh_color, mesh_kind_problem,
-                      mesh_kind_shown, mesh_summary_text, mesh_swatch_html, physics_mesh_name, several_meshes)
+from .helpers import (coupling_mesh_text, evaluation_mesh, memory_estimate_text, mesh_badge_html, mesh_color,
+                      mesh_kind_problem, mesh_kind_shown, mesh_summary_text, mesh_swatch_html, physics_mesh_name,
+                      several_meshes)
 from .mesh_preview import AUTO_PREVIEW_MAX_ELEMENTS, AUTO_PREVIEW_MAX_TETRAHEDRA
 from .model_tree import (MESH_KIND_LABELS, RESULT_SETTING_ADDERS, RESULT_SETTINGS_TIPS, coupling_candidates,
                          solver_candidates)
@@ -798,29 +798,6 @@ def _feature_params(physics, feature_type, space=''):
     return tuple(replace(param, kind='choice', choices=channels,
                          default=param.default if param.default in channels else None)
                  if param.kind == 'str' and param.name == 'channel' else param for param in params)
-
-
-def _memory_estimate_text(estimate, budget, host_budget=None, backend='gpu', scope='Estimated'):
-    """Mesh-node line of the estimated graphics card (and processor) memory, with the share of each budget if known;
-    backend 'cpu': one processor total (the device arrays live in host memory too); scope starts the line."""
-    if estimate is None:
-        return f"{scope.rstrip(':')} memory: not available (see the Validation tab)"
-    if backend == 'cpu':
-        total = estimate.gpu_peak + estimate.host
-        text = f'{scope} processor memory {format_bytes(total)} at the peak (the model runs on the processor)'
-        if host_budget:
-            text += f' ({100.0 * total / host_budget:.0f}% of the {format_bytes(host_budget)} available)'
-        return text
-    text = f'{scope} graphics card memory {format_bytes(estimate.device_peak)} at the peak'
-    if budget:
-        text += f' ({100.0 * estimate.device_peak / budget:.0f}% of the {format_bytes(budget)} limit)'
-    if estimate.external_peak:
-        text += f', of which {format_bytes(estimate.external_peak)} for direct solver factors'
-    if estimate.host:
-        text += f', processor memory {format_bytes(estimate.host)}'
-        if host_budget:
-            text += f' ({100.0 * estimate.host / host_budget:.0f}% of the {format_bytes(host_budget)} available)'
-    return text
 
 
 def _time_estimate_text(estimate, message=''):
@@ -2215,7 +2192,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
         def refresh():
             overview.setText(self._meshes_overview_html())
-            memory_label.setText(_memory_estimate_text(
+            memory_label.setText(memory_estimate_text(
                 self._document.memory_estimate(), self._document.memory_budget, self._document.host_memory_budget,
                 solver_backend(self._document.spec)) + '\n' + _time_estimate_text(*self._document.time_estimate()))
         refresh()
@@ -2740,11 +2717,11 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             return
         backend = solver_backend(document.spec)
         used = mesh_name in {mesh_spec.name for mesh_spec in document.spec.used_meshes()}
-        memory_lines = ([_memory_estimate_text(document.mesh_memory_estimate(mesh_name), document.memory_budget,
+        memory_lines = ([memory_estimate_text(document.mesh_memory_estimate(mesh_name), document.memory_budget,
                                                document.host_memory_budget, backend,
                                                scope='This mesh and its physics:')]
                         if used and several_meshes(document.spec) else [])
-        memory_lines.append(_memory_estimate_text(document.memory_estimate(), document.memory_budget,
+        memory_lines.append(memory_estimate_text(document.memory_estimate(), document.memory_budget,
                                                   document.host_memory_budget, backend,
                                                   scope='Whole model:' if several_meshes(document.spec)
                                                   else 'Estimated'))

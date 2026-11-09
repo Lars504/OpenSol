@@ -904,9 +904,12 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   run items (K0 / K1 / K2 caches, min(orders, MAX_CHUNK_SHIFTS) factors); single-order driven solves hold whole
   operators, `driven_line_block_bytes` (one operator and factor, or the batch of min(study wavelengths,
   MAX_BATCH_WAVELENGTHS) operators with a factor each; no K1 / K2 caches)); its time recipe leaves a cudss eigen
-  node "not estimated". Open: the tensor cuDSS factor still takes the n log2 n growth law, which holds no per-row
-  part (em_bor_cpu_gpu ports, 19,200 unknowns: 812,107 entries x 16 B = 13.0 MB of 25.6 MB permanent, the rest the
-  kept matrix and ~540 B / row; the law books 1.5x the entries and still lands 27 % low).
+  node "not estimated". The tensor cuDSS factor is counted, not grown by n log2 n: `_bor_factor_entries` runs the
+  fem.dissection count on the operator's cliques (one per curl point: its a_phi / a_r / a_z members; m = 0: the u
+  and E_r / E_z blocks apart) -> `cudss_factor.FactorFill` (values + kept matrix + per-row part; cached per grid,
+  seconds above ~1e6 cells). The growth law held no per-row part (em_bor_cpu_gpu ports, 19,200 unknowns: 812,107
+  entries x 16 B = 13.0 MB of 25.6 MB permanent, the rest the kept matrix and ~540 B / row; it booked 1.5x the
+  entries and still read 27 % low). The other tensor cuDSS estimators (conical, modes, 2D FDFD) still use it.
 - Flux (module header): `box_flux` (closed cell box) equals `source_power` = pi / (omega mu0) Im(x^H b) to solver
   precision when its faces lie in lossless PML-free cells. r-face weights: inner cell centre r for E_phi H_z, edge
   rbar for E_z H_phi. `line_flux` (flux_monitor): share-weighted span ends (axis edge weight 0); exact for a line from

@@ -277,6 +277,8 @@ all but drift_diffusion.
   node)^2 per pair. Both orders are ones a solver could use, so the count bounds a good ordering from above and
   nothing in it is fitted; a count below cudss_lu_entries / eigen_lu_entries (summary.json) would mean cuDSS orders
   worse than this, a lead on its ordering options.
+- The "elements" may be any clique cover of an operator's pattern with a point per unknown (repeated members
+  allowed): `physics/em/memory_estimates._bor_factor_entries` passes the curl points of the tensor BOR operator.
 - `MeshDissection(mesh)` (triangles and tetrahedra; order 2 = nodes + edges through `element_edges`; `nedelec_pairs`
   on tetrahedra: edge midpoints, + face centroids at degree 2, as the dof sites) counts per element order on first
   use; equal per mesh digest. `meshing.built_mesh_counts` carries it ('dissection'), `with_built_counts` attaches it as

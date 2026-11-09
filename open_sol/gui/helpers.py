@@ -8,6 +8,7 @@ import re
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..core.gpu_memory import format_bytes
 from ..model.expressions import ExpressionError, error_message, referenced_names
 from ..model.schema import MESH_PARAMS, output_field_names
 from ..model.study import tick_count_text
@@ -22,6 +23,29 @@ _UNKNOWN_MESH_COLOR = '#808080'
 _MESH_MODE_TEXTS = {mode: label.lower() for mode, label in
                     next(param.choice_labels for param in MESH_PARAMS if param.name == 'mode')}
 _MESH_KIND_TEXTS = {'tensor': 'rectangular cells', 'triangles': 'triangles', 'tetrahedra': 'tetrahedra'}
+
+
+def memory_estimate_text(estimate, budget, host_budget=None, backend='gpu', scope='Estimated'):
+    """Line of the estimated graphics card (and processor) memory, with the share of each budget if known; backend
+    'cpu': one processor total (the device arrays live in host memory too); scope starts the line."""
+    if estimate is None:
+        return f"{scope.rstrip(':')} memory: not available (see the Validation tab)"
+    if backend == 'cpu':
+        total = estimate.gpu_peak + estimate.host
+        text = f'{scope} processor memory {format_bytes(total)} at the peak (the model runs on the processor)'
+        if host_budget:
+            text += f' ({100.0 * total / host_budget:.0f}% of the {format_bytes(host_budget)} available)'
+        return text
+    text = f'{scope} graphics card memory {format_bytes(estimate.device_peak)} at the peak'
+    if budget:
+        text += f' ({100.0 * estimate.device_peak / budget:.0f}% of the {format_bytes(budget)} limit)'
+    if estimate.external_peak:
+        text += f', of which {format_bytes(estimate.external_peak)} for direct solver factors'
+    if estimate.host:
+        text += f', processor memory {format_bytes(estimate.host)}'
+        if host_budget:
+            text += f' ({100.0 * estimate.host / host_budget:.0f}% of the {format_bytes(host_budget)} available)'
+    return text
 
 
 def run_user_operation(operation, report, label=''):

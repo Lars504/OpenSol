@@ -25,6 +25,7 @@ from ..model.schema import (FREE_MESH_KINDS, GLOBAL_DERIVED_OPERATION, INTERFACE
 from ..model.spec import (RESERVED_ENTITY_NAMES, AnalyticCurveSpec, CouplingSpec, DerivedCurveSpec,
                           DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                           ParameterSpec, PhysicsSpec, SelectionSpec, SolverSpec, StudySpec, SweepSpec)
+from ..model.study import sweep_value_spec
 from ..model.templates import make_template
 from ..model.time_estimate import estimate_time
 from ..model.validate import internal_error_text, memory_verdict, validate
@@ -78,7 +79,199 @@ _STUDY_FIELDS = frozenset(study_field.name for study_field in fields(StudySpec))
 _STEPS_PER_SOLVE_BESIDE_COURANT_DT = 500
 
 
-class ModelDocument(QtCore.QObject):
+class SpecEstimates:
+    """Cached CPU checks of one spec (parameters, mesh / memory / time estimates, issues); the host class provides
+    spec, registry, _cached, _element_counts, memory_budget and host_memory_budget."""
+
+    def parameters(self) -> dict:
+        """Parameter values that evaluate (partial mode; failures are in evaluation_errors())."""
+        return dict(self._evaluated_parameters()[0])
+
+    def evaluation_errors(self) -> dict:
+        """{parameter name: message} of parameters that fail to evaluate."""
+        return dict(self._evaluated_parameters()[1])
+
+    def _evaluated_parameters(self):
+        def evaluate():
+            errors = {}
+            values = evaluate_parameters(self.spec.parameters, errors)
+            return values, errors
+        return self._cached('parameters', evaluate)
+
+    def default_mesh_name(self):
+        """Name of the default mesh (meshes[0], where physics without a mesh of their own run); None without meshes."""
+        return self.spec.meshes[0].name if self.spec.meshes else None
+
+    def mesh_estimate(self, name=None):
+        """(MeshEstimate or TriangleMeshEstimate, None) of one mesh (its name; None = the default mesh), or (None,
+        message) when it cannot be estimated (CPU only). An element mesh built from the current inputs
+        (set_element_counts) gives its built counts (estimate.counts_built)."""
+        name = self.default_mesh_name() if name is None else name
+
+        def estimate():
+            sized, problem = self._sized_mesh_estimate(name)
+            kept = self._element_counts.get(name)   # the key is worked out only for a mesh that was built
+            counts = kept.get(self.element_mesh_key(name)[0]) if kept and sized is not None else None
+            return (sized if counts is None else with_built_counts(sized, counts)), problem
+        return self._cached(('mesh_estimate', name), estimate)
+
+    def _sized_mesh_estimate(self, name):
+        """mesh_estimate(name) from the mesh settings alone (element counts from the sizes)."""
+        def estimate():
+            if name is None:
+                return None, 'the model has no mesh'
+            try:
+                return estimate_mesh(self.spec, self.parameters(), self.registry, name), None
+            except MESH_ESTIMATE_ERRORS as exc:
+                return None, error_message(exc)
+            except Exception as exc:   # crashing definition callback: traceback to the log, views get a message
+                sys.excepthook(*sys.exc_info())
+                return None, internal_error_text('the mesh estimate', exc)
+        return self._cached(('sized_mesh_estimate', name), estimate)
+
+    def element_mesh_key(self, name) -> tuple:
+        """(meshing.element_mesh_key or None, problem text) of the triangle / tetrahedron mesh `name`: what its
+        elements are made from, so a built mesh belongs to the model only while its key is this one."""
+        def key():
+            estimate, problem = self._sized_mesh_estimate(name)
+            if estimate is None:
+                return None, problem or 'no mesh estimate'
+            if estimate.kind not in FREE_MESH_KINDS:
+                return None, 'it is not a triangle or tetrahedron mesh'
+            try:
+                parameters = self.parameters()
+                return element_mesh_key(estimate.sizing, element_window_size(self.spec, parameters, estimate.kind),
+                                        resolve_geometry(self.spec, parameters)), ''
+            except _KEY_ERRORS as exc:
+                return None, error_message(exc)
+        return self._cached(('element_mesh_key', name), key)
+
+    def used_mesh_estimates(self):
+        """({used mesh name: estimate or None}, {name: failure message or None}) in spec.used_meshes() order."""
+        estimates, errors = {}, {}
+        for mesh_spec in self.spec.used_meshes():
+            estimates[mesh_spec.name], errors[mesh_spec.name] = self.mesh_estimate(mesh_spec.name)
+        return estimates, errors
+
+    def memory_estimate(self):
+        """meshing.estimate_memory of the cached used-mesh estimates (CPU only), None when a mesh or the estimate
+        fails (validation reports why)."""
+        return self._memory_estimates()[0]
+
+    def mesh_memory_estimate(self, name):
+        """The part of memory_estimate() of one used mesh (its arrays, physics and features; transfers excluded);
+        None for an unused mesh or when the estimate fails."""
+        return self._memory_estimates()[1].get(name)
+
+    def _memory_estimates(self):
+        """(MemoryEstimate or None, {used mesh name: its part}), cached per revision."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            if not estimates or any(mesh is None for mesh in estimates.values()):
+                return None, {}
+            by_mesh = {}
+            try:
+                return estimate_memory(self.spec, self.parameters(), self.registry, estimates, by_mesh=by_mesh), by_mesh
+            except MESH_ESTIMATE_ERRORS:
+                return None, {}
+            except Exception:   # crashing estimator: traceback to the log, validation reports it
+                sys.excepthook(*sys.exc_info())
+                return None, {}
+        return self._cached('memory_estimate', estimate)
+
+    def time_estimate(self):
+        """(model.time_estimate TimeEstimate or None, message) of the whole study on the cached used-mesh estimates (a
+        sweep: each value on its own mesh) and the stored machine profile (CPU), cached per revision; (None, '') when a
+        mesh estimate fails."""
+        def estimate():
+            estimates, _errors = self.used_mesh_estimates()
+            if not estimates or any(mesh is None for mesh in estimates.values()):
+                return None, ''
+            try:
+                return estimate_time(self.spec, self.parameters(), self.registry, estimates)
+            except MESH_ESTIMATE_ERRORS:
+                return None, ''
+            except Exception:   # crashing recipe: traceback to the log
+                sys.excepthook(*sys.exc_info())
+                return None, ''
+        return self._cached('time_estimate', estimate)
+
+    def issues(self) -> list:
+        """validate(spec) findings (Issue list), reusing the cached mesh and memory estimates (or the mesh failure
+        message) and checking against the last known GPU budget and available host RAM."""
+        def check():
+            meshes, mesh_errors = self.used_mesh_estimates()
+            memory, memory_parts = self._memory_estimates()
+            return validate(self.spec, self.registry, mesh_estimate=meshes, mesh_error=mesh_errors,
+                            memory_budget=self.memory_budget, memory_estimate=memory,
+                            host_budget=self.host_memory_budget,
+                            memory_parts=None if memory is None else memory_parts)
+        return list(self._cached('issues', check))
+
+    def memory_verdict(self):
+        """validate.memory_verdict of the cached estimates against the last budgets (the mesh a budget issue is
+        reported at, over or not, element meshes still to build); None without a memory estimate."""
+        memory, memory_parts = self._memory_estimates()
+        if memory is None:
+            return None
+        return memory_verdict(self.spec, self.used_mesh_estimates()[0], memory, self.memory_budget,
+                              self.host_memory_budget, memory_parts)
+
+
+class SweepValueEstimates(SpecEstimates):
+    """The document's estimates with swept parameters at chosen values (study.sweep_value_spec per pair): the canvas
+    sweep sliders' mesh, element meshes and memory line. Built element counts are the document's (keys differ)."""
+
+    def __init__(self, document, values):
+        self.document = document
+        self.values = values                 # ((parameter, value), ...)
+        self._cache = {}
+        self._cache_inputs = None            # (document revision, estimate_inputs_version) of _cache
+
+    @property
+    def label(self) -> str:
+        """'w = 1.2e-06' text naming the values (Build mesh messages)."""
+        return ', '.join(f'{name} = {value:.6g}' for name, value in self.values)
+
+    @property
+    def spec(self):
+        def value_spec():
+            spec = self.document.spec
+            for name, value in self.values:
+                spec = sweep_value_spec(spec, name, value)
+            return spec
+        return self._cached('spec', value_spec)
+
+    @property
+    def registry(self):
+        return self.document.registry
+
+    @property
+    def memory_budget(self):
+        return self.document.memory_budget
+
+    @property
+    def host_memory_budget(self):
+        return self.document.host_memory_budget
+
+    @property
+    def _element_counts(self):
+        return self.document._element_counts
+
+    def set_element_counts(self, name, key, counts):
+        self.document.set_element_counts(name, key, counts)
+
+    def _cached(self, key, compute):
+        inputs = (self.document.revision, self.document.estimate_inputs_version)
+        if inputs != self._cache_inputs:
+            self._cache.clear()
+            self._cache_inputs = inputs
+        if key not in self._cache:
+            self._cache[key] = compute()
+        return self._cache[key]
+
+
+class ModelDocument(QtCore.QObject, SpecEstimates):
     """The edited ModelSpec: every edit is one undoable `mutate`; views re-read `spec` on `changed`."""
 
     changed = QtCore.Signal(str, object)     # section (SECTIONS), origin (the editing view or None)
@@ -111,6 +304,7 @@ class ModelDocument(QtCore.QObject):
         self.memory_budget = None            # last GPU budget [bytes] the worker reported (set_memory_budget)
         self.host_memory_budget = None       # last available host RAM [bytes] the worker reported (likewise)
         self._element_counts = {}            # mesh name -> {element_mesh_key: built_mesh_counts} (set_element_counts)
+        self.estimate_inputs_version = 0     # bumped by new element counts / budgets (SweepValueEstimates' caches)
         self.set_spec(spec if spec is not None else ModelSpec())
 
     # ---- whole-model state ----
@@ -248,62 +442,12 @@ class ModelDocument(QtCore.QObject):
             return False
         return True
 
-    # ---- cached CPU-side checks (per revision) ----
-    def parameters(self) -> dict:
-        """Parameter values that evaluate (partial mode; failures are in evaluation_errors())."""
-        return dict(self._evaluated_parameters()[0])
-
-    def evaluation_errors(self) -> dict:
-        """{parameter name: message} of parameters that fail to evaluate."""
-        return dict(self._evaluated_parameters()[1])
-
-    def default_mesh_name(self):
-        """Name of the default mesh (meshes[0], where physics without a mesh of their own run); None without meshes."""
-        return self.spec.meshes[0].name if self.spec.meshes else None
-
-    def mesh_estimate(self, name=None):
-        """(MeshEstimate or TriangleMeshEstimate, None) of one mesh (its name; None = the default mesh), or (None,
-        message) when it cannot be estimated (CPU only). An element mesh built from the current inputs
-        (set_element_counts) gives its built counts (estimate.counts_built)."""
-        name = self.default_mesh_name() if name is None else name
-
-        def estimate():
-            sized, problem = self._sized_mesh_estimate(name)
-            kept = self._element_counts.get(name)   # the key is worked out only for a mesh that was built
-            counts = kept.get(self.element_mesh_key(name)[0]) if kept and sized is not None else None
-            return (sized if counts is None else with_built_counts(sized, counts)), problem
-        return self._cached(('mesh_estimate', name), estimate)
-
-    def _sized_mesh_estimate(self, name):
-        """mesh_estimate(name) from the mesh settings alone (element counts from the sizes)."""
-        def estimate():
-            if name is None:
-                return None, 'the model has no mesh'
-            try:
-                return estimate_mesh(self.spec, self.parameters(), self.registry, name), None
-            except MESH_ESTIMATE_ERRORS as exc:
-                return None, error_message(exc)
-            except Exception as exc:   # crashing definition callback: traceback to the log, views get a message
-                sys.excepthook(*sys.exc_info())
-                return None, internal_error_text('the mesh estimate', exc)
-        return self._cached(('sized_mesh_estimate', name), estimate)
-
-    def element_mesh_key(self, name) -> tuple:
-        """(meshing.element_mesh_key or None, problem text) of the triangle / tetrahedron mesh `name`: what its
-        elements are made from, so a built mesh belongs to the model only while its key is this one."""
-        def key():
-            estimate, problem = self._sized_mesh_estimate(name)
-            if estimate is None:
-                return None, problem or 'no mesh estimate'
-            if estimate.kind not in FREE_MESH_KINDS:
-                return None, 'it is not a triangle or tetrahedron mesh'
-            try:
-                parameters = self.parameters()
-                return element_mesh_key(estimate.sizing, element_window_size(self.spec, parameters, estimate.kind),
-                                        resolve_geometry(self.spec, parameters)), ''
-            except _KEY_ERRORS as exc:
-                return None, error_message(exc)
-        return self._cached(('element_mesh_key', name), key)
+    # ---- cached CPU-side checks (per revision; the estimates are SpecEstimates') ----
+    def at_sweep_values(self, values):
+        """SweepValueEstimates of the model with swept parameters at `values` ((parameter, value) pairs), cached per
+        revision (canvas sweep sliders)."""
+        values = tuple((str(name), float(value)) for name, value in values)
+        return self._cached(('sweep_values', values), lambda: SweepValueEstimates(self, values))
 
     def set_element_counts(self, name, key, counts):
         """Keep the counts (meshing.built_mesh_counts) of an element mesh built from the inputs `key` (Build mesh, a
@@ -316,60 +460,11 @@ class ModelDocument(QtCore.QObject):
         kept[key] = dict(counts)
         while len(kept) > _KEPT_ELEMENT_COUNTS:   # the oldest inputs first (dicts keep insertion order)
             del kept[next(iter(kept))]
+        self.estimate_inputs_version += 1      # SweepValueEstimates recompute (their keys may be this one)
         if self.element_mesh_key(name)[0] == key:
             for cached in (('mesh_estimate', name), 'memory_estimate', 'time_estimate', 'issues'):
                 self._cache.pop(cached, None)
             self.issues_invalidated.emit()
-
-    def used_mesh_estimates(self):
-        """({used mesh name: estimate or None}, {name: failure message or None}) in spec.used_meshes() order."""
-        estimates, errors = {}, {}
-        for mesh_spec in self.spec.used_meshes():
-            estimates[mesh_spec.name], errors[mesh_spec.name] = self.mesh_estimate(mesh_spec.name)
-        return estimates, errors
-
-    def memory_estimate(self):
-        """meshing.estimate_memory of the cached used-mesh estimates (CPU only), None when a mesh or the estimate
-        fails (validation reports why)."""
-        return self._memory_estimates()[0]
-
-    def mesh_memory_estimate(self, name):
-        """The part of memory_estimate() of one used mesh (its arrays, physics and features; transfers excluded);
-        None for an unused mesh or when the estimate fails."""
-        return self._memory_estimates()[1].get(name)
-
-    def _memory_estimates(self):
-        """(MemoryEstimate or None, {used mesh name: its part}), cached per revision."""
-        def estimate():
-            estimates, _errors = self.used_mesh_estimates()
-            if not estimates or any(mesh is None for mesh in estimates.values()):
-                return None, {}
-            by_mesh = {}
-            try:
-                return estimate_memory(self.spec, self.parameters(), self.registry, estimates, by_mesh=by_mesh), by_mesh
-            except MESH_ESTIMATE_ERRORS:
-                return None, {}
-            except Exception:   # crashing estimator: traceback to the log, validation reports it
-                sys.excepthook(*sys.exc_info())
-                return None, {}
-        return self._cached('memory_estimate', estimate)
-
-    def time_estimate(self):
-        """(model.time_estimate TimeEstimate or None, message) of the whole study on the cached used-mesh estimates (a
-        sweep: each value on its own mesh) and the stored machine profile (CPU), cached per revision; (None, '') when a
-        mesh estimate fails."""
-        def estimate():
-            estimates, _errors = self.used_mesh_estimates()
-            if not estimates or any(mesh is None for mesh in estimates.values()):
-                return None, ''
-            try:
-                return estimate_time(self.spec, self.parameters(), self.registry, estimates)
-            except MESH_ESTIMATE_ERRORS:
-                return None, ''
-            except Exception:   # crashing recipe: traceback to the log
-                sys.excepthook(*sys.exc_info())
-                return None, ''
-        return self._cached('time_estimate', estimate)
 
     def set_memory_budget(self, budget, host_budget=None) -> bool:
         """Keep the worker's GPU budget and available host RAM [bytes] for validation; True (and issues_invalidated)
@@ -382,30 +477,10 @@ class ModelDocument(QtCore.QObject):
             self.memory_budget = int(budget)
         if host_moved:
             self.host_memory_budget = int(host_budget)
+        self.estimate_inputs_version += 1
         self._cache.pop('issues', None)
         self.issues_invalidated.emit()
         return True
-
-    def issues(self) -> list:
-        """validate(spec) findings (Issue list), reusing the cached mesh and memory estimates (or the mesh failure
-        message) and checking against the last known GPU budget and available host RAM."""
-        def check():
-            meshes, mesh_errors = self.used_mesh_estimates()
-            memory, memory_parts = self._memory_estimates()
-            return validate(self.spec, self.registry, mesh_estimate=meshes, mesh_error=mesh_errors,
-                            memory_budget=self.memory_budget, memory_estimate=memory,
-                            host_budget=self.host_memory_budget,
-                            memory_parts=None if memory is None else memory_parts)
-        return list(self._cached('issues', check))
-
-    def memory_verdict(self):
-        """validate.memory_verdict of the cached estimates against the last budgets (the mesh a budget issue is
-        reported at, over or not, element meshes still to build); None without a memory estimate."""
-        memory, memory_parts = self._memory_estimates()
-        if memory is None:
-            return None
-        return memory_verdict(self.spec, self.used_mesh_estimates()[0], memory, self.memory_budget,
-                              self.host_memory_budget, memory_parts)
 
     def state_names(self) -> frozenset:
         """Physics state-field names usable in material / coupling expressions (keys of state_field_names)."""
@@ -1037,13 +1112,6 @@ class ModelDocument(QtCore.QObject):
         if key not in self._cache:
             self._cache[key] = compute()
         return self._cache[key]
-
-    def _evaluated_parameters(self):
-        def evaluate():
-            errors = {}
-            values = evaluate_parameters(self.spec.parameters, errors)
-            return values, errors
-        return self._cached('parameters', evaluate)
 
     def _feature_type(self, path):
         """FeatureType of a ('feature', physics, name) node; KeyError when the node or its type is unknown."""

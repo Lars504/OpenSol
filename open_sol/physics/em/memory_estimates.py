@@ -2,6 +2,7 @@
 allocations: fields, coefficients, CPML psi slabs, poles on their boxes, loss accumulators, DFT / line spectra, point
 traces, harmonic FDTD accumulators, the FDFD system and the host (eigen) factorisations. GUI-thread safe."""
 import math
+from functools import lru_cache
 
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES,
                                      FLOAT32_BYTES, FLOAT64_BYTES, INT32_BYTES, MemoryEstimate, host_lu_bytes,
@@ -12,8 +13,8 @@ from ...model.definition_resonance import point_trace_items
 from ...model.schema import resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
-from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
-                                     refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
+from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
+                                     operator_copy_bytes, refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZATIONS, factor_label,
                                     host_direct_precision, solver_host_bytes, superlu_bytes_scale)
 from .definition_bloch import bloch_active_axes
@@ -51,6 +52,48 @@ def _bor_entries_per_row(largest_order) -> float:
     (5: itself, 4 neighbours) apart from E_r / E_z (7: 3 own, 4 of the other via a_phi); |m| >= 1 (the m / r curl
     entries) couples all three, every row 9. Wall rows have fewer: a slight upper bound."""
     return 9.0 if largest_order else 19.0 / 3.0
+
+
+@lru_cache(maxsize=16)
+def _bor_factor_entries(nr, nz, coupled) -> int:
+    """Factor entries of one triangle of the tensor BOR operator on an (nr, nz) grid (the full unknown set): the
+    fem.dissection count on its cliques, one per curl point (body_of_revolution a_phi: 2 E_r + 2 E_z, a_r: 2 u + E_z,
+    a_z: 2 u + E_r; C^T W C couples exactly the unknowns one point differences); coupled False (m = 0): the u block
+    and the E_r / E_z block apart, added."""
+    import numpy as np
+    from ...fem.dissection import element_dissection_pairs
+    n_radial, n_cells = (nr + 1) * nz, nr * nz
+    radial_edge, radial_row = np.divmod(np.arange(n_radial), nz)          # E_r on (edge k, centre j)
+    cell_column, cell_row = np.divmod(np.arange(n_cells), nz)             # u on (centre i, centre j)
+    axial_column, axial_edge = np.divmod(np.arange(nr * (nz + 1)), nz + 1)   # E_z on (centre i, edge l)
+    points = np.concatenate((np.stack((radial_edge, radial_row + 0.5), axis=1),
+                             np.stack((cell_column + 0.5, cell_row + 0.5), axis=1),
+                             np.stack((axial_column + 0.5, axial_edge), axis=1))).astype(np.float64)
+
+    def e_r(edge, row):
+        return edge * nz + row
+
+    def u(column, row):
+        return n_radial + column * nz + row
+
+    def e_z(column, edge):
+        return n_radial + n_cells + column * (nz + 1) + edge
+
+    # a point on the grid's rim misses a neighbour: the index is clipped onto the one it has (a repeated member)
+    edge_k, edge_l = (index.ravel() for index in np.meshgrid(np.arange(nr + 1), np.arange(nz + 1), indexing='ij'))
+    a_phi = np.stack((e_r(edge_k, np.clip(edge_l - 1, 0, nz - 1)), e_r(edge_k, np.clip(edge_l, 0, nz - 1)),
+                      e_z(np.clip(edge_k - 1, 0, nr - 1), edge_l), e_z(np.clip(edge_k, 0, nr - 1), edge_l)), axis=1)
+    centre_i, edge_l = (index.ravel() for index in np.meshgrid(np.arange(nr), np.arange(nz + 1), indexing='ij'))
+    a_r = np.stack((u(centre_i, np.clip(edge_l - 1, 0, nz - 1)), u(centre_i, np.clip(edge_l, 0, nz - 1)),
+                    e_z(centre_i, edge_l)), axis=1)
+    edge_k, centre_j = (index.ravel() for index in np.meshgrid(np.arange(nr + 1), np.arange(nz), indexing='ij'))
+    a_z = np.stack((u(np.clip(edge_k - 1, 0, nr - 1), centre_j), u(np.clip(edge_k, 0, nr - 1), centre_j),
+                    e_r(edge_k, centre_j)), axis=1)
+    if coupled:
+        cliques = np.vstack((a_phi, a_r[:, [0, 1, 2, 2]], a_z[:, [0, 1, 2, 2]]))
+        return element_dissection_pairs(cliques, points)
+    return (element_dissection_pairs(a_phi, points)
+            + element_dissection_pairs(np.vstack((a_r[:, :2], a_z[:, :2])), points))
 
 
 def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec):
@@ -779,8 +822,9 @@ def bor_memory_estimate(settings_values, mesh, context):
         else:       # host_fdfd keeps the driven factor and refactorises it at the next order / wavelength
             kept_cudss_items(run_items, transient_items, unknowns, entries, mixed,
                              later_factorisations(context) or (order_sum and n_listed > 1))
+        fill = FactorFill(_bor_factor_entries(int(mesh.nx), int(mesh.ny), bool(max(orders))))
         external_items, external_extra = cudss_factor_items('the BOR curl-curl operator', unknowns, entries,
-                                                            mixed=mixed)
+                                                            dimensions=fill, mixed=mixed)
     if line_block and (eigen or order_sum):   # bor_line_block.order_factorizations: the bound order family, its factors
         from .bor_line_block import line_block_bytes
         from ...solvers.line_block import MAX_CHUNK_SHIFTS

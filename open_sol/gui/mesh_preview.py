@@ -17,6 +17,7 @@ from ..viz.common import tetrahedron_mesh_data, triangle_mesh_lines
 AUTO_PREVIEW_MAX_ELEMENTS = 200_000   # the mesh view meshes triangle estimates up to this size by itself; larger: Build
 AUTO_PREVIEW_MAX_TETRAHEDRA = 50_000  # ... tetrahedron estimates (gmsh -3 is slower)
 _AUTO_PREVIEW_DELAY_MS = 400          # quiet time after the last edit before an automatic preview starts
+_KEPT_PREVIEWS = 3                    # previews kept per mesh name (the model's and a few sweep values': host data)
 _ELEMENT_NAMES = {'triangles': 'triangles', 'tetrahedra': 'tetrahedra'}
 
 
@@ -74,11 +75,11 @@ class ElementMeshStore(QtCore.QObject):
         self._document = document
         self._bridge = bridge
         self._built = {}              # mesh name -> MeshDrawing of the worker session
-        self._previews = {}           # mesh name -> MeshDrawing of the last finished preview
+        self._previews = {}           # mesh name -> {key: MeshDrawing} of the last finished previews (_KEPT_PREVIEWS)
         self._pending = {}            # mesh name -> key of the preview running now
         self._failures = {}           # mesh name -> (key, message) of the last failed preview
         self._log_requests = {}       # mesh name -> key of the preview Build mesh asked to log
-        self._auto_names = set()      # mesh names the mesh view asked to mesh once edits pause
+        self._auto_requests = {}      # mesh name -> estimates (None: the document) to mesh once edits pause
         self._auto_timer = QtCore.QTimer(self)
         self._auto_timer.setSingleShot(True)
         self._auto_timer.setInterval(_AUTO_PREVIEW_DELAY_MS)
@@ -89,21 +90,24 @@ class ElementMeshStore(QtCore.QObject):
         bridge.study_finished.connect(self._on_study_finished)
         bridge.study_failed.connect(lambda _message, _traceback: self._on_study_failed())
 
-    # ---- queries ----
-    def current_key(self, mesh_name) -> tuple:
-        """(key or None, problem text) of the document's element mesh mesh_name (document.element_mesh_key)."""
-        return self._document.element_mesh_key(mesh_name)
+    # ---- queries (estimates: document.SweepValueEstimates of the canvas sweep sliders, None = the document) ----
+    def _source(self, estimates):
+        return self._document if estimates is None else estimates
 
-    def drawing(self, mesh_name):
-        """The built mesh when the document still gives it, else such a preview; None otherwise."""
-        key = self.current_key(mesh_name)[0]
+    def current_key(self, mesh_name, estimates=None) -> tuple:
+        """(key or None, problem text) of the element mesh mesh_name (element_mesh_key of the document or
+        estimates)."""
+        return self._source(estimates).element_mesh_key(mesh_name)
+
+    def drawing(self, mesh_name, estimates=None):
+        """The built mesh when the document (or estimates) still gives it, else such a preview; None otherwise."""
+        key = self.current_key(mesh_name, estimates)[0]
         if key is None:
             return None
-        for drawings in (self._built, self._previews):
-            drawing = drawings.get(mesh_name)
-            if drawing is not None and drawing.key == key:
-                return drawing
-        return None
+        built = self._built.get(mesh_name)
+        if built is not None and built.key == key:
+            return built
+        return self._previews.get(mesh_name, {}).get(key)
 
     def built_drawing(self, mesh_name):
         """The worker session's mesh mesh_name (the mesh its fields live on), whatever the document says now."""
@@ -111,29 +115,36 @@ class ElementMeshStore(QtCore.QObject):
 
     def outdated(self, mesh_name) -> bool:
         """True when a built or previewed mesh exists that the document no longer gives."""
-        return self.drawing(mesh_name) is None and (mesh_name in self._built or mesh_name in self._previews)
+        return self.drawing(mesh_name) is None and (mesh_name in self._built or bool(self._previews.get(mesh_name)))
 
-    def pending(self, mesh_name) -> bool:
-        return mesh_name in self._pending
+    def pending(self, mesh_name, estimates=None) -> bool:
+        """A preview of mesh_name runs (estimates given: one of their inputs)."""
+        if estimates is None:
+            return mesh_name in self._pending
+        key = self.current_key(mesh_name, estimates)[0]
+        return key is not None and self._pending.get(mesh_name) == key
 
-    def failure(self, mesh_name) -> str:
+    def failure(self, mesh_name, estimates=None) -> str:
         """Message of the last preview failure of the current inputs, '' otherwise."""
         key, text = self._failures.get(mesh_name, (None, ''))
-        return text if key is not None and key == self.current_key(mesh_name)[0] else ''
+        return text if key is not None and key == self.current_key(mesh_name, estimates)[0] else ''
 
     # ---- previews ----
-    def request_preview(self, mesh_name, log=False) -> str:
-        """Mesh the document's element mesh mesh_name on the worker (no session needed; the worker keeps the mesh for
-        the next build, meshing.element_mesh); log True (the Build mesh button) also logs its stage times like a
-        build. Returns a refusal text, '' when started (or already running for these inputs)."""
-        key, problem = self.current_key(mesh_name)
+    def request_preview(self, mesh_name, log=False, estimates=None) -> str:
+        """Mesh the element mesh mesh_name of the document (or estimates: a sweep value) on the worker (no session
+        needed; the worker keeps the mesh for the next build, meshing.element_mesh); log True (the Build mesh button)
+        also logs its stage times like a build. Returns a refusal text, '' when started (or already running for these
+        inputs)."""
+        source = self._source(estimates)
+        at_text = f' at {estimates.label}' if estimates is not None else ''
+        key, problem = self.current_key(mesh_name, estimates)
         if key is None:
-            return f"Mesh '{mesh_name}' cannot be meshed: {problem}"
+            return f"Mesh '{mesh_name}'{at_text} cannot be meshed: {problem}"
         if log:
             self._log_requests[mesh_name] = key
         if self._pending.get(mesh_name) == key:
             return ''
-        spec, parameters = self._document.spec.copy(), dict(self._document.parameters())
+        spec, parameters = source.spec.copy(), dict(source.parameters())
         kind = spec.mesh_by_name(mesh_name).kind
         generation = self._bridge.generation
 
@@ -154,16 +165,20 @@ class ElementMeshStore(QtCore.QObject):
                 return
             data, seconds, stage_seconds, reused, counts = result
             self._finish_preview(mesh_name, key)
-            self._previews[mesh_name] = MeshDrawing(mesh_name, key, data, 'preview', seconds, kind, counts)
+            previews = self._previews.setdefault(mesh_name, {})
+            previews.pop(key, None)
+            previews[key] = MeshDrawing(mesh_name, key, data, 'preview', seconds, kind, counts)
+            while len(previews) > _KEPT_PREVIEWS:   # the oldest inputs first (dicts keep insertion order)
+                del previews[next(iter(previews))]
             self._document.set_element_counts(mesh_name, key, counts)   # before changed: views read the new estimate
             self.changed.emit(mesh_name)
-            text = (f"Mesh '{mesh_name}': {data.n_elements:,} {_ELEMENT_NAMES[kind]}, {data.n_points:,} nodes"
+            text = (f"Mesh '{mesh_name}'{at_text}: {data.n_elements:,} {_ELEMENT_NAMES[kind]}, {data.n_points:,} nodes"
                     + (' (reused: made earlier from the same mesh settings and geometry)' if reused else ''))
             self.message.emit(f'{text} ({seconds:.2g} s)')
             if self._take_log_request(mesh_name, key):
                 self.log.emit('info', text)
                 self.log.emit('info', ledger_time_text({'seconds': stage_seconds},
-                                                       title=f"Build mesh '{mesh_name}' time by stage"))
+                                                       title=f"Build mesh '{mesh_name}'{at_text} time by stage"))
 
         def failed(error):
             if self._bridge.generation != generation:
@@ -171,9 +186,9 @@ class ElementMeshStore(QtCore.QObject):
             self._finish_preview(mesh_name, key)
             self._failures[mesh_name] = (key, str(error).splitlines()[0] if error else 'failed')
             self.changed.emit(mesh_name)
-            self.message.emit(f"Mesh '{mesh_name}' failed: {self._failures[mesh_name][1]}")
+            self.message.emit(f"Mesh '{mesh_name}'{at_text} failed: {self._failures[mesh_name][1]}")
             if self._take_log_request(mesh_name, key):
-                self.log.emit('error', f"Build mesh '{mesh_name}' failed: {error or 'failed'}")
+                self.log.emit('error', f"Build mesh '{mesh_name}'{at_text} failed: {error or 'failed'}")
 
         self._pending[mesh_name] = key
         self._failures.pop(mesh_name, None)
@@ -181,27 +196,28 @@ class ElementMeshStore(QtCore.QObject):
         self.changed.emit(mesh_name)
         return ''
 
-    def request_auto_preview(self, mesh_name) -> bool:
-        """Mesh view without current elements: preview mesh_name once edits pause (each call restarts the wait).
-        False when its estimate exceeds AUTO_PREVIEW_MAX_ELEMENTS (tetrahedra: AUTO_PREVIEW_MAX_TETRAHEDRA) or the
-        last preview of these inputs failed."""
-        estimate = self._document.mesh_estimate(mesh_name)[0]
-        if estimate is None or estimate.kind not in FREE_MESH_KINDS or self.failure(mesh_name):
+    def request_auto_preview(self, mesh_name, estimates=None) -> bool:
+        """Mesh view without current elements: preview mesh_name (of the document or estimates) once edits pause (each
+        call restarts the wait). False when its estimate exceeds AUTO_PREVIEW_MAX_ELEMENTS (tetrahedra:
+        AUTO_PREVIEW_MAX_TETRAHEDRA) or the last preview of these inputs failed."""
+        estimate = self._source(estimates).mesh_estimate(mesh_name)[0]
+        if estimate is None or estimate.kind not in FREE_MESH_KINDS or self.failure(mesh_name, estimates):
             return False
         limit = AUTO_PREVIEW_MAX_TETRAHEDRA if estimate.kind == 'tetrahedra' else AUTO_PREVIEW_MAX_ELEMENTS
         if estimate.n_elements > limit:
             return False
-        self._auto_names.add(mesh_name)
+        self._auto_requests[mesh_name] = estimates   # the last asked-for inputs of each mesh
         self._auto_timer.start()
         return True
 
     def _run_auto_previews(self):
         """Start the asked-for previews whose inputs have no drawing yet; a running preview of older inputs goes first
         (its finish redraws the mesh view, which asks again)."""
-        names, self._auto_names = sorted(self._auto_names), set()
-        for name in names:
-            if self.drawing(name) is None and not self.pending(name) and not self.failure(name):
-                self.request_preview(name)
+        requests, self._auto_requests = sorted(self._auto_requests.items()), {}
+        for name, estimates in requests:
+            if (self.drawing(name, estimates) is None and not self.pending(name)
+                    and not self.failure(name, estimates)):
+                self.request_preview(name, estimates=estimates)
 
     def _finish_preview(self, mesh_name, key):
         if self._pending.get(mesh_name) == key:
@@ -277,7 +293,7 @@ class ElementMeshStore(QtCore.QObject):
     def _on_document_replaced(self):
         names = sorted(set(self._built) | set(self._previews) | set(self._pending) | set(self._failures))
         self._built, self._previews, self._pending, self._failures, self._log_requests = {}, {}, {}, {}, {}
-        self._auto_names = set()
+        self._auto_requests = {}
         self._auto_timer.stop()
         for name in names:
             self.changed.emit(name)

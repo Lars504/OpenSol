@@ -107,7 +107,8 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   discard prompt (an external rebuild drops uncommitted editor text). SettingsPanel rebuilds only on a node change,
   section 'all' or (external edits) the `_LIST_BACKED_NODES` forms, else refreshes in place: an edit outside 'all' that
   changes a form's structure must select another node, and every editor a non-'all' edit can change needs a refresher.
-- ModelDocument: `spec` is replaced on undo / redo / set_spec and after a failed mutate (never cache it); edits from
+- ModelDocument: the estimate methods live in `SpecEstimates` (shared with `SweepValueEstimates`): a new cached
+  estimate goes there. `spec` is replaced on undo / redo / set_spec and after a failed mutate (never cache it); edits from
   inside a document signal handler raise; `spec_dict()` = the current revision's to_dict, kept by every edit (next
   undo snapshot, out-of-date input): never modify it, never change `spec` outside mutate; `node_selected` carries a
   tuple. `mesh_estimate(name)` (None = default mesh) / `used_mesh_estimates()` / `memory_estimate()` /
@@ -206,11 +207,20 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 - Canvas views: selecting Meshes / a mesh / Results switches to the mesh / field view (`_NODE_VIEWS`), leaving it shows
   geometry; any other `_set_mode` switch cancels that. View fit (`_reset_view_if_needed`): a mode switch keeps the zoom;
   it refits on a change of view plane, plane extent, scale, stretch, or the geometry / mesh view's PML cells / triangle
-  ring; a new field (live frames, each sweep value's build) never refits. While a sweep runs the canvas evaluates
-  geometry / material preview at the current value (`set_sweep_value` from SweepStep, cleared by StudyFinished /
-  StudyFailed / a replaced document); after it the field view alone evaluates them at the shown results' value
-  (`set_results_sweep_value` from `ResultsPanel._show_results_sweep_value`: the 'Sweep value' combo's kept value, else
-  the session's value = the last computed); mesh estimates and the 3D preview stay the document's.
+  ring; a new field (live frames, each sweep value's build) and another sweep value (`_view_sweep_value`: sliders,
+  running sweep, results' value; a new length unit rescales the range) never refit.
+- Canvas sweep sliders (`_sweep_box` in the info box, below the legend): one slider per swept parameter
+  (`_sweep_axes(spec)`; one position per sweep value, the model value is no position: its handle sits at the nearest
+  value, 'Model values' returns to it), shown while the study has a sweep. `_shown_sweep_value()` = the running
+  value (`set_sweep_value` from SweepStep, sliders disabled; cleared by StudyFinished / StudyFailed / a replaced
+  document), else in the field view the shown results' value (`set_results_sweep_value` from
+  `ResultsPanel._show_results_sweep_value`: the 'Sweep value' combo's kept value, else the session's value = the last
+  computed; it wins over the sliders there), else the slider choices (`_sweep_value`); geometry, material preview,
+  mesh estimate, element meshes (store calls take `estimates=`) and the status line (size, memory, over budget) then
+  come from `document.at_sweep_values(pairs)` (`SweepValueEstimates`: the `SpecEstimates` of
+  `study.sweep_value_spec`, cached per revision and `estimate_inputs_version`). Its Build mesh previews that value
+  (mesh store keeps `_KEPT_PREVIEWS` per mesh, the counts go to the document's shared `_element_counts`). View only:
+  validation, Compute, forms and the 3D preview stay the document's.
 - Canvas layout: the plot never changes size with the mode or the text (colour bar stays in the layout, opacity 0
   without a field; fixed tick-axis widths; the title sets no minimum width; `_place_plot` puts the widget at the top of
   the layout-free `_PlotArea` at the last fit's aspect, each view side at least `_MIN_FRAME_FRACTION` of its largest).

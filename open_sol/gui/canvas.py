@@ -12,7 +12,6 @@ import pyqtgraph as pg
 from ..core.constants import FACES
 from ..core.domain import containing_cell
 from ..core.mesh import has_uniform_spacing
-from ..model.analytic import parameters_with
 from ..model.expressions import ExpressionError, error_message
 from ..model.geometry import (GEOMETRY_KINDS, PRISM_KINDS, bounding_box, consumed_objects, domain_map,
                               domain_size_z, expand_entities, is_array_copy, line_orientation, material_preview,
@@ -20,15 +19,16 @@ from ..model.geometry import (GEOMETRY_KINDS, PRISM_KINDS, bounding_box, consume
                               preview_pixel_centers, rasterize, rasterize_window, resolve_geometry, section_mask,
                               vertical_section, z_extent)
 from ..model.interface_sampling import interface_objects, interface_selection, object_outline
-from ..model.schema import fill_defaults
+from ..model.schema import FREE_MESH_KINDS, fill_defaults, solver_backend
 from ..model.spec import outer_faces
+from ..model.study import sweep_values_of
 from ..viz.common import (color_limits, containing_cells, edges_from_centers, length_unit, line_profile,
                           tetrahedron_mesh_cut)
 from ..viz.visualization import DARK_CMAPS
 from .document import COMPUTED_RESULTS_NODE, MESHES_NODE, harmonic_channel_polarizations, mesh_of_node
 from .forms import display_label, face_cell_counts_text, format_quantity, rich_tooltip, selectable
-from .helpers import (coupling_mesh_text, field_mesh_name, mesh_badge_html, mesh_color, mesh_summary_text,
-                      several_meshes)
+from .helpers import (coupling_mesh_text, field_mesh_name, memory_estimate_text, mesh_badge_html, mesh_color,
+                      mesh_summary_text, several_meshes)
 from .mesh_preview import AUTO_PREVIEW_MAX_ELEMENTS, AUTO_PREVIEW_MAX_TETRAHEDRA
 from .plot_controls import PlotPanel, log_tick_strings
 
@@ -55,6 +55,8 @@ _PROFILE_COLOR = '#c000c0'
 _FACE_LABEL_COLOR = '#204a87'
 _CUT_LINE_COLOR = '#7a3db8'
 _LAYER_SHADE_RGBA = (0, 80, 200, 30)
+_SWEEP_ERRORS = (ValueError, KeyError, TypeError, ArithmeticError)   # a sweep value spec / estimate that fails
+_OVER_BUDGET_STYLE = 'color:#b02a37;'
 
 # 3D views: Top = the xy layers, Front / Side = vertical cuts at y = const / x = const (scene axes (u, v))
 _VIEWS = (('xy', 'Top (xy)'), ('xz', 'Front (xz at y)'), ('yz', 'Side (yz at x)'))
@@ -353,7 +355,7 @@ class _CellFrame:
 class _EvaluatedModel:
     """CPU evaluation of the document at one revision (SI units); size_x is None when the domain size failed."""
     revision: int
-    sweep_value: tuple | None = None                 # (parameter, value) of a running sweep it was evaluated at
+    sweep_value: tuple | None = None                 # ((parameter, value), ...) it was evaluated at (canvas sliders)
     size_x: float | None = None
     size_y: float | None = None
     scale: float = 1e-6                 # metres per scene unit
@@ -550,6 +552,23 @@ class _PlotArea(QtWidgets.QWidget):
         self.resized.emit()
 
 
+def _nearest_index(values, value) -> int:
+    """Index of the entry of values closest to value."""
+    return min(range(len(values)), key=lambda position: abs(values[position] - value))
+
+
+def _sweep_axes(spec) -> tuple:
+    """((parameter, (values...)), ...) of the study's swept parameters, one canvas slider each; () without a sweep or
+    when its values fail (validation reports why)."""
+    if spec.study.sweep is None:
+        return ()
+    try:
+        parameter, values = sweep_values_of(spec)
+    except _SWEEP_ERRORS:
+        return ()
+    return ((parameter, tuple(float(value) for value in values)),)
+
+
 class ModelCanvas(QtWidgets.QWidget):
     """Central view: geometry (materials, PML, labels, glyphs, editable ROI), mesh, or a FieldData with colour bar."""
 
@@ -585,6 +604,7 @@ class ModelCanvas(QtWidgets.QWidget):
         self._roi_hint = ''
         self._base_legend = []                 # legend lines of the last _redraw without the ROI hint
         self._view_key = None
+        self._view_sweep_value = None          # sweep values of the last fit (_reset_view_if_needed)
         self._box_aspect = None                # plot frame height / width of the last fit (None: fill the area)
         self._overlay_items = []
         self._highlight_items = []             # selection highlight overlays (rebuilt by _redraw_selection)
@@ -614,8 +634,33 @@ class ModelCanvas(QtWidgets.QWidget):
         self._show_field_mesh = False          # the field view draws its field's mesh lines (Results 'Show mesh')
         self._results_meshes = {}              # mesh refinement: {mesh name: estimate} of the results' last level
         self._results_level_text = ''          # 'mesh refinement level k' of _results_meshes ('' without)
-        self._sweep_value = None               # (parameter, value) of the running sweep's value, None = the document's
+        # sweep sliders (_shown_sweep_value: the running value, else in the field view the results' value, else the
+        # slider choices; None = the document's parameters)
+        self._running_sweep_value = None       # (parameter, value) of the running sweep's value (set_sweep_value)
         self._results_sweep_value = None       # (parameter, value) the shown results belong to (field view only)
+        self._sweep_choice = {}                # parameter -> chosen sweep value index (missing = the model value)
+        self._sweep_axes = ()                  # ((parameter, (values...)), ...) the sliders show (_sweep_axes)
+        self._sweep_rows = {}                  # parameter -> (slider, value label)
+        self._sweep_box = QtWidgets.QWidget()
+        self._sweep_layout = QtWidgets.QGridLayout(self._sweep_box)
+        self._sweep_layout.setContentsMargins(4, 2, 4, 2)
+        self._sweep_layout.setColumnStretch(1, 1)
+        self._sweep_mesh_button = QtWidgets.QPushButton('Build mesh')
+        self._sweep_mesh_button.setToolTip(rich_tooltip(
+            'Mesh the shown mesh at the chosen sweep values (the model values until a slider is moved) and show it '
+            'in the mesh view. Its real element count then sets the memory estimate of this value.'))
+        self._sweep_mesh_button.clicked.connect(self._build_sweep_mesh)
+        self._sweep_reset_button = QtWidgets.QPushButton('Model values')
+        self._sweep_reset_button.setToolTip(rich_tooltip('Show the model again with its own parameter values.'))
+        self._sweep_reset_button.clicked.connect(self._reset_sweep_choice)
+        self._sweep_buttons = QtWidgets.QWidget()   # kept across row rebuilds (_rebuild_sweep_rows)
+        buttons_layout = QtWidgets.QHBoxLayout(self._sweep_buttons)
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.addWidget(self._sweep_reset_button)
+        buttons_layout.addWidget(self._sweep_mesh_button)
+        self._sweep_status = selectable(QtWidgets.QLabel())
+        self._sweep_status.setWordWrap(True)
+        self._sweep_box.hide()
         self._mesh_store = None               # mesh_preview.ElementMeshStore: built / previewed element meshes
         self._tetrahedron_cut_cache = None    # (data id, axis, position, scene axes) -> cut segments of the last draw
         self._layer = None                     # 3D: (z_lo, z_hi) of the edited layer, None = all layers
@@ -724,7 +769,7 @@ class ModelCanvas(QtWidgets.QWidget):
         info_layout = QtWidgets.QVBoxLayout(info_widget)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(2)
-        for label in (self._banner, self._mesh_badge, self._legend):
+        for label in (self._banner, self._mesh_badge, self._legend, self._sweep_box):
             info_layout.addWidget(label)
         info_layout.addStretch()
         self._info_box = QtWidgets.QScrollArea(self._plot_area)
@@ -748,6 +793,7 @@ class ModelCanvas(QtWidgets.QWidget):
         document.changed.connect(self._on_document_changed)
         document.node_selected.connect(self._on_node_selected)
         document.geometry_group_changed.connect(lambda _names: self._schedule_refresh(selection_only=True))
+        document.issues_invalidated.connect(self._update_sweep_status)   # budgets / built counts move the memory line
         self._model = self._evaluate()
         self._schedule_refresh()
 
@@ -855,11 +901,12 @@ class ModelCanvas(QtWidgets.QWidget):
             self._redraw()
 
     def set_sweep_value(self, parameter=None, value=None):
-        """Evaluate geometry and material preview with `parameter` at a running sweep's value (dependants
-        re-evaluated; mesh estimates stay the document's); None = the document's parameters."""
-        sweep_value = None if parameter is None else (parameter, float(value))
-        if sweep_value != self._sweep_value:
-            self._sweep_value = sweep_value
+        """Show the model at a running sweep's value (`parameter` at `value`; the sliders follow it, disabled); None =
+        the run ended: back to the sliders' choice."""
+        running = None if parameter is None else (parameter, float(value))
+        if running != self._running_sweep_value:
+            self._running_sweep_value = running
+            self._update_sweep_labels()
             self._schedule_refresh()
 
     def set_results_sweep_value(self, parameter=None, value=None):
@@ -872,11 +919,11 @@ class ModelCanvas(QtWidgets.QWidget):
                 self._schedule_refresh()
 
     def _shown_sweep_value(self):
-        """(parameter, value) the geometry is evaluated at: the running sweep's, else in the field view the shown
-        results' sweep value, else None (the document's parameters)."""
-        if self._sweep_value is not None:
-            return self._sweep_value
-        return self._results_sweep_value if self.mode == 'field' else None
+        """((parameter, value), ...) the canvas shows: the running sweep's, else in the field view the shown results'
+        sweep value, else the sliders' (_sweep_value); None = the document's parameters."""
+        if self._running_sweep_value is None and self.mode == 'field' and self._results_sweep_value is not None:
+            return (self._results_sweep_value,)
+        return self._sweep_value
 
     def set_mesh_store(self, store):
         """Source of the elements drawn in the mesh view and by 'Show mesh' (mesh_preview.ElementMeshStore)."""
@@ -884,8 +931,159 @@ class ModelCanvas(QtWidgets.QWidget):
         store.changed.connect(self._on_mesh_store_changed)
 
     def _on_mesh_store_changed(self, mesh_name):
-        if self.mode != 'geometry' and mesh_name == self._model.mesh_name:
+        if mesh_name == self._model.mesh_name:
+            self._update_sweep_status()
+            if self.mode != 'geometry':
+                self._schedule_refresh()
+
+    # ---- sweep sliders (one per swept parameter, above the legend) ----
+    @property
+    def _sweep_value(self):
+        """((parameter, value), ...) the canvas shows: the running sweep's value, else the sliders' chosen values; None
+        = the document's parameters."""
+        if self._running_sweep_value is not None:
+            return (self._running_sweep_value,)
+        pairs = tuple((parameter, values[self._sweep_choice[parameter]]) for parameter, values in self._sweep_axes
+                      if parameter in self._sweep_choice)
+        return pairs or None
+
+    def _value_estimates(self):
+        """document.SweepValueEstimates of the shown sweep values; None at the document's parameters or when the values
+        cannot be set (a running sweep's parameter gone)."""
+        values = self._shown_sweep_value()
+        if values is None:
+            return None
+        estimates = self._document.at_sweep_values(values)
+        try:
+            estimates.spec
+        except _SWEEP_ERRORS:
+            return None
+        return estimates
+
+    def _sync_sweep_controls(self):
+        """Rebuild the slider rows when the swept parameters or their values changed; drop gone choices."""
+        axes = _sweep_axes(self._document.spec)
+        counts = dict(axes)
+        self._sweep_choice = {parameter: index for parameter, index in self._sweep_choice.items()
+                              if parameter in counts and index < len(counts[parameter])}
+        if axes != self._sweep_axes:
+            self._sweep_axes = axes
+            self._rebuild_sweep_rows()
+        self._sweep_box.setVisible(bool(axes))
+
+    def _rebuild_sweep_rows(self):
+        layout = self._sweep_layout
+        while layout.count():
+            widget = layout.takeAt(0).widget()
+            if widget is not None and widget not in (self._sweep_buttons, self._sweep_status):
+                widget.blockSignals(True)
+                widget.deleteLater()
+        self._sweep_rows = {}
+        label_width = self.fontMetrics().horizontalAdvance('running value 88 of 88: -8.88888e-88')
+        for row, (parameter, values) in enumerate(self._sweep_axes):
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(0, len(values) - 1)   # one tick per sweep value; the model value is no position
+            slider.setPageStep(1)
+            slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+            slider.setToolTip(rich_tooltip(
+                f'Show the geometry, materials and mesh with {parameter} at one of its sweep values (Model values: '
+                'back to the model). Only the view changes: the model, its validation and Compute keep the model '
+                'value.'))
+            slider.valueChanged.connect(lambda index, parameter=parameter: self._on_sweep_slider(parameter, index))
+            value_label = QtWidgets.QLabel()
+            value_label.setMinimumWidth(label_width)
+            layout.addWidget(QtWidgets.QLabel(f'Sweep {parameter}:'), row, 0)
+            layout.addWidget(slider, row, 1)
+            layout.addWidget(value_label, row, 2)
+            self._sweep_rows[parameter] = (slider, value_label)
+        row = len(self._sweep_axes)
+        layout.addWidget(self._sweep_buttons, row, 0)
+        layout.addWidget(self._sweep_status, row, 1, 1, 2)
+        self._update_sweep_labels()
+
+    def _update_sweep_labels(self):
+        """Value texts and handles of the sliders (at the model value: the nearest sweep value's position); a running
+        sweep moves its parameter's slider and disables them all."""
+        running = self._running_sweep_value
+        base = self._document.parameters()
+        for parameter, values in self._sweep_axes:
+            slider, label = self._sweep_rows[parameter]
+            slider.setEnabled(running is None)
+            index = self._sweep_choice.get(parameter)
+            if running is not None and running[0] == parameter:
+                index = _nearest_index(values, running[1])
+                text = f'running value {index + 1} of {len(values)}: {running[1]:.6g}'
+            elif index is None:
+                model_value = base.get(parameter)
+                numeric = isinstance(model_value, (int, float))
+                index = _nearest_index(values, model_value) if numeric else 0
+                text = f'model value: {model_value:.6g}' if numeric else 'model value'
+            else:
+                text = f'value {index + 1} of {len(values)}: {values[index]:.6g}'
+            slider.blockSignals(True)
+            slider.setValue(index)
+            slider.blockSignals(False)
+            label.setText(text)
+        self._sweep_reset_button.setEnabled(running is None and bool(self._sweep_choice))
+
+    def _on_sweep_slider(self, parameter, index):
+        if index == self._sweep_choice.get(parameter):
+            return
+        self._sweep_choice[parameter] = index
+        self._update_sweep_labels()
+        self._schedule_refresh()
+
+    def _reset_sweep_choice(self):
+        if self._sweep_choice:
+            self._sweep_choice = {}
+            self._update_sweep_labels()
             self._schedule_refresh()
+
+    def _build_sweep_mesh(self):
+        """Build mesh at the shown sweep values (the mesh store's preview) and switch to the mesh view."""
+        if self._mesh_store is None or self._model.mesh_name is None:
+            return
+        refusal = self._mesh_store.request_preview(self._model.mesh_name, log=True, estimates=self._value_estimates())
+        if refusal:
+            self._set_edit_message(refusal)
+        elif self.mode != 'mesh':
+            self._set_mode('mesh')
+        self._update_sweep_status()
+
+    def _update_sweep_status(self):
+        """Build mesh button and the size / memory line of the active mesh at the shown sweep values."""
+        if not self._sweep_axes:
+            return
+        estimates = self._value_estimates()
+        source = self._document if estimates is None else estimates
+        name = self._model.mesh_name
+        try:
+            mesh, problem = source.mesh_estimate(name)
+            memory = source.memory_estimate() if mesh is not None else None
+            verdict = source.memory_verdict() if memory is not None else None
+            backend = solver_backend(source.spec)
+        except _SWEEP_ERRORS as exc:
+            mesh, problem = None, error_message(exc)
+        element = mesh is not None and mesh.kind in FREE_MESH_KINDS and self._mesh_store is not None
+        self._sweep_mesh_button.setVisible(element)
+        if element:
+            self._sweep_mesh_button.setEnabled(self._running_sweep_value is None
+                                               and not self._mesh_store.pending(name, estimates))
+        where = f"Mesh '{name}'" if several_meshes(self._document.spec) else 'Mesh'
+        if mesh is None:
+            self._sweep_status.setText(f'{where}: {problem}')
+            self._sweep_status.setStyleSheet(_OVER_BUDGET_STYLE)
+            return
+        if mesh.kind in FREE_MESH_KINDS:
+            noun = 'tetrahedra' if mesh.kind == 'tetrahedra' else 'triangles'
+            size = (f'{mesh.n_elements:,} {noun} (built)' if mesh.counts_built else
+                    f'about {mesh.n_elements:,} {noun} (from the sizes; Build mesh counts them)')
+        else:
+            size = f'{int(mesh.n_cells):,} cells'
+        over = verdict is not None and verdict.over
+        memory_text = memory_estimate_text(memory, source.memory_budget, source.host_memory_budget, backend)
+        self._sweep_status.setText(f'{where}: {size}. {memory_text}' + (': over the limit.' if over else '.'))
+        self._sweep_status.setStyleSheet(_OVER_BUDGET_STYLE if over else '')
 
     # ---- document signals ----
     def _on_document_replaced(self):
@@ -896,8 +1094,9 @@ class ModelCanvas(QtWidgets.QWidget):
         self._detail_image.hide()
         self._color_range = None
         self._view_key = None
-        self._sweep_value = None
+        self._running_sweep_value = None
         self._results_sweep_value = None
+        self._sweep_choice = {}
         self._cancel_drawing()
         if self._tool == 'profile':
             self.set_tool('select')
@@ -1011,17 +1210,20 @@ class ModelCanvas(QtWidgets.QWidget):
 
     # ---- evaluation (CPU) ----
     def _evaluate(self):
-        """Evaluate the document's geometry (at the running / shown results' sweep value, _shown_sweep_value), mesh
-        estimate and material preview; problems go to the banner."""
+        """Evaluate the document's geometry, mesh estimate and material preview at the shown sweep values
+        (_shown_sweep_value); problems go to the banner."""
         document = self._document
-        spec = document.spec
-        sweep_value = self._shown_sweep_value()
-        model = _EvaluatedModel(revision=document.revision, sweep_value=sweep_value,
+        self._sync_sweep_controls()
+        model = _EvaluatedModel(revision=document.revision, sweep_value=self._shown_sweep_value(),
                                 mesh_name=self._active_mesh_name())
-        parameters = (document.parameters() if sweep_value is None
-                      else parameters_with(spec, *sweep_value))
+        estimates = self._value_estimates()
+        if model.sweep_value is not None and estimates is None:
+            model.problems.append('The sweep value cannot be set in this model: the model values are shown.')
+        source = document if estimates is None else estimates
+        spec = source.spec
+        parameters = source.parameters()
         model.problems.extend(f'Parameter {name!r}: {message}'
-                              for name, message in document.evaluation_errors().items())
+                              for name, message in source.evaluation_errors().items())
         try:
             window_map = domain_map(spec, parameters)
         except ValueError as exc:            # ExpressionError included
@@ -1042,7 +1244,7 @@ class ModelCanvas(QtWidgets.QWidget):
         model.shapes = resolve_geometry(spec, parameters, errors=geometry_errors)
         model.problems.extend(f'Geometry {name!r}: {message}' for name, message in geometry_errors.items())
         model.consumed = consumed_objects(spec) | {name for name in model.shapes if is_array_copy(name)}
-        mesh, mesh_error = document.mesh_estimate(model.mesh_name)
+        mesh, mesh_error = source.mesh_estimate(model.mesh_name)
         if mesh_error:
             model.problems.append(f"Mesh '{model.mesh_name}': {mesh_error}" if several_meshes(spec)
                                   else f'Mesh: {mesh_error}')
@@ -1225,6 +1427,7 @@ class ModelCanvas(QtWidgets.QWidget):
         """Rebuild every overlay for the current mode (deferred; called from _refresh / mode changes), then the
         figure style of plot_panel."""
         self._draw_view()
+        self._update_sweep_status()
         self.plot_panel.apply()
 
     def _draw_view(self):
@@ -1267,7 +1470,7 @@ class ModelCanvas(QtWidgets.QWidget):
             self._draw_feature_glyphs(model)
         elif self.mode == 'mesh':
             mesh_title = f" '{html.escape(str(model.mesh_name))}'" if several_meshes(self._document.spec) else ''
-            self._plot.setTitle(f'Mesh{mesh_title}{self._view_title(model)}')
+            self._plot.setTitle(f'Mesh{mesh_title}{self._view_title(model)}{self._sweep_title(model)}')
             legend.extend(self._draw_mesh(model))
         elif (self.mode == 'field' and self._show_field_mesh and self._current_field is not None
               and self._shown_axes(model) == model.scene_axes):
@@ -1319,7 +1522,15 @@ class ModelCanvas(QtWidgets.QWidget):
                 "the Top view's layer (shaded blue).")
 
     def _geometry_title(self, model):
-        return f'{html.escape(str(self._document.spec.title))} — geometry{self._view_title(model)}'
+        return (f'{html.escape(str(self._document.spec.title))} — geometry{self._view_title(model)}'
+                f'{self._sweep_title(model)}')
+
+    @staticmethod
+    def _sweep_title(model):
+        """' at w = 1.2e-06' title suffix of the shown sweep values, '' at the model values."""
+        if model.sweep_value is None:
+            return ''
+        return ' at ' + html.escape(', '.join(f'{name} = {value:.6g}' for name, value in model.sweep_value))
 
     def _redraw_selection(self):
         """Redraw only the selection-dependent items (highlight, ROI, legend hint) at an unchanged revision and mode."""
@@ -1516,13 +1727,16 @@ class ModelCanvas(QtWidgets.QWidget):
     def _element_mesh_status(self, name, noun, appear, max_auto) -> str:
         """The mesh view's status line of an element mesh not drawn yet: meshing (pending or auto preview), failed,
         outdated or above max_auto estimated elements (noun 'triangles' / 'tetrahedra'; appear: where they show)."""
-        store = self._mesh_store
-        failure = store.failure(name) if store is not None else ''
-        auto_preview = store is not None and self.mode == 'mesh' and store.request_auto_preview(name)
-        if store is not None and (store.pending(name) or auto_preview):
+        store, estimates = self._mesh_store, self._value_estimates()
+        failure = store.failure(name, estimates) if store is not None else ''
+        auto_preview = store is not None and self.mode == 'mesh' and store.request_auto_preview(name, estimates)
+        if store is not None and (store.pending(name, estimates) or auto_preview):
             return f'Meshing… the {noun} appear here{appear} when the mesher is done.'
         if failure:
             return f'Meshing failed: {failure}'
+        if estimates is not None:
+            return (f'Above {max_auto:,} estimated elements the mesh view does not mesh by itself: press Build mesh '
+                    f'beside the sweep sliders to see the {noun} of this sweep value.')
         if store is not None and store.outdated(name):
             return (f'The {noun} made earlier no longer match the model: press Build mesh on the mesh form (or build '
                     'the model) to see the current ones.')
@@ -1533,7 +1747,7 @@ class ModelCanvas(QtWidgets.QWidget):
         """Tetrahedron mesh view: the built mesh (else a preview of the same inputs; the mesh view asks for one itself
         up to AUTO_PREVIEW_MAX_TETRAHEDRA) cut by the shown plane; without either the estimate. Legend lines."""
         mesh, name, store = model.mesh, model.mesh_name, self._mesh_store
-        drawing = store.drawing(name) if store is not None else None
+        drawing = store.drawing(name, self._value_estimates()) if store is not None else None
         if drawing is not None:
             return self._draw_tetrahedron_cut(model, drawing)
         how = ('x-y triangles stacked in z layers, each prism split into 3' if mesh.sizing.sweep_axis
@@ -1998,7 +2212,7 @@ class ModelCanvas(QtWidgets.QWidget):
         """Triangle mesh view: the built mesh while the model still gives it, else a preview of the same inputs (the
         mesh view asks for one itself up to AUTO_PREVIEW_MAX_ELEMENTS); without either the estimate. Legend lines."""
         mesh, name, store = model.mesh, model.mesh_name, self._mesh_store
-        drawing = store.drawing(name) if store is not None else None
+        drawing = store.drawing(name, self._value_estimates()) if store is not None else None
         if drawing is not None:
             return self._draw_triangle_lines(model, drawing)
         lines = [f'Triangle mesh estimate: about {int(mesh.n_elements):,} elements, size '
@@ -2155,8 +2369,8 @@ class ModelCanvas(QtWidgets.QWidget):
     # ---- view range ----
     def _reset_view_if_needed(self, model):
         """Fit the view when the view plane, domain size, scale or stretch changed, or the geometry / mesh view's PML
-        cell counts / triangle ring changed since its last draw; a mode switch or a new field (e.g. the next sweep
-        value) keeps the user's zoom (the A button fits)."""
+        cell counts / triangle ring changed since its last draw; a mode switch, a new field or another sweep value
+        (sliders, running sweep) keeps the user's zoom (the A button fits)."""
         field_mode = self.mode == 'field'
         field_extent = self._display[1] if field_mode and self._display is not None else None
         plane_extent = model.plane_extent() if model.size_x is not None else None
@@ -2170,6 +2384,17 @@ class ModelCanvas(QtWidgets.QWidget):
         pml_cells = tuple(sorted(model.mesh.npml_sides.items())) if model.mesh is not None else None
         mode_detail = None if field_mode else (pml_cells, ring_extent)
         fitted_plane_key, fitted_detail = self._view_key or (None, None)
+        if self._view_key is not None and model.sweep_value != self._view_sweep_value:
+            # another sweep value (slider, running sweep) keeps the zoom like a mode switch; a new length unit rescales
+            # the shown range so the same region stays in view
+            self._view_sweep_value = model.sweep_value
+            fitted_scale = fitted_plane_key[2]
+            if fitted_scale != model.scale:
+                factor = fitted_scale / model.scale
+                (x0, x1), (y0, y1) = self._view_box.viewRange()
+                self._plot.setRange(xRange=(x0 * factor, x1 * factor), yRange=(y0 * factor, y1 * factor), padding=0)
+            self._view_key = (plane_key, fitted_detail if mode_detail is None else mode_detail)
+            return
         if plane_key == fitted_plane_key:
             if mode_detail is not None:
                 self._view_key = (plane_key, mode_detail)
@@ -2191,6 +2416,7 @@ class ModelCanvas(QtWidgets.QWidget):
         if not boxes:
             return
         self._view_key = key
+        self._view_sweep_value = model.sweep_value
         x0, x1 = min(box[0] for box in boxes) / model.scale, max(box[1] for box in boxes) / model.scale
         y0, y1 = min(box[2] for box in boxes) / model.scale, max(box[3] for box in boxes) / model.scale
         self._box_aspect = None if stretched or x1 <= x0 or y1 <= y0 else (y1 - y0) / (x1 - x0)
