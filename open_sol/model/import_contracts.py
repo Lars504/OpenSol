@@ -117,12 +117,13 @@ CONTRACTS = (
              importers=('*',), scope='module', external_never=('cupy', 'cupyx'), skip=('core.backend',)),
     Contract('scipy_inside_functions', 'scipy is imported inside functions only', importers=('*',), scope='module',
              external_never=('scipy',)),
-    Contract('direct_wrappers_lazy', 'python-mumps (mumps) and pydiso are imported only inside functions of '
-             'solvers.host_direct (optional packages; physics never reaches them)', importers=('*',),
-             external_never=('mumps', 'pydiso'), skip=('solvers.host_direct',)),
-    Contract('direct_wrappers_inside_functions', 'solvers.host_direct imports python-mumps (mumps) and pydiso inside '
-             'functions only, so open_sol imports without them', importers=('solvers.host_direct',), scope='module',
-             external_never=('mumps', 'pydiso')),
+    Contract('direct_wrappers_lazy', 'python-mumps (mumps), pydiso and threadpoolctl are imported only inside '
+             'functions of solvers.host_direct (optional packages; physics never reaches them)', importers=('*',),
+             external_never=('mumps', 'pydiso', 'threadpoolctl'), skip=('solvers.host_direct',)),
+    Contract('direct_wrappers_inside_functions', 'solvers.host_direct imports python-mumps (mumps), pydiso and '
+             'threadpoolctl inside functions only, so open_sol imports without them',
+             importers=('solvers.host_direct',), scope='module',
+             external_never=('mumps', 'pydiso', 'threadpoolctl')),
     Contract('qt_only_in_gui', 'only gui imports PySide6 / pyqtgraph (api, CLI, describe, io and viz stay headless)',
              importers=('*',), external_never=('PySide6', 'pyqtgraph'), skip=tree('gui')),
     Contract('core_imports_core', 'core imports nothing outside core but its listed exceptions',

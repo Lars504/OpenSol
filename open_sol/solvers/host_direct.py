@@ -28,9 +28,17 @@ helpers here are GUI-thread safe."""
 # Refactorize: the same canonical pattern (indptr, indices) and kind refactors numerically on the kept analysis.
 # Threads: library defaults (MUMPS: OMP_NUM_THREADS / BLAS; PARDISO: MKL_NUM_THREADS); both wrappers release the GIL
 # in their library calls (python-mumps 0.0.6, pydiso 0.3.1), which are uninterruptible like SuperLU.
+# PARDISO beside an OpenBLAS numpy / scipy (pip wheels, conda-forge defaults): two thread pools that both spin after a
+# call, so MKL calls alternating with threaded BLAS calls (norms, Gram-Schmidt, ARPACK) oversubscribe the cores
+# (measured, 4 cores: PARDISO solves 4 - 10 x slower, an ARPACK shift-invert run 5 - 25 x). quiet_openblas holds the
+# OpenBLAS pools at one thread (threadpoolctl, optional: nothing without it) for the duration of every PARDISO
+# factorisation / solve of a HostDirectFactorization, and consumers iterating around such a factor wrap their loop
+# in it (arpack_shift_invert's ARPACK runs); MKL's own pool is never touched, MUMPS never limited (its BLAS may be
+# that OpenBLAS).
 # No automatic fallback: an explicit host node raises (HOST_DIRECT_REFUSALS).
-# Library calls live only in the adapter section at the end (_MumpsFactor, _PardisoFactor), checked against the
-# sources of python-mumps 0.0.6 and pydiso 0.3.1 (not run here).
+# Library calls live only in the adapter section at the end (_MumpsFactor, _PardisoFactor): PARDISO run against
+# pydiso 0.3.1 / oneMKL 2026.2, MUMPS checked against the sources of python-mumps 0.0.6 only (not run).
+import contextlib
 import functools
 import importlib.metadata
 import importlib.util
@@ -227,6 +235,49 @@ def solver_host_bytes(n_unknowns, entries, complex_values=True, mixed=False, sym
     return int(kept + library_copy)
 
 
+_OPENBLAS_POOLS = {}   # 'pools': threadpoolctl controller of the loaded OpenBLAS pools, None without any
+
+
+def _openblas_pools(refresh=False):
+    """threadpoolctl controller of the OpenBLAS thread pools loaded in this process (numpy's, scipy's), None when
+    there is none (numpy on MKL) or threadpoolctl is not installed; looked up on first use and again with refresh
+    (scipy loads its own OpenBLAS lazily; a lookup costs ~0.4 ms)."""
+    if refresh or 'pools' not in _OPENBLAS_POOLS:
+        pools = None
+        try:
+            import threadpoolctl
+            found = threadpoolctl.ThreadpoolController().select(internal_api='openblas')
+            if found.lib_controllers:
+                pools = found
+        except Exception:   # not installed, or a library it cannot read: no limit
+            pools = None
+        _OPENBLAS_POOLS['pools'] = pools
+    return _OPENBLAS_POOLS['pools']
+
+
+@contextlib.contextmanager
+def quiet_openblas(name, refresh=False):
+    """Context holding the OpenBLAS thread pools of numpy / scipy at one thread (restored on exit) around work on a
+    PARDISO factor (`name`: a back end, factorization or library name; module header "Threads"); yields the number of
+    pools held: 0, and nothing changes, for any other name, without threadpoolctl or without a loaded OpenBLAS. Nests.
+    Process-wide while it lasts: only vector-sized BLAS work (norms, Krylov bases) belongs inside."""
+    pools = _openblas_pools(refresh) if _is_host_name(name) and library_of(name) == 'pardiso' else None
+    if pools is None:
+        yield 0
+        return
+    with pools.limit(limits=1):
+        yield len(pools.lib_controllers)
+
+
+def _openblas_quiet(method):
+    """HostDirectFactorization method run inside quiet_openblas of its library."""
+    @functools.wraps(method)
+    def quiet(self, *args, **kwargs):
+        with quiet_openblas(self.back_end):
+            return method(self, *args, **kwargs)
+    return quiet
+
+
 def _host_vector(vector):
     """A cupy vector as a numpy copy; numpy arrays, sequences and None as given."""
     if vector is None or isinstance(vector, np.ndarray) or not hasattr(vector, 'get'):
@@ -298,6 +349,7 @@ class HostDirectFactorization:
         self.lu_entries = 0               # factor entries (MUMPS INFOG(29), PARDISO iparm[17])
         self.perturbed_pivots = 0         # PARDISO iparm[13]; MUMPS INFOG(25) + INFOG(28) (static / null pivots)
         self.threads = None               # library thread count when known
+        self.openblas_pools = 0           # OpenBLAS pools held at one thread during this factor's calls
         self.n_analyses = 0               # analyses (ordering + symbolic) and factorisations of this object
         self.n_factorizations = 0
         self.last_analyses = 0            # analyses of the last refactorize (fallback re-analyses included)
@@ -366,6 +418,10 @@ class HostDirectFactorization:
         exactly when the factor was built with one): numeric factorisation only on the kept analysis when the
         canonical pattern and the kind are unchanged, else a new analysis. symmetric_known: a canonical CSR known to be
         symmetric (no asymmetry check). True when the analysis was reused. Raises HOST_DIRECT_REFUSALS (released)."""
+        with quiet_openblas(self.back_end, refresh=True) as self.openblas_pools:
+            return self._refactorize(host_operator, row_scale, symmetrizer, symmetric_known)
+
+    def _refactorize(self, host_operator, row_scale, symmetrizer, symmetric_known) -> bool:
         started = time.perf_counter()
         analyses = self.n_analyses
         operator, same_pattern = self._equilibrated(host_operator, row_scale, symmetrizer)   # raises before any change
@@ -667,6 +723,7 @@ class HostDirectFactorization:
         self.n_refinements += self.last_refinements
         return solution
 
+    @_openblas_quiet
     def solve_host(self, rhs, transpose=False, refinement_steps=None, backward_error=None):
         """numpy solution x (value_dtype) of A x = rhs (transpose: A^T x = rhs, unconjugated) for a numpy (n,) rhs;
         mixed: refinement_steps / backward_error as CudssFactorization.solve. A real factor solves a complex rhs as two
@@ -709,6 +766,7 @@ class HostDirectFactorization:
         rhs = np.asarray(rhs)
         return self.solve_host(rhs.reshape(-1), transpose=trans == 'T').reshape(rhs.shape)
 
+    @_openblas_quiet
     def solve_preconditioned(self, operator, rhs, initial_guess=None, transpose=False):
         """(x, iterations) of operator x = rhs (transpose: operator^T x = rhs; cupyx CSR and cupy rhs, or scipy / numpy
         with host_arrays) by host GMRES preconditioned with this factor of an earlier, nearby operator; x None above
@@ -728,6 +786,7 @@ class HostDirectFactorization:
                                               'T' if transpose else 'N')
         return (None if solution is None else cp.asarray(solution)), iterations
 
+    @_openblas_quiet
     def solve_preconditioned_host(self, matrix, rhs, initial_guess=None, transpose=False):
         """(x, iterations) of matrix x = rhs (transpose: matrix^T x = rhs), host numpy / scipy, by GMRES preconditioned
         with this factor of an earlier, nearby matrix; x None above sparse_direct.RECYCLE_RTOL."""
@@ -792,8 +851,8 @@ def host_direct_factorization(host_operator, back_end, previous=None, real=False
 
 
 # --- library adapters: every MUMPS / PARDISO call ---------------------------------------------------------------------
-# Checked against the sources of python-mumps 0.0.6 (src/mumps/mumps.py, _mumps.pyx.in) and pydiso 0.3.1
-# (pydiso/mkl_solver.py, _mkl_solver.in.pyx); not run here. Each adapter holds one analysed pattern:
+# MUMPS: checked against the sources of python-mumps 0.0.6 (src/mumps/mumps.py, _mumps.pyx.in), not run here;
+# PARDISO: run against pydiso 0.3.1 (pydiso/mkl_solver.py) on oneMKL 2026.2. Each adapter holds one analysed pattern:
 # estimated_bytes() after the analysis, factor(), refactor(matrix) (same pattern), solve(rhs, transpose) in the factor
 # dtype, factor_bytes(), lu_entries(), perturbed_pivots(), inertia(n), threads(), release(); library errors are mapped
 # to HostDirectSingularError / HostDirectMemoryError (else RuntimeError naming the library code).
@@ -891,13 +950,20 @@ class _MumpsFactor:
 
 
 # PARDISO (pydiso): MKLPardisoSolver(A, matrix_type, factor=False) = phase 11 (A validated: a symmetric type keeps
-# scipy.sparse.triu(A)); refactor(A) = phase 22 on the kept analysis (pydiso checks only the nnz count: the caller
-# compares patterns); solve(b, transpose=True) sets iparm[11] = 2 (A^T, not conjugated); the handle sets iparm[27] = 1
-# for float32 / complex64 data (single precision); iparm property = a copy; PardisoError carries only a message
-# ('... step error, <text of the code>'): mapped back by the module's _err_messages; dealloc runs phase -1. Matrix
-# types: 11 real / 13 complex unsymmetric, -2 real symmetric indefinite, 2 real SPD, 6 complex symmetric.
+# scipy.sparse.triu(A)), here with the OpenMP nested dissection (iparm[1] = 3, _PARDISO_ORDERING: the fill of the
+# default METIS, iparm[1] = 2, at half the analysis time on 2 - 4 threads and the same time on one, every matrix type
+# and both precisions; minimum degree, iparm[1] = 0, is faster still on 2D grids but fills 1.7 x more in 3D; the
+# two-level factorisation, iparm[23], and iparm[24] gave nothing on 4 threads); refactor(A) = phase 22 on the kept
+# analysis (pydiso checks only the nnz count: the caller compares patterns); solve(b, transpose=True) sets
+# iparm[11] = 2 (A^T, not conjugated); the handle sets iparm[27] = 1 for float32 / complex64 data (single precision);
+# iparm property = a copy; PardisoError carries only a message ('... step error, <text of the code>'): mapped back by
+# the module's _err_messages; dealloc runs phase -1. Matrix types: 11 real / 13 complex unsymmetric, -2 real symmetric
+# indefinite, 2 real SPD, 6 complex symmetric.
 _PARDISO_TYPES = {('general', True): 11, ('general', False): 13, ('symmetric', True): -2, ('symmetric', False): 6,
                   ('spd', True): 2}
+_PARDISO_ORDERING = 3   # iparm[1]: OpenMP nested dissection (pydiso FillReducingOrdering.PARALLEL_NESTED_DISSECTION)
+# constructor keywords by pydiso generation, newest first (a TypeError: the next; the last = the library defaults)
+_PARDISO_OPTIONS = ({'fill_reducing_ordering': _PARDISO_ORDERING, 'report_nnz': True}, {'report_nnz': True}, {})
 _PARDISO_SINGULAR = (-4, -7)
 _PARDISO_MEMORY = (-2, -9)
 
@@ -913,11 +979,13 @@ class _PardisoFactor:
         matrix_type = _PARDISO_TYPES[(kind, bool(real))]
 
         def create():
-            try:
-                return mkl_solver.MKLPardisoSolver(matrix, matrix_type=matrix_type, factor=False, verbose=False,
-                                                   report_nnz=True)
-            except TypeError:   # pydiso < 0.3: no keyword-only options
-                return mkl_solver.MKLPardisoSolver(matrix, matrix_type=matrix_type, factor=False, verbose=False)
+            for options in _PARDISO_OPTIONS:
+                try:
+                    return mkl_solver.MKLPardisoSolver(matrix, matrix_type=matrix_type, factor=False, verbose=False,
+                                                       **options)
+                except TypeError:   # an older pydiso without these keywords
+                    if not options:
+                        raise
         self._solver = self._call(create, 'analysis')
 
     def _call(self, function, phase):

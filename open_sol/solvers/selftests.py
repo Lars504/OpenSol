@@ -1452,6 +1452,36 @@ def _host_direct_role_checks(failed):
                 failed.append(f'{name}_double_below_mixed_min_unknowns')
 
 
+def _quiet_openblas_checks(failed, details):
+    """host_direct.quiet_openblas (no wrapper needed): holds nothing for names that are not PARDISO; for a PARDISO
+    name every loaded OpenBLAS pool reads one thread inside (nested too) and its earlier count after; without
+    threadpoolctl or an OpenBLAS it holds nothing."""
+    from .host_direct import _openblas_pools, quiet_openblas
+    for name in ('mumps', 'mumps_mixed', 'scipy_splu', 'superlu', 'cudss', None):
+        with quiet_openblas(name) as held:
+            if held:
+                failed.append(f'quiet_openblas_holds_for_{name}')
+    pools = _openblas_pools(refresh=True)
+    controllers = () if pools is None else tuple(pools.lib_controllers)
+
+    def counts():
+        return [controller.num_threads for controller in controllers]
+
+    before = counts()
+    with quiet_openblas('pardiso_mixed') as held:
+        inside = counts()
+        with quiet_openblas('pardiso') as nested:
+            innermost = counts()
+        after_nested = counts()
+    if held != len(controllers) or nested != held:
+        failed.append('quiet_openblas_pool_count')
+    if any(count != 1 for count in inside + innermost + after_nested):
+        failed.append('quiet_openblas_one_thread_inside')
+    if counts() != before:
+        failed.append('quiet_openblas_restores')
+    details['openblas_pools'] = {'held': held, 'threads': before}
+
+
 def _host_direct_spd_checks(back_end, spd, changed, rhs, failed, errors, details):
     """DiffusionDirectSolver (cpu) on a host direct back end: real SPD factor (PARDISO double: Cholesky, else LDL^T),
     a value-only change on the kept analysis (one analysis), inertia (n, 0), solves against spsolve, release."""
@@ -1614,6 +1644,7 @@ def _check_host_direct(results_by_name):
     from .host_direct import HOST_DIRECT_BACK_ENDS, library_of
     failed, errors, details = [], {}, {}
     _host_direct_role_checks(failed)
+    _quiet_openblas_checks(failed, details)
     libraries = tuple(available_host_direct())
     details['libraries'] = list(libraries)
     if not libraries:
@@ -1909,8 +1940,9 @@ SOLVER_SELFTEST_CASES = (
                     'magnetic_fields_ac linear (double only), em_fdfd_ez eigen (all four), membrane eigen (double '
                     'only), misfit em_modes shifted, run on the cpu, keep the SuperLU size rule; resolve_back_end '
                     'raises missing_text without the wrapper; a host mixed eigen request below mixed_min_unknowns '
-                    'factors in double. Passes as skipped without python-mumps / pydiso (the role part still judged). '
-                    'Written, not run.',
+                    'factors in double; quiet_openblas holds the OpenBLAS pools at one thread for PARDISO names only '
+                    '(nested, restored after; nothing without threadpoolctl). Passes as skipped without python-mumps / '
+                    'pydiso (the role part still judged). Run with pydiso; the MUMPS part written, not run.',
         specs=lambda: {}, check=_check_host_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(
         name='solver_arpack_host_direct',

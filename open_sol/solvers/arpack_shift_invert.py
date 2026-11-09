@@ -9,7 +9,7 @@ import numpy as np
 
 from .cudss_factor import CUDSS_REFUSALS, CudssAccuracyError, canonical_csr, csr_rows
 from .host_direct import (HOST_DIRECT_FACTORIZATIONS, HOST_DIRECT_MIXED_BACK_ENDS, double_of,
-                          host_direct_factorization, is_host_direct_factor)
+                          host_direct_factorization, is_host_direct_factor, quiet_openblas)
 from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrdering, factorize_host
 
 # Shift-invert across several shifts (B1): the shifted operator K - sigma M is built on one fixed pattern (ShiftPencil
@@ -576,9 +576,10 @@ class ArpackShiftInvertSolver:
         start = time.perf_counter()
         converged = True
         try:   # a complex Hermitian pencil goes through scipy eigs (mode 3, M inner product) inside eigsh
-            eigenvalues, vectors = scipy.sparse.linalg.eigsh(stiffness, k=n_wanted, M=mass, sigma=sigma,
-                                                             which='LM', OPinv=inverse, v0=start_vector, ncv=ncv,
-                                                             tol=self.tolerance, maxiter=MAX_RESTARTS)
+            with quiet_openblas(self.factorization):   # ARPACK's BLAS between the PARDISO solves (host_direct header)
+                eigenvalues, vectors = scipy.sparse.linalg.eigsh(stiffness, k=n_wanted, M=mass, sigma=sigma,
+                                                                 which='LM', OPinv=inverse, v0=start_vector, ncv=ncv,
+                                                                 tol=self.tolerance, maxiter=MAX_RESTARTS)
         except scipy.sparse.linalg.ArpackNoConvergence as exc:
             eigenvalues, vectors = exc.eigenvalues, exc.eigenvectors
             converged = False
@@ -670,9 +671,10 @@ class ArpackShiftInvertSolver:
         start = time.perf_counter()
         converged = True
         try:
-            theta, vectors = scipy.sparse.linalg.eigs(operator, k=n_wanted, which='LM', v0=start_vector,
-                                                      tol=max(self.tolerance, float(tolerance_floor)), ncv=ncv,
-                                                      maxiter=max_restarts)
+            with quiet_openblas(self.factorization):   # ARPACK's BLAS between the PARDISO solves (host_direct header)
+                theta, vectors = scipy.sparse.linalg.eigs(operator, k=n_wanted, which='LM', v0=start_vector,
+                                                          tol=max(self.tolerance, float(tolerance_floor)), ncv=ncv,
+                                                          maxiter=max_restarts)
         except scipy.sparse.linalg.ArpackNoConvergence as exc:
             theta, vectors = exc.eigenvalues, exc.eigenvectors
             converged = False

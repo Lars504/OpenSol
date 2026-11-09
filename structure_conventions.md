@@ -444,7 +444,10 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   it as `previous=` (refactorised on the same pattern) before the next one; its own guard (the library's estimate
   after analysis vs HOST_FRACTION of the available RAM) raises. Their threads are the library defaults
   (OMP_NUM_THREADS / MKL_NUM_THREADS; no open_sol setting): oversubscription with numba / BLAS threads is the user's
-  to set.
+  to set, except PARDISO beside an OpenBLAS numpy / scipy (MKL solves alternating with threaded BLAS calls run 4 - 25 x
+  slower): a HostDirectFactorization holds the OpenBLAS pools at one thread during its own calls, and code looping
+  around a PARDISO factor with BLAS work of its own (a Krylov / ARPACK loop) wraps the loop in
+  `host_direct.quiet_openblas(name)` (solvers sub file "host_direct").
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
   `release_session` after the block; an exception kept or re-raised later goes through
   `gpu_memory.drop_exception_frames` first.

@@ -201,6 +201,19 @@ python -c "from open_sol.solvers.host_direct import host_direct_available; print
 PARDISO runs MKL threads: set `MKL_NUM_THREADS` to limit them. With numba kernels or a threaded BLAS in the same
 process, limit the threads so the libraries do not oversubscribe the cores.
 
+numpy and scipy from pip or conda-forge use OpenBLAS, which keeps a thread pool of its own beside MKL's. The two get
+in each other's way: a PARDISO solve right after a threaded numpy call runs 4 to 25 times slower (measured on 4
+cores; eigenfrequency studies suffer most). Install threadpoolctl and open_sol holds the OpenBLAS threads back while
+PARDISO works:
+
+```bash
+conda install -c conda-forge threadpoolctl
+```
+
+Without it, or to cover the numpy calls of a physics between two PARDISO solves as well, set the environment
+variable `OPENBLAS_NUM_THREADS=1` before starting Python (dense numpy linear algebra then runs on one core). A numpy
+built on MKL (`conda install -c conda-forge "libblas=*=*mkl"`) shares MKL's threads and needs neither.
+
 ## Updating and removing
 
 After `git pull` nothing needs reinstalling (editable install) unless `pyproject.toml` changed; then repeat step 3.

@@ -23,8 +23,8 @@ cudss = ["nvmath-python[cu12]"]
 # builds the wrapper against an installed MUMPS
 mumps = ["python-mumps"]
 # Intel MKL PARDISO through pydiso (MIT; MKL under the Intel Simplified Software License): x86-64 only, Linux / Windows
-# wheels pull MKL
-pardiso = ["pydiso"]
+# wheels pull MKL; threadpoolctl (BSD) lets open_sol hold numpy's OpenBLAS threads back while PARDISO works
+pardiso = ["pydiso", "threadpoolctl"]
 
 [tool.setuptools.dynamic]
 version = { attr = "open_sol.__version__" }

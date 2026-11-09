@@ -67,6 +67,10 @@ x86-64) is a `skipped` record with `host_direct.missing_text`.
   Compare at a fixed `--threads`; without it the libraries take every core, so MUMPS / PARDISO speed-ups mix
   parallelism with algorithm. The JSON records the environment of each child, the library's thread count and, with
   threadpoolctl installed, the BLAS / OpenMP pools.
+- OpenBLAS beside MKL: numpy / scipy on OpenBLAS and PARDISO on MKL keep two thread pools that slow each other when
+  their calls alternate. open_sol holds the OpenBLAS pools at one thread while a PARDISO factor works when
+  threadpoolctl is installed (`openblas_pools_held` in the details: 0 = not held, expect PARDISO solves several times
+  slower); `--threads` sets `OPENBLAS_NUM_THREADS` to the same count as MKL's, it does not avoid the conflict.
 - First-call overhead: library loading and first-touch allocations land in repeat 0 (min vs median shows it); use
   `--repeat 3` or more for timings you quote.
 - RSS granularity: pages, not bytes; the peak covers all repeats of a case (factors are released between them); the

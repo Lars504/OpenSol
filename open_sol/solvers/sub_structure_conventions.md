@@ -552,7 +552,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   mixed: the factor-dtype CSR and one solve's GMRES vectors).
 - Refactorize: the same canonical pattern and kind = numeric factorisation on the kept analysis (last_plan_reused);
   pydiso's refactor checks only the nnz count, so the pattern is compared here first.
-- Library notes (verified against the python-mumps 0.0.6 and pydiso 0.3.1 sources, not run): python-mumps
+- Library notes (PARDISO: run on pydiso 0.3.1 / oneMKL 2026.2; MUMPS: verified against the python-mumps 0.0.6
+  sources, not run): python-mumps
   `Context.set_matrix(a, symmetric=True)` keeps scipy.sparse.triu itself and creates the s/d/c/z instance only when
   the dtype changes (SYM stays that of the first call: one Context per analysis); icntl / infog 1-based; ICNTL(9) = 2
   solves A^T (believed unconjugated for complex: checked by solver_host_direct_cpu_gpu only); INFOG(12) negative
@@ -562,14 +563,38 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   pattern every refactorisation); `solve(transpose=True)` = iparm[11] = 2 (A^T, not A^H); float32 data sets iparm[27]
   (single precision); PardisoError carries only a message (mapped back by `_err_messages`); release = dropping the
   handle (dealloc phase -1). Every library call sits in `_MumpsFactor` / `_PardisoFactor` at the end of the module.
+- PARDISO ordering: the analysis asks for the OpenMP nested dissection (iparm[1] = 3, `_PARDISO_ORDERING`; an older
+  pydiso without the keyword gets the library default METIS): the same fill as METIS at half the analysis time on
+  2 - 4 threads (with METIS the analysis is 50 - 85 % of a cold PARDISO factorisation up to ~600 000 unknowns), equal
+  on one thread, every matrix type and both precisions. Measured and not adopted: minimum degree (iparm[1] = 0: the
+  fastest cold factor on 2D grids, 2 - 6 x slower solves and 1.7 x the fill in 3D), the two-level factorisation
+  (iparm[23]) and iparm[24] (nothing on 4 threads; untested on more).
+- Where a PARDISO refactorisation spends its time (2D FDFD, 160 000 unknowns, 4 threads: ~185 ms): the numeric
+  factorisation ~50 %, the equilibration + asymmetry check ~30 % (single-threaded numpy / scipy; `symmetric_known`
+  skips the check), pydiso's own `scipy.sparse.triu` of a symmetric type ~6 %, the probe solve ~12 %. *_mixed halves
+  the factor memory but costs time in 2D (every full-accuracy solve = 3 library solves + GMRES; the float32
+  factorisation is only ~1.4 x faster): it pays for memory, or where the factorisation dominates (large 3D).
 - Availability (GUI-thread safe, nothing imported): MUMPS = find_spec('mumps') and the python-mumps distribution
   metadata (PyMUMPS installs another `mumps`); PARDISO = find_spec('pydiso') on x86-64. `missing_text(name)` is neutral
   ("'<name>' needs ...": back_end and factorization settings alike), `install_hint`, `factor_label` (texts).
 - Threads: library defaults (MUMPS OpenMP / BLAS: OMP_NUM_THREADS, recorded; PARDISO MKL_NUM_THREADS,
   get_mkl_pardiso_max_threads recorded); no open_sol setting, oversubscription with numba / scipy BLAS threads is the
   user's to set. Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+- PARDISO beside OpenBLAS (pip wheels and conda-forge defaults: numpy / scipy on OpenBLAS, pydiso on MKL): both pools
+  spin after a call, so an MKL call right after a threaded BLAS call (a norm, a Gram-Schmidt product, ARPACK's own
+  BLAS) shares the cores with spinning OpenBLAS workers (4 cores: a solve 15 -> 70 ms, a mixed solve 75 -> 450 ms, an
+  ARPACK shift-invert run 0.16 -> 4 s). `host_direct.quiet_openblas(name)` (context; a back end / factorization /
+  library name) holds every loaded OpenBLAS pool at one thread through threadpoolctl and restores it on exit: nothing
+  for a name that is not PARDISO (MUMPS's BLAS may be that OpenBLAS), without threadpoolctl (optional, in the
+  `pardiso` extra) or with numpy on MKL (one pool, no conflict). HostDirectFactorization wraps refactorize, solve_host
+  and solve_preconditioned* itself (`openblas_pools` = pools held, 0 none); a consumer whose own loop does BLAS work
+  between PARDISO solves wraps the loop (arpack_shift_invert: the scipy eigs / eigsh calls, by `self.factorization`).
+  It is process-wide while held: only vector-sized BLAS work belongs inside, never a dense factorisation. BLAS calls
+  of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those.
 - Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
-  PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting, calibrated memory / time
+  per-pattern caches of the equilibration / asymmetry index work, a factorisation through the pydiso handle (no
+  triu per refactorisation), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
+  calibrated memory / time
   constants and profile curves.
 
 ## explicit_kernels (`StepperConfig`; role 'stepper')

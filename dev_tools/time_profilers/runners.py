@@ -56,6 +56,7 @@ def _factor_details(factor) -> dict:
             'library_peak_bytes': _number(getattr(factor, 'peak_bytes', None)),
             'factor_entries': _number(getattr(factor, 'lu_entries', None)),
             'library_threads': _number(getattr(factor, 'threads', None)),
+            'openblas_pools_held': _number(getattr(factor, 'openblas_pools', None)),
             'probe_refinements': _number(getattr(factor, 'refinement_steps', None)),
             'solve_refinements': _number(getattr(factor, 'last_refinements', None)),
             'perturbed_pivots': _number(getattr(factor, 'perturbed_pivots', None))}
