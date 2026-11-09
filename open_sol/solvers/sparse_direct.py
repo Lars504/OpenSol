@@ -11,6 +11,11 @@ every right-hand side) or the device (cuSOLVER QR 'cusolver_qr', one factorisati
 # solve_host, transposed solves of symmetric factors only, not recyclable: re-solves after a value change refactorise
 # with previous=, reusing the cuDSS plan of an unchanged pattern). The factor lives outside the cupy pool and is guarded
 # by cuDSS's own estimate after planning, so the host size rules do not apply to it.
+# Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed, solvers.host_direct): opt-in like cuDSS (never
+# 'auto'), on both backends; factorize / factorize_host / DiffusionDirectSolver return a
+# host_direct.HostDirectFactorization (transposed solves, recyclable, inertia; previous= refactorises on the kept
+# analysis). They keep the SuperLU size rules (library-named texts; uncalibrated, LDL^T / nested dissection usually
+# allow more) plus the library's own memory estimate after the analysis; a refusal raises (no fallback).
 import importlib.util
 import inspect
 import math
@@ -19,10 +24,23 @@ import time
 import numpy as np
 
 from .cudss_factor import csr_rows
+from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
+                          host_direct_factorization, is_host_direct_factor, missing_text)
 
 CUDSS_BACK_ENDS = ('cudss', 'cudss_mixed')
-BACK_ENDS = ('scipy_splu', 'cusolver_qr') + CUDSS_BACK_ENDS
+BACK_ENDS = ('scipy_splu', 'cusolver_qr') + CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS
 LINEAR_SOLVER_CHOICES = ('auto',) + BACK_ENDS
+SYMMETRIC_OPTION_BACK_ENDS = CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS   # factorize honours symmetric / symmetrizer /
+                                                                       # row_scale / previous
+MIXED_BACK_ENDS = ('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS       # a float32 / complex64 factor + refinement
+HOST_FACTOR_BACK_ENDS = ('scipy_splu',) + HOST_DIRECT_BACK_ENDS        # factors in host memory (SuperLU size rules)
+# run-time recipe of the host direct back ends: the SuperLU items (HostLU / HostSolve on the cpu profile) times these
+# (uncalibrated: the multicore speed-up of MUMPS / PARDISO over SuperLU is not measured; profile curves not yet), and
+# solves of a *_mixed factor x HOST_DIRECT_MIXED_FULL_SOLVES (low-precision solves + refinement, as
+# CUDSS_MIXED_FULL_SOLVES; uncalibrated)
+HOST_DIRECT_FACTOR_TIME = 1.0
+HOST_DIRECT_SOLVE_TIME = 1.0
+HOST_DIRECT_MIXED_FULL_SOLVES = 4.0
 # run-time recipe of the cuDSS back ends (2D: the profile's complex 5-point cudss curves; 3D: the arpack_shift_invert
 # fit of complex 3D curl-curl factors), scaled for real operators by these value-size / flop ratios (uncalibrated
 # guesses: scalar 7-point and FEM fills differ from the curl-curl one), and (3D only; the 2D mixed solve curve holds its
@@ -103,7 +121,7 @@ def expected_back_end(choice, backend='gpu') -> str:
 
 def backend_misfit(values, backend) -> str:
     """SolverType.backend_misfit of sparse_direct: '' unless a GPU back end (cusolver_qr, cudss, cudss_mixed) is asked
-    of the cpu backend."""
+    of the cpu backend (the host direct back ends run on both)."""
     back_end = values.get('back_end')
     if backend == 'cpu' and (back_end == 'cusolver_qr' or back_end in CUDSS_BACK_ENDS):
         return f"back_end '{back_end}' runs on the GPU only (use 'auto' or 'scipy_splu' on the CPU backend)"
@@ -135,21 +153,29 @@ def _format_bytes(n) -> str:
 def size_issue(back_end, nx, ny, periodic_x, periodic_y, unknowns_per_cell=1, remedy=_SMALLER_MODEL):
     """(level, text) for a system of unknowns_per_cell * nx * ny unknowns (PML included) that `back_end` refuses
     ('error': validation and the solver alike) or that is close to its limit ('warning'); None otherwise (always for
-    the cuDSS back ends: guarded by cuDSS's own device estimate after planning). CPU only."""
+    the cuDSS back ends: guarded by cuDSS's own device estimate after planning). The host direct back ends (MUMPS /
+    PARDISO) keep the SuperLU limits (uncalibrated: LDL^T and nested dissection usually allow more), with
+    unknowns_per_cell allowed. CPU only."""
     if back_end in CUDSS_BACK_ENDS:
         return None
     n_unknowns = int(unknowns_per_cell) * int(nx) * int(ny)
     scalar = unknowns_per_cell == 1
     components = '' if scalar else f' x {unknowns_per_cell} field components'
     cells = f'{n_unknowns:,} unknowns ({nx} x {ny} cells{components}, PML included)'
-    solver_text = "the sparse_direct back end 'scipy_splu'" if scalar else 'the host SuperLU solver'
-    if back_end == 'scipy_splu':
+    if back_end in HOST_DIRECT_BACK_ENDS:
+        label = factor_label(back_end)
+        solver_text, factors, growth = (f"the sparse_direct back end '{back_end}' ({label})", f'its {label} factors',
+                                        f'host memory for the {label} factors')
+    else:
+        solver_text = "the sparse_direct back end 'scipy_splu'" if scalar else 'the host SuperLU solver'
+        factors, growth = 'its L + U factors', 'host memory for the SuperLU factors'
+    if back_end in HOST_FACTOR_BACK_ENDS:
         if n_unknowns > SPLU_LIMIT_UNKNOWNS:
-            return 'error', (f'{cells} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of {solver_text}: its L + U factors '
+            return 'error', (f'{cells} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of {solver_text}: {factors} '
                              f'would fill the host memory and swap the machine to a halt; {remedy}')
         if n_unknowns > SPLU_WARN_UNKNOWNS:
-            return 'warning', (f'{cells} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of {solver_text} (host '
-                               f'memory for the SuperLU factors grows faster than the unknowns); {remedy}')
+            return 'warning', (f'{cells} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of {solver_text} '
+                               f'({growth} grows faster than the unknowns); {remedy}')
         return None
     if unknowns_per_cell != 1:
         raise ValueError(f"size_issue: back end {back_end!r} sizes scalar (one unknown per cell) systems only")
@@ -166,21 +192,35 @@ def size_issue(back_end, nx, ny, periodic_x, periodic_y, unknowns_per_cell=1, re
                        f'{_to_superlu_text()}, or {_SMALLER_MODEL}')
 
 
-def diffusion_size_issue(n_unknowns, dimensions=2):
+def host_size_back_end(name) -> str:
+    """The sparse_direct back end whose size rule applies to a back end / eigen factorization name: 'superlu', 'auto'
+    and None -> 'scipy_splu' (host SuperLU), every other name itself (host direct names keep the SuperLU limits in
+    size_issue, cuDSS names have none)."""
+    return 'scipy_splu' if name in (None, 'auto', 'superlu') else name
+
+
+def diffusion_size_issue(n_unknowns, dimensions=2, back_end='scipy_splu'):
     """(level, text) for a real DiffusionSystem of n_unknowns window cells (3D: voxels) on host SuperLU (the
     sparse_direct 'linear' solver of heat / potential / magnetostatics) near ('warning') or over ('error') its size
-    rule; None otherwise. CPU only."""
+    rule; None otherwise. A host direct back_end (MUMPS / PARDISO) has the same rule, its text naming the library.
+    CPU only."""
     n_unknowns = int(n_unknowns)
     warn, limit = ((SPLU_3D_WARN_UNKNOWNS, SPLU_3D_LIMIT_UNKNOWNS) if dimensions == 3
                    else (SPLU_WARN_UNKNOWNS, SPLU_LIMIT_UNKNOWNS))
     cells = f"{n_unknowns:,} window {'voxels' if dimensions == 3 else 'cells'}"
+    if back_end in HOST_DIRECT_BACK_ENDS:
+        label = factor_label(back_end)
+        solver, factors, practical = (f"(host {label}, back_end '{back_end}')", f'its {label} factors',
+                                      f"(host {label}, back_end '{back_end}')")
+    else:
+        solver, factors, practical = ('(host SuperLU, the Automatic choice on the cpu backend)', 'its L + U factors',
+                                      '(host SuperLU)')
     if n_unknowns > limit:
-        return 'error', (f'{cells} exceed the {limit:,} limit of the sparse_direct linear solver (host SuperLU, '
-                         f'the Automatic choice on the cpu backend): its L + U factors would fill the host memory; '
-                         f'{_TO_PCG}')
+        return 'error', (f'{cells} exceed the {limit:,} limit of the sparse_direct linear solver {solver}: {factors} '
+                         f'would fill the host memory; {_TO_PCG}')
     if n_unknowns > warn:
-        return 'warning', (f'{cells} exceed ~{warn:,}, the practical size of the sparse_direct linear solver (host '
-                           f'SuperLU): factor memory and time grow faster than the cells; {_TO_PCG}')
+        return 'warning', (f'{cells} exceed ~{warn:,}, the practical size of the sparse_direct linear solver '
+                           f'{practical}: factor memory and time grow faster than the cells; {_TO_PCG}')
     return None
 
 
@@ -230,8 +270,8 @@ def _to_superlu_text():
 
 def resolve_back_end(choice, backend='gpu') -> str:
     """Back end of a back_end choice: 'auto' -> 'scipy_splu' when scipy is installed (always on the cpu backend), else
-    'cusolver_qr'; ValueError for an unknown choice, 'scipy_splu' without scipy, a GPU back end on the cpu or a cuDSS
-    one without nvmath-python."""
+    'cusolver_qr'; ValueError for an unknown choice, 'scipy_splu' without scipy, a GPU back end on the cpu, a cuDSS
+    one without nvmath-python or a host direct one without its wrapper (host_direct.missing_text)."""
     if choice not in LINEAR_SOLVER_CHOICES:
         raise ValueError(f"back_end must be one of {', '.join(LINEAR_SOLVER_CHOICES)}, got {choice!r}")
     misfit = backend_misfit({'back_end': choice}, backend)
@@ -246,6 +286,8 @@ def resolve_back_end(choice, backend='gpu') -> str:
         if not cudss_available():
             raise ValueError(f"back_end '{resolved}' needs nvmath-python with cuDSS, which is not installed: pip install "
                              "nvmath-python[cu12] (or [cu13]), or use 'auto' / 'scipy_splu'")
+    if resolved in HOST_DIRECT_BACK_ENDS and not host_direct_available(resolved):
+        raise ValueError(missing_text(resolved))
     return resolved
 
 
@@ -354,29 +396,35 @@ class Factorization:
         return self._recycled_gmres(matrix.tocsr().astype(np.complex128), rhs, initial, 'T' if transpose else 'N')
 
     def _recycled_gmres(self, host_operator, host_rhs, initial, trans):
-        """(host x or None, iterations) of host GMRES on host_operator (one restart cycle of RECYCLE_MAX_ITERATIONS)
-        preconditioned by the SuperLU solve with `trans`; None when the true residual misses RECYCLE_RTOL."""
-        import scipy.sparse.linalg
-        rhs_norm = float(np.linalg.norm(host_rhs))
-        if rhs_norm == 0.0:
-            return np.zeros(self.n_unknowns, dtype=np.complex128), 0
-        preconditioner = scipy.sparse.linalg.LinearOperator(
-            host_operator.shape, matvec=lambda vector: self._lu_solve(vector, trans=trans), dtype=np.complex128)
-        iteration_count = [0]
+        """recycled_gmres preconditioned by this SuperLU factor (_lu_solve)."""
+        return recycled_gmres(self._lu_solve, self.n_unknowns, host_operator, host_rhs, initial, trans)
 
-        def count_iteration(_residual_norm):
-            iteration_count[0] += 1
 
-        # scipy >= 1.12 names the relative tolerance rtol (tol removed in 1.14); asked 10x tighter because scipy may
-        # test a preconditioned residual: the true residual below decides.
-        tolerance_name = 'rtol' if 'rtol' in inspect.signature(scipy.sparse.linalg.gmres).parameters else 'tol'
-        solution, _info = scipy.sparse.linalg.gmres(
-            host_operator, host_rhs, x0=initial, restart=RECYCLE_MAX_ITERATIONS, maxiter=1, M=preconditioner,
-            callback=count_iteration, callback_type='pr_norm', atol=0.0, **{tolerance_name: 0.1 * RECYCLE_RTOL})
-        residual_norm = float(np.linalg.norm(host_rhs - host_operator @ solution))
-        if not residual_norm <= RECYCLE_RTOL * rhs_norm:   # also NaN
-            return None, iteration_count[0]
-        return solution, iteration_count[0]
+def recycled_gmres(lu_solve, n_unknowns, host_operator, host_rhs, initial, trans):
+    """(host x or None, iterations) of host GMRES on host_operator (one restart cycle of RECYCLE_MAX_ITERATIONS)
+    preconditioned by lu_solve(vector, trans=trans) of a factor of an earlier operator (SuperLU Factorization,
+    host_direct.HostDirectFactorization); None when the true residual misses RECYCLE_RTOL."""
+    import scipy.sparse.linalg
+    rhs_norm = float(np.linalg.norm(host_rhs))
+    if rhs_norm == 0.0:
+        return np.zeros(n_unknowns, dtype=np.complex128), 0
+    preconditioner = scipy.sparse.linalg.LinearOperator(
+        host_operator.shape, matvec=lambda vector: lu_solve(vector, trans=trans), dtype=np.complex128)
+    iteration_count = [0]
+
+    def count_iteration(_residual_norm):
+        iteration_count[0] += 1
+
+    # scipy >= 1.12 names the relative tolerance rtol (tol removed in 1.14); asked 10x tighter because scipy may
+    # test a preconditioned residual: the true residual below decides.
+    tolerance_name = 'rtol' if 'rtol' in inspect.signature(scipy.sparse.linalg.gmres).parameters else 'tol'
+    solution, _info = scipy.sparse.linalg.gmres(
+        host_operator, host_rhs, x0=initial, restart=RECYCLE_MAX_ITERATIONS, maxiter=1, M=preconditioner,
+        callback=count_iteration, callback_type='pr_norm', atol=0.0, **{tolerance_name: 0.1 * RECYCLE_RTOL})
+    residual_norm = float(np.linalg.norm(host_rhs - host_operator @ solution))
+    if not residual_norm <= RECYCLE_RTOL * rhs_norm:   # also NaN
+        return None, iteration_count[0]
+    return solution, iteration_count[0]
 
 
 def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None, symmetric=False,
@@ -384,8 +432,9 @@ def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None,
     """Factorization of a square cupyx CSR operator of an nx * ny grid (cast to complex128): scipy_splu factorises on
     the host now and keeps no device copy (orderings: a SuperLUOrdering reused / kept), cusolver_qr keeps the operator
     (in qr_band_order) and factorises per solve, cudss / cudss_mixed give a CudssFactorization (previous / symmetric /
-    symmetrizer: cudss_factorization; ignored by the others). A scipy operator (cpu backend, scipy_splu only) gives a
-    host_arrays Factorization (numpy solves)."""
+    symmetrizer: cudss_factorization; ignored by the others), the host direct back ends a
+    host_direct.HostDirectFactorization of a host copy (same options, host_arrays for a scipy operator). A scipy
+    operator (cpu backend: scipy_splu or a host direct back end) gives numpy solves (host_arrays)."""
     if back_end not in BACK_ENDS:
         raise ValueError(f"back_end must be one of {', '.join(BACK_ENDS)} (resolve_back_end maps 'auto'), got "
                          f"{back_end!r}")
@@ -402,9 +451,16 @@ def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None,
         host_operator = operator if isinstance(operator.data, np.ndarray) else operator.get()
         return cudss_factorization(host_operator, back_end, previous=previous, symmetric=symmetric,
                                    symmetrizer=symmetrizer)
+    if back_end in HOST_DIRECT_BACK_ENDS:   # one device-to-host transfer of a cupyx operator, complex128 factor
+        on_host = isinstance(operator.data, np.ndarray)
+        factor = host_direct_factorization(operator if on_host else operator.get(), back_end, previous=previous,
+                                           symmetric=symmetric, symmetrizer=symmetrizer)
+        factor.host_arrays = on_host
+        return factor
     if isinstance(operator.data, np.ndarray):   # host scipy operator
         if back_end != 'scipy_splu':
-            raise ValueError(f"factorize: a host (scipy) operator needs back_end 'scipy_splu', got {back_end!r}")
+            raise ValueError(f"factorize: a host (scipy) operator needs back_end 'scipy_splu' or a host direct one "
+                             f"({', '.join(HOST_DIRECT_BACK_ENDS)}), got {back_end!r}")
         factor = _ordered_superlu(operator, np.complex128, orderings)
         factor.host_arrays = True
         return factor
@@ -768,6 +824,18 @@ class SparseDirectSolver:
         self.n_cudss_symmetric = 0       # cuDSS factorisations that are an LDL^T / Cholesky (the rest: general LU)
         self.n_cudss_double_fallbacks = 0   # cudss_mixed factors rejected by their probe and replaced by double ones
         self.n_auto_fallbacks = 0        # B1b: an 'auto' cuDSS back end switched to SuperLU after a refusal (0 / 1)
+        # host direct back ends (MUMPS / PARDISO): analyses (fallback re-analyses included) and those reused by a
+        # refactorisation, the last factor's library estimate after its analysis, factor entries, refinement iterations
+        # of its probe, unrefined probe residual (mixed), thread count; LDL^T / Cholesky factors and mixed rejections
+        self.n_host_direct_analyses = 0
+        self.n_host_direct_reused_analyses = 0
+        self.host_direct_peak_bytes = 0
+        self.host_direct_lu_entries = 0
+        self.n_host_direct_symmetric = 0
+        self.host_direct_refinement_steps = 0
+        self.host_direct_single_residual = None
+        self.n_host_direct_double_fallbacks = 0
+        self.host_direct_threads = None
 
     @property
     def back_end(self) -> str:
@@ -782,7 +850,8 @@ class SparseDirectSolver:
 
     def factorize(self, operator, nx, ny, periodic_x, periodic_y, previous=None, symmetric=False, symmetrizer=None):
         """Factorization of a square CSR grid operator of the backend (cupyx; scipy on the cpu) on the resolved back end
-        (module factorize; previous / symmetric / symmetrizer reach the cuDSS back ends only), counted."""
+        (module factorize; previous / symmetric / symmetrizer reach the cuDSS and host direct back ends only),
+        counted."""
         require_backend_operator(self.label(), self.backend, operator)
         from .cudss_factor import CUDSS_REFUSALS
         start = time.perf_counter()
@@ -796,14 +865,20 @@ class SparseDirectSolver:
         return self._counted(factor, start)
 
     def factorize_host(self, matrix, real=False, symmetric=False, positive_definite=False, symmetrizer=None,
-                       row_scale=None, previous=None):
+                       row_scale=None, previous=None, symmetric_known=False):
         """Factorization (solve_host; float64 with real) of a host scipy sparse matrix, counted: cuDSS on the cuDSS back
-        ends (cudss_factorization options; a refusal of an 'auto' runtime: SuperLU, fall_back), else host SuperLU
-        whatever the back end (the cuDSS options ignored)."""
+        ends (cudss_factorization options; a refusal of an 'auto' runtime: SuperLU, fall_back), MUMPS / PARDISO on the
+        host direct back ends (host_direct_factorization, the same options; symmetric_known: a canonical symmetric
+        CSR, no asymmetry check; refusals raise), else host SuperLU whatever the back end (the options ignored)."""
         from .cudss_factor import CUDSS_REFUSALS
         start = time.perf_counter()
         factor = None
-        if self.back_end in CUDSS_BACK_ENDS:
+        if self.back_end in HOST_DIRECT_BACK_ENDS:
+            factor = host_direct_factorization(matrix, self.back_end, previous=previous, real=real,
+                                               symmetric=symmetric, positive_definite=positive_definite,
+                                               symmetrizer=symmetrizer, row_scale=row_scale,
+                                               symmetric_known=symmetric_known)
+        elif self.back_end in CUDSS_BACK_ENDS:
             try:
                 factor = cudss_factorization(matrix, self.back_end, previous=previous, real=real, symmetric=symmetric,
                                              positive_definite=positive_definite, symmetrizer=symmetrizer,
@@ -956,6 +1031,16 @@ class SparseDirectSolver:
             self.cudss_single_residual = factor.single_residual
             self.n_cudss_symmetric += int(factor.symmetric)
             self.n_cudss_double_fallbacks += int(factor.last_double_fallback)
+        elif is_host_direct_factor(factor):   # MUMPS / PARDISO (host_bytes above = the library's factor bytes)
+            self.n_host_direct_analyses += factor.last_analyses   # fallback re-analyses of the call included
+            self.n_host_direct_reused_analyses += int(factor.last_plan_reused)
+            self.host_direct_peak_bytes = factor.peak_bytes
+            self.host_direct_lu_entries = factor.lu_entries
+            self.n_host_direct_symmetric += int(factor.symmetric)
+            self.host_direct_refinement_steps = factor.refinement_steps
+            self.host_direct_single_residual = factor.single_residual
+            self.n_host_direct_double_fallbacks += int(factor.last_double_fallback)
+            self.host_direct_threads = factor.threads
         return factor
 
     def work_counters(self) -> dict:
@@ -977,6 +1062,16 @@ class SparseDirectSolver:
                             cudss_single_residual=self.cudss_single_residual,
                             cudss_symmetric_factors=self.n_cudss_symmetric,
                             cudss_double_fallbacks=self.n_cudss_double_fallbacks)
+        if self._back_end in HOST_DIRECT_BACK_ENDS:
+            counters.update(host_direct_analyses=self.n_host_direct_analyses,
+                            host_direct_reused_analyses=self.n_host_direct_reused_analyses,
+                            host_direct_peak_bytes=self.host_direct_peak_bytes,
+                            host_direct_lu_entries=self.host_direct_lu_entries,
+                            host_direct_symmetric_factors=self.n_host_direct_symmetric,
+                            host_direct_refinement_steps=self.host_direct_refinement_steps,
+                            host_direct_single_residual=self.host_direct_single_residual,
+                            host_direct_double_fallbacks=self.n_host_direct_double_fallbacks,
+                            host_direct_threads=self.host_direct_threads)
         return counters
 
 
@@ -1021,7 +1116,9 @@ class DiffusionDirectSolver(ExactSolveRecord):
     runtime: one real float64 factor per assembly (factorize), exact solves (solve); factorisations counted on the
     runtime. Host SuperLU (gpu backend: the CSR and rhs / solution move per call) or, back_end cudss / cudss_mixed, a
     real cuDSS Cholesky (LDL^T if it fails; cudss_mixed: a float32 LDL^T, never a float32 Cholesky) refactorised on the
-    kept plan while the pattern holds, solves on the device; cusolver_qr is refused."""
+    kept plan while the pattern holds, solves on the device; on the host direct back ends a MUMPS LDL^T / PARDISO
+    Cholesky (LDL^T if it fails; mixed: a float32 LDL^T) refactorised on the kept analysis, solves on the host;
+    cusolver_qr is refused."""
 
     def __init__(self, runtime):
         if not isinstance(runtime, SparseDirectSolver):
@@ -1037,13 +1134,18 @@ class DiffusionDirectSolver(ExactSolveRecord):
         # from grid_nested_dissection instead of minimum degree (fill ~ n^(4/3) on 7-point stencils)
         self.grid_shape = None
 
-    def factorize(self, operator, preconditioner=None, n_unknowns=None) -> None:
-        """Real factor of the assembled SPD CSR (scipy on the cpu backend, cupyx on the gpu): host SuperLU, or cuDSS on
-        its back ends (the previous factor refactorised: plan reuse); preconditioner ignored."""
-        back_end = self.runtime.back_end
+    def _refuse_cusolver_qr(self, back_end) -> None:
         if back_end == 'cusolver_qr':
-            raise ValueError(f"{self.label()}: diffusion systems factorise with host SuperLU or cuDSS; back_end "
-                             "'cusolver_qr' is not supported here (use 'auto', 'scipy_splu', 'cudss' or 'cudss_mixed')")
+            raise ValueError(f"{self.label()}: diffusion systems factorise with host SuperLU, cuDSS, MUMPS or PARDISO; "
+                             "back_end 'cusolver_qr' is not supported here (use 'auto', 'scipy_splu', 'cudss', "
+                             f"'cudss_mixed' or one of {', '.join(HOST_DIRECT_BACK_ENDS)})")
+
+    def factorize(self, operator, preconditioner=None, n_unknowns=None) -> None:
+        """Real factor of the assembled SPD CSR (scipy on the cpu backend, cupyx on the gpu): host SuperLU, cuDSS on
+        its back ends or MUMPS / PARDISO on theirs (the previous factor refactorised: plan / analysis reuse);
+        preconditioner ignored."""
+        back_end = self.runtime.back_end
+        self._refuse_cusolver_qr(back_end)
         require_backend_operator(self.label(), self.backend, operator)
         on_host = isinstance(operator.data, np.ndarray)
         if back_end in CUDSS_BACK_ENDS:   # gpu backend only (backend_misfit): no host round trip of the values (H1)
@@ -1051,15 +1153,20 @@ class DiffusionDirectSolver(ExactSolveRecord):
                                                              previous=self._factor)
             self._device_operator = operator if self.compute_residual else None
             return
+        if back_end in HOST_DIRECT_BACK_ENDS:
+            self._factorize_host_direct(operator if on_host else operator.get())
+            return
         self._factorize_superlu(operator if on_host else operator.get())
 
     def factorize_host_operator(self, host_operator, symmetric_known=False) -> None:
-        """factorize of a host scipy operator on either backend, no device copy made: cuDSS takes it as it is
-        (symmetric_known: a canonical symmetric CSR, the canonicalising copy and asymmetry check skipped), else SuperLU."""
+        """factorize of a host scipy operator on either backend, no device copy made: cuDSS and the host direct back
+        ends take it as it is (symmetric_known: a canonical symmetric CSR, the canonicalising copy and asymmetry check
+        skipped), else SuperLU."""
         back_end = self.runtime.back_end
-        if back_end == 'cusolver_qr':
-            raise ValueError(f"{self.label()}: diffusion systems factorise with host SuperLU or cuDSS; back_end "
-                             "'cusolver_qr' is not supported here (use 'auto', 'scipy_splu', 'cudss' or 'cudss_mixed')")
+        self._refuse_cusolver_qr(back_end)
+        if back_end in HOST_DIRECT_BACK_ENDS:
+            self._factorize_host_direct(host_operator, symmetric_known=symmetric_known)
+            return
         if back_end in CUDSS_BACK_ENDS:
             from .cudss_factor import CUDSS_REFUSALS
             start = time.perf_counter()
@@ -1131,18 +1238,40 @@ class DiffusionDirectSolver(ExactSolveRecord):
         self._factor = self.runtime._counted(factor, start)
         self._host_operator = host_csr if self.compute_residual else None
 
+    def _factorize_host_direct(self, host_operator, symmetric_known=False) -> None:
+        """MUMPS / PARDISO factor of a host scipy operator (real, positive_definite: PARDISO Cholesky, MUMPS LDL^T),
+        counted on the runtime; the previous host direct factor refactorised on its kept analysis. The SuperLU size
+        rule applies (SPLU_LIMIT_UNKNOWNS); refusals raise (no fallback)."""
+        back_end = self.runtime.back_end
+        n_unknowns = int(host_operator.shape[0])
+        if n_unknowns > SPLU_LIMIT_UNKNOWNS:   # validation's diffusion_size_issue refuses 3D earlier
+            raise ValueError(f'{self.label()}: {diffusion_size_issue(n_unknowns, back_end=back_end)[1]}')
+        start = time.perf_counter()
+        previous = self._factor if is_host_direct_factor(self._factor) else None
+        factor = host_direct_factorization(host_operator, back_end, previous=previous, real=True,
+                                           positive_definite=True, symmetric_known=symmetric_known)
+        factor.host_arrays = True
+        self._factor = self.runtime._counted(factor, start)
+        self._host_operator = host_operator.tocsr() if self.compute_residual else None
+        self._device_operator = None
+
     def release_factor(self) -> None:
-        """Drop the factor (a cuDSS factor's device memory, outside the cupy pool, freed now); the next solve needs a
-        factorize. Counters stay."""
+        """Drop the factor (a cuDSS factor's device memory, outside the cupy pool, or a MUMPS / PARDISO factor's
+        library memory, freed now); the next solve needs a factorize. Counters stay."""
         factor, self._factor = self._factor, None
-        if factor is not None and not isinstance(factor, Factorization):   # a CudssFactorization (SuperLU: host only)
-            factor.release()
+        release = getattr(factor, 'release', None)   # CudssFactorization / HostDirectFactorization (SuperLU: none)
+        if release is not None:
+            release()
         self._host_operator = self._device_operator = None
 
     def solve(self, rhs, solution, reference=None) -> None:
         """solution[...] = A^-1 rhs (flat arrays of the backend); reference ignored (exact solve)."""
         if self._factor is None:
             raise RuntimeError(f'{self.label()}: factorize before solve')
+        if is_host_direct_factor(self._factor):   # MUMPS / PARDISO: host solve (one transfer each way on the gpu)
+            host_rhs = self._host_rhs(rhs)
+            self._finish_host_solve(host_rhs, self._factor.solve_host(host_rhs), solution, self._host_operator)
+            return
         if not isinstance(self._factor, Factorization):   # cuDSS: device in, device out
             self._solve_on_device(rhs, solution)
             return
@@ -1171,26 +1300,34 @@ class DiffusionDirectSolver(ExactSolveRecord):
 def time_estimate(values, work):
     """Run-time recipe of a sparse_direct role (core.time_estimate.SolverWork): host SuperLU factorisations (+ the
     CSR transfer on the gpu) and triangular solves (+ rhs / solution transfers), the grid curves times
-    work.factor_scale / solve_scale; cuDSS by _cudss_time_items (2D: the profile's cudss curves, 3D: the fit);
-    cusolver_qr is not estimated."""
+    work.factor_scale / solve_scale; cuDSS by _cudss_time_items (2D: the profile's cudss curves, 3D: the fit); the
+    host direct back ends by the SuperLU items x HOST_DIRECT_FACTOR_TIME / HOST_DIRECT_SOLVE_TIME (mixed solves x
+    HOST_DIRECT_MIXED_FULL_SOLVES; uncalibrated); cusolver_qr is not estimated."""
     from ..core import time_estimate as te
     back_end = expected_back_end(values.get('back_end', 'auto'), work.backend)
     if back_end in CUDSS_BACK_ENDS and work.dimensions in (2, 3):
         return te.TimeEstimate(_cudss_time_items(back_end, work))
-    if back_end != 'scipy_splu':
+    if back_end not in HOST_FACTOR_BACK_ENDS:
         return te.TimeEstimate(not_estimated=(f"{work.role} solver (sparse_direct back_end '{back_end}', "
                                               f"{work.dimensions}D)",))
+    host_direct = back_end in HOST_DIRECT_BACK_ENDS
+    label = factor_label(back_end)   # 'SuperLU' for scipy_splu
+    factor_scale = work.factor_scale * (HOST_DIRECT_FACTOR_TIME if host_direct else 1.0)
+    solve_scale = work.solve_scale * ((HOST_DIRECT_SOLVE_TIME * (HOST_DIRECT_MIXED_FULL_SOLVES
+                                                                 if back_end in MIXED_BACK_ENDS else 1.0))
+                                      if host_direct else 1.0)
     gpu = work.backend == 'gpu'
-    solve = (te.HostSolve(work.unknowns, work.dimensions, work.complex, work.rhs, scale=work.solve_scale),) + (
+    solve = (te.HostSolve(work.unknowns, work.dimensions, work.complex, work.rhs, scale=solve_scale),) + (
         (te.Transfer(2.0 * work.unknowns * work.value_bytes * work.rhs),) if gpu else ())
-    factor = te.HostLU(work.unknowns, work.dimensions, work.complex, scale=work.factor_scale)
-    items = [te.TimeItem('SuperLU factorisations', 'factorisation', float(work.factorizations),
+    factor = te.HostLU(work.unknowns, work.dimensions, work.complex, scale=factor_scale)
+    items = [te.TimeItem(f'{label} factorisations', 'factorisation', float(work.factorizations),
                          work.factorizations_kind, (factor,),
                          per_step=work.factor_per_step, counter=work.counter('factorizations'),
-                         seconds_counter=work.counter('factor_seconds')),   # timed around SuperLU only
-             te.TimeItem('SuperLU solves', 'solve', float(work.solves), work.solves_kind, solve, per_step=work.per_step)]
+                         seconds_counter=work.counter('factor_seconds')),   # timed around the factorisation only
+             te.TimeItem(f'{label} solves', 'solve', float(work.solves), work.solves_kind, solve,
+                         per_step=work.per_step)]
     if gpu:
-        items.append(te.TimeItem('SuperLU operator transfers', 'factorisation', float(work.factorizations),
+        items.append(te.TimeItem(f'{label} operator transfers', 'factorisation', float(work.factorizations),
                                  work.factorizations_kind, (te.Transfer(work.nnz * (work.value_bytes + 4)),),
                                  per_step=work.factor_per_step))
     return te.TimeEstimate(tuple(items))

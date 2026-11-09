@@ -14,7 +14,13 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   factorize_host; sparse_direct's cuDSS time recipe uses arpack's CUDSS_* fit inside functions). Shared helpers, never
   a local copy: `cudss_factor.csr_rows` / `canonical_csr` (numpy only, module level in sparse_direct, arpack,
   multigrid), `sparse_direct.cudss_precision`, `require_backend_operator`, `ExactSolveRecord` (the PCGSolver-protocol
-  record of BandedSolver and DiffusionDirectSolver).
+  record of BandedSolver and DiffusionDirectSolver), `cudss_factor.gmres_refine` (the GMRES-IR loop of cuDSS mixed
+  factors and of host_direct, array module xp), `sparse_direct.recycled_gmres` (GMRES on an earlier factor's solve).
+- `host_direct.py` (MUMPS via python-mumps, MKL PARDISO via pydiso) imports numpy and the cudss_factor helpers at module
+  level (sparse_direct, arpack_shift_invert, definition_helpers and solvers.definition import it there), the wrappers
+  (`mumps`, `pydiso.mkl_solver`), scipy, core and `sparse_direct.recycled_gmres` inside functions only (import
+  contracts direct_wrappers_lazy / direct_wrappers_inside_functions). `HOST_DIRECT_BACK_ENDS` is the one list of the
+  host names: every other tuple, choice label and text derives from it.
 - `definition.py` (SolverTypes + `register`) <- model.schema, never cupy at module level; `get_registry()` imports it
   right after model.study, so `register_physics` can check each `PhysicsType.solver_roles` default_type.
 - pcg.py holds the CPU numbers the definitions share (FLOAT32_TOLERANCE_FLOOR, CG_ITERATIONS_PER_AXIS_CELL,
@@ -59,14 +65,21 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `ValidationContext.solvers(physics_spec)` (None when unresolved: check_solvers reports; `validated_linear_precision`
   then assumes float64).
 - Self-test specs needing a tight CG: `model.selftest_helpers.with_exact_cg(spec[, physics_names])` (node 'exact_cg',
-  double, tolerance 1e-12, as 'linear').
+  double, tolerance 1e-12, as 'linear'). Host direct nodes: `with_direct_node(spec, back_end, role='linear',
+  physics_names=(), node_name=None)` (sparse_direct back_end, or for role 'eigen' an arpack_shift_invert factorization;
+  node 'host_direct_<back_end>' / 'host_direct_eigen_<back_end>'), `available_host_direct()` (installed libraries) and
+  `skip_without_host_direct()` (skip_result when none is installed).
 - Shared roles (model.definition_helpers): `CG_LINEAR_ROLE` (pcg single / double, jacobi only: solid_mechanics),
   `CG_ELASTIC_3D_LINEAR_ROLE` (+ 'mixed', jacobi only: solid_mechanics_3d), `CG_DIFFUSION_LINEAR_ROLE` (+ 'mixed': heat,
   electric_currents, electrostatics, magnetostatics; Automatic on the gpu = pcg multigrid), `DIRECT_LINEAR_ROLE`
-  (sparse_direct: em_fdfd_nonlinear, magnetic_fields_ac, pressure acoustics), `FDFD_LINEAR_ROLE` (sparse_direct double /
-  mixed, opt_in_types ('line_block',), `FDFD_DIRECT_BACK_ENDS` incl. cudss / cudss_mixed: em_fdfd_ez / _hz),
-  `CUDSS_LINEAR_ROLE` (sparse_direct double, same back ends: drift_diffusion, em_fdfd_bor, em_fdfd_conical),
-  `eigen_role(studies)` (arpack_shift_invert), `STEPPER_ROLE` (explicit_kernels single / double: em_fdtd_ez / _hz),
+  (sparse_direct double, setting_choices back_end auto / scipy_splu / cusolver_qr + the host direct names:
+  em_fdfd_nonlinear), `MAGNETIC_AC_LINEAR_ROLE` (auto / scipy_splu / cudss + the double host names), `FDFD_LINEAR_ROLE`
+  (sparse_direct double / mixed, opt_in_types ('line_block',), `FDFD_DIRECT_BACK_ENDS` incl. cudss / cudss_mixed and the
+  four host names: em_fdfd_ez / _hz), `CUDSS_LINEAR_ROLE` (sparse_direct double, same back ends: drift_diffusion,
+  em_fdfd_bor, em_fdfd_conical), `DIFFUSION_DIRECT_BACK_ENDS` (+ the four host names: the CG / diffusion / pressure /
+  membrane linear roles), `eigen_role(studies)` (arpack_shift_invert; factorization auto / superlu / cudss + the double
+  host names, with mixed_factorization also cudss_mixed + the host *_mixed names), `STEPPER_ROLE` (explicit_kernels
+  single / double: em_fdtd_ez / _hz),
   `HALF_STORAGE_STEPPER_ROLE` (+ 'half_storage': em_fdtd_3d, elastic_waves, laminar_flow). Stepper precision: estimators
   / validate by `resolved_stepper_precision(solvers)`, a create by `explicit_kernels.stepper_precision(ctx.solvers(name))`.
   `cg_solver_issues` gives the iteration-limit warning of an assigned pcg node (Automatic: none); the precision warning
@@ -74,7 +87,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Opt-in roles: a SolverType fills its `opt_in_roles` only for a SolverRole whose `opt_in_types` names it, so adding a
   role to a shared type does not offer it to every physics with that role (line_block 'linear': em_fdfd_ez / _hz only).
   Likewise `SolverType.opt_in_settings` {setting: values} fit only a role whose `setting_choices[setting]` lists them
-  (sparse_direct back_end cudss / cudss_mixed), so a new back end never reaches a physics that cannot hold its factor.
+  (sparse_direct back_end cudss / cudss_mixed and the host direct names), so a new back end never reaches a physics
+  that cannot hold its factor (em_modes / em_fdfd_bor 'shifted' misfit the host names: their eigen node's
+  factorization is the knob).
   `SolverRole.setting_choices` is the generic per-role restriction of setting values (checked by `solver_misfit`).
 - Private runtimes: a script constructor given a choice string or None builds its own runtime and reports its
   counters in the physics' `work_counters` (no role record); a build-injected one never does.
@@ -222,10 +237,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   ordering reuse: `SuperLUOrdering` (one per runtime) keeps the last pattern's elimination order; a later factorisation
   of the same indptr / indices pre-permutes and skips MMD (counters reused_orderings / eigen_reused_orderings).
 - The runtime keeps no factor: consumers hold their own (one runtime serves the NLFD channels or thermal noise).
-  `back_end` (auto / scipy_splu / cusolver_qr / cudss / cudss_mixed) resolved on first use; factorize / factorize_host /
+  `back_end` (auto / scipy_splu / cusolver_qr / cudss / cudss_mixed / mumps / mumps_mixed / pardiso / pardiso_mixed:
+  LINEAR_SOLVER_CHOICES, the order solvers.definition's labels follow) resolved on first use; factorize / factorize_host /
   `solve_recycled` (device) / `solve_recycled_host` (em_fdfd_bor, magnetic AC circuit rows) are counted. The shifted
   role, magnetic_fields_ac and em_fdfd_bor always factorise on the host (validation refuses cusolver_qr). cpu backend:
-  scipy_splu only, `host_arrays` Factorization numpy in / out.
+  scipy_splu or a host direct back end, `host_arrays` factors numpy in / out.
 - cuDSS back ends ('cudss' double, 'cudss_mixed' float32 / complex64 factor + float64 refinement to 1e-12): opt-in per
   role (Model path "Opt-in roles"): the SPD roles of `DIFFUSION_DIRECT_BACK_ENDS` (via DiffusionDirectSolver),
   FDFD_LINEAR_ROLE (LDL^T, counter cudss_symmetric_factors) and CUDSS_LINEAR_ROLE (drift_diffusion real LU,
@@ -233,8 +249,31 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   them. A role opting in needs consumers holding a CudssFactorization on that grid (no transposed LU solve, not
   recyclable, no SuperLU inertia). GPU only (`backend_misfit`); without nvmath validate errors and `resolve_back_end`
   raises. `size_issue` returns None for them; cuDSS's own peak estimate after planning is the guard and memory
-  estimators count the factor as an external item (`linear_solver_direct` False, `linear_solver_cudss(solvers)`;
-  `cg_solver_issues` skips the SuperLU size rule).
+  estimators count the factor as an external item (`linear_solver_direct` '', `linear_solver_cudss(solvers)`;
+  `cg_solver_issues` skips the SuperLU size rule). `definition_helpers.linear_solver_direct(context)` returns '' or the
+  resolved non-cuDSS back end name (scipy_splu, a host direct name; truthy as before), which estimators pass on as
+  `direct=` (`diffusion_system_estimate` books a host direct name by host_direct.factor_host_bytes).
+- Back-end groups (module constants, never local copies): SYMMETRIC_OPTION_BACK_ENDS (cuDSS + host direct: factorize
+  honours symmetric / symmetrizer / row_scale / previous), MIXED_BACK_ENDS (cudss_mixed + the host *_mixed: float32 /
+  complex64 factor; validation rules about float32 accuracy use it), HOST_FACTOR_BACK_ENDS (scipy_splu + host direct:
+  host memory, the SuperLU size rules); `host_size_back_end(name)` maps superlu / auto / None to scipy_splu for
+  size_issue.
+- Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed; section "host_direct"): opt-in per role (never
+  'auto'), no backend misfit (host factors on both backends: factorize pulls a cupyx operator to the host once and
+  returns cupy solutions, a scipy one numpy: host_arrays), a missing wrapper is a validate error and `resolve_back_end`
+  raises `host_direct.missing_text`. factorize / factorize_host (+ symmetric_known) / DiffusionDirectSolver
+  (factorize, factorize_host_operator, factorize_device_values through a host copy; real SPD request: PARDISO
+  Cholesky, MUMPS LDL^T; solves on the host) return a HostDirectFactorization: transposed solves, recyclable
+  (solve_recycled*), inertia, previous= refactorises on the kept analysis. Size rules: the SuperLU ones (size_issue /
+  diffusion_size_issue(back_end=) with library-named texts; uncalibrated, LDL^T / nested dissection usually allow
+  more) plus the library's own estimate after the analysis (HOST_FRACTION of the available RAM); refusals
+  (HOST_DIRECT_REFUSALS) raise, no fallback. `fall_back`, `device_pencil`, `factorize_pencil` and
+  `factorize_device_csr` stay cuDSS / auto only. Counters (host direct runtimes): host_direct_analyses (fallback
+  re-analyses included), host_direct_reused_analyses, host_direct_peak_bytes (the library estimate), host_direct_lu_entries,
+  host_direct_symmetric_factors, host_direct_refinement_steps, host_direct_single_residual, host_direct_double_fallbacks,
+  host_direct_threads; host_factor_bytes = the library's factor bytes. Time recipe: the SuperLU items (labels named by
+  the library) x HOST_DIRECT_FACTOR_TIME / HOST_DIRECT_SOLVE_TIME, mixed solves x HOST_DIRECT_MIXED_FULL_SOLVES (all
+  uncalibrated, no profile curves yet).
 - 'auto' -> cuDSS only through `SolverRole.auto_back_ends` {grid: back end}: `schema.auto_back_end_values` (inside
   resolved_solvers: validate, estimators, build and summary see the concrete back end) on the gpu with nvmath
   (find_spec); role-less `expected_back_end` / `resolve_back_end` map 'auto' to SuperLU. Opted in: pressure_acoustics
@@ -314,7 +353,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Self-tests (`selftests.py`): solver_pcg_cpu_gpu, solver_sparse_direct_cpu_gpu, solver_line_block_cpu_gpu (both
   backends vs scipy on synthetic operators; gpu half skipped by `_backends()` without a GPU); solver_sparse_direct_cudss
   (gpu; its role / misfit part is CPU and judged without nvmath); solver_cudss_device_pencil (gpu);
-  fem_harmonic_cudss_device_pencil (heavy).
+  fem_harmonic_cudss_device_pencil (heavy); solver_host_direct_cpu_gpu and solver_arpack_host_direct (each installed
+  library, both precisions; skipped without python-mumps / pydiso, the role / misfit / resolution part of the first
+  always judged). A change to `cudss_factor.gmres_refine` is checked on the GPU by solver_arpack_cudss,
+  solver_sparse_direct_cudss and fem_harmonic_cudss_device_pencil, on the host by solver_host_direct_cpu_gpu.
 - Validation: the SolverType validate reports scipy / nvmath availability at the node; for Automatic the physics checks
   report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
 
@@ -352,6 +394,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - `eigsh_inverse(...)`: factor-free symmetric shift-invert at 0 for a possibly inexact inverse (solid_mechanics_3d: one
   PCG solve each); counted like eigs.
 - nvmath / cuDSS API notes, pitfalls and measurements: `nvmath_guide.md` (repo root).
+- Host direct factorizations mumps / mumps_mixed / pardiso / pardiso_mixed (FACTORIZATIONS order: auto, superlu,
+  cudss, cudss_mixed, then HOST_DIRECT_FACTORIZATIONS): factorize_host returns a HostDirectFactorization (host
+  solves, the caller's ordering unused, symmetric / row_scale / previous honoured: LDLT_FACTORIZATIONS = cuDSS + host,
+  for which _factorize_shift defaults row_scale to ShiftPencil.row_scale); a host *_mixed request below
+  mixed_min_unknowns factors in double (S5c, `host_direct.double_of`; MIXED_FACTORIZATIONS = cudss_mixed + the host
+  mixed names); inertia from the library pivots (real LDL^T / Cholesky: MUMPS INFOG(12), PARDISO iparm[21] / [22]);
+  None (LU, complex, symmetrizer, perturbed or null pivots) -> one counting SuperLU in _shift_inertia (exact); a
+  Hermitian pencil is always counted by `_superlu_count`. No deferred check, no fallback (refusals raise). Counters:
+  eigen_host_direct_analyses, eigen_lu_entries, eigen_factor_symmetric, eigen_double_fallbacks,
+  eigen_refinement_steps, eigen_host_direct_threads; time recipe the SuperLU items x sparse_direct.HOST_DIRECT_*.
 - Setting `factorization` 'superlu' / 'cudss' / 'cudss_mixed' / 'auto' (default). cudss is GPU only (`backend_misfit`;
   validate errors without nvmath, `cudss_factor.cudss_available` = find_spec); `factorize_host` then returns a
   `CudssFactorization` for every caller (the eigen callers' Factorization stand-in; no transposed solve, not
@@ -407,7 +459,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   symmetric (FEM pencil): the same LDL^T.
 - 'cudss_mixed': complex64 / float32 factor of E (keeping complex symmetry), float64 E on the device for residuals.
   `solve(rhs, refinement_steps=None)` refines by restarted flexible GMRES preconditioned by the low-precision solve
-  (`_gmres_refine`, GMRES_RESTART 8, vectors in `solve_peak_bytes(mixed=True)`) to MIXED_SOLVE_TOLERANCE (1e-12) or
+  (module `gmres_refine` with xp = cupy, shared with host_direct; GMRES_RESTART 8, vectors in
+  `solve_peak_bytes(mixed=True)`) to MIXED_SOLVE_TOLERANCE (1e-12) or
   backward error MIXED_SOLVE_BACKWARD_ERROR (1e-15), at most MIXED_MAX_REFINEMENTS 16; a cycle whose FGMRES estimate met
   the target while the true residual did not is the float64 floor and ends the solve. Consumers checking true
   residuals (reduced sweep rom_tolerance) need this (a 1e-12 backward error on resonance left 1e-7 - 1e-5 residuals).
@@ -467,6 +520,57 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `Factorization.inertia()` (U diagonal signs, valid only when perm_r == perm_c, else an extra counting SuperLU with
   diag_pivot_thresh 0). A Hermitian pencil on cuDSS has no count. Counting factorisations count in
   eigen_factorizations: a time recipe pricing a band search counts them there.
+
+## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
+- Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or
+  the caller's row_scale), entry by entry on an own copy of the canonical pattern, as CudssFactorization: LDL^T when
+  symmetry was requested (symmetric, positive_definite or a symmetrizer) and relative_asymmetry <= SYMMETRY_TOLERANCE
+  (complex symmetric, not Hermitian), else LU; PARDISO real positive_definite = Cholesky (matrix type 2; a zero-pivot
+  error -> LDL^T, sticky); MUMPS always LDL^T for symmetric kinds (python-mumps sets SYM=2 and exposes no SYM=1).
+  `back_end` = the library ('mumps' / 'pardiso'), `precision` the request, `factor_precision` what is factored;
+  `description` starts with the library label ('MUMPS LDL^T', 'PARDISO LU float32 + float64 GMRES refinement').
+- Solves: A x = b as x = R E^-1 R (D) b; A^T x = b as R E^-T R b (no symmetrizer) or D R E^-T R b (symmetrizer;
+  E^-T = E^-1 for a symmetric kind); a real factor takes a complex rhs as two real solves; solve() of a cupy rhs moves it
+  to the host and the solution back (host_arrays / numpy rhs: numpy). `_lu_solve(rhs, trans)` serves
+  DiffusionDirectSolver and sparse_direct.recycled_gmres (solve_preconditioned*: recyclable).
+- Probe after every factorisation (cudss_factor gates: ACCEPT_RESIDUAL or BACKWARD_ERROR_TOLERANCE); a double miss
+  switches the factor to float64 GMRES-IR (gmres_refine with the double factor as preconditioner, every later solve;
+  refinement_steps = the probe's iterations), a second miss releases and raises HostDirectAccuracyError. The libraries'
+  own refinement (MUMPS ICNTL(10), PARDISO iparm[7]) is not used. PARDISO perturbs tiny pivots silently (1e-13
+  unsymmetric, 1e-8 symmetric): a singular operator mostly shows as an accuracy error, not HostDirectSingularError.
+- Mixed (*_mixed): float32 / complex64 factor, float64 E kept; full-accuracy solves by gmres_refine to
+  solve_backward_error, an int refinement_steps = plain steps; each low-precision solve scales its rhs to unit norm;
+  the probe's stall test and mixed gates as cuDSS; a miss refactors in double (sticky: last_double_fallback,
+  mixed_rejection). No low-precision Cholesky (as cuDSS), no remembered rejections per pattern (cuDSS H4).
+- Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
+  iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
+  HostDirectMemoryError (no guard when unknown); library allocation errors map to it too. The factor lives in library
+  memory outside numpy: holders release() it before dropping or replacing it (host_direct_factorization releases a
+  `previous` it cannot refactorise). Estimators: `factor_host_bytes` (SuperLU heuristics x `superlu_bytes_scale`:
+  LU_FILL_OVER_SUPERLU / LDLT_FILL_OVER_SUPERLU x WORKSPACE_OVER_FACTOR x the mixed value share, uncalibrated: refit
+  from host_direct_lu_entries / host_factor_bytes) + `solver_host_bytes` (E, row scale, the wrapper's matrix copy,
+  mixed: the factor-dtype CSR and one solve's GMRES vectors).
+- Refactorize: the same canonical pattern and kind = numeric factorisation on the kept analysis (last_plan_reused);
+  pydiso's refactor checks only the nnz count, so the pattern is compared here first.
+- Library notes (verified against the python-mumps 0.0.6 and pydiso 0.3.1 sources, not run): python-mumps
+  `Context.set_matrix(a, symmetric=True)` keeps scipy.sparse.triu itself and creates the s/d/c/z instance only when
+  the dtype changes (SYM stays that of the first call: one Context per analysis); icntl / infog 1-based; ICNTL(9) = 2
+  solves A^T (believed unconjugated for complex: checked by solver_host_direct_cpu_gpu only); INFOG(12) negative
+  pivots of SYM=2; MUMPSError.error = INFOG(1) (-10 / -6 singular; -5, -7, -8, -9, -13, -17, -19, -20 memory);
+  `factor()` retries -8 / -9 itself. pydiso: symmetric types keep sp.triu of the matrix given; MKL needs every diagonal
+  entry of a symmetric type stored, so the factor adds explicit zero diagonal slots once per pattern (the same padded
+  pattern every refactorisation); `solve(transpose=True)` = iparm[11] = 2 (A^T, not A^H); float32 data sets iparm[27]
+  (single precision); PardisoError carries only a message (mapped back by `_err_messages`); release = dropping the
+  handle (dealloc phase -1). Every library call sits in `_MumpsFactor` / `_PardisoFactor` at the end of the module.
+- Availability (GUI-thread safe, nothing imported): MUMPS = find_spec('mumps') and the python-mumps distribution
+  metadata (PyMUMPS installs another `mumps`); PARDISO = find_spec('pydiso') on x86-64. `missing_text(name)` is neutral
+  ("'<name>' needs ...": back_end and factorization settings alike), `install_hint`, `factor_label` (texts).
+- Threads: library defaults (MUMPS OpenMP / BLAS: OMP_NUM_THREADS, recorded; PARDISO MKL_NUM_THREADS,
+  get_mkl_pardiso_max_threads recorded); no open_sol setting, oversubscription with numba / scipy BLAS threads is the
+  user's to set. Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+- Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
+  PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting, calibrated memory / time
+  constants and profile curves.
 
 ## explicit_kernels (`StepperConfig`; role 'stepper')
 - Frozen settings bundle: precision 'single', 'double' or 'half_storage' (fp16 storage, float32 arithmetic;

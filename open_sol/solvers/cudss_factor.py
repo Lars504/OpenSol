@@ -39,7 +39,8 @@ at module level."""
 # decision D2, default unchanged); probes and deferred checks never refine to less than BACKWARD_ERROR_TOLERANCE. The
 # GMRES keeps basis and directions as (cycle, n) device arrays: classical Gram-Schmidt twice by batched products, one
 # host read per iteration (coefficients + norm; E7 measured ~9 ms of Python / syncs per 48 ms solve with one .item()
-# per coefficient), the single solve's scaling norm stays on the device (B8).
+# per coefficient), the single solve's scaling norm stays on the device (B8). The loop is the module function
+# gmres_refine (array module xp): cupy here, numpy for the mixed / refined host factors of solvers.host_direct.
 # A mixed factor whose probe still misses is replaced by the double factor of the same kind (last_double_fallback,
 # mixed_rejection text) and the object factors in double from then on (a sweep would otherwise re-plan per shift).
 # Stall test (H4): a probe (and a deferred check) stops its GMRES after MIXED_STALL_ITERATIONS when the rate so far,
@@ -459,17 +460,97 @@ def _figure(value) -> str:
     return 'not computed' if value is None else f'{value:.3g}'
 
 
-def _orthogonalized(basis, vector):
-    """Classical Gram-Schmidt, twice, of a device vector (in place) against the orthonormal device rows of `basis`:
-    (host coefficients, host norm of what is left) in one device-to-host read (B8: was one .item() per row)."""
-    import cupy as cp
-    coefficients = cp.conj(basis @ cp.conj(vector))   # <b_i, v> without a conjugated copy of the basis
+def _to_host(xp):
+    """Function giving a host numpy copy of an array of the array module xp (cupy: .get(), numpy: the array)."""
+    return np.asarray if xp is np else (lambda array: array.get())
+
+
+def _orthogonalized(basis, vector, xp):
+    """Classical Gram-Schmidt, twice, of a vector of the array module xp (cupy or numpy; in place) against the
+    orthonormal rows of `basis`: (host coefficients, host norm of what is left) in one device-to-host read (B8: was one
+    .item() per row)."""
+    coefficients = xp.conj(basis @ xp.conj(vector))   # <b_i, v> without a conjugated copy of the basis
     vector -= coefficients @ basis
-    correction = cp.conj(basis @ cp.conj(vector))     # the second pass keeps the basis orthogonal to rounding
+    correction = xp.conj(basis @ xp.conj(vector))     # the second pass keeps the basis orthogonal to rounding
     vector -= correction @ basis
     coefficients += correction
-    packed = cp.concatenate((coefficients, cp.linalg.norm(vector).reshape(1).astype(coefficients.dtype))).get()
+    norm = xp.asarray(xp.linalg.norm(vector)).reshape(1).astype(coefficients.dtype)
+    packed = _to_host(xp)(xp.concatenate((coefficients, norm)))
     return packed[:-1], float(packed[-1].real)
+
+
+def gmres_refine(xp, product, single_solve, rhs, solution, operator_norm, stall_test=False,
+                 backward_error=MIXED_SOLVE_BACKWARD_ERROR, used=0):
+    """(solution, used, (relative residual, backward error, unrefined)) of restarted flexible GMRES on E y = rhs from
+    `solution` (updated in place), preconditioned by the low-precision solve single_solve(v) (GMRES-IR; product(v) =
+    E v, new arrays both; operator_norm() = sqrt(||E||_1 ||E||_inf), called when needed), until the relative residual
+    MIXED_SOLVE_TOLERANCE, the backward error `backward_error`, the float64 floor (module header) or
+    MIXED_MAX_REFINEMENTS iterations (`used` counts them, starting from the given value); stall_test (a probe or deferred
+    check): also stop after MIXED_STALL_ITERATIONS when the gate is out of reach (module header). xp is the array module
+    of the vectors (cupy: CudssFactorization, numpy: host_direct). Basis and directions are (cycle, n) arrays: classical
+    Gram-Schmidt twice by batched products, one host read per iteration (coefficients + norm) and one per restart (two
+    norms), one product for the update (B8). The errors are those of the returned solution ((None, None, None) for a
+    zero rhs)."""
+    to_host = _to_host(xp)
+    n_unknowns = int(rhs.shape[0])
+    value_dtype = solution.dtype
+    rhs_norm = float(xp.linalg.norm(rhs))
+    estimate_met = False   # the last cycle's GMRES estimate met the target
+    stalled = False        # stall_test: the rate so far cannot reach the probe gate
+    unrefined = None
+    while True:
+        residual = rhs - product(solution)
+        residual_norm, solution_norm = (float(norm) for norm in
+                                        to_host(xp.stack((xp.linalg.norm(residual), xp.linalg.norm(solution)))))
+        target = max(MIXED_SOLVE_TOLERANCE * rhs_norm, backward_error
+                     * (operator_norm() * solution_norm + rhs_norm))
+        if unrefined is None and rhs_norm > 0.0:
+            unrefined = residual_norm / rhs_norm
+        cycle = min(GMRES_RESTART, MIXED_MAX_REFINEMENTS - used)
+        # estimate met, true residual not: the floor
+        if residual_norm <= target or cycle <= 0 or estimate_met or stalled:
+            # (relative residual, backward error, unrefined) of E y = rhs: the deferred check's gate values
+            errors = ((None, None, None) if rhs_norm == 0.0 else
+                      (residual_norm / rhs_norm, residual_norm / (operator_norm() * solution_norm + rhs_norm),
+                       unrefined))
+            return solution, used, errors
+        basis = xp.empty((cycle + 1, n_unknowns), dtype=value_dtype)
+        directions = xp.empty((cycle, n_unknowns), dtype=value_dtype)
+        basis[0] = residual / residual_norm
+        rotations, filled = [], 0
+        hessenberg = np.zeros((cycle + 1, cycle), dtype=value_dtype)
+        projected = np.zeros(cycle + 1, dtype=value_dtype)   # rotated residual coordinates
+        projected[0] = residual_norm
+        for column in range(cycle):
+            directions[column] = single_solve(basis[column])
+            vector = product(directions[column])
+            hessenberg[:column + 1, column], next_norm = _orthogonalized(basis[:column + 1], vector, xp)
+            filled = column + 1
+            for row, (cosine, sine) in enumerate(rotations):
+                upper, lower = hessenberg[row, column], hessenberg[row + 1, column]
+                hessenberg[row, column] = cosine * upper + sine * lower
+                hessenberg[row + 1, column] = -np.conj(sine) * upper + cosine * lower
+            cosine, sine = _givens(hessenberg[column, column], next_norm)
+            rotations.append((cosine, sine))
+            hessenberg[column, column] = cosine * hessenberg[column, column] + sine * next_norm
+            previous = projected[column]
+            projected[column], projected[column + 1] = cosine * previous, -np.conj(sine) * previous
+            used += 1
+            estimate = abs(projected[column + 1])
+            if estimate <= target or next_norm == 0.0:
+                estimate_met = True
+                break
+            if stall_test and used == MIXED_STALL_ITERATIONS:
+                gate = max(MIXED_SOLVE_TOLERANCE * rhs_norm, BACKWARD_ERROR_TOLERANCE
+                           * (operator_norm() * solution_norm + rhs_norm))
+                rate = (residual_norm / estimate) ** (1.0 / MIXED_STALL_ITERATIONS)
+                remaining = MIXED_MAX_REFINEMENTS - MIXED_STALL_ITERATIONS
+                if estimate / rate ** remaining > MIXED_STALL_MARGIN * gate:
+                    stalled = True
+                    break
+            basis[column + 1] = vector / next_norm
+        weights = np.linalg.solve(np.triu(hessenberg[:filled, :filled]), projected[:filled])
+        solution += xp.asarray(weights) @ directions[:filled]
 
 
 def csr_rows(indptr, dtype=np.int64):
@@ -1478,70 +1559,13 @@ class CudssFactorization:
         return self._row_scale * solution
 
     def _gmres_refine(self, rhs, solution, stall_test=False, backward_error=MIXED_SOLVE_BACKWARD_ERROR):
-        """Restarted flexible GMRES on E y = rhs from `solution`, preconditioned by the low-precision solve (GMRES-IR),
-        until the relative residual MIXED_SOLVE_TOLERANCE, the backward error `backward_error`, the float64 floor
-        (module header) or MIXED_MAX_REFINEMENTS iterations (counted in last_refinements); stall_test (a probe or
-        deferred check): also stop after MIXED_STALL_ITERATIONS when the gate is out of reach (module header). Basis and
-        directions are (cycle, n) device arrays: classical Gram-Schmidt twice by batched products, one host read per
-        iteration (coefficients + norm) and one per restart (two norms), one product for the update (B8)."""
+        """Module gmres_refine on the device (E = _product, preconditioned by _single_solve), its iterations counted
+        on in last_refinements, its errors kept as _last_solve_errors (the deferred check's gate values)."""
         import cupy as cp
-        rhs_norm = float(cp.linalg.norm(rhs))
-        estimate_met = False   # the last cycle's GMRES estimate met the target
-        stalled = False        # stall_test: the rate so far cannot reach the probe gate
-        unrefined = None
-        while True:
-            residual = rhs - self._product(solution)
-            residual_norm, solution_norm = (float(norm) for norm in
-                                            cp.stack((cp.linalg.norm(residual), cp.linalg.norm(solution))).get())
-            target = max(MIXED_SOLVE_TOLERANCE * rhs_norm, backward_error
-                         * (self.operator_norm * solution_norm + rhs_norm))
-            if unrefined is None and rhs_norm > 0.0:
-                unrefined = residual_norm / rhs_norm
-            cycle = min(GMRES_RESTART, MIXED_MAX_REFINEMENTS - self.last_refinements)
-            # estimate met, true residual not: the floor
-            if residual_norm <= target or cycle <= 0 or estimate_met or stalled:
-                # (relative residual, backward error, unrefined) of E y = rhs: the deferred check's gate values
-                self._last_solve_errors = ((None, None, None) if rhs_norm == 0.0 else
-                                           (residual_norm / rhs_norm,
-                                            residual_norm / (self.operator_norm * solution_norm + rhs_norm), unrefined))
-                return solution
-            basis = cp.empty((cycle + 1, self.n_unknowns), dtype=self.value_dtype)
-            directions = cp.empty((cycle, self.n_unknowns), dtype=self.value_dtype)
-            basis[0] = residual / residual_norm
-            rotations, used = [], 0
-            hessenberg = np.zeros((cycle + 1, cycle), dtype=self.value_dtype)
-            projected = np.zeros(cycle + 1, dtype=self.value_dtype)   # rotated residual coordinates
-            projected[0] = residual_norm
-            for column in range(cycle):
-                directions[column] = self._single_solve(basis[column])
-                vector = self._product(directions[column])
-                hessenberg[:column + 1, column], next_norm = _orthogonalized(basis[:column + 1], vector)
-                used = column + 1
-                for row, (cosine, sine) in enumerate(rotations):
-                    upper, lower = hessenberg[row, column], hessenberg[row + 1, column]
-                    hessenberg[row, column] = cosine * upper + sine * lower
-                    hessenberg[row + 1, column] = -np.conj(sine) * upper + cosine * lower
-                cosine, sine = _givens(hessenberg[column, column], next_norm)
-                rotations.append((cosine, sine))
-                hessenberg[column, column] = cosine * hessenberg[column, column] + sine * next_norm
-                previous = projected[column]
-                projected[column], projected[column + 1] = cosine * previous, -np.conj(sine) * previous
-                self.last_refinements += 1
-                estimate = abs(projected[column + 1])
-                if estimate <= target or next_norm == 0.0:
-                    estimate_met = True
-                    break
-                if stall_test and self.last_refinements == MIXED_STALL_ITERATIONS:
-                    gate = max(MIXED_SOLVE_TOLERANCE * rhs_norm, BACKWARD_ERROR_TOLERANCE
-                               * (self.operator_norm * solution_norm + rhs_norm))
-                    rate = (residual_norm / estimate) ** (1.0 / MIXED_STALL_ITERATIONS)
-                    remaining = MIXED_MAX_REFINEMENTS - MIXED_STALL_ITERATIONS
-                    if estimate / rate ** remaining > MIXED_STALL_MARGIN * gate:
-                        stalled = True
-                        break
-                basis[column + 1] = vector / next_norm
-            weights = np.linalg.solve(np.triu(hessenberg[:used, :used]), projected[:used])
-            solution += cp.asarray(weights) @ directions[:used]
+        solution, self.last_refinements, self._last_solve_errors = gmres_refine(
+            cp, self._product, self._single_solve, rhs, solution, lambda: self.operator_norm, stall_test=stall_test,
+            backward_error=backward_error, used=self.last_refinements)
+        return solution
 
     def solve(self, rhs, transpose=False, refinement_steps=None, backward_error=None):
         """cupy solution x (value_dtype) of A x = rhs (transpose: A^T x = rhs, unconjugated, symmetric factors only) for

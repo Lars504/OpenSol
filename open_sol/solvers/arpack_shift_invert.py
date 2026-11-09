@@ -8,6 +8,8 @@ from typing import NamedTuple
 import numpy as np
 
 from .cudss_factor import CUDSS_REFUSALS, CudssAccuracyError, canonical_csr, csr_rows
+from .host_direct import (HOST_DIRECT_FACTORIZATIONS, HOST_DIRECT_MIXED_BACK_ENDS, double_of,
+                          host_direct_factorization, is_host_direct_factor)
 from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrdering, factorize_host
 
 # Shift-invert across several shifts (B1): the shifted operator K - sigma M is built on one fixed pattern (ShiftPencil
@@ -16,7 +18,9 @@ from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrd
 # real symmetric / Hermitian pencil with M positive definite; read from the cuDSS LDL^T pivots (real only, the
 # equilibration is a congruence; mixed: float32 pivots, exact=False) or from a SuperLU factor whose pivots stayed on the
 # diagonal (else one counting SuperLU with diag_pivot_thresh 0, counted as an eigen factorisation). Pencils and the
-# shifted operator stay host CSR: SuperLU converts to CSC itself (_ordered_superlu).
+# shifted operator stay host CSR: SuperLU converts to CSC itself (_ordered_superlu). MUMPS / PARDISO factorizations
+# (host_direct) count from their real LDL^T / Cholesky pivots (MUMPS INFOG(12), PARDISO iparm[21] / [22]); an LU,
+# perturbed / null pivots or a Hermitian pencil get the counting SuperLU; previous= refactorises on the kept analysis.
 # ShiftPencil (H2): the terms of K - sigma M put on one canonical pattern once; per shift SuperLU gets a one-pass host
 # combination of the values, a cuDSS factorization one DevicePencil (uploaded and symmetry-checked once, through a
 # private sparse_direct runtime) refreshed by factorize_pencil on the device (host CSR, asymmetry check and lower take
@@ -197,8 +201,14 @@ class ShiftPencil:
 # float64 refinement (only roles whose setting_choices accept it: callers that ask for loose solves, em_fdfd_3d).
 # 'auto' (B1a): the role's auto_back_ends[grid] on the gpu with nvmath-python (schema.auto_back_end_values, marked by
 # sparse_direct.AUTO_BACK_END_KEY: the runtime then falls back to SuperLU on a cuDSS refusal, B1b), else SuperLU
-FACTORIZATIONS = ('auto', 'superlu', 'cudss', 'cudss_mixed')
+# Host direct factorizations (solvers.host_direct: MUMPS / MKL PARDISO, + _mixed): opt-in like cuDSS, never 'auto', on
+# both backends; factorize_host returns a HostDirectFactorization (host solves, LDL^T of a symmetric request, inertia
+# from the library's pivots); a refusal raises (no fallback); *_mixed below mixed_min_unknowns factors in double (S5c).
+FACTORIZATIONS = ('auto', 'superlu', 'cudss', 'cudss_mixed') + HOST_DIRECT_FACTORIZATIONS
 CUDSS_FACTORIZATIONS = ('cudss', 'cudss_mixed')
+LDLT_FACTORIZATIONS = CUDSS_FACTORIZATIONS + HOST_DIRECT_FACTORIZATIONS   # an own factor honouring symmetric /
+                                                                         # symmetrizer / row_scale (SuperLU: LU)
+MIXED_FACTORIZATIONS = ('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS   # a float32 / complex64 factor + refinement
 SCIPY_DEFAULT_BASIS = 20   # scipy eigs ncv default: min(n, max(2 k + 1, 20))
 # Arnoldi / Lanczos restarts of eigs / eigsh_shifted: converging solves need tens; scipy's own default 10 n let a solve
 # whose rounding noise exceeds the tolerance (a shift on a resonance) run uninterruptibly for minutes
@@ -336,6 +346,8 @@ class ArpackShiftInvertSolver:
         self.symmetric_factor = False   # the last cudss factorisation is an LDL^T
         self.double_fallbacks = 0   # cudss_mixed factors rejected by their probe and replaced by double ones
         self.n_cudss_plans = 0      # cuDSS analyses of factorize_host (the pencil runtime counts its own)
+        self.n_host_direct_analyses = 0   # MUMPS / PARDISO analyses (fallback re-analyses included)
+        self.host_direct_threads = None   # the last host direct factor's library thread count
         self.orderings = SuperLUOrdering()   # SuperLU elimination order of the last pattern (shifts of one pencil)
         self._pencil_runtime = None   # private SparseDirectSolver of the cuDSS ShiftPencils (factorize_pencil)
         self.device_pencil_min_entries = DEVICE_PENCIL_MIN_ENTRIES
@@ -345,9 +357,9 @@ class ArpackShiftInvertSolver:
 
     def factorization_for(self, n_unknowns) -> str:
         """The factorization used for an operator of n_unknowns: cudss for a cudss_mixed request below
-        mixed_min_unknowns (S5c), else the runtime's own."""
-        if self.factorization == 'cudss_mixed' and int(n_unknowns) < self.mixed_min_unknowns:
-            return 'cudss'
+        mixed_min_unknowns (S5c; a host *_mixed request likewise its double name), else the runtime's own."""
+        if self.factorization in MIXED_FACTORIZATIONS and int(n_unknowns) < self.mixed_min_unknowns:
+            return 'cudss' if self.factorization == 'cudss_mixed' else double_of(self.factorization)
         return self.factorization
 
     def shift_pencil(self, stiffness_terms, mass, dtype, symmetric, symmetric_known=False) -> ShiftPencil:
@@ -398,7 +410,7 @@ class ArpackShiftInvertSolver:
         first solve unless defer_check is False), else host SuperLU of pencil.operator."""
         start = time.perf_counter()   # eigen_factor_seconds include the combination and the row scale
         real = pencil.dtype.kind != 'c' and all(not np.iscomplexobj(coefficient) for coefficient in coefficients)
-        if row_scale is None and self.factorization in CUDSS_FACTORIZATIONS:
+        if row_scale is None and self.factorization in LDLT_FACTORIZATIONS:
             row_scale = pencil.row_scale(coefficients)
         if pencil.device is None:
             operator = pencil.operator(coefficients)   # canonical CSR: cuDSS may skip its asymmetry check when vouched
@@ -432,7 +444,18 @@ class ArpackShiftInvertSolver:
         all four). A runtime resolved from 'auto' falls back to SuperLU on a cuDSS refusal (_fall_back)."""
         start = time.perf_counter()
         factor = None
-        if self.factorization in CUDSS_FACTORIZATIONS:
+        if self.factorization in HOST_DIRECT_FACTORIZATIONS:   # MUMPS / PARDISO: refusals raise (no fallback)
+            factor = host_direct_factorization(matrix, self.factorization_for(matrix.shape[0]), previous=previous,
+                                               real=real, symmetric=symmetric, row_scale=row_scale,
+                                               symmetric_known=symmetric_known and symmetric)
+            factor.host_arrays = True
+            self.symmetric_factor = factor.symmetric
+            self.refinement_steps = factor.refinement_steps
+            self.lu_entries = factor.lu_entries
+            self.double_fallbacks += int(factor.last_double_fallback)
+            self.n_host_direct_analyses += factor.last_analyses
+            self.host_direct_threads = factor.threads
+        elif self.factorization in CUDSS_FACTORIZATIONS:
             from .sparse_direct import cudss_factorization
             try:
                 factor = cudss_factorization(matrix, self.factorization_for(matrix.shape[0]), previous=previous,
@@ -457,10 +480,13 @@ class ArpackShiftInvertSolver:
 
     def _shift_inertia(self, factor, operator, sigma):
         """ShiftInertia of a factor of the symmetric / Hermitian K - sigma M (module header), None when uncountable
-        (cuDSS general LU or complex LDL^T); a SuperLU with off-diagonal pivots gets one counting factorisation."""
+        (cuDSS general LU or complex LDL^T); a SuperLU with off-diagonal pivots and a MUMPS / PARDISO factor without a
+        count (LU, perturbed or null pivots) get one counting SuperLU factorisation."""
         counts = factor.inertia()
         exact = getattr(factor, 'factor_precision', 'double') == 'double'   # what is factored, not the request
-        if counts is None and getattr(factor, 'back_end', '') == 'scipy_splu':
+        if counts is None and (getattr(factor, 'back_end', '') == 'scipy_splu' or is_host_direct_factor(factor)):
+            if is_host_direct_factor(factor):
+                exact = True   # the counting SuperLU is double
             from .sparse_direct import superlu_counting_inertia
             start = time.perf_counter()
             counts = superlu_counting_inertia(operator)
@@ -475,7 +501,8 @@ class ArpackShiftInvertSolver:
         itself (no offset; a singular factor retried once at sigma (1 + COUNT_SHIFT_NUDGE)); previous as factorize_host;
         pencil: this pencil's ShiftPencil (None: one is built). A Hermitian pencil on cuDSS (general LU, no count):
         None, nothing factorised (factor = previous); a runtime resolved from 'auto' counts it by one counting host
-        SuperLU instead (factor = previous), so band searches stay verified."""
+        SuperLU instead (factor = previous), so band searches stay verified; on a host direct factorization (MUMPS /
+        PARDISO) a Hermitian pencil is always counted by that counting SuperLU (factor = previous)."""
         hermitian = (pencil.dtype.kind == 'c' if pencil is not None else
                      np.iscomplexobj(stiffness.data) or np.iscomplexobj(mass.data))
         if hermitian and self.factorization in CUDSS_FACTORIZATIONS and self.fallback_factorization is None:
@@ -483,8 +510,8 @@ class ArpackShiftInvertSolver:
         pencil = self._checked_pencil(pencil, (stiffness,), mass, np.complex128 if hermitian else np.float64,
                                       symmetric=not hermitian)
         sigma = float(sigma)
-        if hermitian and self.factorization in CUDSS_FACTORIZATIONS:
-            return self._superlu_count(pencil, sigma), previous
+        if hermitian and self.factorization in CUDSS_FACTORIZATIONS + HOST_DIRECT_FACTORIZATIONS:
+            return self._superlu_count(pencil, sigma), previous   # a host direct LU has no count: SuperLU counts
         for attempt in range(2):
             try:
                 # probed now: a count is never solved with, so a deferred check would never judge the factor whose
@@ -740,6 +767,12 @@ class ArpackShiftInvertSolver:
                             eigen_factor_symmetric=int(self.symmetric_factor),
                             eigen_double_fallbacks=self.double_fallbacks + fallbacks,
                             eigen_cudss_plans=self.n_cudss_plans + plans)
+        if self.factorization in HOST_DIRECT_FACTORIZATIONS:
+            counters.update(eigen_host_direct_analyses=self.n_host_direct_analyses, eigen_lu_entries=self.lu_entries,
+                            eigen_factor_symmetric=int(self.symmetric_factor),
+                            eigen_double_fallbacks=self.double_fallbacks,
+                            eigen_refinement_steps=self.refinement_steps,
+                            eigen_host_direct_threads=self.host_direct_threads)
         return counters
 
 
@@ -955,7 +988,8 @@ def time_estimate(values, work):
     (2D the profile's cudss curves, 3D the fitted recipe above), other dimensions not estimated. work.plan_reused
     marks a ShiftPencil caller (its set-up once, host M products, per-shift combination; work.nnz = the pencil's
     entries); the device Krylov-Schur wherever eigs runs it (gpu backend, device_arnoldi_fits; work.device_arnoldi
-    forces it: solve_resonances' own factor); cudss_mixed below MIXED_EIGEN_MIN_UNKNOWNS priced as cudss (S5c)."""
+    forces it: solve_resonances' own factor); cudss_mixed below MIXED_EIGEN_MIN_UNKNOWNS priced as cudss (S5c); the
+    host direct factorizations on the SuperLU items x sparse_direct.HOST_DIRECT_* (uncalibrated)."""
     from dataclasses import replace
     from ..core import time_estimate as te
     factorization = values.get('factorization')
@@ -991,10 +1025,19 @@ def time_estimate(values, work):
                                                 if device_arnoldi and device_matvec else cudss_work)
         if not work.plan_reused:   # a fresh plan with every factorisation
             factorisation, plan = plan + factorisation, ()
-    else:
+    else:   # host SuperLU, or MUMPS / PARDISO priced as SuperLU x sparse_direct.HOST_DIRECT_* (uncalibrated; a mixed
+        # factor's solves x CUDSS_MIXED_SOLVES_PER_SOLVE as cudss_mixed: the eigen polish)
+        from .sparse_direct import HOST_DIRECT_FACTOR_TIME, HOST_DIRECT_SOLVE_TIME
+        host_direct = factorization in HOST_DIRECT_FACTORIZATIONS
+        factor_scale = work.factor_scale * (HOST_DIRECT_FACTOR_TIME if host_direct else 1.0)
+        solve_scale = work.solve_scale * ((HOST_DIRECT_SOLVE_TIME * (CUDSS_MIXED_SOLVES_PER_SOLVE
+                                                                     if factorization in MIXED_FACTORIZATIONS
+                                                                     and float(work.unknowns)
+                                                                     >= MIXED_EIGEN_MIN_UNKNOWNS else 1.0))
+                                          if host_direct else 1.0)
         apply = work.product_ops or (te.HostSolve(n_unknowns, work.dimensions, work.complex, rhs=work.rhs,
-                                                  scale=work.solve_scale),)
-        factorisation = (te.HostLU(n_unknowns, work.dimensions, work.complex, scale=work.factor_scale),)
+                                                  scale=solve_scale),)
+        factorisation = (te.HostLU(n_unknowns, work.dimensions, work.complex, scale=factor_scale),)
         if pencil_caller:   # SuperLU's CSC copy of the shifted operator
             factorisation += (te.HostStream(2.0 * (value_bytes + te.INDEX_BYTES) * entries),)
     if pencil_caller and not device_pencil:   # the one-pass host combination (every term read, 1 written)

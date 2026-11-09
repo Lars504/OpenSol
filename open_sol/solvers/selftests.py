@@ -2,7 +2,8 @@
 small synthetic 2D grid operators, each backend against a scipy reference, the cuDSS eigen factorization against
 SuperLU and the cuDSS sparse_direct back ends against scipy. No model run; the gpu half is skipped without a usable GPU.
 Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
-of eigsh_shifted with its shift on an eigenvalue."""
+of eigsh_shifted with its shift on an eigenvalue. The MUMPS / PARDISO host direct back ends and eigen factorizations
+against scipy (skipped without their wrappers)."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
@@ -1392,6 +1393,326 @@ def _check_eigen_band(results_by_name):
                         'merged_count': int(merged.size)}}
 
 
+# --- host direct back ends (MUMPS / PARDISO) ------------------------------------------------------------------------
+
+_HOST_INERTIA_SHIFT_INDEX = 150   # real symmetric indefinite K - sigma I: sigma halfway after the 151st eigenvalue
+
+
+def _host_direct_role_checks(failed):
+    """CPU, no wrapper needed: the host direct back ends fit the roles listing them (heat, em_fdfd_ez,
+    em_fdfd_nonlinear linear; magnetic_fields_ac double only; em_fdfd_ez eigen all four, membrane eigen double only)
+    and misfit em_modes 'shifted' (opt-in setting); no cpu misfit; the SuperLU size rule; resolve_back_end gives the
+    name when the wrapper is installed, else raises missing_text; factorization_for maps a host *_mixed request
+    below mixed_min_unknowns to its double name."""
+    from ..model.schema import get_registry
+    from .arpack_shift_invert import FACTORIZATIONS, ArpackShiftInvertSolver
+    from .arpack_shift_invert import backend_misfit as eigen_backend_misfit
+    from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS, host_direct_available,
+                              missing_text)
+    from .roles import solver_misfit
+    from .sparse_direct import LINEAR_SOLVER_CHOICES, backend_misfit, resolve_back_end, size_issue
+    registry = get_registry()
+    sparse_type, eigen_type = registry.solver_type('sparse_direct'), registry.solver_type('arpack_shift_invert')
+    every, double = tuple(HOST_DIRECT_BACK_ENDS), tuple(HOST_DIRECT_DOUBLE_BACK_ENDS)
+    for solver_type, setting, physics_name, role, study, grid, offered in (
+            (sparse_type, 'back_end', 'heat', 'linear', 'stationary', 'tensor', every),
+            (sparse_type, 'back_end', 'em_fdfd_ez', 'linear', 'stationary', 'tensor', every),
+            (sparse_type, 'back_end', 'em_fdfd_nonlinear', 'linear', 'stationary', 'tensor', every),
+            (sparse_type, 'back_end', 'magnetic_fields_ac', 'linear', 'stationary', 'tensor', double),
+            (sparse_type, 'back_end', 'em_modes', 'shifted', 'mode_analysis', 'tensor', ()),
+            (eigen_type, 'factorization', 'em_fdfd_ez', 'eigen', 'eigenfrequency', 'tensor', every),
+            (eigen_type, 'factorization', 'membrane', 'eigen', 'eigenfrequency', 'triangles', double)):
+        physics_type = registry.physics_type(physics_name)
+        for name in HOST_DIRECT_BACK_ENDS:   # gpu: every listed physics runs there (the cpu: backend_misfit below)
+            misfit = solver_misfit(solver_type, {setting: name}, physics_type, role, study, 'gpu', grid)
+            if bool(misfit) == (name in offered):
+                failed.append(f'{physics_name}_{role}_{name}_offered_{name in offered}')
+    for name in HOST_DIRECT_BACK_ENDS:
+        if name not in LINEAR_SOLVER_CHOICES or name not in FACTORIZATIONS:
+            failed.append(f'{name}_listed')
+        if backend_misfit({'back_end': name}, 'cpu') or eigen_backend_misfit({'factorization': name}, 'cpu'):
+            failed.append(f'{name}_runs_on_cpu')
+        if (size_issue(name, 5000, 5000, False, False) or ('',))[0] != 'error' or size_issue(name, 30, 20, False,
+                                                                                               False) is not None:
+            failed.append(f'{name}_superlu_size_rule')
+        if host_direct_available(name):
+            if resolve_back_end(name, 'cpu') != name:
+                failed.append(f'{name}_resolves')
+        else:
+            try:
+                resolve_back_end(name, 'cpu')
+                failed.append(f'{name}_missing_raises')
+            except ValueError as error:
+                if str(error) != missing_text(name):
+                    failed.append(f'{name}_missing_text')
+    for name in HOST_DIRECT_BACK_ENDS:
+        if name.endswith('_mixed'):
+            solver = ArpackShiftInvertSolver(factorization=name, mixed_min_unknowns=1000)
+            if solver.factorization_for(600) != name[:-len('_mixed')] or solver.factorization_for(2000) != name:
+                failed.append(f'{name}_double_below_mixed_min_unknowns')
+
+
+def _host_direct_spd_checks(back_end, spd, changed, rhs, failed, errors, details):
+    """DiffusionDirectSolver (cpu) on a host direct back end: real SPD factor (PARDISO double: Cholesky, else LDL^T),
+    a value-only change on the kept analysis (one analysis), inertia (n, 0), solves against spsolve, release."""
+    import scipy.sparse.linalg
+    from .sparse_direct import DiffusionDirectSolver, SparseDirectSolver
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    direct = DiffusionDirectSolver(runtime)
+    for name, matrix in (('spd', spd), ('values', changed)):
+        direct.factorize(matrix)
+        solution = np.zeros(matrix.shape[0])
+        direct.solve(rhs, solution)
+        errors[f'{back_end}_{name}'] = norm_relative_error(solution,
+                                                           scipy.sparse.linalg.spsolve(matrix.tocsc(), rhs))
+    factor = direct._factor
+    mixed = back_end.endswith('_mixed')
+    expected_kind = 'spd' if back_end == 'pardiso' else 'symmetric'
+    if factor.matrix_kind != expected_kind or factor.factor_precision != ('mixed' if mixed else 'double'):
+        failed.append(f'{back_end}_spd_kind_{factor.matrix_kind}_{factor.factor_precision}')
+    if not factor.last_plan_reused:
+        failed.append(f'{back_end}_values_on_kept_analysis')
+    counters = runtime.work_counters()
+    if counters.get('host_direct_analyses') != 1 or counters.get('host_direct_reused_analyses') != 1:
+        failed.append(f'{back_end}_one_analysis')
+    inertia = factor.inertia()
+    if inertia is not None and tuple(inertia) != (spd.shape[0], 0):
+        failed.append(f'{back_end}_spd_inertia')
+    details[f'{back_end}_spd'] = {'description': factor.description, 'inertia': inertia, 'counters': counters,
+                                  'probe_residual': factor.probe_residual, 'single_residual': factor.single_residual}
+    direct.release_factor()
+    if factor.valid:
+        failed.append(f'{back_end}_released')
+
+
+def _host_direct_general_checks(back_end, operators, rhs, failed, errors, details):
+    """sparse_direct factorize on the cpu (scipy operators, host_arrays): complex LU (solve, transposed solve, GMRES on
+    the factor of a perturbed operator), the symmetrizer LDL^T of D A (solve and transposed solve), a real LU by
+    factorize_host(real=True) (float64 solve, a complex rhs as two real solves), each against spsolve."""
+    import scipy.sparse.linalg
+    from .sparse_direct import SparseDirectSolver
+    general, perturbed, unsymmetric, symmetrizer, real_general = operators
+    nx, ny = _GRID
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    factor = runtime.factorize(general, nx, ny, False, False)
+    if not factor.host_arrays or factor.symmetric or not factor.recyclable:
+        failed.append(f'{back_end}_general_lu')
+    errors[f'{back_end}_general'] = norm_relative_error(factor.solve(rhs),
+                                                        scipy.sparse.linalg.spsolve(general.tocsc(), rhs))
+    errors[f'{back_end}_general_transpose'] = norm_relative_error(
+        factor.solve(rhs, transpose=True), scipy.sparse.linalg.spsolve(general.T.tocsc(), rhs))
+    solution, iterations = runtime.solve_recycled(factor, perturbed, rhs)
+    details[f'{back_end}_recycled_iterations'] = iterations
+    if solution is None:
+        failed.append(f'{back_end}_recycled_converged')
+    else:
+        errors[f'{back_end}_recycled'] = norm_relative_error(solution,
+                                                             scipy.sparse.linalg.spsolve(perturbed.tocsc(), rhs))
+    factor.release()
+    factor = runtime.factorize(unsymmetric, nx, ny, False, False, symmetrizer=symmetrizer)
+    if not factor.symmetric:
+        failed.append(f'{back_end}_symmetrizer_ldlt')
+    errors[f'{back_end}_symmetrizer'] = norm_relative_error(factor.solve(rhs),
+                                                            scipy.sparse.linalg.spsolve(unsymmetric.tocsc(), rhs))
+    errors[f'{back_end}_symmetrizer_transpose'] = norm_relative_error(
+        factor.solve(rhs, transpose=True), scipy.sparse.linalg.spsolve(unsymmetric.T.tocsc(), rhs))
+    factor.release()
+    factor = runtime.factorize_host(real_general, real=True)
+    real_rhs = np.ascontiguousarray(rhs.real)
+    real_solution = factor.solve_host(real_rhs)
+    if real_solution.dtype != np.float64 or factor.symmetric:
+        failed.append(f'{back_end}_real_lu')
+    errors[f'{back_end}_real_lu'] = norm_relative_error(real_solution,
+                                                        scipy.sparse.linalg.spsolve(real_general.tocsc(), real_rhs))
+    errors[f'{back_end}_real_lu_complex_rhs'] = norm_relative_error(
+        factor.solve_host(rhs), scipy.sparse.linalg.spsolve(real_general.tocsc(), rhs))
+    factor.release()
+    details[f'{back_end}_counters'] = runtime.work_counters()
+
+
+def _host_direct_inertia_checks(back_end, failed, details):
+    """Real symmetric indefinite K - sigma I by factorize_host(real=True, symmetric=True): LDL^T, inertia() = the
+    counting SuperLU's (None allowed: perturbed pivots, recorded); refactorize on the same pattern keeps the analysis."""
+    import scipy.sparse
+    from .sparse_direct import SparseDirectSolver, superlu_counting_inertia
+    nx, ny = _GRID
+    stiffness = _laplacian(nx, ny)
+    exact = np.sort(np.linalg.eigvalsh(stiffness.toarray()))
+    shifted = []
+    for index in (_HOST_INERTIA_SHIFT_INDEX, _HOST_INERTIA_SHIFT_INDEX + 100):
+        sigma = 0.5 * (exact[index] + exact[index + 1])
+        shifted.append((stiffness - sigma * scipy.sparse.identity(stiffness.shape[0], format='csr')).tocsr())
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    factor, outcomes = None, []
+    for operator in shifted:
+        factor = runtime.factorize_host(operator, real=True, symmetric=True, previous=factor)
+        got, expected = factor.inertia(), superlu_counting_inertia(operator)
+        outcomes.append({'inertia': got, 'superlu': expected, 'perturbed_pivots': factor.perturbed_pivots,
+                         'reused': factor.last_plan_reused})
+        if not factor.symmetric:
+            failed.append(f'{back_end}_indefinite_ldlt')
+        if (got is not None and expected is not None and not back_end.endswith('_mixed')
+                and tuple(got) != tuple(expected)):
+            failed.append(f'{back_end}_inertia')
+    if not factor.last_plan_reused:
+        failed.append(f'{back_end}_inertia_kept_analysis')
+    factor.release()
+    details[f'{back_end}_inertia'] = outcomes
+
+
+def _host_direct_fallback_checks(back_end, spd, rhs, failed, errors):
+    """A *_mixed factor whose low-precision solves are made useless (identity) misses its probe: refactored in double
+    (last_double_fallback, factor_precision double, mixed_rejection set), the solve right."""
+    import scipy.sparse.linalg
+    from .host_direct import HostDirectFactorization, host_direct_factorization
+    unit_solve = HostDirectFactorization._unit_solve
+    HostDirectFactorization._unit_solve = lambda self, vector, transpose=False: np.array(vector, copy=True)
+    try:
+        factor = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+    finally:
+        HostDirectFactorization._unit_solve = unit_solve
+    if not (factor.last_double_fallback and factor.factor_precision == 'double' and factor.mixed_rejection):
+        failed.append(f'{back_end}_double_fallback')
+    errors[f'{back_end}_double_fallback'] = norm_relative_error(factor.solve_host(rhs),
+                                                                scipy.sparse.linalg.spsolve(spd.tocsc(), rhs))
+    factor.release()
+
+
+def _host_direct_gpu_checks(back_end, general, spd, complex_rhs, real_rhs, failed, errors):
+    """gpu backend: factorize of a cupyx operator (one host copy; cupy solve in / out, transposed too) and
+    DiffusionDirectSolver on a cupyx SPD operator, against spsolve."""
+    import scipy.sparse.linalg
+    from ..core.backend import to_host
+    from .sparse_direct import DiffusionDirectSolver, SparseDirectSolver
+    nx, ny = _GRID
+    runtime = SparseDirectSolver(back_end=back_end, backend='gpu')
+    factor = runtime.factorize(_device_matrix('gpu', general), nx, ny, False, False)
+    device_rhs = _device('gpu', complex_rhs)
+    solution = factor.solve(device_rhs)
+    if isinstance(solution, np.ndarray) or factor.host_arrays:
+        failed.append(f'gpu_{back_end}_solution_on_device')
+    errors[f'gpu_{back_end}_general'] = norm_relative_error(to_host(solution),
+                                                            scipy.sparse.linalg.spsolve(general.tocsc(), complex_rhs))
+    errors[f'gpu_{back_end}_general_transpose'] = norm_relative_error(
+        to_host(factor.solve(device_rhs, transpose=True)), scipy.sparse.linalg.spsolve(general.T.tocsc(), complex_rhs))
+    factor.release()
+    direct = DiffusionDirectSolver(SparseDirectSolver(back_end=back_end, backend='gpu'))
+    direct.factorize(_device_matrix('gpu', spd))
+    solution = _device('gpu', np.zeros(spd.shape[0]))
+    direct.solve(_device('gpu', real_rhs), solution)
+    errors[f'gpu_{back_end}_spd'] = norm_relative_error(to_host(solution),
+                                                        scipy.sparse.linalg.spsolve(spd.tocsc(), real_rhs))
+    direct.release_factor()
+
+
+def _check_host_direct(results_by_name):
+    """sparse_direct back ends mumps / mumps_mixed / pardiso / pardiso_mixed (each installed library, both precisions)
+    against scipy on 30 x 20 grid operators, CPU and (with a GPU) cupyx operators; the role / misfit / resolution part
+    always (passes as skipped without python-mumps / pydiso)."""
+    import scipy.sparse
+    from ..model.selftest_helpers import available_host_direct
+    from .host_direct import HOST_DIRECT_BACK_ENDS, library_of
+    failed, errors, details = [], {}, {}
+    _host_direct_role_checks(failed)
+    libraries = tuple(available_host_direct())
+    details['libraries'] = list(libraries)
+    if not libraries:
+        return _outcome({'role_checks': 0.0}, failed, dict(details, skipped='python-mumps / pydiso not installed'))
+    rng = np.random.default_rng(_SEED + 7)
+    nx, ny = _GRID
+    n_unknowns = nx * ny
+    spd = (_laplacian(nx, ny) + scipy.sparse.diags(rng.uniform(0.01, 1.0, n_unknowns))).tocsr()
+    changed = (spd + scipy.sparse.diags(rng.uniform(0.0, 0.5, n_unknowns))).tocsr()   # same pattern, new values
+    real_rhs = rng.standard_normal(n_unknowns)
+    complex_rhs = rng.standard_normal(n_unknowns) + 1j * rng.standard_normal(n_unknowns)
+    general = _general_operator(rng, nx, ny)
+    perturbed = (general + scipy.sparse.diags(1e-3 * rng.uniform(0.0, 1.0, n_unknowns))).tocsr()
+    symmetric = (_laplacian(nx, ny) + scipy.sparse.diags((0.5 + 0.2j) * rng.uniform(1.0, 2.0, n_unknowns))).tocsr()
+    symmetrizer = (1.0 + 0.5j) * rng.uniform(0.5, 2.0, n_unknowns)
+    unsymmetric = (scipy.sparse.diags(1.0 / symmetrizer) @ symmetric).tocsr()   # D A symmetric, A not
+    forward = scipy.sparse.kron(scipy.sparse.diags([-np.ones(nx), np.ones(nx - 1)], [0, 1]),
+                                scipy.sparse.identity(ny))
+    real_general = (spd + 0.3 * forward).tocsr()
+    operators = (general, perturbed, unsymmetric, symmetrizer, real_general)
+    gpu = 'gpu' in _backends()
+    for back_end in HOST_DIRECT_BACK_ENDS:
+        if library_of(back_end) not in libraries:
+            continue
+        _host_direct_spd_checks(back_end, spd, changed, real_rhs, failed, errors, details)
+        _host_direct_general_checks(back_end, operators, complex_rhs, failed, errors, details)
+        _host_direct_inertia_checks(back_end, failed, details)
+        if back_end.endswith('_mixed'):
+            _host_direct_fallback_checks(back_end, spd, real_rhs, failed, errors)
+        if gpu:
+            _host_direct_gpu_checks(back_end, general, spd, complex_rhs, real_rhs, failed, errors)
+    details['backends'] = list(_backends())
+    return _outcome(errors, failed, details)
+
+
+def _check_arpack_host_direct(results_by_name):
+    """arpack_shift_invert factorizations mumps / pardiso (+ _mixed): count_below and eigsh_shifted(inertia=True) of
+    the Laplacian with the consistent mass against the dense eigh counts (mixed recorded only), eigsh_shifted
+    eigenvalues against eigh, one analysis for every shift (double), eigs_shifted of a complex symmetric pencil against
+    superlu, a Hermitian count_below by the counting SuperLU; passes as skipped without python-mumps / pydiso."""
+    import scipy.linalg
+    import scipy.sparse
+    from ..model.selftest_helpers import available_host_direct
+    from .arpack_shift_invert import EIGSH_SHIFT_RELATIVE_OFFSET, ArpackShiftInvertSolver
+    from .host_direct import HOST_DIRECT_FACTORIZATIONS, library_of
+    libraries = tuple(available_host_direct())
+    if not libraries:
+        return _outcome({'none': 0.0}, [], {'skipped': 'python-mumps / pydiso not installed'})
+    nx, ny = _GRID
+    stiffness, mass = _laplacian(nx, ny), _consistent_mass(nx, ny)
+    exact = np.sort(scipy.linalg.eigh(stiffness.toarray(), mass.toarray(), eigvals_only=True))
+    sigmas = [0.5 * exact[0] if index < 0 else 0.5 * (exact[index] + exact[index + 1]) for index in _INERTIA_INDICES]
+    complex_stiffness = ((1.0 + 0.01j) * stiffness).tocsr()
+    reference_solver = ArpackShiftInvertSolver(factorization='superlu')
+    start = np.random.default_rng(_SEED + 8).standard_normal(nx * ny)
+    reference = reference_solver.eigs_shifted(complex_stiffness, mass, sigmas[1], _INERTIA_EIGENPAIRS,
+                                              start_vector=start)[0]
+    errors, failed, outcomes = {}, [], {}
+    for factorization in HOST_DIRECT_FACTORIZATIONS:
+        if library_of(factorization) not in libraries:
+            continue
+        mixed = factorization.endswith('_mixed')
+        solver = ArpackShiftInvertSolver(factorization=factorization)
+        factor, worst = None, 0.0
+        for index, sigma in zip(_INERTIA_INDICES, sigmas):
+            expected = int(np.count_nonzero(exact < sigma))
+            counted, factor = solver.count_below(stiffness, mass, sigma, previous=factor)
+            result = solver.eigsh_shifted(stiffness, mass, sigma / (1.0 + EIGSH_SHIFT_RELATIVE_OFFSET),
+                                          _INERTIA_EIGENPAIRS, previous=factor, inertia=True)
+            factor, shifted = result[4], result[5]
+            got = [None if item is None else item.n_below for item in (counted, shifted)]
+            key = f'{factorization}_{index}'
+            outcomes[key] = {'expected': expected, 'count_below': got[0], 'eigsh_shifted': got[1],
+                             'exact': None if shifted is None else shifted.exact}
+            if not mixed and got != [expected, expected]:
+                failed.append(f'{key}_count')
+            if not result[3]:
+                failed.append(f'{key}_converged')
+            # the nearest but one: the last returned pair may swap with its neighbour outside the set
+            nearest = exact[np.argsort(np.abs(exact - sigma))][:_INERTIA_EIGENPAIRS - 1]
+            worst = max(worst, _matched_error(result[0], nearest))
+        errors[f'{factorization}_eigsh'] = worst
+        outcomes[f'{factorization}_analyses'] = factor.n_analyses
+        if not mixed and factor.n_analyses != 1:
+            failed.append(f'{factorization}_one_analysis')
+        factor.release()
+        values, _vectors, _applications, converged, factor = solver.eigs_shifted(
+            complex_stiffness, mass, sigmas[1], _INERTIA_EIGENPAIRS, start_vector=start)
+        errors[f'{factorization}_eigs_shifted'] = _matched_error(values, reference)
+        if not converged:
+            failed.append(f'{factorization}_eigs_shifted_converged')
+        factor.release()
+        hermitian, _previous = solver.count_below(stiffness.astype(np.complex128), mass, sigmas[2])   # Hermitian
+        if hermitian is None or hermitian.n_below != int(np.count_nonzero(exact < sigmas[2])):
+            failed.append(f'{factorization}_hermitian_count')
+        outcomes[f'{factorization}_counters'] = solver.work_counters()
+    return _outcome(errors, failed, {'libraries': list(libraries), 'outcomes': outcomes})
+
+
 SOLVER_SELFTEST_CASES = (
     SelfTestCase(
         name='solver_pcg_cpu_gpu',
@@ -1568,4 +1889,38 @@ SOLVER_SELFTEST_CASES = (
                     'runs, with no fewer modes than their clustered union and no more than both runs together. '
                     'Written, not run.',
         specs=lambda: {}, check=_check_eigen_band, max_wall_time=120.0),
+    SelfTestCase(
+        name='solver_host_direct_cpu_gpu',
+        label='Sparse direct solver on the processor (MUMPS / PARDISO) agrees with SciPy',
+        description='sparse_direct back ends mumps / mumps_mixed / pardiso / pardiso_mixed (python-mumps, pydiso; each '
+                    'installed library, both precisions) against scipy spsolve (relative error <= '
+                    f'{_PARITY_TOLERANCE:g}) on 30 x 20 grid operators: DiffusionDirectSolver on the 5-point Laplacian '
+                    '+ a random diagonal (real SPD: PARDISO double Cholesky, MUMPS and mixed LDL^T), then a value-only '
+                    'change on the kept analysis (one analysis), inertia (n, 0), release; the complex non-symmetric '
+                    'operator of solver_sparse_direct_cpu_gpu by factorize on the cpu (LU, solve, transposed solve, '
+                    'GMRES on the factor of a 1e-3-perturbed operator); D^-1 S with S complex symmetric and the '
+                    'symmetrizer D (LDL^T of D A, solve and transposed solve); a real non-symmetric operator by '
+                    'factorize_host(real=True) (float64 LU, a complex rhs as two real solves); the real symmetric '
+                    'indefinite Laplacian - sigma I at two shifts (LDL^T, inertia equal to the counting SuperLU unless '
+                    'pivots were perturbed, the second shift on the kept analysis); mixed: low-precision solves made '
+                    'useless force the probe miss and the double fallback (solve right); with a GPU the same LU '
+                    '(cupy solves, transposed too) and DiffusionDirectSolver on cupyx operators. Always (no wrapper '
+                    'needed): the back ends fit heat, em_fdfd_ez and em_fdfd_nonlinear linear (all four), '
+                    'magnetic_fields_ac linear (double only), em_fdfd_ez eigen (all four), membrane eigen (double '
+                    'only), misfit em_modes shifted, run on the cpu, keep the SuperLU size rule; resolve_back_end '
+                    'raises missing_text without the wrapper; a host mixed eigen request below mixed_min_unknowns '
+                    'factors in double. Passes as skipped without python-mumps / pydiso (the role part still judged). '
+                    'Written, not run.',
+        specs=lambda: {}, check=_check_host_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
+    SelfTestCase(
+        name='solver_arpack_host_direct',
+        label='Eigen solver on a processor factorisation (MUMPS / PARDISO) agrees with dense counts',
+        description='arpack_shift_invert factorizations mumps / mumps_mixed / pardiso / pardiso_mixed (each installed '
+                    'library): count_below and eigsh_shifted(inertia=True) of the 30 x 20 Laplacian with the bilinear '
+                    'consistent mass at the sigmas of eigen_inertia_count against the dense eigh count (mixed recorded '
+                    'only), the eigsh_shifted eigenvalues nearest each sigma against eigh (relative error <= '
+                    f'{_PARITY_TOLERANCE:g}), one analysis for all eight shifts (double), eigs_shifted of the complex '
+                    'symmetric pencil (1 + 0.01 j) K, M against superlu, a Hermitian count_below by the counting '
+                    'SuperLU. Passes as skipped without python-mumps / pydiso. Written, not run.',
+        specs=lambda: {}, check=_check_arpack_host_direct, max_wall_time=120.0),
 )
