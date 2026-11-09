@@ -7,6 +7,8 @@ format (one subfolder each, loaded by path; not in the Examples menu, not checke
 `dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it, not shipped):
 `dev_tools/time_profilers/cpu_solvers` benchmarks every CPU solver choice (enumerated from the registry) on problems
 assembled by open_sol's own operator code; it is not `python -m open_sol profile` (the run-time estimate's profile).
+`dev_tools/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
+syncs); `dev_tools/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
 User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
 `INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
 cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
@@ -570,4 +572,5 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `dev_tools/time_profilers/`: CPU solver profiler (parent / child layout, imports, solver enumeration rule, result
-  line); usage in its README.md.
+  line), case_profilers (script layout, wrap before the registry, unresolved parts); usage in its README.md.
+- `dev_tools/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).

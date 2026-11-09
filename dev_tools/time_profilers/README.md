@@ -82,3 +82,21 @@ x86-64) is a `skipped` record with `host_direct.missing_text`.
   direct solve; real time-stepped runs warm-start and are cheaper per solve.
 - Problems are synthetic geometries on open_sol's real assembly code, without PEC / mirror pinning, Bloch phases or
   conformal cuts; GPU back ends and the thermal-noise `shifted` role are out of scope.
+
+# Case profilers (`case_profilers/`)
+
+Whole selftest runs per solver engine (gpu by default), to find host work (numpy / scipy / Python, device-host
+round trips) around the solves. Run from any folder:
+
+```
+python dev_tools/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
+python dev_tools/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...]
+```
+
+Common options (`profiler_harness.main`): `--case`, `--runs`, `--variant`, `--backend gpu|cpu`, `--repeat`,
+`--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`; some scripts add `--kind` / `--refine`.
+Output `out/<name>/report.txt` + `profile.prof`: per part calls, inclusive / exclusive wall and cpu/wall (~1
+host-bound, ~0 waiting on the GPU, > 1 threaded BLAS), the untimed rest, cProfile own / cumulative time of open_sol
+functions, callers of the largest outside functions and of every sync / transfer site. `run_all_profilers.py` logs
+to `out/run_all.log` and keeps each report in `out/history/<timestamp>/`. `measure_cudss_reordering.py` times cuDSS
+reordering choices on synthetic matrices; `profiler_example_sin_square_membrane.py` profiles an example file.

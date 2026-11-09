@@ -25,3 +25,16 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   status there, never a traceback without a result.
 - Thread variables are set in the child environment before it starts (pools read them at library load), never by
   the child itself.
+
+## case_profilers
+- One `profiler_solver_<type>[_<variant>].py` per solver engine (tensor / triangles / tetrahedra), each a list of
+  'module:Class.method' parts on `profiler_harness.py`; `profiler_*_parts.py` / `_common.py` are shared part lists;
+  `run_all_profilers.py` runs every script in a subprocess. Scripts import their siblings by bare name (own folder
+  on sys.path) and find the repository from `__file__`, so they run from any folder as scripts, not with `-m`.
+  Output: `out/` next to the scripts (git-ignored).
+- Parts are wrapped before the registry exists (`wrapped_timers` in `main`): StudyType / FeatureType callbacks keep
+  the function objects of registration time, so time what they call instead of the callback itself.
+- A target that does not resolve is listed in the report ("parts that did not resolve"), never raised: after a
+  refactor check that section, or the part silently drops out of the table.
+- Every timed call synchronises the GPU at entry and exit: time per-phase functions, not per-step kernels
+  (or compare with `--no-sync`).
