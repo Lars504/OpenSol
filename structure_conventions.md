@@ -4,9 +4,10 @@ Gotchas and cross-file code flow only; signatures and help texts live in the cod
 Examples live outside the package (`examples/README.md`); `experiments/` holds the user's research models in the same
 format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
 `gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
-User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy): `INSTALL.md`;
-`pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required, cupy / Qt as extras; ships api_reference.md
-and api_templates.md as package data) makes `pip install -e .` work, else run from the repository root.
+User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
+`INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
+cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
+data) makes `pip install -e .` work, else run from the repository root.
 Folder-specific gotchas live in `sub_structure_conventions.md` next to the code (index in section 3): read those of the
 folders you work in. Only gotchas every agent needs stay here.
 
@@ -38,7 +39,8 @@ open_sol/
 │                    # membrane (film / plate, triangles + 1D, ports, Bloch), semiconductor, acoustics (elastic_waves;
 │                    # frequency-domain pressure_acoustics), fluid, magnetic (static, AC, 3D)
 ├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes: pcg (+ multigrid), line_block,
-│                    # sparse_direct, banded, arpack_shift_invert, cudss_factor, explicit_kernels (solvers sub file)
+│                    # sparse_direct, banded, arpack_shift_invert, cudss_factor, host_direct (MUMPS / PARDISO),
+│                    # explicit_kernels (solvers sub file)
 ├── coupling/        # CouplingTerm / CouplingGroup, DynamicMaterialUpdate, MultiphysicsRunner, E13 SlotSum, the
 │                    # coupling type definitions per partner family (definitions*.py) and their self-tests
 ├── model/           # spec, schema (registry), expressions, geometry, validate, meshing, builder (-> Session), session,
@@ -61,7 +63,8 @@ ones that shape everyday code:
   functions). cupy / cupyx at module level only in `core.backend` (others: `from <..>core.backend import cp` /
   `cupyx_sparse as cpsp` / `cupyx_ndimage as cpndi`; a real `import cupy` only inside a GPU-only function), so open_sol
   imports without cupy. scipy (installed: use it on the host where cupyx falls short: no `eigs`, no shift-invert,
-  `spsolve` refactorises per call) only inside functions. PySide6 / pyqtgraph only in gui.
+  `spsolve` refactorises per call) only inside functions. PySide6 / pyqtgraph only in gui. The optional direct solver
+  wrappers python-mumps (`mumps`) / pydiso only inside functions of `solvers.host_direct`.
 - `physics/<pkg>` <- core, solvers, fem and model.schema / spec / geometry / expressions / definition_helpers /
   definition_resonance (a definition registering a coupling type also coupling.coupling_term / index_terms); never the
   model runtime (meshing, builder, study, session, validate): shared study rules go to core or
@@ -386,7 +389,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   shared one from definition_helpers when it fits); validate and estimators read the resolution
   (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting. Automatic = the role's default
   type at its defaults (a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
-  `SolverRole.auto_back_ends`, solvers sub file); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
+  `SolverRole.auto_back_ends`, solvers sub file; the optional host MUMPS / PARDISO back ends of `solvers.host_direct`
+  are opt-in only, never auto: a role lists them in its `setting_choices`, every such tuple derived from
+  `host_direct.HOST_DIRECT_*`, never spelled out); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
   node and assigns it (`PhysicsSpec.solvers`; self-tests: `selftest_helpers.with_exact_cg`). The model-wide
   `solver_defaults.precision` (S9) fills the precision of every solver that offers it and sets none: resolve solver
   values only through `schema.resolved_solvers` / `with_default_precision`, never `fill_defaults` of the node
@@ -417,7 +422,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   phases never overlap, the estimate takes the largest; split a solve into phases in the order the code allocates, so
   no phase sums arrays that are never live together; build temporaries are the part's build_extra); a cuDSS factor
   (outside the cupy pool) is an external item from `cudss_factor.factor_device_bytes`, bound to the phases it lives in
-  when it is released after its solve (`cudss_external(phases=)`). A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` /
+  when it is released after its solve (`cudss_external(phases=)`); a MUMPS / PARDISO factor (host memory outside
+  numpy) is a host item from `host_direct.factor_host_bytes` (or a SuperLU item x `superlu_bytes_scale`) plus
+  `solver_host_bytes`, its constants uncalibrated. A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` /
   `SolverType.time_estimate`: machine-independent op counts, never seconds; iteration counts derived a priori, never
   fitted to run counters: a count deviation is a lead on the solver; a kernel bound by arithmetic, not bytes, also
   counts its `Elementwise.flops`, since float64 runs at 1/64 rate on consumer GPUs: core sub file "Run-time
@@ -429,7 +436,12 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   only one the GUI thread calls. cupy's pool runs under a budget (core sub file "GPU memory"): overruns raise
   OutOfMemoryError. `free_all_blocks` only between jobs / builds / sweep values, never in step loops.
 - A cuDSS factor (and the cusolver_qr workspace) lives outside the cupy pool, so the budget never sees it: code holding
-  one (a ModalPencil, a harmonic system's factor) releases it (`release()`) before dropping or replacing it.
+  one (a ModalPencil, a harmonic system's factor) releases it (`release()`) before dropping or replacing it. Likewise
+  a MUMPS / PARDISO factor (`host_direct.HostDirectFactorization`) holds host memory outside numpy: release it or pass
+  it as `previous=` (refactorised on the same pattern) before the next one; its own guard (the library's estimate
+  after analysis vs HOST_FRACTION of the available RAM) raises. Their threads are the library defaults
+  (OMP_NUM_THREADS / MKL_NUM_THREADS; no open_sol setting): oversubscription with numba / BLAS threads is the user's
+  to set.
 - A traceback keeps a failed build's frames and locals alive: inside `except` record only text, call
   `release_session` after the block; an exception kept or re-raised later goes through
   `gpu_memory.drop_exception_frames` first.
@@ -492,7 +504,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/solvers/`: layout and imports, the model path (spec, backends, resolved_solvers, validate, feature
   precisions, build stage, summary 'solvers'), pcg (stop reference, mixed, users), multigrid, line_block (layout,
   shift family, chunks, rejected shifts), sparse_direct (cuDSS plan reuse, host / device value refreshes), banded (grid
-  kinds, 1D Automatic), arpack_shift_invert (several shifts, inertia counts), explicit_kernels.
+  kinds, 1D Automatic), arpack_shift_invert (several shifts, inertia counts), host_direct (MUMPS / PARDISO library
+  notes), explicit_kernels.
 - `open_sol/coupling/`: runner cadence, prepare / flush, coupling protocol, coupling type catalogue, q_accum readers,
   couplings across meshes (views, transfer classes), E13 contributor API / SlotSum, EM loss
   protocol, thermo-optic, Pockels, semiconductor / acoustics / piezo / fluid / magnetic / phase-change coupling

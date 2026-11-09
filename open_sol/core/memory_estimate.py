@@ -274,9 +274,11 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
     locals live; mixed
     (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
     multigrid preconditioner): its hierarchy, setup products and host aggregation; direct (a host SuperLU
-    sparse_direct linear solver, the 2D cpu Automatic): the host factor and its float64 CSC input copy (a cuDSS one:
-    the caller adds fem.diffusion.cudss_diffusion_estimate). wrap (phi wrap of a polar
-    window or a cylindrical sector, symmetry 2.21): 2 more slots in the dense build array; its CSR entries stay within
+    sparse_direct linear solver, the 2D cpu Automatic: True or 'scipy_splu'): the host factor and its float64 CSC input
+    copy; a host direct back end name (MUMPS / PARDISO, solvers.host_direct.HOST_DIRECT_BACK_ENDS): its heuristic
+    factor (host_direct.factor_host_bytes, uncalibrated) and the arrays the factor object keeps beside it
+    (solver_host_bytes) instead (a cuDSS one: the caller adds fem.diffusion.cudss_diffusion_estimate). wrap (phi wrap
+    of a polar window or a cylindrical sector, symmetry 2.21): 2 more slots in the dense build array; its CSR entries stay within
     the 5 / 7 per row. flux (a caller computing flux_at_centres after its solves): its temporaries, transient phase
     'flux post-processing'; dissipation (2D dissipation_density): the share arrays it keeps (run items)."""
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
@@ -327,9 +329,21 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
         build_extra = max(build_extra, alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row))
         host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
     if direct:   # solvers.sparse_direct.DiffusionDirectSolver: one factor per assembly, the previous one dropped
-        host_items.append(('host SuperLU factor L + U (float64)', host_real_lu_bytes(cells, dimensions)))
-        host_items.append(('host CSC copy of the operator (float64)',
-                           FLOAT64_CSR_ENTRY_BYTES * entries_per_row * cells + INT32_BYTES * cells))
+        from ..solvers import host_direct   # numpy only (a function-level exception of the core rule)
+        if direct in host_direct.HOST_DIRECT_BACK_ENDS:   # real SPD: PARDISO Cholesky / MUMPS LDL^T
+            mixed = host_direct.host_direct_precision(direct) == 'mixed'
+            host_items.append((f"host {host_direct.factor_label(direct)} factor ({'float32' if mixed else 'float64'}, "
+                               'heuristic, uncalibrated)',
+                               host_direct.factor_host_bytes(cells, dimensions, complex_values=False, symmetric=True,
+                                                             mixed=mixed)))
+            host_items.append((f'host {host_direct.factor_label(direct)} solver arrays (equilibrated operator, its '
+                               'library copy, row scale; mixed: refinement vectors)',
+                               host_direct.solver_host_bytes(cells, entries_per_row * cells, complex_values=False,
+                                                             mixed=mixed, symmetric=True)))
+        else:
+            host_items.append(('host SuperLU factor L + U (float64)', host_real_lu_bytes(cells, dimensions)))
+            host_items.append(('host CSC copy of the operator (float64)',
+                               FLOAT64_CSR_ENTRY_BYTES * entries_per_row * cells + INT32_BYTES * cells))
     run_items, transient_items = [], []
     if flux:   # freed when the caller's post-processing returns
         n_flux = _FLUX_ARRAYS[3 if dimensions == 3 else 2] + (_CROSS_FLUX_ARRAYS if cross_term else 0)

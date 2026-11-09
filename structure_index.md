@@ -27,8 +27,8 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/physics/nlfd/: lines 688-707
 - open_sol/physics/potential/: lines 709-726
 - open_sol/physics/semiconductor/: lines 728-741
-- open_sol/solvers/: lines 743-756
-- open_sol/viz/: lines 758-765
+- open_sol/solvers/: lines 743-757
+- open_sol/viz/: lines 759-766
 
 ## open_sol/
 
@@ -748,6 +748,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `cudss_factor.py`: cuDSS sparse LU / LDL^T / Cholesky on the device (nvmath-python DirectSolver): the 'cudss' / 'cudss_mixed' factorizations of arpack_shift_invert and back ends of sparse_direct, a sparse_direct.Factorization stand-in. numpy only at module ...
 - `definition.py`: SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'explicit_kernels') and register(registry)
 - `explicit_kernels.py`: 'explicit_kernels' solver type runtime (role 'stepper'): the settings bundle of an explicit time-stepping engine (solver_plan S3.1); the engine stays the loop. single = float32 fields; double = float64 fields and arithmetic (em_fdtd_ez / ...
+- `host_direct.py`: Host multicore sparse direct factors by MUMPS (python-mumps) and MKL PARDISO (pydiso): back ends mumps / pardiso (+ _mixed) of sparse_direct and arpack_shift_invert
 - `line_block.py`: 'line_block' shifted-solver runtime (solver_plan Part II): batched block-tridiagonal direct solves of (K + sum_i s_i M_i + sum_j t_j N_j) x = b, M_i diagonal, N_j sparse block-tridiagonal, on line-ordered grid unknowns: per shift a block ...
 - `multigrid.py`: Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver (solver_plan S7.0) on assembled SPD CSR operators (DiffusionSystem), one symmetric V(1,1)-cycle per application, hierarchy in float32
 - `pcg.py`: 'pcg' LinearSolver runtime: preconditioned CG on an assembled CSR or matrix-free operator, device-side scalars, the residual read on the host every check_interval iterations; 'mixed' = float32 CG corrections (a float32 CSR copy, or the ...

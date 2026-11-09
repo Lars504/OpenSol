@@ -2,10 +2,45 @@
 and register(registry). Imports no cupy at module level; get_registry() imports it after model.study, before the
 physics definitions (solver_plan S3.5)."""
 from ..model.schema import Issue, Param, solver_backend
-from . import arpack_shift_invert, banded, explicit_kernels, line_block, multigrid, pcg, sparse_direct
+from . import arpack_shift_invert, banded, explicit_kernels, host_direct, line_block, multigrid, pcg, sparse_direct
 from .roles import SolverType
 
 _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
+
+# Host direct back ends (solvers.host_direct: MUMPS / MKL PARDISO): every list and text below derives from
+# HOST_DIRECT_BACK_ENDS, so dropping a value there (e.g. a wrapper without single precision) needs no edit here
+_HOST_DIRECT_NAMES = ' / '.join(host_direct.HOST_DIRECT_BACK_ENDS)
+_HOST_DIRECT_DOUBLE_NAMES = ' / '.join(host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
+_HOST_DIRECT_MIXED_NAMES = ' / '.join(host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
+_HOST_MEMORY_PERCENT = round(100 * host_direct.HOST_FRACTION)
+_GUI_LIBRARY_NAMES = {'pardiso': 'Intel PARDISO'}   # drop-down / tip wording; others: host_direct.LIBRARY_LABELS
+_HOST_DIRECT_INSTALL = '; '.join(f'{host_direct.LIBRARY_LABELS[library]}: {host_direct.install_hint(library)}'
+                                 for library in host_direct.HOST_DIRECT_LIBRARIES)
+
+
+def _gui_library_name(name) -> str:
+    library = host_direct.library_of(name)
+    return _GUI_LIBRARY_NAMES.get(library, host_direct.LIBRARY_LABELS[library])
+
+
+def _host_direct_choice_labels(names) -> dict:
+    """{name: drop-down text} of host direct back ends / factorizations."""
+    return {name: f'{_gui_library_name(name)} on the processor'
+                  + (', mixed precision' if host_direct.host_direct_precision(name) == 'mixed' else '')
+            for name in names}
+
+
+_GUI_HOST_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
+_GUI_HOST_MIXED_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
+_HOST_DIRECT_MIXED_HELP = (
+    f' {_HOST_DIRECT_MIXED_NAMES}: the equilibrated operator factorised in single precision (float32 / complex64, '
+    'about half the factor memory), every solve refined by float64 GMRES to 1e-12 as cudss_mixed; a first factor '
+    'whose probe misses is refactorised in double for the rest of the run.'
+    if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
+_HOST_DIRECT_MIXED_TIP = (
+    f'\n- {_GUI_HOST_MIXED_LIBRARIES} on the processor, mixed precision: faster to set up and less memory, with the '
+    'same accuracy; switches to double precision by itself when a model needs it.'
+    if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
 
 PCG_PARAMS = (
     Param('precision', 'choice', 'double', label='Solver precision', choices=('double', 'single', 'mixed'),
@@ -175,11 +210,14 @@ LINE_BLOCK = SolverType(
     grids=('tensor',), create=_create_line_block, memory_estimate=_empty_memory_estimate,
     time_estimate=line_block.time_estimate)
 
+_SPARSE_DIRECT_LABELS = {'auto': 'Automatic', 'scipy_splu': 'Direct solver on the processor',
+                         'cusolver_qr': 'Direct solver on the graphics card (small models)',
+                         'cudss': 'GPU cuDSS', 'cudss_mixed': 'GPU cuDSS, mixed precision',
+                         **_host_direct_choice_labels(host_direct.HOST_DIRECT_BACK_ENDS)}
+
 SPARSE_DIRECT_PARAMS = (
     Param('back_end', 'choice', 'auto', label='Back end', choices=sparse_direct.LINEAR_SOLVER_CHOICES,
-          choice_labels=(('auto', 'Automatic'), ('scipy_splu', 'Direct solver on the processor'),
-                         ('cusolver_qr', 'Direct solver on the graphics card (small models)'),
-                         ('cudss', 'GPU cuDSS'), ('cudss_mixed', 'GPU cuDSS, mixed precision')),
+          choice_labels=tuple((name, _SPARSE_DIRECT_LABELS[name]) for name in sparse_direct.LINEAR_SOLVER_CHOICES),
           help='Where the sparse factorisation runs (role linear). scipy_splu: SuperLU on the host (needs scipy; the '
                'matrix moves to the host, where its L + U factors stay), one factorisation reused for every right-hand '
                'side, practical up to ~1e6 unknowns (warning above, refused above 2e6). cusolver_qr: sparse QR on the '
@@ -211,7 +249,24 @@ SPARSE_DIRECT_PARAMS = (
                '1e-10). cudss_mixed: the diagonally equilibrated operator factorised in single precision (float32 / '
                'complex64: on GPUs with slow double arithmetic ~10x faster to factorise, half the factor memory), '
                'every solve refined by float64 residual steps to 1e-12 (~3-4 single solves per solve); refused at '
-               'the first factor when single precision cannot reach that (very high contrast: use cudss).',
+               'the first factor when single precision cannot reach that (very high contrast: use cudss). '
+               f'{_HOST_DIRECT_NAMES} (both backends, never chosen by auto; only where the physics offers them: the '
+               'linear solves of heat, electric_currents, electrostatics, magnetostatics(_3d), solid_mechanics(_3d), '
+               'pressure_acoustics, membrane, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, drift_diffusion '
+               f'and em_fdfd_nonlinear, the shifted role of heat thermal noise, and {_HOST_DIRECT_DOUBLE_NAMES} for '
+               'magnetic_fields_ac): a multicore sparse direct factor on the host by MUMPS (python-mumps) or Intel MKL '
+               'PARDISO (pydiso, x86-64 only), after the diagonal equilibration of cuDSS: LDL^T for (complex) '
+               'symmetric operators (the symmetrised D A of the FDFD types; the real symmetric positive definite '
+               'systems: PARDISO Cholesky, LDL^T if that fails, MUMPS LDL^T), LU otherwise; transposed (adjoint) '
+               'solves, GMRES on an '
+               'earlier factor and inertia counts work as with scipy_splu. The scipy_splu size rules apply '
+               '(uncalibrated for these libraries), plus a check of the library\'s own memory estimate after its '
+               f'analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a probe solve checks each factor '
+               '(float64 GMRES refinement on the factor when its residual misses 1e-10); a refusal raises (no '
+               'fallback).'
+               f'{_HOST_DIRECT_MIXED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
+               'MKL_NUM_THREADS for PARDISO; with numba or a threaded BLAS in the same process set them to share the '
+               f'cores). Optional packages, a validation error without them: {_HOST_DIRECT_INSTALL}.',
           tip='Where the equations are solved.\n\n'
               '- Automatic: the processor solver when the SciPy package is installed, else the graphics card solver; '
               'with nvmath-python installed, the GPU cuDSS solver takes the direct solves of sound pressure and '
@@ -226,7 +281,11 @@ SPARSE_DIRECT_PARAMS = (
               'needs nvmath-python; heat, electric, magnetic, solid, frequency-domain wave and semiconductor models '
               'only.\n'
               '- GPU cuDSS, mixed precision: faster to set up and half the memory, with the same accuracy; may be '
-              'refused for very high material contrasts.'),
+              'refused for very high material contrasts.\n'
+              f'- {_GUI_HOST_LIBRARIES} on the processor: fast exact solvers using every processor core, for large '
+              'models, limited by computer memory; need the optional python-mumps or pydiso package (Intel PARDISO: '
+              'Intel / AMD 64-bit processors only); never picked by Automatic.'
+              f'{_HOST_DIRECT_MIXED_TIP}'),
 )
 
 
@@ -243,7 +302,16 @@ def _create_sparse_direct(ctx, request):
 def _validate_sparse_direct(vctx, values, path):
     """A cuDSS back end without nvmath-python: error; scipy_splu (or auto on the cpu backend) without scipy: error;
     auto without scipy: info (find_spec only: GUI-thread safe). GPU back ends on the cpu are the backend_misfit, a cuDSS
-    back end a role does not offer the opt-in misfit, both reported at the physics."""
+    back end a role does not offer the opt-in misfit, both reported at the physics. A host direct back end (MUMPS /
+    PARDISO) without its package or scipy: error."""
+    back_end = values.get('back_end')
+    if back_end in host_direct.HOST_DIRECT_BACK_ENDS:
+        if not host_direct.host_direct_available(back_end):
+            return [Issue('error', path, host_direct.missing_text(back_end))]
+        if not sparse_direct.scipy_available():
+            return [Issue('error', path, f"back_end '{back_end}' needs scipy (sparse matrix handling), which is not "
+                                         'installed: pip install scipy')]
+        return []
     if values.get('back_end') in sparse_direct.CUDSS_BACK_ENDS:
         from .cudss_factor import cudss_available
         if not cudss_available():
@@ -280,13 +348,16 @@ SPARSE_DIRECT = SolverType(
                 'the indefinite Helmholtz matrix). On the CPU backend: SuperLU on scipy operators, numpy solutions. '
                 'back_end cudss / cudss_mixed (GPU cuDSS, kept device factor, plan reused across re-assemblies) only '
                 'where the physics offers it (the diffusion and elastic linear roles, em_fdfd_ez / _hz, em_fdfd_bor, '
-                'em_fdfd_conical, drift_diffusion).',
+                'em_fdfd_conical, drift_diffusion). '
+                f'back_end {_HOST_DIRECT_NAMES} (the optional host MUMPS / Intel MKL PARDISO, multicore, both '
+                'backends, never chosen by auto) likewise only where the physics offers them.',
     summary='Exact solver for wave, semiconductor and frequency-sweep problems: robust, memory grows quickly with the '
             'mesh.',
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=('double',),
     grids=('tensor', 'triangles', 'tetrahedra'), create=_create_sparse_direct, validate=_validate_sparse_direct,
     memory_estimate=_empty_memory_estimate, backend_misfit=sparse_direct.backend_misfit,
-    time_estimate=sparse_direct.time_estimate, opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS})
+    time_estimate=sparse_direct.time_estimate,
+    opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS})
 
 
 def _create_banded(ctx, request):
@@ -317,6 +388,18 @@ BANDED = SolverType(
     create=_create_banded, validate=_validate_banded, memory_estimate=_empty_memory_estimate,
     time_estimate=banded.time_estimate)
 
+_FACTORIZATION_LABELS = {'auto': 'Automatic', 'superlu': 'Host SuperLU', 'cudss': 'GPU cuDSS',
+                         'cudss_mixed': 'GPU cuDSS, mixed precision',
+                         **_host_direct_choice_labels(host_direct.HOST_DIRECT_FACTORIZATIONS)}
+_HOST_FACTORIZATION_MIXED_HELP = (
+    f' {_HOST_DIRECT_MIXED_NAMES} (only where cudss_mixed is offered): a single-precision host factor, the solves '
+    'refined and polished as for cudss_mixed; a first factor whose probe misses is refactorised in double for the '
+    'rest of the run.' if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
+_HOST_FACTORIZATION_MIXED_TIP = (
+    f'\n- {_GUI_HOST_MIXED_LIBRARIES} on the processor, mixed precision (where GPU cuDSS mixed precision is '
+    'offered): faster to factorise and less memory, with the same accuracy.'
+    if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
+
 ARPACK_PARAMS = (
     Param('tolerance', 'float', 0.0, label='Eigenvalue tolerance', unit='1', min=0.0,
           help='Relative accuracy ARPACK asks of each eigenvalue (scipy eigs tol); 0 = machine precision (default). '
@@ -330,8 +413,7 @@ ARPACK_PARAMS = (
               'need more memory.'),
     Param('factorization', 'choice', 'auto', label='Shift-invert factorisation',
           choices=arpack_shift_invert.FACTORIZATIONS,
-          choice_labels=(('auto', 'Automatic'), ('superlu', 'Host SuperLU'), ('cudss', 'GPU cuDSS'),
-                         ('cudss_mixed', 'GPU cuDSS, mixed precision')),
+          choice_labels=tuple((name, _FACTORIZATION_LABELS[name]) for name in arpack_shift_invert.FACTORIZATIONS),
           help="LU of the shifted operator. auto: superlu, except on the gpu backend with nvmath-python installed for "
                "the vibration modes of solid_mechanics on triangle meshes (cudss) and of solid_mechanics_3d on "
                "tetrahedra (cudss_mixed; brick meshes have no factor), where a cuDSS refusal (a zero pivot, missed "
@@ -352,8 +434,15 @@ ARPACK_PARAMS = (
                "and em_modes correct every ARPACK solve by one float64 residual step (~3e-8), stop ARPACK at ~1e-6 "
                "and re-evaluate each eigenvalue by the float64 Rayleigh quotient of its vector, accurate to ~1e-14 "
                "because the scaled operator is complex symmetric (with a Bloch phase it is not: full float64 "
-               "refinement per solve instead); the solid_mechanics pencils refine every solve to 1e-12. Ignored by "
-               "solid_mechanics_3d on brick meshes (no factor).",
+               "refinement per solve instead); the solid_mechanics pencils refine every solve to 1e-12. "
+               f"{_HOST_DIRECT_DOUBLE_NAMES} (every eigen role, both backends, never chosen by auto; needs "
+               "python-mumps / pydiso): the shifted operator factorised on the host by MUMPS or Intel MKL PARDISO "
+               "(x86-64 only), multicore, with the cudss equilibration and LDL^T where the operator is (complex) "
+               "symmetric after the diagonal scaling, else LU; inertia counts of target / band searches come from "
+               "the library's LDL^T pivots (a counting SuperLU when pivots were perturbed or the pencil is "
+               "Hermitian); the host SuperLU size rules apply, plus the library's own memory estimate after its "
+               f"analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a refusal raises (no fallback)."
+               f"{_HOST_FACTORIZATION_MIXED_HELP} Ignored by solid_mechanics_3d on brick meshes (no factor).",
           tip='Where the eigenvalue search factorises its matrix.\n\n'
               '- Automatic: host SuperLU, except vibration modes on finite element meshes, which use the GPU cuDSS '
               'solver when nvmath-python is installed (switching to host SuperLU if the graphics card solver refuses '
@@ -363,7 +452,11 @@ ARPACK_PARAMS = (
               'nvmath-python.\n'
               '- GPU cuDSS, mixed precision (frequency-domain optics, mode solves on triangle meshes, vibration '
               'modes on finite element meshes): faster still and half the graphics card memory, with the same '
-              'accuracy.'),
+              'accuracy.\n'
+              f'- {_GUI_HOST_LIBRARIES} on the processor: exact factorisation using every processor core, often '
+              'faster than host SuperLU on large models; needs the optional python-mumps or pydiso package; never '
+              'picked by Automatic.'
+              f'{_HOST_FACTORIZATION_MIXED_TIP}'),
 )
 
 
@@ -382,9 +475,13 @@ def _create_arpack(ctx, request):
 
 def _validate_arpack(vctx, values, path):
     """A cuDSS factorization without nvmath-python: error (find_spec only: GUI-thread safe). cuDSS on the cpu is the
-    backend_misfit, cudss_mixed outside the FDFD eigen roles the role's setting_choices, both reported at the physics."""
+    backend_misfit, cudss_mixed outside the FDFD eigen roles the role's setting_choices, both reported at the physics.
+    A host direct factorization (MUMPS / PARDISO) without its package: error."""
     from .cudss_factor import cudss_available
     factorization = values.get('factorization')
+    if (factorization in host_direct.HOST_DIRECT_FACTORIZATIONS
+            and not host_direct.host_direct_available(factorization)):
+        return [Issue('error', path, host_direct.missing_text(factorization))]
     if factorization in arpack_shift_invert.CUDSS_FACTORIZATIONS and not cudss_available():
         return [Issue('error', path, f"factorization '{factorization}' needs nvmath-python with cuDSS, which is not "
                                      "installed: pip install nvmath-python[cu12] (or [cu13]), or use 'superlu'")]
@@ -393,7 +490,8 @@ def _validate_arpack(vctx, values, path):
 ARPACK_SHIFT_INVERT = SolverType(
     'arpack_shift_invert', 'Shift-invert eigensolver', roles=('eigen',), params=ARPACK_PARAMS,
     description='Eigenpairs nearest a target: host SuperLU (or, factorization cudss, GPU cuDSS; auto: cuDSS for the '
-                'vibration modes of finite element solids on the GPU) factorisation of the operator shifted to the '
+                f'vibration modes of finite element solids on the GPU; {_HOST_DIRECT_DOUBLE_NAMES}: the optional '
+                'multicore host MUMPS / Intel MKL PARDISO) factorisation of the operator shifted to the '
                 'target and '
                 'ARPACK (scipy eigs, largest |theta| of the shifted inverse) in double precision. Used by em_modes '
                 '(cross-section modes near the effective-index guess) and by em_fdfd_ez / em_fdfd_hz in an '

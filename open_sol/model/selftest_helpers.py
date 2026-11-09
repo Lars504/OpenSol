@@ -98,6 +98,36 @@ def skip_without_cudss():
     return None if cudss_available() else skip_result('nvmath-python (cuDSS) is not installed')
 
 
+def available_host_direct(candidates=None) -> tuple:
+    """The names of `candidates` (host direct back ends / libraries, None: solvers.host_direct.HOST_DIRECT_LIBRARIES,
+    i.e. one per library) whose package (python-mumps / pydiso) is installed here, in their order (find_spec only)."""
+    from ..solvers import host_direct
+    names = host_direct.HOST_DIRECT_LIBRARIES if candidates is None else candidates
+    return tuple(name for name in names if host_direct.host_direct_available(name))
+
+
+def skip_without_host_direct(names=None):
+    """skip_result when none of the host direct libraries / back ends `names` (None: every library) is installed,
+    else None."""
+    return None if available_host_direct(names) else skip_result('python-mumps / pydiso not installed')
+
+
+def with_direct_node(spec, back_end, role='linear', physics_names=(), node_name=None):
+    """spec with a solver node of `back_end` (a host direct name such as 'mumps', or any other back_end /
+    factorization value) as the `role` solver of the named physics (() = every physics of the spec): a sparse_direct
+    node {'back_end'}, for role 'eigen' an arpack_shift_invert node {'factorization'}; named node_name or
+    'host_direct_<back_end>' ('host_direct_eigen_<back_end>' for 'eigen'), never the variant pattern
+    <variant>_<physics>_<role>; a node of that name already in the spec is reused; modified in place and returned."""
+    eigen = role == 'eigen'
+    name = node_name or (f'host_direct_eigen_{back_end}' if eigen else f'host_direct_{back_end}')
+    if not any(solver.name == name for solver in spec.solvers):
+        spec.solvers.append(SolverSpec(name, 'arpack_shift_invert' if eigen else 'sparse_direct',
+                                       {'factorization' if eigen else 'back_end': back_end}))
+    for physics_name in (physics_names or [physics.name for physics in spec.physics]):
+        spec.physics_by_name(physics_name).solvers[role] = name
+    return spec
+
+
 def no_runs():
     """specs() of a case that runs no model (check gets {})."""
     return {}

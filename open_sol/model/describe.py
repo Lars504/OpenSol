@@ -117,7 +117,9 @@ _SPEC_FIELD_HELP = {
         "cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The "
         "runtime guards stay: the GPU pool limit raises OutOfMemoryError, and "
         "each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an "
-        "Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises)."),
+        "Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises); MUMPS / "
+        "PARDISO factors (the host direct back ends / factorizations) check their own estimate after the analysis "
+        "against 80 % of the available RAM (an explicit node raises)."),
     'SolverDefaultsSpec.subpixel_smoothing': (
         'false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour). '
         'Fill fraction and normal of every E_z cell / E_x and E_y face whose volume two materials share come once '
@@ -1921,6 +1923,7 @@ def _mesh_section(physics_types):
 
 
 def _solvers_section(registry, physics_types):
+    from ..solvers import host_direct   # numpy only at module level
     return {
         'about': 'A physics hands its numerical jobs (roles) to solvers: ModelSpec.solvers holds solver nodes '
                  '(SolverSpec: name, type, settings), PhysicsSpec.solvers {role: node name} assigns them; a role left '
@@ -1951,6 +1954,13 @@ def _solvers_section(registry, physics_types):
             'triangles / tetrahedra, membrane on triangles: cudss_mixed) replaces it on the gpu backend when '
             'nvmath-python is installed, for Automatic and for nodes that leave back_end auto; else auto is host '
             'SuperLU (scipy_splu).',
+            'sparse_direct back_end / arpack_shift_invert factorization '
+            f"{', '.join(host_direct.HOST_DIRECT_BACK_ENDS)}: the optional multicore host direct solvers MUMPS "
+            '(python-mumps) and Intel MKL PARDISO (pydiso, x86-64 only) on both backends, opt-in like cudss (only '
+            'roles whose line under Roles by physics type lists them; elsewhere a misfit) and never chosen by auto; without the package a node is a validation error. The '
+            'host SuperLU size rules apply, each factor checks the library\'s own memory estimate after its analysis '
+            f'against {round(100 * host_direct.HOST_FRACTION)} % of the available RAM, and a refusal raises (no '
+            'fallback).',
         ],
         'types': {solver_type.name: {
             'name': solver_type.name, 'label': solver_type.label, 'description': solver_type.description,

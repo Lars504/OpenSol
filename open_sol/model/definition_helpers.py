@@ -12,6 +12,7 @@ from ..core.fv_diffusion import BCSide
 from ..core.mirror import mirror_faces
 from ..core.monitors import probe_result
 from ..fem.squeeze_film import SLIP_MODELS, VEIJOLA_KNUDSEN_LIMIT
+from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS
 from ..solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, SOLVER_DTYPE_NAMES, auto_max_iterations
 from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
@@ -239,8 +240,9 @@ def cg_iteration_issues(vctx, solver_values, path, all_cell_sink=False):
 # D11) Automatic = sparse_direct on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double,
 # thin-film K is badly conditioned and its frequency response near resonance converges worst in float32)
 # sparse_direct back_end values of the SPD roles below, whose direct solves go through DiffusionDirectSolver (host
-# SuperLU, or the real cuDSS Cholesky of the opt-in back ends; never cusolver_qr)
-DIFFUSION_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss', 'cudss_mixed')
+# SuperLU, the real cuDSS Cholesky of the opt-in cuDSS back ends or the host MUMPS / PARDISO Cholesky of the opt-in
+# host direct ones, solvers.host_direct; never cusolver_qr)
+DIFFUSION_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS
 CG_LINEAR_ROLE = SolverRole('spd', 'pcg', setting_choices={'preconditioner': ('jacobi',),
                                                            'back_end': DIFFUSION_DIRECT_BACK_ENDS},
                             grid_defaults={'triangles': ('sparse_direct', {})},
@@ -297,13 +299,26 @@ def linear_solver_mixed(context) -> bool:
     return resolved is not None and resolved_precision(resolved.solver_type, resolved.values) == 'mixed'
 
 
-def linear_solver_direct(context) -> bool:
-    """Whether the physics' resolved 'linear' solver is sparse_direct with a host factor (the cpu Automatic of the
-    diffusion types: its estimator adds the host SuperLU factor; a cuDSS back end's device factor lies outside the
-    cupy pool: an external item, cudss_factor.factor_device_bytes)."""
+def linear_solver_direct(context) -> str:
+    """Back end name (truthy) when the physics' resolved 'linear' solver is sparse_direct with a host factor, else ''
+    (the cpu Automatic of the diffusion types: 'scipy_splu', its estimator adds the host SuperLU factor; a host direct
+    name, `host_direct_back_end`: the MUMPS / PARDISO factor; a cuDSS back end's device factor lies outside the cupy
+    pool: an external item, cudss_factor.factor_device_bytes). Callers use it as a bool or pass it on as direct=."""
     resolved = context.solvers.get('linear')
-    return (resolved is not None and resolved.solver_type.name == 'sparse_direct'
-            and not linear_solver_cudss(context.solvers))
+    if resolved is None or resolved.solver_type.name != 'sparse_direct' or linear_solver_cudss(context.solvers):
+        return ''
+    return resolved_back_end(context.solvers) or 'scipy_splu'
+
+
+def host_direct_back_end(solvers, role='linear'):
+    """The host direct back end (solvers.host_direct.HOST_DIRECT_BACK_ENDS: MUMPS / PARDISO, + _mixed) the resolved
+    `role` solver ({role: ResolvedSolver} of MemoryContext / ValidationContext, or None) uses: its sparse_direct
+    back_end, for role 'eigen' its arpack_shift_invert factorization; None for any other solver or value."""
+    resolved = (solvers or {}).get(role)
+    if resolved is None:
+        return None
+    name = resolved.values.get('factorization' if role == 'eigen' else 'back_end')
+    return name if name in HOST_DIRECT_BACK_ENDS else None
 
 
 def linear_solver_cudss(solvers) -> bool:
@@ -367,20 +382,24 @@ def validated_linear_precision(vctx, physics_spec):
 
 def cg_solver_issues(vctx, physics_spec, path, all_cell_sink=False):
     """Iteration-limit warning of the physics' assigned pcg 'linear' node (Automatic = pcg defaults: none; the node's
-    precision warning is at the node: pcg SolverType validate); the host SuperLU size rule of a sparse_direct one (none
-    on a cuDSS back end: guarded by cuDSS's device estimate at run time)."""
+    precision warning is at the node: pcg SolverType validate); the host SuperLU size rule of a sparse_direct one (also
+    for a MUMPS / PARDISO back end, worded for its library; none on a cuDSS back end: guarded by cuDSS's device
+    estimate at run time)."""
     solvers = vctx.solvers(physics_spec)
     resolved = (solvers or {}).get('linear')
     if resolved is not None and resolved.solver_type.name == 'sparse_direct':
-        return [] if linear_solver_cudss(solvers) else _direct_diffusion_size_issues(vctx, path)
+        if linear_solver_cudss(solvers):
+            return []
+        return _direct_diffusion_size_issues(vctx, path, host_direct_back_end(solvers) or 'scipy_splu')
     if resolved is None or resolved.node is None or resolved.solver_type.name != 'pcg':
         return []
     return [Issue(issue.level, issue.path, f"linear solver '{resolved.node}': {issue.message}")
             for issue in cg_iteration_issues(vctx, resolved.values, path, all_cell_sink=all_cell_sink)]
 
 
-def _direct_diffusion_size_issues(vctx, path):
-    """[] or the sparse_direct.diffusion_size_issue of the meshed window (3D: its voxels) as an Issue at path."""
+def _direct_diffusion_size_issues(vctx, path, back_end='scipy_splu'):
+    """[] or the sparse_direct.diffusion_size_issue of the meshed window (3D: its voxels) for back_end ('scipy_splu'
+    or a host direct one: the same limits) as an Issue at path."""
     from ..solvers.sparse_direct import diffusion_size_issue   # numpy only at module level
     mesh = vctx.mesh
     if mesh is None:
@@ -389,25 +408,32 @@ def _direct_diffusion_size_issues(vctx, path):
         window_cells = int(mesh.n_nodes) + int(mesh.n_edges)
     else:
         window_cells = math.prod(mesh.window_axis_cells)
-    issue = diffusion_size_issue(window_cells, dimensions=3 if vctx.spec.is_3d else 2)
+    issue = diffusion_size_issue(window_cells, dimensions=3 if vctx.spec.is_3d else 2, back_end=back_end)
     return [] if issue is None else [Issue(issue[0], path, issue[1])]
 
 
 # ---- direct / eigen / stepper solver roles (solvers.sparse_direct, arpack_shift_invert, explicit_kernels) ----
-# 'linear' of the sparse direct users without cuDSS (em_fdfd_nonlinear)
-DIRECT_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',))
-# ... of magnetic_fields_ac: host SuperLU or a cuDSS LDL^T of the complex symmetric bordered system (circuit.
-# RecycledFactor, plan reused across operator changes); back_end 'auto' = cudss on triangles on the gpu backend (B1a:
-# double, mu contrasts and circuit rows make complex64 doubtful; 1.7e5 P2 unknowns took 7 s per SuperLU factor)
-MAGNETIC_AC_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss')
+# The host direct back ends (solvers.host_direct: MUMPS / PARDISO, opt-in, never 'auto') join every role whose
+# consumers hold a generic factor (solve / solve_host, transposed solves, recycling, inertia: all supported); tuples
+# derive from host_direct.HOST_DIRECT_* only, so dropping a value there needs no edit here.
+# 'linear' of the sparse direct users without cuDSS (em_fdfd_nonlinear: host factors, recycled by the channels)
+DIRECT_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
+                                setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
+                                                 + HOST_DIRECT_BACK_ENDS})
+# ... of magnetic_fields_ac: host SuperLU, MUMPS / PARDISO or a cuDSS LDL^T of the complex symmetric bordered system
+# (circuit.RecycledFactor, plan reused across operator changes); back_end 'auto' = cudss on triangles on the gpu
+# backend (B1a: double, mu contrasts and circuit rows make complex64 doubtful, so no mixed back end; 1.7e5 P2 unknowns
+# took 7 s per SuperLU factor)
+MAGNETIC_AC_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss') + HOST_DIRECT_DOUBLE_BACK_ENDS
 MAGNETIC_AC_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
                                      setting_choices={'back_end': MAGNETIC_AC_DIRECT_BACK_ENDS},
                                      auto_back_ends={'triangles': 'cudss'})
 # ... of em_fdfd_ez / _hz: also a line_block node (solver_plan Part II stage 2; Automatic stays sparse_direct) and the
 # opt-in cuDSS back ends (tensor: LDL^T of the symmetrised D A, plan reused across wavelengths and material changes;
-# triangles: LDL^T of the FEM pencil; physics/em sub file FDFD); back_end 'auto' = cudss on the gpu backend (B1a:
-# double, one factor serves many source / port / adjoint solves and mixed solves run ~2x slower)
-FDFD_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cusolver_qr', 'cudss', 'cudss_mixed')
+# triangles: LDL^T of the FEM pencil; physics/em sub file FDFD) and the host direct ones (the same LDL^T on the host);
+# back_end 'auto' = cudss on the gpu backend (B1a: double, one factor serves many source / port / adjoint solves and
+# mixed solves run ~2x slower)
+FDFD_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cusolver_qr', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS
 FDFD_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double', 'mixed'), opt_in_types=('line_block',),
                               setting_choices={'back_end': FDFD_DIRECT_BACK_ENDS},
                               auto_back_ends={'tensor': 'cudss', 'triangles': 'cudss'})
@@ -429,9 +455,11 @@ def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None):
     cudss_mixed only with mixed_factorization (callers of solve_resonances with a symmetrizer: em_fdfd_3d, em_fdfd,
     em_fdfd_bor, em_fdfd_conical; the real symmetric eigsh_shifted pencils of solid_mechanics (2D) and
     solid_mechanics_3d on tetrahedra, refined to full accuracy; em_modes, whose triangle pencil is Rayleigh-polished:
-    its validation refuses tensor meshes). auto_factorizations: {grid kind: cuDSS factorization} an 'auto'
+    its validation refuses tensor meshes); the host direct factorizations (MUMPS / PARDISO) always, their mixed ones
+    likewise only with mixed_factorization. auto_factorizations: {grid kind: cuDSS factorization} an 'auto'
     factorization becomes on the gpu with nvmath-python (the runtime falls back to superlu, B1b); other grids: superlu."""
-    factorizations = ('auto', 'superlu', 'cudss') + (('cudss_mixed',) if mixed_factorization else ())
+    factorizations = (('auto', 'superlu', 'cudss') + HOST_DIRECT_DOUBLE_BACK_ENDS
+                      + ((('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS) if mixed_factorization else ()))
     return SolverRole('general', 'arpack_shift_invert', studies=tuple(studies), precisions=('double',),
                       setting_choices={'factorization': factorizations},
                       auto_back_ends=dict(auto_factorizations or {}))

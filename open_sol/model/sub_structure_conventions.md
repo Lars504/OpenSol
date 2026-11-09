@@ -468,7 +468,10 @@ templates, describe. Current state, no changelog.
   cupy pool alive through the run, external_transient_items ((phase, label, bytes)) = factors alive only in a transient
   phase, listed once per phase they live in (`cudss_factor.factor_device_bytes`, never a local formula; physics
   estimators go through `definition_helpers.cudss_external(phases={label: phase(s)})`, one_at_a_time for unphased
-  factors released before the next is planned; external_extra = the largest factorisation's peak on top). The budget
+  factors released before the next is planned; external_extra = the largest factorisation's peak on top); a MUMPS /
+  PARDISO factor (solvers.host_direct, host memory outside numpy) is a host item, never an external one:
+  `host_direct.factor_host_bytes` (or a booked SuperLU item x `superlu_bytes_scale(name)`) + `solver_host_bytes`, its
+  fill / workspace constants uncalibrated (an estimator left at the plain SuperLU size says so in its sub file). The budget
   check uses `device_peak` = max(build peak, steady + run items + the largest phase of (its pool transients + the
   factors alive in it)) + gpu_external + external_extra, `external_peak` (the external_memory record) = gpu_external +
   the largest phase of phase-bound factors + external_extra: split a solve into phases in the order the code allocates
@@ -965,6 +968,8 @@ templates, describe. Current state, no changelog.
   membrane) price build and per-frequency host work through `definition_helpers.scalar_harmonic_build_items` /
   `harmonic_frequency_items` (counted from fem.dofs / elements / assembly / harmonic: a change there updates them). A
   complex operator goes to a role as value_bytes 16 (`SolverWork.complex`), never as a hand-made complex factor_scale.
+  MUMPS / PARDISO back ends / factorizations are priced as the SuperLU items (HostLU / HostSolve on the host profile)
+  scaled by the uncalibrated `sparse_direct.HOST_DIRECT_*` time constants: no profile curve times those libraries.
   After a run summary.json `time_check` compares items with their `counter` paths and seconds groups
   (`seconds_counter`: timers at existing syncs only; the rest of study_seconds = 'study'); warnings: an exact count
   off, a group outside UNIT_RATIO_BAND with >= MIN_CHECK_SECONDS; guesses never warn. Physics work at build (port mode

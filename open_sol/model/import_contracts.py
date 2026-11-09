@@ -117,6 +117,12 @@ CONTRACTS = (
              importers=('*',), scope='module', external_never=('cupy', 'cupyx'), skip=('core.backend',)),
     Contract('scipy_inside_functions', 'scipy is imported inside functions only', importers=('*',), scope='module',
              external_never=('scipy',)),
+    Contract('direct_wrappers_lazy', 'python-mumps (mumps) and pydiso are imported only inside functions of '
+             'solvers.host_direct (optional packages; physics never reaches them)', importers=('*',),
+             external_never=('mumps', 'pydiso'), skip=('solvers.host_direct',)),
+    Contract('direct_wrappers_inside_functions', 'solvers.host_direct imports python-mumps (mumps) and pydiso inside '
+             'functions only, so open_sol imports without them', importers=('solvers.host_direct',), scope='module',
+             external_never=('mumps', 'pydiso')),
     Contract('qt_only_in_gui', 'only gui imports PySide6 / pyqtgraph (api, CLI, describe, io and viz stay headless)',
              importers=('*',), external_never=('PySide6', 'pyqtgraph'), skip=tree('gui')),
     Contract('core_imports_core', 'core imports nothing outside core but its listed exceptions',
@@ -124,6 +130,7 @@ CONTRACTS = (
              allowed=(('core.fv_diffusion', 'solvers.pcg'), ('core.fv_diffusion', 'solvers.sparse_direct', 'function'),
                       ('core.memory_estimate', 'solvers.pcg', 'function'),
                       ('core.memory_estimate', 'solvers.multigrid', 'function'),
+                      ('core.memory_estimate', 'solvers.host_direct', 'function'),
                       ('core.mirror', 'model.geometry', 'function'),
                       ('core.time_profile', 'solvers.sparse_direct', 'function'),
                       ('core.time_profile', 'solvers.pcg', 'function'))),
@@ -204,8 +211,10 @@ CONTRACTS = (
              'TEMPLATE_SOURCES that hold templates', importers=('*',), scope='registration', never=SELFTEST_MODULES,
              skip=SELFTEST_MODULES, allowed=TEMPLATE_SOURCES),
     Contract('selftest_helpers', 'model.selftest_helpers imports only model.spec (solvers.cudss_factor inside '
-             'skip_without_cudss)', importers=('model.selftest_helpers',), only=('model.spec',),
-             allowed=(('model.selftest_helpers', 'solvers.cudss_factor', 'function'),)),
+             'skip_without_cudss, solvers.host_direct inside the host direct helpers)',
+             importers=('model.selftest_helpers',), only=('model.spec',),
+             allowed=(('model.selftest_helpers', 'solvers.cudss_factor', 'function'),
+                      ('model.selftest_helpers', 'solvers.host_direct', 'function'))),
     Contract('coupling_runtime', 'coupling runtime modules import only coupling, core.constants and core.backend (and '
              'the listed E13 helpers)', importers=tree('coupling'),
              only=tree('coupling') + ('core.constants', 'core.backend'),

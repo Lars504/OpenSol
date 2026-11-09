@@ -154,6 +154,53 @@ Check it (prints True):
 python -c "from open_sol.solvers.cudss_factor import cudss_available; print(cudss_available())"
 ```
 
+## 6. Optional: multicore direct solvers on the CPU (MUMPS, PARDISO)
+
+Two optional host sparse direct solvers use every processor core: MUMPS and Intel MKL PARDISO. A solver node selects
+them (`sparse_direct` back_end / `arpack_shift_invert` factorization `mumps` or `pardiso`, and their `_mixed`
+single-precision variants) where the physics offers them; Automatic never picks them, and they run on both the CPU
+and the GPU backend (the factor stays in host memory). Without the package such a node is a validation error and
+their self-tests pass as skipped. Install either, both or neither.
+
+### 6a. MUMPS (python-mumps)
+
+python-mumps is a BSD-licensed wrapper of MUMPS (CeCILL-C licence, LGPL-like; neither is bundled with open_sol).
+conda-forge ships both prebuilt; `pip install python-mumps` builds the wrapper against a MUMPS installation of your own.
+
+```bash
+conda install -c conda-forge python-mumps
+```
+
+Check it (prints True):
+
+```bash
+python -c "from open_sol.solvers.host_direct import host_direct_available; print(host_direct_available('mumps'))"
+```
+
+MUMPS runs OpenMP / BLAS threads: set `OMP_NUM_THREADS` to limit them.
+
+### 6b. Intel MKL PARDISO (pydiso)
+
+pydiso is an MIT-licensed wrapper of the PARDISO solver in Intel oneMKL (Intel Simplified Software License). It runs
+on x86-64 processors only (Intel or AMD; not on ARM such as Apple silicon). Pick ONE route:
+
+```bash
+pip install pydiso
+```
+
+```bash
+conda install -c conda-forge pydiso
+```
+
+The pip wheels (Linux, Windows) pull MKL in, a large download. Check it (prints True):
+
+```bash
+python -c "from open_sol.solvers.host_direct import host_direct_available; print(host_direct_available('pardiso'))"
+```
+
+PARDISO runs MKL threads: set `MKL_NUM_THREADS` to limit them. With numba kernels or a threaded BLAS in the same
+process, limit the threads so the libraries do not oversubscribe the cores.
+
 ## Updating and removing
 
 After `git pull` nothing needs reinstalling (editable install) unless `pyproject.toml` changed; then repeat step 3.

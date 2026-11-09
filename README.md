@@ -20,8 +20,14 @@ Step-by-step conda setup (separate environment, optional cupy / GPU): `INSTALL.m
   backend are greyed out / refused by validation.
 - From the repository root: `pip install -e ".[gui]"` (extras: `cuda12` / `cuda11` = cupy, `gui` = PySide6 +
   pyqtgraph, `cudss` = nvmath-python for the cuDSS sparse direct solver on the GPU, which some 3D FEM examples and
-  self-tests need). numpy, scipy and matplotlib are always installed. Install editable (`-e`): the GUI's Examples menu
-  reads `examples/` beside the package.
+  self-tests need, `mumps` = python-mumps and `pardiso` = pydiso for the multicore MUMPS / Intel MKL PARDISO sparse
+  direct solvers on the processor). numpy, scipy and matplotlib are always installed. Install editable (`-e`): the
+  GUI's Examples menu reads `examples/` beside the package.
+- MUMPS and PARDISO are optional host back ends of the direct and eigen solvers (`sparse_direct` back_end /
+  `arpack_shift_invert` factorization `mumps`, `pardiso`, each also `_mixed`): opt-in per solver node, never chosen by
+  Automatic, on both backends. python-mumps (BSD wrapper of the CeCILL-C MUMPS library) is best installed from
+  conda-forge; pydiso (MIT wrapper of Intel oneMKL, Intel Simplified Software License) runs on x86-64 only. Neither
+  is bundled or required (`INSTALL.md` step 6).
 - Without installing, run everything from the repository root (`python -m open_sol ...`); the example scripts put
   the root on `sys.path` themselves.
 - scipy is required: the CPU backend, the host direct solvers (Automatic `sparse_direct` = SuperLU for FDFD, NLFD,

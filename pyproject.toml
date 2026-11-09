@@ -18,6 +18,13 @@ cuda11 = ["cupy-cuda11x"]
 gui = ["PySide6", "pyqtgraph"]
 # cuDSS sparse direct solver on the GPU (back ends / factorizations 'cudss', 'cudss_mixed'); [cu13] for CUDA 13
 cudss = ["nvmath-python[cu12]"]
+# Multicore host sparse direct solvers (back ends / factorizations 'mumps' / 'pardiso' + '_mixed'), never required.
+# MUMPS (CeCILL-C library, BSD wrapper; not bundled): conda install -c conda-forge python-mumps is recommended, pip
+# builds the wrapper against an installed MUMPS
+mumps = ["python-mumps"]
+# Intel MKL PARDISO through pydiso (MIT; MKL under the Intel Simplified Software License): x86-64 only, Linux / Windows
+# wheels pull MKL
+pardiso = ["pydiso"]
 
 [tool.setuptools.dynamic]
 version = { attr = "open_sol.__version__" }

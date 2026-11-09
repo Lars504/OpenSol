@@ -19,166 +19,166 @@ Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the
 - lines 647-912: Geometry
 - lines 914-1069: Materials
 - lines 1071-1117: Mesh
-- lines 1119-1237: Solvers
-- lines 1239-2069: Shared help texts
-- lines 2071-2236: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2238-2491: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2493-2624: Physics type `electric_currents` - Electric Currents
-- lines 2626-2828: Physics type `electrostatics` - Electrostatics
-- lines 2830-3054: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3056-3244: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3246-3359: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3361-3558: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3560-3732: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3734-4076: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4078-4440: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4442-4962: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4454-4481: Settings (PhysicsSpec.settings)
-  - lines 4483-4498: Material properties (MaterialSpec.properties)
-  - lines 4500-4541: Fields
-  - lines 4543-4547: Source slots
-  - lines 4549-4569: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4571-4631: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4633-4681: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4683-4703: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4705-4739: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4741-4750: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4752-4772: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4774-4794: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4796-4818: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4820-4834: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4836-4854: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4856-4870: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4872-4890: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4892-4904: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4906-4916: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4918-4930: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 4932-4944: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 4946-4962: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 4964-5271: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5273-5506: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5508-5911: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5520-5541: Settings (PhysicsSpec.settings)
-  - lines 5543-5554: Material properties (MaterialSpec.properties)
-  - lines 5556-5586: Fields
-  - lines 5588-5591: Source slots
-  - lines 5593-5609: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5611-5627: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5629-5649: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5651-5667: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5669-5689: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5691-5700: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5702-5720: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5722-5747: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5749-5774: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5776-5810: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5812-5822: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5824-5841: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5843-5857: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5859-5875: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5877-5893: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5895-5911: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5913-6324: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5925-5946: Settings (PhysicsSpec.settings)
-  - lines 5948-5961: Material properties (MaterialSpec.properties)
-  - lines 5963-5992: Fields
-  - lines 5994-5998: Source slots
-  - lines 6000-6022: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6024-6040: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6042-6062: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6064-6080: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6082-6102: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6104-6113: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6115-6133: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6135-6160: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6162-6187: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6189-6223: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6225-6235: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6237-6254: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6256-6270: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6272-6288: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6290-6306: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6308-6324: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6326-6531: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6533-6833: Physics type `heat` - Heat Transfer in Solids
-- lines 6835-6993: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 6995-7189: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7191-7359: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7361-7533: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7535-7842: Physics type `membrane` - Membrane
-- lines 7844-8077: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8079-8532: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8091-8140: Settings (PhysicsSpec.settings)
-  - lines 8142-8219: Material properties (MaterialSpec.properties)
-  - lines 8221-8278: Fields
-  - lines 8280-8284: Source slots
-  - lines 8286-8296: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8298-8308: Feature `solid_mechanics.roller` - Roller
-  - lines 8310-8323: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8325-8335: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8337-8350: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8352-8365: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8367-8380: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8382-8395: Feature `solid_mechanics.body_force` - Body force
-  - lines 8397-8408: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8410-8421: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8423-8433: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8435-8445: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8447-8482: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8484-8498: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8500-8514: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8516-8532: Feature `solid_mechanics.admittance` - Admittance
-- lines 8534-9076: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8546-8595: Settings (PhysicsSpec.settings)
-  - lines 8597-8724: Material properties (MaterialSpec.properties)
-  - lines 8726-8796: Fields
-  - lines 8798-8803: Source slots
-  - lines 8805-8815: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8817-8827: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8829-8844: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8846-8856: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8858-8873: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8875-8890: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 8892-8907: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 8909-8920: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 8922-8933: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 8935-8945: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 8947-8957: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 8959-8982: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 8984-9001: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9003-9020: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9022-9039: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9041-9076: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9078-9086: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9088-9096: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9098-9107: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9109-9118: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9120-9128: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9130-9138: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9140-9151: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9153-9161: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9163-9176: Coupling type `field_transfer` - Field transfer
-- lines 9178-9186: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9188-9196: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9198-9206: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9208-9216: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9218-9226: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9228-9236: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9238-9251: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9253-9262: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9264-9273: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9275-9309: Study type `eigenfrequency` - Eigenfrequency
-- lines 9311-9346: Study type `frequency_domain` - Frequency domain
-- lines 9348-9391: Study type `frequency_response` - Frequency response
-- lines 9393-9415: Study type `mode_analysis` - Mode analysis
-- lines 9417-9439: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9441-9457: Study type `optimization` - Optimization
-- lines 9459-9482: Study type `optomechanics` - Optomechanics
-- lines 9484-9505: Study type `stationary` - Stationary
-- lines 9507-9536: Study type `thermal_noise` - Thermal noise
-- lines 9538-9552: Study type `time_dependent` - Time dependent
-- lines 9554-9620: Templates
-- lines 9622-9840: Results, reports and files
+- lines 1119-1238: Solvers
+- lines 1240-2070: Shared help texts
+- lines 2072-2237: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2239-2492: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2494-2625: Physics type `electric_currents` - Electric Currents
+- lines 2627-2829: Physics type `electrostatics` - Electrostatics
+- lines 2831-3055: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3057-3245: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3247-3360: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3362-3559: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3561-3733: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3735-4077: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4079-4441: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4443-4963: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4455-4482: Settings (PhysicsSpec.settings)
+  - lines 4484-4499: Material properties (MaterialSpec.properties)
+  - lines 4501-4542: Fields
+  - lines 4544-4548: Source slots
+  - lines 4550-4570: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4572-4632: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4634-4682: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4684-4704: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4706-4740: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4742-4751: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4753-4773: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4775-4795: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4797-4819: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4821-4835: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4837-4855: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4857-4871: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4873-4891: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4893-4905: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4907-4917: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4919-4931: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 4933-4945: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 4947-4963: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 4965-5272: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5274-5507: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5509-5912: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5521-5542: Settings (PhysicsSpec.settings)
+  - lines 5544-5555: Material properties (MaterialSpec.properties)
+  - lines 5557-5587: Fields
+  - lines 5589-5592: Source slots
+  - lines 5594-5610: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5612-5628: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5630-5650: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5652-5668: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5670-5690: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5692-5701: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5703-5721: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5723-5748: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5750-5775: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5777-5811: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5813-5823: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5825-5842: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5844-5858: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5860-5876: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5878-5894: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5896-5912: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5914-6325: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5926-5947: Settings (PhysicsSpec.settings)
+  - lines 5949-5962: Material properties (MaterialSpec.properties)
+  - lines 5964-5993: Fields
+  - lines 5995-5999: Source slots
+  - lines 6001-6023: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6025-6041: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6043-6063: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6065-6081: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6083-6103: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6105-6114: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6116-6134: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6136-6161: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6163-6188: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6190-6224: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6226-6236: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6238-6255: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6257-6271: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6273-6289: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6291-6307: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6309-6325: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6327-6532: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6534-6834: Physics type `heat` - Heat Transfer in Solids
+- lines 6836-6994: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 6996-7190: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7192-7360: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7362-7534: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7536-7843: Physics type `membrane` - Membrane
+- lines 7845-8078: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8080-8533: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8092-8141: Settings (PhysicsSpec.settings)
+  - lines 8143-8220: Material properties (MaterialSpec.properties)
+  - lines 8222-8279: Fields
+  - lines 8281-8285: Source slots
+  - lines 8287-8297: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8299-8309: Feature `solid_mechanics.roller` - Roller
+  - lines 8311-8324: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8326-8336: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8338-8351: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8353-8366: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8368-8381: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8383-8396: Feature `solid_mechanics.body_force` - Body force
+  - lines 8398-8409: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8411-8422: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8424-8434: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8436-8446: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8448-8483: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8485-8499: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8501-8515: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8517-8533: Feature `solid_mechanics.admittance` - Admittance
+- lines 8535-9077: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8547-8596: Settings (PhysicsSpec.settings)
+  - lines 8598-8725: Material properties (MaterialSpec.properties)
+  - lines 8727-8797: Fields
+  - lines 8799-8804: Source slots
+  - lines 8806-8816: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8818-8828: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8830-8845: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8847-8857: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8859-8874: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8876-8891: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 8893-8908: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 8910-8921: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 8923-8934: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 8936-8946: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 8948-8958: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 8960-8983: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 8985-9002: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9004-9021: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9023-9040: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9042-9077: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9079-9087: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9089-9097: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9099-9108: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9110-9119: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9121-9129: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9131-9139: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9141-9152: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9154-9162: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9164-9177: Coupling type `field_transfer` - Field transfer
+- lines 9179-9187: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9189-9197: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9199-9207: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9209-9217: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9219-9227: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9229-9237: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9239-9252: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9254-9263: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9265-9274: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9276-9310: Study type `eigenfrequency` - Eigenfrequency
+- lines 9312-9347: Study type `frequency_domain` - Frequency domain
+- lines 9349-9392: Study type `frequency_response` - Frequency response
+- lines 9394-9416: Study type `mode_analysis` - Mode analysis
+- lines 9418-9440: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9442-9458: Study type `optimization` - Optimization
+- lines 9460-9483: Study type `optomechanics` - Optomechanics
+- lines 9485-9506: Study type `stationary` - Stationary
+- lines 9508-9537: Study type `thermal_noise` - Thermal noise
+- lines 9539-9553: Study type `time_dependent` - Time dependent
+- lines 9555-9621: Templates
+- lines 9623-9841: Results, reports and files
 
 ## Model spec
 
@@ -345,7 +345,7 @@ A model is one JSON object (ModelSpec.to_dict(); api.save / api.load) made of th
 - `precision` (str; default "auto"): auto (default) | single | double | mixed | half_storage: model-wide solver precision. auto = each solver's own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role offer that precision takes it, unless its solver node sets a precision of its own (the per-solver override): Automatic roles and nodes without a precision setting. Solvers that do not offer it keep their default (a validation info names them), e.g. double makes pcg and the time steppers double while sparse_direct / arpack_shift_invert / banded are double anyway; mixed reaches only pcg nodes and Automatic pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block nodes. A node with pcg preconditioner multigrid and no precision of its own fails with mixed (set the node precision). check.json / summary.json solvers record the precision each role resolved to.
 - `subpixel_smoothing` (bool; default false): false (default) | true: anisotropic permittivity averaging at material interfaces (Kottke / Farjadpour). Fill fraction and normal of every E_z cell / E_x and E_y face whose volume two materials share come once at build from 64 x 4 and 4 x 64 sample rasters per cell of the drawn material regions (each location takes the one whose fine axis is nearer its normal); the averaging (E_z and the field component along an interface: mean eps; across it: the harmonic mean, the diagonal of the inverse tensor) is reapplied to the current eps of two neighbouring cells of those materials after every change, so thermo-optic and other eps couplings keep working. Honoured by em_fdtd_ez / _hz, em_fdfd_ez / _hz, em_modes (E_x / E_y faces with the in-plane normal, E_z cells the area mean) and em_fdtd_3d outside an optimization study (incl. their mode ports); every other physics ignores it (validation info). em_fdtd_3d: the in-plane geometry per run of z cells sharing one cross-section (vertical walls: exact for z prisms; tapers and spheres are smoothed per layer, staircased along z) plus horizontal interfaces (prism tops / bottoms) sampled at 16 heights per half cell; the averaged face eps are re-quantised into a uint16 face index (2 bytes per cell). Only the background eps is averaged: sigma_e, mu_r and Drude / Lorentz poles keep their cell membership, and expression-defined eps jumps inside one material stay staircased. Restores second order on curved E_z interfaces; on slanted H_z interfaces it is better than staircasing, not second order.
 - `conformal_boundaries` (bool; default false): false (default) | true: curved walls at their drawn position instead of staircased to the cells, located once at build from the drawn geometry (bisection along the cell links and faces). em_fdtd_ez / _hz pec_domain: E_z puts E_z = 0 at the exact wall distance along each H link to a PEC cell; H_z (Dey-Mittra) updates H_z of each cut cell from the free lengths of its faces and its free area, and only faces wholly inside the metal are PEC. Each corrected cell is limited so its update stays within the stability limit of the unchanged time step (the smallest cut never sets dt; a very small cut is then partly staircased). em_fdtd_ez / _hz dispersive materials (Drude / Lorentz poles): each pole current is weighted by the share of its control area inside the drawn material (E_z: the cell, exact for E tangential to the interface; H_z: the dual cell of each E_x / E_y face) instead of 0 / 1, the Courant check with those shares; the background eps keeps the cell mask (subpixel_smoothing averages it). em_fdfd_ez / _hz pec_domain: the same E_z wall distances (t >= 0.02) and H_z free face lengths, the H_z free area (>= 0.02 of the cell) entering the k0^2 mu term, so the operator stays reciprocal; no time-step limit. Mode ports, sources and the FDFD poles keep the cell mask. laminar_flow: interpolated (Bouzidi, linear) bounce-back on the links from fluid to solid cells, with the wall where the solid material is drawn (a material counts as solid when most of its cells have viscosity 0); outer faces keep their face rules. heat, electric_currents, electrostatics (cut cells): held regions (temperature / voltage on object perimeters, fixed_temperature_domain, terminal) put their value on the drawn outline: the free neighbour conducts c A / (t d) to it, t d its distance from the free centre along the link (t >= 0.02, Shortley-Weller), instead of the half cell 2 c A / w; walls of non-conducting materials (a material counts as closed when most of its cells conduct neither) get fractional face apertures and merged cut-cell volumes (>= 0.02), re-located whenever an assembly's conducting cells change (k(T), sigma(T)); perimeter heat_flux / current_density / surface_charge feed their value times each cut cell's chord of the drawn outline into the object cell owning it, convection loses h L / (1 + h delta / k_n) there (delta the owner centre's distance to the chord). em_modes pec_domain (Dey-Mittra on the projected Yee cell): E_z = 0 at the wall distance along each centre link into the metal, H_z from the free lengths of its E_x / E_y edges over the free area of its dual cell (fractions >= 0.02). em_fdtd_3d pec_domain (3D models, Dey-Mittra): every H face between four cell centres the drawn surface cuts takes the free lengths of its four E edges over its free area, floored so its update row stays within its uncut row at the time step (heuristic 3D Courant floor; E faces between two metal cells stay pinned). 2D Cartesian models only otherwise; heat / potential also (r, z) and polar / spherical domains (the cut fractions along the logical (r, angle) links / faces / cells, outline chords in the local (dr, r d_angle) frame; links across an angle_wrap seam stay staircased); every other physics ignores it (validation info). Features thinner than 1/16 of a cell face, or that no cell centre sees, stay invisible.
-- `memory_check` (str; default "error"): error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS factors outside the pool included, against the GPU budget; the host estimate against the available RAM; also per sweep value and per mesh refinement level). error refuses the model before the build (a triangle / tetrahedron mesh is built first when the estimate from its sizes is over: the judgement is on the built element count; the issue is reported at the mesh with the largest part); warning builds and runs it anyway with a validation warning, for a model whose estimate is known to be high (the cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The runtime guards stay: the GPU pool limit raises OutOfMemoryError, and each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises).
+- `memory_check` (str; default "error"): error (default) | warning: what a memory estimate over the budget does (the GPU estimate at its peak, cuDSS factors outside the pool included, against the GPU budget; the host estimate against the available RAM; also per sweep value and per mesh refinement level). error refuses the model before the build (a triangle / tetrahedron mesh is built first when the estimate from its sizes is over: the judgement is on the built element count; the issue is reported at the mesh with the largest part); warning builds and runs it anyway with a validation warning, for a model whose estimate is known to be high (the cuDSS factor size depends on the fill of cuDSS's reordering, which the estimate can only model). The runtime guards stay: the GPU pool limit raises OutOfMemoryError, and each cuDSS plan checks cuDSS's own memory estimate against the free device memory before it factorises (an Automatic sparse_direct back end then falls back to SuperLU, an explicit cudss node raises); MUMPS / PARDISO factors (the host direct back ends / factorizations) check their own estimate after the analysis against 80 % of the available RAM (an explicit node raises).
 
 #### `StudySpec` - ModelSpec.study
 
@@ -1127,12 +1127,13 @@ A physics hands its numerical jobs (roles) to solvers: ModelSpec.solvers holds s
 - One node may serve several physics; the build creates one runtime per (physics, role).
 - Opt-in roles: line_block fills the linear role of em_fdfd_ez / em_fdfd_hz only (its shifted role: heat thermal noise, em_fdfd_bor, em_modes); a line_block node assigned as the linear solver of any other physics is a misfit.
 - sparse_direct back_end auto: a role's auto_back_end_by_grid {grid kind: back end} (pressure_acoustics on triangles / tetrahedra, membrane on triangles: cudss_mixed) replaces it on the gpu backend when nvmath-python is installed, for Automatic and for nodes that leave back_end auto; else auto is host SuperLU (scipy_splu).
+- sparse_direct back_end / arpack_shift_invert factorization mumps, mumps_mixed, pardiso, pardiso_mixed: the optional multicore host direct solvers MUMPS (python-mumps) and Intel MKL PARDISO (pydiso, x86-64 only) on both backends, opt-in like cudss (only roles whose line under Roles by physics type lists them; elsewhere a misfit) and never chosen by auto; without the package a node is a validation error. The host SuperLU size rules apply, each factor checks the library's own memory estimate after its analysis against 80 % of the available RAM, and a refusal raises (no fallback).
 
 ### Solver types
 
 #### Solver type `arpack_shift_invert` - Shift-invert eigensolver
 
-Eigenpairs nearest a target: host SuperLU (or, factorization cudss, GPU cuDSS; auto: cuDSS for the vibration modes of finite element solids on the GPU) factorisation of the operator shifted to the target and ARPACK (scipy eigs, largest |theta| of the shifted inverse) in double precision. Used by em_modes (cross-section modes near the effective-index guess) and by em_fdfd_ez / em_fdfd_hz in an eigenfrequency study (resonances nearest the wavelength setting). solid_mechanics (eigenfrequency, optomechanics: plane-strain or 2.5D guided vibration modes) uses symmetric shift-invert Lanczos (scipy eigsh) on a real SuperLU factor of K - sigma M. solid_mechanics_3d (eigenfrequency) uses it without a factor: symmetric Lanczos (scipy eigsh) on K^-1 M at 0, each K^-1 one PCG solve of its 'linear' solver on the device. The ARPACK basis stays on the host and SuperLU runs the same on both backends (cudss: GPU backend only); on triangle and tetrahedron meshes (FEM) the same factorisation of the assembled element matrices.
+Eigenpairs nearest a target: host SuperLU (or, factorization cudss, GPU cuDSS; auto: cuDSS for the vibration modes of finite element solids on the GPU; mumps / pardiso: the optional multicore host MUMPS / Intel MKL PARDISO) factorisation of the operator shifted to the target and ARPACK (scipy eigs, largest |theta| of the shifted inverse) in double precision. Used by em_modes (cross-section modes near the effective-index guess) and by em_fdfd_ez / em_fdfd_hz in an eigenfrequency study (resonances nearest the wavelength setting). solid_mechanics (eigenfrequency, optomechanics: plane-strain or 2.5D guided vibration modes) uses symmetric shift-invert Lanczos (scipy eigsh) on a real SuperLU factor of K - sigma M. solid_mechanics_3d (eigenfrequency) uses it without a factor: symmetric Lanczos (scipy eigsh) on K^-1 M at 0, each K^-1 one PCG solve of its 'linear' solver on the device. The ARPACK basis stays on the host and SuperLU runs the same on both backends (cudss: GPU backend only); on triangle and tetrahedron meshes (FEM) the same factorisation of the assembled element matrices.
 
 - SolverSpec.type `arpack_shift_invert`; roles eigen; operators spd, complex_symmetric, general; backends gpu, cpu; precisions double; grids tensor, triangles, tetrahedra
 
@@ -1141,8 +1142,8 @@ Params (SolverSpec.settings):
   Relative accuracy ARPACK asks of each eigenvalue (scipy eigs tol); 0 = machine precision (default). solid_mechanics_3d (inexact PCG inner solves) raises it to at least 1e3 x its linear CG tolerance.
 - `subspace_size` (int; default 0; range [0, inf)) - Subspace size
   Arnoldi vectors ARPACK keeps (scipy eigs ncv), raised to the eigenpairs wanted + 2; 0 = scipy's default max(2 k + 1, 20) for k wanted eigenpairs. A larger basis converges in fewer operator applications but holds that many complex128 vectors of the system size on the host.
-- `factorization` (choice; default "auto"; choices auto | superlu | cudss | cudss_mixed) - Shift-invert factorisation
-  LU of the shifted operator. auto: superlu, except on the gpu backend with nvmath-python installed for the vibration modes of solid_mechanics on triangle meshes (cudss) and of solid_mechanics_3d on tetrahedra (cudss_mixed; brick meshes have no factor), where a cuDSS refusal (a zero pivot, missed accuracy or too little GPU memory) switches that solver to superlu for the rest of the run with a warning (up to 2e6 unknowns; the run summary records the resolved value and eigen_auto_fallbacks). superlu: scipy SuperLU on the host (host memory, both backends). cudss (GPU backend, needs nvmath-python with cuDSS): NVIDIA's sparse direct solver factorises on the device in double precision with its own nested-dissection ordering (LDL^T where the operator is complex symmetric after a diagonal scaling: em_fdfd_3d, 2D em_fdfd without Bloch phase, solid_mechanics); the factor lives in GPU memory outside the cupy pool (refused when cuDSS's own estimate exceeds 80 % of the free device memory, and the host SuperLU size rule of the FDFD eigen solves no longer applies); ARPACK still runs on the host, so each operator application moves one vector to the device and back. A probe solve checks the factor and turns on cuDSS iterative refinement when its residual misses 1e-10. cudss_mixed (em_fdfd_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_modes on triangle meshes, solid_mechanics and solid_mechanics_3d on tetrahedra): the diagonally equilibrated operator factorised in single precision (complex64 / float32: about 10x faster to factorise on GPUs with slow double arithmetic, half the GPU memory, solves ~2x cheaper). The resonance solves of the frequency-domain optics types and em_modes correct every ARPACK solve by one float64 residual step (~3e-8), stop ARPACK at ~1e-6 and re-evaluate each eigenvalue by the float64 Rayleigh quotient of its vector, accurate to ~1e-14 because the scaled operator is complex symmetric (with a Bloch phase it is not: full float64 refinement per solve instead); the solid_mechanics pencils refine every solve to 1e-12. Ignored by solid_mechanics_3d on brick meshes (no factor).
+- `factorization` (choice; default "auto"; choices auto | superlu | cudss | cudss_mixed | mumps | mumps_mixed | pardiso | pardiso_mixed) - Shift-invert factorisation
+  LU of the shifted operator. auto: superlu, except on the gpu backend with nvmath-python installed for the vibration modes of solid_mechanics on triangle meshes (cudss) and of solid_mechanics_3d on tetrahedra (cudss_mixed; brick meshes have no factor), where a cuDSS refusal (a zero pivot, missed accuracy or too little GPU memory) switches that solver to superlu for the rest of the run with a warning (up to 2e6 unknowns; the run summary records the resolved value and eigen_auto_fallbacks). superlu: scipy SuperLU on the host (host memory, both backends). cudss (GPU backend, needs nvmath-python with cuDSS): NVIDIA's sparse direct solver factorises on the device in double precision with its own nested-dissection ordering (LDL^T where the operator is complex symmetric after a diagonal scaling: em_fdfd_3d, 2D em_fdfd without Bloch phase, solid_mechanics); the factor lives in GPU memory outside the cupy pool (refused when cuDSS's own estimate exceeds 80 % of the free device memory, and the host SuperLU size rule of the FDFD eigen solves no longer applies); ARPACK still runs on the host, so each operator application moves one vector to the device and back. A probe solve checks the factor and turns on cuDSS iterative refinement when its residual misses 1e-10. cudss_mixed (em_fdfd_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_modes on triangle meshes, solid_mechanics and solid_mechanics_3d on tetrahedra): the diagonally equilibrated operator factorised in single precision (complex64 / float32: about 10x faster to factorise on GPUs with slow double arithmetic, half the GPU memory, solves ~2x cheaper). The resonance solves of the frequency-domain optics types and em_modes correct every ARPACK solve by one float64 residual step (~3e-8), stop ARPACK at ~1e-6 and re-evaluate each eigenvalue by the float64 Rayleigh quotient of its vector, accurate to ~1e-14 because the scaled operator is complex symmetric (with a Bloch phase it is not: full float64 refinement per solve instead); the solid_mechanics pencils refine every solve to 1e-12. mumps / pardiso (every eigen role, both backends, never chosen by auto; needs python-mumps / pydiso): the shifted operator factorised on the host by MUMPS or Intel MKL PARDISO (x86-64 only), multicore, with the cudss equilibration and LDL^T where the operator is (complex) symmetric after the diagonal scaling, else LU; inertia counts of target / band searches come from the library's LDL^T pivots (a counting SuperLU when pivots were perturbed or the pencil is Hermitian); the host SuperLU size rules apply, plus the library's own memory estimate after its analysis against 80 % of the available RAM; a refusal raises (no fallback). mumps_mixed / pardiso_mixed (only where cudss_mixed is offered): a single-precision host factor, the solves refined and polished as for cudss_mixed; a first factor whose probe misses is refactorised in double for the rest of the run. Ignored by solid_mechanics_3d on brick meshes (no factor).
 
 #### Solver type `banded` - Banded direct solver (1D)
 
@@ -1191,50 +1192,50 @@ Params (SolverSpec.settings):
 
 #### Solver type `sparse_direct` - Sparse direct solver
 
-Sparse direct factorisation, double precision (complex128): host SuperLU (scipy) or GPU sparse QR (back_end). Role linear: the Helmholtz systems of em_fdfd_ez / em_fdfd_hz / em_fdfd_nonlinear (one factorisation per wavelength and material state, reused for every source; after a small operator change GMRES on the earlier factor first), every Newton step of drift_diffusion and the eddy-current system of magnetic_fields_ac (host only); also the linear role of heat, electric_currents, electrostatics and magnetostatics (their Automatic on the CPU backend: one real float64 host SuperLU per assembly, exact solves; scipy_splu only), and the Automatic linear solver of the diffusion and elastic types on triangle meshes and of heat on tetrahedra (FEM, both backends). Role shifted: one host SuperLU per shift K + s M, the reference of the thermal noise spectra. Iterative solvers are not offered for these (they stall on the indefinite Helmholtz matrix). On the CPU backend: SuperLU on scipy operators, numpy solutions. back_end cudss / cudss_mixed (GPU cuDSS, kept device factor, plan reused across re-assemblies) only where the physics offers it (the diffusion and elastic linear roles, em_fdfd_ez / _hz, em_fdfd_bor, em_fdfd_conical, drift_diffusion).
+Sparse direct factorisation, double precision (complex128): host SuperLU (scipy) or GPU sparse QR (back_end). Role linear: the Helmholtz systems of em_fdfd_ez / em_fdfd_hz / em_fdfd_nonlinear (one factorisation per wavelength and material state, reused for every source; after a small operator change GMRES on the earlier factor first), every Newton step of drift_diffusion and the eddy-current system of magnetic_fields_ac (host only); also the linear role of heat, electric_currents, electrostatics and magnetostatics (their Automatic on the CPU backend: one real float64 host SuperLU per assembly, exact solves; scipy_splu only), and the Automatic linear solver of the diffusion and elastic types on triangle meshes and of heat on tetrahedra (FEM, both backends). Role shifted: one host SuperLU per shift K + s M, the reference of the thermal noise spectra. Iterative solvers are not offered for these (they stall on the indefinite Helmholtz matrix). On the CPU backend: SuperLU on scipy operators, numpy solutions. back_end cudss / cudss_mixed (GPU cuDSS, kept device factor, plan reused across re-assemblies) only where the physics offers it (the diffusion and elastic linear roles, em_fdfd_ez / _hz, em_fdfd_bor, em_fdfd_conical, drift_diffusion). back_end mumps / mumps_mixed / pardiso / pardiso_mixed (the optional host MUMPS / Intel MKL PARDISO, multicore, both backends, never chosen by auto) likewise only where the physics offers them.
 
 - SolverSpec.type `sparse_direct`; roles linear, shifted; operators spd, complex_symmetric, general; backends gpu, cpu; precisions double; grids tensor, triangles, tetrahedra
 
 Params (SolverSpec.settings):
-- `back_end` (choice; default "auto"; choices auto | scipy_splu | cusolver_qr | cudss | cudss_mixed) - Back end
-  Where the sparse factorisation runs (role linear). scipy_splu: SuperLU on the host (needs scipy; the matrix moves to the host, where its L + U factors stay), one factorisation reused for every right-hand side, practical up to ~1e6 unknowns (warning above, refused above 2e6). cusolver_qr: sparse QR on the GPU (cupy only), one factorisation per solve, for small models (~1e5 unknowns on a square grid): its workspace, estimated as 64 B * nx * ny * the cell count of the narrower axis (doubled by a periodic wrap of the other axis), lies outside the GPU memory budget, so validation warns above 512 MiB and refuses above 2 GiB, and the solver also refuses a workspace over half the free GPU memory (overrunning the GPU freezes the display). auto: scipy_splu when scipy is installed, else cusolver_qr; on the cpu backend always scipy_splu (cusolver_qr is an error there); on the gpu backend with nvmath-python installed, the frequency-response linear solves of pressure_acoustics (triangle and tetrahedron meshes) and membrane (triangle meshes) take cudss_mixed instead, solid_mechanics_3d on tetrahedra cudss_mixed, and cudss: em_fdfd_ez / _hz (tensor and triangle meshes), em_fdfd_bor / em_fdfd_conical and drift_diffusion (tensor meshes; drift_diffusion also triangles), solid_mechanics on triangles and the heat / electric_currents / electrostatics / magnetostatics types on triangle and tetrahedron meshes (the run summary records the resolved back end); when cuDSS refuses such an operator (a zero pivot, missed accuracy or too little GPU memory) that solver switches to scipy_splu for the rest of the run with a warning (up to 2e6 unknowns). The shifted role (thermal noise) and magnetic_fields_ac always factorise on the host. cudss (GPU backend, needs nvmath-python with cuDSS; only where the physics offers it: heat, electric_currents, electrostatics, magnetostatics, solid_mechanics and solid_mechanics_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical and drift_diffusion (real LU of every Newton Jacobian) linear solves): NVIDIA's sparse direct solver factorises on the GPU in double precision (real symmetric positive definite systems by Cholesky, LDL^T if that fails; its own nested-dissection ordering) and keeps the factor in GPU memory outside the cupy pool (refused when cuDSS's own estimate after planning exceeds 80 % of the free device memory; the host SuperLU size rules do not apply); a re-assembly with the same sparsity pattern (new material values, Newton / saturation iterations) refactorises without the host planning step; solves stay on the GPU. A probe solve checks each factor (cuDSS refinement when its residual misses 1e-10). cudss_mixed: the diagonally equilibrated operator factorised in single precision (float32 / complex64: on GPUs with slow double arithmetic ~10x faster to factorise, half the factor memory), every solve refined by float64 residual steps to 1e-12 (~3-4 single solves per solve); refused at the first factor when single precision cannot reach that (very high contrast: use cudss).
+- `back_end` (choice; default "auto"; choices auto | scipy_splu | cusolver_qr | cudss | cudss_mixed | mumps | mumps_mixed | pardiso | pardiso_mixed) - Back end
+  Where the sparse factorisation runs (role linear). scipy_splu: SuperLU on the host (needs scipy; the matrix moves to the host, where its L + U factors stay), one factorisation reused for every right-hand side, practical up to ~1e6 unknowns (warning above, refused above 2e6). cusolver_qr: sparse QR on the GPU (cupy only), one factorisation per solve, for small models (~1e5 unknowns on a square grid): its workspace, estimated as 64 B * nx * ny * the cell count of the narrower axis (doubled by a periodic wrap of the other axis), lies outside the GPU memory budget, so validation warns above 512 MiB and refuses above 2 GiB, and the solver also refuses a workspace over half the free GPU memory (overrunning the GPU freezes the display). auto: scipy_splu when scipy is installed, else cusolver_qr; on the cpu backend always scipy_splu (cusolver_qr is an error there); on the gpu backend with nvmath-python installed, the frequency-response linear solves of pressure_acoustics (triangle and tetrahedron meshes) and membrane (triangle meshes) take cudss_mixed instead, solid_mechanics_3d on tetrahedra cudss_mixed, and cudss: em_fdfd_ez / _hz (tensor and triangle meshes), em_fdfd_bor / em_fdfd_conical and drift_diffusion (tensor meshes; drift_diffusion also triangles), solid_mechanics on triangles and the heat / electric_currents / electrostatics / magnetostatics types on triangle and tetrahedron meshes (the run summary records the resolved back end); when cuDSS refuses such an operator (a zero pivot, missed accuracy or too little GPU memory) that solver switches to scipy_splu for the rest of the run with a warning (up to 2e6 unknowns). The shifted role (thermal noise) and magnetic_fields_ac always factorise on the host. cudss (GPU backend, needs nvmath-python with cuDSS; only where the physics offers it: heat, electric_currents, electrostatics, magnetostatics, solid_mechanics and solid_mechanics_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical and drift_diffusion (real LU of every Newton Jacobian) linear solves): NVIDIA's sparse direct solver factorises on the GPU in double precision (real symmetric positive definite systems by Cholesky, LDL^T if that fails; its own nested-dissection ordering) and keeps the factor in GPU memory outside the cupy pool (refused when cuDSS's own estimate after planning exceeds 80 % of the free device memory; the host SuperLU size rules do not apply); a re-assembly with the same sparsity pattern (new material values, Newton / saturation iterations) refactorises without the host planning step; solves stay on the GPU. A probe solve checks each factor (cuDSS refinement when its residual misses 1e-10). cudss_mixed: the diagonally equilibrated operator factorised in single precision (float32 / complex64: on GPUs with slow double arithmetic ~10x faster to factorise, half the factor memory), every solve refined by float64 residual steps to 1e-12 (~3-4 single solves per solve); refused at the first factor when single precision cannot reach that (very high contrast: use cudss). mumps / mumps_mixed / pardiso / pardiso_mixed (both backends, never chosen by auto; only where the physics offers them: the linear solves of heat, electric_currents, electrostatics, magnetostatics(_3d), solid_mechanics(_3d), pressure_acoustics, membrane, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, drift_diffusion and em_fdfd_nonlinear, the shifted role of heat thermal noise, and mumps / pardiso for magnetic_fields_ac): a multicore sparse direct factor on the host by MUMPS (python-mumps) or Intel MKL PARDISO (pydiso, x86-64 only), after the diagonal equilibration of cuDSS: LDL^T for (complex) symmetric operators (the symmetrised D A of the FDFD types; the real symmetric positive definite systems: PARDISO Cholesky, LDL^T if that fails, MUMPS LDL^T), LU otherwise; transposed (adjoint) solves, GMRES on an earlier factor and inertia counts work as with scipy_splu. The scipy_splu size rules apply (uncalibrated for these libraries), plus a check of the library's own memory estimate after its analysis against 80 % of the available RAM; a probe solve checks each factor (float64 GMRES refinement on the factor when its residual misses 1e-10); a refusal raises (no fallback). mumps_mixed / pardiso_mixed: the equilibrated operator factorised in single precision (float32 / complex64, about half the factor memory), every solve refined by float64 GMRES to 1e-12 as cudss_mixed; a first factor whose probe misses is refactorised in double for the rest of the run. Threads: the library defaults (OMP_NUM_THREADS for MUMPS, MKL_NUM_THREADS for PARDISO; with numba or a threaded BLAS in the same process set them to share the cores). Optional packages, a validation error without them: MUMPS: conda install -c conda-forge python-mumps (pip install python-mumps builds against an installed MUMPS); PARDISO: pip install pydiso (Linux / Windows x86-64 wheels, pulls MKL) or conda install -c conda-forge pydiso; x86-64 only.
 
 ### Roles by physics type (Automatic = the default type at its default settings)
 
-- `drift_diffusion` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed only
+- `drift_diffusion` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
 - `elastic_waves` stepper: operator general, Automatic `explicit_kernels`, every study, precisions single, half_storage
-- `electric_currents` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `electrostatics` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `em_eme_3d` eigen: operator general, Automatic `arpack_shift_invert`, every study, precisions double; factorization auto, superlu, cudss only
-- `em_fdfd_3d` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, precisions double; factorization auto, superlu, cudss, cudss_mixed only
-- `em_fdfd_bor` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed only
-- `em_fdfd_bor` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, cudss_mixed only
+- `electric_currents` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `electrostatics` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_eme_3d` eigen: operator general, Automatic `arpack_shift_invert`, every study, precisions double; factorization auto, superlu, cudss, mumps, pardiso only
+- `em_fdfd_3d` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
+- `em_fdfd_bor` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_bor` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
 - `em_fdfd_bor` shifted: operator complex_symmetric, Automatic `sparse_direct`, every study, precisions mixed, double
-- `em_fdfd_conical` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed only
-- `em_fdfd_conical` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, precisions double; factorization auto, superlu, cudss, cudss_mixed only
-- `em_fdfd_ez` linear: operator general, Automatic `sparse_direct`, every study, precisions double, mixed; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed only
-- `em_fdfd_ez` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, cudss_mixed only
-- `em_fdfd_hz` linear: operator general, Automatic `sparse_direct`, every study, precisions double, mixed; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed only
-- `em_fdfd_hz` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, cudss_mixed only
-- `em_fdfd_nonlinear` linear: operator general, Automatic `sparse_direct`, every study, precisions double
+- `em_fdfd_conical` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_conical` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
+- `em_fdfd_ez` linear: operator general, Automatic `sparse_direct`, every study, precisions double, mixed; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_ez` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
+- `em_fdfd_hz` linear: operator general, Automatic `sparse_direct`, every study, precisions double, mixed; back_end auto, scipy_splu, cusolver_qr, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `em_fdfd_hz` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
+- `em_fdfd_nonlinear` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cusolver_qr, mumps, mumps_mixed, pardiso, pardiso_mixed only
 - `em_fdtd_3d` stepper: operator general, Automatic `explicit_kernels`, every study, precisions single, half_storage
 - `em_fdtd_ez` stepper: operator general, Automatic `explicit_kernels`, every study, precisions single, double
 - `em_fdtd_hz` stepper: operator general, Automatic `explicit_kernels`, every study, precisions single, double
-- `em_modes` eigen: operator general, Automatic `arpack_shift_invert`, every study, precisions double; factorization auto, superlu, cudss, cudss_mixed only
+- `em_modes` eigen: operator general, Automatic `arpack_shift_invert`, every study, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
 - `em_modes` shifted: operator general, Automatic `sparse_direct`, every study, precisions mixed, double
-- `heat` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `heat` shifted: operator complex_symmetric, Automatic `sparse_direct`, thermal_noise, precisions mixed, double
+- `heat` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `heat` shifted: operator complex_symmetric, Automatic `sparse_direct`, thermal_noise, precisions mixed, double; back_end auto, scipy_splu, cusolver_qr, mumps, mumps_mixed, pardiso, pardiso_mixed only
 - `laminar_flow` stepper: operator general, Automatic `explicit_kernels`, every study, precisions single, half_storage
-- `magnetic_fields_ac` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cudss only
-- `magnetostatics` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `magnetostatics_3d` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `membrane` linear: operator general, Automatic `sparse_direct`, frequency_response, precisions double; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `membrane` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, frequency_response, precisions double; factorization auto, superlu, cudss only
-- `pressure_acoustics` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `solid_mechanics` linear: operator spd, Automatic `pcg`, every study, precisions single, double; preconditioner jacobi only; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `solid_mechanics` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, cudss_mixed only
-- `solid_mechanics_3d` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; preconditioner jacobi only; back_end auto, scipy_splu, cudss, cudss_mixed only
-- `solid_mechanics_3d` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, cudss_mixed only
+- `magnetic_fields_ac` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cudss, mumps, pardiso only
+- `magnetostatics` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `magnetostatics_3d` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `membrane` linear: operator general, Automatic `sparse_direct`, frequency_response, precisions double; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `membrane` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, frequency_response, precisions double; factorization auto, superlu, cudss, mumps, pardiso only
+- `pressure_acoustics` linear: operator general, Automatic `sparse_direct`, every study, precisions double; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `solid_mechanics` linear: operator spd, Automatic `pcg`, every study, precisions single, double; preconditioner jacobi only; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `solid_mechanics` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
+- `solid_mechanics_3d` linear: operator spd, Automatic `pcg`, every study, precisions single, double, mixed; preconditioner jacobi only; back_end auto, scipy_splu, cudss, cudss_mixed, mumps, mumps_mixed, pardiso, pardiso_mixed only
+- `solid_mechanics_3d` eigen: operator general, Automatic `arpack_shift_invert`, eigenfrequency, optomechanics, precisions double; factorization auto, superlu, cudss, mumps, pardiso, cudss_mixed, mumps_mixed, pardiso_mixed only
 
 ## Shared help texts
 

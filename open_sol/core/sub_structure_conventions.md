@@ -35,7 +35,11 @@ coordinate rules stay in the root file.
   backend_misfit).
 - Memory estimates: `diffusion_system_estimate(direct=True)` (a host SuperLU sparse_direct linear solver, the cpu
   Automatic) adds the host factor (`host_real_lu_bytes`: 2D n log2 n, 3D n^(4/3) fill, LU_3D_ENTRIES_PER_UNKNOWN_4_3
-  uncalibrated) and its CSC input copy as host items; on the cpu `check_memory` counts them with the device items. A
+  uncalibrated) and its CSC input copy as host items; on the cpu `check_memory` counts them with the device items.
+  `direct=<host direct name>` (MUMPS / PARDISO; `definition_helpers.linear_solver_direct` returns the back end name)
+  books instead `host_direct.factor_host_bytes` (the SuperLU heuristic x `superlu_bytes_scale`: LDL^T / LU fill,
+  workspace and mixed ratios, all uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes)
+  + `solver_host_bytes` (function-level import of solvers.host_direct, a listed exception of the core rule). A
   cuDSS 'linear' back end is not in it (core may not import solvers.cudss_factor): the caller combines
   `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (fem sub file). Its build extra is the larger of the
   pattern build + anchor check and the multigrid setup with assemble's locals alive at `factorize`
@@ -53,7 +57,10 @@ coordinate rules stay in the root file.
   U of the last scipy_splu), which the model path reports only in the study log (`solve_summary`). Outside the cupy
   pool: the cusolver_qr workspace (guarded by `solvers.sparse_direct.check_solver_size`) and every cuDSS factor
   (guarded by cuDSS's own plan estimate in `solvers.cudss_factor`; estimated as MemoryEstimate gpu_external by
-  `cudss_factor.factor_device_bytes`, measured by the process-wide live / high-water counters of cudss_factor).
+  `cudss_factor.factor_device_bytes`, measured by the process-wide live / high-water counters of cudss_factor). A
+  MUMPS / PARDISO factor (`solvers.host_direct`) holds host memory outside numpy (its `host_bytes`): guarded by the
+  library's own estimate after analysis against HOST_FRACTION of `host_memory.available_bytes()` (no guard when that is
+  None), estimated as host items; a check measuring numpy host arrays does not see it.
 
 ## Accepted host syncs (the root rule: none per step in hot loops)
 - The build's Courant check; one `Device().synchronize()` per study chunk and one at the end of each study run
