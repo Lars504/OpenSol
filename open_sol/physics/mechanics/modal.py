@@ -35,6 +35,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ...solvers.host_direct import HostDirectAccuracyError, factor_label
 
 MODAL_TABLE_COLUMNS = ('resonance_number', 'frequency', 'angular_frequency')
 MODAL_TABLE_UNITS = ('1', 'Hz', 'rad/s')
@@ -350,7 +351,8 @@ class ModalPencil:
         return eigenvalues, np.asarray(vectors), shift_inertia
 
     def _failure_text(self, exc, omega_target) -> str:
-        """Study message of a failed shift factor (cuDSS failure, or a singular SuperLU factor)."""
+        """Study message of a failed shift factor (cuDSS failure, a MUMPS / PARDISO factor missing its accuracy probe,
+        or a singular SuperLU / MUMPS / PARDISO factor)."""
         frequency = omega_target / (2.0 * math.pi)
         if self.kind == 'symmetric':
             prefix = ''
@@ -361,6 +363,11 @@ class ModalPencil:
         if self.on_device:   # cuDSS: memory guard, residual or refinement failure
             return (f'eigenfrequency solve: the cuDSS factorisation of {prefix}K - (2 pi f_target)^2 M failed ({exc}); '
                     "use eigen factorization 'cudss' (double) or 'superlu'")
+        if isinstance(exc, HostDirectAccuracyError):   # residual probe missed after the library's refinement
+            library = factor_label(getattr(self.eigen_solver, 'factorization', None))
+            return (f'eigenfrequency solve: the {library} factorisation of {prefix}K - (2 pi f_target)^2 M at f = '
+                    f'{frequency:.6g} Hz missed its accuracy check ({exc}): a resonance on the shift or a nearly '
+                    "singular pencil; move target_frequency slightly or use eigen factorization 'superlu'")
         if self.kind == 'symmetric':   # SuperLU 'Factor is exactly singular' (eigsh_shifted offsets a nonzero target)
             return (f'eigenfrequency solve: K - (2 pi f_target)^2 M is singular at the target f = {frequency:.6g} Hz '
                     '(at 0 Hz a part that moves without strain, else a resonance on the shift): check the supports or '
@@ -718,8 +725,8 @@ class _BandSearch:
             self.warnings.append(f'between f = {_hertz(low.sigma):.6g} and {_hertz(high.sigma):.6g} Hz the inertia '
                                  f'count gives {expected} mode(s), the shifts found {found}: {what}')
         if not all(point.exact for point in points):
-            self.warnings.append('inertia counts from a float32 factor (cudss_mixed): a pivot near a shift may be '
-                                 'miscounted')
+            self.warnings.append('inertia counts from a float32 / complex64 factor (a mixed eigen factorization): a '
+                                 'pivot near a shift may be miscounted')
 
 
 def _hertz(eigenvalue) -> float:
@@ -740,15 +747,16 @@ def _cudss_timing(factorization, applications) -> dict:
 
 
 def _check_size(n_free, eigen_solver, warnings):
-    """True for a cuDSS eigen factor (it guards its own memory); ValueError above SPLU_LIMIT_DOFS on the host SuperLU or
-    below 3 free dofs, a warning above SPLU_WARN_DOFS."""
+    """True for a cuDSS eigen factor (it guards its own memory); ValueError above SPLU_LIMIT_DOFS on the host SuperLU
+    (MUMPS / PARDISO: the same limits, uncalibrated) or below 3 free dofs, a warning above SPLU_WARN_DOFS."""
     on_device = getattr(eigen_solver, 'factorization', 'superlu') in CUDSS_FACTORIZATIONS
+    library = factor_label(getattr(eigen_solver, 'factorization', None))
     if n_free > SPLU_LIMIT_DOFS and not on_device:
         raise ValueError(f'eigenfrequency solve: {n_free:,} free dofs exceed the {SPLU_LIMIT_DOFS:,} limit of the host '
-                         'SuperLU factor (its L + U would fill the host memory): use a coarser mesh')
+                         f'{library} factor (its factors would fill the host memory): use a coarser mesh')
     if n_free > SPLU_WARN_DOFS and not on_device:
-        warnings.append(f'{n_free:,} free dofs exceed ~{SPLU_WARN_DOFS:,}, the practical size of the host SuperLU '
-                        'factor: expect a long solve and much host memory')
+        warnings.append(f'{n_free:,} free dofs exceed ~{SPLU_WARN_DOFS:,}, the practical size of the host '
+                        f'{library} factor: expect a long solve and much host memory')
     if n_free < 3:
         raise ValueError(f'solve_modes: only {n_free} free dofs remain outside the supports')
     return on_device

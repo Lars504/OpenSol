@@ -244,6 +244,11 @@ all but drift_diffusion.
   `material_elements`: triangle and tetrahedron estimates both carry it (meshing `_material_elements_2d` /
   `_material_elements`, the window elements only); 1 where it is empty). `refactorizes` (a coefficient following a state, a Newton / B-H loop):
   transient phase 'refactorisation' (a new operator copy, + the multigrid setup / cuDSS refresh peak).
+- `direct` of both FEM estimates is `definition_helpers.linear_solver_direct` (the resolved non-cuDSS back end name,
+  truthy; True = SuperLU): `direct_factor_item` books a MUMPS / PARDISO factor (`host_direct_name`: a name of
+  `host_direct.HOST_DIRECT_BACK_ENDS`, never a literal list) at the SuperLU heuristic x
+  `host_direct.superlu_bytes_scale` (real Cholesky / LDL^T; float32 values when mixed; uncalibrated) and
+  `fem_system_estimate(host_direct=)` adds its own copies (`host_direct.solver_host_bytes`); SuperLU items unchanged.
 - cuDSS diffusion factor (`cudss_diffusion_estimate`, shared by the FEM estimates and the tensor DiffusionSystem
   callers, `input_copy=False` there: A_solve is kept): the device route keeps the index maps
   (`cudss_factor.index_map_bytes`; one refresh's peak: `refresh_peak_bytes`); the lower-triangle CSR copies share the maps'
@@ -399,8 +404,9 @@ all but drift_diffusion.
   `add_point_source_at` / `add_probe_at(point)` (located by `domain.locate`), `field_dofs` = P0, `nodal_field` /
   `element_field` for lagrange_field.
 - `fem_diffusion_estimate_3d`: `lagrange_entries_per_dof` (P1 V + 2E, P2 V + 7E + 12F + 6T per V + E), FEM_FILL_FACTOR_3D (2 / 3) on
-  `host_real_lu_bytes(n, dimensions=3)`, uncalibrated; the rest is the 2D `fem_system_estimate` (cuDSS dimensions 3,
-  `active_fraction` from the TetrahedronMeshEstimate's material_elements).
+  `host_real_lu_bytes(n, dimensions=3)`, uncalibrated (MUMPS / PARDISO scaled from it by the 2D `direct_factor_item`);
+  the rest is the 2D `fem_system_estimate` (cuDSS dimensions 3, `active_fraction` from the TetrahedronMeshEstimate's
+  material_elements).
 
 ## Vector elasticity on tetrahedra (`elasticity3d.py`)
 - Interleaved vector dofs 3 d + component on a full-mesh scalar DofMap3D; Voigt rows (xx, yy, zz, yz, xz, xy) with
@@ -421,6 +427,12 @@ all but drift_diffusion.
   shared pattern as is, else the pattern_sum union; index maps from one pass over the stored entries (scipy fancy
   indexing is slow at 1e7 entries). Active elements = `set_active(mask)`, not a > 0. Robin: n . a grad u = value -
   (admittance + j omega damping) u.
+- MUMPS / PARDISO back ends take the host route (`device_pencil` is None off cuDSS): `factorize_host(previous=)`
+  refactorises on the kept analysis while the pattern holds. Factor errors become ValueErrors at `_factorize`:
+  CudssAccuracyError / HostDirectAccuracyError (a RuntimeError, caught first) -> `_accuracy_error` naming the library
+  (`host_direct.factor_label` of the runtime's back end), any other RuntimeError (zero pivot) -> the singular text;
+  HostDirectMemoryError (a ValueError) passes as is. Host factors probe at factorize, so `_solve_free` never expects
+  their accuracy error (caught all the same; no fallback: only an 'auto' cuDSS runtime falls back).
 - PML stretch = the pml3d map with beta fixed at build from a reference frequency (`pml_ring` / `pml_shell`), so K and
   M do not depend on omega; PML faces held at 0 on their outer side by default (`pml_outer`). `stretch_derivatives`
   (C1 profile) serves fourth-order forms (membrane plate). Only ring / shell elements (a node beyond a layered face) are

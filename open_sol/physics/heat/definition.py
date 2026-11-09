@@ -26,6 +26,7 @@ from ...model.definition_helpers import (
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...model.spec import RESERVED_ENTITY_NAMES
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.line_block import (MAX_CHUNK_SHIFTS, operator_bytes as line_block_operator_bytes,
                                    shift_bytes as line_block_shift_bytes)
 from .boundaries import BCSide, HeatBoundaryConfig
@@ -1490,10 +1491,13 @@ HEAT_PHYSICS = PhysicsType(
     supported_studies=('stationary', 'time_dependent', THERMAL_NOISE_STUDY),
     default_study={'type': 'stationary'},
     # linear: the CG solves; shifted: (j omega C + q^2 k_zz A + K) u = w of the noise spectra (sparse_direct =
-    # host SuperLU per shift, the reference; line_block = batched GPU solves, mixed or double)
+    # host SuperLU per shift, the reference, or an opt-in MUMPS / PARDISO host factor through the same factorize_host /
+    # solve_host; line_block = batched GPU solves, mixed or double)
     solver_roles={'linear': CG_DIFFUSION_LINEAR_ROLE,
                   'shifted': SolverRole('complex_symmetric', 'sparse_direct', studies=(THERMAL_NOISE_STUDY,),
-                                        precisions=('mixed', 'double'))},
+                                        precisions=('mixed', 'double'),
+                                        setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
+                                                         + HOST_DIRECT_BACK_ENDS})},
     backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
     conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter heat_flux / convection; 2D)
     conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too

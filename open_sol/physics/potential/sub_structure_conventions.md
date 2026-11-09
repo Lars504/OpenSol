@@ -151,8 +151,10 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
   per-quadrature-point Boltzmann mass (`DampedIteration` with `assemble_mass` of the tangent).
 - Refused: nonlinear electrolytes, voltage waveforms, azimuthal_order != 0 (validation). Gap: driven terminals would fit
   cheaply (one factor, each basis a lift), not built. Time estimate = 2D recipe at `fem.diffusion.fem_time_system`
-  (uncalibrated). cuDSS: heat sub file; potential re-factors only on material / BC-kind / held changes, so a coupled
-  sigma(T) loop is the plan-reuse case.
+  (uncalibrated). cuDSS and the opt-in MUMPS / PARDISO back ends: heat sub file; potential re-factors only on material /
+  BC-kind / held changes, so a coupled sigma(T) loop is the plan / analysis reuse case. Estimators pass
+  `direct=linear_solver_direct(context)` (a back end name) through: the fem / core diffusion estimates book a host
+  direct factor themselves.
 - Self-tests `selftests_fem.py`: electrostatics_fem_coax (C' vs 1e-5, observed order >= 2.5: non-nested meshes give a
   noisy estimate of the ~4 P2 energy order), currents_heat_fem_joule (heat on the same triangles and on a tensor mesh
   through the conservative transfer), electrostatics_fem_electrolyte_slit (tolerances first estimates).

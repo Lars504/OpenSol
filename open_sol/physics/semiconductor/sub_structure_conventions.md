@@ -93,13 +93,22 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   (band ~3 wy): keep self-test windows short in y.
 - `selftests_fem.py` (cpu, triangles; tolerances first estimates). Gates on triangles have no self-test.
 
-## cuDSS 'linear' back ends
+## cuDSS and MUMPS / PARDISO 'linear' back ends
 - Role `CUDSS_LINEAR_ROLE` (shared with em_fdfd_bor / _conical), tensor and triangles (size rules return None on
   cuDSS). `_linear_solve`: equilibrated COO -> host CSR (explicit zeros kept), `factorize_host(real=True, previous=)`:
-  real LU (nonsymmetric Jacobian). `_cudss_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n):
-  the pattern is fixed while the pinned set is, so later iterations refactorise on the kept plan; a changed pinned set
-  re-plans (pattern compare). The Poisson factor is released after the cold start (`release_cudss_factor`).
-  CudssAccuracyError is re-raised as its own ValueError, CudssSingularError as the singular-system one.
+  real LU (nonsymmetric Jacobian). `_kept_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n) on
+  `drift_diffusion.KEPT_FACTOR_BACK_ENDS` (CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS: cuDSS and the opt-in
+  MUMPS / PARDISO back ends; any other back end falls through to the cusolver_qr grid path, so a new kept-factor back
+  end joins that tuple): the pattern is fixed while the pinned set is, so later iterations refactorise on the kept plan
+  / analysis; a changed pinned set re-plans (pattern compare). The Poisson factor is released after the cold start
+  (`release_kept_factors`). CudssAccuracyError / HostDirectAccuracyError are re-raised as their own ValueError,
+  Cudss- / HostDirectSingularError as the singular-system one; a MUMPS / PARDISO refusal never falls back.
+- Host direct size rules: `solver.linear_size_issue` gives MUMPS / PARDISO the scipy_splu rule (unknowns_per_cell 3;
+  else size_issue would size them as a cusolver_qr grid), `solver_fem.fem_linear_size_issue` the SPLU limits named by
+  the library (uncalibrated). Memory: `definition._host_factor_items` (the SuperLU heuristic x
+  `host_direct.superlu_bytes_scale`, real LU, + `solver_host_bytes`); time: the sparse_direct recipe prices them as
+  SuperLU items. Self-test semiconductor_host_direct (`selftests_cudss.py`, cpu; skipped without python-mumps /
+  pydiso): the forward junction on pardiso / mumps / pardiso_mixed vs a scipy_splu node.
 - Automatic: 'auto' resolves to cuDSS on the gpu with nvmath. A refusal (inside `factorize_host` or a deferred
   cudss_mixed check in `solve_host` -> `linear_solver.fall_back`) switches it to SuperLU for good and releases every
   kept cuDSS factor: `_factor_solve` reads `linear_solver.back_end` per call, never a cached choice. Self-tests needing

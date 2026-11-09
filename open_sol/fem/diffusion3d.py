@@ -19,8 +19,9 @@ from .assembly3d import (assemble_face_load_3d, assemble_face_mass_3d, assemble_
                          element_integrals_3d)
 from .assembly import pattern_sum
 from .diffusion import (EdgeCondition as FaceCondition,   # FaceCondition: the same kinds on faces
-                        FEMDiffusionPhysicsCommon, _same_operator, active_dofs, fem_system_estimate,
-                        floating_region_count, lagrange_entries_per_dof, robin_anchoring, robin_assembled)
+                        FEMDiffusionPhysicsCommon, _same_operator, active_dofs, direct_factor_item,
+                        fem_system_estimate, floating_region_count, host_direct_name, lagrange_entries_per_dof,
+                        robin_anchoring, robin_assembled)
 from .dofs3d import lagrange_dofs_3d
 from .mesh import side_members
 from .mesh3d import PLANE_TOLERANCE, window_faces
@@ -467,12 +468,14 @@ class FEMDiffusionPhysicsBase3D(FEMDiffusionPhysicsCommon):
 def fem_diffusion_estimate_3d(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
                               refactorizes=False, active_fraction=1.0) -> MemoryEstimate:
     """FEMDiffusionSystem3D + its physics on a TetrahedronMeshEstimate (fem.diffusion.fem_system_estimate,
-    uncalibrated; SuperLU fill FEM_FILL_FACTOR_3D on the 3D heuristic); cudss = the 'linear' cuDSS back end or None."""
+    uncalibrated; SuperLU fill FEM_FILL_FACTOR_3D on the 3D heuristic, MUMPS / PARDISO scaled from it:
+    fem.diffusion.direct_factor_item); cudss = the 'linear' cuDSS back end or None."""
     n_dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
     n_active = active_dofs(n_dofs, active_fraction)
-    direct_factor = (('host SuperLU factor L + U (float64, FEM 3D, uncalibrated)',
-                      int(FEM_FILL_FACTOR_3D[order] * host_real_lu_bytes(n_active, dimensions=3))) if direct else None)
+    direct_factor = direct_factor_item(direct, FEM_FILL_FACTOR_3D[order] * host_real_lu_bytes(n_active, dimensions=3),
+                                       'host SuperLU factor L + U (float64, FEM 3D, uncalibrated)', 'FEM 3D')
     return fem_system_estimate(n_dofs, lagrange_entries_per_dof(mesh, order), 10 if order == 2 else 4,
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 3, direct_factor=direct_factor, multigrid=multigrid,
-                               cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction)
+                               cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
+                               host_direct=host_direct_name(direct))

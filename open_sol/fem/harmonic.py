@@ -8,8 +8,9 @@ HarmonicPencil (K, C, M on one pattern, one complex factor per frequency), Harmo
 # symmetric for a symmetric a; no Bloch phases here). a: number, (n_elements,), (n_elements, 2) diagonal, (n_elements,
 # 2, 2) or a callable (fem.assembly forms); b, c, m: number, (n_elements,) or callable. K, C and M are assembled once
 # (per condition / coefficient change) on one CSR pattern (HarmonicPencil), so every frequency's reduced operator has the
-# same pattern (cuDSS plan reuse through previous=; on a cuDSS back end the reduced K, C, M values stay on the device,
-# sparse_direct.DevicePencil, so a frequency combines, equilibrates and factorises there without a host CSR; ports'
+# same pattern (cuDSS plan / MUMPS / PARDISO analysis reuse through previous=; on a cuDSS back end the reduced K, C,
+# M values stay on the device, sparse_direct.DevicePencil, so a frequency combines, equilibrates and factorises there
+# without a host CSR; ports'
 # frequency_terms blocks are added there too, at slots mapped once per block pattern (factorize_pencil(extra=), E7-8;
 # a block outside the pattern, or unsymmetric with a symmetric pencil, takes factorize_host). A direct solve on a cuDSS
 # factor also keeps its full-numbering values on the device (device_values(), R6: device consumers such as a cupy
@@ -515,6 +516,7 @@ class HarmonicSystemBase:
         of a factorize_pencil factor is judged by this solve: on a miss an 'auto' runtime falls back to SuperLU (B1b,
         SparseDirectSolver.fall_back) and the frequency is factorised and solved again, else ValueError."""
         from ..solvers.cudss_factor import CudssAccuracyError, CudssFactorization
+        from ..solvers.host_direct import HostDirectAccuracyError   # host factors probe at factorize: never expected
         for attempt in range(2):
             try:
                 if isinstance(self._factor, CudssFactorization):   # R6: the solution stays on the device as well
@@ -522,7 +524,7 @@ class HarmonicSystemBase:
                     device = self._factor.solve(rhs)
                     return cp.asnumpy(device), device
                 return self._factor.solve_host(rhs), None
-            except CudssAccuracyError as exc:
+            except (CudssAccuracyError, HostDirectAccuracyError) as exc:
                 fall_back = getattr(self.linear_solver, 'fall_back', None)
                 if attempt or fall_back is None or not fall_back(exc, self.pencil.free.size):
                     raise self._accuracy_error(exc, omega) from None
@@ -612,7 +614,13 @@ class HarmonicSystemBase:
         return None if slots is None else (slots, values)
 
     def _accuracy_error(self, exc, omega) -> ValueError:
-        return ValueError(f'{self.label()}: the cuDSS solves of the harmonic operator at f = '
+        """ValueError of a factor missing its accuracy check (cuDSS, or a MUMPS / PARDISO host factor), named by its
+        library."""
+        from ..solvers.cudss_factor import CudssAccuracyError
+        from ..solvers.host_direct import factor_label
+        library = ('cuDSS' if isinstance(exc, CudssAccuracyError)
+                   else factor_label(getattr(self.linear_solver, 'back_end', None)))
+        return ValueError(f'{self.label()}: the {library} solves of the harmonic operator at f = '
                           f'{omega / (2.0 * math.pi):.6g} Hz miss the accuracy check ({exc}): the operator is '
                           'ill-conditioned, e.g. a drive on a nearly lossless resonance')
 
@@ -622,6 +630,7 @@ class HarmonicSystemBase:
         matrix (plan reuse through previous= either way; extra outside the pattern, or unsymmetric with a symmetric
         pencil, takes the host route)."""
         from ..solvers.cudss_factor import CudssAccuracyError
+        from ..solvers.host_direct import HostDirectAccuracyError   # a RuntimeError: caught before the singular case
         try:
             device, names = self._device_terms()
             added = None if device is None or extra is None else self._extra_on_device(device, extra)
@@ -635,7 +644,7 @@ class HarmonicSystemBase:
                     matrix = pattern_sum([matrix, extra])
                 self._factor = self.linear_solver.factorize_host(matrix, symmetric=self.symmetric,
                                                                  previous=self._factor)
-        except CudssAccuracyError as exc:
+        except (CudssAccuracyError, HostDirectAccuracyError) as exc:
             raise self._accuracy_error(exc, omega) from None
         except RuntimeError as exc:
             raise ValueError(f'{self.label()}: the harmonic operator is singular at f = {omega / (2.0 * math.pi):.6g} '

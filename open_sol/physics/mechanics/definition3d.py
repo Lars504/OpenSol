@@ -16,13 +16,15 @@ from ...fem.elasticity3d import TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRA
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATION_PARAM, SQUEEZE_FILM_GAS_PARAMS,
                                          cg_solver_issues, cudss_external, eigen_factorization, eigen_role,
-                                         eigen_search_counts, eigen_subspace_size,
+                                         eigen_search_counts, eigen_subspace_size, host_direct_back_end,
                                          element_order, linear_solver_mixed, linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
 from ...model.geometry import expand_entities
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
+from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
+                                    superlu_bytes_scale)
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
@@ -122,9 +124,9 @@ _PIEZOELECTRIC_PARAM = Param(
          'D = e S + eps E, E = -grad phi, div D = 0. Electrode / Electrode (domain) features fix phi (connection voltage; '
          'at least one, the ground, is required) or make an isolated equipotential carrying a net charge [C] (floating); '
          'every other boundary is insulating (D . n = 0). The coupled symmetric indefinite operator is factorised once '
-         "per assembly by the 'linear' sparse_direct solver (host SuperLU, or cuDSS LDL^T with back_end cudss on a GPU), "
-         'with the potential scaled to balance the blocks. With every e = 0 it is a 3D anisotropic electrostatics solve '
-         '(electrode capacitance with fringing in the air around the solid). Outputs electric_potential, '
+         "per assembly by the 'linear' sparse_direct solver (host SuperLU, cuDSS LDL^T with back_end cudss on a GPU, or "
+         'an opt-in MUMPS / PARDISO host LDL^T), with the potential scaled to balance the blocks. With every e = 0 it '
+         'is a 3D anisotropic electrostatics solve (electrode capacitance with fringing in the air around the solid). Outputs electric_potential, '
          'electric_field_x / _y / _z, electric_displacement_x / _y / _z and the stress with its -e^T E part. Studies '
          'stationary / time_dependent (static solves) and eigenfrequency: the modes of the coupled pencil (massless '
          "potential) nearest target_frequency by the 'eigen' solver, voltage electrodes held at 0 V (short circuit: "
@@ -684,10 +686,35 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
     return issues
 
 
+def host_factor_item(name, superlu_label, superlu_bytes, symmetric=True, complex_values=False) -> tuple:
+    """(label, bytes) of a host factor booked by its SuperLU heuristic: for a MUMPS / PARDISO back end / factorization
+    name (host_direct.HOST_DIRECT_BACK_ENDS; eigen names through eigen_host_direct first) the bytes x
+    host_direct.superlu_bytes_scale and the library's factor kind in place of 'SuperLU L + U' in the label
+    (uncalibrated); any other name keeps label and bytes (also used by definition)."""
+    if name not in HOST_DIRECT_BACK_ENDS:
+        return superlu_label, int(superlu_bytes)
+    kind = f"{factor_label(name)} {'LDL^T' if symmetric else 'LU'}"
+    label = superlu_label.replace('SuperLU L + U', kind).replace('SuperLU', kind)
+    return (f'{label} (SuperLU heuristic scaled, uncalibrated)',
+            int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=complex_values)))
+
+
+def eigen_host_direct(solvers, unknowns):
+    """The MUMPS / PARDISO factorization the 'eigen' runtime factors a pencil of `unknowns` with (S5c,
+    ArpackShiftInvertSolver.factorization_for: a *_mixed one below MIXED_EIGEN_MIN_UNKNOWNS factors in double), else
+    None (also used by definition)."""
+    from ...solvers.arpack_shift_invert import MIXED_EIGEN_MIN_UNKNOWNS
+    name = host_direct_back_end(solvers, role='eigen')
+    if name is not None and host_direct_precision(name) == 'mixed' and int(unknowns) < MIXED_EIGEN_MIN_UNKNOWNS:
+        return double_of(name)
+    return name
+
+
 def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     """Tetrahedron mesh (FEM): the host SuperLU size rule of the factorised unknowns (displacement, + potential when
     piezoelectric: the 'linear' factor of a static solve or of the complex frequency-response pencil, the eigen factor
-    with factorization superlu; a cuDSS factor guards its own device memory)."""
+    with factorization superlu; a MUMPS / PARDISO factor keeps these limits, uncalibrated, named by its library; a cuDSS
+    factor guards its own device memory)."""
     mesh = vctx.mesh
     if mesh is None or getattr(mesh, 'kind', '') != _TETRAHEDRA:
         return []
@@ -697,11 +724,13 @@ def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     if vctx.study_type in _MODAL_STUDIES:
         if eigen_factorization(vctx.solvers(physics_spec)) in CUDSS_FACTORIZATIONS:
             return []
+        library = factor_label(host_direct_back_end(vctx.solvers(physics_spec), role='eigen'))
         where = 'the coupled pencil A - sigma M (eigen)' if piezoelectric else 'K - sigma M (eigen)'
     else:
         resolved = (vctx.solvers(physics_spec) or {}).get('linear')
         if resolved is not None and resolved.values.get('back_end') in CUDSS_BACK_ENDS:
             return []   # a cuDSS LDL^T / Cholesky of the 'linear' role guards its own device memory
+        library = factor_label(host_direct_back_end(vctx.solvers(physics_spec)))
         if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
             where = 'the complex pencil per frequency (linear)'
         else:
@@ -710,12 +739,12 @@ def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
         remedy = ("eigen factorization 'cudss' on a GPU, " if vctx.study_type in _MODAL_STUDIES
                   else "linear solver back_end 'cudss' on a GPU, ")
         return [Issue('error', path, f'~{unknowns:,} {what} exceed the {SPLU_3D_LIMIT_UNKNOWNS:,} limit of the host '
-                                     f'SuperLU factor of {where} (uncalibrated for 3D elasticity): use {remedy}a coarser '
-                                     'mesh or discretization linear')]
+                                     f'{library} factor of {where} (uncalibrated for 3D elasticity): use {remedy}a '
+                                     'coarser mesh or discretization linear')]
     if unknowns > SPLU_3D_WARN_UNKNOWNS:
         return [Issue('warning', path, f'~{unknowns:,} {what} exceed ~{SPLU_3D_WARN_UNKNOWNS:,}, the practical size of '
-                                       f'the host SuperLU factor of {where}: factor memory and time grow faster than the '
-                                       'unknowns')]
+                                       f'the host {library} factor of {where}: factor memory and time grow faster '
+                                       'than the unknowns')]
     return []
 
 
@@ -1460,7 +1489,10 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                * factored))
         if factorization not in CUDSS_FACTORIZATIONS:
             kind = 'complex128' if complex_factor > 1 else 'float64'
-            host_items.append((f'SuperLU factor of {pencil} ({kind}, heuristic)', complex_factor * factor_bytes))
+            host_items.append(host_factor_item(eigen_host_direct(context.solvers, factored),
+                                               f'SuperLU factor of {pencil} ({kind}, heuristic)',
+                                               complex_factor * factor_bytes, complex_values=complex_factor > 1,
+                                               symmetric=_trivial_bloch_phase(settings_values)))
         # a PML, loss or resistive load: the complex symmetric pencil runs eigs_shifted (device Krylov-Schur on a
         # DevicePencil); a real or Hermitian (Bloch phase) one eigsh_shifted
         pml = bool(_pml_faces(settings_values))
@@ -1495,11 +1527,14 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                            ('frequency response solution, rhs and product vectors (complex)',
                             6 * _COMPLEX_BYTES * factored)])
         if host_factor:
-            host_items.append(('complex SuperLU factor of the pencil (heuristic)', 2 * factor_bytes))
+            host_items.append(host_factor_item(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
+                                               2 * factor_bytes, complex_values=True))
         host_items.extend(reduced_sweep_memory_items(context, factored, factored_entries))   # adaptive / modal
     elif host_factor:
         what = 'the coupled operator' if piezoelectric else 'K'
-        host_items.append((f'SuperLU factor of {what} (float64, heuristic)', factor_bytes))
+        # piezoelectric: the coupled operator is real symmetric indefinite (LDL^T on MUMPS / PARDISO as well)
+        host_items.append(host_factor_item(linear_back_end, f'SuperLU factor of {what} (float64, heuristic)',
+                                           factor_bytes))
     return MemoryEstimate.from_items(device_items, host_items=host_items, run_items=run_items,
                                      transient_items=transient_items, **cudss_external(factors))
 
@@ -1940,7 +1975,8 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'rectangular-cell mesh shows them as 0). The frequency_response study (tetrahedra only; elastic or '
                 'piezoelectric with mechanical_loss_factor / dielectric_loss_tangent) factorises the complex symmetric '
                 "K (1 + j eta) - omega^2 M once per frequency by the 'linear' sparse_direct solver (host SuperLU, or "
-                'cuDSS LDL^T with back_end cudss on a GPU, its plan reused across frequencies); the Admittance feature '
+                'cuDSS LDL^T with back_end cudss on a GPU, its plan reused across frequencies, or an opt-in MUMPS / '
+                'PARDISO host LDL^T reusing its analysis); the Admittance feature '
                 'gives Y(f) in S with the BVD fit and kappa_e. Settings periodic_x / _y / _z with bloch_kx / _ky / _kz '
                 '(tetrahedra, eigenfrequency study only): Bloch / Floquet unit cells, u and phi on each hi face = the lo '
                 'face values times exp(-j k L), the modes of the reduced pencil P^H K P, P^H M P (complex Hermitian, '

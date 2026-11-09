@@ -20,15 +20,18 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          cg_solver_issues, coupling_target, cudss_external, eigen_factorization,
                                          eigen_role,
                                          eigen_search_counts, eigen_subspace_size,
-                                         evaluates_to, frequency_sweep_counts, geometry_param, is_axisymmetric,
+                                         evaluates_to, frequency_sweep_counts, geometry_param, host_direct_back_end,
+                                         is_axisymmetric,
                                          linear_solver_precision, on_triangles, point_cells, reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
 from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path,
                              solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
+from ...solvers.host_direct import factor_label
 from ...solvers.pcg import workspace_bytes
 from . import definition3d
+from .definition3d import eigen_host_direct, host_factor_item
 from .coupling import make_temperature_rise_transform
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES,
@@ -715,18 +718,20 @@ def _triangle_issues(vctx, physics_spec, settings_values, path):
     else:
         cudss_factor = resolved is not None and resolved.values.get('back_end') in CUDSS_BACK_ENDS
     if mesh is not None and getattr(mesh, 'kind', '') == _TRIANGLES and not cudss_factor:
+        library = factor_label(host_direct_back_end(solvers, role='eigen' if vctx.study_type in _MODAL_STUDIES
+                                                    else 'linear'))
         per_component = mesh.n_nodes + (mesh.n_edges if settings_values.get('discretization') == 'quadratic' else 0)
         unknowns = _fem_components(settings_values) * per_component
         if unknowns > SPLU_LIMIT_UNKNOWNS:
             remedy = ("eigen factorization 'cudss' on a GPU, " if vctx.study_type in _MODAL_STUDIES
                       else "linear solver back_end 'cudss' on a GPU, ")
             issues.append(Issue('error', path, f'~{unknowns:,} displacement unknowns exceed the {SPLU_LIMIT_UNKNOWNS:,} '
-                                               f'limit of the host SuperLU factor: use {remedy}a coarser triangle mesh '
-                                               'or discretization linear'))
+                                               f'limit of the host {library} factor: use {remedy}a coarser triangle '
+                                               'mesh or discretization linear'))
         elif unknowns > SPLU_WARN_UNKNOWNS:
             issues.append(Issue('warning', path, f'~{unknowns:,} displacement unknowns exceed ~{SPLU_WARN_UNKNOWNS:,}, '
-                                                 'the practical size of the host SuperLU factor (memory and time grow '
-                                                 'faster than the unknowns)'))
+                                                 f'the practical size of the host {library} factor (memory and time '
+                                                 'grow faster than the unknowns)'))
     return issues
 
 
@@ -1114,8 +1119,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
                            ('frequency response complex operator copies', 3 * (16 + INT32_BYTES) * entries),
                            ('frequency response solution vectors (complex)', 4 * 16 * vector_dofs)))
         if host_factor:
-            host_items.append(('frequency response complex SuperLU L + U (heuristic)',
-                               int(2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs))))
+            host_items.append(host_factor_item(linear_back_end, 'frequency response complex SuperLU L + U (heuristic)',
+                                               2 * _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs),
+                                               complex_values=True))
         else:   # the kept HarmonicSystem: cuDSS LDL^T refreshed from the DevicePencil (K + j L, M)
             run_items += harmonic_pencil_items(vector_dofs, entries, linear_back_end, (16, FLOAT64_BYTES))
             factors.append(('frequency response cuDSS factor', vector_dofs, entries, 16, 2,
@@ -1123,8 +1129,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
         host_items.extend(reduced_sweep_memory_items(context, vector_dofs, entries))
     else:
         if host_factor:
-            host_items.append(('SuperLU L + U factors (float64, heuristic)',
-                               int(_FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs))))
+            host_items.append(host_factor_item(linear_back_end, 'SuperLU L + U factors (float64, heuristic)',
+                                               _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs)))
         if settings_values.get('out_of_plane') == GENERALIZED_PLANE_STRAIN and not is_axisymmetric(settings_values):
             host_items.append(('generalized plane strain unit loads and solutions (3 + 3 x float64)',
                                6 * FLOAT64_BYTES * vector_dofs))
@@ -1143,8 +1149,9 @@ def _fem_memory_estimate(settings_values, mesh, context):
         if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
             host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
         if not static and host_factor:   # the static state of the pencil is factorised too
-            host_items.append(('SuperLU L + U factors of the Newton tangent (float64, heuristic)',
-                               int(_FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs))))
+            host_items.append(host_factor_item(linear_back_end,
+                                               'SuperLU L + U factors of the Newton tangent (float64, heuristic)',
+                                               _FEM_FILL_FACTOR * host_real_lu_bytes(vector_dofs)))
     return MemoryEstimate.from_items(((f'fields ({n_fields} x float32 per element)',
                                        n_fields * FLOAT32_BYTES * elements),
                                       ('window element mask', BOOL_BYTES * elements)),
@@ -1287,7 +1294,8 @@ def _eigen_host_items(context, dofs, entries, rigid_motions=0, pml=False, basis_
     n_resonances = modal_kept_count(context)   # several targets / a band keep more mode shapes
     csr_entry_bytes = FLOAT64_BYTES + INT32_BYTES
     factor = (() if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
-              else (('eigen SuperLU L + U factors (float64, heuristic)', host_real_lu_bytes(dofs)),))
+              else (host_factor_item(eigen_host_direct(context.solvers, dofs),
+                                     'eigen SuperLU L + U factors (float64, heuristic)', host_real_lu_bytes(dofs)),))
     basis = (((f'eigenvectors ({n_wanted} vectors; the basis is on the device)', n_wanted * FLOAT64_BYTES * dofs),)
              if basis_on_device else
              ((f'Lanczos basis + eigenvectors ({n_basis} + {n_wanted} vectors)',

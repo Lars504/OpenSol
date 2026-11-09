@@ -10,12 +10,13 @@ from ...core.memory_estimate import (COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, 
                                      MemoryEstimate, combine, host_lu_bytes, phase_before_items, window_cell_count)
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINEAR_ROLE, axisymmetric_issues,
                                          coupling_target, evaluates_to, geometry_param, held_object_conflicts,
-                                         is_axisymmetric, linear_solver_cudss, material_follows_state,
-                                         numpy_calls, reports_model_checks, resolved_back_end)
+                                         host_direct_back_end, is_axisymmetric, linear_solver_cudss,
+                                         material_follows_state, numpy_calls, reports_model_checks, resolved_back_end)
 from ...model.expressions import is_identifier
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
                                      refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
+from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
 from .drift_diffusion import COMPONENTS
 from .renderer import SEMICONDUCTOR_FIELD_INFOS
 from .selftests import PN_DIODE_DESCRIPTION, PN_DIODE_LABEL, PN_DIODE_SUMMARY, silicon_pn_photodiode_spec
@@ -337,10 +338,26 @@ def _triangle_memory_estimate(mesh, context):
     if linear_solver_cudss(context.solvers):   # COO entries bound the coupled CSR; Poisson: the P1 node graph
         return combine((MemoryEstimate.from_items(items, host_items=host_items),
                         _cudss_estimate(context, COMPONENTS * nodes, entries, nodes, 2 * edges + nodes)))
-    host_items += [('SuperLU L + U factors (heuristic, uncalibrated on triangles)',
-                    int(_TRIANGLE_LU_FILL * _REAL_LU_SCALE * host_lu_bytes(COMPONENTS * nodes))),
-                   ('host sparse matrix (float64)', FLOAT64_CSR_ENTRY_BYTES * entries)]
+    host_items += _host_factor_items(context, 'SuperLU L + U factors (heuristic, uncalibrated on triangles)',
+                                     _TRIANGLE_LU_FILL * _REAL_LU_SCALE * host_lu_bytes(COMPONENTS * nodes),
+                                     COMPONENTS * nodes, entries)
+    host_items.append(('host sparse matrix (float64)', FLOAT64_CSR_ENTRY_BYTES * entries))
     return MemoryEstimate.from_items(items, host_items=host_items)
+
+
+def _host_factor_items(context, superlu_label, superlu_bytes, unknowns, entries) -> list:
+    """Host items of the coupled Newton LU: SuperLU at its heuristic; a MUMPS / PARDISO back end (the kept factor per
+    unknown count) that heuristic x host_direct.superlu_bytes_scale (real LU; float32 values when mixed; uncalibrated)
+    + its own copies (host_direct.solver_host_bytes); the cold start's Poisson factor is released before the coupled
+    one is factored and stays below it."""
+    back_end = host_direct_back_end(context.solvers)
+    if back_end is None:
+        return [(superlu_label, int(superlu_bytes))]
+    label, mixed = factor_label(back_end), host_direct_precision(back_end) == 'mixed'
+    return [(f"{label} LU factor ({'float32' if mixed else 'float64'}, SuperLU heuristic scaled, uncalibrated)",
+             int(superlu_bytes * superlu_bytes_scale(back_end, symmetric=False, complex_values=False))),
+            (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+             solver_host_bytes(unknowns, entries, complex_values=False, mixed=mixed, symmetric=False))]
 
 
 def _memory_estimate(settings_values, mesh, context):
@@ -365,8 +382,10 @@ def _memory_estimate(settings_values, mesh, context):
     else:
         # dense 3 x 3 cell blocks: ~9 entries per scalar fill entry of the window grid, i.e. ~3x the scalar heuristic
         # at 3 unknowns per cell
-        host_items += [('SuperLU L + U factors (heuristic)', int(3 * _REAL_LU_SCALE * host_lu_bytes(unknowns))),
-                       ('host sparse matrix (float64)', FLOAT64_CSR_ENTRY_BYTES * entries)]
+        host_items += _host_factor_items(context, 'SuperLU L + U factors (heuristic)',
+                                         3 * _REAL_LU_SCALE * host_lu_bytes(unknowns), unknowns,
+                                         _CSR_ENTRIES_PER_CELL * window_cells)
+        host_items.append(('host sparse matrix (float64)', FLOAT64_CSR_ENTRY_BYTES * entries))
     return MemoryEstimate.from_items(items, host_items=host_items)
 
 
@@ -537,7 +556,8 @@ _DESCRIPTION = (
     'factorises every Newton Jacobian on the GPU as a real LU, reusing the cuDSS plan (ordering and symbolic phase) '
     'across Newton iterations and continuation steps while the contacts, gates and insulator cells stay the same; '
     'cudss_mixed factorises in single precision with float64 refinement and falls back to double when that misses '
-    '1e-12.')
+    '1e-12. A sparse_direct node on a MUMPS or PARDISO back end (opt-in, never Automatic) keeps its host real LU the '
+    'same way and reuses its analysis; it keeps the host SuperLU size limits and raises on a refusal (no fallback).')
 _SLOT_DOCS = {GENERATION_SLOT: ('1/(m^3 s)', 'Coupled electron-hole pair generation rate (field generation, written by '
                                              'em_semiconductor_generation), added to the generation features (field '
                                              'generation_ext); acts on the free semiconductor cells only.')}

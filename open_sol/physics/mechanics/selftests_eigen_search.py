@@ -1,12 +1,14 @@
 """Self-tests of the eigenfrequency study's search 'band' / 'targets' on solid_mechanics (roller boxes with discrete
 closed-form modes) and solid_mechanics_3d on tetrahedra (a cantilever: modal band / targets against dense eigh, and a
-band study against a 'nearest' study of the same mesh)."""
+band study against a 'nearest' study of the same mesh). solid_eigenfrequency_band_host_direct: the rectangle band search
+with a MUMPS / PARDISO eigen factorization (inertia counts from the host LDL^T; skipped without python-mumps / pydiso)."""
 import math
 
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value
+from ...model.selftest_helpers import (available_host_direct, float32_value, skip_without_host_direct, solver_role,
+                                       with_direct_node)
 from ...model.spec import FeatureSpec, MaterialSpec, StudySpec
 from .selftests import _elastic, _lame
 from .selftests_eigenfrequency import _CELL, _PHYSICS, _TABLE, _box_spec, _discrete_modes
@@ -99,6 +101,57 @@ def _check_band(results_by_name):
             tolerances[f'{run} {item}'] = 0.5
         details[run] = {'band_Hz': [low, high], 'frequency_expected': expected, 'frequency_measured': measured,
                         'expected_count': table.get('expected_count'), 'snapshot_labels': list(labels)}
+    return _normalized_report(errors, tolerances, details)
+
+
+# ---- solid_eigenfrequency_band_host_direct: the 'rectangle' band run with an eigen node per installed host direct
+# factorization (literals: the selftest rule), cpu backend: inertia counts from MUMPS INFOG(12) / PARDISO iparm ----
+_HOST_DIRECT_FACTORIZATIONS = ('mumps', 'pardiso')
+_HOST_DIRECT_RUN = 'rectangle'
+
+
+def _host_direct_band_specs():
+    """One band run of the _HOST_DIRECT_RUN box per installed factorization of _HOST_DIRECT_FACTORIZATIONS; {} without
+    python-mumps / pydiso."""
+    factorizations = available_host_direct(_HOST_DIRECT_FACTORIZATIONS)
+    if not factorizations:
+        return {}
+    cells, stiffness, _ = _band_runs()[_HOST_DIRECT_RUN]
+    low, high, _ = _run_band(cells, stiffness)
+    specs = {}
+    for factorization in factorizations:
+        spec = _box_spec(0.0, _PER_SHIFT, stiffness=stiffness,
+                         study_settings={'search': 'band', 'frequency_min': low, 'frequency_max': high,
+                                         'max_resonances': _MAX_RESONANCES})
+        spec.solver_defaults.backend = 'cpu'
+        specs[factorization] = with_direct_node(spec, factorization, role='eigen', physics_names=(_PHYSICS,))
+    return specs
+
+
+def _check_band_host_direct(results_by_name):
+    """Per factorization as _check_band (discrete modes of the band, frequency order, the inertia count, snapshots) and
+    an 'eigen' record of a host direct factor (eigen_host_direct_analyses > 0)."""
+    if not results_by_name:
+        return skip_without_host_direct(_HOST_DIRECT_FACTORIZATIONS)
+    cells, stiffness, _ = _band_runs()[_HOST_DIRECT_RUN]
+    low, high, expected = _run_band(cells, stiffness)
+    errors, tolerances, details = {}, {}, {}
+    for factorization, results in results_by_name.items():
+        table = results.result(_PHYSICS, _TABLE)
+        measured = [float(row[_FREQUENCY_COLUMN]) for row in table['rows']]
+        labels = results.summary().get('snapshot_labels') or []
+        counters = solver_role(results, _PHYSICS, 'eigen').get('counters') or {}
+        errors[f'{factorization} frequencies'] = _sorted_error(measured, expected)
+        tolerances[f'{factorization} frequencies'] = _FREQUENCY_TOLERANCE
+        errors[f'{factorization} order'] = float(any(np.diff(measured) < 0.0))
+        errors[f'{factorization} expected_count'] = abs((table.get('expected_count') or 0) - len(expected))
+        errors[f'{factorization} snapshots'] = abs(len(labels) - len(expected))
+        errors[f'{factorization} record'] = 0.0 if int(counters.get('eigen_host_direct_analyses') or 0) > 0 else 1.0
+        for item in ('order', 'expected_count', 'snapshots', 'record'):
+            tolerances[f'{factorization} {item}'] = 0.5
+        details[factorization] = {'band_Hz': [low, high], 'frequency_expected': expected,
+                                  'frequency_measured': measured, 'expected_count': table.get('expected_count'),
+                                  'counters': dict(counters)}
     return _normalized_report(errors, tolerances, details)
 
 
@@ -370,6 +423,19 @@ EIGEN_SEARCH_CASES = (
                     'inertia) equals their number and one snapshot is stored per mode. measured = error = the worst '
                     'deviation in tolerance units, tolerance 1 (first estimates, not yet run).',
         specs=_band_specs, check=_check_band),
+    SelfTestCase(
+        name='solid_eigenfrequency_band_host_direct',
+        label="Solid mechanics: eigenfrequency search 'band' on a MUMPS / PARDISO eigen factor",
+        description="The 'rectangle' run of solid_eigenfrequency_band_roller_box (orthotropic roller box, 20 x 8 cells, "
+                    f'{_PER_SHIFT} modes per shift) on the cpu backend with an arpack_shift_invert node per installed '
+                    'factorization of mumps, pardiso: the shift factors are the library LDL^T of K - sigma M and the '
+                    "band's Sylvester counts come from the library inertia (MUMPS INFOG(12), PARDISO iparm 22 / 23; "
+                    'perturbed pivots: a counting SuperLU). Per run as that case: every discrete mode of the band '
+                    f'once (relative {_FREQUENCY_TOLERANCE:g}, frequency order), expected_count equal to their number, '
+                    'one snapshot per mode, and an eigen record with host direct analyses. measured = error = the '
+                    'worst deviation in tolerance units, tolerance 1; passes as skipped without python-mumps / pydiso. '
+                    'Not run yet.',
+        specs=_host_direct_band_specs, check=_check_band_host_direct),
     SelfTestCase(
         name='solid_eigenfrequency_targets',
         label="Solid mechanics: eigenfrequency search 'targets'",

@@ -48,10 +48,14 @@ Kirchhoff plate, D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega
   `_shift_solver(system)` (a Bloch cell overrides it with the reduced pencil): a new pencil variant overrides
   `_shift_solver`, not the search. Inertia counts only for a real pencil, through an `InertiaCounter` (kept factor,
   refactorised in place) released by `_multi_shift_solve`: a new caller of `_shift_solver` that counts releases it.
+  The eigen role is `eigen_role()` (no mixed factorization): a MUMPS / PARDISO factorization counts from its LDL^T
+  (arpack_shift_invert; perturbed pivots: a counting SuperLU).
 - Driven: `system.solve(omega)` = one complex factor per frequency via the 'linear' role's `factorize_host(symmetric=
   True, previous=)` (HarmonicPencil fixes the pattern: a cuDSS plan survives the sweep; fem sub file).
-  `definition.MEMBRANE_LINEAR_ROLE` (frequency_response only; cusolver_qr refused; cuDSS only on triangles). A system
-  rebuild releases the old factor first (`_release_factor`: cuDSS lies outside the cupy pool).
+  `definition.MEMBRANE_LINEAR_ROLE` (frequency_response only; cusolver_qr refused; cuDSS and the opt-in MUMPS / PARDISO
+  back ends only on triangles: a 1D model refuses those nodes in validation, so no node sits unused beside the line
+  factor). A system rebuild releases the old factor first (`_release_factor`: cuDSS and MUMPS / PARDISO factors lie
+  outside the cupy pool / numpy).
 - sweep_method adaptive / modal: `plan_frequency_response` (after `reset_frequency_response`, which drops any old
   model) sets the PML reference and calls `system.plan_reduced` (fem sub file "Reduced sweeps"); fields only where
   `wants_fields` (study option 'fields'), probes / mode projections always through `system.linear_output`
@@ -60,7 +64,10 @@ Kirchhoff plate, D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega
   only stores it). Any system rebuild / coefficient re-apply mid-sweep makes `system.solve` raise; ports are refused
   (validation and plan). Modal uses the 'eigen' role, so it is declared for frequency_response too.
 - Validation applies the host SuperLU size rule (SPLU_* on n_nodes (+ n_edges for P2), holes included) to the factor
-  the study uses, none for cuDSS; estimates count a cuDSS factor instead of the host factor as an external item
+  the study uses, none for cuDSS (MUMPS / PARDISO keep it, the texts naming the library: `host_direct.factor_label`);
+  estimates book a MUMPS / PARDISO factor (`definition._host_direct_factor`: the 'linear' back end or the 'eigen'
+  factorization of the study) at the host heuristic x `host_direct.superlu_bytes_scale` (LDL^T; S5c: a small mixed
+  eigen pencil factors in double) + `solver_host_bytes`, and a cuDSS factor instead of the host factor as an external item
   (`definition_helpers.cudss_external`) plus its pool items: frequency_response run items (kept DevicePencil, solve
   vectors, kept solution; no CSR copies on top: the pencil's maps / transients hold the planned values, measured on
   membrane_guide_pml), eigenfrequency transient items of phase 'eigen solve' (fem.harmonic_resonances releases the

@@ -700,15 +700,39 @@ def lagrange_entries_per_dof(mesh, order) -> float:
 def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
                            refactorizes=False, active_fraction=1.0) -> MemoryEstimate:
     """FEMDiffusionSystem + its physics on a TriangleMeshEstimate (fem_system_estimate; SuperLU fill FEM_FILL_FACTOR on
-    the 2D heuristic); cudss = the 'linear' cuDSS back end (cudss_back_end) or None."""
+    the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None."""
     n_dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
     n_active = active_dofs(n_dofs, active_fraction)
-    direct_factor = (('host SuperLU factor L + U (float64, FEM)', int(FEM_FILL_FACTOR * host_real_lu_bytes(n_active)))
-                     if direct else None)
+    direct_factor = direct_factor_item(direct, FEM_FILL_FACTOR * host_real_lu_bytes(n_active),
+                                       'host SuperLU factor L + U (float64, FEM)', 'FEM')
     return fem_system_estimate(n_dofs, lagrange_entries_per_dof(mesh, order), 6 if order == 2 else 3,
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 2, direct_factor=direct_factor, multigrid=multigrid,
-                               cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction)
+                               cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
+                               host_direct=host_direct_name(direct))
+
+
+def host_direct_name(direct):
+    """`direct` of an estimator (definition_helpers.linear_solver_direct: the resolved non-cuDSS sparse_direct back
+    end, truthy; True = SuperLU) when it names a MUMPS / PARDISO back end (host_direct.HOST_DIRECT_BACK_ENDS), else
+    None."""
+    from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS   # numpy only at module level
+    return direct if isinstance(direct, str) and direct in HOST_DIRECT_BACK_ENDS else None
+
+
+def direct_factor_item(direct, superlu_bytes, superlu_label, detail):
+    """(label, bytes) host item of a DiffusionDirectSolver's factor, None when `direct` is falsy: the SuperLU heuristic
+    superlu_bytes under superlu_label, or for a MUMPS / PARDISO back end (host_direct_name) that heuristic x
+    host_direct.superlu_bytes_scale (real Cholesky / LDL^T, float32 values when mixed; uncalibrated)."""
+    if not direct:
+        return None
+    back_end = host_direct_name(direct)
+    if back_end is None:
+        return superlu_label, int(superlu_bytes)
+    from ..solvers.host_direct import factor_label, host_direct_precision, superlu_bytes_scale
+    dtype = 'float32' if host_direct_precision(back_end) == 'mixed' else 'float64'
+    return (f'host {factor_label(back_end)} factor ({dtype}, {detail}, SuperLU heuristic scaled, uncalibrated)',
+            int(superlu_bytes * superlu_bytes_scale(back_end, symmetric=True, complex_values=False)))
 
 
 def active_dofs(n_dofs, active_fraction) -> int:
@@ -727,9 +751,11 @@ def painted_fraction(mesh, material_names) -> float:
 
 def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element_fields, nodal_fields, dimensions,
                         direct_factor=None, multigrid=False, cudss=None, refactorizes=False,
-                        active_fraction=1.0) -> MemoryEstimate:
+                        active_fraction=1.0, host_direct=None) -> MemoryEstimate:
     """FEMDiffusionSystem[3D] and physics: float32 element state, host nodal arrays, the operator and linear solver on
-    the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS take it as a temporary); refactorizes: per change."""
+    the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS / MUMPS / PARDISO take it as a temporary);
+    refactorizes: per change; host_direct: the MUMPS / PARDISO back end of direct_factor (its own arrays beside the
+    library factor, host_direct.solver_host_bytes) or None."""
     n_active = active_dofs(n_dofs, active_fraction)
     entries = int(round(float(entries_per_dof) * n_active))
     csr_bytes = FLOAT64_CSR_ENTRY_BYTES * entries + INT32_BYTES * (n_active + 1)
@@ -747,6 +773,11 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
     if direct_factor is not None:   # DiffusionDirectSolver: the run-backend copy goes to the host and is dropped
         items.append(('FEM solution vector (run backend)', FLOAT64_BYTES * n_active))
         host_items.append(direct_factor)
+        if host_direct is not None:
+            from ..solvers.host_direct import host_direct_precision, solver_host_bytes
+            host_items.append(('host direct solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+                               solver_host_bytes(n_active, entries, complex_values=False, symmetric=True,
+                                                 mixed=host_direct_precision(host_direct) == 'mixed')))
         build_extra = refactor_extra = csr_bytes
     else:   # pcg keeps the run-backend operator; a re-assembly makes the new copy before the old one goes
         items.append(('FEM operator and CG vectors (run backend)', csr_bytes + 4 * FLOAT64_BYTES * n_active))

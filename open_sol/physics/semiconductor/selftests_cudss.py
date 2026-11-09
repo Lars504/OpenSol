@@ -1,13 +1,14 @@
 """cuDSS 'linear' back ends of drift_diffusion against host SuperLU: a forward-biased abrupt pn junction strip and the
 silicon_pn_photodiode template (reverse bias + generation), each solved by a sparse_direct node pinned to scipy_splu (the
 reference), one per cuDSS back end and the Automatic solver (on the gpu with nvmath-python: the role's cuDSS back end,
-B1a). Registered by definition.register; passes as skipped without nvmath-python."""
+B1a). Registered by definition.register; passes as skipped without nvmath-python. semiconductor_host_direct: the same
+forward junction on the cpu with the MUMPS / PARDISO back ends against SuperLU (skipped without python-mumps / pydiso)."""
 import math
 
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import solver_role
+from ...model.selftest_helpers import available_host_direct, skip_without_host_direct, solver_role, with_direct_node
 from ...model.spec import SolverSpec
 from . import selftests as semiconductor_selftests
 
@@ -109,7 +110,71 @@ def _check_cudss(results_by_name):
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
 
 
+# semiconductor_host_direct: the installed ones of these host direct back ends (literals: the selftest rule) run the
+# forward junction on the cpu against a scipy_splu node
+_HOST_DIRECT_BACK_ENDS = ('pardiso', 'mumps', 'pardiso_mixed')
+_HOST_MODEL = 'forward_junction'
+
+
+def _host_direct_specs():
+    """'scipy_splu' (reference) and one run per installed back end of _HOST_DIRECT_BACK_ENDS on the forward junction,
+    all on the cpu; {} without python-mumps / pydiso."""
+    back_ends = available_host_direct(_HOST_DIRECT_BACK_ENDS)
+    if not back_ends:
+        return {}
+    specs = {}
+    for back_end in (_REFERENCE, *back_ends):
+        spec = _MODELS[_HOST_MODEL]()
+        spec.solver_defaults.backend = 'cpu'
+        specs[back_end] = with_direct_node(spec, back_end, physics_names=(semiconductor_selftests._PHYSICS,),
+                                           node_name=_NODE_PREFIX + back_end)
+    return specs
+
+
+def _check_host_direct(results_by_name):
+    """Per host direct back end: field / current deviations from SuperLU in tolerance units; the linear record must
+    show that back end with at least the 2 analyses of the kept factors (equilibrium Poisson + coupled), reused
+    analyses (refactorisations of the kept factor) and more factorisations than analyses."""
+    if not results_by_name:
+        return skip_without_host_direct(_HOST_DIRECT_BACK_ENDS)
+    reference = results_by_name[_REFERENCE]
+    normalized_errors, details = {}, {}
+    for back_end, results in results_by_name.items():
+        if back_end == _REFERENCE:
+            continue
+        deviations = _deviations(results, reference)
+        for name, deviation in deviations.items():
+            normalized_errors[f'{back_end} {name}'] = deviation / _TOLERANCE
+        counters = _linear_counters(results)
+        analyses = int(counters.get('host_direct_analyses') or 0)
+        record_ok = (counters.get('back_end') == back_end and analyses >= _EQUILIBRIUM_AND_COUPLED_PLANS
+                     and int(counters.get('host_direct_reused_analyses') or 0) > 0
+                     and int(counters.get('factorizations') or 0) > analyses)
+        normalized_errors[f'{back_end} record'] = 0.0 if record_ok else math.inf
+        details[back_end] = {'deviations': deviations, 'counters': dict(counters),
+                             'superlu_factor_seconds': _linear_counters(reference).get('factor_seconds')}
+    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
+                     else normalized_errors[item])
+    worst = normalized_errors[worst_item]
+    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
+    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+
+
 CUDSS_SELFTEST_CASES = (
+    SelfTestCase(
+        name='semiconductor_host_direct',
+        label="Drift-diffusion MUMPS / PARDISO 'linear' back ends vs SuperLU",
+        description=('drift_diffusion on the cpu: the forward-biased semiconductor_cpu_gpu pn junction strip '
+                     f'({_FORWARD_BIAS:g} V, 1000 x 2 cells) solved by a sparse_direct node pinned to scipy_splu (the '
+                     'reference) and by one node per installed back end of pardiso, mumps, pardiso_mixed. The host '
+                     'direct back ends keep their real LU per system size (equilibrium Poisson, coupled) and '
+                     'refactorise it on the kept analysis (drift_diffusion KEPT_FACTOR_BACK_ENDS). Per back end max '
+                     '|host direct - SuperLU| / max |SuperLU| of V, N, P and the relative contact-current deviations '
+                     f'must stay below {_TOLERANCE:g} (first estimate), and the linear record must show that back end '
+                     'with >= 2 analyses, reused analyses and more factorisations than analyses. measured = error = '
+                     'the worst item in tolerance units, tolerance 1; passes as skipped without python-mumps / '
+                     'pydiso. Not run yet.'),
+        specs=_host_direct_specs, check=_check_host_direct),
     SelfTestCase(
         name='semiconductor_cudss',
         label="Drift-diffusion cuDSS 'linear' back ends vs SuperLU",

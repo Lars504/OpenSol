@@ -1,13 +1,15 @@
 """Heat on triangle meshes (mesh plan stage T4, FEMHeatPhysics): a heated cylinder in a held coaxial shell (quadratic
 and linear elements, curved outlines) against the closed form, the decay rate of a transient slab against the
 implicit-Euler rate of the continuum mode, and the cpu vs gpu backends; model runs read through feature results
-(probes) only. Registered by definition.register."""
+(probes) only. Registered by definition.register. heat_fem_host_direct: the disc heater on the MUMPS / PARDISO back ends
+against SuperLU (skipped without python-mumps / pydiso)."""
 import math
 
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import with_exact_cg
+from ...model.selftest_helpers import (available_host_direct, skip_without_host_direct, solver_role, with_direct_node,
+                                       with_exact_cg)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 
@@ -187,7 +189,57 @@ def _check_backends(results_by_name):
             'details': {'relative_differences': differences}}
 
 
+# ---- MUMPS / PARDISO 'linear' back ends (DiffusionDirectSolver: a real Cholesky / LDL^T) ----
+# the installed ones of these back ends run (literals: the selftest rule); the reference is a scipy_splu node
+_HOST_DIRECT_BACK_ENDS = ('mumps', 'pardiso', 'mumps_mixed')
+_HOST_DIRECT_REFERENCE = 'scipy_splu'
+_HOST_DIRECT_TOLERANCE = 1e-5      # relative probe-rise difference (float32 T; both solves exact to ~1e-12)
+
+
+def _host_direct_runs():
+    """The quadratic disc heater on the cpu with a scipy_splu node and one node per installed back end of
+    _HOST_DIRECT_BACK_ENDS; {} without python-mumps / pydiso."""
+    back_ends = available_host_direct(_HOST_DIRECT_BACK_ENDS)
+    if not back_ends:
+        return {}
+    return {back_end: with_direct_node(disc_heater_spec('quadratic', 'cpu'), back_end, physics_names=(PHYSICS_NAME,))
+            for back_end in (_HOST_DIRECT_REFERENCE, *back_ends)}
+
+
+def _check_host_direct(results_by_name):
+    """Per host direct back end: relative probe-rise differences from the SuperLU run; its 'linear' record must show
+    that back end with a symmetric (Cholesky / LDL^T) factor. error = the largest difference (inf on a wrong record)."""
+    if not results_by_name:
+        return skip_without_host_direct(_HOST_DIRECT_BACK_ENDS)
+    reference = results_by_name[_HOST_DIRECT_REFERENCE]
+    differences, records = {}, {}
+    for back_end, results in results_by_name.items():
+        if back_end == _HOST_DIRECT_REFERENCE:
+            continue
+        for probe in ('centre', 'shell_probe'):
+            expected = _probe_rise(reference, probe)
+            differences[f'{back_end}.{probe}'] = abs(_probe_rise(results, probe) - expected) / expected
+        counters = solver_role(results, PHYSICS_NAME).get('counters') or {}
+        records[back_end] = dict(counters)
+        if counters.get('back_end') != back_end or not int(counters.get('host_direct_symmetric_factors') or 0):
+            differences[f'{back_end}.record'] = math.inf
+    error = max(differences.values()) if all(not math.isnan(value) for value in differences.values()) else math.nan
+    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': _HOST_DIRECT_TOLERANCE,
+            'details': {'relative_differences': differences, 'counters': records}}
+
+
 FEM_SELFTEST_CASES = (
+    SelfTestCase(
+        name='heat_fem_host_direct', label='Heat on triangles: MUMPS / PARDISO linear solver vs SuperLU',
+        description=('The quadratic heat_fem_disc_heater model (h = a / 5, cpu backend) with a sparse_direct node '
+                     'pinned to scipy_splu (host SuperLU, the reference) and one node per installed back end of mumps, '
+                     'pardiso, mumps_mixed as the linear solver: DiffusionDirectSolver factorises the SPD operator by '
+                     'the library (PARDISO Cholesky, MUMPS LDL^T; mixed: float32 factor + float64 GMRES refinement). '
+                     'Relative probe-rise differences from SuperLU at the centre and the shell probe; the linear '
+                     'record must show that back end with a symmetric factor. Tolerance '
+                     f'{_HOST_DIRECT_TOLERANCE:g} (float32 probes); passes as skipped without python-mumps / pydiso. '
+                     'Not run yet.'),
+        specs=_host_direct_runs, check=_check_host_direct),
     SelfTestCase(
         name='heat_fem_disc_heater', label='Heat on triangles: heated cylinder in a held shell',
         description=('Stationary heat on a uniform triangle mesh (h = a / 5 quadratic, a / 7 linear): a core r < a = '

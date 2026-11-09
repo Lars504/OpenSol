@@ -174,7 +174,10 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   fem.harmonic's factorize_host would run SuperLU instead). On cuDSS the reduced pencil stays on the device, one plan
   per sweep. Memory: the kept DevicePencil / solution / publish maps are run items (no factor CSR copies on top:
   rigid_disk gpu measured within 4 %), the factor an external item (`definition_helpers.cudss_external`; fill rule
-  2D -12 % on rigid_disk, small ducts ~-55 %: the per-factor fixed bytes of cudss_factor dominate there).
+  2D -12 % on rigid_disk, small ducts ~-55 %: the per-factor fixed bytes of cudss_factor dominate there). The opt-in
+  MUMPS / PARDISO back ends (DIFFUSION_DIRECT_BACK_ENDS) take fem.harmonic's host route (LDL^T of the complex
+  symmetric A(omega), analysis reused per frequency, SuperLU size rules): memory = the SuperLU heuristic x
+  `host_direct.superlu_bytes_scale` + `solver_host_bytes` (uncalibrated); time: the SuperLU items.
 - PML strength from the fastest sound speed of the layer's fluid at `pml_frequency` (default lowest study frequency,
   `study_frequency_band` = a copy of the study's spacing rule: physics must not import model.study*).
 - surface_pressure: int p dA / int p weight dA as dot products with unit / weight loads; side filters by the normal out
@@ -187,8 +190,9 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   call `_host_total()`, never `_total` directly.
 - `assembly_seconds` (work counter) = wall time of every `_build_system`, carried as seconds_counter by the time
   recipe: code calling `_build_system` must not wrap it in another timed group.
-- Self-tests selftests_harmonic (CPU, each with a SelfTestVariant 'gpu' at the same tolerance); pressure_acoustics_rigid_disk
-  uses t / a = 0.001 (the square-rim thickness correction ~(t / a) ln(a / t) is +3 % at the template's 0.01).
+- Self-tests selftests_harmonic (CPU, each with a SelfTestVariant 'gpu' at the same tolerance, but
+  pressure_acoustics_host_direct: the PML duct at two frequencies on mumps_mixed / pardiso vs a scipy_splu node, cpu
+  only, skipped without python-mumps / pydiso); pressure_acoustics_rigid_disk uses t / a = 0.001 (the square-rim thickness correction ~(t / a) ln(a / t) is +3 % at the template's 0.01).
 - Open: losses, eigenfrequency study, structural couplings, m > 0, Bloch / periodic faces, interior zero-thickness
   rigid sheets (need doubled dofs).
 

@@ -21,16 +21,17 @@ from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_
 from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZATION_SETTING,
                                          KEPT_SOLUTION_BYTES_PER_DOF, SQUEEZE_FILM_GAS_PARAMS, cudss_external,
                                          eigen_factorization, eigen_role, eigen_search_counts, element_order,
-                                         evaluates_to, harmonic_frequency_items, on_triangles,
-                                         scalar_harmonic_build_items,
-                                         optional_material_param, reduced_sweep_memory_items, reports_model_checks,
-                                         resolved_back_end, squeeze_film_gas_issues, validate_points_inside)
+                                         evaluates_to, harmonic_frequency_items, host_direct_back_end, on_triangles,
+                                         scalar_harmonic_build_items, optional_material_param,
+                                         reduced_sweep_memory_items, reports_model_checks, resolved_back_end, squeeze_film_gas_issues, validate_points_inside)
 from ...model.geometry import expand_entities
 from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
                              resolve_values, solver_backend)
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                             arnoldi_basis_bytes, arnoldi_basis_size)
 from ...solvers.cudss_factor import operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+from ...solvers.host_direct import (double_of, factor_label, host_direct_precision, solver_host_bytes,
+                                    superlu_bytes_scale)
 from ...solvers.sparse_direct import (CUDSS_BACK_ENDS, SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS, device_pencil_bytes,
                                       scipy_available)
 from .materials import (BENDING_ARRAY, COUPLED_TENSION_SLOTS, LOSS_ARRAY, MEMBRANE_PROPERTY_ARRAYS, MEMBRANE_SCHEMA,
@@ -51,7 +52,9 @@ _PML_FACE_SETTINGS = tuple(f'pml_{face}' for face in FACES)
 # 'linear' role (the driven solve of a frequency_response study): sparse_direct, the cuDSS back ends (gpu backend,
 # triangle meshes: LDL^T of the complex symmetric operator, refactorised per frequency on the kept plan); back_end
 # 'auto' = cudss_mixed there on the gpu backend with nvmath-python, else host SuperLU; cusolver_qr refused (the membrane
-# factorises host matrices only); a 1D model keeps the host factor (validation; 'auto' stays SuperLU on a line)
+# factorises host matrices only); the opt-in MUMPS / PARDISO back ends factorise the host A(omega) on triangles (LDL^T,
+# analysis reused per frequency); a 1D model keeps the host SuperLU factor (validation refuses cuDSS / MUMPS / PARDISO
+# nodes there; 'auto' stays SuperLU on a line)
 MEMBRANE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', studies=(FREQUENCY_RESPONSE_STUDY,),
                                   precisions=('double',), setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
                                   auto_back_ends={'triangles': 'cudss_mixed'})
@@ -891,28 +894,31 @@ def _periodic_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
 
 
 def _solver_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
-    """1D: a cuDSS 'linear' node is an error (the line factor stays on the host); triangles: the host SuperLU size rule
-    (SPLU_* limits on the P1 / P2 dofs of the mesh) of the factor the study uses, none for a cuDSS factor."""
+    """1D: a cuDSS or MUMPS / PARDISO 'linear' node is an error (the small banded line factor stays on host SuperLU);
+    triangles: the host SuperLU size rule (SPLU_* limits on the P1 / P2 dofs of the mesh) of the factor the study uses,
+    also for a MUMPS / PARDISO factor (uncalibrated, named by its library), none for a cuDSS factor."""
     solvers = vctx.solvers(physics_spec) or {}
     linear = solvers.get('linear')
     cudss_linear = linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS
     if one_d:
-        if not cudss_linear:
+        if not cudss_linear and host_direct_back_end(solvers) is None:
             return []
         return [Issue('error', path, f"linear solver '{linear.node}': a 1D membrane factorises its small banded line "
-                                     "operator on the host; use Automatic or back_end 'auto' / 'scipy_splu' (cuDSS "
-                                     'serves triangle meshes)')]
+                                     "operator on the host; use Automatic or back_end 'auto' / 'scipy_splu' (cuDSS, "
+                                     'MUMPS and PARDISO serve triangle meshes)')]
     mesh = vctx.mesh
     if mesh is None or mesh.kind != 'triangles':
         return []
     if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
         if cudss_linear:
             return []
+        library = factor_label(host_direct_back_end(solvers))
         remedy = ("assign a sparse_direct solver node with back_end 'cudss' or 'cudss_mixed' (GPU backend) as the "
                   "membrane's linear solver, or coarsen the mesh")
     elif vctx.study_type == EIGENFREQUENCY_STUDY:
         if eigen_factorization(solvers) in CUDSS_FACTORIZATIONS:
             return []
+        library = factor_label(host_direct_back_end(solvers, role='eigen'))
         remedy = ("assign an arpack_shift_invert solver node with factorization 'cudss' (GPU backend) as the "
                   "membrane's eigen solver, or coarsen the mesh")
     else:
@@ -921,11 +927,11 @@ def _solver_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
     unknowns = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
     text = f'up to ~{unknowns:,} complex unknowns (P{order} dofs of the mesh, hole elements included)'
     if unknowns > SPLU_LIMIT_UNKNOWNS:
-        return [Issue('error', path, f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host SuperLU factor: its '
-                                     f'L + U factors would fill the host memory; {remedy}')]
+        return [Issue('error', path, f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host {library} factor: '
+                                     f'its factors would fill the host memory; {remedy}')]
     if unknowns > SPLU_WARN_UNKNOWNS:
-        return [Issue('warning', path, f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host SuperLU '
-                                       f'factor; {remedy}')]
+        return [Issue('warning', path, f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host '
+                                       f'{library} factor; {remedy}')]
     return []
 
 
@@ -1169,9 +1175,21 @@ def _cudss_factor(settings_values, context):
     return None
 
 
+def _host_direct_factor(context):
+    """The MUMPS / PARDISO back end (host_direct.HOST_DIRECT_BACK_ENDS) of the factor the study uses
+    (frequency_response: the 'linear' back end, eigenfrequency: the 'eigen' factorization), else None."""
+    study = context.spec.study.type
+    if study == FREQUENCY_RESPONSE_STUDY:
+        return host_direct_back_end(context.solvers)
+    if study == EIGENFREQUENCY_STUDY:
+        return host_direct_back_end(context.solvers, role='eigen')
+    return None
+
+
 def _memory_estimate(settings_values, mesh, context):
     """Per-element state and coupled slots on the device, a cuDSS factor's pool items (frequency_response: kept;
-    eigenfrequency: transient per solve) and the factor outside the pool; host factor / pencil / basis items."""
+    eigenfrequency: transient per solve) and the factor outside the pool; host factor / pencil / basis items (a
+    MUMPS / PARDISO factor: _host_direct_factor)."""
     dofs, elements, entries, factor_bytes, triangles = _discretisation(settings_values, mesh, context)
     plate = _plate(context)
     if triangles:
@@ -1182,7 +1200,19 @@ def _memory_estimate(settings_values, mesh, context):
     study = context.spec.study.type
     complex_pencil = _complex_pencil(settings_values, context)
     run_items, eigen_items, factors = [], [], ()
-    if cudss is None:
+    host_direct = _host_direct_factor(context) if triangles and cudss is None else None
+    if host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
+        label = factor_label(host_direct)
+        complex_values = study == FREQUENCY_RESPONSE_STUDY or complex_pencil
+        # S5c mirror (factorization_for): a small *_mixed eigen pencil factors in double
+        mixed = host_direct_precision(host_direct) == 'mixed' and not (
+            study == EIGENFREQUENCY_STUDY and dofs < MIXED_EIGEN_MIN_UNKNOWNS)
+        scaled = host_direct if mixed else double_of(host_direct)
+        host_items = [(f'{label} LDL^T factor (SuperLU heuristic scaled, uncalibrated)',
+                       int(factor_bytes * superlu_bytes_scale(scaled, symmetric=True, complex_values=complex_values))),
+                      (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+                       solver_host_bytes(dofs, entries, complex_values=complex_values, mixed=mixed, symmetric=True))]
+    elif cudss is None:
         host_items = [('complex factor L + U (heuristic, uncalibrated)', factor_bytes)]
     else:   # cudss_factor.CudssFactorization (LDL^T): rhs / equilibration / solution vectors
         name, value_bytes = cudss
@@ -1784,7 +1814,8 @@ _DESCRIPTION = (
     "factorisation per frequency on the 'linear' sparse_direct solver (back_end 'cudss' / 'cudss_mixed' on the gpu "
     'backend factorises on the device, triangle meshes only, its plan kept over the sweep since the pattern is fixed; '
     "Automatic / 'auto': cudss_mixed there when nvmath-python is installed, else host SuperLU, up to ~1e6 unknowns "
-    'practical, 2e6 refused); one snapshot per frequency (study '
+    'practical, 2e6 refused; an opt-in MUMPS or PARDISO host factor on triangle meshes keeps those limits); one '
+    'snapshot per frequency (study '
     'setting snapshots); field_probe, port and mode_projection record per frequency). Edges are free unless clamped '
     '(w = 0); clamped_line / simply_supported_line hold drawn line objects inside the membrane (zero-thickness walls, '
     'irises); symmetry / antisymmetry make faces even / odd mirror planes of a half or quarter model; '

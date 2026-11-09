@@ -65,6 +65,9 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   real Cholesky with plan reuse (`factorize_host(..., real=True, positive_definite=True, previous=)`), shared with the
   FV path. It pays for long fixed-dt transients above ~1e5 dofs and coupled k(T) re-factors; a small 2D steady solve
   pays the cuDSS plan (and nvmath's first-use start) where SuperLU takes ms: back_end 'scipy_splu' keeps it on the host.
+  Opt-in MUMPS / PARDISO back ends (DIFFUSION_DIRECT_BACK_ENDS) factor it on the host as well (PARDISO Cholesky, MUMPS
+  LDL^T; analysis reused while the pattern holds), keep the SuperLU size rule and are booked by the fem estimate's
+  direct_factor_item.
   'cudss_mixed' is unmeasured (kappa ~ (L / h)^2 x the k contrast). A pcg node works (multigrid on P2 untested: its
   aggregation counts negative off-diagonals only, P2 stiffness has positive ones); transient pcg steps stop against the
   step's initial residual. Time estimate = the 2D DiffusionSystem recipe at `fem.diffusion.fem_time_system`
@@ -81,7 +84,9 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   em_modes mode-pair weightings on triangles and per-element `material_regions`; the shifted solves would fit cuDSS LDL^T
   with plan reuse better than line_block).
 - Self-tests `selftests_fem.py` (probe results only): heat_fem_disc_heater, heat_fem_transient_slab (slowest-mode decay
-  vs ln(1 + mu dt) / dt, Automatic and an exact pcg node), heat_fem_cpu_gpu. Not covered: values of t on triangles.
+  vs ln(1 + mu dt) / dt, Automatic and an exact pcg node), heat_fem_cpu_gpu, heat_fem_host_direct (the disc heater on
+  the installed MUMPS / PARDISO back ends vs a scipy_splu node, cpu; skipped without python-mumps / pydiso). Not
+  covered: values of t on triangles.
 
 ## Tetrahedron meshes (FEMHeatPhysics3D, `solver_fem3d.py`; fem sub file "Scalar diffusion on tetrahedra")
 - `solver_fem.FEMHeatMixin` holds everything FEMHeatPhysics and FEMHeatPhysics3D share (steps, state, sources,
@@ -108,7 +113,10 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   `operator_full` on the host restricted to the solved cells: held cells and Dirichlet faces are u = 0 reservoirs,
   cells with neither a conductance diagonal nor rho cp drop out. The heat 'shifted' solver role (thermal_noise only,
   `HeatPhysics(shifted_solver=)`): Automatic 'sparse_direct' = one host SuperLU per (frequency, distinct |q|): cost
-  grows with n_frequencies x axial samples, never per weighting cell.
+  grows with n_frequencies x axial samples, never per weighting cell. Its setting_choices offer back_end auto / scipy_splu
+  / cusolver_qr and the host direct back ends (HOST_DIRECT_BACK_ENDS): `spectral_densities` calls the generic
+  `factorize_host` / `solve_host` (a MUMPS / PARDISO LU of the complex symmetric shifted operator; symmetric= is not
+  passed yet, so no LDL^T, and no previous=: one analysis per shift).
 - A 'line_block' node as the shifted solver: every (frequency, axial sample) shift of a channel goes to the one
   LineBlockSolver of the role, shared by every noise operator (re-bound by `set_operator(owner=)`; contribution parts as
   rhs rows); rejected shifts go through `spectral_densities` on a private SparseDirectSolver. Device state is released

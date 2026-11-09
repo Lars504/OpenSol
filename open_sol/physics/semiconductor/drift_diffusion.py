@@ -9,9 +9,13 @@ import numpy as np
 from ...core.constants import ELEMENTARY_CHARGE, EPS0, K_B
 from ...core.metric import CARTESIAN, window_metric
 from ...solvers.cudss_factor import CUDSS_REFUSALS, CudssAccuracyError
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, HostDirectAccuracyError
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver
 
-COMPONENTS = 3                    # unknowns per cell, interleaved: index 3 * cell + (0 u, 1 n, 2 p)
+# back ends whose factor is kept per unknown count and refactorised through previous= (cuDSS plan / MUMPS / PARDISO
+# analysis reuse); the others (scipy_splu, cusolver_qr) factorise afresh per Newton step
+KEPT_FACTOR_BACK_ENDS = CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS
+COMPONENTS = 3                   # unknowns per cell, interleaved: index 3 * cell + (0 u, 1 n, 2 p)
 _SERIES_LIMIT = 1e-4              # |x| below which B(x) and B'(x) use their Taylor series
 _MIN_STEP_FRACTION = 1.0 / 64.0   # continuation step (fraction of the first one) below which a continuation fails
 _CARRIER_FLOOR = 1e-150           # scaled n, p floor of a Newton update (n exp(dn / n) never underflows to 0 / subnormal)
@@ -84,9 +88,10 @@ class DriftDiffusionCore:
         self.cold_starts = 0
         self.rejected_predictions = 0   # continuation steps whose secant prediction did not converge
         self.host_factor_bytes = None
-        # cuDSS back ends: the last factor per unknown count (Poisson n, coupled 3 n), refactorised with previous= so
-        # its plan is reused while the pattern (the pinned set) holds; device memory outside the cupy pool
-        self._cudss_factors = {}
+        # KEPT_FACTOR_BACK_ENDS (cuDSS, MUMPS, PARDISO): the last factor per unknown count (Poisson n, coupled 3 n),
+        # refactorised with previous= so its plan / analysis is reused while the pattern (the pinned set) holds; memory
+        # outside the cupy pool / numpy (released by release_kept_factors)
+        self._kept_factors = {}
         # _PinnedPattern per unknown count (Poisson n, coupled 3 n): CSR pattern + slot maps of the Newton system, kept
         # while the pinned set holds (faces are fixed at construction)
         self._patterns = {}
@@ -137,7 +142,7 @@ class DriftDiffusionCore:
         try:
             state = self._equilibrium_state()
         finally:
-            self.release_cudss_factor(self.n_cells)   # the Poisson factor serves the cold start only
+            self.release_kept_factors(self.n_cells)   # the Poisson factor serves the cold start only
         try:
             state = self._continue(state, start_voltages, np.zeros_like(end_generation), end_voltages, end_generation)
         except ContinuationFailed as exc:
@@ -403,8 +408,9 @@ class DriftDiffusionCore:
     def _linear_solve(self, values, entries, pinned_rows, rhs, components):
         """Solution of the sparse system of COO values (entries() their rows / cols; pinned rows as identity rows) on
         the kept _PinnedPattern, rows L1-equilibrated, through the linear solver's back end (counted there): real cuDSS
-        LU on the cuDSS back ends, else a real SuperLU (or cusolver_qr) solve; a cuDSS refusal of
-        an 'auto' runtime switches it to SuperLU (B1b) and the system is solved again there."""
+        / MUMPS / PARDISO LU on KEPT_FACTOR_BACK_ENDS, else a real SuperLU (or cusolver_qr) solve; a cuDSS refusal of
+        an 'auto' runtime switches it to SuperLU (B1b) and the system is solved again there (a MUMPS / PARDISO refusal
+        raises: no fallback)."""
         size = rhs.size
         pattern = self._patterns.get(size)
         if pattern is None or not np.array_equal(pattern.pinned_rows, pinned_rows):
@@ -420,11 +426,11 @@ class DriftDiffusionCore:
             except CUDSS_REFUSALS as exc:   # a deferred cuDSS check at solve_host (cudss_mixed on a reused plan)
                 if not self.linear_solver.fall_back(exc, size):   # B1b: an 'auto' runtime -> SuperLU for good
                     raise
-                self.release_cudss_factor()
+                self.release_kept_factors()
                 solution, factor = self._factor_solve(pattern, data, rhs, components)
-        except CudssAccuracyError as exc:   # probe missed after refinement: not a zero pivot
+        except (CudssAccuracyError, HostDirectAccuracyError) as exc:   # probe missed after refinement: not a zero pivot
             raise ValueError(f'{self.label()}: {exc}') from exc
-        except RuntimeError as exc:   # SuperLU: 'Factor is exactly singular'; cuDSS: CudssSingularError
+        except RuntimeError as exc:   # SuperLU 'Factor is exactly singular', Cudss- / HostDirectSingularError
             raise ValueError(f'{self.label()}: singular linear system ({exc}); every insulating region (n_intrinsic '
                              '0) must touch a semiconductor or a gate, and every semiconductor region an ohmic '
                              'contact') from exc
@@ -433,19 +439,19 @@ class DriftDiffusionCore:
 
     def _factor_solve(self, pattern, data, rhs, components):
         """(solution, factor) of the equilibrated system (CSR data on `pattern`) on the runtime's current back end: a
-        real cuDSS LU (the kept factor of this size refactorised in place), a real host SuperLU or
+        real cuDSS / MUMPS / PARDISO LU (the kept factor of this size refactorised in place), a real host SuperLU or
         cusolver_qr on the grid."""
         size = rhs.size
         back_end = self.linear_solver.back_end
-        if back_end in CUDSS_BACK_ENDS:
-            previous = self._cudss_factors.pop(size, None)
+        if back_end in KEPT_FACTOR_BACK_ENDS:
+            previous = self._kept_factors.pop(size, None)
             factor = self.linear_solver.factorize_host(pattern.host_csr(data), real=True, previous=previous)
-            if self.linear_solver.back_end in CUDSS_BACK_ENDS:
-                self._cudss_factors[size] = factor
+            if self.linear_solver.back_end in KEPT_FACTOR_BACK_ENDS:
+                self._kept_factors[size] = factor
             else:   # B1b: factorize_host of an 'auto' runtime fell back to SuperLU: free every cuDSS factor
                 if previous is not None:
                     previous.release()
-                self.release_cudss_factor()
+                self.release_kept_factors()
             return factor.solve_host(rhs), factor
         if back_end == 'scipy_splu':
             factor = self.linear_solver.factorize_host(pattern.host_csr(data), real=True)
@@ -458,11 +464,12 @@ class DriftDiffusionCore:
         factor = self.linear_solver.factorize(matrix, grid_x, grid_y, False, False)
         return cp.asnumpy(factor.solve(cp.asarray(rhs))), factor
 
-    def release_cudss_factor(self, unknowns=None) -> None:
-        """Free the kept cuDSS factor of the system of `unknowns` unknowns (n_cells: the Poisson one; None: all)."""
-        sizes = list(self._cudss_factors) if unknowns is None else [unknowns]
+    def release_kept_factors(self, unknowns=None) -> None:
+        """Free the kept cuDSS / MUMPS / PARDISO factor of the system of `unknowns` unknowns (n_cells: the Poisson one;
+        None: all)."""
+        sizes = list(self._kept_factors) if unknowns is None else [unknowns]
         for size in sizes:
-            factor = self._cudss_factors.pop(size, None)
+            factor = self._kept_factors.pop(size, None)
             if factor is not None:
                 factor.release()
 

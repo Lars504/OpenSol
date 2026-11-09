@@ -18,8 +18,9 @@ from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIFFUSION_DIRECT_BACK_ENDS,
                                          DISCRETIZATION_PARAM, KEPT_SOLUTION_BYTES_PER_DOF, axisymmetric_issues,
                                          cudss_external, dof_map_bytes, element_order, element_term_ops, frequency_sweep_counts,
-                                         geometry_param, harmonic_frequency_items, is_axisymmetric, numpy_calls,
-                                         plain_number, reduced_sweep_memory_items, reduced_sweep_time_items,
+                                         geometry_param, harmonic_frequency_items, host_direct_back_end,
+                                         is_axisymmetric, numpy_calls, plain_number, reduced_sweep_memory_items,
+                                         reduced_sweep_time_items,
                                          reports_model_checks, resolved_back_end, scalar_harmonic_build_items,
                                          scalar_harmonic_build_items_3d, selected_material_data,
                                          shell_element_fraction, validate_points_inside)
@@ -27,6 +28,7 @@ from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import expand_entities
 from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
                              resolve_values)
+from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, device_pencil_bytes, scipy_available
 from ..mechanics.pml3d import DEFAULT_PML_CELLS, PMLPadding
 from .definition import ELASTIC_WAVES
@@ -45,7 +47,9 @@ _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j om
 # 'linear' role: sparse_direct, the cuDSS back ends (gpu backend: fem.harmonic keeps the reduced K, C, M on the device
 # and refactorises the LDL^T per frequency on one plan, factorize_pencil); back_end 'auto' = cudss_mixed on the gpu
 # backend with nvmath-python (basiri2019 E2, 76,740 unknowns: 15 ms per frequency vs 3.2 s SuperLU), else host
-# SuperLU; cusolver_qr refused (factorize_host would silently run SuperLU)
+# SuperLU; the opt-in MUMPS / PARDISO back ends of DIFFUSION_DIRECT_BACK_ENDS factorise the host A(omega) by
+# factorize_host (LDL^T, analysis reused per frequency through previous=); cusolver_qr refused (factorize_host would
+# silently run SuperLU)
 PRESSURE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
                                   setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
                                   auto_back_ends={'triangles': 'cudss_mixed', 'tetrahedra': 'cudss_mixed'})
@@ -627,6 +631,17 @@ def _memory_estimate(settings_values, mesh, context):
                  back_end == 'cudss_mixed'),) if cudss else ())
     local = _LOCAL_DOFS[(3 if three_d else 2, order)]
     factor = 0 if cudss else int(fill * host_lu_bytes(dofs, dimensions=3 if three_d else 2))
+    # a MUMPS / PARDISO back end: the complex symmetric LDL^T at the SuperLU heuristic x superlu_bytes_scale + its own
+    # copies (uncalibrated; refactorised per frequency on its analysis, fem.harmonic previous=)
+    host_direct = host_direct_back_end(context.solvers)
+    factor_items = [('complex SuperLU factor (FEM heuristic, uncalibrated)', factor)]
+    if host_direct is not None:
+        label = factor_label(host_direct)
+        factor_items = [(f'complex {label} LDL^T factor (SuperLU FEM heuristic scaled, uncalibrated)',
+                         int(factor * superlu_bytes_scale(host_direct, symmetric=True, complex_values=True))),
+                        (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+                         solver_host_bytes(dofs, entries, complex_values=True, symmetric=True,
+                                           mixed=host_direct_precision(host_direct) == 'mixed'))]
     # fem.harmonic on a cuDSS back end keeps the reduced K, C, M values on the device (sparse_direct.DevicePencil)
     # and keeps a direct solve's solution there (R6): complex128 full-numbering values, int64 free / fixed / system ids
     run_items = []
@@ -644,7 +659,7 @@ def _memory_estimate(settings_values, mesh, context):
             run_items.append(('device background nodal values (complex128)', COMPLEX128_BYTES * dofs))
     return MemoryEstimate.from_items(
         ((f'element state ({len(STATE_NAMES)} x float32)', len(STATE_NAMES) * FLOAT32_BYTES * elements),),
-        host_items=(('complex SuperLU factor (FEM heuristic, uncalibrated)', factor),
+        host_items=(*factor_items,
                     ('complex pencil copies (CSR)', _HOST_CSR_COPIES * COMPLEX128_CSR_ENTRY_BYTES * entries),
                     ('full-numbering complex vectors', _HOST_VECTORS_PER_DOF * COMPLEX128_BYTES * dofs),
                     ('assembly COO (transient, complex128)', 3 * COMPLEX128_BYTES * local * local * elements),
@@ -876,7 +891,8 @@ PRESSURE_ACOUSTICS = PhysicsType(
                 'assembled once; each frequency is one complex symmetric factorisation by the linear role '
                 "(sparse_direct: back_end 'cudss' / 'cudss_mixed' on the gpu backend: cuDSS LDL^T reusing its plan, the "
                 "pencil kept on the device; 'auto' = cudss_mixed there when nvmath-python is installed, else host "
-                'SuperLU). Outer faces default to sound hard '
+                'SuperLU; opt-in MUMPS / PARDISO host LDL^T reusing its analysis per frequency). Outer faces default '
+                'to sound hard '
                 '(also mirror planes); features: sound_hard, sound_soft, prescribed_pressure, impedance, '
                 'vibrating_boundary (outer faces act on their window edge, object outlines in 2D / interfaces in 3D), '
                 'rigid_obstacle (excluded voids), point_source, background_pressure_field (scattered-field '

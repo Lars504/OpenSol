@@ -12,10 +12,11 @@ from ...fem.magnetostatics import PLANAR_DEGREES
 from ...fem.quadrature import triangle_rule
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, DISCRETIZATION_PARAM, DISCRETIZATION_SETTING,
                                          MAGNETIC_AC_LINEAR_ROLE, conducts, coupling_target, element_order,
-                                         evaluates_to, is_axisymmetric, linear_solver_cudss, make_point_probe,
-                                         material_follows_state, optional_material_param, reports_model_checks,
-                                         validate_points_inside)
+                                         evaluates_to, host_direct_back_end, is_axisymmetric, linear_solver_cudss,
+                                         make_point_probe, material_follows_state, optional_material_param,
+                                         reports_model_checks, validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...solvers.host_direct import factor_label, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import RECYCLE_MAX_ITERATIONS, scipy_available, size_issue
 from .circuit import COIL_RESULT_KEYS, CONDUCTORS, DRIVES, triangle_size_issue
 from .definition_magnetostatics import (_BOTH_GRIDS, _FEATURES as _DC_FEATURES, _GEOMETRY_PARAM,
@@ -197,15 +198,17 @@ def _material_issues(vctx, physics_spec, path):
 
 def _solver_issues(vctx, physics_spec, settings_values, path):
     """scipy missing (error); a cusolver_qr node (error: host matrices only); the window size (triangles: the dofs +
-    circuit rows) against the host SuperLU limits (not on a cuDSS back end: its own estimate guards it)."""
+    circuit rows) against the host SuperLU limits (MUMPS / PARDISO too, uncalibrated; not on a cuDSS back end: its own
+    estimate guards it)."""
     if not scipy_available():
         return [Issue('error', path, 'magnetic_fields_ac assembles on the host with scipy (SuperLU or cuDSS factor), '
                                      'and scipy is not installed: pip install scipy')]
     solvers = vctx.solvers(physics_spec) or {}
     resolved = solvers.get('linear')
     if resolved is not None and resolved.values.get('back_end') == 'cusolver_qr':
+        accepted = ', '.join(f"'{name}'" for name in MAGNETIC_AC_LINEAR_ROLE.setting_choices['back_end'])
         return [Issue('error', path, f"linear solver '{resolved.node}': magnetic_fields_ac factorises host matrices "
-                                     "(SuperLU or cuDSS): use back_end 'auto', 'scipy_splu' or 'cudss', or Automatic")]
+                                     f"(a host direct or cuDSS factor): use back_end {accepted}, or Automatic")]
     mesh = vctx.mesh
     if mesh is None or linear_solver_cudss(solvers):
         return []
@@ -284,6 +287,22 @@ def _cudss_estimate(context, n_unknowns, entries) -> MemoryEstimate:
                                      external_extra=extra)
 
 
+def _host_factor_items(context, superlu_label, superlu_bytes, n_unknowns, entries) -> tuple:
+    """Host items of the 'linear' factor: SuperLU at its heuristic; a MUMPS / PARDISO back end (double only, the role)
+    that heuristic x host_direct.superlu_bytes_scale (complex symmetric LDL^T: RecycledFactor asks symmetric=True;
+    uncalibrated) + its own copies (host_direct.solver_host_bytes); none on cuDSS (_cudss_estimate)."""
+    if linear_solver_cudss(context.solvers):
+        return ()
+    back_end = host_direct_back_end(context.solvers)
+    if back_end is None:
+        return ((superlu_label, int(superlu_bytes)),)
+    label = factor_label(back_end)
+    return ((f'{label} LDL^T factor (complex128, SuperLU heuristic scaled, uncalibrated)',
+             int(superlu_bytes * superlu_bytes_scale(back_end, symmetric=True, complex_values=True))),
+            (f'{label} solver copies (equilibrated operator, row scale)',
+             solver_host_bytes(n_unknowns, entries, complex_values=True, symmetric=True)))
+
+
 def _triangle_memory_estimate(settings_values, mesh, context):
     """MagneticACFEMPhysics: per-element float32 fields on the run backend; host complex CSR copies, the SuperLU factor
     (FEM fill over the 2D heuristic; cuDSS: _cudss_estimate), nodal values, the curl quadrature cache and the point
@@ -295,9 +314,8 @@ def _triangle_memory_estimate(settings_values, mesh, context):
     points = triangle_rule(PLANAR_DEGREES[order] + int(is_axisymmetric(settings_values))).weights.size
     local = 6 if order == 2 else 3
     entries = int(round(lagrange_entries_per_dof(mesh, order) * dofs))
-    factor_items = () if linear_solver_cudss(context.solvers) else (
-        ('SuperLU L + U factors (complex128, FEM heuristic, uncalibrated)',
-         int(FEM_FILL_FACTOR * host_lu_bytes(unknowns))),)
+    factor_items = _host_factor_items(context, 'SuperLU L + U factors (complex128, FEM heuristic, uncalibrated)',
+                                      FEM_FILL_FACTOR * host_lu_bytes(unknowns), unknowns, entries)
     own = MemoryEstimate.from_items(
         ((f'element fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * elements),),
         host_items=factor_items + (
@@ -318,8 +336,8 @@ def _memory_estimate(settings_values, mesh, context):
         return _triangle_memory_estimate(settings_values, mesh, context)
     window_cells = window_cell_count(mesh)
     n_rows = _circuit_rows(context.physics_spec)
-    factor_items = () if linear_solver_cudss(context.solvers) else (   # a cuDSS factor: _cudss_estimate
-        ('SuperLU L + U factors (heuristic)', host_lu_bytes(window_cells + n_rows)),)
+    factor_items = _host_factor_items(context, 'SuperLU L + U factors (heuristic)',
+                                      host_lu_bytes(window_cells + n_rows), window_cells + n_rows, 5 * window_cells)
     own = MemoryEstimate.from_items(
         ((f'fields ({_N_FIELDS} x float32)', _N_FIELDS * FLOAT32_BYTES * int(mesh.n_cells)),
          ('reluctivities nu_xx / nu_yy (window)', 2 * FLOAT64_BYTES * window_cells)),

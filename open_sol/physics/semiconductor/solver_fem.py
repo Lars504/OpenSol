@@ -11,6 +11,7 @@ from ...fem.diffusion import ring_dof_locations
 from ...fem.dofs import lagrange_dofs
 from ...fem.renderer import FEMFieldRenderer
 from ...fem.sampling import evaluate
+from ...solvers.host_direct import factor_label
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS
 from .drift_diffusion import COMPONENTS
 from .drift_diffusion_fem import FEMDriftDiffusionSystem
@@ -24,7 +25,8 @@ _SMALLER_MODEL = 'coarsen the triangle mesh (larger elements away from junctions
 
 def fem_linear_size_issue(back_end, n_nodes):
     """(level, text) of the 3-unknown nodal system of n_nodes P1 nodes on the 'linear' back end, or None (always on
-    cuDSS: guarded by its own device estimate); cusolver_qr is refused on triangles (no grid index order). CPU only."""
+    cuDSS: guarded by its own device estimate); cusolver_qr is refused on triangles (no grid index order); MUMPS /
+    PARDISO keep the SuperLU limits (uncalibrated), named by their library. CPU only."""
     if back_end in CUDSS_BACK_ENDS:
         return None
     if back_end == 'cusolver_qr':
@@ -32,11 +34,13 @@ def fem_linear_size_issue(back_end, n_nodes):
                          "triangle mesh use Automatic or back_end 'auto' / 'scipy_splu' (host SuperLU)")
     unknowns = COMPONENTS * int(n_nodes)
     text = f'{unknowns:,} unknowns ({int(n_nodes):,} mesh nodes x 3: potential, electrons, holes)'
+    library = factor_label(back_end)
     if unknowns > SPLU_LIMIT_UNKNOWNS:
-        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host SuperLU solver: its L + U factors '
+        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host {library} solver: its factors '
                          f'would fill the host memory; {_SMALLER_MODEL}')
     if unknowns > SPLU_WARN_UNKNOWNS:
-        return 'warning', f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of host SuperLU; {_SMALLER_MODEL}'
+        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of host {library}; '
+                           f'{_SMALLER_MODEL}')
     return None
 
 

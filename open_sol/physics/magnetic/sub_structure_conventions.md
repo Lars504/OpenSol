@@ -149,7 +149,9 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   raise on tetrahedra. Not done: mirror-plane unfolding (unchecked), nodal B display, Lorentz force.
 - cuDSS (unmeasured): operator real SPD. Linear models: one factor, few solves; host SuperLU fine up to ~1e5 P2 dofs,
   above cuDSS pays (3D fill). Saturation refactors per iteration (15-50): plan reuse (`CudssFactorization.refactorize`)
-  is the win; cudss_mixed is risky at mu contrasts 1e3-1e5 (measure single_residual on an iron-core model first).
+  is the win; cudss_mixed is risky at mu contrasts 1e3-1e5 (measure single_residual on an iron-core model first). The
+  opt-in MUMPS / PARDISO back ends of the shared diffusion role refactorise on their kept analysis the same way
+  (`previous=` through DiffusionDirectSolver); their mixed variants carry the same float32 risk (unmeasured).
 - Memory: magnetostatics / magnetostatics_3d on every mesh kind add a cuDSS 'linear' factor through
   `fem.diffusion.cudss_diffusion_estimate` (tensor: on the kept A_solve; FEM: via `fem_diffusion_estimate[_3d](cudss=)`),
   `refactorizes` when a material saturates (transient 'refactorisation' per iteration / Newton step). 3D tensor field
@@ -238,11 +240,15 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
 - cuDSS: complex symmetric, not Hermitian, on both mesh kinds: LDL^T (`RecycledFactor`: `factorize_host(matrix,
   symmetric=True, previous=)`, default row_scale) through `MAGNETIC_AC_LINEAR_ROLE` ('auto' = cudss on triangles). A
   cuDSS factor is not recyclable, so an operator change refactorises on its plan. complex64 'mixed' is doubtful at mu
-  contrasts 1e3-1e5 plus circuit rows.
+  contrasts 1e3-1e5 plus circuit rows, so the role offers the host direct back ends in double only
+  (HOST_DIRECT_DOUBLE_BACK_ENDS): a MUMPS / PARDISO LDL^T is recyclable like SuperLU (an operator change: GMRES on the
+  old factor), keeps the SuperLU size rule, and the cusolver_qr refusal text lists the role's back ends.
 - Memory (`definition_ac._cudss_estimate`): the factor is made at the first solve, so its pool copies
   (`operator_copy_bytes`, complex128), rhs buffer and row scale are run items, the factor external
   (`factor_device_bytes`, value_bytes 16, dimensions 2); an operator following a state adds the device route's index
-  maps (run item) and its refresh peak (transient 'refactorisation'); circuit border entries are left out.
+  maps (run item) and its refresh peak (transient 'refactorisation'); circuit border entries are left out. A MUMPS /
+  PARDISO factor: `definition_ac._host_factor_items` (the SuperLU heuristic x `host_direct.superlu_bytes_scale`, LDL^T,
+  + `solver_host_bytes`; uncalibrated).
 
 ## Couplings (`couplings.py`; types in coupling/definitions_magnetic.py)
 - magnetic_heat_induction (AC -> heat): 'sum' of q_eddy + q_magnetic (one buffer) into volumetric_power,
