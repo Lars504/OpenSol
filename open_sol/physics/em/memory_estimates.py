@@ -6,14 +6,16 @@ import math
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES,
                                      FLOAT32_BYTES, FLOAT64_BYTES, INT32_BYTES, MemoryEstimate, host_lu_bytes,
                                      phase_before_items, window_cell_count)
-from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, linear_solver_cudss,
-                                         resolved_back_end, resolved_stepper_precision)
+from ...model.definition_helpers import (eigen_factorization, eigen_subspace_size, host_direct_back_end,
+                                         linear_solver_cudss, resolved_back_end, resolved_stepper_precision)
 from ...model.definition_resonance import point_trace_items
 from ...model.schema import resolve_values, solver_backend
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_bytes,
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
                                      refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
+from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZATIONS, factor_label,
+                                    host_direct_precision, solver_host_bytes, superlu_bytes_scale)
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
 from .eigenfrequency import FILTER_BLOCK_COLUMNS, WIDENING_BASIS_RESERVE
@@ -40,7 +42,8 @@ _EIGEN_HOST_VECTORS = 6   # solve_resonances: mass, b_diagonal, start vector (+ 
 # -> material properties without which they inject nothing (None: always data)
 _OFF_DIAGONAL_WRITERS = {'acoustics_em_acousto_optic': None,
                          'electrostatics_em_pockels': ('pockels_r61', 'pockels_r62')}
-_OFF_DIAGONAL_EXTRA_FILL = 0.5   # SuperLU L + U of the 9-point eps_xy operator over the 5-point heuristic (rough)
+_OFF_DIAGONAL_EXTRA_FILL = 0.5   # SuperLU L + U of the 9-point eps_xy operator over the 5-point heuristic (rough;
+# booked at SuperLU size for a MUMPS / PARDISO factor too)
 
 
 def _bor_entries_per_row(largest_order) -> float:
@@ -122,6 +125,25 @@ def eigen_mixed(factorization, unknowns) -> bool:
     """Whether an eigen runtime's own cuDSS factor of `unknowns` rows is mixed (ArpackShiftInvertSolver.factorization_for:
     a cudss_mixed request below MIXED_EIGEN_MIN_UNKNOWNS factors in double)."""
     return factorization == 'cudss_mixed' and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS
+
+
+def host_factor_items(name, superlu_label, superlu_bytes, unknowns, entries, symmetric=True, eigen=False) -> list:
+    """Host items of a factor booked at a SuperLU heuristic: [(superlu_label, superlu_bytes)] unless `name` (the
+    resolved back end or eigen factorization) is a host_direct one; then the MUMPS / PARDISO factor = that heuristic x
+    host_direct.superlu_bytes_scale (symmetric: an LDL^T of D A / of the complex symmetric pencil; complex64 values when
+    mixed, an eigen mixed request below MIXED_EIGEN_MIN_UNKNOWNS factors in double; uncalibrated) + its solver copies
+    (host_direct.solver_host_bytes). The 'eigen' prefix of superlu_label is kept."""
+    if name not in HOST_DIRECT_FACTORIZATIONS:
+        return [(superlu_label, int(superlu_bytes))]
+    if eigen and host_direct_precision(name) == 'mixed' and int(unknowns) < MIXED_EIGEN_MIN_UNKNOWNS:
+        name = name.removesuffix('_mixed')   # ArpackShiftInvertSolver.factorization_for (S5c)
+    mixed = host_direct_precision(name) == 'mixed'
+    prefix = 'eigen ' if superlu_label.startswith('eigen ') else ''
+    library, kind = factor_label(name), 'LDL^T' if symmetric else 'LU'
+    return [(f"{prefix}{library} {kind} factor ({'complex64' if mixed else 'complex128'}, SuperLU heuristic scaled, "
+             'uncalibrated)', int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=True))),
+            (f'{prefix}{library} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
+             int(solver_host_bytes(unknowns, entries, complex_values=True, mixed=mixed, symmetric=symmetric)))]
 
 
 def later_factorisations(context) -> bool:
@@ -303,11 +325,13 @@ def fdfd_memory_estimate(polarization):
         if eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
             host_items, eigen_transient, external_items, external_extra = _eigen_items(
                 context, n_cells, sparse_row, superlu=not line_block_items)
-            superlu_host = any(label.startswith('eigen SuperLU') for label, _ in host_items)
+            superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
             transient_items += eigen_transient
             run_items += line_block_items
-        elif back_end == 'scipy_splu':
-            host_items = [('SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells)),
+        elif back_end == 'scipy_splu' or back_end in HOST_DIRECT_BACK_ENDS:
+            # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (_factorization only)
+            host_items = [*host_factor_items(back_end, 'SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
+                                             n_cells, entries, symmetric=not bloch_active_axes(settings_values)),
                           ('host operator copy', operator_copy)]
             superlu_host = True
         elif back_end in ('cudss', 'cudss_mixed'):   # kept between solves (_factorization, _cudss_previous)
@@ -364,11 +388,14 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
     entries = FEM_FDFD_ENTRIES_PER_ROW[order] * unknowns
     eigen = eigen_solved(context.spec, context.physics_spec.name)
     factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers) if linear_solver_cudss(context.solvers) else 'superlu')
+                     else resolved_back_end(context.solvers)
+                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
     on_device = factorization in CUDSS_FACTORIZATIONS
     vector_bytes = COMPLEX128_BYTES * unknowns
-    host_items = ([] if on_device else [('SuperLU L + U factors (scalar FEM fill, heuristic)',
-                                         fem_fdfd_lu_bytes(unknowns, order))]) + [
+    # MUMPS / PARDISO: the LDL^T of the complex symmetric pencil (driven: kept and refactorised in place, one factor)
+    host_items = ([] if on_device else host_factor_items(
+        factorization, 'SuperLU L + U factors (scalar FEM fill, heuristic)', fem_fdfd_lu_bytes(unknowns, order),
+        unknowns, entries, symmetric=True, eigen=eigen)) + [
         ('assembled K, M, energy matrix and operator (sparse, rough)', 4 * entries * COMPLEX128_CSR_ENTRY_BYTES),
         ('solution, rhs and dof vectors (complex128)', 4 * vector_bytes),
         ('nodal display fields (3 complex128 + float64 parts)', 8 * FLOAT64_BYTES * unknowns)]
@@ -424,7 +451,9 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
     vector_bytes = COMPLEX128_BYTES * n_cells
     factorization = eigen_factorization(context.solvers)
     own_cudss = superlu and factorization in CUDSS_FACTORIZATIONS   # a symmetrized LDL^T of D A, freed after the solve
-    factor = ([('eigen SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells))]
+    # MUMPS / PARDISO: the symmetrized LDL^T of D A on the host (an LU with a Bloch phase or eps_xy: booked as LDL^T)
+    factor = (host_factor_items(factorization, 'eigen SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
+                                n_cells, 5 * n_cells, symmetric=True, eigen=True)
               if superlu and not own_cudss else [])
     search_host, transient_items = resonance_search_items(solver_backend(context.spec), n_cells, n_wanted, n_basis,
                                                           own_cudss=own_cudss, filter_entries=5 * n_cells)
@@ -482,8 +511,9 @@ def modes_memory_estimate(settings_values, mesh, context):
                                            settings_values['bc_y_lo'] == 'periodic', precision, n_operators)))
         host_items.append((f'kept problems of the batch ({n_operators} x operators A - shift B, A)',
                            (n_operators - 1) * operator_bytes))
-    elif not on_device:
-        host_items.insert(0, ('SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns)))
+    elif not on_device:   # MUMPS / PARDISO: an LU (the Yee cross-section operator is not complex symmetric)
+        host_items[:0] = host_factor_items(factorization, 'SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns),
+                                           unknowns, 9 * unknowns, symmetric=False, eigen=True)
     return MemoryEstimate.from_items((('mode fields (9 x float32)', 9 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
                                      external_items=external_items, external_extra=external_extra)
@@ -504,7 +534,9 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
     mode_bytes = COMPLEX128_BYTES * (unknowns + 4 * SAMPLE_POINTS * n_elements)
     factorization = eigen_factorization(context.solvers)
     on_device = factorization in CUDSS_FACTORIZATIONS
-    factor_items = [] if on_device else [('SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns))]
+    factor_items = [] if on_device else host_factor_items(   # MUMPS / PARDISO: LDL^T of the complex symmetric pencil
+        factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
+        FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)
     mixed = eigen_mixed(factorization, unknowns)
     # fem_modes.solve_fem_modes: an own LDL^T per solve (no plan reuse), dropped after it
     transient_items = ([(EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
@@ -603,10 +635,14 @@ def conical_memory_estimate(settings_values, mesh, context):
     unknowns = 3 * n_cells
     eigen = eigen_solved(context.spec, context.physics_spec.name)
     factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers) if linear_solver_cudss(context.solvers) else 'superlu')
+                     else resolved_back_end(context.solvers)
+                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
     on_device = factorization in CUDSS_FACTORIZATIONS
+    # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase) at the SuperLU heuristic x superlu_bytes_scale
     host_items = ([] if on_device else
-                  [('SuperLU L + U factors (heuristic, x2 for the curl-curl fill)', 2 * host_lu_bytes(unknowns))])
+                  host_factor_items(factorization, 'SuperLU L + U factors (heuristic, x2 for the curl-curl fill)',
+                                    2 * host_lu_bytes(unknowns), unknowns, 13 * unknowns,
+                                    symmetric=not bloch_active_axes(settings_values), eigen=eigen))
     host_items += [('curl E, curl H, curl-curl and system matrix (sparse complex128, rough)',
                     30 * COMPLEX128_CSR_ENTRY_BYTES * unknowns),
                    ('cross-section operator parts of the assembly (sparse complex128, rough)',
@@ -660,7 +696,9 @@ def _conical_fem_memory_estimate(settings_values, mesh, context):
     search_host, search_transient = resonance_search_items(   # the filter's A, B and W: one operator's entries each
         solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=on_device,
         filter_entries=3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES)
-    host_items = ([] if on_device else [('SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns))]) + [
+    host_items = ([] if on_device else host_factor_items(
+        factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
+        FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)) + [
         ('assembled blocks K / M / W and the restricted operator (sparse, rough)', 2 * operator_bytes(unknowns, order)),
         *search_host,
         (f'resonance vectors ({n_resonances} x complex128)', n_resonances * COMPLEX128_BYTES * unknowns),
@@ -695,10 +733,17 @@ def bor_memory_estimate(settings_values, mesh, context):
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
     factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers) if linear_solver_cudss(context.solvers) else 'superlu')
+                     else resolved_back_end(context.solvers)
+                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
     on_device = not line_block and factorization in CUDSS_FACTORIZATIONS
+    orders = [abs(int(order)) for order in settings_values.get('azimuthal_orders') or ()] or [
+        abs(int(settings_values.get('azimuthal_order') or 0))]
+    entries = int(math.ceil(_bor_entries_per_row(max(orders)) * unknowns))   # the largest order's pattern
+    # MUMPS / PARDISO (not under a line_block shifted solver): the LDL^T of the complex symmetric operator
     host_items = ([] if on_device else
-                  [('SuperLU L + U factors (heuristic, x2 for the curl-curl fill)', 2 * host_lu_bytes(unknowns))])
+                  host_factor_items(factorization if not line_block else 'superlu',
+                                    'SuperLU L + U factors (heuristic, x2 for the curl-curl fill)',
+                                    2 * host_lu_bytes(unknowns), unknowns, entries, symmetric=True, eigen=eigen))
     host_items += [('curl, operator and assembly transients (sparse complex128, rough)',
                     30 * COMPLEX128_CSR_ENTRY_BYTES * unknowns),
                    ('kept BORAssembly (curl split C0 / C1, K0 / K1 / K2 of the axis class; sparse complex128, rough)',
@@ -709,9 +754,6 @@ def bor_memory_estimate(settings_values, mesh, context):
     n_listed = len(settings_values.get('azimuthal_orders') or ())
     order_sum = bool(n_listed) and study_type in ('stationary', FREQUENCY_DOMAIN_STUDY)   # the driven order sum
     n_orders = max(n_listed, 1) if eigen or order_sum else 1
-    orders = [abs(int(order)) for order in settings_values.get('azimuthal_orders') or ()] or [
-        abs(int(settings_values.get('azimuthal_order') or 0))]
-    entries = int(math.ceil(_bor_entries_per_row(max(orders)) * unknowns))   # the largest order's pattern
     if order_sum:   # solvers/fdfd_bor._solve_order_sum: one order's factor at a time (the item above)
         host_items.append(('driven order sum: Yee fields of the +m / -m terms and their phi = 0 sum (complex128), '
                            'phi-mean |E|^2 (float64)', 3 * 6 * COMPLEX128_BYTES * n_cells + 3 * 8 * n_cells))
@@ -780,7 +822,9 @@ def _bor_fem_memory_estimate(settings_values, mesh, context):
     search_host, search_transient = resonance_search_items(   # the filter's A, B and W: one operator's entries each
         solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=on_device,
         filter_entries=3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES)
-    host_items = ([] if on_device else [('SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns))]) + [
+    host_items = ([] if on_device else host_factor_items(
+        factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
+        FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)) + [
         ('assembled blocks K0 / K1 / K2 / M / W and the restricted operator (sparse, rough)',
          2 * operator_bytes(unknowns, order)),
         *search_host,

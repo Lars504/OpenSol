@@ -7,7 +7,9 @@ import math
 from ....core.constants import C0, DTYPE
 from ....core.wavelengths import wavelength_label
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
-from ....solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver, scipy_available
+from ....solvers.host_direct import is_host_direct_factor
+from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, SparseDirectSolver,
+                                       scipy_available)
 from ..harmonic import write_float32
 from ..materials import DrudePole, LorentzPole
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
@@ -23,8 +25,10 @@ def is_cudss(factorization) -> bool:
 
 
 def direct_text(factorization):
-    """solve_summary text of a 'linear' solver factor: its cuDSS description, else host SuperLU."""
-    return factorization.description if is_cudss(factorization) else SUPERLU_TEXT
+    """solve_summary text of a 'linear' solver factor: its cuDSS / MUMPS / PARDISO description, else host SuperLU."""
+    if is_cudss(factorization) or is_host_direct_factor(factorization):
+        return factorization.description
+    return SUPERLU_TEXT
 
 
 class HostFDFDBase:
@@ -32,7 +36,8 @@ class HostFDFDBase:
     gives _solve(), _mark_assembly_dirty(omega_only=False) and _grid_size_issue()."""
     # Driven factor: _factorization (of system's operator itself while _factorization_current, else of an earlier one at
     # the same omega and active set: a GMRES preconditioner, sparse_direct RECYCLE_*); a replaced cuDSS factor is kept
-    # as _cudss_previous and refactorised in place by the next factorisation (one plan while the pattern holds).
+    # as _cudss_previous and refactorised in place by the next factorisation (one plan while the pattern holds). MUMPS /
+    # PARDISO factors take the same symmetric options (LDL^T) but are recyclable like SuperLU: never kept as previous.
 
     type_label = ''              # model type name in messages
     permittivity_arrays = ('eps_r', 'eps_xx', 'eps_yy')
@@ -48,8 +53,9 @@ class HostFDFDBase:
         if not (math.isfinite(wavelength) and wavelength > 0.0):
             raise ValueError(f'{label} wavelength must be finite and > 0 [m], got {wavelength!r}')
         self._omega = 2.0 * math.pi * C0 / wavelength
-        # The build's 'linear' (sparse_direct: host SuperLU, cuDSS on its cuDSS back ends, never 'cusolver_qr') /
-        # 'eigen' (arpack_shift_invert) solvers; scripts pass nothing and get private ones, reported in work_counters.
+        # The build's 'linear' (sparse_direct: host SuperLU, cuDSS / MUMPS / PARDISO on their back ends, never
+        # 'cusolver_qr') / 'eigen' (arpack_shift_invert) solvers; scripts pass nothing and get private ones, reported in
+        # work_counters.
         self._private_solvers = []
         if linear_solver is None:
             linear_solver = SparseDirectSolver(back_end='scipy_splu')
@@ -75,7 +81,7 @@ class HostFDFDBase:
         self.solved_omega = None
         self.eigen_solve = None       # EigenSolve of the last solve_eigenfrequencies
         self.selected_resonance = None   # 1-based resonance shown, None = the driven solve
-        self.host_factor_bytes = None   # SuperLU L + U of the driven factor (Simulation.memory_report)
+        self.host_factor_bytes = None   # host bytes of the driven factor (SuperLU L + U, MUMPS / PARDISO; memory_report)
         self.last_solve_seconds = None
         self.last_factor_seconds = None
         self.last_recycled_iterations = None   # GMRES iterations of the last solve if it reused an older factor
@@ -189,6 +195,11 @@ class HostFDFDBase:
         """Whether the 'linear' solver resolves to a cuDSS back end."""
         return self.linear_solver.back_end in CUDSS_BACK_ENDS
 
+    @property
+    def _linear_symmetric_options(self) -> bool:
+        """Whether the 'linear' solver's factor honours symmetric / symmetrizer / row_scale (cuDSS, MUMPS, PARDISO)."""
+        return self.linear_solver.back_end in SYMMETRIC_OPTION_BACK_ENDS
+
     def _release_kept_cudss(self):
         """Release the cuDSS factor kept only for its plan."""
         if self._cudss_previous is not None:
@@ -218,11 +229,15 @@ class HostFDFDBase:
 
     def _factorize_operator(self, operator, cudss_options):
         """Factorization of a host operator by the 'linear' solver: cuDSS (LDL^T with cudss_options() refactorising
-        _cudss_previous) or host SuperLU (the kept cuDSS factor freed; also after an 'auto' runtime fell back);
-        host_factor_bytes (None on cuDSS) and last_factor_seconds."""
+        _cudss_previous), MUMPS / PARDISO (LDL^T with the same options; the kept cuDSS factor freed) or host SuperLU
+        (the kept cuDSS factor freed; also after an 'auto' runtime fell back); host_factor_bytes (None on cuDSS) and
+        last_factor_seconds."""
         linear = self.linear_solver
-        if self._linear_on_cudss:
+        if self._linear_symmetric_options:
             previous, self._cudss_previous = self._cudss_previous, None
+            if not self._linear_on_cudss and previous is not None:   # host back end: no cuDSS plan to refactorise
+                previous.release()
+                previous = None
             factorization = linear.factorize_host(operator, symmetric=True, previous=previous, **cudss_options())
         else:
             self._release_kept_cudss()

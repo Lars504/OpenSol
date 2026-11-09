@@ -27,8 +27,9 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...core.constants import C0
-from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver, arnoldi_basis_size,
+from ...solvers.arpack_shift_invert import (LDLT_FACTORIZATIONS, ArpackShiftInvertSolver, arnoldi_basis_size,
                                             device_arnoldi_fits)
+from ...solvers.host_direct import is_host_direct_factor
 
 PML_RESONANCE_FRACTION = 0.5    # resonances with a larger share of the |u|^2 energy weights in PML cells are dropped
 RESONANCE_TABLE_COLUMNS = ('resonance_number', 'wavelength', 'frequency', 'frequency_imag', 'q_factor', 'pml_fraction')
@@ -42,8 +43,9 @@ SHIFT_RELATIVE_OFFSET = 1e-4
 _THETA_FLOOR = 1e-12            # |theta| below this times the largest: pinned / PEC unknowns (infinite k^2)
 _LOSSLESS_RELATIVE_IMAG = 1e-12   # |Im omega| below this times Re omega is round-off: Q = inf
 _START_VECTOR_SEED = 6          # deterministic ARPACK start vector (no symmetry, so odd modes are reached too)
-# cudss_mixed LDL^T of D A: one float64 refinement step per solve (~3e-8 on the Mie eighth sphere) and ARPACK stopped
-# above that noise; the Rayleigh quotients of the vectors then restore the eigenvalues to ~(1e-6)^2
+# mixed LDL^T of D A (cudss_mixed on the device, mumps_mixed / pardiso_mixed on the host): one float64 refinement step
+# per solve (~3e-8 on the Mie eighth sphere, cuDSS) and ARPACK stopped above that noise; the Rayleigh quotients of the
+# vectors then restore the eigenvalues to ~(1e-6)^2
 MIXED_EIGS_REFINEMENTS = 1
 MIXED_ARPACK_TOLERANCE = 1e-6
 # fewer than n_resonances left after the PML filter: eigs again with 2x the eigenpairs on the same factor, at most this
@@ -175,13 +177,13 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     spectral_map of SPECTRAL_MAPS; warnings = the caller's size-rule notes; eigen_solver (solvers.arpack_shift_invert,
     None = default settings) on `factorization` of A (solve_host, host_bytes, description; None = the eigen solver's
     factorize_host: host SuperLU with the elimination `ordering` of the unknowns, None = SuperLU's minimum degree, or
-    cuDSS with its own ordering); ARPACK tolerance at least
+    cuDSS / MUMPS / PARDISO with their own ordering); ARPACK tolerance at least
     tolerance_floor, basis basis_per_wanted x the wanted eigenpairs unless the node sets one (0 = scipy's default;
     MAX_WIDENINGS doublings of the wanted eigenpairs while the PML filter leaves fewer than n_resonances);
-    symmetrizer (n,) diagonal D with D A complex symmetric: an own cuDSS factor is the LDL^T of D A (D B the mass);
-    symmetric: A itself is complex symmetric (FEM, no symmetrizer: the same LDL^T); equilibration (n,) > 0: the cuDSS
-    row scale of the factored operator (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none) and
-    min_region_fraction in [0, 1] (module header)."""
+    symmetrizer (n,) diagonal D with D A complex symmetric: an own cuDSS / MUMPS / PARDISO factor is the LDL^T of D A
+    (D B the mass); symmetric: A itself is complex symmetric (FEM, no symmetrizer: the same LDL^T); equilibration (n,)
+    > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
+    and min_region_fraction in [0, 1] (module header)."""
     started = time.perf_counter()
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     omega_target = float(omega_target)
@@ -211,12 +213,13 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         target_squared, shift = shift, shift * (1.0 + SHIFT_RELATIVE_OFFSET)
         host_operator = (host_operator - (shift - target_squared) * b_mass.sparse()).tocsr()
     on_device = False   # an own cuDSS factor: each application runs on the GPU, one vector transfer each way
-    polish = False      # cudss_mixed LDL^T of D A: loose solves, then the float64 Rayleigh quotient of every vector
+    polish = False      # mixed LDL^T of D A: loose solves, then the float64 Rayleigh quotient of every vector
     scaled_b = b_mass   # (D A)^-1 (D B) = A^-1 B: same theta and vectors
     factor_operator = host_operator
     row_scale = None    # D of an own symmetrized factor (the Rayleigh quotients use D A and D B)
     if factorization is None:
-        symmetrized = symmetrizer is not None and eigen_solver.factorization in CUDSS_FACTORIZATIONS
+        # cuDSS / MUMPS / PARDISO factor the LDL^T of D A (SuperLU: A itself, the symmetrizer unused)
+        symmetrized = symmetrizer is not None and eigen_solver.factorization in LDLT_FACTORIZATIONS
         if symmetrized:
             symmetrizer = row_scale = np.asarray(symmetrizer, dtype=np.complex128).ravel()
             scaled_b = b_mass.scaled(symmetrizer)
@@ -224,7 +227,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         factorization = eigen_solver.factorize_host(factor_operator, ordering=ordering,
                                                     symmetric=symmetrized or bool(symmetric), row_scale=equilibration)
         on_device = factorization.back_end == 'cudss'
-        polish = on_device and factorization.factor_precision == 'mixed' and factorization.symmetric
+        # cudss_mixed on the device, mumps_mixed / pardiso_mixed on the host (factor_precision 'double' after a fallback)
+        polish = (getattr(factorization, 'factor_precision', 'double') == 'mixed'
+                  and getattr(factorization, 'symmetric', False))
         if polish:
             tolerance_floor = max(float(tolerance_floor), MIXED_ARPACK_TOLERANCE)
     factorized = time.perf_counter()
@@ -240,7 +245,12 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         def solve(vector):   # cudss_mixed: MIXED_EIGS_REFINEMENTS steps when polished, else to full accuracy
             return factorization.solve(vector, refinement_steps=MIXED_EIGS_REFINEMENTS if polish else None)
     else:
-        solve, b_times = factorization.solve_host, scaled_b.times
+        b_times = scaled_b.times
+        if polish:   # host mixed LDL^T (mumps_mixed / pardiso_mixed): MIXED_EIGS_REFINEMENTS steps per solve
+            def solve(vector):
+                return factorization.solve_host(vector, refinement_steps=MIXED_EIGS_REFINEMENTS)
+        else:
+            solve = factorization.solve_host
     if spectral_map == 'shift_invert':
         def apply_on_backend(vector):
             return solve(b_times(vector))
@@ -293,6 +303,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     if on_device:
         factor_text = _cudss_factor_text(factorization, factorization.n_solves - solves_before[0],
                                          factorization.solve_seconds - solves_before[1], polish)
+    elif factor_text is None and is_host_direct_factor(factorization):   # an own MUMPS / PARDISO factor
+        factor_text = _host_direct_factor_text(factorization, factorized - started, polish)
     resonances = [_resonance(omega, pml_fraction, vector if field_of is None else field_of(vector), region_fraction)
                   for _, omega, pml_fraction, region_fraction, vector in candidates[:n_resonances]]
     if len(resonances) < n_resonances:
@@ -515,6 +527,24 @@ def _cudss_factor_text(factor, n_solves, solve_seconds, polish):
     return (f'{kind} on the GPU: plan {factor.plan_seconds:.3g} s + factorise {factor.factorize_seconds:.3g} s, '
             f'factor + operator {factor.device_bytes / 2 ** 20:.4g} MiB of device memory{refinement}; {n_solves} '
             f'device solves {solve_seconds:.3g} s of the eigs time')
+
+
+def _host_direct_factor_text(factor, factor_seconds, polish):
+    """Study-log text of an own MUMPS / PARDISO factor (solvers.host_direct): kind, factorise time (analysis
+    included), the library's factor bytes of host memory, refinement."""
+    if factor.factor_precision == 'mixed':
+        steps = (f'{MIXED_EIGS_REFINEMENTS} float64 refinement step(s) per solve, ARPACK to '
+                 f'{MIXED_ARPACK_TOLERANCE:g}, Rayleigh quotients' if polish else 'float64 refinement per solve')
+        single = getattr(factor, 'single_residual', None)
+        refinement = (f', unrefined residual {single:.2g}' if single is not None else '') + f', {steps}'
+    else:   # a double factor whose probe missed: float64 GMRES on its own factor (refinement_steps: the probe's)
+        steps = getattr(factor, 'refinement_steps', 0)
+        refinement = f', refined solves (probe: {steps} float64 GMRES steps)' if steps else ''
+    asymmetry = getattr(factor, 'asymmetry', None)
+    kind = factor.description if asymmetry is None else (
+        f'{factor.description} (scaled operator asymmetry {asymmetry:.2g})')
+    return (f'{kind} on the host: factorise {factor_seconds:.3g} s, factor {(factor.host_bytes or 0) / 2 ** 20:.4g} '
+            f'MiB of host memory{refinement}')
 
 
 def _resonance(omega, pml_fraction, field, region_fraction=math.nan):

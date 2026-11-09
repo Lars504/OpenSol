@@ -15,7 +15,8 @@ from .fem_bor import FEM_BOR_ARNOLDI_BASIS_PER_WANTED, FEM_BOR_SIZE_REMEDY
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, estimated_unknowns
 from .bor_ports import bor_mode_monitor_result, bor_mode_source_result
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY,
-                                FREQUENCY_DOMAIN_STUDY, N_ANGLES_PARAM, OPTOMECHANICS_STUDY, POINT_SOURCE_SIGN,
+                                FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
+                                POINT_SOURCE_SIGN,
                                 SPAN_CELLS, _window_axes, all_solved_wavelengths, apply_component_point_source,
                                 apply_far_field, apply_field_probe, apply_flux_monitor, apply_pec,
                                 boundary_settings_params, eigen_backend_kwargs, eigen_only_feature_issues, eigen_solved,
@@ -138,8 +139,9 @@ _SETTINGS = (
                '(Whitney / P1: cheaper, error ~h^2 instead of ~h^4 in k^2, and the layer of elements on the axis is '
                'stiff for m = 0 / |m| = 1 fields there). About 7 (quadratic) or 2 (linear) unknowns per element, one '
                'assembly per solve (K0 + m K1 + m^2 K2 for every listed order), shift-invert by the eigen solver: host '
-               'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (complex symmetric pencil), '
-               'cudss_mixed its complex64 form with float64 Rayleigh quotients. Materials are one value per element; a '
+               'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (complex symmetric pencil), with '
+               f'{HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host, the _mixed ones their complex64 form with '
+               'float64 Rayleigh quotients. Materials are one value per element; a '
                'cpml face gets a ring of mesh pml_layers element layers with the stretch of the pml_* settings (the '
                'stretched radius in every metric factor) and a pec outer side; pec_domain removes its elements and '
                'holds tangential E = 0 on their outline. Not available on triangles (validation errors): stationary '
@@ -505,10 +507,13 @@ _DESCRIPTION = (
     'per wavelength and material state, reused as GMRES preconditioner after a material change at the same wavelength '
     "(thermo-optic iteration); with back_end 'cudss' / 'cudss_mixed' (GPU backend, nvmath-python) a cuDSS LDL^T on the "
     'GPU instead, without the host size limit, every later factorisation of the same sparsity (other wavelengths, '
-    "material states, orders of an order sum) reusing the first one's cuDSS plan; role 'eigen' = arpack_shift_invert "
-    '(eigenfrequency study: '
+    "material states, orders of an order sum) reusing the first one's cuDSS plan; with back_end "
+    f'{HOST_DIRECT_NAMES} (optional python-mumps / pydiso packages, either backend) the same LDL^T by MUMPS / Intel '
+    "PARDISO on the processor cores, recycled like SuperLU and under its size limit; role 'eigen' = "
+    'arpack_shift_invert (eigenfrequency study: '
     'its tolerance / subspace_size; the finite-integration operator is complex symmetric, so factorization cudss is a '
-    'cuDSS LDL^T on the GPU without the host size limit and cudss_mixed its complex64 form: loose solves, then the '
+    f'cuDSS LDL^T on the GPU without the host size limit, {HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host '
+    'under the SuperLU size limit, and the _mixed ones their complex64 form: loose solves, then the '
     "float64 Rayleigh quotient of every resonance); role 'shifted' (every study): Automatic (sparse_direct) changes "
     'nothing, a '
     'line_block node factors every driven system and every shift-invert operator on its backend instead (unknowns '
@@ -844,7 +849,8 @@ EM_FDFD_BOR = PhysicsType(
     uses_dispersion=True,
     # shifted: the factors of the order family A(m) (driven systems, shift-invert operators); Automatic sparse_direct =
     # no device factors (host SuperLU of the linear / eigen roles), line_block = batched device factors
-    # eigen cudss_mixed: the Rayleigh-polished complex64 LDL^T (Yee and triangle operators are complex symmetric)
+    # eigen mixed factorizations (cuDSS, MUMPS, PARDISO): the Rayleigh-polished complex64 LDL^T (Yee and triangle
+    # operators are complex symmetric)
     solver_roles={'linear': CUDSS_LINEAR_ROLE,
                   'eigen': eigen_role((EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY), mixed_factorization=True),
                   'shifted': SolverRole('complex_symmetric', 'sparse_direct', precisions=('mixed', 'double'))},

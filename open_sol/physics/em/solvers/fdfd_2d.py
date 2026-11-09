@@ -20,10 +20,12 @@ from ..boundaries import MIRROR_TYPES, WALL_SIGNS, BCType, solver_boundary_confi
 from ..conformal_pec import build_conformal_fdfd
 from ..design_density import DesignRegion, paint_regions
 from ..eigenfrequency import solve_resonances
-from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, ArpackShiftInvertSolver
+from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.line_block import (LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve,
                                     operator_shift_bytes)
-from ....solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver, qr_workspace_bytes, size_issue
+from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SparseDirectSolver, host_size_back_end, qr_workspace_bytes,
+                                       size_issue)
 from ..fdfd_line_block import LINE_BLOCK_TEXT, MAX_BATCH_WAVELENGTHS, fdfd_block_axis, fdfd_layout
 from ..fdfd_monitors import HarmonicFluxMonitor, HarmonicNearToFar, HarmonicProbe
 from ..fdfd_ports import HarmonicModeMonitor, ModeSourcePhasor
@@ -163,7 +165,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self.solution = None          # xp complex128 (nx, ny) E_z / H_z of the last solve
         self.system = None            # HarmonicSystem of the last assembly
         self.solved_omega = None      # rad/s of the last solve
-        self.host_factor_bytes = None   # scipy_splu L + U bytes on the host (Simulation.memory_report)
+        self.host_factor_bytes = None   # host factor bytes (SuperLU L + U, MUMPS / PARDISO; Simulation.memory_report)
         self.last_factor_seconds = None   # host wall time of the last factorisation
         self.last_solve_seconds = None    # host wall time of the last whole solve (incl. any refactorisation)
         self.last_recycled_iterations = None   # GMRES iterations of the last solve if it reused an older factor
@@ -297,14 +299,14 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         return self.eigen_solve
 
     def _eigen_symmetrizer(self, omega):
-        """_symmetrizer for an eigen solver with a cuDSS factorization, else None."""
-        if getattr(self.eigen_solver, 'factorization', None) not in CUDSS_FACTORIZATIONS:
+        """_symmetrizer for an eigen solver whose own factorization is an LDL^T (cuDSS, MUMPS, PARDISO), else None."""
+        if getattr(self.eigen_solver, 'factorization', None) not in LDLT_FACTORIZATIONS:
             return None
         return self._symmetrizer(omega)
 
     def _symmetrizer(self, omega):
-        """Stretched cell areas D of the system at omega (D A complex symmetric: a cuDSS factor of D A is an LDL^T),
-        None with a Bloch phase."""
+        """Stretched cell areas D of the system at omega (D A complex symmetric: a cuDSS / MUMPS / PARDISO factor of
+        D A is an LDL^T), None with a Bloch phase."""
         if self.boundary_config.has_bloch_phase:
             return None
         domain = self.domain
@@ -315,11 +317,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                                     polar_radius_min=domain.coordinates.radius_min if polar else None)
 
     def _eigen_size_warnings(self):
-        """[warning] of the host SuperLU size rule of the shift-invert factor (whatever the linear back end), [] below
-        it or with a cuDSS factorization (GPU); ValueError beyond its limit."""
-        if getattr(self.eigen_solver, 'factorization', None) in CUDSS_FACTORIZATIONS:
+        """[warning] of the host size rule of the shift-invert factor (whatever the linear back end; SuperLU's, also
+        for MUMPS / PARDISO), [] below it or with a cuDSS factorization (GPU); ValueError beyond its limit."""
+        factorization = getattr(self.eigen_solver, 'factorization', None)
+        if factorization in CUDSS_FACTORIZATIONS:
             return []
-        issue = size_issue('scipy_splu', *self._field_re.shape, False, False)   # periodicity matters to cusolver_qr only
+        issue = size_issue(host_size_back_end(factorization), *self._field_re.shape, False,
+                           False)   # periodicity matters to cusolver_qr only
         if issue is None:
             return []
         if issue[0] == 'error':
@@ -717,6 +721,9 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 options = {'previous': self._cudss_previous, 'symmetric': True,
                            'symmetrizer': self._symmetrizer(self.system.omega)}
                 self._cudss_previous = None
+            elif self.linear_solver.back_end in HOST_DIRECT_BACK_ENDS:   # host LDL^T of D A (LU when not symmetric):
+                self._release_kept_cudss()   # recyclable and transposes natively, like SuperLU
+                options = {'symmetric': True, 'symmetrizer': self._symmetrizer(self.system.omega)}
             else:   # SuperLU (also after an 'auto' runtime fell back from cuDSS: its kept factors are freed)
                 self._release_kept_cudss()
             self._factorization = self.linear_solver.factorize(self.system.operator,
@@ -779,6 +786,9 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             return (f'{text} (SuperLU factorisation {factor_seconds}, L + U factors '
                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
         description = getattr(self._factorization, 'description', None) or linear.back_end
+        if linear.back_end in HOST_DIRECT_BACK_ENDS:   # library factor outside numpy: its own memory report
+            return (f'{text} ({description} factorisation {factor_seconds}, factor '
+                    f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
         if linear.back_end in CUDSS_BACK_ENDS:   # counts of the role solver (adjoint transposes included)
             return (f'{text} ({description} factorisation {factor_seconds}; {linear.n_factorizations} cuDSS '
                     f'factorisations on {linear.n_cudss_plans} plan(s))')
@@ -1245,7 +1255,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def solve_adjoint(self, flat_rhs):
         """x of operator^T x = flat_rhs (unconjugated) for the system of the last solve, on its factorisation (SuperLU
-        trans='T'; GMRES-recycled or refactorised like a forward solve)."""
+        trans='T', MUMPS / PARDISO transposed solves; GMRES-recycled or refactorised like a forward solve)."""
         if self.solution is None or self.system is None:
             raise ValueError("not solved yet: FDFDPhysics.solve_adjoint needs a solve (step or solve_harmonic) first")
         return self._solve_linear(self.xp.asarray(flat_rhs, dtype=self.xp.complex128), transpose=True)

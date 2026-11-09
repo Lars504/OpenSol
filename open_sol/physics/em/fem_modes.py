@@ -13,9 +13,10 @@ omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
 # (boundaries._grading_values at depth = distance beyond the window / ring width, sigma_max at pml_dx = width /
 # cpml_npml), folded into eps and mu as Lambda = diag(s_y / s_x, s_x / s_y, s_x s_y) at the quadrature points.
 # Shift-invert: (A + sigma B)^-1 B x = theta x, beta^2 = sigma - 1 / theta, sigma = (k0 n_guess)^2 (1 + 1e-6). A + sigma
-# B is complex symmetric (unconjugated Galerkin, diagonal Lambda): a cudss eigen node factors an LDL^T, equilibrated by
-# the parts' |diagonals| (S - k0^2 T_eps + sigma T_nu nearly cancels on its diagonal, as fem3d's curl-curl minus mass).
-# cudss_mixed (complex64 LDL^T) runs ARPACK on loose solves (eigenfrequency.MIXED_EIGS_REFINEMENTS float64 steps, ARPACK
+# B is complex symmetric (unconjugated Galerkin, diagonal Lambda): a cudss / mumps / pardiso eigen node factors an LDL^T,
+# equilibrated by the parts' |diagonals| (S - k0^2 T_eps + sigma T_nu nearly cancels on its diagonal, as fem3d's
+# curl-curl minus mass). A mixed LDL^T (cudss_mixed on the device, mumps_mixed / pardiso_mixed on the host; complex64)
+# runs ARPACK on loose solves (eigenfrequency.MIXED_EIGS_REFINEMENTS float64 steps, ARPACK
 # to MIXED_ARPACK_TOLERANCE) and then replaces beta^2 by the float64 Rayleigh quotient sigma - x^T (A + sigma B) x /
 # x^T B x of each vector: stationary for a complex symmetric pencil (left = right eigenvector), error ~ (vector error)^2.
 # Walls: pec / antisymmetric faces, the outer side of a PML ring (pec, COMSOL's default exterior) and the closure of
@@ -46,6 +47,7 @@ from ...fem.mesh import FACE_BITS
 from ...fem.quadrature import triangle_rule
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver, device_factor_matvec
 from ...solvers.cudss_factor import operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+from ...solvers.host_direct import HOST_DIRECT_FACTORIZATIONS, factor_label
 from ...solvers.sparse_direct import SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS
 from .boundaries import MIRROR_TYPES, BCType, _grading_values, cpml_sigma_max
 from .cross_section_modes import (_PML_MODE_FRACTION, _POWER_FLOOR, _RANK_DECIMALS, _SHIFT_RELATIVE_OFFSET,
@@ -105,20 +107,30 @@ def sample_basis_bytes(n_elements, order) -> int:
     return int(n_elements * SAMPLE_POINTS * per_point * FLOAT64_BYTES)
 
 
+def host_solver_label(factorization) -> str:
+    """Host solver of a size-rule text: 'SuperLU solver', or for a mumps / pardiso (+ _mixed) factorization or
+    back end its library under SuperLU's limits (host_direct factors keep the SuperLU size rule, uncalibrated)."""
+    if factorization in HOST_DIRECT_FACTORIZATIONS:
+        return f"{factor_label(factorization)} solver (SuperLU's limits, uncalibrated for it)"
+    return 'SuperLU solver'
+
+
 def size_issue_for_unknowns(n_unknowns, factorization='superlu', remedy=_SIZE_REMEDY):
     """(level, text) when the FEM pencil of n_unknowns is near ('warning') or over ('error') the host SuperLU size rule
-    (unknowns x FEM_LU_FILL_FACTOR against the 5-point limits of solvers.sparse_direct), else None; None for a cuDSS
-    eigen factorization (its own device-memory guard after planning). remedy: the closing advice (em_fdfd_bor: its own)."""
+    (unknowns x FEM_LU_FILL_FACTOR against the 5-point limits of solvers.sparse_direct; MUMPS / PARDISO alike, texts
+    naming them), else None; None for a cuDSS eigen factorization (its own device-memory guard after planning). remedy:
+    the closing advice (em_fdfd_bor: its own)."""
     if factorization in CUDSS_FACTORIZATIONS:
         return None
+    solver = host_solver_label(factorization)
     equivalent = float(n_unknowns) * FEM_LU_FILL_FACTOR
     text = (f'{int(n_unknowns):,} FEM unknowns (about {FEM_LU_FILL_FACTOR:g}x the SuperLU fill of a grid unknown, '
             f'so ~{int(equivalent):,} grid unknowns)')
     if equivalent > SPLU_LIMIT_UNKNOWNS:
-        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host SuperLU solver: its L + U '
+        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host {solver}: its '
                          f'factors would fill the host memory; {remedy}')
     if equivalent > SPLU_WARN_UNKNOWNS:
-        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host SuperLU solver; '
+        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host {solver}; '
                            f'{remedy}')
     return None
 
@@ -514,7 +526,8 @@ def solve_fem_modes(layout, materials, omega, n_modes, n_eff_guess=None, start_v
                     drop_pml_modes=True) -> CrossSectionSolve:
     """CrossSectionSolve of up to n_modes FEMModes found by shift-invert near (k0 n_eff_guess)^2 (default max Re sqrt(eps
     mu)), ranked by descending Re beta^2 (ties by Im), modes with > 1/2 of int |H_t|^2 in the PML ring dropped;
-    eigen_solver: solvers.arpack_shift_invert runtime (None = default settings; cudss_mixed: Rayleigh-polished)."""
+    eigen_solver: solvers.arpack_shift_invert runtime (None = default settings; cudss_mixed / mumps_mixed /
+    pardiso_mixed: Rayleigh-polished)."""
     if isinstance(n_modes, bool) or not isinstance(n_modes, (int, np.integer)) or n_modes < 1:
         raise ValueError(f'n_modes must be an integer >= 1, got {n_modes!r}')
     problem = prepare_fem_modes(layout, materials, omega, n_eff_guess)
@@ -524,11 +537,13 @@ def solve_fem_modes(layout, materials, omega, n_modes, n_eff_guess=None, start_v
     if n_unknowns < 4:
         raise ValueError(f'solve_fem_modes: only {n_unknowns} unknowns remain inside the walls')
     warnings = []
-    # complex symmetric pencil: a cudss node factors an LDL^T (SuperLU ignores symmetric / row_scale)
+    # complex symmetric pencil: a cudss / mumps / pardiso node factors an LDL^T (SuperLU ignores symmetric / row_scale)
     factorization = eigen_solver.factorize_host(problem.operator, symmetric=True, row_scale=problem.row_scale)
     factorized = time.perf_counter()
-    polish = (getattr(factorization, 'back_end', None) == 'cudss' and factorization.factor_precision == 'mixed'
-              and factorization.symmetric)   # module header: loose solves, then float64 Rayleigh quotients
+    # module header: loose solves, then float64 Rayleigh quotients, for any mixed LDL^T (cuDSS on the device, MUMPS /
+    # PARDISO on the host: solve_host(refinement_steps=)); SuperLU has no factor_precision
+    polish = getattr(factorization, 'factor_precision', 'double') == 'mixed' and getattr(factorization, 'symmetric',
+                                                                                          False)
     steps = MIXED_EIGS_REFINEMENTS if polish else None
     n_wanted = min(2 * int(n_modes) + 10, n_unknowns - 2)
     initial = _start_vector(start_vector, layout)
@@ -579,7 +594,7 @@ def solve_fem_modes(layout, materials, omega, n_modes, n_eff_guess=None, start_v
             'factor_kind': getattr(factorization, 'description', 'SuperLU'),
             'factor_device_bytes': int(getattr(factorization, 'device_bytes', 0)),
             'arnoldi': eigen_solver.last_arnoldi, 'warnings': warnings}
-    if getattr(factorization, 'single_residual', None) is not None:   # cudss_mixed: the complex64 factor alone
+    if getattr(factorization, 'single_residual', None) is not None:   # *_mixed: the complex64 factor alone
         info['single_residual'] = float(factorization.single_residual)
     if rayleigh_change is not None:
         info['rayleigh_change'] = rayleigh_change

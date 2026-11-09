@@ -23,7 +23,8 @@ from ..placement import flux_line_cells, line_mirror_factor
 from ..renderer_conical import ConicalRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cpml_grading_cell_size, grid_cell_widths
-from .host_fdfd import HostFDFDBase
+from ....solvers.host_direct import is_host_direct_factor
+from .host_fdfd import HostFDFDBase, direct_text
 
 CONICAL_POLARIZATION = 'conical'        # no in-plane polarisation (sheet placement helpers refuse it)
 CONICAL_MATERIAL_SCHEMA_KEY = 'modes'   # EM_MATERIAL_SCHEMAS key: eps_r (E_z), eps_xx (E_x), eps_yy (E_y), mu, sigmas
@@ -47,7 +48,8 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
     # (sparse_direct RECYCLE_*), refactorising only when it misses. 'linear' back_end cudss / cudss_mixed: an LDL^T of D A
     # (system.symmetrizer; a general LU with a Bloch phase) with the eigen-solve's row scale instead of SuperLU; not
     # recyclable, so a replaced factor is kept as _cudss_previous and the next factorisation (new omega, k_z, material)
-    # refactorises it in place: one cuDSS plan while the pattern holds.
+    # refactorises it in place: one cuDSS plan while the pattern holds. mumps / pardiso (+ _mixed): the same LDL^T
+    # options on the host, recyclable like SuperLU and under SuperLU's size rule.
 
     name = 'em'
     type_label = 'em_fdfd_conical'
@@ -137,16 +139,17 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
             return (f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m, '
                     f'{getattr(self._factorization, "description", "cuDSS")}, solve {self.last_solve_seconds:.3g} s '
                     f'({factor}{linear.n_factorizations} cuDSS factorisations on {linear.n_cudss_plans} plan(s))')
-        text = (f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m, host SuperLU, '
-                f'solve {self.last_solve_seconds:.3g} s')
+        host_direct = is_host_direct_factor(self._factorization)   # MUMPS / PARDISO: the library's own factor bytes
+        text = (f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m, '
+                f'{direct_text(self._factorization)}, solve {self.last_solve_seconds:.3g} s')
         if linear.n_recycled_solves:
             last = (f'{self.last_recycled_iterations} GMRES iterations' if self.last_recycled_iterations is not None
                     else 'factorised')
             text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
                      f'GMRES-preconditioned by an earlier factor; last solve {last}')
         if self.last_factor_seconds is not None:
-            text += (f' (factorisation {self.last_factor_seconds:.3g} s, L + U factors '
-                     f'{format_bytes(self.host_factor_bytes)} of host memory)')
+            text += (f" (factorisation {self.last_factor_seconds:.3g} s, {'factor' if host_direct else 'L + U factors'} "
+                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
         return text
 
     def scalars(self) -> dict:

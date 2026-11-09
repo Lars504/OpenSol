@@ -39,7 +39,7 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInve
 from ...solvers.sparse_direct import SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS
 from .boundaries import BCType
 from .eigenfrequency import solve_resonances
-from .fem_modes import _LOCAL_NODES, PERIODIC_TEXT, pml_ring
+from .fem_modes import _LOCAL_NODES, PERIODIC_TEXT, host_solver_label, pml_ring
 
 POLARIZATIONS = ('ez', 'hz')
 # faces whose condition holds the out-of-plane unknown at 0 (a cpml face: the ring's pec outer side); others natural
@@ -71,17 +71,19 @@ def fem_fdfd_lu_bytes(n_unknowns, order) -> int:
 
 def fem_fdfd_size_issue(n_unknowns, order, factorization='superlu'):
     """(level, text) when the host SuperLU factor of n_unknowns is near ('warning') or over ('error') the sparse_direct
-    limits (unknowns x FEM_FDFD_LU_FILL as grid unknowns), else None; None for a cuDSS eigen factorization."""
+    limits (unknowns x FEM_FDFD_LU_FILL as grid unknowns; a mumps / pardiso factorization or back end alike, texts
+    naming it), else None; None for a cuDSS factorization or back end."""
     if factorization in CUDSS_FACTORIZATIONS:
         return None
+    solver = host_solver_label(factorization)
     equivalent = float(n_unknowns) * FEM_FDFD_LU_FILL[order]
     text = (f'{int(n_unknowns):,} FEM unknowns (about {FEM_FDFD_LU_FILL[order]:g}x the SuperLU fill of a grid unknown, '
             f'so ~{int(equivalent):,} grid unknowns)')
     if equivalent > SPLU_LIMIT_UNKNOWNS:
-        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host SuperLU solver: its L + U '
+        return 'error', (f'{text} exceed the {SPLU_LIMIT_UNKNOWNS:,} limit of the host {solver}: its '
                          f'factors would fill the host memory; {FEM_FDFD_SIZE_REMEDY}')
     if equivalent > SPLU_WARN_UNKNOWNS:
-        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host SuperLU solver; '
+        return 'warning', (f'{text} exceed ~{SPLU_WARN_UNKNOWNS:,}, the practical size of the host {solver}; '
                            f'{FEM_FDFD_SIZE_REMEDY}')
     return None
 

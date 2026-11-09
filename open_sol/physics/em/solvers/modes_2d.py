@@ -20,6 +20,7 @@ from ..cross_section_modes import (BEND_MODELS, GROUP_RELATIVE_STEP, LINE_BLOCK_
                                    prepare_cross_section_modes, size_issue_for, solve_prepared_modes)
 from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ....solvers.host_direct import HOST_DIRECT_FACTORIZATIONS, factor_label
 from ....solvers.line_block import LineBlockSolver, RejectedLineBlockSolve, batch_factorizations
 from ....solvers.sparse_direct import scipy_available
 from ..harmonic import cell_permeability, cell_permittivity, write_float32
@@ -38,6 +39,8 @@ MODE_TABLE_COLUMNS = ('mode_number', 'n_eff', 'n_eff_imag', 'loss_db_per_cm', 'n
                       'effective_area', 'pml_fraction', 'selected')
 MODE_TABLE_UNITS = ('1', '1', '1', 'dB/cm', '1', '1', 'm^2', '1', '')
 _DB_PER_NEPER = 20.0 / math.log(10.0)   # power loss in dB of a field decaying by e^-1
+# factor_kind prefixes of the eigen solver's own MUMPS / PARDISO factor (its description, e.g. 'MUMPS LDL^T')
+HOST_DIRECT_KINDS = tuple(dict.fromkeys(factor_label(name) for name in HOST_DIRECT_FACTORIZATIONS))
 
 
 def bend_factor_message(x_edges, radius, reference_x):
@@ -393,6 +396,9 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
                       f'{format_bytes(info["factor_host_bytes"])} of host memory')
         elif kind.startswith('cuDSS'):   # the eigen solver's factorization cudss
             factor = f'{kind} factorisation on the GPU {info["factor_seconds"]:.3g} s'
+        elif kind.startswith(HOST_DIRECT_KINDS):   # the eigen solver's factorization mumps / pardiso
+            factor = (f'{kind} factorisation {info["factor_seconds"]:.3g} s, factor '
+                      f'{format_bytes(info["factor_host_bytes"])} of host memory')
         else:
             batch = '' if self.last_batch_size is None else f', one batch of {self.last_batch_size} operators'
             factor = f'{info["factor_kind"]} factor of the shifted solver ({self._line_block.precision}{batch})'

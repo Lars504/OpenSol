@@ -13,6 +13,7 @@ from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, Expression
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.schema import (PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param, array_owner,
                              coupling_writes, feature_path, output_field_names, permittivity_arrays, resolve_values,
@@ -862,13 +863,19 @@ def scipy_issues(type_name, what, path) -> list:
     return [Issue('error', path, f'{type_name} needs scipy ({what}), which is not installed: pip install scipy')]
 
 
+# the host direct back ends / factorizations as help-text words, built from solvers.host_direct (a value dropped there
+# drops from every EM help text)
+HOST_DIRECT_NAMES = ' / '.join(HOST_DIRECT_BACK_ENDS)
+
+
 def host_matrix_back_end_issues(solvers, type_name, path) -> list:
     """Error for a 'linear' node with back_end cusolver_qr on a type that factorises a host matrix."""
     resolved = (solvers or {}).get('linear')
     if resolved is None or resolved.values.get('back_end') != 'cusolver_qr':
         return []
-    return [Issue('error', path, f"linear solver '{resolved.node}': {type_name} factorises a host matrix (SuperLU or "
-                                 "cuDSS): use back_end 'auto', 'scipy_splu', 'cudss' or 'cudss_mixed', or Automatic")]
+    choices = ', '.join(f"'{name}'" for name in ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS)
+    return [Issue('error', path, f"linear solver '{resolved.node}': {type_name} factorises a host matrix (SuperLU, "
+                                 f'cuDSS, MUMPS or PARDISO): use back_end {choices}, or Automatic')]
 
 
 def missing_source_issues(vctx, physics_spec, path, source_types, driven_studies) -> list:

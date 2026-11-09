@@ -19,6 +19,7 @@ from ..bor_line_block import bor_layout, driven_factorization, order_factorizati
 from ..boundaries import BCType, solver_boundary_config
 from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
 from ....solvers.line_block import LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve
+from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.sparse_direct import CUDSS_BACK_ENDS
 from ..bor_ports import BORModeMonitor, BORModeSource
 from ..eigenfrequency import resonance_table_result
@@ -28,7 +29,7 @@ from ..materials import register_em_arrays
 from ..placement import box_cells, flux_line_cells, port_cells
 from ..renderer_bor import BORRenderer
 from ..yee_grid import cpml_grading_cell_size
-from .host_fdfd import SUPERLU_TEXT, HostFDFDBase, direct_text, is_cudss
+from .host_fdfd import HostFDFDBase, direct_text, is_cudss
 
 BOR_POLARIZATION = 'bor'          # no in-plane polarisation (sheet placement helpers refuse it)
 BOR_MATERIAL_SCHEMA_KEY = 'modes'   # EM_MATERIAL_SCHEMAS key: eps_r (E_phi), eps_xx (E_r), eps_yy (E_z), mu_r, sigmas
@@ -109,7 +110,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
     # 'linear' back_end cudss / cudss_mixed: an LDL^T of the complex symmetric operator (row scale (|diag K| + k0^2
     # |M|)^-1/2, as the eigen-solve) instead of SuperLU; not recyclable, so a replaced factor is kept as _cudss_previous
     # and the next factorisation (new omega, material, order, order-sum term) refactorises it in place: one cuDSS plan
-    # while the pattern holds.
+    # while the pattern holds. mumps / pardiso (+ _mixed): the same LDL^T options on the host, recyclable like SuperLU
+    # (GMRES after a material change) and under SuperLU's size rule.
 
     name = 'em'
     type_label = 'em_fdfd_bor'
@@ -280,9 +282,10 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
                     else 'factorised')
             text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
                      f'GMRES-preconditioned by an earlier factor; last solve {last}')
-        if self.last_factor_seconds is not None:
-            text += (f' (factorisation {self.last_factor_seconds:.3g} s, L + U factors '
-                     f'{format_bytes(self.host_factor_bytes)} of host memory)')
+        if self.last_factor_seconds is not None:   # MUMPS / PARDISO: the library's own factor bytes
+            factor = 'factor' if linear.back_end in HOST_DIRECT_BACK_ENDS else 'L + U factors'
+            text += (f' (factorisation {self.last_factor_seconds:.3g} s, {factor} '
+                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
         return text
 
     def yee(self):
@@ -441,9 +444,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         initial_guess = (self.solution if self.solution is not None and self.solution.size == rhs.size
                          and self.selected_resonance is None and self.solved_omega == system.omega else None)
         solution = self._solve_kept_factor(system.operator, rhs, initial_guess, lambda: self._factorize_host(system))
-        # recycled solves: SuperLU factors only
-        self.last_linear_text = (SUPERLU_TEXT if self.last_recycled_iterations is not None
-                                 else direct_text(self._factorization))
+        # recycled solves too: the kept factor's kind (SuperLU, MUMPS / PARDISO; cuDSS factors are never recycled)
+        self.last_linear_text = direct_text(self._factorization)
         return solution
 
     def _solve(self):

@@ -12,7 +12,8 @@ from ..fem_modes import (FEMModeMaterials, element_means, fem_group_indices, fem
 from ..harmonic import shown_phasor_fields
 from ..renderer import ModeRenderer
 from .fem_em_base import TriangleEMPhysics
-from .modes_2d import (MODE_PERMITTIVITY_ARRAYS, MODE_PERMITTIVITY_SLOTS, MODE_POLARIZATION, _ModeStudyMixin)
+from .modes_2d import (HOST_DIRECT_KINDS, MODE_PERMITTIVITY_ARRAYS, MODE_PERMITTIVITY_SLOTS, MODE_POLARIZATION,
+                       _ModeStudyMixin)
 
 
 
@@ -66,6 +67,14 @@ class FEMModePhysics(_ModeStudyMixin, TriangleEMPhysics):
         if kind.startswith('cuDSS'):   # the eigen solver's factorization cudss / cudss_mixed
             factor = (f'{kind} on the GPU {info["factor_seconds"]:.3g} s, factor + operator '
                       f'{format_bytes(info["factor_device_bytes"])} of device memory')
+            if 'single_residual' in info:
+                factor += f', unrefined residual {info["single_residual"]:.2g}'
+            if 'rayleigh_change' in info:
+                factor += (f', loose solves + Rayleigh quotients (n_eff^2 moved by up to '
+                           f'{info["rayleigh_change"]:.2g})')
+        elif kind.startswith(HOST_DIRECT_KINDS):   # mumps / pardiso (+ _mixed: polished like cudss_mixed)
+            factor = (f'{kind} factorisation {info["factor_seconds"]:.3g} s, factor '
+                      f'{format_bytes(info["factor_host_bytes"])} of host memory')
             if 'single_residual' in info:
                 factor += f', unrefined residual {info["single_residual"]:.2g}'
             if 'rayleigh_change' in info:

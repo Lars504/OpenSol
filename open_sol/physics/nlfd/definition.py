@@ -17,6 +17,7 @@ from ...model.definition_helpers import DIRECT_LINEAR_ROLE, optimization_evaluat
 from ...model.expressions import is_identifier
 from ...model.geometry import bounding_box, expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.sparse_direct import RECYCLE_MAX_ITERATIONS
 from ..em.definition_common import (EM_FAMILY, em_material_params, make_validate_physics,
                                     quasi_static_domain_requirements, source_slot_docs, write_dispersive_materials)
@@ -1232,7 +1233,8 @@ def _pump_depleted_issues(vctx, physics_spec, settings_values, table, path):
         issues.append(Issue('warning', path, "pump_depleted with the GPU QR back end (cusolver_qr) refactorises every "
                                              f'channel in every {per} (no factor is kept): install scipy for '
                                              "'scipy_splu', whose factors are reused by every solve"))
-    elif back_end not in (None, 'scipy_splu') and kerr and not newton:   # a device factor without GMRES recycling
+    # a device factor without GMRES recycling (MUMPS / PARDISO host factors are recycled like SuperLU)
+    elif back_end not in (None, 'scipy_splu') + HOST_DIRECT_BACK_ENDS and kerr and not newton:
         issues.append(Issue('info', path, f"back end '{back_end}' keeps no factor GMRES can recycle: with picard every "
                                           'Kerr / free-carrier channel refactorises in every sweep (its lagged '
                                           "operator changes); iteration_method 'newton' reuses one factor per channel"))
@@ -1547,8 +1549,8 @@ _DESCRIPTION = (
     'the fields change by <= tolerance. Sources and '
     'monitors are the em_fdfd_ez / _hz features with a channel setting; fields and '
     'powers are absolute and per unit length in z, so nonlinear results scale with the source amplitudes (a 2D SHG '
-    'efficiency P_2w / P_w^2 has unit m/W). Each channel factorises its own operator (host SuperLU memory adds up '
-    'per channel). Study: nonlinear_frequency_domain (one snapshot per channel). Output fields of the shown channel: '
+    'efficiency P_2w / P_w^2 has unit m/W). Each channel factorises its own operator (host SuperLU, MUMPS or PARDISO '
+    'memory adds up per channel). Study: nonlinear_frequency_domain (one snapshot per channel). Output fields of the shown channel: '
     'the phasor quartets of both polarisations (the other polarisation reads 0), e_abs (primary), e_intensity, h_abs, '
     'absorbed_power, nonlinear_polarization_abs |P_NL|, the chi2 poling sign and carrier_density (0 without free '
     'carriers), eps_sensitivity (the cascade adjoint of the adjoint_objective features) and design_density. '

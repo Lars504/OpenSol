@@ -4,10 +4,11 @@ from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT64_BYTES, MemoryEstimate
 from ...model.definition_helpers import eigen_factorization, eigen_role
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
-from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
+from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
 from ...solvers.line_block import factor_solve_ops
 from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
-                                OPTOMECHANICS_STUDY, PERIODIC_BC_HELP, all_solved_wavelengths, apply_pec,
+                                HOST_DIRECT_NAMES, OPTOMECHANICS_STUDY, PERIODIC_BC_HELP, all_solved_wavelengths,
+                                apply_pec,
                                 boundary_settings_params, eigen_backend_kwargs, em_material_params, fem_size_issues,
                                 first_solved_wavelength, kept_line_block_factors, make_validate_physics, mesh_kind,
                                 object_result, other_em_physics_labels, physics_counter, raw_settings, role_counter,
@@ -140,8 +141,9 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
                'elements and P1 on straight elements, cheaper, error ~h^2 instead of ~h^4 in beta^2. About 7 '
                '(quadratic) or 2 (linear) unknowns per element, solved by the shift-invert of the eigen solver: host '
                'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (the pencil is complex symmetric), '
-               'cudss_mixed its complex64 form: one float64 refinement step per solve, ARPACK to 1e-6, then beta^2 '
-               'from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector error). '
+               f'with {HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host, '
+               'the _mixed ones their complex64 form: one float64 refinement step per solve, ARPACK to 1e-6, then '
+               'beta^2 from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector error). '
                'Materials are one value per element (an element takes the material at its centroid; the mesh '
                'follows every drawn outline). On triangles: pec / antisymmetric faces fix tangential E on the window '
                'edge, pmc / symmetric faces are natural (mirror planes are the window edge, no ghost cell); a cpml '
@@ -464,8 +466,9 @@ _DESCRIPTION = (
     'by shift-invert Arnoldi (scipy eigs on a SuperLU factor: needs scipy; 2 unknowns per cell, PML included, so '
     'validation warns near and refuses beyond the factor size limit) around (k0 n_eff_guess)^2. Solver roles: eigen '
     '= arpack_shift_invert (tolerance, subspace_size, factorization: superlu, cudss = a cuDSS LU on the GPU without '
-    'the host size limit, guarded by the free device memory; cudss_mixed only on a triangles mesh, since this '
-    'operator is not complex symmetric); shifted: Automatic (sparse_direct) = that SuperLU factor, a '
+    f'the host size limit, guarded by the free device memory; {HOST_DIRECT_NAMES} = a MUMPS / PARDISO factor on '
+    'the host under the SuperLU size limit; cudss_mixed and the other _mixed factorizations only on a triangles '
+    'mesh, since this operator is not complex symmetric); shifted: Automatic (sparse_direct) = that SuperLU factor, a '
     'line_block node factors the shift-invert operators on its backend instead (unknowns ordered by grid rows or '
     'columns, a periodic axis inside the blocks, two periodic axes an error; mixed or double precision, refined '
     'against the complex128 operator), batched: the omega and, with group_index, omega (1 +- 1e-3) operators of a '
@@ -580,16 +583,17 @@ def _bloch_issues(vctx, physics_spec, settings_values, path):
 
 
 def _solver_issues(vctx, physics_spec, settings_values, path):
-    """scipy missing: error; mode_number above n_modes: error; eigen factorization cudss_mixed on a tensor mesh: error; a
-    line_block shifted node with two periodic axes: error; else (also under line_block with a shg_overlap /
-    bend_overlap feature) the host SuperLU size limit (size_issue_for; none for a cudss factorization)."""
+    """scipy missing: error; mode_number above n_modes: error; a mixed eigen factorization (MIXED_FACTORIZATIONS) on a
+    tensor mesh: error; a line_block shifted node with two periodic axes: error; else (also under line_block with a
+    shg_overlap / bend_overlap feature) the host SuperLU size limit (size_issue_for; none for a cudss factorization,
+    MUMPS / PARDISO keep it)."""
     issues = []
     factorization = eigen_factorization(vctx.solvers(physics_spec))
-    if factorization == 'cudss_mixed' and mesh_kind(vctx) == 'tensor':
-        issues.append(Issue('error', path, "the eigen factorization cudss_mixed needs the complex symmetric pencil of a "
-                                           "triangles mesh (its loose complex64 solves are polished by Rayleigh "
+    if factorization in MIXED_FACTORIZATIONS and mesh_kind(vctx) == 'tensor':
+        issues.append(Issue('error', path, f"the eigen factorization {factorization} needs the complex symmetric pencil "
+                                           "of a triangles mesh (its loose complex64 solves are polished by Rayleigh "
                                            "quotients); the Yee cross-section operator is not complex symmetric: use "
-                                           "'cudss' (double) or a triangles mesh"))
+                                           f"'{factorization.removesuffix('_mixed')}' (double) or a triangles mesh"))
     issues.extend(scipy_issues('em_modes', 'host sparse eigensolver', path))
     if settings_values['mode_number'] > settings_values['n_modes']:
         issues.append(Issue('error', path, f"mode_number {settings_values['mode_number']} exceeds n_modes "
@@ -763,7 +767,7 @@ EM_MODES = PhysicsType(
     scalar_outputs_help=_SCALAR_OUTPUTS_HELP,
     # shifted: the shift-invert factors of the eigen-solve; Automatic sparse_direct = host SuperLU through the eigen
     # role (nothing of its own), line_block = batched device factors (ModePhysics class comment)
-    # eigen cudss_mixed: the Rayleigh-polished complex64 LDL^T of the triangle pencil; refused on tensor meshes
+    # eigen MIXED_FACTORIZATIONS: the Rayleigh-polished complex64 LDL^T of the triangle pencil; refused on tensor meshes
     solver_roles={'eigen': eigen_role(mixed_factorization=True),
                   'shifted': SolverRole('general', 'sparse_direct', precisions=('mixed', 'double'))},
     subpixel_smoothing=True,

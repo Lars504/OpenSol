@@ -20,8 +20,8 @@ em_fdfd_conical (solvers/fdfd_conical)."""
 # for D = (A_x, A_y, -A_z) on (E_x, E_y, E_z): the layout dual lengths times the CPML stretch along each axis at the point
 # (face lengths x face stretch, centre lengths x centre stretch), the E_z block negated (= the similarity E_z -> j E_z
 # that makes the curls real). PML, loss, complex k_z, mirrors / walls, PEC and subpixel eps keep it; a Bloch phase breaks
-# it (phased wrap entries: LU, no polish). With D a cudss eigen node factors an LDL^T and cudss_mixed adds the float64
-# Rayleigh polish (solve_resonances(symmetrizer=D)).
+# it (phased wrap entries: LU, no polish). With D a cudss / mumps / pardiso eigen node factors an LDL^T and a mixed one
+# (cudss_mixed, mumps_mixed, pardiso_mixed) adds the float64 Rayleigh polish (solve_resonances(symmetrizer=D)).
 # Flux through the hi face of a line of cells: 1/2 Re of E of the line cells x conj(H) on that face (the boundary term
 # of the discrete Poynting theorem for the cells below / left of it); in lossless source-free cells a line across a whole
 # period (or wall to wall) carries the same power whichever side's E is paired, so two such lines enclose exactly the
@@ -332,13 +332,15 @@ def solve_conical_resonances(cell_widths, boundary_config, pml_dx, materials, k_
                              eigen_solver=None):
     """ConicalEigenSolve of up to n_wanted resonances C_H mu^-1 C_E E = k0^2 eps E at k_z [rad/m] nearest omega_guess
     (eigenfrequency.solve_resonances, squared Cayley: statics and PML resonances dropped, PML stretched at omega_guess);
-    eigen_solver None = default settings (host SuperLU; cudss: LDL^T of D A without a Bloch phase, else LU)."""
+    eigen_solver None = default settings (host SuperLU; cudss / mumps / pardiso: LDL^T of D A without a Bloch phase,
+    else LU)."""
     started = time.perf_counter()
     if isinstance(n_wanted, bool) or not isinstance(n_wanted, (int, np.integer)) or n_wanted < 1:
         raise ValueError(f"n_wanted must be an integer >= 1, got {n_wanted!r}")
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     warnings = []
-    if eigen_solver.factorization not in CUDSS_FACTORIZATIONS:   # host SuperLU size rule (cuDSS guards its own memory)
+    # host SuperLU size rule, also for MUMPS / PARDISO (cuDSS guards its own memory)
+    if eigen_solver.factorization not in CUDSS_FACTORIZATIONS:
         issue = size_issue_for(*np.shape(materials.eps_zz))
         if issue is not None:
             if issue[0] == 'error':

@@ -17,8 +17,8 @@ directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonanceP
 # real and the system symmetric. A master is pinned with any dof it stands for. Elements hold the material of their
 # region (fem.mesh3d: the last solid at the centroid clamped into the window, so the shell
 # extrudes the window-edge materials). PML share: the per-row energy of W = int W . |Re eps| W (no stretch), window
-# rows = dofs whose entity centre lies in the closed window. Equilibration of a cuDSS factor: (|diag K| + k_t^2 |diag
-# M|)^-1/2 (cudss_factor header). Rule degree 2 x degree, + 2 in PML elements (varying Lambda).
+# rows = dofs whose entity centre lies in the closed window. Equilibration of a cuDSS / MUMPS / PARDISO factor:
+# (|diag K| + k_t^2 |diag M|)^-1/2 (cudss_factor header). Rule degree 2 x degree, + 2 in PML elements (varying Lambda).
 import math
 import time
 from dataclasses import dataclass
@@ -39,8 +39,8 @@ from .fdfd3d import ARNOLDI_BASIS_PER_WANTED, ARPACK_TOLERANCE_FLOOR
 
 ELEMENT_ORDERS = (1, 2)
 _FIXED_FACE_TYPES = frozenset(('pec', 'antisymmetric', 'cpml'))   # tangential E 0 on the mesh's outer side
-# host SuperLU size rule: FEM unknowns x this ~ the Yee E unknowns of equal fill (denser rows: ~18 / ~45 nonzeros vs
-# Yee's 13); uncalibrated first figures (igor3d_plan 7.2 T8)
+# host SuperLU size rule (MUMPS / PARDISO keep it): FEM unknowns x this ~ the Yee E unknowns of equal fill (denser
+# rows: ~18 / ~45 nonzeros vs Yee's 13); uncalibrated first figures (igor3d_plan 7.2 T8)
 YEE_EQUIVALENT_UNKNOWNS = {1: 1.5, 2: 3.5}
 
 
@@ -290,7 +290,8 @@ class FEMPhysics3D:
     # ---- eigenfrequency study ----
     def solve_eigenfrequencies(self, n_resonances):
         """Up to n_resonances resonances nearest the wavelength (squared-Cayley shift-invert of A on the free dofs;
-        host SuperLU under the 3D size rule at YEE_EQUIVALENT_UNKNOWNS, or a cuDSS factor) -> EigenSolve."""
+        host SuperLU (or MUMPS / PARDISO) under the 3D size rule at YEE_EQUIVALENT_UNKNOWNS, or a cuDSS factor) ->
+        EigenSolve."""
         self.eigen_solve = None
         system = self._refresh_system()
         n_free = len(system.free)

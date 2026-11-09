@@ -3,10 +3,11 @@ fixed out-of-plane wave number k_z) on definition_common, with its self-tests; d
 from dataclasses import replace
 
 from ...core import time_estimate as te
-from ...model.definition_helpers import (CUDSS_LINEAR_ROLE, eigen_factorization, eigen_role, linear_solver_cudss,
-                                         resolved_back_end, validate_points_inside)
+from ...model.definition_helpers import (CUDSS_LINEAR_ROLE, eigen_factorization, eigen_role, host_direct_back_end,
+                                         linear_solver_cudss, resolved_back_end, validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
-from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
+from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
+from ...solvers.sparse_direct import MIXED_BACK_ENDS
 from .conical import COMPONENTS, FIELD_COMPONENTS, size_issue_for
 from .fem_conical import FEM_CONICAL_SIZE_REMEDY
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
@@ -359,24 +360,27 @@ def _create(ctx, physics_spec, settings_values):
 def _solver_issues(vctx, physics_spec, settings_values, path):
     """scipy missing: error; a linear solver node with back_end cusolver_qr: error (host matrix only); the host factor
     size limit (conical.size_issue_for; none for a cudss eigen-solve or, driven, a cuDSS linear back end) on tensor
-    meshes; cudss_mixed with a Bloch phase: info (no symmetrizer: a refined LU); driven study without a source:
-    warning."""
+    meshes (MUMPS / PARDISO keep it); a mixed factorization or back end (MIXED_FACTORIZATIONS / MIXED_BACK_ENDS) with
+    a Bloch phase: info (no symmetrizer: a refined LU); driven study without a source: warning."""
     solvers = vctx.solvers(physics_spec) or {}
     issues = (scipy_issues('em_fdfd_conical', 'host sparse direct and eigen solvers', path)
               + host_matrix_back_end_issues(solvers, 'em_fdfd_conical', path))
     eigen = vctx.study_type == EIGENFREQUENCY_STUDY
     factorization = (eigen_factorization(solvers) if eigen
-                     else resolved_back_end(solvers) if linear_solver_cudss(solvers) else 'superlu')
-    if mesh_kind(vctx) == 'tensor' and factorization not in CUDSS_FACTORIZATIONS:   # triangles: _triangle_issues
+                     else resolved_back_end(solvers) if linear_solver_cudss(solvers) or host_direct_back_end(solvers)
+                     else 'superlu')
+    # MUMPS / PARDISO keep the SuperLU size rule; triangles: _triangle_issues
+    if mesh_kind(vctx) == 'tensor' and factorization not in CUDSS_FACTORIZATIONS:
         issue = size_issue_for(int(vctx.mesh.nx), int(vctx.mesh.ny))
         if issue is not None:
             issues.append(Issue(issue[0], path, issue[1]))
-    if factorization == 'cudss_mixed' and bloch_active_axes(settings_values) and mesh_kind(vctx) != 'triangles':
+    mixed = factorization in (MIXED_FACTORIZATIONS if eigen else MIXED_BACK_ENDS)
+    if mixed and bloch_active_axes(settings_values) and mesh_kind(vctx) != 'triangles':
         role = 'eigen factorization' if eigen else 'linear back_end'
-        issues.append(Issue('info', path, f'{role} cudss_mixed with a Bloch phase: the phased operator has no '
+        issues.append(Issue('info', path, f'{role} {factorization} with a Bloch phase: the phased operator has no '
                                           'symmetrizer, so the complex64 factor is an LU refined to full accuracy '
                                           'at every solve' + (' (no loose solves, no Rayleigh polish)' if eigen else '')
-                                          + '; cudss (double) is usually as fast'))
+                                          + f"; {factorization.removesuffix('_mixed')} (double) is usually as fast"))
     return issues + missing_source_issues(vctx, physics_spec, path, ('point_source', 'line_source'), _DRIVEN_STUDIES)
 
 

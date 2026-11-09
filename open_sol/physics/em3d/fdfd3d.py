@@ -24,7 +24,8 @@ import numpy as np
 from ...core.backend import to_host
 from ...core.constants import C0, MU0
 from ...core.solver_base import PhysicsSolver
-from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver, pattern_combination
+from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, ArpackShiftInvertSolver,
+                                            pattern_combination)
 from ...solvers.sparse_direct import vector_3d_size_issue
 from ..em.eigenfrequency import solve_resonances
 from ..em.yee_grid import face_partner, face_shares
@@ -51,9 +52,9 @@ _INTERFACE_ARRAYS = ('location', 'cell_a', 'cell_b', 'fill', 'normal_square')   
 class FDFDSystem3D:
     """Host system of one assembly at omega [rad/s]: ops (YeeOperators3D), live (LiveUnknowns3D), operator A (n, n) CSR
     complex128, mass = the live face eps, inverse_mu (3 N,) 1 / mu of every H edge, energy_weights / in_window (n,),
-    elimination_order (n,) of the host factor (operators3d.nested_dissection_ordering; None on a cuDSS factorization),
-    symmetrizer (n,) complex D with D A complex symmetric (stretched dual volumes, half on antisymmetric plane faces;
-    None with a Bloch phase)."""
+    elimination_order (n,) of the host factor (operators3d.nested_dissection_ordering; None on a cuDSS / MUMPS / PARDISO
+    factorization), symmetrizer (n,) complex D with D A complex symmetric (stretched dual volumes, half on
+    antisymmetric plane faces; None with a Bloch phase)."""
     omega: float
     ops: object
     live: object
@@ -200,8 +201,8 @@ class FDFDPhysics3D(StaticEM3DContract, PhysicsSolver):
     # ---- eigenfrequency study ----
     def solve_eigenfrequencies(self, n_resonances):
         """eigenfrequency study hook: up to n_resonances resonances nearest the wavelength setting (squared-Cayley
-        shift-invert on the system assembled there; host SuperLU under sparse_direct.vector_3d_size_issue, or cuDSS
-        under its own device check) -> EigenSolve."""
+        shift-invert on the system assembled there; host SuperLU (or MUMPS / PARDISO, the same rule) under
+        sparse_direct.vector_3d_size_issue, or cuDSS under its own device check) -> EigenSolve."""
         self.eigen_solve = None
         system = self._refresh_system()
         issue = (None if self.eigen_solver.factorization in CUDSS_FACTORIZATIONS
@@ -274,8 +275,8 @@ class FDFDPhysics3D(StaticEM3DContract, PhysicsSolver):
         in_window_cells = np.zeros(self.shape, dtype=bool)
         in_window_cells[window] = True
         in_window = np.tile(in_window_cells.ravel(), 3)[live.full_index] | live.plane_faces
-        # cuDSS reorders itself: the host nested dissection only for a SuperLU factor
-        elimination_order = (None if self.eigen_solver.factorization in CUDSS_FACTORIZATIONS
+        # cuDSS / MUMPS / PARDISO reorder themselves: the host nested dissection only for a SuperLU factor
+        elimination_order = (None if self.eigen_solver.factorization in LDLT_FACTORIZATIONS
                              else nested_dissection_ordering(live))
         self._counters['assemblies'] += 1
         self._counters['assembly_seconds'] += time.perf_counter() - started

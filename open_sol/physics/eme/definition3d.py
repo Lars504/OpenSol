@@ -13,6 +13,7 @@ from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, Phys
                              solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, arnoldi_basis_bytes, arnoldi_basis_size
 from ...solvers.cudss_factor import factor_device_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
+from ...solvers.host_direct import HOST_DIRECT_DOUBLE_BACK_ENDS
 from ...solvers.sparse_direct import scipy_available
 from ..em.cross_section_modes import size_issue_for
 from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
@@ -21,6 +22,7 @@ from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY,
                                     make_validate_physics, object_result, shortest_solved_wavelength,
                                     source_slot_docs, unused_wavelength_issues)
 from ..em.materials import EM_MATERIAL_SCHEMAS
+from ..em.memory_estimates import host_factor_items
 from ..em3d.boundaries3d import BoundaryConfig3D
 from .definition import (OBJECTIVE_FEATURE, PORTS_FEATURE, SCALAR_OUTPUTS_HELP, SECTION_TABLE_DESCRIPTION,
                          adjoint_time_estimate, apply_ports, apply_section_table, bend_feature, length_sweep_feature,
@@ -299,7 +301,10 @@ def _memory_estimate(settings_values, mesh, context):
     mode_set_bytes = COMPLEX128_BYTES * (n_modes * 7 + 2) * points
     on_device = eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
     entries = _CROSS_SECTION_ENTRIES * unknowns
-    factor_items = () if on_device else (('cross-section SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns)),)
+    # eigen mumps / pardiso: a host LU (not complex symmetric) at the SuperLU heuristic x superlu_bytes_scale
+    factor_items = () if on_device else tuple(host_factor_items(
+        eigen_factorization(context.solvers), 'cross-section SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns),
+        unknowns, entries, symmetric=False, eigen=True))
     # one mode solve at a time (cross_section_modes.solve_prepared_modes: the factor is local, freed on return), so its
     # device vectors are one transient phase. cuDSS general LU in double (the transverse-H operator is not complex
     # symmetric): the equilibrated complex128 CSR copy, rhs / equilibration / solution / applied vectors and the
@@ -422,7 +427,9 @@ _DESCRIPTION = (
     'absorbed_power; heat_em_thermo_optic writes eps_r, eps_xx, eps_yy. Host memory dominates (one cross-section '
     'factorisation at a time, the cached mode sets, the partial cascades); GPU: 28 B per cell of fields and q_abs '
     "plus the material arrays (an eigen solver node with factorization 'cudss' factorises each cross-section on the "
-    'GPU instead, a general LU: the operator is not complex symmetric). Studies: stationary and frequency_domain (each wavelength starts every section\'s '
+    'GPU instead, a general LU: the operator is not complex symmetric; '
+    f"{' or '.join(repr(name) for name in HOST_DIRECT_DOUBLE_BACK_ENDS)} a MUMPS / PARDISO LU on the host under the "
+    'SuperLU size limit). Studies: stationary and frequency_domain (each wavelength starts every section\'s '
     'shift-invert from the summed physical modes of its previous solve, when cached). Cannot share the model with '
     "another EM type. The instance is usually named 'eme'.")
 

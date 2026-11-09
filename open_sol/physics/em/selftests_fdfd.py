@@ -6,8 +6,9 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import (PERIODIC_Y, cell_centre, float_list, glass_half_space, probe_phasor,
-                                       single_value)
+from ...model.selftest_helpers import (PERIODIC_Y, available_host_direct, cell_centre, float_list, glass_half_space,
+                                       probe_phasor, single_value, skip_result, skip_without_host_direct,
+                                       with_direct_node)
 from ...model.spec import (OUTER_FACES, CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec,
                            MaterialSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec,
                            StudySpec)
@@ -17,7 +18,7 @@ from .selftests_bloch import _TFSF_FLUX_LINES, _oblique_tfsf_spec
 from .selftests_hz import (_DRUDE_CELL, _DRUDE_EPS_INF, _DRUDE_GAMMA, _DRUDE_INNER_PREFIX, _DRUDE_OMEGA_P,
                            _DRUDE_OUTER_PREFIX, _DRUDE_RADIUS, GRADED_FRESNEL_TEXT, _cylinder, _cylinder_efficiencies,
                            _drude_relative_index, _flux_box, _net_outflow, graded_interface_mesh, require_graded)
-from .selftests_mode_ports import (_DOWNSTREAM, _UPSTREAM, _mode_spectra, _slab_fundamental_index,
+from .selftests_mode_ports import (_DOWNSTREAM, _SILICON_EPS_R, _UPSTREAM, _mode_spectra, _slab_fundamental_index,
                                    slab_waveguide_spec)
 
 _PHYSICS_NAME = 'em'
@@ -164,6 +165,19 @@ _BATCH_MODELS = ('hankel_ez', 'fresnel_ez', 'fresnel_hz')
 _CUDSS_BACK_ENDS = ('cudss', 'cudss_mixed')
 _DIRECT_NODE = 'sparse_direct_linear'   # the 'linear' sparse_direct node: scipy_splu (reference) or a cuDSS back end
 _CUDSS_TOLERANCE = 1e-8   # relative to the largest |SuperLU value| (measured: cudss ~4e-14, cudss_mixed <= 5e-10)
+# em_fdfd_host_direct (cpu backend): per host direct back end of every installed library (python-mumps: mumps /
+# mumps_mixed, pydiso: pardiso / pardiso_mixed; solvers.host_direct.HOST_DIRECT_BACK_ENDS) the em_fdfd_cudss
+# frequency_domain runs and the em_fdfd_adjoint_gradient ez reflection gradient (its transposed solve) against the
+# same runs on a scipy_splu node, and the em_fdfd_eigenfrequency_pec_cavity lossy ez cavity on an eigen node of that
+# back end against its closed form; relative tolerances per precision (uncalibrated: no run yet; the cuDSS twins
+# measured double ~4e-14, mixed <= 5e-10)
+_HOST_REFERENCE = 'scipy_splu'
+_HOST_TOLERANCES = {'double': 1e-9, 'mixed': 1e-8}
+_HOST_ADJOINT_RUN = 'adjoint'
+_HOST_CAVITY_RUN = 'ez_lossy'   # selftests_eigenfrequency._RUNS key
+# eigen cavity ((cells), cell [m]) per precision: a mixed request below arpack_shift_invert.MIXED_EIGEN_MIN_UNKNOWNS
+# (20,000) factors in double (S5c), so the mixed run takes the 2.0 x 1.2 um cavity on 10 nm cells (24,321 unknowns)
+_HOST_CAVITIES = {'double': ((51, 31), 40e-9), 'mixed': ((201, 121), 10e-9)}
 
 # fd_joule_heating template: 1 x 1 um water box (all-CPML for EM, convection on the outer faces for heat), uniform 4 nm
 # mesh (250 + 30 cells per axis: 78,400 FDFD unknowns), a gold nanowire of radius 30 nm at the centre (15 cells across)

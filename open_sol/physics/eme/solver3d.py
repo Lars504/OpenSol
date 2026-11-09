@@ -8,8 +8,9 @@ port results, and the E phasor reconstructed at the cell centres of the whole gr
 # (cross_section_modes PEC: E_z = 0 at their centres, E_x / E_y = 0 on faces between two of them). Bends: the
 # cross_section_modes bend map about x = reference ('exact' model). A new wavelength starts each section's
 # shift-invert from the summed physical modes of its last solve (tracks_modes; the start shell keeps H_x, H_y only).
-# Factor: the 'eigen' node's factorize_host per section (host SuperLU or cuDSS LU; the transverse-H operator is not
-# complex symmetric, so no LDL^T, and cudss_mixed is not offered: ARPACK at machine precision needs refined solves).
+# Factor: the 'eigen' node's factorize_host per section (host SuperLU, cuDSS LU or a MUMPS / PARDISO LU on the host;
+# the transverse-H operator is not complex symmetric, so no LDL^T, and no _mixed factorization is offered: ARPACK at
+# machine precision needs refined solves).
 # Adjoint (adjoint.cross_section_gradient): eps_sensitivity = dJ/d eps_xx, eps_yy, eps_r of every window cell from the
 # kept cascade; no design regions in 3D yet (the optimization study is 2D only).
 from dataclasses import replace
@@ -101,7 +102,7 @@ class EMEPhysics3D(EMEBase):
         self._pml_dx = max(float(max(axis_widths[0], axis_widths[-1])) for axis_widths in self._cell_widths)
         self._periodic = (bool(self.cross_section_config.periodic_x), bool(self.cross_section_config.periodic_y))
         self._area_stretch = (None, None)   # (omega, stretched_areas) of the last solve
-        self.host_factor_bytes = None       # largest SuperLU factor of the last solve (Simulation.memory_report)
+        self.host_factor_bytes = None       # largest host factor (SuperLU, MUMPS / PARDISO) of the last solve
         # cross-section factorisation / ARPACK host wall time and the largest cuDSS factor (cudss eigen node; 0 else)
         self._counters.update({'operator_applications': 0, 'mode_factor_seconds': 0.0, 'mode_eigen_seconds': 0.0,
                                'max_factor_device_bytes': 0})

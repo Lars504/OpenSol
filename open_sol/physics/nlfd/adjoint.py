@@ -27,6 +27,7 @@ import numpy as np
 
 from ...core.backend import array_module_of
 from ...core.constants import EPS0, HBAR, MU0
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ..em.adjoint import (EpsSensitivity, adjoint_source, objective_cotangents, permittivity_gradients,
                           sensitivity_density)
 from ..em.harmonic import face_mean_at_centres
@@ -42,6 +43,8 @@ ADJOINT_FAIL_RESIDUAL = 1e-4     # relative GMRES residual above which the pump-
 # relative ||A^T x - b|| / ||b|| a transposed solve through the symmetrizer must reach (first estimate: forward SuperLU /
 # refined cuDSS solves reach ~1e-12; D spans the cell areas x CPML stretches, which may cost a few digits)
 SYMMETRIZED_TRANSPOSE_RESIDUAL = 1e-8
+# the MUMPS / PARDISO back ends as error-text words (their factors solve A^T natively, as SuperLU)
+_TRANSPOSING_HOST_BACK_ENDS = ' / '.join(f"'{name}'" for name in HOST_DIRECT_BACK_ENDS)
 
 
 def channel_symmetrizer(physics):
@@ -76,7 +79,8 @@ def transposed_channel_solve(physics, flat_rhs):
             raise RuntimeError(f'em_fdfd_nonlinear adjoint: the transposed solve through the symmetrizer D misses '
                                f'{SYMMETRIZED_TRANSPOSE_RESIDUAL:g} (relative residual {residual:.3g}: D A is not '
                                f'complex symmetric for this channel, {missing}); use the sparse_direct back end '
-                               "'scipy_splu' for the 'linear' role")
+                               f"'scipy_splu' (or {_TRANSPOSING_HOST_BACK_ENDS}: transposed solves on the host) for "
+                               "the 'linear' role")
     return solution
 
 

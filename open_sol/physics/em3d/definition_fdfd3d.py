@@ -14,17 +14,19 @@ from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX1
 from ...model.definition_helpers import (DISCRETIZATION_PARAM, eigen_factorization, eigen_role, eigen_subspace_size,
                                          element_order)
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, solver_backend
-from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, arnoldi_basis_size
+from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, MIXED_FACTORIZATIONS,
+                                            arnoldi_basis_size)
 from ...solvers.sparse_direct import vector_3d_size_issue
 from ..em.definition_common import (DEFAULT_WAVELENGTH, EM_FAMILY, _refractive_index, all_solved_wavelengths,
                                     boundary_settings_params, make_validate_physics, object_result, physics_counter,
-                                    resonance_eigenpairs, shortest_solved_wavelength, source_slot_docs)
+                                    HOST_DIRECT_NAMES, resonance_eigenpairs, shortest_solved_wavelength,
+                                    source_slot_docs)
 from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_memory_estimate,
                                   validate_resonance_table)
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
                                  resonance_table_result)
 from ..em.memory_estimates import (EIGEN_PHASE, _study_values, cudss_factor_items, cudss_own_factor_bytes, eigen_mixed,
-                                   resonance_search_items)
+                                   host_factor_items, resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
                          _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _bloch_k,
@@ -59,7 +61,8 @@ CURL_CURL_LU_GROWTH_EXPONENT = 0.3
 # the target get denser on finer grids; 5 k basis: 457 / 80 at 26^3 cells (Mie sphere example), 307 / 80 at 19^3 (its
 # staircase eighth-sphere test grid), ~240 / 80 at 18^3 (from 263 with a 3 k basis); linear fits within the guess range)
 APPLICATIONS_PER_BASIS_PER_AXIS_CELL = 0.22
-# ... with factorization cudss_mixed and no Bloch phase (ARPACK stopped at 1e-6, then Rayleigh quotients): 1.0 on the
+# ... with a mixed factorization (measured on cudss_mixed; the host _mixed ones assumed alike) and no Bloch phase (ARPACK
+# stopped at 1e-6, then Rayleigh quotients): 1.0 on the
 # eighth nanobeam (14 and 30 eigenpairs), 2.4 on the Mie sphere (16). Since S5a the PML widening (solve_resonances:
 # eigenpairs doubled, the device decomposition resumed) is counted in: 4.0 on the Mie example (320 / 80, two passes),
 # 2.4 on its tetrahedral twin (192 / 80, two passes); a guess between, per basis of the first pass
@@ -308,9 +311,11 @@ def _memory_estimate(settings_values, mesh, context):
     vector_bytes = COMPLEX128_BYTES * unknowns
     row_bytes = INT32_BYTES * unknowns   # CSR indptr per row
     factorization = eigen_factorization(context.solvers)
-    factor_items = () if factorization in CUDSS_FACTORIZATIONS else (
-        ('eigen SuperLU L + U factors (3D curl-curl heuristic)', host_lu_bytes(unknowns, dimensions=3)),)
     general = _boundary_config(settings_values).has_bloch_phase   # a Bloch phase: an LU of the whole matrix
+    # MUMPS / PARDISO: the LDL^T of D A (LU with a Bloch phase) at the SuperLU heuristic x superlu_bytes_scale
+    factor_items = () if factorization in CUDSS_FACTORIZATIONS else tuple(host_factor_items(
+        factorization, 'eigen SuperLU L + U factors (3D curl-curl heuristic)', host_lu_bytes(unknowns, dimensions=3),
+        unknowns, _ROW_ENTRIES * unknowns, symmetric=not general, eigen=True))
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
                                                                      general, 'the curl-curl operator')
     # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's device A copy
@@ -382,14 +387,19 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     vector_bytes = COMPLEX128_BYTES * unknowns
     matrix_bytes = row_entries * COMPLEX128_CSR_ENTRY_BYTES * unknowns + INT32_BYTES * unknowns
     factorization = eigen_factorization(context.solvers)
+    symmetric = not _boundary_config(settings_values).has_bloch_phase   # MUMPS / PARDISO: LDL^T of the pencil
     if factorization in CUDSS_FACTORIZATIONS:
         factor_items = ()
     elif counted is not None:
-        factor_items = (('eigen SuperLU L + U factors (counted on the built mesh: nested dissection of the Nedelec dof '
-                         'sites)', host_counted_lu_bytes(counted, unknowns)),)
+        factor_items = tuple(host_factor_items(
+            factorization, 'eigen SuperLU L + U factors (counted on the built mesh: nested dissection of the Nedelec '
+            'dof sites)', host_counted_lu_bytes(counted, unknowns), unknowns, row_entries * unknowns,
+            symmetric=symmetric, eigen=True))
     else:
-        factor_items = (('eigen SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
-                         host_lu_bytes(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]), dimensions=3)),)
+        factor_items = tuple(host_factor_items(
+            factorization, 'eigen SuperLU L + U factors (3D heuristic at the Yee-equivalent unknowns)',
+            host_lu_bytes(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]), dimensions=3), unknowns,
+            row_entries * unknowns, symmetric=symmetric, eigen=True))
     fill = 3
     if counted is not None:
         from ...solvers.cudss_factor import FactorFill
@@ -418,7 +428,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
 def _time_estimate(settings_values, mesh, context):
     """One host assembly and one 'eigen' shift-invert (2 n_resonances + 10 eigenpairs, a factorisation) on 3 E unknowns
     per cell; the squared Cayley map does two triangular solves per application (rhs 2), basis as fdfd3d, the factor
-    and (cpml) the applications per basis vector growing with the grid as fitted above (cudss_mixed: a flat guess).
+    and (cpml) the applications per basis vector growing with the grid as fitted above (a mixed factorization: a flat
+    guess).
     Tetrahedra: the same recipe at the Yee-equivalent unknowns of the Nedelec unknowns (uncalibrated; the per-axis
     PML growth taken at the cube root of the elements)."""
     if mesh.kind == 'tetrahedra':
@@ -433,7 +444,7 @@ def _time_estimate(settings_values, mesh, context):
     config = _boundary_config(settings_values)
     factorization = eigen_factorization(context.solvers)
     # the polished mixed path (ARPACK floor 1e-6) only on a mixed factor: small operators factor in double (S5c)
-    if (factorization == 'cudss_mixed' and not config.has_bloch_phase
+    if (factorization in MIXED_FACTORIZATIONS and not config.has_bloch_phase
             and unknowns >= MIXED_EIGEN_MIN_UNKNOWNS):
         applications_per_basis = MIXED_APPLICATIONS_PER_BASIS
     else:
@@ -460,7 +471,9 @@ _DESCRIPTION = (
     '3D finite-difference frequency-domain eigensolver on the em_fdtd_3d Yee grid: E_x, E_y, E_z on the +x / +y / +z '
     'faces of each cell in V/m, H_x, H_y, H_z on its (+y +z) / (+x +z) / (+x +y) edges in A/m. The eigenfrequency '
     'study solves curl (mu^-1 curl E) = (omega / C0)^2 eps E for the resonances nearest the target wavelength setting '
-    '(host SuperLU shift-invert of the operator assembled there, ARPACK on the squared Cayley map, which sends the '
+    '(shift-invert of the operator assembled there by the eigen factorization: host SuperLU, cudss / cudss_mixed on '
+    f'the GPU or {HOST_DIRECT_NAMES} on the host, the last two the LDL^T of D A; ARPACK on the squared Cayley map, '
+    'which sends the '
     'static gradient solutions to 0; materials and PML frozen at the target), on the live E faces only (PEC faces, '
     'mirror planes and ghost cells dropped, Bloch phases in the wrap entries). Materials as em_fdtd_3d: eps_r or the '
     'diagonal eps_xx / eps_yy / eps_zz, sigma_e and Drude / Lorentz poles as eps(omega_t) = eps - j sigma_e / (omega_t '

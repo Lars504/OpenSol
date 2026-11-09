@@ -144,7 +144,8 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
 
     @property
     def host_factor_bytes(self):
-        """Summed scipy_splu L + U bytes of the channels (Simulation.memory_report), None before any factor."""
+        """Summed host factor bytes of the channels (SuperLU L + U, MUMPS / PARDISO; Simulation.memory_report), None
+        before any factor."""
         sizes = [physics.host_factor_bytes for physics in self.channel_physics if physics.host_factor_bytes is not None]
         return sum(sizes) if sizes else None
 

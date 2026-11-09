@@ -60,6 +60,7 @@ from ...core.constants import C0, ETA0, MU0
 from .boundaries import BCType, cpml_axis_profiles
 from .eigenfrequency import EigenSolve, Resonance, solve_resonances
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ...solvers.host_direct import HOST_DIRECT_FACTORIZATIONS, factor_label
 from ...solvers.sparse_direct import size_issue
 from .operators import pml_stretch
 
@@ -841,12 +842,12 @@ def solve_bor_resonances(system, n_resonances, eigen_solver=None, factorization=
     """eigenfrequency.EigenSolve of up to n_resonances BORResonances nearest system.omega: squared-Cayley shift-invert
     (eigenfrequency.solve_resonances) by eigen_solver (solvers.arpack_shift_invert, None = default settings) on
     `factorization` of system.operator (solve_host, host_bytes, description, e.g. a line-block factor; None = an own
-    SuperLU / cuDSS factor at k_t^2 (1 + SHIFT_RELATIVE_OFFSET)); fields = active solution vectors, 1 real at their
-    largest |component|. The FIT operator is complex symmetric (D = I): a cudss node factors an LDL^T, cudss_mixed adds
-    the float64 Rayleigh polish."""
+    SuperLU / cuDSS / MUMPS / PARDISO factor at k_t^2 (1 + SHIFT_RELATIVE_OFFSET)); fields = active solution vectors, 1
+    real at their largest |component|. The FIT operator is complex symmetric (D = I): a cudss / mumps / pardiso node
+    factors an LDL^T, a mixed one (cudss_mixed, mumps_mixed, pardiso_mixed) adds the float64 Rayleigh polish."""
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     warnings = []
-    # host SuperLU size rule: only for an own SuperLU factor (a passed line-block factor has no host LU)
+    # host SuperLU size rule: only for an own SuperLU / MUMPS / PARDISO factor (a passed line-block factor has no host LU)
     if factorization is None and eigen_solver.factorization not in CUDSS_FACTORIZATIONS:
         issue = size_issue_for(*system.shape)
         if issue is not None:
@@ -871,11 +872,14 @@ def order_eigen_solve(solve, order, eigen_solver, factorization=None):
         kind = getattr(factorization, 'description', 'external')
     elif eigen_solver.factorization in CUDSS_FACTORIZATIONS:
         kind = f'cuDSS {eigen_solver.factorization}'
+    elif eigen_solver.factorization in HOST_DIRECT_FACTORIZATIONS:
+        kind = f'{factor_label(eigen_solver.factorization)} {eigen_solver.factorization}'
     else:
         kind = 'SuperLU'
     info.update(azimuthal_order=int(order), azimuthal_orders=[int(order)], factor_kind=kind,
                 factor_host_bytes=int(info['factor_host_bytes'] or 0))
-    if factorization is not None or 'factor_text' not in info:   # an own cuDSS factor keeps solve_resonances' text
+    # an own cuDSS / MUMPS / PARDISO factor keeps solve_resonances' text
+    if factorization is not None or 'factor_text' not in info:
         info['factor_text'] = _factor_text([kind], info['factor_seconds'], info['factor_host_bytes'])
     return EigenSolve(resonances=[_order_resonance(resonance, order) for resonance in solve.resonances], info=info)
 
@@ -887,10 +891,12 @@ def _order_resonance(resonance, order):
 
 
 def _factor_text(kinds, seconds, host_bytes):
-    """'SuperLU factorisation 0.31 s, L + U factors 12 MiB of host memory' (EigenSolve.summary factor part)."""
+    """'SuperLU factorisation 0.31 s, L + U factors 12 MiB of host memory' (EigenSolve.summary factor part; 'factors'
+    without a SuperLU kind, e.g. MUMPS / PARDISO)."""
     kinds = list(dict.fromkeys(kinds))
     text = f"{' / '.join(kinds)} factorisation {seconds:.3g} s"
-    return text + (f', L + U factors {host_bytes / 2 ** 20:.4g} MiB of host memory' if host_bytes else '')
+    factors = 'L + U factors' if 'SuperLU' in kinds else 'factors'
+    return text + (f', {factors} {host_bytes / 2 ** 20:.4g} MiB of host memory' if host_bytes else '')
 
 
 _SUMMED_INFO = ('n_requested', 'factor_seconds', 'eigen_seconds', 'seconds', 'operator_applications',

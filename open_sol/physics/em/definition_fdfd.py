@@ -9,11 +9,12 @@ from ...core.backend import to_host
 from ...core.memory_estimate import BOOL_BYTES, MemoryEstimate
 from ...core.renderer import FieldInfo
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
-                                         linear_solver_cudss, optimization_evaluations, resolved_back_end,
-                                         validate_points_inside)
+                                         host_direct_back_end, linear_solver_cudss, optimization_evaluations,
+                                         resolved_back_end, validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, solver_backend
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
+                                HOST_DIRECT_NAMES,
                                 MIRROR_BC_HELP, MODE_DIRECTION_CHOICE_LABELS, MODE_NUMBER_TIP_START, MODE_POWER_TIP,
                                 MODE_SOURCE_NUMBER_PARAM, MODE_TABLE_ROWS, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
                                 PERIODIC_BC_HELP, POINT_SOURCE_SIGN, PROBE_COMPONENT_CHOICE_LABELS, SPAN_CELLS,
@@ -100,10 +101,12 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
                'symmetric faces hold H_z = 0, pec / antisymmetric faces and pec_domain outlines are natural (no '
                'staircase). Driven solves (stationary, frequency_domain, time_dependent) factor the complex symmetric '
                'operator once per wavelength and material state with host SuperLU (the linear role; cusolver_qr is not '
-               'used here; back_end cudss / cudss_mixed: a cuDSS LDL^T on the GPU, the analysis reused); '
+               'used here; back_end cudss / cudss_mixed: a cuDSS LDL^T on the GPU, the analysis reused; '
+               f'{HOST_DIRECT_NAMES}: a MUMPS / PARDISO LDL^T on the host, the analysis reused); '
                'eigenfrequency uses the eigen role (host SuperLU, or cudss / cudss_mixed: a cuDSS LDL^T on '
-               'the GPU). On triangles only point_source, field_probe (the in-plane components from the field gradient '
-               'in the containing element), pec_domain and resonance_table work; the other features, periodic / Bloch '
+               f'the GPU, or {HOST_DIRECT_NAMES}: a MUMPS / PARDISO LDL^T on the host). On triangles only '
+               'point_source, field_probe (the in-plane components from the field gradient in the containing element),'
+               ' pec_domain and resonance_table work; the other features, periodic / Bloch '
                'faces and the optimization / optomechanics / thermal_noise studies are validation errors.',
           tip='Order of the finite elements when the mesh is made of triangles: quadratic is far more accurate per '
               'element, linear is cheaper.\n\nUnused on a rectangular-cell mesh.'),
@@ -516,11 +519,17 @@ _COMMON_DESCRIPTION = (
     'D A with D the stretched cell areas (a general LU with a Bloch phase or H_z eps_xy couplings, whose adjoint '
     'solves then factor the transpose too), one per wavelength and material state, later ones reusing the analysis '
     'of the first (about 20 x faster than SuperLU per factorisation at 1e5 - 5e5 unknowns; prefer cudss: the '
-    'cudss_mixed refinement makes its solves slower), no host size limit, the factor outside the GPU memory budget) '
+    'cudss_mixed refinement makes its solves slower), no host size limit, the factor outside the GPU memory budget; '
+    f'{HOST_DIRECT_NAMES} (optional python-mumps / pydiso packages, either backend): the same LDL^T of D A, or LU, '
+    'by MUMPS / Intel PARDISO on the processor cores, recycled by GMRES after a material change and solved '
+    'transposed for the adjoint like SuperLU, under the SuperLU size limits (uncalibrated) plus a check of the '
+    "library's own memory estimate) "
     'or a line_block node (block Thomas factor on the GPU / CPU, one per wavelength and '
     'material state, cost lines x b^3 with b the cells across a line: suits elongated grids; the periodic axis lies '
     'inside the blocks, two periodic axes are an error; a rejected solve and the adjoint solves use a host SuperLU), '
-    'eigen (eigenfrequency / optomechanics study) = arpack_shift_invert (its shift-invert factor: host SuperLU, or the '
+    'eigen (eigenfrequency / optomechanics study) = arpack_shift_invert (its shift-invert factor: host SuperLU, '
+    f'cudss / cudss_mixed or {HOST_DIRECT_NAMES} (the LDL^T of D A; the mixed ones run loose solves plus float64 '
+    'Rayleigh quotients), or the '
     'line_block factor of the operator at the target when that is the linear solver; a rejected solve redoes the '
     'eigen-solve on SuperLU). Studies: '
     'stationary solves '
@@ -702,7 +711,7 @@ def _triangle_issues(vctx, physics_spec, settings_values, path):
     """On a triangles mesh: errors for the optimization / optomechanics / thermal_noise studies (they read the Yee
     fields or need the adjoint) and periodic / Bloch faces (no periodic mesh); info for a cusolver_qr linear node (host
     SuperLU here); the FEM size rule of the host factor on the estimated unknowns (none for a cudss eigen-solve or a
-    cudss linear back end). The Yee-only features are refused by their grids."""
+    cudss linear back end; MUMPS / PARDISO keep SuperLU's). The Yee-only features are refused by their grids."""
     if mesh_kind(vctx) != 'triangles':
         return []
     issues = []
@@ -721,7 +730,8 @@ def _triangle_issues(vctx, physics_spec, settings_values, path):
     mesh = vctx.mesh
     order = DISCRETIZATION_ORDERS[settings_values['discretization']]
     factorization = (eigen_factorization(solvers) if eigen_solved(vctx.spec, physics_spec.name)
-                     else 'cudss' if linear_solver_cudss(solvers) else 'superlu')
+                     else 'cudss' if linear_solver_cudss(solvers)
+                     else host_direct_back_end(solvers) or 'superlu')   # MUMPS / PARDISO: SuperLU's rule, own texts
     issue = fem_fdfd_size_issue(scalar_unknowns(mesh.n_nodes, mesh.n_edges, order), order, factorization)
     if issue is not None:
         issues.append(Issue(issue[0], path, f'estimated {issue[1]}'))

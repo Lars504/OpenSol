@@ -8,7 +8,8 @@ import numpy as np
 
 from ....core.backend import to_host
 from ....core.constants import C0, EPS0, MU0
-from ....solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver
+from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS, is_host_direct_factor
+from ....solvers.sparse_direct import CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, SparseDirectSolver
 from ..eigenfrequency import element_region_rows
 from ..fdfd_monitors import _ascending_wavelength
 from ..fdfd_sources import phase_factor
@@ -107,7 +108,8 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         self.selected_resonance = None
         self.last_factor_seconds = None
         self._factorization = None
-        self._cudss_previous = None   # cuDSS factor of an older system, refactorised in place by the next one
+        # cuDSS / MUMPS / PARDISO factor of an older system, refactorised in place by the next one (plan / analysis kept)
+        self._cudss_previous = None
         self._system_dirty = True
         self._solution_dirty = True
 
@@ -136,7 +138,8 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         _ = self.linear_solver.back_end   # resolves the choice (ValueError without scipy)
 
     def _size_issue(self, layout, factorization=None):
-        """(level, text) of the host SuperLU size rule (the eigen factorization unless given), None for cuDSS."""
+        """(level, text) of the host SuperLU size rule (the eigen factorization unless given; MUMPS / PARDISO keep it),
+        None for cuDSS."""
         if factorization is None:
             factorization = getattr(self.eigen_solver, 'factorization', 'superlu')
         return fem_fdfd_size_issue(layout.n_unknowns, self.order, factorization)
@@ -202,13 +205,16 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
             return None
         linear = self.linear_solver
         cudss = linear.back_end in CUDSS_BACK_ENDS
-        factor_text = (getattr(self._factorization, 'description', None) or 'cuDSS') if cudss else 'host SuperLU'
+        host_direct = linear.back_end in HOST_DIRECT_BACK_ENDS
+        factor_text = ((getattr(self._factorization, 'description', None) or linear.back_end)
+                       if cudss or host_direct else 'host SuperLU')
         text = (f'{self.system.layout.n_unknowns:,} FEM unknowns ({self.mesh.n_elements:,} triangles, degree '
                 f'{self.order}), sparse direct back end {linear.back_end} ({factor_text} on triangles), '
                 f'solve {self.last_solve_seconds:.3g} s')
         if self.last_factor_seconds is not None:
+            host_bytes = f'{(self.host_factor_bytes or 0) / 2 ** 20:.4g} MiB of host memory'
             factor_size = (f'{linear.n_factorizations} factorisations on {linear.n_cudss_plans} plan(s)' if cudss
-                           else f'L + U factors {(self.host_factor_bytes or 0) / 2 ** 20:.4g} MiB of host memory')
+                           else f'factor {host_bytes}' if host_direct else f'L + U factors {host_bytes}')
             text += (f' (assembly {self.system.assembly_seconds:.3g} s, {factor_text} factorisation '
                      f'{self.last_factor_seconds:.3g} s, {factor_size})')
         return text
@@ -229,14 +235,17 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         started = time.perf_counter()
         system = self._refresh_system()
         if self._factorization is None:
-            cudss = self.linear_solver.back_end in CUDSS_BACK_ENDS
-            issue = self._size_issue(system.layout, 'cudss' if cudss else 'superlu')
+            back_end = self.linear_solver.back_end
+            keeps_previous = back_end in SYMMETRIC_OPTION_BACK_ENDS
+            # cuDSS: no host size rule; MUMPS / PARDISO: SuperLU's rule, texts naming the library
+            issue = self._size_issue(system.layout, back_end if keeps_previous else 'superlu')
             if issue is not None and issue[0] == 'error':
                 raise ValueError(issue[1])
-            # host SuperLU (cusolver_qr too), or the cuDSS LDL^T of the complex symmetric pencil with its equilibration,
-            # refactorising the previous system's factor in place (plan reused); SuperLU ignores the cuDSS options
+            # host SuperLU (cusolver_qr too), or the cuDSS / MUMPS / PARDISO LDL^T of the complex symmetric pencil with
+            # its equilibration, refactorising the previous system's factor in place (plan / analysis reused; a factor
+            # of another library is released by host_direct_factorization); SuperLU ignores these options
             previous, self._cudss_previous = self._cudss_previous, None
-            if not cudss and previous is not None:   # an 'auto' runtime fell back to SuperLU (B1b): free the kept factor
+            if not keeps_previous and previous is not None:   # an 'auto' runtime fell back to SuperLU (B1b): free it
                 previous.release()
                 previous = None
             self._factorization = self.linear_solver.factorize_host(system.operator, symmetric=True,
@@ -259,7 +268,8 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         """fem_fdfd.FEMFDFDSystem at omega, reassembled (and the driven factor dropped) when dirty."""
         if self._system_dirty or self.system is None:
             self.system = None
-            if getattr(self._factorization, 'back_end', None) == 'cudss':   # kept for its plan (_solve)
+            if (getattr(self._factorization, 'back_end', None) == 'cudss'
+                    or is_host_direct_factor(self._factorization)):   # kept for its plan / analysis (_solve)
                 self._cudss_previous = self._factorization
             self._factorization = None
             self.system = assemble_fem_fdfd(self._current_layout(), self._materials(self._omega), self._omega)
