@@ -1,0 +1,29 @@
+# Generic rules only: this file is public. Private folder names go in .git/info/exclude
+# (shared by every worktree of this clone, never pushed).
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Generated output: every tool writes into a folder named out/ or *_out/
+out/
+*_out/
+# committed example outputs (summary.json, log.txt, model.json) stay tracked; their arrays / figures do not
+!examples/**/*_out/
+*.npz
+*.partial
+*.msh
+examples/**/*.png
+
+# Machine run-time profiles (python -m open_sol profile)
+time_profiles/
+
+# Agent scratch files
+.temp_scratchpad/
+.claude/settings.local.json
+
+# Repository snapshot archives
+*.zip

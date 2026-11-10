@@ -167,7 +167,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Products run in row blocks of ~PRODUCT_BLOCK_PRODUCTS (`_row_blocks`): one SpGEMM over a 5e6-row 3D operator needs a
   workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. Both Galerkin products
   are bounded: R_b (A_b P) has nnz(P_i) nnz((A P)_i) products per row, several times A_b P's, and runs in its own
-  sub-blocks (`_blocks_of`; unbounded it raised INSUFFICIENT_RESOURCES at 5.6e6 cells). The block sum merges
+  sub-blocks (`_blocks_of`). Open: carey2026 E2 (5.6e6 cells, ~3 GiB) still raises cuSPARSE INSUFFICIENT_RESOURCES
+  in that SpGEMM with sub-blocks of <= 2^23 products, so the cause is not the product count. The block sum merges
   only equal block counts (binary counter): a running sum recopies A_c per block. A cupyx / scipy CSR row slice copies
   the matrix even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
 - Hierarchy (T, P, R, coarse operators / vectors) is HIERARCHY_DTYPE float32 at every precision; a float64 fine level

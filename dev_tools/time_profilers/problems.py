@@ -1,4 +1,4 @@
-"""Problem classes of the CPU solver profiler: each assembles one representative system with open_sol's own operator
+"""Problem classes of the solver profiler: each assembles one representative system with open_sol's own operator
 code (2D FDFD Helmholtz, finite-volume and P2 finite-element heat conduction) at a size knob and names the physics
 type, solver role, study and grid kind whose solver choices it stands for. open_sol is imported inside the builders
 only (the parent process reads the metadata alone)."""
@@ -64,6 +64,7 @@ class ProblemClass:
     sizes: tuple
     quick_sizes: tuple
     builder: object
+    kind: str = 'synthetic'   # model_cases.ModelTarget: 'model'
 
 
 def _fdfd_parts(size):

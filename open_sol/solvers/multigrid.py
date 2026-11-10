@@ -712,8 +712,9 @@ class MultigridPreconditioner:
         partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
         for start, stop in self._row_blocks(operator, prolongation.indptr):
             block_product = self._low(self._rows(operator, start, stop)) @ prolongation   # A_b P
-            # R_b (A_b P) takes nnz(P_i) nnz((A P)_i) partial products per row, more than A_b P's nnz(A_i) nnz(P_i)
-            # (carey2026 E2, 5.6e6 cells: INSUFFICIENT_RESOURCES in that SpGEMM), so it runs in its own sub-blocks
+            # R_b (A_b P) takes nnz(P_i) nnz((A P)_i) partial products per row, more than A_b P's nnz(A_i) nnz(P_i),
+            # so it runs in its own sub-blocks (the workspace setup_extra_bytes books). carey2026 E2 (5.6e6 cells)
+            # still raises INSUFFICIENT_RESOURCES in this SpGEMM at <= 2^23 products: not a product-count limit
             outer_products = (xp.diff(prolongation.indptr[start:stop + 1]).astype(np.int64)
                               * xp.diff(block_product.indptr).astype(np.int64))
             for sub_start, sub_stop in self._blocks_of(outer_products):

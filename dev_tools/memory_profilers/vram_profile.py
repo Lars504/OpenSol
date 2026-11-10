@@ -1,7 +1,9 @@
-"""VRAM profiler (dev tooling, not part of open_sol): runs named selftest cases in-process with a cupy pool hook and
-cuDSS wrappers; writes out/<case>.md + .json next to this script (pool peak by allocation site, cuDSS plans, estimate,
-and a reconciliation: the estimate's big items held together should sit just below the measured bytes).
-Run (from any folder, gpu): python vram_profile.py em_bor_cudss_driven [more case names]"""
+"""VRAM profiler (dev tooling, not part of open_sol): runs named selftest cases in-process under a cupy pool hook and
+cuDSS phase wrappers; writes out/<case><tag>.md + .json (estimate parts vs measured, sites at each peak).
+Run (from any folder, gpu): python vram_profile.py em_bor_cudss_driven [more case names] [--tag _x --depth 3]"""
+import argparse
+import functools
+import gc
 import json
 import math
 import os
@@ -13,27 +15,39 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]   # memory_profilers -> dev_tools -> repository
 sys.path.insert(0, str(ROOT))
 OUT_DIR = Path(__file__).resolve().parent / 'out'
-SNAPSHOT_STEP_BYTES = 128 * 1024   # a new peak-time snapshot once the run peak grew this much
-SITE_DEPTH = 3                     # open_sol frames per allocation site
-TOP_SITES = 25
+SNAPSHOT_SLACK_BYTES = 64 * 1024   # a stage peak re-snapshots once it grew this much past its last snapshot
+TRIGGER_DEPTH = 8                  # open_sol frames of the allocation that reached a peak
 
-import cupy as cp                                  # noqa: E402
-from cupy.cuda import memory_hook                  # noqa: E402
-from open_sol import api                           # noqa: E402
-from open_sol.model import study as study_module   # noqa: E402
-from open_sol.model.builder import ESTIMATE_SMALL_ITEMS, estimate_verdict   # noqa: E402
-from open_sol.solvers import cudss_factor          # noqa: E402
+import cupy as cp                                          # noqa: E402
+from cupy.cuda import memory_hook                          # noqa: E402
+from nvmath.sparse.advanced import DirectSolver            # noqa: E402
+from open_sol import api                                   # noqa: E402
+from open_sol.model import study as study_module           # noqa: E402
+from open_sol.model.builder import estimate_gap, estimate_verdict   # noqa: E402
+from open_sol.solvers import cudss_factor                  # noqa: E402
 
-PACKAGE = os.path.normcase(str(ROOT / 'open_sol'))
-SOLVER_FILES = ('solvers' + os.sep + 'cudss_factor.py', 'solvers' + os.sep + 'sparse_direct.py')
+PACKAGE = os.path.normcase(str(ROOT / 'open_sol')) + os.sep
+SOLVER_FILES = ('solvers/cudss_factor.py', 'solvers/sparse_direct.py')
+_PACKAGE_PATHS = {}   # code file name -> path inside open_sol ('/' separated) or None
 
 
-def _frames(start, depth, skip_solvers=False):
-    parts, frame = [], start
+def _package_path(code_filename):
+    """Path of a code file relative to open_sol, None outside the package (cached per file name)."""
+    relative = _PACKAGE_PATHS.get(code_filename, False)
+    if relative is False:   # normcase keeps the length on Windows, so the slice keeps the file's own case
+        inside = os.path.normcase(code_filename).startswith(PACKAGE)
+        relative = code_filename[len(PACKAGE):].replace('\\', '/') if inside else None
+        _PACKAGE_PATHS[code_filename] = relative
+    return relative
+
+
+def frames_text(frame, depth, skip_solvers=False):
+    """'file:line function < ...' of the first `depth` open_sol frames from `frame` outwards."""
+    parts = []
     while frame is not None and len(parts) < depth:
-        name = os.path.normcase(frame.f_code.co_filename)
-        if name.startswith(PACKAGE) and not (skip_solvers and name.endswith(SOLVER_FILES)):
-            parts.append(f'{os.path.relpath(name, PACKAGE)}:{frame.f_lineno} {frame.f_code.co_name}'.replace('\\', '/'))
+        relative = _package_path(frame.f_code.co_filename)
+        if relative is not None and not (skip_solvers and relative.endswith(SOLVER_FILES)):
+            parts.append(f'{relative}:{frame.f_lineno} {frame.f_code.co_name}')
         frame = frame.f_back
     return ' < '.join(parts) or '(outside open_sol)'
 
@@ -43,164 +57,290 @@ def mb(n):
 
 
 class PoolTrace(memory_hook.MemoryHook):
-    """Live pool allocations (pointer -> bytes, site, run, stage), the run peak and a by-site snapshot near it."""
+    """Live pool allocations by site (used bytes, 512 B rounded), a by-site snapshot at each stage's peak (taken at the
+    first free after it, so exact within SNAPSHOT_SLACK_BYTES) and nested region marks (start, peak, end)."""
     name = 'PoolTrace'
 
-    def __init__(self):
-        self.live = {}
-        self.current = 0
+    def __init__(self, site_depth=3):
+        self.site_depth = site_depth
+        self.live = {}       # pointer -> (bytes, site key, run index)
+        self.current = 0     # pool used bytes seen by the hook
         self.run_index = 0
         self.stage = 'other'
-        self.region_peak = 0
+        self.marks = []      # open regions: [start, peak]
         self.start_run()
 
     def start_run(self):
         self.run_index += 1
-        self.run_start = self.current
-        self.run_peak = self.current
-        self.snapshot_at = -1
-        self.snapshot = None
-        self.build_peak = self.current
-        self.build_snapshot_at = -1
-        self.build_snapshot = None
-        self.region_stats = defaultdict(lambda: {'calls': 0, 'max_peak': 0, 'max_net': 0, 'sum_net': 0})
+        self.earlier = self.current        # arrays of earlier runs still live (decreases as they are freed)
+        self.site_live = defaultdict(int)  # '[stage] site' -> live bytes of this run
+        self.stage_peaks = {}              # stage -> {'bytes', 'snapshot_bytes', 'snapshot'}
+        self.pending = None                # (stage, trigger) of a stage peak not snapshotted yet
+        self.regions = defaultdict(lambda: {'calls': 0, 'max_peak': 0, 'max_net': 0, 'sum_net': 0})
+
+    def run_bytes(self):
+        return self.current - self.earlier
 
     def malloc_postprocess(self, **kwargs):
         size = int(kwargs['mem_size'])
-        self.live[kwargs['mem_ptr']] = (size, _frames(sys._getframe(1), SITE_DEPTH), self.run_index, self.stage)
+        frame = sys._getframe(1)
+        key = f'[{self.stage}] {frames_text(frame, self.site_depth)}'
+        self.live[kwargs['mem_ptr']] = (size, key, self.run_index)
+        self.site_live[key] += size
         self.current += size
-        self.region_peak = max(self.region_peak, self.current)
-        if self.current > self.run_peak:
-            self.run_peak = self.current
-            if self.run_peak >= self.snapshot_at + SNAPSHOT_STEP_BYTES:
-                self.snapshot, self.snapshot_at = self._snapshot(self.run_peak), self.run_peak
-        if self.stage == 'build' and self.current > self.build_peak:
-            self.build_peak = self.current
-            if self.build_peak >= self.build_snapshot_at + SNAPSHOT_STEP_BYTES:
-                self.build_snapshot, self.build_snapshot_at = self._snapshot(self.build_peak), self.build_peak
+        if self.marks and self.current > self.marks[-1][1]:
+            self.marks[-1][1] = self.current
+        peak = self.stage_peaks.get(self.stage)
+        if peak is None:
+            peak = self.stage_peaks[self.stage] = {'bytes': 0, 'snapshot_bytes': -SNAPSHOT_SLACK_BYTES, 'snapshot': None}
+        run_bytes = self.run_bytes()
+        if run_bytes > peak['bytes']:
+            peak['bytes'] = run_bytes
+            if self.pending is not None or run_bytes >= peak['snapshot_bytes'] + SNAPSHOT_SLACK_BYTES:
+                self.pending = (self.stage, frames_text(frame, TRIGGER_DEPTH))
 
     def free_postprocess(self, **kwargs):
         entry = self.live.pop(kwargs.get('mem_ptr'), None)
-        if entry is not None:
-            self.current -= entry[0]
+        if entry is None:   # allocated before the hook was installed
+            return
+        self.flush()        # the bytes live right before this free are the peak's
+        size, key, run_index = entry
+        self.current -= size
+        if run_index != self.run_index:
+            self.earlier -= size
+        elif self.site_live[key] == size:
+            del self.site_live[key]
+        else:
+            self.site_live[key] -= size
 
-    def _snapshot(self, peak):
-        by_site = defaultdict(int)
-        earlier = 0
-        for size, site, run_index, stage in self.live.values():
-            if run_index == self.run_index:
-                by_site[f'[{stage}] {site}'] += size
-            else:
-                earlier += size
-        return {'peak': peak - self.run_start, 'stage': self.stage, 'earlier_runs': earlier,
-                'trigger': _frames(sys._getframe(2), 8), 'by_site': dict(by_site)}
+    def flush(self):
+        """Snapshot a pending stage peak (on a free, a stage change and the run's end)."""
+        if self.pending is None:
+            return
+        stage, trigger = self.pending
+        self.pending = None
+        peak = self.stage_peaks[stage]
+        peak['snapshot_bytes'] = self.run_bytes()
+        peak['snapshot'] = {'bytes': self.run_bytes(), 'earlier_runs': self.earlier, 'trigger': trigger,
+                            'by_site': dict(self.site_live)}
+
+    def set_stage(self, stage):
+        self.flush()
+        previous, self.stage = self.stage, stage
+        return previous
+
+    def enter(self):
+        self.marks.append([self.current, self.current])
+
+    def leave(self):
+        start, peak = self.marks.pop()
+        if self.marks:
+            self.marks[-1][1] = max(self.marks[-1][1], peak)
+        return start, peak, self.current
 
 
 TRACE = PoolTrace()
-PLANS = []
-OUTSIDE = {'baseline': 0, 'high_water': 0}
+PLANS, BUILDS, RUNS = [], [], []
+CUDSS = {'live': 0, 'high_water': 0}   # measured cuDSS bytes outside the pool: summed phase deltas of live solvers
 
 
-def _sync():
+def outside_pool_bytes():
+    """Device bytes in use outside the cupy pool: memGetInfo used minus the pool's reserved bytes (synchronised)."""
     cp.cuda.Device().synchronize()
-
-
-def _outside_pool_bytes():
-    """Device bytes in use outside the cupy pool (cudaMemGetInfo minus the pool's reserved bytes), sampled."""
-    _sync()
     free, total = cp.cuda.runtime.memGetInfo()
     return (total - free) - cp.get_default_memory_pool().total_bytes()
 
 
-def _sample_outside():
-    OUTSIDE['high_water'] = max(OUTSIDE['high_water'], _outside_pool_bytes() - OUTSIDE['baseline'])
-
-
 def region(label, function):
+    """function wrapped in a pool region mark."""
+    @functools.wraps(function)
     def wrapped(*args, **kwargs):
-        saved, start = TRACE.region_peak, TRACE.current
-        TRACE.region_peak = TRACE.current
+        TRACE.enter()
         try:
             return function(*args, **kwargs)
         finally:
-            stats = TRACE.region_stats[label]
+            start, peak, end = TRACE.leave()
+            stats = TRACE.regions[label]
             stats['calls'] += 1
-            stats['max_peak'] = max(stats['max_peak'], TRACE.region_peak - start)
-            stats['max_net'] = max(stats['max_net'], TRACE.current - start)
-            stats['sum_net'] += TRACE.current - start
-            TRACE.region_peak = max(saved, TRACE.region_peak)
+            stats['max_peak'] = max(stats['max_peak'], peak - start)
+            stats['max_net'] = max(stats['max_net'], end - start)
+            stats['sum_net'] += end - start
     return wrapped
 
 
-def staged(stage, function):
-    def wrapped(*args, **kwargs):
-        saved, TRACE.stage = TRACE.stage, stage
+# --- nvmath DirectSolver phases (no cupy pool traffic inside them, so the outside-pool delta is cuDSS's own) ----------
+NVMATH_PHASES = ('__init__', 'plan', 'factorize', 'solve', 'free')
+SOLVER_PHASES = {}   # id(DirectSolver) -> phase record (not on the solver: its free() clears its attributes)
+BOOK_ERRORS = []     # profiler failures inside a wrapped call: recorded, never raised into the run
+
+
+def _new_phases():
+    return {'init': 0, 'plan': 0, 'factorize_first': None, 'factorize': 0, 'factorize_calls': 0, 'solve_first': None,
+            'solve': 0, 'solve_calls': 0, 'freed': None, 'held': 0}
+
+
+def _book(solver, phase, before):
+    """Add the outside-pool delta since `before` to the solver's phase record and the live cuDSS counter."""
+    try:
+        delta = outside_pool_bytes() - before
+    except Exception:   # free from __del__ at interpreter shutdown: the CUDA context may be gone
+        return
+    name = 'init' if phase == '__init__' else phase
+    if name == 'init':   # a fresh solver (an id reused after an earlier solver's free gets a new record)
+        SOLVER_PHASES[id(solver)] = _new_phases()
+    phases = SOLVER_PHASES.setdefault(id(solver), _new_phases())
+    if name == 'free':
+        phases['freed'] = (phases['freed'] or 0) - delta
+    else:
+        phases[name] += delta
+        if name in ('factorize', 'solve'):
+            phases[f'{name}_calls'] += 1
+            if phases[f'{name}_first'] is None:
+                phases[f'{name}_first'] = delta
+    phases['held'] += delta
+    CUDSS['live'] += delta
+    CUDSS['high_water'] = max(CUDSS['high_water'], CUDSS['live'])
+
+
+def _phase_wrapper(phase, function):
+    @functools.wraps(function)
+    def wrapped(self, *args, **kwargs):
+        before = outside_pool_bytes()
         try:
-            return function(*args, **kwargs)
+            return function(self, *args, **kwargs)
         finally:
-            TRACE.stage = saved
+            try:
+                _book(self, phase, before)
+            except Exception as error:   # a profiler bug must not change the run's outcome
+                BOOK_ERRORS.append(f'{phase}: {type(error).__name__}: {error}')
     return wrapped
 
 
+for _phase in NVMATH_PHASES:
+    setattr(DirectSolver, _phase, _phase_wrapper(_phase, getattr(DirectSolver, _phase)))
+
+
+# --- open_sol cuDSS wrappers ------------------------------------------------------------------------------------------
 Factorization = cudss_factor.CudssFactorization
+CUDSS_REGIONS = ('refactorize', 'refactorize_device_values', 'refactorize_device_lower', 'solve', '_device_index_maps',
+                 '_device_asymmetry', '_plan', '_device_plan')
+_missing = [name for name in ('_plan_solver', '_factorize_and_probe', *CUDSS_REGIONS) if not hasattr(Factorization, name)]
+if _missing:
+    raise AttributeError(f'vram_profile: CudssFactorization has no {", ".join(_missing)} (renamed? update the profiler '
+                         'and its sub_structure_conventions.md)')
 original_plan_solver = Factorization._plan_solver
 original_factorize = Factorization._factorize_and_probe
 
 
 def plan_solver(self, kind, started):
-    before = _outside_pool_bytes()
     original_plan_solver(self, kind, started)
-    after = _outside_pool_bytes()
-    pattern = getattr(self, '_pattern', None)
-    PLANS.append({'object': id(self), 'caller': _frames(sys._getframe(1), 4, skip_solvers=True),
-                  'n': self.n_unknowns, 'stored_entries': int(self._factor_matrix.nnz),
-                  'full_entries': None if pattern is None else int(pattern[1].size),
-                  'value_dtype': str(cp.dtype(self.value_dtype)), 'factor_dtype': str(cp.dtype(self._factor_dtype)),
-                  'kind': kind, 'cudss_permanent': self.permanent_bytes, 'cudss_peak': self.peak_bytes,
-                  'plan_outside_drop': after - before, 'factorize_outside_drop': None, 'lu_entries': None,
-                  'factorizations': 0})
-    _sample_outside()
+    pattern = self._pattern
+    plan = {'run': TRACE.run_index, 'caller': frames_text(sys._getframe(1), 4, skip_solvers=True),
+            'n': self.n_unknowns, 'stored_entries': int(self._factor_matrix.nnz),
+            'full_entries': None if pattern is None else int(pattern[1].size),
+            'value_dtype': str(cp.dtype(self.value_dtype)), 'factor_dtype': str(cp.dtype(self._factor_dtype)),
+            'kind': kind, 'ordering_reused': bool(self.last_ordering_reused),
+            'cudss_permanent': self.permanent_bytes, 'cudss_peak': self.peak_bytes,
+            'phases': SOLVER_PHASES.get(id(self._solver)), 'lu_entries': None, 'factorizations': 0}
+    self._vram_plan = plan
+    PLANS.append(plan)
 
 
 def factorize_and_probe(self, defer=False):
-    before = _outside_pool_bytes()
     try:
         return original_factorize(self, defer)
     finally:
-        after = _outside_pool_bytes()
-        for plan in reversed(PLANS):
-            if plan['object'] == id(self):
-                plan['factorizations'] += 1
-                plan['lu_entries'] = self.lu_entries
-                if plan['factorize_outside_drop'] is None:
-                    plan['factorize_outside_drop'] = after - before
-                break
-        _sample_outside()
+        plan = getattr(self, '_vram_plan', None)
+        if plan is not None:
+            if plan['run'] != TRACE.run_index and not any(entry is plan for entry in PLANS):
+                PLANS.append(plan)   # planned in an earlier run, refactorised in this one
+            plan['factorizations'] += 1
+            plan['lu_entries'] = self.lu_entries
 
 
 Factorization._plan_solver = plan_solver
 Factorization._factorize_and_probe = factorize_and_probe
-for method in ('refactorize', 'refactorize_device_values', 'refactorize_device_lower', 'solve', '_device_index_maps',
-               '_device_asymmetry', '_plan', '_device_plan'):
-    setattr(Factorization, method, region(f'cudss {method}', getattr(Factorization, method)))
-_build_session = staged('build', study_module.build_session)
-_run_built = staged('study', region('study run', study_module._run_built))
-for module_name in ('study', 'study_adaptation', 'study_estimation', 'study_sectors'):
-    module = __import__(f'open_sol.model.{module_name}', fromlist=['_'])
-    module.build_session, module._run_built = _build_session, _run_built
+for _method in CUDSS_REGIONS:
+    setattr(Factorization, _method, region(f'cudss {_method}', getattr(Factorization, _method)))
 
-RUNS = []
+
+# --- build / study wrappers -------------------------------------------------------------------------------------------
+original_build_session = study_module.build_session
+original_run_built = study_module._run_built
+
+
+def build_session(*args, **kwargs):
+    previous = TRACE.set_stage('build')
+    TRACE.enter()
+    outcome = (None, None)
+    try:
+        outcome = original_build_session(*args, **kwargs)
+        return outcome
+    finally:
+        start, peak, end = TRACE.leave()
+        TRACE.set_stage(previous)
+        BUILDS.append({'built': outcome[0] is not None, 'pool_used_at_start': start, 'peak_above_start': peak - start,
+                       'kept': end - start, 'studies': []})
+
+
+def run_built(*args, **kwargs):
+    previous = TRACE.set_stage('study')
+    TRACE.enter()
+    try:
+        return original_run_built(*args, **kwargs)
+    finally:
+        start, peak, end = TRACE.leave()
+        TRACE.set_stage(previous)
+        if not BUILDS:
+            BUILDS.append({'built': True, 'pool_used_at_start': start, 'peak_above_start': 0, 'kept': 0, 'studies': []})
+        build = BUILDS[-1]
+        build['studies'].append({'start_above_build': start - build['pool_used_at_start'],
+                                 'peak_above_start': peak - start, 'net': end - start})
+
+
+# every loaded module holding them by name (a module imported later reads the patched study attributes)
+for _module in list(sys.modules.values()):
+    if getattr(_module, '__name__', '').startswith('open_sol'):
+        if getattr(_module, 'build_session', None) is original_build_session:
+            _module.build_session = build_session
+        if getattr(_module, '_run_built', None) is original_run_built:
+            _module._run_built = run_built
+
+
+# --- selftest run wrapper ---------------------------------------------------------------------------------------------
 original_selftest_run = api._selftest_run
+original_registered_case = api._registered_case
+STARTED = {}
+
+
+def _begin_run():
+    PLANS.clear()
+    BUILDS.clear()
+    TRACE.start_run()
+    STARTED.update(seconds=time.perf_counter(), cudss_live=CUDSS['live'])
+    CUDSS['high_water'] = CUDSS['live']
+
+
+def _end_run(name, status, summary, vram):
+    TRACE.flush()
+    build = summary.get('build') or {}
+    cudss_at_start = STARTED['cudss_live']
+    RUNS.append({'name': name, 'seconds': time.perf_counter() - STARTED['seconds'], 'status': status,
+                 'pool_earlier_runs': TRACE.earlier, 'pool_end': TRACE.run_bytes(),
+                 'stage_peaks': {stage: dict(peak) for stage, peak in TRACE.stage_peaks.items()},
+                 'regions': {label: dict(stats) for label, stats in TRACE.regions.items()},
+                 'builds': [dict(entry) for entry in BUILDS],
+                 'plans': list(PLANS),   # the same dicts: frees after this run (Results closed later) still land
+                 'cudss_live_at_start': cudss_at_start, 'cudss_high_water': CUDSS['high_water'] - cudss_at_start,
+                 'estimate': build.get('gpu_estimate'), 'ledger_peak': build.get('gpu_peak_bytes'),
+                 'ledger_kept': sum(size for _, size in build['gpu_breakdown']) if build.get('gpu_breakdown') else None,
+                 'run_memory': summary.get('run_memory'), 'external_memory': summary.get('external_memory'),
+                 'open_sol_vram': vram})
 
 
 def selftest_run(spec, run_dir, max_wall_time):
-    del PLANS[:]
-    _sync()
-    TRACE.start_run()
-    OUTSIDE['baseline'], OUTSIDE['high_water'] = _outside_pool_bytes(), 0
-    started = time.perf_counter()
+    _begin_run()
     results, record = original_selftest_run(spec, run_dir, max_wall_time)
-    _sample_outside()
     summary = {}
     if run_dir is not None and (Path(run_dir) / 'summary.json').exists():
         summary = json.loads((Path(run_dir) / 'summary.json').read_text())
@@ -208,61 +348,84 @@ def selftest_run(spec, run_dir, max_wall_time):
         run_name = Path(run_dir).relative_to(OUT_DIR / 'runs').as_posix()
     except (TypeError, ValueError):
         run_name = str(run_dir)
-    RUNS.append({'name': run_name,
-                 'seconds': time.perf_counter() - started, 'status': record.get('status'),
-                 'pool_at_start': TRACE.run_start, 'pool_peak': TRACE.run_peak - TRACE.run_start,
-                 'pool_end': TRACE.current - TRACE.run_start, 'snapshot': TRACE.snapshot,
-                 'build_snapshot': TRACE.build_snapshot,
-                 'regions': {label: dict(stats) for label, stats in TRACE.region_stats.items()},
-                 'plans': [dict(plan) for plan in PLANS], 'outside_high_water': OUTSIDE['high_water'],
-                 'estimate': (summary.get('build') or {}).get('gpu_estimate'),
-                 'build_ledger_peak': (summary.get('build') or {}).get('gpu_peak_bytes'),
-                 'run_memory': summary.get('run_memory'), 'external_memory': summary.get('external_memory')})
+    _end_run(run_name, record.get('status'), summary, record.get('vram'))
     return results, record
 
 
+def registered_case(case, *args, **kwargs):
+    """A case without model runs (specs {}: its check builds the solvers itself) is profiled as one 'direct' run."""
+    runs_before = len(RUNS)
+    _begin_run()
+    record = original_registered_case(case, *args, **kwargs)
+    if len(RUNS) == runs_before:
+        _end_run(f'{case.name} (direct check, no model run)', (record or {}).get('status', 'skipped'), {}, None)
+    return record
+
+
 api._selftest_run = selftest_run
+api._registered_case = registered_case
+
+
+# --- report -----------------------------------------------------------------------------------------------------------
+def measured_parts(run):
+    """{part: (profiler measured bytes, what it is)} over every build / study of the run (max: sweeps build per value)."""
+    builds = [entry for entry in run['builds'] if entry['built']]
+    studies = [study for entry in builds for study in entry['studies']]
+    return {
+        'kept': (max((entry['kept'] for entry in builds), default=None), 'pool used at build end - at build start'),
+        'build_peak': (max((entry['peak_above_start'] for entry in builds), default=None),
+                       'pool used peak during build - at build start'),
+        'run': (max((study['start_above_build'] + study['peak_above_start'] for study in studies), default=None),
+                'pool used peak during study - at build start'),
+        'external': ((run['external_memory'] or {}).get('measured_bytes'),
+                     "cuDSS's own plan estimates, live high water (open_sol counter)"),
+        'external_device': (run['cudss_high_water'] if run['plans'] else None,
+                            'device bytes of the nvmath DirectSolver calls (memGetInfo deltas, 2 MiB steps on WDDM), '
+                            'live high water')}
+
+
+def estimated_parts(estimate):
+    if not estimate or estimate.get('gpu_steady') is None:
+        return {}
+    return {'kept': estimate['gpu_steady'], 'build_peak': estimate.get('gpu_build_peak'),
+            'run': estimate['gpu_steady'] + (estimate.get('gpu_run') or 0),
+            'external': estimate.get('external_peak'), 'external_device': estimate.get('external_peak')}
+
+
+def verdict_rows(run):
+    """[part, estimate, measured, gap, verdict, open_sol measured, open_sol verdict, measured as] per estimate part."""
+    estimates, own = estimated_parts(run['estimate']), run['open_sol_vram'] or {}
+    rows = []
+    for part, (measured, meaning) in measured_parts(run).items():
+        estimated = estimates.get(part)
+        judged = measured is not None and estimated is not None
+        gap = estimate_gap(measured, estimated) if judged else None
+        verdict = (estimate_verdict(measured, estimated) or 'ok') if judged else 'n/a'
+        own_part = own.get('external' if part.startswith('external') else part)
+        own_part = own_part if isinstance(own_part, dict) else {}
+        rows.append([part, estimated, measured, gap, verdict, own_part.get('measured_bytes'),
+                     (own_part.get('verdict') or 'ok') if own_part else 'n/a', meaning])
+    return rows
+
+
+def verdict_table(run):
+    lines = ['| part | estimate MB | measured MB | held - estimate MB | verdict | open_sol measured MB | open_sol verdict '
+             '| measured as |', '|---|---|---|---|---|---|---|---|']
+    for part, estimated, measured, gap, verdict, own_measured, own_verdict, meaning in verdict_rows(run):
+        lines.append(f'| {part} | {mb(estimated)} | {mb(measured)} | {mb(gap)} | {verdict} | {mb(own_measured)} | '
+                     f'{own_verdict} | {meaning} |')
+    return lines
 
 
 def _items_text(rows, phased=False):
     lines = []
     for row in rows or ():
-        if phased:
-            lines.append(f'  - [{row[0]}] {row[1]}: {mb(row[2])} MB')
-        else:
-            lines.append(f'  - {row[0]}: {mb(row[1])} MB')
+        lines.append(f'  - [{row[0]}] {row[1]}: {mb(row[2])} MB' if phased else f'  - {row[0]}: {mb(row[1])} MB')
     return lines or ['  - (none)']
 
 
-def _reconcile_line(label, measured, estimated):
-    if measured is None or estimated is None:
-        return f'- {label}: n/a'
-    verdict = estimate_verdict(measured, estimated) or f'ok (within the {ESTIMATE_SMALL_ITEMS:.0%} small-item margin)'
-    share = (measured - estimated) / max(estimated, 1)
-    return (f'- {label}: estimate {mb(estimated)} MB, measured {mb(measured)} MB, held beyond the estimate '
-            f'{mb(measured - estimated)} MB ({share:+.0%}): {verdict}')
-
-
-def reconciliation_lines(run, estimate):
-    """Estimate (kept + run + largest transient phase; external) vs measured, judged as builder.estimate_verdict."""
-    pool_estimate = (None if estimate.get('gpu_steady') is None   # the run's pool peak may fall in its build
-                     else max(estimate['gpu_steady'] + (estimate.get('gpu_run') or 0),
-                              estimate.get('gpu_build_peak') or 0))
-    external_estimate = (None if estimate.get('gpu_external') is None
-                         else estimate['gpu_external'] + (estimate.get('external_extra') or 0))
-    largest_plan = max((plan['cudss_permanent'] or 0 for plan in run['plans']), default=None)
-    return ['### Reconciliation (big items held together: should sit just below the measured bytes)',
-            _reconcile_line('pool, used-bytes peak of build + run (hook) vs max(build peak, kept + run)',
-                            run['pool_peak'] or None,   # a cpu run allocates nothing in the pool
-                            pool_estimate),
-            _reconcile_line('outside the pool, largest cuDSS permanent', largest_plan, external_estimate),
-            _reconcile_line('outside the pool, real device bytes (memGetInfo high water)',
-                            run['outside_high_water'] if run['plans'] else None, external_estimate),
-            f"- pool bytes still held when the run returned: {mb(run['pool_end'])} MB (arrays outliving the run)", '']
-
-
 def _fill_columns(plan):
-    """lu entries per n log2 n and per n^(4/3), cuDSS bytes per lu entry (the fill law and the storage rule apart)."""
+    """lu entries per n log2 n and per n^(4/3), cuDSS permanent bytes per lu entry."""
     n, lu = plan['n'], plan['lu_entries']
     if not lu or n < 2:
         return 'n/a | n/a | n/a'
@@ -270,38 +433,58 @@ def _fill_columns(plan):
             f"{(plan['cudss_permanent'] or 0) / lu:.1f}")
 
 
-def run_text(run):
+def _phase_columns(plan):
+    """init | plan | first factorize | later factorizes | first solve | later solves | freed | held MB."""
+    phases = plan['phases']
+    if phases is None:
+        return ' | '.join(['n/a'] * 8)
+    later_factorize = phases['factorize'] - (phases['factorize_first'] or 0)
+    later_solve = phases['solve'] - (phases['solve_first'] or 0)
+    return ' | '.join([mb(phases['init']), mb(phases['plan']), mb(phases['factorize_first']), mb(later_factorize),
+                       mb(phases['solve_first']), mb(later_solve), mb(phases['freed']), mb(phases['held'])])
+
+
+def run_text(run, top_sites):
     estimate = run['estimate'] or {}
     lines = [f"## {run['name']}  ({run['status']}, {run['seconds']:.1f} s)", '',
-             *reconciliation_lines(run, estimate),
-             '### Measured (profiler)',
-             f"- pool used at run start (earlier runs): {mb(run['pool_at_start'])} MB",
-             f"- pool used-bytes peak of this run (hook, no block rounding): {mb(run['pool_peak'])} MB; "
-             f"left at the end: {mb(run['pool_end'])} MB",
-             f"- outside-pool device bytes high water (memGetInfo, sampled at plan / factorize): "
-             f"{mb(run['outside_high_water'])} MB",
-             f"- summary run_memory: {run['run_memory']}", f"- summary external_memory: {run['external_memory']}",
-             f"- build ledger peak: {mb(run['build_ledger_peak'])} MB", '',
-             '### Estimate',
-             f"- gpu_steady {mb(estimate.get('gpu_steady'))}, gpu_build_peak {mb(estimate.get('gpu_build_peak'))}, "
-             f"gpu_run {mb(estimate.get('gpu_run'))}, gpu_external {mb(estimate.get('gpu_external'))}, "
-             f"external_extra {mb(estimate.get('external_extra'))} MB",
-             '- kept items:', *_items_text(estimate.get('items')),
-             '- run items:', *_items_text(estimate.get('run_items')),
-             '- transient items (phase, label):', *_items_text(estimate.get('transient_items'), phased=True),
-             '- external items:', *_items_text(estimate.get('external_items')), '']
+             '### Estimate parts vs measured (the estimate should sit just below the held bytes)', '',
+             *verdict_table(run), '',
+             "- pool: used bytes from the hook (512 B rounded, no cached blocks); open_sol's run part is reserved-based "
+             "(pool reserved high water - free blocks stranded before the build)",
+             f"- open_sol build ledger: kept {mb(run['ledger_kept'])} MB, peak {mb(run['ledger_peak'])} MB",
+             f"- arrays of earlier runs live at the end: {mb(run['pool_earlier_runs'])} MB; this run's arrays still "
+             f"held when it returned: {mb(run['pool_end'])} MB; measured cuDSS bytes of earlier runs at the start: "
+             f"{mb(run['cudss_live_at_start'])} MB", '']
+    if len(run['builds']) > 1 or any(len(entry['studies']) > 1 for entry in run['builds']):
+        lines += ['### Builds and studies (MB)', '',
+                  '| build | built | peak above start | kept | study: start above build | study peak above its start | '
+                  'study net |', '|---|---|---|---|---|---|---|']
+        for index, entry in enumerate(run['builds'], 1):
+            for study in entry['studies'] or [None]:
+                study_text = ('| | |' if study is None else
+                              f"{mb(study['start_above_build'])} | {mb(study['peak_above_start'])} | {mb(study['net'])} |")
+                lines.append(f"| {index} | {entry['built']} | {mb(entry['peak_above_start'])} | {mb(entry['kept'])} | "
+                             f"{study_text}")
+        lines.append('')
+    lines += ['### Estimate',
+              f"- gpu_steady {mb(estimate.get('gpu_steady'))}, gpu_build_peak {mb(estimate.get('gpu_build_peak'))}, "
+              f"gpu_run {mb(estimate.get('gpu_run'))}, gpu_external {mb(estimate.get('gpu_external'))}, "
+              f"external_extra {mb(estimate.get('external_extra'))}, external_peak {mb(estimate.get('external_peak'))} MB",
+              '- kept items:', *_items_text(estimate.get('items')),
+              '- run items:', *_items_text(estimate.get('run_items')),
+              '- transient items (phase, label):', *_items_text(estimate.get('transient_items'), phased=True),
+              '- external items:', *_items_text(estimate.get('external_items')), '']
     if run['plans']:
-        lines += ['### cuDSS plans', '',
-                  '| caller | n | stored nnz | full nnz | value / factor | kind | cuDSS permanent MB | cuDSS peak MB | '
-                  'plan drop MB | factorize drop MB | lu_nnz | lu / n log2 n | lu / n^(4/3) | B / lu entry | '
-                  'factorizations |',
-                  '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|']
+        lines += ['### cuDSS plans (device MB per nvmath DirectSolver call: memGetInfo minus pool, synchronised; freed = '
+                  'returned at free, held = left after every booked call)', '',
+                  '| caller | n | stored nnz | full nnz | value / factor | kind | ordering reused | cuDSS permanent | '
+                  'cuDSS peak | init | plan | factorize 1st | factorize later | solve 1st | solve later | freed | held | '
+                  'lu_nnz | lu / n log2 n | lu / n^(4/3) | B / lu entry | factorizations |', '|' + '---|' * 22]
         for plan in run['plans']:
             lines.append(f"| {plan['caller']} | {plan['n']} | {plan['stored_entries']} | {plan['full_entries']} | "
-                         f"{plan['value_dtype']} / {plan['factor_dtype']} | {plan['kind']} | "
-                         f"{mb(plan['cudss_permanent'])} | {mb(plan['cudss_peak'])} | {mb(plan['plan_outside_drop'])} | "
-                         f"{mb(plan['factorize_outside_drop'])} | {plan['lu_entries']} | {_fill_columns(plan)} | "
-                         f"{plan['factorizations']} |")
+                         f"{plan['value_dtype']} / {plan['factor_dtype']} | {plan['kind']} | {plan['ordering_reused']} | "
+                         f"{mb(plan['cudss_permanent'])} | {mb(plan['cudss_peak'])} | {_phase_columns(plan)} | "
+                         f"{plan['lu_entries']} | {_fill_columns(plan)} | {plan['factorizations']} |")
         lines.append('')
     if run['regions']:
         lines += ['### Pool regions (peak / net over the call, MB)', '',
@@ -310,33 +493,60 @@ def run_text(run):
             lines.append(f"| {label} | {stats['calls']} | {mb(stats['max_peak'])} | {mb(stats['max_net'])} | "
                          f"{mb(stats['sum_net'])} |")
         lines.append('')
-    for title, snapshot in (('build peak', run.get('build_snapshot')), ('run peak', run['snapshot'])):
+    for stage, peak in run['stage_peaks'].items():
+        snapshot = peak['snapshot']
         if not snapshot:
             continue
         rows = sorted(snapshot['by_site'].items(), key=lambda item: -item[1])
-        lines += [f"### Live pool bytes near the {title} ({mb(snapshot['peak'])} MB over the run start, stage "
-                  f"{snapshot['stage']}; earlier runs' arrays {mb(snapshot['earlier_runs'])} MB)", '',
+        lines += [f"### Live pool bytes at the {stage} peak ({mb(snapshot['bytes'])} MB of this run, exact peak "
+                  f"{mb(peak['bytes'])} MB; earlier runs' arrays {mb(snapshot['earlier_runs'])} MB)", '',
                   f"Peak allocation: `{snapshot['trigger']}`", '', '| MB | [stage] site |', '|---|---|']
-        for site, size in rows[:TOP_SITES]:
+        for site, size in rows[:top_sites]:
             lines.append(f'| {mb(size)} | `{site}` |')
-        rest = sum(size for _, size in rows[TOP_SITES:])
+        rest = sum(size for _, size in rows[top_sites:])
         if rest:
-            lines.append(f'| {mb(rest)} | ({len(rows) - TOP_SITES} more sites) |')
+            lines.append(f'| {mb(rest)} | ({len(rows) - top_sites} more sites) |')
         lines.append('')
     return '\n'.join(lines)
 
 
-def main(names):
+def console_text(run):
+    lines = [f"{run['name']} ({run['status']}):"]
+    for part, estimated, measured, gap, verdict, _, own_verdict, _ in verdict_rows(run):
+        lines.append(f'  {part:16s} est {mb(estimated):>10s}  meas {mb(measured):>10s}  gap {mb(gap):>10s} MB  '
+                     f'{verdict} (open_sol: {own_verdict})')
+    for plan in run['plans']:
+        lines.append(f"  cuDSS n={plan['n']}: permanent {mb(plan['cudss_permanent'])} MB; init | plan | factorize 1st "
+                     f"| factorize later | solve 1st | solve later | freed | held: {_phase_columns(plan)}")
+    return '\n'.join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser(description='VRAM profile of named selftest cases (gpu).')
+    parser.add_argument('cases', nargs='*', default=['em_bor_cudss_driven'])
+    parser.add_argument('--depth', type=int, default=3, help='open_sol frames per allocation site (default 3)')
+    parser.add_argument('--top', type=int, default=25, help='sites listed per peak table (default 25)')
+    parser.add_argument('--tag', default='', help='suffix of the report names (out/<case><tag>.md), keeps earlier ones')
+    args = parser.parse_args()
+    TRACE.site_depth = args.depth
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with TRACE:
-        for name in names:
-            del RUNS[:]
+        for name in args.cases:
+            RUNS.clear()
             api.selftest(out_dir=OUT_DIR / 'runs', names=[name])
-            text = f'# VRAM profile: {name}\n\n' + '\n'.join(run_text(run) for run in RUNS)
-            (OUT_DIR / f'{name}.md').write_text(text, encoding='utf-8')
-            (OUT_DIR / f'{name}.json').write_text(json.dumps(RUNS, indent=1, default=str), encoding='utf-8')
-            print(f'wrote {OUT_DIR / (name + ".md")}')
+            gc.collect()   # factors of closed Results freed now, so their 'freed' bytes reach the report
+            text = f'# VRAM profile: {name}\n\n' + '\n'.join(run_text(run, args.top) for run in RUNS)
+            (OUT_DIR / f'{name}{args.tag}.md').write_text(text, encoding='utf-8')
+            (OUT_DIR / f'{name}{args.tag}.json').write_text(json.dumps(RUNS, indent=1, default=str), encoding='utf-8')
+            if BOOK_ERRORS:
+                text += '\n## Profiler errors (inside wrapped calls, not raised)\n\n' + '\n'.join(
+                    f'- {line}' for line in BOOK_ERRORS) + '\n'
+                (OUT_DIR / f'{name}{args.tag}.md').write_text(text, encoding='utf-8')
+                print(f'{len(BOOK_ERRORS)} profiler errors (see the report): {BOOK_ERRORS[0]}')
+                BOOK_ERRORS.clear()
+            print('\n'.join(console_text(run) for run in RUNS) or f'{name}: no runs (unknown case or cpu only?)')
+            print(f'wrote {OUT_DIR / (name + args.tag + ".md")}')
 
 
 if __name__ == '__main__':
-    main(sys.argv[1:] or ['em_bor_cudss_driven'])
+    main()

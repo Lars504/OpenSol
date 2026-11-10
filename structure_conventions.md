@@ -5,8 +5,8 @@ Examples live outside the package (`examples/README.md`); `experiments/` holds t
 format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
 `gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
 `dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it, not shipped):
-`dev_tools/time_profilers/cpu_solvers` benchmarks every CPU solver choice (enumerated from the registry) on problems
-assembled by open_sol's own operator code; it is not `python -m open_sol profile` (the run-time estimate's profile).
+`dev_tools/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
+problems assembled by open_sol's own operator code and on whole model files; it is not `python -m open_sol profile` (the run-time estimate's profile).
 `dev_tools/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
 syncs); `dev_tools/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
 User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
@@ -493,6 +493,13 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   enabled, build temporaries only in BuildContext caches (`release_caches()`); status of the EM engines: physics/em
   sub file "Registered EM types".
 
+### Generated output and git
+- Every folder a tool writes results into (its default `--out` too) is named `out/` or ends in `_out/`: the tracked
+  `.gitignore` ignores both, so a new tool needs no new rule. Committed example outputs (`examples/**/*_out/`) are
+  re-included there; their `.npz` / `.png` stay ignored.
+- The tracked `.gitignore` is public and generic; private folder names (experiments, plans, articles, side projects)
+  go in `.git/info/exclude`, which every worktree of this clone shares and which is never pushed.
+
 ## 3. Sub files (`sub_structure_conventions.md`)
 
 - `open_sol/`: api.run, Results lifetime (api.py, `__main__`), describe entries of new api / CLI arguments.
@@ -571,6 +578,6 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure.
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
-- `dev_tools/time_profilers/`: CPU solver profiler (parent / child layout, imports, solver enumeration rule, result
+- `dev_tools/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result
   line), case_profilers (script layout, wrap before the registry, unresolved parts); usage in its README.md.
 - `dev_tools/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).

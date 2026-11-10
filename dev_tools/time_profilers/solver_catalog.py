@@ -1,21 +1,25 @@
-"""The CPU solver choices of a problem class, enumerated from open_sol itself: every registered SolverType that fills
-the class's role, every combination of its choice settings (back_end / factorization / precision / preconditioner),
-kept when roles.solver_misfit admits it for that physics type, role, study and grid kind on the cpu backend and the
-SolverType's validate raises no error; host direct names whose wrapper is missing stay listed as unavailable."""
+"""The solver choices of a problem class (or model target) per backend, enumerated from open_sol itself: every
+registered SolverType that fills the class's role, every combination of its choice settings (all of its 'choice'
+params), kept when roles.solver_misfit admits it for that physics type, role, study and grid kind on the backend and
+the SolverType's validate raises no error; host direct / cuDSS names whose package is missing, and every gpu choice
+without a usable GPU, stay listed as unavailable."""
+import dataclasses
 import itertools
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-VARIED_SETTINGS = ('back_end', 'factorization', 'precision', 'preconditioner')   # choice params enumerated
+BACKENDS = ('cpu', 'gpu')
 LIBRARY_SETTINGS = ('back_end', 'factorization')   # the setting naming a sparse factorisation library
-# the reference of each role: host SuperLU (speed-ups and eigenvalue differences are against it)
+# the reference of each role on the cpu backend: host SuperLU (speed-ups and eigenvalue differences are against it);
+# a role without one (or whose SuperLU the role does not offer) takes its cpu Automatic
 BASELINES = {'linear': 'sparse_direct:scipy_splu', 'eigen': 'arpack_shift_invert:superlu'}
 
 
 @dataclass(frozen=True)
 class Candidate:
-    """One solver choice of a problem class: label, SolverType name, resolved values, whether it is the cpu Automatic
-    of the role on the grid kind, the baseline, and availability (reason: why not)."""
+    """One solver choice of a problem class on one backend: label (backend-free, what --solvers patterns match),
+    SolverType name, resolved values, whether it is the Automatic of the role on that backend and grid kind, the
+    baseline, and availability (reason: why not)."""
     label: str
     solver_type: str
     values: dict
@@ -23,50 +27,69 @@ class Candidate:
     baseline: bool
     available: bool
     reason: str = ''
+    backend: str = 'cpu'
+
+    @property
+    def row(self) -> str:
+        """Report row / record key: the label, '<label> @gpu' on the gpu backend."""
+        return self.label if self.backend == 'cpu' else f'{self.label} @{self.backend}'
 
 
-def label_of(type_name, values) -> str:
-    """'sparse_direct:mumps', 'arpack_shift_invert:pardiso_mixed', 'pcg:double/multigrid', 'line_block:mixed',
-    'banded'."""
+def choice_names(solver_type) -> tuple:
+    """Names of the 'choice' params of a SolverType (the settings the catalogue varies)."""
+    return tuple(param.name for param in solver_type.params if param.kind == 'choice')
+
+
+def _label_names(type_name, values) -> tuple:
+    """Settings the short label of a type names, in order."""
     if type_name == 'sparse_direct':
-        return f"sparse_direct:{values['back_end']}"
+        return ('back_end',)
     if type_name == 'arpack_shift_invert':
-        return f"arpack_shift_invert:{values['factorization']}"
+        return ('factorization',)
     if type_name == 'pcg':
-        return f"pcg:{values['precision']}/{values['preconditioner']}"
-    if 'precision' in values:
-        return f"{type_name}:{values['precision']}"
-    return type_name
+        return ('precision', 'preconditioner')
+    return ('precision',) if 'precision' in values else ()
+
+
+def label_of(type_name, values, varied=()) -> str:
+    """'sparse_direct:mumps', 'arpack_shift_invert:pardiso_mixed', 'pcg:double/multigrid', 'line_block:mixed',
+    'banded'; a varied choice the short label does not name is appended as '/name=value'."""
+    names = _label_names(type_name, values)
+    label = f"{type_name}:{'/'.join(str(values[name]) for name in names)}" if names else type_name
+    return label + ''.join(f'/{name}={values[name]}' for name in varied if name not in names)
 
 
 def _value_sets(solver_type):
-    """Every combination of the VARIED_SETTINGS choice params of a SolverType, the other params at their defaults."""
+    """Every combination of the choice params of a SolverType, the other params at their defaults."""
     defaults = {param.name: param.default for param in solver_type.params}
-    varied = [param for param in solver_type.params if param.kind == 'choice' and param.name in VARIED_SETTINGS]
+    varied = [param for param in solver_type.params if param.kind == 'choice']
     for combination in itertools.product(*(param.choices for param in varied)):
         values = dict(defaults)
         values.update(zip((param.name for param in varied), combination))
         yield values
 
 
-def _cpu_value(values):
-    """values with a library setting 'auto' replaced by what it resolves to on the cpu backend (host SuperLU)."""
-    from open_sol.solvers.sparse_direct import expected_back_end
-    resolved = dict(values)
+def _resolved_value(values, solver_role, backend, grid):
+    """values with a library setting 'auto' replaced by what it resolves to on the backend and grid kind (gpu: the
+    role's cuDSS back end when nvmath-python is installed, schema.auto_back_end_values; else host SuperLU)."""
+    from open_sol.model.schema import auto_back_end_values
+    from open_sol.solvers.sparse_direct import AUTO_BACK_END_KEY, expected_back_end
+    resolved = dict(auto_back_end_values(values, solver_role, backend, grid))
+    resolved.pop(AUTO_BACK_END_KEY, None)
     if resolved.get('back_end') == 'auto':
-        resolved['back_end'] = expected_back_end('auto', 'cpu')
+        resolved['back_end'] = expected_back_end('auto', backend)
     if resolved.get('factorization') == 'auto':
         resolved['factorization'] = 'superlu'
     return resolved
 
 
-def _automatic_label(registry, solver_role, grid) -> str:
-    """Label of what Automatic resolves to on the cpu backend and grid kind (SolverRole.automatic; 'auto': SuperLU)."""
-    type_name, settings = solver_role.automatic('cpu', grid)
+def _automatic_label(registry, solver_role, grid, backend) -> str:
+    """Label of what Automatic resolves to on the backend and grid kind (SolverRole.automatic + its 'auto' library)."""
+    type_name, settings = solver_role.automatic(backend, grid)
     solver_type = registry.solver_type(type_name)
     values = {param.name: param.default for param in solver_type.params}
     values.update(settings)
-    return label_of(type_name, _cpu_value(values))
+    return label_of(type_name, _resolved_value(values, solver_role, backend, grid), choice_names(solver_type))
 
 
 def _validation_errors(solver_type, values, dimensions) -> str:
@@ -82,48 +105,68 @@ def _validation_errors(solver_type, values, dimensions) -> str:
     return '; '.join(issue.message for issue in issues if issue.level == 'error')
 
 
-def _unavailable(values) -> str:
-    """host_direct.missing_text of a MUMPS / PARDISO setting whose wrapper is not installed (or PARDISO off x86-64)."""
+def _gpu_missing() -> str:
+    """Why the gpu backend cannot run here ('' when a CUDA device answers)."""
+    from open_sol.core.backend import cupy_installed, gpu_available
+    if not cupy_installed():
+        return 'gpu backend: cupy is not installed'
+    return '' if gpu_available() else 'gpu backend: no CUDA device answers'
+
+
+def _unavailable(values, backend, gpu_missing) -> str:
+    """Why a choice cannot run on this machine: no GPU for the gpu backend, a missing MUMPS / PARDISO wrapper
+    (host_direct.missing_text; PARDISO off x86-64) or nvmath-python for a cuDSS back end ('' when it can)."""
+    from open_sol.solvers.cudss_factor import cudss_available
     from open_sol.solvers.host_direct import HOST_DIRECT_BACK_ENDS, host_direct_available, missing_text
+    if backend == 'gpu' and gpu_missing:
+        return gpu_missing
     for name in LIBRARY_SETTINGS:
         library = values.get(name)
         if library in HOST_DIRECT_BACK_ENDS and not host_direct_available(library):
             return missing_text(library)
+        if library in ('cudss', 'cudss_mixed') and not cudss_available():
+            return f"{name} '{library}' needs nvmath-python with cuDSS (pip install nvmath-python[cu12])"
     return ''
 
 
-def cpu_candidates(problem_class):
-    """([Candidate], [{'label', 'reason'}] excluded) of a problem class: the baseline first, then by label."""
+def solver_candidates(target, backends=('cpu',)):
+    """([Candidate], [{'label', 'backend', 'reason'}] excluded) of a problem class / model target (physics_type, role,
+    study, grid, dimensions) on the backends: the baseline first, then by backend and label."""
     from open_sol.model.schema import get_registry
     from open_sol.solvers.roles import solver_misfit
     registry = get_registry()
-    physics_type = registry.physics_type(problem_class.physics_type)
-    role = problem_class.role
+    physics_type = registry.physics_type(target.physics_type)
+    role = target.role
     solver_role = physics_type.solver_roles[role]
-    automatic = _automatic_label(registry, solver_role, problem_class.grid)
-    baseline = BASELINES[role]
-    candidates, excluded, seen = [], [], set()
-    for solver_type in registry.solver_types():
-        if role not in solver_type.roles:
-            continue
-        for values in _value_sets(solver_type):
-            if any(values.get(name) == 'auto' for name in LIBRARY_SETTINGS):
-                continue   # 'auto' is host SuperLU on the cpu: the same run as scipy_splu / superlu
-            label = label_of(solver_type.name, values)
-            if label in seen:
+    gpu_missing = _gpu_missing() if 'gpu' in backends else ''
+    candidates, excluded = [], []
+    for backend in backends:
+        automatic = _automatic_label(registry, solver_role, target.grid, backend)
+        seen = set()
+        for solver_type in registry.solver_types():
+            if role not in solver_type.roles:
                 continue
-            seen.add(label)
-            misfit = solver_misfit(solver_type, values, physics_type, role, problem_class.study, 'cpu',
-                                   problem_class.grid)
-            invalid = misfit or _validation_errors(solver_type, values, problem_class.dimensions)
-            missing = _unavailable(values)
-            if invalid and not missing:
-                excluded.append({'label': label, 'reason': invalid})
-                continue
-            if misfit:   # a misfit host direct name is excluded whether installed or not
-                excluded.append({'label': label, 'reason': misfit})
-                continue
-            candidates.append(Candidate(label, solver_type.name, values, label == automatic, label == baseline,
-                                        not missing, missing))
-    candidates.sort(key=lambda candidate: (not candidate.baseline, candidate.label))
+            for values in _value_sets(solver_type):
+                if any(values.get(name) == 'auto' for name in LIBRARY_SETTINGS):
+                    continue   # 'auto' is one of the explicit library choices: the same run as that choice
+                label = label_of(solver_type.name, values, choice_names(solver_type))
+                if label in seen:
+                    continue
+                seen.add(label)
+                misfit = solver_misfit(solver_type, values, physics_type, role, target.study, backend, target.grid)
+                invalid = misfit or _validation_errors(solver_type, values, target.dimensions)
+                missing = _unavailable(values, backend, gpu_missing)
+                if invalid and not missing:
+                    excluded.append({'label': label, 'backend': backend, 'reason': invalid})
+                    continue
+                if misfit:   # a misfit library name is excluded whether installed or not
+                    excluded.append({'label': label, 'backend': backend, 'reason': misfit})
+                    continue
+                candidates.append(Candidate(label, solver_type.name, values, label == automatic,
+                                            backend == 'cpu' and label == BASELINES.get(role), not missing, missing,
+                                            backend))
+    if not any(candidate.baseline for candidate in candidates):   # no SuperLU reference: the cpu Automatic
+        candidates = [dataclasses.replace(candidate, baseline=candidate.backend == 'cpu' and candidate.automatic)
+                      for candidate in candidates]
+    candidates.sort(key=lambda candidate: (not candidate.baseline, BACKENDS.index(candidate.backend), candidate.label))
     return candidates, excluded

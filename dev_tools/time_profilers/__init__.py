@@ -1,2 +1,2 @@
-"""Wall-time / memory profilers of open_sol's solvers (dev tooling): cpu_solvers compares every CPU solver choice on
-representative problems assembled by open_sol's own code; case_profilers profiles whole selftest runs per engine."""
+"""Wall-time / memory profilers of open_sol's solvers (dev tooling): solver_profiler compares every cpu / gpu solver
+choice on problems assembled by open_sol's own code and on whole models; case_profilers profiles selftest runs."""
