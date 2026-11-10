@@ -705,32 +705,21 @@ class MultigridPreconditioner:
         del diagonal
         prolongation = self._stack_rows(blocks, tentative.shape[1])
         del blocks
-        xp = self._xp
-        restriction = None
+        row_blocks = self._row_blocks(operator, prolongation.indptr)
+        # a single block's left factor is R itself (no second transpose); several blocks transpose their own rows
+        restriction = prolongation.T.tocsr() if len(row_blocks) == 1 else None
         # binary-counter sum of the block contributions: merging only partial sums of equal block counts costs
         # O(nnz log blocks); a running sum recopies the whole coarse operator per block (297 s of a 303 s 3D build)
         partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
-        for start, stop in self._row_blocks(operator, prolongation.indptr):
-            block_product = self._low(self._rows(operator, start, stop)) @ prolongation   # A_b P
-            # R_b (A_b P) takes nnz(P_i) nnz((A P)_i) partial products per row, more than A_b P's nnz(A_i) nnz(P_i),
-            # so it runs in its own sub-blocks (the workspace setup_extra_bytes books). carey2026 E2 (5.6e6 cells)
-            # still raises INSUFFICIENT_RESOURCES in this SpGEMM at <= 2^23 products: not a product-count limit
-            outer_products = (xp.diff(prolongation.indptr[start:stop + 1]).astype(np.int64)
-                              * xp.diff(block_product.indptr).astype(np.int64))
-            for sub_start, sub_stop in self._blocks_of(outer_products):
-                first, last = start + sub_start, start + sub_stop
-                if first == 0 and last == n_unknowns:   # a single block's left factor is R itself (no 2nd transpose)
-                    restriction = left = prolongation.T.tocsr()
-                else:
-                    left = prolongation[first:last].T.tocsr()
-                partial_sum = left @ self._rows(block_product, sub_start, sub_stop)
-                del left
-                n_blocks = 1
-                while partial_sums and partial_sums[-1][1] == n_blocks:
-                    earlier_sum, earlier_blocks = partial_sums.pop()
-                    partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
-                partial_sums.append((partial_sum, n_blocks))
-            del block_product, outer_products
+        for start, stop in row_blocks:
+            left = restriction if restriction is not None else prolongation[start:stop].T.tocsr()
+            partial_sum = left @ (self._low(self._rows(operator, start, stop)) @ prolongation)
+            del left
+            n_blocks = 1
+            while partial_sums and partial_sums[-1][1] == n_blocks:
+                earlier_sum, earlier_blocks = partial_sums.pop()
+                partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
+            partial_sums.append((partial_sum, n_blocks))
         coarse_operator = partial_sums.pop()[0]
         while partial_sums:
             coarse_operator = partial_sums.pop()[0] + coarse_operator
@@ -742,23 +731,18 @@ class MultigridPreconditioner:
     def _row_blocks(self, left, right_indptr):
         """Host [(start, stop)] row blocks of left @ right (right's CSR indptr) with about PRODUCT_BLOCK_PRODUCTS
         partial products each (a longer single row stays one block)."""
+        from ..core.backend import to_host
         xp = self._xp
+        n_rows = left.shape[0]
         # per-row counts as one float32 SpMV of left's pattern (exact: rows hold far fewer than 2^24 products), so the
         # only entry-sized temporary is the 4-byte pattern data, not int64 per-entry cumulative sums
         pattern = self._sparse.csr_matrix((xp.ones(left.nnz, dtype=np.float32), left.indices, left.indptr),
                                           shape=left.shape)
         products_per_row = pattern.dot(xp.diff(right_indptr).astype(np.float32))
         del pattern
-        return self._blocks_of(products_per_row)
-
-    def _blocks_of(self, products_per_row):
-        """Host [(start, stop)] row blocks of about PRODUCT_BLOCK_PRODUCTS products each from backend per-row counts
-        (a longer single row stays one block)."""
-        from ..core.backend import to_host
-        xp = self._xp
-        n_rows = products_per_row.shape[0]
         row_products = xp.zeros(n_rows + 1, dtype=np.int64)
         xp.cumsum(products_per_row.astype(np.int64), out=row_products[1:])
+        del products_per_row
         targets = xp.arange(PRODUCT_BLOCK_PRODUCTS, int(row_products[-1]), PRODUCT_BLOCK_PRODUCTS, dtype=np.int64)
         boundaries = np.asarray(to_host(xp.searchsorted(row_products, targets, side='right') - 1), dtype=np.int64)
         boundaries = np.unique(np.concatenate(([0], boundaries, [n_rows])))
