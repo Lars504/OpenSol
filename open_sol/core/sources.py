@@ -28,25 +28,21 @@ class GaussianPulse:
         self.tau = 1.0 / (bandwidth * f0 * np.pi)
         self.t0 = t0_factor * self.tau
 
-    def _envelope_and_phase(self, t):
-        delay = np.asarray(t, dtype=np.float64) - self.t0
-        return np.exp(-(delay / self.tau) ** 2), 2.0 * np.pi * self.f0 * delay
-
-    def __call__(self, t):
+    def _carried(self, t, scalar_carrier, array_carrier):
+        """Envelope times carrier(phase) (math carrier for a Python number t, numpy one for arrays)."""
         if isinstance(t, (float, int)):
             delay = t - self.t0
-            return math.exp(-(delay / self.tau) ** 2) * math.sin(2.0 * math.pi * self.f0 * delay)
-        envelope, phase = self._envelope_and_phase(t)
-        return _float_or_array(envelope * np.sin(phase), t)
+            return math.exp(-(delay / self.tau) ** 2) * scalar_carrier(2.0 * math.pi * self.f0 * delay)
+        delay = np.asarray(t, dtype=np.float64) - self.t0
+        return _float_or_array(np.exp(-(delay / self.tau) ** 2) * array_carrier(2.0 * np.pi * self.f0 * delay), t)
+
+    def __call__(self, t):
+        return self._carried(t, math.sin, np.sin)
 
     def quadrature(self, t):
         """Envelope times cos of the carrier phase (the pulse is envelope times sin): no exact Hilbert partner, its
         spectrum errs by 2 exp(-4 f / (bandwidth^2 f0)) of the pulse's and holds DC 2 exp(-1 / bandwidth^2) of its peak."""
-        if isinstance(t, (float, int)):
-            delay = t - self.t0
-            return math.exp(-(delay / self.tau) ** 2) * math.cos(2.0 * math.pi * self.f0 * delay)
-        envelope, phase = self._envelope_and_phase(t)
-        return _float_or_array(envelope * np.cos(phase), t)
+        return self._carried(t, math.cos, np.cos)
 
     @property
     def duration(self) -> float:
@@ -63,22 +59,19 @@ class ContinuousWave:
         self.f0 = f0
         self.tau_ramp = ramp_periods / f0
 
-    def _ramp_and_phase(self, t):
-        t = np.asarray(t, dtype=np.float64)
-        return 1.0 - np.exp(-t / self.tau_ramp), 2.0 * np.pi * self.f0 * t
+    def _carried(self, t, scalar_carrier, array_carrier):
+        """Ramp times carrier(2 pi f0 t) (math carrier for a Python number t, numpy one for arrays)."""
+        if isinstance(t, (float, int)):
+            return (1.0 - math.exp(-t / self.tau_ramp)) * scalar_carrier(2.0 * math.pi * self.f0 * t)
+        times = np.asarray(t, dtype=np.float64)
+        return _float_or_array((1.0 - np.exp(-times / self.tau_ramp)) * array_carrier(2.0 * np.pi * self.f0 * times), t)
 
     def __call__(self, t):
-        if isinstance(t, (float, int)):
-            return (1.0 - math.exp(-t / self.tau_ramp)) * math.sin(2.0 * math.pi * self.f0 * t)
-        ramp, phase = self._ramp_and_phase(t)
-        return _float_or_array(ramp * np.sin(phase), t)
+        return self._carried(t, math.sin, np.sin)
 
     def quadrature(self, t):
         """Ramp times cos(2 pi f0 t) (the wave is ramp times sin)."""
-        if isinstance(t, (float, int)):
-            return (1.0 - math.exp(-t / self.tau_ramp)) * math.cos(2.0 * math.pi * self.f0 * t)
-        ramp, phase = self._ramp_and_phase(t)
-        return _float_or_array(ramp * np.cos(phase), t)
+        return self._carried(t, math.cos, np.cos)
 
     def spectral_limit(self):
         """None: the switch-on ramp's spectrum decays only algebraically (DFT monitors sample every step)."""

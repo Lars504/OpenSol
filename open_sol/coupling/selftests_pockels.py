@@ -6,9 +6,9 @@ import numpy as np
 from ..model.selftest_helpers import with_exact_cg
 from ..model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                           MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
-from .selftests import (_CELL, _CURRENTS_LINE_CELLS, _EM, _K0, _MODE_DOWN, _MODE_UP, _N_CELLS, _SIZE, _SLAB_X_RANGE,
-                        _discrete_wavenumber, _em_physics, _full_period_rectangle, _line_geometry, _mode_phase,
-                        _summaries, _unconverged_failures, _window_field, _wrap)
+from .selftests import (_CELL, _CURRENTS_LINE_CELLS, _EM, _K0, _N_CELLS, _SIZE, _SLAB_X_RANGE, _discrete_wavenumber,
+                        _em_physics, _full_period_rectangle, _line_geometry, _monitor_phases, _strip_outcome,
+                        _summaries, _unconverged_failures, _window_field)
 
 POCKELS_TYPE_NAME = 'electrostatics_em_pockels'   # = definitions.POCKELS_TYPE_NAME (definitions imports this module)
 _ELECTROSTATICS = 'electrostatics'                # instance name = type name = its default instance
@@ -97,13 +97,7 @@ def _check_pockels_strip(results_by_name):
     err_eps = max(eps_errors.values())
 
     # 3. phase between the mode monitors, biased minus reference
-    phases, n_eff = {}, {}
-    for run_name in (_REFERENCE, _BIASED):
-        for feature in (_MODE_UP, _MODE_DOWN):
-            phases[f'{run_name}_{feature}'], n_eff[f'{run_name}_{feature}'] = _mode_phase(results_by_name[run_name],
-                                                                                          feature)
-    dphi_measured = _wrap((phases[f'{_BIASED}_{_MODE_DOWN}'] - phases[f'{_BIASED}_{_MODE_UP}'])
-                          - (phases[f'{_REFERENCE}_{_MODE_DOWN}'] - phases[f'{_REFERENCE}_{_MODE_UP}']))
+    phases, n_eff, dphi_measured = _monitor_phases(results_by_name, _BIASED)
     dphi_predicted = -_CRYSTAL_LENGTH * float(_discrete_wavenumber(_INDEX + _INDEX_CHANGE['yy'])
                                               - _discrete_wavenumber(_INDEX))
     dphi_first_order = -_K0 * _INDEX_CHANGE['yy'] * _CRYSTAL_LENGTH   # -k0 1/2 n0^3 r33 |E| L
@@ -117,18 +111,13 @@ def _check_pockels_strip(results_by_name):
 
     normalized_errors = {'phase': err_phase / _PHASE_TOLERANCE, 'field': err_field / _FIELD_TOLERANCE,
                          'eps': err_eps / _EPS_TOLERANCE}
-    error = float(np.max(np.asarray(list(normalized_errors.values())))) + len(failed)   # NaN propagates
     details = {'err_phase': err_phase, 'err_field': err_field, 'err_eps': eps_errors,
-               'normalized_errors': normalized_errors, 'failed_checks': failed,
                'E_y_closed_V_per_m': _FIELD_Y, 'E_y_mean_V_per_m': float(np.mean(field_y)),
                'dn_closed': dict(_INDEX_CHANGE), 'dphi_measured_rad': dphi_measured,
                'dphi_predicted_rad': dphi_predicted, 'dphi_first_order_rad': dphi_first_order,
                'first_order_relative_difference': abs(dphi_measured - dphi_first_order) / abs(dphi_first_order),
-               'phase_positive_rad': phases, 'n_eff': n_eff,
-               'ticks': {run_name: int(summary['ticks']) for run_name, summary in summaries.items()},
-               'warnings': {run_name: list(summary['warnings']) for run_name, summary in summaries.items()}}
-    return {'measured': dphi_measured, 'expected': dphi_predicted, 'error': error, 'tolerance': 1.0,
-            'details': details}
+               'phase_positive_rad': phases, 'n_eff': n_eff}
+    return _strip_outcome(normalized_errors, failed, summaries, dphi_measured, dphi_predicted, details)
 
 
 # The Pockels-alone check runs inside pockels_phase_index_sum (selftests_index_sum.py), which shares its reference run.

@@ -526,7 +526,7 @@ class NonUniformGrid2D:
             f"  dt = {float(self.dt)*1e18:.3f} as"
         )
         if self.max_cell_ratio_x > 1.25 or self.max_cell_ratio_y > 1.25:
-            print(f"  WARNING: Adjacent ratio > 1.25 may cause spurious reflections.")
+            print("  WARNING: Adjacent ratio > 1.25 may cause spurious reflections.")
 
     @property
     def shape(self):
