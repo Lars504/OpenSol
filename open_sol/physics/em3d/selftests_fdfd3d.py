@@ -241,6 +241,15 @@ def _table_omegas(table):
             for row in table['rows']]
 
 
+def _add_band_checks(checks, run, found, expected, count):
+    """checks[run]: Re of the found omegas vs the real `expected` ones (inf unless `count` were found);
+    checks[run_inverse_q]: their largest 1/Q = 2 |Im| / Re (lossless: ~0)."""
+    checks[run] = (_pairwise_error([omega.real for omega in found], expected) if len(found) == count else math.inf,
+                   _RUN_TOLERANCE)
+    checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
+                                  _RUN_TOLERANCE)
+
+
 def _box_omegas(cells, frozen_eps):
     """Complex omega of every box mode in a medium of frozen complex eps."""
     return [C0 * math.sqrt(value) / cmath.sqrt(frozen_eps) for value in _box_wavenumbers(cells, float(np.float32(_CELL)))]
@@ -259,10 +268,7 @@ def _check_box(results_by_name):
     for run, results in results_by_name.items():
         found = _table_omegas(results.result(_PHYSICS_NAME, _TABLE))
         expected = _nearest(expected_all, omega_target, len(found))
-        checks[run] = (_pairwise_error([omega.real for omega in found], [omega.real for omega in expected])
-                       if len(found) == _RUN_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, [omega.real for omega in expected], _RUN_RESONANCES)
         details[run] = {'found_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in found],
                         'expected_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in expected]}
     if not results_by_name:
@@ -331,10 +337,7 @@ def _check_lattice(results_by_name):
         found = _table_omegas(results_by_name[run].result(_PHYSICS_NAME, _TABLE))
         omega_target = 2.0 * math.pi * C0 / _lattice_target(k_fraction)
         expected = _nearest(_lattice_omegas(k_fraction, float(np.float32(_CELL))), omega_target, len(found))
-        checks[run] = (_pairwise_error([omega.real for omega in found], [omega.real for omega in expected])
-                       if len(found) == _LATTICE_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, [omega.real for omega in expected], _LATTICE_RESONANCES)
         details[run] = {'found': [omega.real for omega in found], 'expected': [omega.real for omega in expected]}
     return _failed_count_result(checks, details)
 
@@ -552,10 +555,7 @@ def _check_bragg(results_by_name):
         found = _swept_omegas(derived, value_index)
         expected = _nearest(_bragg_omegas(k_fraction, _discrete_trace), omega_target, _BRAGG_RESONANCES)
         continuum = _bragg_omegas(k_fraction, _continuum_trace)
-        checks[run] = (_pairwise_error([omega.real for omega in found], expected)
-                       if len(found) == _BRAGG_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, expected, _BRAGG_RESONANCES)
         checks[f'{run}_continuum'] = (max((min(abs(value / reference - 1.0) for reference in continuum)
                                            for value in expected), default=math.inf) if continuum else math.inf,
                                       _BRAGG_CONTINUUM_TOLERANCE)

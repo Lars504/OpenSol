@@ -1,8 +1,6 @@
 """Self-tests of the em_fdtd_3d mirror faces (symmetry 2.5): a dipole pair in a full vacuum cube against one dipole in
 its x_lo-mirrored half (flux box, unfolded z-cut fields, unfolded far field), and a TFSF plane-wave box opening onto
 an x_lo / y_lo mirror plane against the full box (scattered flux box, a mid-pulse z-cut snapshot)."""
-import math
-
 import numpy as np
 
 from ...model.schema import SelfTestCase

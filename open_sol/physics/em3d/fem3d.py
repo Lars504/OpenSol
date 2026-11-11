@@ -168,8 +168,8 @@ class FEMPhysics3D:
     untagged elements) or a callable omega -> ((m, 3) complex eps, (m,) complex 1 / mu, (m,) bool pec) per element
     (the model path, em3d fem_solver3d), a BoundaryConfig3D (cpml faces need the mesh's PML shell, periodic faces
     matching mesh sides; bloch_k as em_fdfd_3d), element_order
-    1 / 2, the target wavelength [m]; solve_eigenfrequencies / select_resonance as em_fdfd_3d, fields_at / plane_cut
-    sample the selected resonance; invalidate() after a material change."""
+    1 / 2, the target wavelength [m]; solve_eigenfrequencies / select_resonance as em_fdfd_3d, fields_at
+    samples the selected resonance; invalidate() after a material change."""
 
     def __init__(self, mesh, boundary_config, materials=None, background=None, element_order=2, wavelength=1.55e-6,
                  eigen_solver=None):
@@ -346,22 +346,6 @@ class FEMPhysics3D:
         element_inverse_mu = np.where(elements >= 0, self._inverse_mu[np.maximum(elements, 0)], np.nan)
         h_field = 1j * curl * element_inverse_mu[:, None] / (self.resonance_omega * MU0)
         return {'e': e_field, 'h': h_field}
-
-    def plane_cut(self, axis, position, counts=(64, 64)) -> dict:
-        """Fields of the selected resonance on a counts grid over the window cut normal to axis (0 / 1 / 2) at
-        position [m]: {'u', 'v' (1D coordinates), 'e', 'h' ((n_u, n_v, 3)), 'e_abs' ((n_u, n_v))}."""
-        window = self.mesh.window
-        others = [k for k in range(3) if k != axis]
-        u = np.linspace(window[others[0]], window[3 + others[0]], int(counts[0]))
-        v = np.linspace(window[others[1]], window[3 + others[1]], int(counts[1]))
-        grid_u, grid_v = np.meshgrid(u, v, indexing='ij')
-        points = np.empty(grid_u.shape + (3,))
-        points[..., axis] = float(position)
-        points[..., others[0]], points[..., others[1]] = grid_u, grid_v
-        fields = self.fields_at(points.reshape(-1, 3))
-        shape = grid_u.shape + (3,)
-        e_field, h_field = fields['e'].reshape(shape), fields['h'].reshape(shape)
-        return {'u': u, 'v': v, 'e': e_field, 'h': h_field, 'e_abs': np.sqrt((np.abs(e_field) ** 2).sum(axis=-1))}
 
     def work_counters(self) -> dict:
         """Assemblies and their host seconds (+ the eigen solver's counters when it is private)."""

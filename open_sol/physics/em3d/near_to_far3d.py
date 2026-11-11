@@ -97,18 +97,15 @@ class NearToFar3D:
         return radiation_n, radiation_l
 
     def far_field_amplitude(self, directions):
-        """Complex (n_f, n_dir, 3) r E_far / sqrt(eta0) (Cartesian, a.u.) toward the unit directions: far_field is the
-        sum of its |.|^2 over the components (parity sectors combine it per angle)."""
+        """Complex (n_f, n_dir, 3) r E_far / sqrt(eta0) (Cartesian, a.u.) toward the unit directions: the radiated power
+        per steradian (dt-weighted, no 1/2) is the sum of its |.|^2 over the components (parity sectors combine it per
+        angle)."""
         directions = np.asarray(directions, dtype=np.float64)
         radiation_n, radiation_l = self.radiation_vectors(directions)
         along = np.sum(radiation_n * directions[None], axis=2, keepdims=True)
         field = float(ETA0) * (radiation_n - along * directions[None]) - np.cross(directions[None], radiation_l)
         wavenumbers = 2.0 * np.pi * self.frequencies / C0
         return (wavenumbers / (4.0 * np.pi * np.sqrt(float(ETA0))))[:, None, None] * field
-
-    def far_field(self, directions):
-        """Radiated power per steradian (n_f, n_dir) float64 a.u. (dt-weighted, no 1/2) toward the unit directions."""
-        return np.sum(np.abs(self.far_field_amplitude(directions)) ** 2, axis=2)
 
 
 def cut_plane_directions(cut_plane, n_angles):

@@ -48,7 +48,6 @@ class HarmonicAccumulator3D:
         self.frequencies = _check_frequencies(frequencies)
         self.dt = float(engine.dt)
         self.sample_interval = dft_sample_interval(self.dt, physics.sources, [self.frequencies])
-        shape = (self.frequencies.size,) + tuple(cells.stop - cells.start for cells in self.window)
         self.xp = xp = physics.domain.xp
         # Per component its accumulated grid box: the window plus the lo face row of window cell 0 along the
         # component's own axis when the window starts inside the grid (padding / mirror ghost: the same lo face the
