@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, K_B
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
+from ...model.selftest_helpers import float32_value, float_list, solver_role
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverSpec, StudySpec)
 
@@ -29,14 +29,9 @@ WATER_LIKE = {'k': 0.6, 'rho': 1000.0, 'cp': 4000.0}               # W/(m*K), kg
 NIOBATE_LIKE = {'k': 4.6, 'rho': 4640.0, 'cp': 628.0}
 
 
-def _stored(value):
-    """value as the float32 material arrays hold it, back in float64."""
-    return float(np.float32(value))
-
-
 def _capacity(properties):
     """rho * cp [J/(m^3*K)] of the float32-stored material values, multiplied in float64 like the noise operator."""
-    return _stored(properties['rho']) * _stored(properties['cp'])
+    return float32_value(properties['rho']) * float32_value(properties['cp'])
 
 
 def _log_band(start, stop, count):
@@ -80,7 +75,7 @@ COSINE_TOLERANCE = 1e-5            # on the max relative error; float32 weights 
 def _cosine_mode_conductance():
     """K_m [W/(m^3*K)] of the cosine mode: k ((2/dx)^2 sin^2(pi / (2 N)) + q^2) with the float32-stored k."""
     in_plane = (2.0 / COSINE_CELL) ** 2 * math.sin(math.pi / (2.0 * COSINE_N_X)) ** 2
-    return _stored(WATER_LIKE['k']) * (in_plane + COSINE_WAVENUMBER ** 2)
+    return float32_value(WATER_LIKE['k']) * (in_plane + COSINE_WAVENUMBER ** 2)
 
 
 def _cosine_mode_weight_integral():
@@ -153,7 +148,7 @@ SUM_RULE_TOLERANCE = 1e-3
 
 
 def _diffusivity(properties):
-    return _stored(properties['k']) / _capacity(properties)
+    return float32_value(properties['k']) / _capacity(properties)
 
 
 def _relaxation_band():
@@ -316,13 +311,13 @@ def _pec_box_closed_form():
     included) of the forward phase noise."""
     omega = 2.0 * math.pi * C0 / BOX_WAVELENGTH
     k0 = omega / C0
-    index = math.sqrt(_stored(BOX_PERMITTIVITY))
+    index = math.sqrt(float32_value(BOX_PERMITTIVITY))
     transverse = (2.0 / BOX_CELL) ** 2 * math.sin(math.pi / (2.0 * BOX_CELLS[1])) ** 2
     beta = math.sqrt((index * k0) ** 2 - transverse)
     field_squared = 4.0 * omega / (EPS0 * C0 ** 2) / (beta * BOX_WIDTH * BOX_HEIGHT)   # E0^2, mu0 = 1 / (eps0 c^2)
-    amplitude = omega * EPS0 * index * _stored(BOX_DNDT) * field_squared / 2.0          # W0 [1/(K m^3)]
+    amplitude = omega * EPS0 * index * float32_value(BOX_DNDT) * field_squared / 2.0    # W0 [1/(K m^3)]
     capacity = _capacity(SILICA_LIKE)
-    rate = (_stored(SILICA_LIKE['k']) / capacity * (2.0 / BOX_CELL) ** 2
+    rate = (float32_value(SILICA_LIKE['k']) / capacity * (2.0 / BOX_CELL) ** 2
             * math.sin(math.pi / BOX_CELLS[1]) ** 2)
     scale = K_B * REFERENCE_TEMPERATURE ** 2 * INTERACTION_LENGTH * amplitude ** 2 * BOX_WIDTH * BOX_HEIGHT / capacity
     return {'n_eff': beta / k0, 'rate': rate, 'variance': 0.375 * scale, 'static_variance': 0.25 * scale,
@@ -471,9 +466,8 @@ def _check_line_block(results_by_name):
         other = np.asarray(batched['series'].get(name, []), dtype=np.float64)
         errors[name] = (float(np.max(np.abs(other - values))) / psd_scale if other.shape == values.shape
                         else math.inf)   # NaN propagates
-    solvers = results.summary().get('solvers') or {}
-    reference_type = (((solvers.get(PHYSICS_NAME) or {}).get('roles') or {}).get('shifted') or {}).get('type')
-    shifted = ((solvers.get(LINE_BLOCK_PHYSICS_NAME) or {}).get('roles') or {}).get('shifted') or {}
+    reference_type = solver_role(results, PHYSICS_NAME, 'shifted').get('type')
+    shifted = solver_role(results, LINE_BLOCK_PHYSICS_NAME, 'shifted')
     work = shifted.get('counters') or {}
     errors['rejected_shifts'] = (float(work.get('rejected_shifts', math.inf))
                                  if shifted.get('type') == 'line_block' and reference_type == 'sparse_direct'

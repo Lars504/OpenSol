@@ -23,7 +23,8 @@ from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZAT
                                          eigen_factorization, eigen_role, eigen_search_counts, element_order,
                                          evaluates_to, harmonic_frequency_items, host_direct_back_end, on_triangles,
                                          scalar_harmonic_build_items, optional_material_param,
-                                         reduced_sweep_memory_items, reports_model_checks, resolved_back_end, squeeze_film_gas_issues, validate_points_inside)
+                                         reduced_sweep_memory_items, reports_model_checks, resolved_back_end,
+                                         selected_material_data, squeeze_film_gas_issues, validate_points_inside)
 from ...model.geometry import expand_entities
 from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
                              resolve_values, solver_backend)
@@ -777,16 +778,9 @@ def _material_issues(vctx, physics_spec, path, one_d):
     compressive tension (info), tension_xy in a 1D model (warning: ignored)."""
     if not reports_model_checks(vctx, physics_spec, MEMBRANE_TYPE_NAME):
         return []
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     issues, any_mass = [], False
     parameters = vctx.parameters
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for material, properties, _ in selected_material_data(vctx.spec):   # unresolved ones: reported at the material
         density = properties.get('areal_density')
         any_mass = any_mass or evaluates_to(density, parameters, lambda value: value > 0.0)
         material_path = ('material', material.name)
@@ -1009,15 +1003,8 @@ def _study_values(spec, registry, parameters) -> dict:
 
 def _loss_factors(vctx):
     """Set of the loss_factor values of the selected materials (unset = 0), None when one is not a plain number."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     values = set()
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for _, properties, _ in selected_material_data(vctx.spec):   # unresolved ones: reported at the material
         seen = []
         value = properties.get(LOSS_ARRAY)
         if value is None:
@@ -1118,9 +1105,10 @@ def _plate(context) -> bool:
     return bool(context.material_sets(BENDING_ARRAY))
 
 
-def _port_count(context) -> int:
+def _feature_count(context, *types) -> int:
+    """Enabled features of these types of the estimated physics (0 without its physics_spec)."""
     physics_spec = getattr(context, 'physics_spec', None)
-    return len(_enabled_features(physics_spec, 'port')) if physics_spec is not None else 0
+    return len(_enabled_features(physics_spec, *types)) if physics_spec is not None else 0
 
 
 def _discretisation(settings_values, mesh, context):
@@ -1131,7 +1119,7 @@ def _discretisation(settings_values, mesh, context):
         dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
         entries = lagrange_entries_per_dof(mesh, order) * dofs * (BENDING_ENTRY_FACTOR if plate else 1.0)
         entries += (PORT_ENTRIES_PER_NODE * (PLATE_PORT_ENTRY_FACTOR if plate else 1.0) * int(mesh.n_nodes)
-                    * _port_count(context))
+                    * _feature_count(context, 'port'))
         return dofs, int(mesh.n_elements), int(entries), int(FEM_FILL_FACTOR * host_lu_bytes(dofs)), True
     cells = window_cell_count(mesh)
     if plate:
@@ -1145,13 +1133,7 @@ def _discretisation(settings_values, mesh, context):
 
 def _requested_resonances(context) -> int:
     """n_resonances of the model's study (1 when it does not resolve or is absent)."""
-    study = context.spec.study
-    try:
-        values = resolve_values(context.registry.study_type(study.type).params,
-                                study.settings if isinstance(study.settings, dict) else {}, context.parameters)
-    except (KeyError, ValueError, TypeError):   # reported by validate
-        values = {}
-    return int(values.get('n_resonances') or 1)
+    return int(_study_values(context.spec, context.registry, context.parameters).get('n_resonances') or 1)
 
 
 def _complex_pencil(settings_values, context) -> bool:
@@ -1290,7 +1272,7 @@ def _build_items(settings_values, mesh, context, nnz) -> tuple:
     items = list(scalar_harmonic_build_items(
         mesh, order, elements=int(mesh.n_elements), dofs=dofs, stored_entries=nnz,
         pml=bool(_pml_faces(settings_values)), complex_stiffness=bool(context.material_sets(LOSS_ARRAY)),
-        extra_stiffness_parts=int(plate) + int(bool(_port_count(context))), counter=assemblies,
+        extra_stiffness_parts=int(plate) + int(bool(_feature_count(context, 'port'))), counter=assemblies,
         seconds_counter=seconds))
     if plate:   # bending_fem element blocks; interior edges <= mesh edges, 12 x 12 blocks of both sides' P2 dofs
         edges = float(mesh.n_edges)
@@ -1299,8 +1281,7 @@ def _build_items(settings_values, mesh, context, nnz) -> tuple:
             te.HostStream(PLATE_EDGE_BYTES_PER_POINT_ENTRY * _PLATE_EDGE_POINTS * block_entries
                           + ASSEMBLY_BYTES_PER_COO_ENTRY * (block_entries + 36.0 * float(mesh.n_elements))),
             te.PythonCalls(PLATE_EDGE_CALLS_PER_CHUNK * math.ceil(edges / CHUNK_ITEMS))), seconds_counter=seconds))
-    physics_spec = getattr(context, 'physics_spec', None)
-    guides = len(_enabled_features(physics_spec, 'port', 'mode_projection')) if physics_spec is not None else 0
+    guides = _feature_count(context, 'port', 'mode_projection')
     if guides:
         items.append(te.TimeItem('port / mode projection set-up', 'setup', float(guides), 'exact',
                                  (te.HostStream(PORT_SETUP_BYTES_PER_EDGE * float(mesh.n_edges)),
@@ -1347,15 +1328,15 @@ def _time_estimate(settings_values, mesh, context):
         stiffness_bytes = 16 if pml or context.material_sets(LOSS_ARRAY) else 8
         # ports add their DtN block per frequency (frequency_terms): on a DevicePencil at slots mapped once
         # (factorize_pencil extra=, a few entries), else with the reduced operator by pattern_sum on the host
-        ports = bool(_port_count(context))
+        ports = _feature_count(context, 'port')
         frequency_items = harmonic_frequency_items(
             unknowns, nnz, sweep, device_pencil=cudss, term_value_bytes=(stiffness_bytes, 16 if pml else 8),
-            frequency_terms=ports)
+            frequency_terms=bool(ports))
         port_items = ()
-        if triangles and _plate(context) and _port_count(context):   # dense strip pencil per port and frequency
+        if triangles and _plate(context) and ports:   # dense strip pencil per port and frequency
             strip = 4.0 * math.sqrt(float(mesh.n_nodes))
             port_items = (te.TimeItem('plate port strip modes (per port and frequency)', 'solve',
-                                      _port_count(context) * sweep['factorizations'], sweep['factorizations_kind'],
+                                      ports * sweep['factorizations'], sweep['factorizations_kind'],
                                       (te.DenseFlops((PLATE_STRIP_EIG_FLOPS + PLATE_STRIP_DTN_FLOPS) * strip ** 3,
                                                      host=True), te.PythonCalls(60))),)
         parts = [build, te.TimeEstimate((*frequency_items, *port_items, *reduced_sweep_time_items(sweep, unknowns))),
@@ -1414,10 +1395,7 @@ def _film_unknowns(mesh, n_selected_elements=None) -> int:
 def _squeeze_film_time(settings_values, mesh, context):
     """Eigenfrequency study with enabled squeeze films on triangles: per film one set-up and factor (incompressible:
     reused for every mode), per film and resonance a complex SuperLU factor + solve (bounded); None without films."""
-    physics_spec = getattr(context, 'physics_spec', None)
-    if physics_spec is None or mesh.kind != 'triangles':
-        return None
-    films = len(_enabled_features(physics_spec, _SQUEEZE_FILM))
+    films = _feature_count(context, _SQUEEZE_FILM) if mesh.kind == 'triangles' else 0
     if not films:
         return None
     unknowns = float(_film_unknowns(mesh))

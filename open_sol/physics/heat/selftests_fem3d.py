@@ -9,6 +9,7 @@ import numpy as np
 from ...model.schema import SelfTestCase
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
+from .selftests_fem import _decay_rate, _probe_rise   # same PHYSICS_NAME and REFERENCE_T
 
 HEAT_TYPE_NAME = 'heat'            # = definition.PHYSICS_TYPE_NAME (definition imports this module)
 PHYSICS_NAME = 'heat'
@@ -43,12 +44,6 @@ INITIAL_RISE = 100.0               # K
 TRANSIENT_TOLERANCE = 3e-4
 
 _BACKEND_TOLERANCE = 1e-5          # relative probe-rise difference cpu vs gpu (float32 T, exact solves)
-
-
-def _probe_rise(results, feature):
-    """Last sample of a temperature probe minus T0 [K]."""
-    values = np.asarray(results.result(PHYSICS_NAME, feature)['values'], dtype=np.float64)
-    return float(values[-1] - REFERENCE_T) if values.size else math.nan
 
 
 def _probe_points(size):
@@ -169,23 +164,12 @@ def _transient_runs():
 def _check_transient(results_by_name):
     """Decay rate of the centre probe between the TRANSIENT_WINDOW steps against ln(1 + mu dt) / dt, mu = D pi^2 / L^2;
     error = its relative deviation."""
-    probe = results_by_name['slab'].result(PHYSICS_NAME, 'centre')
-    times = np.asarray(probe['t'], dtype=np.float64)
-    rises = np.asarray(probe['values'], dtype=np.float64) - REFERENCE_T
-    samples = []
-    for step in TRANSIENT_WINDOW:
-        index = int(np.argmin(np.abs(times - step * TRANSIENT_STEP))) if times.size else -1
-        found = index >= 0 and abs(times[index] - step * TRANSIENT_STEP) <= 1e-6 * TRANSIENT_STEP
-        samples.append(rises[index] if found else math.nan)
-    diffusivity = TRANSIENT_PROPERTIES['k'] / (TRANSIENT_PROPERTIES['rho'] * TRANSIENT_PROPERTIES['cp'])
-    mode_rate = diffusivity * math.pi ** 2 / TRANSIENT_SIZE[0] ** 2
-    expected = math.log1p(mode_rate * TRANSIENT_STEP) / TRANSIENT_STEP
-    measured = (math.log(samples[0] / samples[1]) / ((TRANSIENT_WINDOW[1] - TRANSIENT_WINDOW[0]) * TRANSIENT_STEP)
-                if all(value > 0.0 for value in samples) else math.nan)
+    measured, expected, samples, mode_rate, n_samples = _decay_rate(
+        results_by_name['slab'], TRANSIENT_STEP, TRANSIENT_WINDOW, TRANSIENT_PROPERTIES, TRANSIENT_SIZE[0])
     error = abs(measured / expected - 1.0)
     return {'measured': measured, 'expected': expected, 'error': error, 'tolerance': TRANSIENT_TOLERANCE,
             'details': {'rises_K': samples, 'steps': TRANSIENT_WINDOW, 'continuum_rate_per_s': mode_rate,
-                        'n_samples': int(times.size)}}
+                        'n_samples': n_samples}}
 
 
 # ---- cpu vs gpu ----

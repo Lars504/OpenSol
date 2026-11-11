@@ -3,10 +3,10 @@ vented gas gap against the closed-form Reynolds pressure, full disc and a half m
 import math
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import (_AREAL_DENSITY, _DRUM_H, _DRUM_RADIUS, _DRUM_ZEROS, _FILM, _MEMBRANE_TYPE, _PHYSICS, _TABLE,
-                        _solver_defaults, _triangles)
+                        _triangles)
 
 _FILM_TYPE = 'squeeze_film_damping'   # = definition._SQUEEZE_FILM (selftests never import the definition)
 _VISCOSITY = 1.81e-5            # Pa s
@@ -41,7 +41,7 @@ def _drum_film_specs():
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
             FeatureSpec('rim', 'clamped', ['drum']), FeatureSpec(_TABLE, 'resonance_table'),
             *_film_features(_FILMS)])],
-        meshes=[_triangles(_DRUM_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_DRUM_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': 1}))
     half = ModelSpec(
         title='Self-test: squeeze film under a half clamped circular membrane (symmetry face sealed)',
@@ -55,7 +55,7 @@ def _drum_film_specs():
             FeatureSpec('rim', 'clamped', ['frame']), FeatureSpec('mirror', 'symmetry', ['x_hi']),
             FeatureSpec(_TABLE, 'resonance_table'),
             *_film_features(('film_incompressible', 'film_compressible'))])],
-        meshes=[_triangles(_DRUM_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_DRUM_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': 1}))
     return {'full': full, 'half': half}
 
