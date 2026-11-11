@@ -116,15 +116,18 @@ def _z_expected_profiles():
             'z_source': (z_centres, source_discrete, source_closed, source_rise)}
 
 
-def _check_z_expressions(results_by_name):
-    """Largest deviation of each run's mid-height cut and z moments from the discrete 1D profile, / its rise."""
+def _z_profile_record(results_by_name, profiles, tolerance, solver_details=False):
+    """Case record of the largest deviation of each run's mid-height cut and z moments from its discrete 1D profile
+    ({run: (z centres, discrete T, closed-form T, rise)}), / its rise; solver_details: each run's details also hold
+    its iterations and warnings."""
     errors, details = {}, {}
-    for name, (z_centres, discrete, closed, rise) in _z_expected_profiles().items():
+    for name, (z_centres, discrete, closed, rise) in profiles.items():
         results = results_by_name[name]
         values, _, _, z_cut = _cut_plane(results)
         cut_index = int(np.argmin(np.abs(z_centres - z_cut)))
         cut_deviation = float(np.max(np.abs(values - discrete[cut_index])))   # NaN propagates
-        derived = results.summary()['derived']
+        summary = results.summary()
+        derived = summary['derived']
         moment_deviations = {}
         for power in _Z_MOMENT_POWERS:
             expected = float(np.mean((discrete - WALL_TEMPERATURE) * (z_centres / BOX_SIZE[2]) ** power))
@@ -135,9 +138,16 @@ def _check_z_expressions(results_by_name):
         details[name] = {'cut_deviation_K': cut_deviation, 'z_cut_m': z_cut,
                          'moment_deviations_K': {str(power): value for power, value in moment_deviations.items()},
                          'rise_K': rise, 'closed_form_gap_relative': float(np.max(np.abs(discrete - closed))) / rise}
+        if solver_details:
+            details[name].update(iterations=summary.get('ticks'), warnings=list(summary.get('warnings') or []))
     error = max(errors.values())
     return {'measured': error, 'expected': 0.0, 'error': error,
-            'tolerance': EXACT_IDENTITY_TOLERANCE, 'details': {'relative_errors': errors, **details}}
+            'tolerance': tolerance, 'details': {'relative_errors': errors, **details}}
+
+
+def _check_z_expressions(results_by_name):
+    """Largest deviation of each run's mid-height cut and z moments from the discrete 1D profile, / its rise."""
+    return _z_profile_record(results_by_name, _z_expected_profiles(), EXACT_IDENTITY_TOLERANCE)
 
 
 # ---- heat_3d_z_couplings (igor 1.10): z in a field_transfer expression and in a state-dependent property ----
@@ -205,28 +215,7 @@ def _z_coupling_profiles():
 
 def _check_z_couplings(results_by_name):
     """Largest deviation of each run's mid-height cut and z moments from its 1D finite-volume profile, / its rise."""
-    errors, details = {}, {}
-    for name, (z_centres, discrete, closed, rise) in _z_coupling_profiles().items():
-        results = results_by_name[name]
-        values, _, _, z_cut = _cut_plane(results)
-        cut_index = int(np.argmin(np.abs(z_centres - z_cut)))
-        cut_deviation = float(np.max(np.abs(values - discrete[cut_index])))   # NaN propagates
-        summary = results.summary()
-        derived = summary['derived']
-        moment_deviations = {}
-        for power in _Z_MOMENT_POWERS:
-            expected = float(np.mean((discrete - WALL_TEMPERATURE) * (z_centres / BOX_SIZE[2]) ** power))
-            moment_deviations[power] = abs(float(derived[_z_moment_name(power)]) - expected)   # float() reads 'nan'
-        deviations = [cut_deviation, *moment_deviations.values()]
-        finite = all(math.isfinite(value) for value in deviations)
-        errors[name] = max(deviations) / rise if finite else math.inf
-        details[name] = {'cut_deviation_K': cut_deviation, 'z_cut_m': z_cut,
-                         'moment_deviations_K': {str(power): value for power, value in moment_deviations.items()},
-                         'rise_K': rise, 'closed_form_gap_relative': float(np.max(np.abs(discrete - closed))) / rise,
-                         'iterations': summary.get('ticks'), 'warnings': list(summary.get('warnings') or [])}
-    error = max(errors.values())
-    return {'measured': error, 'expected': 0.0, 'error': error,
-            'tolerance': Z_COUPLED_TOLERANCE, 'details': {'relative_errors': errors, **details}}
+    return _z_profile_record(results_by_name, _z_coupling_profiles(), Z_COUPLED_TOLERANCE, solver_details=True)
 
 
 # ---- heat_3d_graded_z_robin (igor 1.4): the Robin slab on a graded z axis ----

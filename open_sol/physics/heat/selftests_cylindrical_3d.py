@@ -9,11 +9,12 @@ import numpy as np
 
 from ...core.constants import FACES_3D
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import cell_edges, max_relative_error, with_exact_cg
+from ...model.selftest_helpers import cell_edges, max_relative_error, with_exact_cg, worst_result
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec, StudySpec)
+from .selftests_coordinates import _axis_geometry, _geometric_widths, _missed_refusals, _radial_chain, _set_dirichlet
 
-CONDUCTIVITY = 2.0                 # W/(m*K)
+CONDUCTIVITY = 2.0                 # W/(m*K), = selftests_coordinates.CONDUCTIVITY (its _radial_chain)
 POWER_DENSITY = 1e10               # W/m^3 (exact in float32)
 INNER_RISE = 10.0                  # K, Dirichlet rise of the annulus' inner face
 CG_TOLERANCE = 1e-13               # float64 Jacobi-PCG, relative to ||b||
@@ -33,12 +34,6 @@ WRAP_CELLS = 24                    # uniform angle cells of the wrapped runs
 WRAP_SECTORS = 4                   # antiperiodic run: one C_4 sector
 
 
-def _geometric_widths(length, n_cells, ratio):
-    """n_cells widths growing by ratio, summing to length."""
-    widths = ratio ** np.arange(n_cells, dtype=np.float64)
-    return length * widths / widths.sum()
-
-
 def _sector_heat(dr, d_angle, dz, radius_min, angle_wrap='none', angle_min=0.25):
     """(stationary HeatPhysics with T0 = 0 and exact float64 CG, its padding-free cpu Domain3D) on a cylindrical
     sector of the given widths, k = CONDUCTIVITY along r, phi and z."""
@@ -56,13 +51,6 @@ def _sector_heat(dr, d_angle, dz, radius_min, angle_wrap='none', angle_min=0.25)
     return heat, domain
 
 
-def _axis_geometry(domain, axis, origin=0.0):
-    """(float64 widths, edges, centres) of one axis of the domain (float32 cells), shifted by origin (radius_min)."""
-    widths = np.asarray(domain.cell_widths()[axis], dtype=np.float64)
-    edges = origin + np.asarray(domain.cell_edges()[axis], dtype=np.float64)
-    return widths, edges, 0.5 * (edges[:-1] + edges[1:])
-
-
 def _full(domain, values, dtype=np.float32):
     """Full-grid host array of values broadcastable to the (nx, ny, nz) grid (the window: no padding)."""
     return np.ascontiguousarray(np.broadcast_to(values, domain.grid.shape), dtype=dtype)
@@ -70,12 +58,6 @@ def _full(domain, values, dtype=np.float32):
 
 def _everywhere(domain):
     return np.ones(domain.grid.shape, dtype=bool)
-
-
-def _set_dirichlet(heat, faces_values):
-    from ...core.fv_diffusion import BCSide
-    for face, value in faces_values.items():
-        heat.set_face_bc(face, BCSide('dirichlet', value=value))
 
 
 def _solved_rise(heat):
@@ -118,18 +100,11 @@ def _check_geometry(_results):
     disk = window_metric_3d(dr, d_angle, dz, Coordinates('polar'))
     errors['axis_face'] = float(np.max(np.abs(disk.face_area[0].full()[0])))
 
-    refused = 0
-    for make in (lambda: window_metric_3d(dr, np.full(8, math.pi), dz, Coordinates('polar')),
-                 lambda: window_metric_3d(dr, np.ones(1), dz, Coordinates('polar', line=True)),
-                 lambda: window_metric_3d(dr, d_angle, np.zeros(3))):
-        try:
-            make()
-        except ValueError:
-            refused += 1
-    errors['refusals'] = float(3 - refused)
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': GEOMETRY_TOLERANCE,
-            'details': {'errors': errors}}
+    errors['refusals'] = _missed_refusals((
+        lambda: window_metric_3d(dr, np.full(8, math.pi), dz, Coordinates('polar')),
+        lambda: window_metric_3d(dr, np.ones(1), dz, Coordinates('polar', line=True)),
+        lambda: window_metric_3d(dr, d_angle, np.zeros(3))))
+    return worst_result(errors, GEOMETRY_TOLERANCE)
 
 
 # ---- heat_cylindrical_sector_3d (CPU) ----
@@ -153,16 +128,6 @@ def _sector_disk():
             'disk_cell_volume': abs(heat.system.cell_volume(*cell) / volume - 1.0)}
 
 
-def _radial_chain(widths, faces, inner_value):
-    """Exact discrete centre values and flow per radian and metre of height of a source-free radial chain between
-    Dirichlet faces faces[0] (inner_value) and faces[-1] (0): half cells 2 k r_f / w, interior 2 k r_f / (w_l + w_r)."""
-    resistances = np.concatenate(([widths[0] / (2.0 * CONDUCTIVITY * faces[0])],
-                                  (widths[:-1] + widths[1:]) / (2.0 * CONDUCTIVITY * faces[1:-1]),
-                                  [widths[-1] / (2.0 * CONDUCTIVITY * faces[-1])]))
-    flow = inner_value / float(np.sum(resistances))
-    return inner_value - flow * np.cumsum(resistances)[:-1], flow
-
-
 def _sector_annulus():
     """Source-free annulus between Dirichlet r faces (graded dr, phi and z): the exact series chain in every cell and
     the inflow through x_lo = chain flow x phi span x height."""
@@ -172,7 +137,7 @@ def _sector_annulus():
     _set_dirichlet(heat, {'x_lo': INNER_RISE, 'x_hi': 0.0})
     rise = _solved_rise(heat)
     widths, edges, _ = _axis_geometry(domain, 0, ANNULUS_INNER)
-    expected, flow = _radial_chain(widths, edges, INNER_RISE)
+    expected, flow = _radial_chain(widths, edges, 1.0, INNER_RISE)   # areas r_f: flow per radian and metre of height
     expected_inflow = flow * float(np.sum(domain.cell_widths()[1])) * float(np.sum(domain.cell_widths()[2]))
     return {'annulus_rise': max_relative_error(rise, expected[:, None, None], INNER_RISE),
             'annulus_inflow': abs(heat.system.face_inward_flux('x_lo') / expected_inflow - 1.0)}
@@ -298,14 +263,7 @@ def _wrap_refusals():
     def beyond_full_turn():
         _sector_heat(np.full(4, 1e-5), np.full(8, math.pi / 3.0), np.full(2, 1e-5), ANGULAR_INNER)
 
-    makers = (unanchored_periodic, wrapped_face_condition, two_angle_cells, beyond_full_turn)
-    refused = 0
-    for make in makers:
-        try:
-            make()
-        except ValueError:
-            refused += 1
-    return float(len(makers) - refused)
+    return _missed_refusals((unanchored_periodic, wrapped_face_condition, two_angle_cells, beyond_full_turn))
 
 
 def _check_sector(_results):
@@ -316,9 +274,7 @@ def _check_sector(_results):
     errors.update(_periodic_ring())
     errors.update(_antiperiodic_sector())
     errors['refusals'] = _wrap_refusals()
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': EXACT_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, EXACT_TOLERANCE)
 
 
 # ---- model path: DomainSpec coordinates polar + size_z (cpu backend) ----
@@ -485,9 +441,7 @@ def _layer_errors(results):
 def _check_model_runs(results_by_name):
     errors = _ring_errors(results_by_name['ring'])
     errors.update(_layer_errors(results_by_name['layers']))
-    error = float(np.max(np.asarray(list(errors.values()), dtype=np.float64)))   # NaN propagates
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': MODEL_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, MODEL_TOLERANCE)
 
 
 def _refusal_specs():
@@ -551,9 +505,7 @@ def _check_model_paths(_results):
     for label, (spec, head, text) in _refusal_specs().items():
         errors[f'refused_{label}'] = float(not any(issue.level == 'error' and issue.path[:1] == (head,)
                                                    and text in issue.message for issue in validate(spec, registry)))
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': GEOMETRY_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, GEOMETRY_TOLERANCE)
 
 
 CYLINDRICAL_3D_SELFTEST_CASES = (
