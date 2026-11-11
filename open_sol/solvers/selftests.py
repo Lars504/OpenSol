@@ -7,7 +7,7 @@ against scipy (skipped without their wrappers)."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import norm_relative_error
+from ..model.selftest_helpers import norm_relative_error, skip_without_cudss
 
 _GRID = (30, 20)                  # nx, ny of the synthetic operators (i * ny + j unknown order)
 _SEED = 20261017
@@ -27,12 +27,21 @@ def _laplacian(nx, ny):
             + sparse.kron(sparse.identity(nx), second_difference(ny))).tocsr()
 
 
-def _outcome(errors, failed, details):
-    """SelfTestCase record: worst relative error, or _STRUCTURAL_FAILURE when a sub-check failed."""
-    measured = max(errors.values())
+def _outcome(errors, failed, details, tolerance=_PARITY_TOLERANCE):
+    """SelfTestCase record: worst relative error ({}: 0), or _STRUCTURAL_FAILURE when a sub-check failed."""
+    measured = max(errors.values(), default=0.0)
     error = max(measured, _STRUCTURAL_FAILURE) if failed else measured
-    return {'measured': measured, 'expected': 0.0, 'error': error, 'tolerance': _PARITY_TOLERANCE,
+    return {'measured': measured, 'expected': 0.0, 'error': error, 'tolerance': tolerance,
             'details': {'failed': failed, 'relative_errors': errors, **details}}
+
+
+def _refused(failed, name, function, exceptions):
+    """Append name to failed unless function() raises one of exceptions."""
+    try:
+        function()
+    except exceptions:
+        return
+    failed.append(name)
 
 
 def _backends():
@@ -111,11 +120,8 @@ def _check_pcg(results_by_name):
             twin = 'gpu_' + key[len('cpu_'):]
             if abs(iterations[key] - iterations[twin]) > CG_CHECK_INTERVAL:   # one residual-check block of rounding
                 failed.append(f'{key}_iterations_match_gpu')
-        try:
-            PCGSolver(backend='cpu').factorize(_device_matrix('gpu', matrix))
-            failed.append('cpu_refuses_device_operator')
-        except TypeError:
-            pass
+        _refused(failed, 'cpu_refuses_device_operator',
+                 lambda: PCGSolver(backend='cpu').factorize(_device_matrix('gpu', matrix)), TypeError)
     return _outcome(errors, failed, {'iterations': iterations, 'backends': list(backends)})
 
 
@@ -167,11 +173,8 @@ def _check_sparse_direct(results_by_name):
             failed.append(f'{key}_solution_on_backend')
     if back_ends['cpu_auto'] != 'scipy_splu':
         failed.append('cpu_auto_resolves_scipy_splu')
-    try:
-        _ = SparseDirectSolver(back_end='cusolver_qr', backend='cpu').back_end
-        failed.append('cpu_refuses_cusolver_qr')
-    except ValueError:
-        pass
+    _refused(failed, 'cpu_refuses_cusolver_qr',
+             lambda: SparseDirectSolver(back_end='cusolver_qr', backend='cpu').back_end, ValueError)
     return _outcome(errors, failed, {'back_ends': back_ends, 'backends': list(backends)})
 
 
@@ -297,11 +300,10 @@ def _check_arpack_cudss(results_by_name):
     import scipy.sparse.linalg
     from .arpack_shift_invert import (ArpackShiftInvertSolver, backend_misfit, device_arnoldi_fits,
                                       device_factor_matvec)
-    from .cudss_factor import (ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization,
-                               cudss_available)
-    if not cudss_available():
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _PARITY_TOLERANCE,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+    from .cudss_factor import ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, MIXED_MAX_REFINEMENTS, CudssFactorization
+    skipped = skip_without_cudss()
+    if skipped is not None:
+        return skipped
     rng = np.random.default_rng(_SEED + 3)
     nx, ny = _GRID
     n_unknowns = nx * ny
@@ -423,11 +425,7 @@ def _check_arpack_cudss(results_by_name):
         factor.release()
         if factor.valid:
             failed.append('cudss_invalid_after_release')
-        try:
-            factor.solve_host(rhs)
-            failed.append('cudss_solve_refused_after_release')
-        except RuntimeError:
-            pass
+        _refused(failed, 'cudss_solve_refused_after_release', lambda: factor.solve_host(rhs), RuntimeError)
     errors['cudss_eigs'] = _matched_error(eigenvalues['cudss_eigs'], eigenvalues['superlu_eigs'])
     errors['cudss_eigsh'] = _matched_error(eigenvalues['cudss_eigsh'], eigenvalues['superlu_eigsh'])
     errors['cudss_mixed_eigs'] = _matched_error(eigenvalues['cudss_mixed_eigs'], eigenvalues['superlu_eigs'])
@@ -523,11 +521,8 @@ def _auto_back_end_checks(failed, registry):
             failed.append(f'auto_back_end_{backend}_{grid}_{given}_{resolved}')
         if bool(values.get(AUTO_BACK_END_KEY)) != (resolved != given):   # B1b: marked exactly when replaced
             failed.append(f'auto_back_end_marked_{backend}_{grid}_{given}')
-    try:
-        SolverRole('general', 'sparse_direct', auto_back_ends={'triangles': 'cudss'})   # no setting_choices back_end
-        failed.append('auto_back_end_unoffered_accepted')
-    except ValueError:
-        pass
+    _refused(failed, 'auto_back_end_unoffered_accepted',   # no setting_choices back_end
+             lambda: SolverRole('general', 'sparse_direct', auto_back_ends={'triangles': 'cudss'}), ValueError)
 
 
 def _check_sparse_direct_cudss(results_by_name):
@@ -581,11 +576,8 @@ def _check_sparse_direct_cudss(results_by_name):
     factor = runtime.factorize(_device_matrix('gpu', general), nx, ny, False, False)
     errors['cudss_general'] = norm_relative_error(to_host(factor.solve(_device('gpu', complex_rhs))),
                                               scipy.sparse.linalg.spsolve(general.tocsc(), complex_rhs))
-    try:
-        factor.solve(_device('gpu', complex_rhs), transpose=True)
-        failed.append('cudss_lu_transpose_refused')
-    except NotImplementedError:
-        pass
+    _refused(failed, 'cudss_lu_transpose_refused', lambda: factor.solve(_device('gpu', complex_rhs), transpose=True),
+             NotImplementedError)
     factor.release()
     symmetric = (_laplacian(nx, ny) + scipy.sparse.diags((0.5 + 0.2j) * rng.uniform(1.0, 2.0, n_unknowns))).tocsr()
     symmetrizer = (1.0 + 0.5j) * rng.uniform(0.5, 2.0, n_unknowns)
@@ -706,11 +698,8 @@ def _auto_fallback_checks(spd, rhs, failed, errors, details):
     CudssFactorization._probe_accepted = lambda self, tolerance: False   # cuDSS refuses every factor
     try:
         strict = SparseDirectSolver('cudss', backend='gpu')
-        try:
-            strict.factorize_host(spd, real=True, positive_definite=True)
-            failed.append('auto_fallback_strict_raises')
-        except CudssAccuracyError:
-            pass
+        _refused(failed, 'auto_fallback_strict_raises',
+                 lambda: strict.factorize_host(spd, real=True, positive_definite=True), CudssAccuracyError)
         runtime = SparseDirectSolver('cudss', backend='gpu', fallback_back_end='scipy_splu')
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
@@ -1383,14 +1372,11 @@ def _check_eigen_band(results_by_name):
         failed.append('targets_union')
     else:
         errors['targets'] = float(np.max(np.abs(distinct_merged - distinct_union) / distinct_union))
-    measured = max(errors.values(), default=0.0)
-    error = max(measured, _STRUCTURAL_FAILURE) if failed else measured
-    return {'measured': measured, 'expected': 0.0, 'error': error, 'tolerance': _BAND_TOLERANCE,
-            'details': {'failed': failed, 'relative_errors': errors, 'reference_count': int(reference.size),
-                        'found_count': int(found.size), 'degenerate_pairs': degenerate,
-                        'orthogonality': orthogonality, 'shifts': band.info.get('shifts'),
-                        'band_warnings': band.info.get('warnings'), 'union_count': int(union.size),
-                        'merged_count': int(merged.size)}}
+    return _outcome(errors, failed, {'reference_count': int(reference.size), 'found_count': int(found.size),
+                                     'degenerate_pairs': degenerate, 'orthogonality': orthogonality,
+                                     'shifts': band.info.get('shifts'), 'band_warnings': band.info.get('warnings'),
+                                     'union_count': int(union.size), 'merged_count': int(merged.size)},
+                    tolerance=_BAND_TOLERANCE)
 
 
 # --- host direct back ends (MUMPS / PARDISO) ------------------------------------------------------------------------

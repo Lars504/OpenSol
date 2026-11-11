@@ -610,8 +610,9 @@ class ArpackShiftInvertSolver:
                                           previous)
         n_unknowns = pencil.n_rows
         start_vector = None if start_vector is None else np.asarray(start_vector, dtype=np.complex128)
-        device_apply = None
         if pencil.device is None:
+            device_apply = None
+
             def apply(vector):
                 return factor.solve_host(pencil.mass @ vector)
         else:   # M x and the solve on the device (the device Krylov-Schur: no transfers; host ARPACK: one each way)
@@ -884,7 +885,6 @@ class _KrylovSchur:
 
     def _expand(self):
         """Arnoldi steps from column p to m (one operator application and one packed host read each)."""
-        import cupy as cp
         for column in range(self.size, self.basis_size):
             if self.matvec_on_host:   # the next row came with the previous read (else one transfer: restarts, resume)
                 product = self.matvec(self._host_vector(column))
