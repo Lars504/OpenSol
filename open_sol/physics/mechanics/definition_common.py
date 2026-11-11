@@ -7,7 +7,9 @@ from dataclasses import replace
 from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, optional_material_param,
                                          reports_model_checks)
 from ...model.expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
-from ...model.schema import FeatureType, Issue, Param, feature_path, resolve_values, state_field_names
+from ...model.geometry import expand_entities
+from ...model.schema import (FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values,
+                             state_field_names)
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
@@ -24,6 +26,7 @@ OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NA
 FREQUENCY_RESPONSE_STUDY_NAME = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 BACKGROUND_STUDY = 'stationary'           # the background study of the modal / response studies
 PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY_NAME, OPTOMECHANICS_STUDY)   # read stress_stiffening
+MODAL_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # studies running solve_eigenfrequencies
 
 
 # ---- the study a solid takes (StudySpec.solved_physics) ----
@@ -383,6 +386,32 @@ def union_masks(masks):
     return combined
 
 
+def apply_body_force(ctx, solver, feature_spec, values, selection, names):
+    """Body force of the components `names` (f_x, f_y (, f_z)) on the selected cells; uniform values follow a reused
+    sweep build (element meshes: on a host copy of the element mask)."""
+    from ...core.backend import to_host   # lazy: definitions never load the backend at import
+    mask = ctx.domain_mask(selection.entities)
+    solver.add_body_force(mask, *(ctx.eval_field(values[name], mask=mask) for name in names))
+    kept_mask = to_host(mask) if ctx.domain.grid_kind in FREE_MESH_KINDS else mask
+    follow_load(ctx, solver, feature_spec, values, names, lambda *changes: solver.add_body_force(kept_mask, *changes))
+    return None
+
+
+def apply_temperature_change(ctx, solver, feature_spec, values, selection):
+    mask = ctx.domain_mask(selection.entities)
+    solver.add_temperature_change(mask, ctx.eval_field(values['delta_T'], mask=mask))
+    return None
+
+
+def electrode_result(session, solver, electrode, feature_spec, options, charge_unit):
+    """Table [feature, V, Q] of an electrode (Q in charge_unit); ValueError when piezoelectric is off."""
+    if electrode is None:
+        raise ValueError(f"electrode '{feature_spec.name}': piezoelectric is off, so it is not part of the solve")
+    voltage, charge = solver.electrode_values(electrode)
+    return {'kind': 'table', 'columns': ['feature', 'V', 'Q'], 'units': ['', 'V', charge_unit],
+            'rows': [[feature_spec.name, voltage, charge]], 'V': voltage, 'Q': charge}
+
+
 # ---- validation helpers (CPU only) ----
 def plain_value(value, parameters):
     """Float of a value that evaluates over the parameters; None when unset or field / state dependent."""
@@ -392,6 +421,73 @@ def plain_value(value, parameters):
         return evaluate_scalar(value, parameters)
     except ExpressionError:
         return None
+
+
+def outer_faces(vctx, feature, faces) -> list:
+    """Outer faces (of `faces`) of a feature's selection; [] when it does not resolve (reported elsewhere)."""
+    try:
+        return [entity for entity in expand_entities(vctx.spec, feature.selection) if entity in faces]
+    except (ValueError, TypeError):
+        return []
+
+
+def support_holders(vctx, physics_spec, held_components):
+    """{(face or object, axis): [feature names]} of the enabled support features (held_components(vctx, feature))."""
+    holders = {}
+    for feature in physics_spec.features:
+        if feature.enabled and feature.type in SUPPORT_FEATURES:
+            for key in held_components(vctx, feature):
+                holders.setdefault(key, []).append(feature.name)
+    return holders
+
+
+def free_body_allowed(study_type, settings_values) -> bool:
+    """A free body may be solved (triangles, tetrahedra): the eigenfrequency / optomechanics study at target_frequency >
+    0 (its 0 Hz modes dropped) or the frequency_response study (K - omega^2 M is regular at f > 0)."""
+    return bool((study_type in MODAL_STUDIES and settings_values.get('target_frequency'))
+                or study_type == FREQUENCY_RESPONSE_STUDY_NAME)
+
+
+def nonlinear_state_infos(vctx, path, static_refused) -> list:
+    """geometric_nonlinearity infos: no nonlinear static solve (static_refused), or the frequency_response study
+    (linear about the state of the initial stress)."""
+    if static_refused:
+        return [Issue('info', path, f'geometric_nonlinearity: {static_refused} has no static solve, so the pencil takes '
+                                    'K + K_sigma of the initial stress (the tangent at u = 0)')]
+    if vctx.study_type == FREQUENCY_RESPONSE_STUDY_NAME:
+        return [Issue('info', path, 'geometric_nonlinearity: the frequency response stays linear (small vibrations) '
+                                    'about the nonlinear static state of the initial stress and thermal strain alone; '
+                                    'the loads are its harmonic drive')]
+    return []
+
+
+def piezo_material_issues(vctx, physics_spec, path, piezo_arrays, void_text, merge_errors) -> list:
+    """Warnings per selected material setting piezo_e* (any of piezo_arrays) without youngs_modulus or c11 > 0 (void:
+    void_text says what remains) and when no selected material sets one (a material whose merge raises merge_errors
+    counts as piezoelectric: reported at the material)."""
+    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
+    issues = []
+    piezo_materials = []
+    for material in vctx.spec.materials:
+        try:
+            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
+        except merge_errors:   # reported at the material
+            piezo_materials.append(material.name)
+            continue
+        if not (material.selection and any(properties.get(name) is not None for name in piezo_arrays)):
+            continue
+        piezo_materials.append(material.name)
+        stiff = any(properties.get(name) is not None and (plain_value(properties.get(name), vctx.parameters) is None
+                                                          or plain_value(properties.get(name), vctx.parameters) > 0.0)
+                    for name in ('youngs_modulus', 'c11'))   # a non-plain expression counts as stiff
+        if not stiff:
+            issues.append(Issue('warning', ('material', material.name),
+                                f"material '{material.name}' sets piezo_e* but no youngs_modulus or c11 > 0: "
+                                f'{physics_spec.name} treats it as void {void_text}'))
+    if not piezo_materials:
+        issues.append(Issue('warning', path, 'piezoelectric is on but no selected material sets a piezo_e* entry: the '
+                                             'potential only adds a dielectric, nothing couples'))
+    return issues
 
 
 def _stiff(properties, parameters, tensor):
@@ -670,6 +766,18 @@ def harmonic_support_result(solver, region):
     if getattr(solver, '_shows_harmonic', False) and hasattr(solver, 'harmonic_reaction_table'):
         return solver.harmonic_reaction_table(region)
     return None
+
+
+def support_result(solver, region, axes, unit):
+    """Result of a support feature: the complex reaction table while a frequency response is shown (FEM meshes), else
+    one row [feature, F_<axis>, ...] of solver.reaction(region) in `unit` with the F_<axis> extras."""
+    table = harmonic_support_result(solver, region)
+    if table is not None:
+        return table
+    forces = solver.reaction(region)
+    names = [f'F_{axis}' for axis in axes]
+    return {'kind': 'table', 'columns': ['feature', *names], 'units': ['', *(unit for _ in names)],
+            'rows': [[region.name, *forces]], **dict(zip(names, forces))}
 
 
 def stiffness_follows_state(context):

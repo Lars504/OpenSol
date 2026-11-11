@@ -16,7 +16,7 @@ them."""
 # G^T A G has balanced blocks (c ~ 1e11 Pa against eps ~ 1e-10 F/m) for SuperLU's threshold pivoting; G^T M G = M (the
 # mass has no phi part, so phi rows of the pencil are massless: ARPACK mode 3 takes a semi-definite M).
 # 'resistive_load' (3D only): tied like a floating electrode, its master row closes through R to ground: j omega Q = -V /
-# R, so the reduced master row gains j s^2 / (omega R) x_master (the eigenfrequency study: solve_loaded_modes; the
+# R, so the reduced master row gains j s^2 / (omega R) x_master (the eigenfrequency study: ModalPencil kind 'loaded'; the
 # frequency response: HarmonicSystem's load term); a static solve refuses it.
 import math
 from dataclasses import dataclass, replace
@@ -319,22 +319,11 @@ class PiezoSystem:
             values[electrode.name] = (scalar(solution[dofs[0]]), scalar(-np.sum(product[dofs])))
         return values
 
-    def solve_modes(self, mass, omega_target, n_resonances, eigen_solver, prolongation=None, bloch_text='',
-                    rigid_motions=0):
-        """ModalSolve of the coupled pencil (G^T A G, G^T M G) on the free dofs (short circuit on voltage electrodes,
-        open on floating ones, resistive_load ones through their resistor: damped complex modes by
-        modal.solve_loaded_modes), or on x_G = P x_r of a Bloch prolongation over the free dofs (bloch3d; bloch_text
-        labels it): resonance displacements over every coupled dof (x = G x_G: physical phi, tied floating electrodes
-        filled), peak node |u| = 1 m read over displacement_dofs; rigid_motions as modal.solve_modes."""
-        pencil = self.modal_pencil(mass, eigen_solver, prolongation, bloch_text, rigid_motions)
-        try:
-            return self.expanded(pencil.solve_at(omega_target, n_resonances))
-        finally:
-            pencil.release()
-
     def modal_pencil(self, mass, eigen_solver, prolongation=None, bloch_text='', rigid_motions=0):
-        """modal.ModalPencil of the coupled pencil as solve_modes builds it (kind 'loaded' with resistive_load
-        electrodes); pass its solves through expanded()."""
+        """modal.ModalPencil of the coupled pencil (G^T A G, G^T M G) on the free dofs (short circuit on voltage
+        electrodes, open on floating ones, kind 'loaded' with resistive_load electrodes), or on x_G = P x_r of a Bloch
+        prolongation over the free dofs (bloch3d; bloch_text labels it); pass its solves through expanded() (x = G x_G:
+        physical phi, tied floating electrodes filled; peak node |u| = 1 m read over displacement_dofs)."""
         reduced_mass = congruence(self.column_map, mass)
         components = self.displacement_dofs.size // self.potential_dofs.size   # 2D: 2, 3D: 3 per potential dof
         if self.loads and prolongation is not None:
