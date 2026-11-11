@@ -535,13 +535,7 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
         previous_session, session = session, None
         table['values'].append(value)
         table['converged'].append(converged)
-        for name in derived_names:
-            table['derived'][name].append(float(derived.get(name, math.nan)))
-        references, errors, _ = derived_references(spec.derived_values,
-                                                   evaluate_parameters(value_spec.parameters, errors={}), derived)
-        for name in reference_names:   # failing references were logged by the value's run
-            table['reference'][name].append(float(references[name]))
-            table['error'][name].append(float(errors[name]))
+        _append_derived_row(table, derived_names, reference_names, spec, value_spec, derived)
         table['results'].append(results)
         table['derived_series'].append(derived_series)
         if kept_fields is not None:
@@ -569,6 +563,18 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
     last_summary['status'] = status
     last_summary['sweep'], last_summary['sweep_index'] = table, last_index
     return last_summary
+
+
+def _append_derived_row(table, derived_names, reference_names, spec, value_spec, derived):
+    """Append one sweep value's derived values (NaN when missing) and their references / errors (over value_spec's
+    parameters) to the sweep table columns."""
+    for name in derived_names:
+        table['derived'][name].append(float(derived.get(name, math.nan)))
+    references, errors, _ = derived_references(spec.derived_values,
+                                               evaluate_parameters(value_spec.parameters, errors={}), derived)
+    for name in reference_names:   # failing references were logged by the value's run
+        table['reference'][name].append(float(references[name]))
+        table['error'][name].append(float(errors[name]))
 
 
 def summed_runs(labelled_summaries):
