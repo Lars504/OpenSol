@@ -3,20 +3,18 @@ no gmsh unless noted): the coil edge drive (CPU check), an empty box in a unifor
 against the continuous 1D solutions (exact for P1 / P2 on aligned elements), the coil energy identity, a permeable
 sphere on gmsh tetrahedra (heavy, skipped without gmsh) and cpu vs gpu. Specs built fresh; registered by
 definition3d."""
-import math
-
 import numpy as np
 
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import scaled_worst_result, worst_error
+from ...model.selftest_helpers import last_value, scaled_worst_result, worst_error
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, SolverDefaultsSpec, StudySpec)
 from .selftests import _NONLINEAR_SETTINGS as _SATURATION_SETTINGS, _nonlinear_iterations
 from .selftests_3d import (_HELD_POTENTIAL, _SATURATING_CURVES, _SATURATING_MATERIALS, _SATURATING_ORIENTATIONS,
                            _SATURATING_POTENTIAL, _SLAB_BOX, _SLAB_CELL, _SLAB_PERMEABILITY, _SLAB_RANGE, _UNIFORM_BOX,
                            _UNIFORM_CELL, _UNIFORM_FIELDS, MAGNETOSTATICS_3D_TYPE_NAME, _box, _inverse_curve, _report,
-                           _slab_axes)
+                           _slab_axes, _slab_errors, _slab_parts, _volume)
 
 _MAGNETIC = 'magnetic'
 _TOLERANCE = 1e-6   # exact FEM solutions, float32 sample storage (first estimate)
@@ -43,18 +41,6 @@ def _fem_spec(title, size, features, materials=(), geometry=(), cell=_SLAB_CELL,
         meshes=[mesh if mesh is not None else _tetrahedra_mesh(cell)],
         solver_defaults=SolverDefaultsSpec(backend=backend),
         study=StudySpec(type='stationary'))
-
-
-def _sampled(results, component):
-    """(float64 values on the sample lattice, (x, y, z) float64 sample centres [m]) of a magnetic field."""
-    volume = results.volume(f'{_MAGNETIC}.{component}')
-    return (np.asarray(volume.values, dtype=np.float64),
-            tuple(np.asarray(centres, dtype=np.float64) for centres in volume.centres))
-
-
-def _last_probe(results, feature):
-    values = np.asarray(results.result(_MAGNETIC, feature)['values'], dtype=np.float64)
-    return float(values[-1]) if values.size else math.nan
 
 
 # ---- magnet3d_fem_coil_drive (CPU) ----
@@ -132,15 +118,15 @@ def _uniform_errors(results, field):
     errors = {}
     centres = None
     for index, axis in enumerate(_AXES):
-        flux_density, centres = _sampled(results, f'B_{axis}')
-        field_strength, _ = _sampled(results, f'H_{axis}')
+        flux_density, centres = _volume(results, f'B_{axis}')
+        field_strength, _ = _volume(results, f'H_{axis}')
         errors[f'B_{axis}'] = float(np.max(np.abs(flux_density - applied[index]))) / scale
         errors[f'H_{axis}'] = float(np.max(np.abs(MU0 * field_strength - applied[index]))) / scale
-    potential, _ = _sampled(results, 'phi_m')
+    potential, _ = _volume(results, 'phi_m')
     grids = np.meshgrid(*centres, indexing='ij')
     expected = -(applied[0] * grids[0] + applied[1] * grids[1] + applied[2] * grids[2]) / MU0
     errors['phi_m'] = float(np.max(np.abs(potential - expected))) / float(np.max(np.abs(expected)))
-    errors['probe_B_abs'] = abs(_last_probe(results, 'probe') - scale) / scale
+    errors['probe_B_abs'] = abs(last_value(results, _MAGNETIC, 'probe') - scale) / scale
     return errors
 
 
@@ -153,22 +139,11 @@ def _check_uniform(results_by_name):
 # ---- magnet3d_fem_layered_slab / magnet3d_fem_saturating_slab ----
 def _slab_spec(slab_axis, drive_axis, order, slab_properties=None, potential=_HELD_POTENTIAL, settings=None,
                kind='permeable'):
-    """The magnet3d_layered_slab layout on Kuhn tetrahedra of the same cell: slab normal to slab_axis, the first cell
-    layer along drive_axis ideal iron at `potential` [A], the drive axis' hi face a symmetry face."""
-    low, high = [0.0] * 3, list(_SLAB_BOX)
-    low[slab_axis], high[slab_axis] = (fraction * _SLAB_BOX[slab_axis] for fraction in _SLAB_RANGE)
-    layer_high = list(_SLAB_BOX)
-    layer_high[drive_axis] = _SLAB_CELL
-    drive = _AXES[drive_axis]
-    properties = {'mu_dc': _SLAB_PERMEABILITY} if slab_properties is None else dict(slab_properties)
-    return _fem_spec(
-        f'3D {kind} slab on tetrahedra normal to {_AXES[slab_axis]}, driven along {drive} ({order})', _SLAB_BOX,
-        [FeatureSpec('iron', 'ideal_iron', ['iron_layer'], {'potential': potential}),
-         FeatureSpec('mirror', 'symmetry', [f'{drive}_hi'])],
-        materials=[MaterialSpec('air', properties={'mu_dc': 1.0}, selection=['all']),
-                   MaterialSpec('iron', properties=properties, selection=['slab'])],
-        geometry=[_box('slab', low, high), _box('iron_layer', (0.0, 0.0, 0.0), layer_high)],
-        discretization=order, settings=settings)
+    """The magnet3d_layered_slab layout (selftests_3d._slab_parts) on Kuhn tetrahedra of the same cell."""
+    features, materials, geometry = _slab_parts(slab_axis, drive_axis, slab_properties, potential)
+    return _fem_spec(f'3D {kind} slab on tetrahedra normal to {_AXES[slab_axis]}, driven along {_AXES[drive_axis]} '
+                     f'({order})', _SLAB_BOX, features, materials=materials, geometry=geometry, discretization=order,
+                     settings=settings)
 
 
 def _slab_layout(slab_axis, drive_axis, centres):
@@ -222,23 +197,6 @@ def _slab_expected(slab_axis, drive_axis, centres, iron_field_of_flux=None, iron
             iron & ~held)
 
 
-def _slab_errors(results, drive_axis, expected, potential):
-    """B and H per component against (B_d, H_d) (relative to their maxima), phi_m relative to Omega_0."""
-    expected_flux, expected_field, expected_potential, _ = expected
-    errors = {}
-    for index, axis in enumerate(_AXES):
-        driven = index == drive_axis
-        flux_density, _ = _sampled(results, f'B_{axis}')
-        field_strength, _ = _sampled(results, f'H_{axis}')
-        errors[f'B_{axis}'] = (float(np.max(np.abs(flux_density - (expected_flux if driven else 0.0))))
-                               / float(np.max(expected_flux)))
-        errors[f'H_{axis}'] = (float(np.max(np.abs(field_strength - (expected_field if driven else 0.0))))
-                               / float(np.max(expected_field)))
-    potential_values, _ = _sampled(results, 'phi_m')
-    errors['phi_m'] = float(np.max(np.abs(potential_values - expected_potential))) / potential
-    return errors
-
-
 def _layered_runs():
     runs = {f'{name}_quadratic': _slab_spec(*axes, 'quadratic') for name, axes in _slab_axes().items()}
     runs['normal_x_linear'] = _slab_spec(0, 0, 'linear')
@@ -250,9 +208,9 @@ def _check_layered(results_by_name):
     errors = {}
     for run, results in results_by_name.items():
         slab_axis, drive_axis = axes_by_name[run.rsplit('_', 1)[0]]
-        centres = _sampled(results, 'phi_m')[1]
+        centres = _volume(results, 'phi_m')[1]
         expected = _slab_expected(slab_axis, drive_axis, centres)
-        for key, value in _slab_errors(results, drive_axis, expected, _HELD_POTENTIAL).items():
+        for key, value in _slab_errors(results, drive_axis, expected, _HELD_POTENTIAL, shape=None).items():
             errors[f'{run}_{key}'] = value
     return _report(errors)
 
@@ -274,12 +232,12 @@ def _check_saturating(results_by_name):
         for orientation, axes in _SATURATING_ORIENTATIONS.items():
             run = f'{material}_{orientation}'
             results = results_by_name[run]
-            centres = _sampled(results, 'phi_m')[1]
+            centres = _volume(results, 'phi_m')[1]
             expected = _slab_expected(*axes, centres, iron_field_of_flux=lambda flux: _inverse_curve(curve, flux),
                                       iron_flux_of_field=curve, potential=_SATURATING_POTENTIAL)
-            for key, value in _slab_errors(results, axes[1], expected, _SATURATING_POTENTIAL).items():
+            for key, value in _slab_errors(results, axes[1], expected, _SATURATING_POTENTIAL, shape=None).items():
                 errors[f'{run}_{key}'] = value
-            permeability, _ = _sampled(results, 'mu_eff')
+            permeability, _ = _volume(results, 'mu_eff')
             free_iron = expected[3]
             expected_permeability = expected[0][free_iron] / (MU0 * expected[1][free_iron])
             errors[f'{run}_mu_eff'] = float(np.max(np.abs(permeability[free_iron] / expected_permeability - 1.0)))
@@ -368,7 +326,8 @@ def _check_sphere(results_by_name):
                 'details': {'skipped': 'gmsh not found (set OPEN_SOL_GMSH or put gmsh on PATH)'}}
     expected = 3.0 * _SPHERE_PERMEABILITY / (_SPHERE_PERMEABILITY + 2.0) * _SPHERE_FIELD
     results = results_by_name['quadratic']
-    errors = {name: abs(_last_probe(results, name) - expected) / expected for name in ('probe_centre', 'probe_inner')}
+    errors = {name: abs(last_value(results, _MAGNETIC, name) - expected) / expected
+              for name in ('probe_centre', 'probe_inner')}
     return _report(errors, _SPHERE_TOLERANCE, expected_B_in=expected)
 
 
@@ -387,7 +346,7 @@ def _check_backends(results_by_name):
               'coil_cpu': worst_error(_identity_errors(results_by_name['coil_cpu']))}
     gpu_runs = [case for case in ('uniform', 'coil') if f'{case}_gpu' in results_by_name]
     for case in gpu_runs:
-        magnitudes = [_sampled(results_by_name[f'{case}_{backend}'], 'B_abs')[0] for backend in ('cpu', 'gpu')]
+        magnitudes = [_volume(results_by_name[f'{case}_{backend}'], 'B_abs')[0] for backend in ('cpu', 'gpu')]
         errors[f'{case}_B_abs_cpu_gpu'] = (float(np.max(np.abs(magnitudes[0] - magnitudes[1])))
                                            / float(np.max(np.abs(magnitudes[1]))))
     return _report(errors, gpu_runs=gpu_runs)

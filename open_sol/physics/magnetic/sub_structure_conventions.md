@@ -14,7 +14,8 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   fixed_potential (`validate_magnetic_common` serves both; `_validate_external_field` reads the physics' own type
   settings) and shares `sigma_dc` / _xx / _yy and their arrays with electric_currents. Both 2D types: default instance
   'magnetic', family ''. magnetostatics_3d: own mu_dc Params (mu_dc_xx / _yy / _zz, remanence_z), shares the 2D
-  saturation_polarization / bh_curve and nonlinear settings objects (isotropic only); no current_source, no couplings.
+  saturation_polarization / bh_curve and nonlinear settings objects (isotropic only), `_face_setter` (face kinds
+  swapped), `_validate_whole_window` and the per-material `_curve_material_issues`; no current_source, no couplings.
 - `__init__.py` resolves names lazily (module `__getattr__`); the definition modules import only materials /
   renderer / selftest template names / circuit and fem estimate constants at module level (solvers inside `create`,
   cases inside each `_selftest_cases`, BCSide inside apply callbacks), no cupy.

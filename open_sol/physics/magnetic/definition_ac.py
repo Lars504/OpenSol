@@ -14,7 +14,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, DISCRETIZA
                                          MAGNETIC_AC_LINEAR_ROLE, conducts, coupling_target, element_order,
                                          evaluates_to, host_direct_back_end, is_axisymmetric, linear_solver_cudss,
                                          make_point_probe, material_follows_state, optional_material_param,
-                                         reports_model_checks, validate_points_inside)
+                                         reports_model_checks, selected_material_data, validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.host_direct import factor_label, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import RECYCLE_MAX_ITERATIONS, scipy_available, size_issue
@@ -164,16 +164,9 @@ def _material_issues(vctx, physics_spec, path):
     """Once per model: remanence is ignored (warning per material); no conducting material (info)."""
     if not reports_model_checks(vctx, physics_spec, MAGNETIC_AC_TYPE_NAME):
         return []
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     issues = []
     any_conductor = False
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for material, properties, _ in selected_material_data(vctx.spec):   # unresolved ones: reported at the material
         any_conductor = any_conductor or conducts(properties, vctx.parameters, 'sigma_dc')
         if any(evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0)
                for name in REMANENCE_ARRAYS):

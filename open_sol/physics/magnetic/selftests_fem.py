@@ -10,6 +10,7 @@ import numpy as np
 
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.selftest_helpers import last_value, scaled_worst_result
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverDefaultsSpec,
                            StudySpec, SweepSpec)
@@ -130,11 +131,7 @@ def _probes():
 
 def _probe_values(results):
     """float64 A [T m] of the probes' last samples."""
-    values = []
-    for index in range(len(_PROBE_X)):
-        samples = np.asarray(results.result(_MAGNETIC, f'probe{index}')['values'], dtype=np.float64)
-        values.append(float(samples[-1]) if samples.size else math.nan)
-    return np.array(values)
+    return np.array([last_value(results, _MAGNETIC, f'probe{index}') for index in range(len(_PROBE_X))])
 
 
 def _current_sheet_specs():
@@ -273,14 +270,6 @@ def _vs_tensor_specs():
 
 
 # ---- checks ----
-def _report(errors, tolerances, details):
-    """error = the largest error over its tolerance (NaN propagates), tolerance 1."""
-    scaled = [errors[name] / tolerances[name] for name in errors]
-    error = float(np.max(np.asarray(scaled, dtype=np.float64))) if scaled else 0.0
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': 1.0,
-            'details': {'errors': errors, 'tolerances': tolerances, **details}}
-
-
 def _check_current_sheet(results_by_name):
     """A at the probes (float32), the energy (float64) and the band mean of (x - x_c) B_y (the plain mean is 0 by
     symmetry) against the continuous solution."""
@@ -296,10 +285,10 @@ def _check_current_sheet(results_by_name):
                                 / np.max(np.abs(expected_potential))),
               'energy': abs(energy / (energy_per_width * _WIDTH) - 1.0),
               'B_moment': abs(moment / expected_moment - 1.0)}
-    return _report(errors, {'A_probes': _FLOAT32, 'energy': _EXACT, 'B_moment': _FLOAT32},
-                   {'A_measured': measured_potential.tolist(), 'A_expected': expected_potential.tolist(),
-                    'energy': energy, 'energy_expected': energy_per_width * _WIDTH,
-                    'B_moment': moment, 'B_moment_expected': expected_moment})
+    return scaled_worst_result(errors, {'A_probes': _FLOAT32, 'energy': _EXACT, 'B_moment': _FLOAT32},
+                               A_measured=measured_potential.tolist(), A_expected=expected_potential.tolist(),
+                               energy=energy, energy_expected=energy_per_width * _WIDTH,
+                               B_moment=moment, B_moment_expected=expected_moment)
 
 
 def _check_uniform_field(results_by_name):
@@ -315,7 +304,7 @@ def _check_uniform_field(results_by_name):
         errors[f'{order}_energy'] = abs(values['W'] / expected_energy - 1.0)
         details[order] = values
     tolerances = {name: _EXACT if name.endswith('energy') else _FLOAT32 for name in errors}
-    return _report(errors, tolerances, {'measured': details, 'energy_expected': expected_energy})
+    return scaled_worst_result(errors, tolerances, measured=details, energy_expected=expected_energy)
 
 
 def _check_coil_pair(results_by_name):
@@ -333,7 +322,7 @@ def _check_coil_pair(results_by_name):
     errors = {name: abs(measured[name] / expected[name] - 1.0) for name in expected}
     errors['energy_identity'] = abs((measured['L_go'] + measured['L_back']) * _COIL_CURRENT ** 2
                                     / (2.0 * measured['W']) - 1.0)
-    return _report(errors, dict.fromkeys(errors, _EXACT), {'measured': measured, 'expected': expected})
+    return scaled_worst_result(errors, dict.fromkeys(errors, _EXACT), measured=measured, expected=expected)
 
 
 def _check_remanent_slab(results_by_name):
@@ -360,8 +349,8 @@ def _check_remanent_slab(results_by_name):
         errors[f'{order}_energy'] = abs(values['W'] / expected_energy - 1.0)
         details[order] = dict(values, A_probes=measured_potential.tolist())
     tolerances = {name: _EXACT if name.endswith('energy') else _FLOAT32 for name in errors}
-    return _report(errors, tolerances, {'measured': details, 'H_expected': field, 'B_magnet_expected': magnet_flux,
-                                        'A_expected': expected_potential.tolist(), 'energy_expected': expected_energy})
+    return scaled_worst_result(errors, tolerances, measured=details, H_expected=field, B_magnet_expected=magnet_flux,
+                               A_expected=expected_potential.tolist(), energy_expected=expected_energy)
 
 
 def _check_saturating_slab(results_by_name):
@@ -373,8 +362,8 @@ def _check_saturating_slab(results_by_name):
     errors = {'B': max(abs(values['Bx_max'] / _SATURATING_FIELD - 1.0), abs(values['Bx_min'] / _SATURATING_FIELD - 1.0)),
               'H_iron': abs(values['H_iron'] / expected_field - 1.0),
               'newton_steps': 0.0 if iterations is not None and iterations <= _NEWTON_LIMITS['slab'] else math.inf}
-    return _report(errors, {'B': _FLOAT32, 'H_iron': _FLOAT32, 'newton_steps': 1.0},
-                   {'measured': values, 'H_expected': expected_field, 'newton_iterations': iterations})
+    return scaled_worst_result(errors, {'B': _FLOAT32, 'H_iron': _FLOAT32, 'newton_steps': 1.0},
+                               measured=values, H_expected=expected_field, newton_iterations=iterations)
 
 
 def _make_sheet_check(density, flux_of_field, tolerance, step_limit):
@@ -389,8 +378,8 @@ def _make_sheet_check(density, flux_of_field, tolerance, step_limit):
         converged = record.get('nonlinear_unconverged', 1) == 0
         errors = {'A_probes': float(np.max(np.abs(measured - expected)) / np.max(np.abs(expected))),
                   'newton': 0.0 if converged and iterations is not None and iterations <= step_limit else math.inf}
-        return _report(errors, {'A_probes': tolerance, 'newton': 1.0},
-                       {'A_measured': measured.tolist(), 'A_expected': expected.tolist(), 'counters': record})
+        return scaled_worst_result(errors, {'A_probes': tolerance, 'newton': 1.0},
+                                   A_measured=measured.tolist(), A_expected=expected.tolist(), counters=record)
     return check
 
 
@@ -398,7 +387,7 @@ def _check_vs_tensor(results_by_name):
     """B_gap of the linear C-core: triangles vs the graded tensor grid (relative)."""
     values = {name: _derived_value(results, 'B_gap') for name, results in results_by_name.items()}
     errors = {'B_gap': abs(values['triangles'] / values['tensor'] - 1.0)}
-    return _report(errors, {'B_gap': _VS_TENSOR_TOLERANCE}, {'B_gap': values})
+    return scaled_worst_result(errors, {'B_gap': _VS_TENSOR_TOLERANCE}, B_gap=values)
 
 
 # ---- finite-difference tangent check (CPU, scripted) ----

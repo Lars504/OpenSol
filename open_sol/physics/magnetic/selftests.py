@@ -9,7 +9,7 @@ import numpy as np
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import (EXACT_CG_TOLERANCE, cell_edges, max_relative_error, relative_error, solver_role,
-                                       with_exact_cg, worst_error)
+                                       with_direct_node, with_exact_cg, worst_error)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec, SweepSpec)
 
@@ -163,13 +163,6 @@ def _band_rectangle(name, x0, x1, height=_WIDTH):
     return GeometrySpec(name, 'rectangle', {'x0': x0, 'y0': 0.0, 'x1': x1, 'y1': height})
 
 
-def _with_direct(spec):
-    """spec with the host SuperLU sparse_direct node _DIRECT_NAME as the magnetic 'linear' solver (in place)."""
-    spec.solvers.append(SolverSpec(_DIRECT_NAME, 'sparse_direct', {'back_end': 'scipy_splu'}))
-    spec.physics_by_name(_MAGNETIC).solvers['linear'] = _DIRECT_NAME
-    return spec
-
-
 def _model(title, features, materials=(), geometry=(), derived_values=(), axisymmetric=False, graded=False,
            size=(_LENGTH, _WIDTH), extra_settings=None, direct=False):
     """Stationary magnetostatics-only model, float64 CG to 1e-12 (direct: host SuperLU), uniform _CELL mesh or graded
@@ -188,7 +181,9 @@ def _model(title, features, materials=(), geometry=(), derived_values=(), axisym
         title=title, domain=DomainSpec(size_x=size[0], size_y=size[1]), geometry=geometry, materials=list(materials),
         physics=[PhysicsSpec(_MAGNETIC, MAGNETOSTATICS_TYPE_NAME, settings=settings, features=list(features))],
         mesh=mesh, study=StudySpec(type='stationary'), derived_values=list(derived_values))
-    return _with_direct(spec) if direct else with_exact_cg(spec)
+    if direct:   # the host SuperLU node _DIRECT_NAME as the magnetic 'linear' solver
+        return with_direct_node(spec, 'scipy_splu', physics_names=(_MAGNETIC,), node_name=_DIRECT_NAME)
+    return with_exact_cg(spec)
 
 
 def _mirror_y():
