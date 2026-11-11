@@ -10,7 +10,7 @@ RATIOS = [1.05, 1.1, 1.15, 1.2, 1.3, 1.5, 2.0]  # max_ratio at contrast RATIO_SW
 RATIO_SWEEP_CONTRAST = 32
 ASPECTS = [1, 2, 4, 8, 16, 32, 64]             # dx_base / dy_fine of the strip heater rows (rows refined only)
 OUTER_EXTENTS = [10, 30, 100, 300, 1000]       # R_out / a_heat of the disc heater with outer grading
-OUTER_RATIO = 1.3                              # a common default maximum element growth rate
+OUTER_RATIO = 1.3                              # industry-standard default maximum element growth rate
 METRIC_ASPECTS = [3, 10, 30, 100, 300]         # b / a of the polar annulus (= dr / (a dphi) at the inner arc)
 MAX_ITERATIONS = 200_000                       # explicit: the count is iterations to tolerance, not the auto cap
 STRIP_SNAPS = [(name, 'dx_fine', 0.0) for name in ('heater_snap_lo', 'heater_snap_hi', 'core_snap_lo', 'core_snap_hi',

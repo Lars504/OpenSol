@@ -377,12 +377,12 @@ _SPEC_FIELD_HELP = {
     'MeshSegmentSpec.ratio': 'Size ratio of the profile (see profile); 1 = uniform.',
     'StudySpec.type': 'Registered study type name (see the study type sections).',
     'StudySpec.settings': 'Values of the study type params by name; missing keys take the defaults.',
-    'StudySpec.solved_physics': "Physics names the study solves itself, e.g. "
-                                "['membrane']; the others run first as stationary background physics (also those of a "
-                                'type the study could solve), so couplings from them into the listed physics are '
-                                'allowed. [] = every physics whose solver has the study\'s solve. Only frequency_domain, '
-                                'mode_analysis, eigenfrequency, frequency_response and optomechanics (validation error '
-                                'elsewhere).',
+    'StudySpec.solved_physics': "Physics names the study solves itself (the industry-standard physics per study step), "
+                                "e.g. ['membrane']; the others run first as stationary background physics (also those "
+                                'of a type the study could solve), so couplings from them into the listed physics are '
+                                "allowed. [] = every physics whose solver has the study's solve. Only "
+                                'frequency_domain, mode_analysis, eigenfrequency, frequency_response and optomechanics '
+                                '(validation error elsewhere).',
     'StudySpec.stored_fields': "Output fields stored in snapshots, as 'physics.component' (e.g. 'em.ez'); [] "
                                '(default) = every output field of every physics (primary fields first); list fields '
                                'to store fewer and save memory (snapshots past 1 GB keep only the final state).',
@@ -410,13 +410,13 @@ _SPEC_FIELD_HELP = {
     'AdaptationSpec.anisotropic': 'Tensor meshes: refine x and y bands separately by the indicator part that '
                                   'dominates (true) or both axes alike.',
     'AdaptationSpec.keep_levels': 'true: keep every level\'s snapshots, not only the last level\'s.',
-    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec): the study is '
-                            'rebuilt and rerun per evaluation with the estimated parameters set, until the weighted '
-                            'misfit of measured derived values and curves is least; then one run at the best point '
-                            'stays live (summary estimation). null = one run. Any study type; no sweep or adaptation '
-                            '(validation); parity_sectors run every sector per evaluation (combined values fitted). A '
-                            'geometry parameter remeshes per evaluation (element meshes are reused while unchanged), '
-                            'which adds finite-difference noise: keep diff_step large or use nelder_mead.',
+    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec; industry-standard parameter estimation): '
+                            'the study is rebuilt and rerun per evaluation with the estimated parameters set, until '
+                            'the weighted misfit of measured derived values and curves is least; then one run at the '
+                            'best point stays live (summary estimation). null = one run. Any study type; no sweep or '
+                            'adaptation (validation); parity_sectors run every sector per evaluation (combined values '
+                            'fitted). A geometry parameter remeshes per evaluation (element meshes are reused while '
+                            'unchanged), which adds finite-difference noise: keep diff_step large or use nelder_mead.',
     'EstimationSpec.parameters': 'Estimated model parameters (EstimatedParameterSpec, >= 1); each evaluation sets '
                                  'them as numbers, parameters depending on them follow.',
     'EstimationSpec.targets': 'Measured derived values (EstimationTargetSpec); residual (model - value) / sigma.',
@@ -482,11 +482,11 @@ _SPEC_FIELD_HELP = {
                                    'normal of the object outline, tangent = the normal turned +90 deg; on a polar / '
                                    'spherical domain their radial / angular components, as the fields _x / _y there; '
                                    'they shadow parameters), e.g. "em_ex_re*normal_x + em_ey_re*normal_y". Operation '
-                                   "'expression' (source null, a global evaluation): one number of parameters, "
-                                   'scalar outputs, t and the derived values listed before this one, no fields, x, y, '
-                                   'z or selection, e.g. c_eff = "sqrt(N_int / rho_int)" of two integrals listed '
-                                   'above; evaluated in float64 in list order like every derived value. With a '
-                                   'source: '
+                                   "'expression' (source null, an industry-standard global evaluation): one number of "
+                                   'parameters, scalar outputs, t and the derived values listed before this one, no '
+                                   'fields, x, y, z or selection, e.g. c_eff = "sqrt(N_int / rho_int)" of two '
+                                   'integrals listed above; evaluated in float64 in list order like every derived '
+                                   'value. With a source: '
                                    'expression of the result sample names and parameters, evaluated per sample, e.g. '
                                    '"power" or "1 - fraction_positive" (see Derived values). Both may use the names of '
                                    'the derived values listed before this one (their values; NaN when they failed): '
@@ -1873,7 +1873,7 @@ def _mesh_section(physics_types):
             'Mesh kind triangles (S7.5, 2D Cartesian models): free triangles following curved boundaries for the '
             'physics, features and solvers that declare them (the Mesh kinds line of each type: '
             f"{', '.join(on_triangles) or 'none registered'}; some only in one study, validation names the limits). "
-            'Sizes as a free '
+            'Sizes as an industry-standard free '
             'triangular mesher: dx = maximum element size, max_ratio = maximum growth rate (null: 1.3), refinements = '
             'maximum sizes in / along / at their objects, h_min (null: dx / 100), curvature_factor 0.3 along circle '
             'and ellipse edges; auto: the wavelength rule with points_per_wavelength (null: 5), else the '

@@ -135,12 +135,13 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
     Param('discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATION_ORDERS),
           choice_labels=(('quadratic', 'Quadratic'), ('linear', 'Linear')),
           help='Element order on a triangles mesh (MeshSpec kind triangles; tensor meshes ignore it and use the Yee '
-               'cross-section). quadratic (default): second-order Nedelec edge elements for E_x, E_y and '
-               'P2 Lagrange for E_z (Lee-Sun-Cendes mixed form, free of spurious modes), elements with a curved edge '
-               'mapped isoparametrically, so circles and ellipses are followed to the mesh; linear: Whitney edge '
-               'elements and P1 on straight elements, cheaper, error ~h^2 instead of ~h^4 in beta^2. About 7 '
-               '(quadratic) or 2 (linear) unknowns per element, solved by the shift-invert of the eigen solver: host '
-               'SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (the pencil is complex symmetric), '
+               'cross-section). quadratic (default, the industry standard): second-order Nedelec edge elements for '
+               'E_x, E_y and P2 Lagrange for E_z (Lee-Sun-Cendes mixed form, free of spurious modes), elements with a '
+               'curved edge mapped isoparametrically, so circles and ellipses are followed to the mesh; linear: '
+               'Whitney edge elements and P1 on straight elements, cheaper, error ~h^2 instead of ~h^4 in beta^2. '
+               'About 7 (quadratic) or 2 (linear) unknowns per element, solved by the shift-invert of the eigen '
+               'solver: host SuperLU, or with its factorization cudss a cuDSS LDL^T on the GPU (the pencil is complex '
+               'symmetric), '
                f'with {HOST_DIRECT_NAMES} a MUMPS / PARDISO LDL^T on the host, '
                'the _mixed ones their complex64 form: one float64 refinement step per solve, ARPACK to 1e-6, then '
                'beta^2 from the float64 Rayleigh quotient of each eigenvector (error ~ the square of the vector '
@@ -209,10 +210,10 @@ _MODE_SCALARS = (
     'convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), '
     'n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted '
     'frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the '
-    'TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate parallel '
-    'to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all three '
-    'components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the whole '
-    'mode, mirror images included) and pml_fraction (share of the '
+    'industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate '
+    'parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all '
+    'three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the '
+    'whole mode, mirror images included) and pml_fraction (share of the '
     "mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding)")
 _MODE_TABLE_DESCRIPTION = (
     "Mode table of the last solve (a frequency_domain study: its last wavelength). Result 'table', one row per mode "

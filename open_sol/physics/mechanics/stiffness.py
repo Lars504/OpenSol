@@ -5,7 +5,7 @@ condition, the thermal stress per kelvin and the stress of a strain; elementwise
 # (I, J in 1, 2, 3, 6), beta_I = c_IJ alpha_J (J = 1, 2, 3: diagonal expansion). Plane strain S_3 = 0 (stress_zz =
 # T_3); plane stress T_3 = 0 condensed (c'_IJ = c_IJ - c_I3 c_3J / c_33, beta'_I = beta_I - c_I3 beta_3 / c_33); generalized
 # plane strain S_3 = one uniform e; axisymmetric 3 = the hoop theta (c13 = c_rt, c23 = c_zt, c33 = c_tt), orthotropic
-# only (c16 = c26 = c36 = 0). Plane-strain choice: the full 3D law with the out-of-plane strains held at 0.
+# only (c16 = c26 = c36 = 0). Industry-standard plane strain: the full 3D law with the out-of-plane strains held at 0.
 from dataclasses import dataclass
 
 import numpy as np

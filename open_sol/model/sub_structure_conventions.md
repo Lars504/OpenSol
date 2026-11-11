@@ -79,7 +79,7 @@ templates, describe. Current state, no changelog.
   keeps only values whose references are in the series too, `session.earlier_derived_names`); validate errors for a
   later name or one shadowed by a parameter / field / scalar / reserved name; `ModelSpec.rename_derived_value` renames
   the references (later expressions, adaptation target, 'sweep' analytic-curve series). Operation 'expression'
-  (`schema.GLOBAL_DERIVED_OPERATION`, source None; in `SOURCE_FREE_DERIVED_OPERATIONS`) = a global evaluation:
+  (`schema.GLOBAL_DERIVED_OPERATION`, source None; in `SOURCE_FREE_DERIVED_OPERATIONS`) = a standard global evaluation:
   one float64 `evaluate_scalar` over `Session._plain_namespace` (parameters, scalar outputs, t, earlier values; no
   mesh, selection or point), branched in `Session.derived_value` before `evaluate`, so every consumer (summaries,
   sweeps, series, references, parity-sector recomputes) takes it unchanged; validate `_check_global_expression`
@@ -261,8 +261,8 @@ templates, describe. Current state, no changelog.
   (heat P is per the 1D total: W/m^2, W/m or W; its help says W/m).
 - Spec: pass the registry to renames (typed 'ref' / 'names' params, field names). Geometry objects and selections
   share one namespace minus `RESERVED_ENTITY_NAMES` (FACES + 'all'). Material `dispersion` None inherits the library
-  poles, [] none. Composite geometry consumes its inputs (the usual default): an object feeds one composite only and is
-  no longer selectable on its own; a second use needs a duplicate.
+  poles, [] none. Composite geometry consumes its inputs (the industry-standard default): an object feeds one composite
+  only and is no longer selectable on its own; a second use needs a duplicate.
 - Arrays (kind 'array': base, nx / ny / nz, pitch_x / _y / _z; nz / pitch_z in `Z_PARAM_NAMES`): `resolve_geometry`
   adds every copy as a resolved shape ('<array>[i,j]', '[i,j,k]' when nz > 1; a composite base is copied whole, its
   inputs '<input>@<copy>'; `geometry.is_array_copy`) right after the array, values = base + i pitch (exact float

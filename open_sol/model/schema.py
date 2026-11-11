@@ -60,8 +60,8 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
 MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
-# MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: growth
-# 1.3; five quadratic elements per wavelength)
+# MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: the industry-standard
+# growth 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
                       'triangles': {'max_ratio': 1.3, 'points_per_wavelength': 5.0},
                       'tetrahedra': {'max_ratio': 1.3, 'points_per_wavelength': 5.0}}
@@ -1461,7 +1461,8 @@ MESH_PARAMS = (
               'cells. Empty: 1.15 for rectangular cells, 1.3 for triangles.',
           help='Largest size ratio of neighbouring cells on a graded mesh, or the maximum element growth rate of a '
                'triangle mesh (> 1); typically 1.1-1.3. Smaller ratios grade more smoothly (less numerical '
-               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles).'),
+               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, the '
+               'industry-standard default).'),
     Param('wavelength_min', 'float', None, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Shortest vacuum wavelength the automatic mesh must resolve, in metres: 1.55e-6 for 1550 nm. Used in '
@@ -1484,8 +1485,8 @@ MESH_PARAMS = (
               "size' is set: it fixes the smallest cells instead.",
           help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
                'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
-               "distance). null = the kind default: 20 (tensor), 5 (triangles: five quadratic elements "
-               'per wavelength). Unused while dx is set (the finest cells take dx).'),
+               "distance). null = the kind default: 20 (tensor), 5 (triangles: the industry-standard five quadratic "
+               'elements per wavelength). Unused while dx is set (the finest cells take dx).'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Largest cell size far from the structure. Leave empty to keep the main cell size everywhere.\n\n'
@@ -1515,7 +1516,8 @@ MESH_PARAMS = (
           tip='Element edges along a curved boundary are at most this fraction of its radius of curvature: '
               'smaller values follow circles, ellipses, spheres and cylinders more closely.',
           help="Triangles / tetrahedra: element size along circle / ellipse / sphere / cylinder boundaries <= "
-               "curvature_factor x the local radius of curvature."),
+               "curvature_factor x the local radius of curvature (0.3 = the "
+               "industry-standard default)."),
     Param('mesher', 'choice', 'builtin', label='Mesher', choices=('builtin', 'gmsh'),
           choice_labels=(('builtin', 'Built-in'), ('gmsh', 'Gmsh (external program)')),
           visible_if=(('kind', FREE_MESH_KINDS),),

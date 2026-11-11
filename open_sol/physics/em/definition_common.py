@@ -554,10 +554,10 @@ FLUX_PARAMS = spectral_params(100, '50-200 give a smooth spectrum; the work per 
                               '50 to 200 gives a smooth spectrum; more wavelengths slow down every time step.')
 
 MODE_NUMBER_HELP = ('1-based index of the mode in descending order of Re(n_eff) among the propagating modes (the '
-                    'usual numbering; the ranking key is Re(k^2) of the transverse eigenvalue, so evanescent '
-                    'modes, Re(k^2) < 0, come after every propagating one whatever their Re(n_eff)): 1 = the '
-                    'fundamental, most strongly guided mode, 2 the next, ...; both parities count, so in a symmetric '
-                    'slab mode 1 is even and mode 2 odd; modes localised in the PML of a line that continues '
+                    'industry-standard numbering; the ranking key is Re(k^2) of the transverse eigenvalue, so '
+                    'evanescent modes, Re(k^2) < 0, come after every propagating one whatever their Re(n_eff)): 1 = '
+                    'the fundamental, most strongly guided mode, 2 the next, ...; both parities count, so in a '
+                    'symmetric slab mode 1 is even and mode 2 odd; modes localised in the PML of a line that continues '
                     'through it are discarded and not counted. The build fails when the line has fewer modes and '
                     'warns when the selected one is not guided (Re(n_eff) not above the index of a span-end cell at a '
                     'cpml or metal end: a cladding or radiation mode) or carries no forward power (an evanescent or '
@@ -613,9 +613,9 @@ MODE_SOURCE_PARAMS = (
                'Hilbert partner) then biases fraction_* / phase_* toward the lower band edge and adds a DC part.'),
     Param('power', 'float', 1.0, label='Mode power', unit='W/m', min=0.0, min_exclusive=True, tip=MODE_POWER_TIP,
           help='Power per unit z length carried by the launched mode, 1/2 Re of the integral of (E x H*).n over the '
-               'line (the usual 2D port input power): cw = the time-averaged power once the ramp has settled, '
-               'gaussian = the cycle-averaged power at the envelope peak. Fields scale with sqrt(power) and are '
-               'linear, so 1 W/m is the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).'),
+               'line (the industry-standard 2D port input power): cw = the time-averaged power once the ramp has '
+               'settled, gaussian = the cycle-averaged power at the envelope peak. Fields scale with sqrt(power) and '
+               'are linear, so 1 W/m is the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).'),
 )
 MODE_MONITOR_PARAMS = (
     mode_number_param('It picks the mode at the middle monitor wavelength; at the other wavelengths the same mode is '
@@ -666,7 +666,8 @@ def mode_end_text(polarization, solver):
     """Span-end conditions of a mode_source / mode_monitor line of em_<solver>_<polarization> (mode_ports.PortLine,
     alike for FDTD and FDFD); hz adds the face-permittivity note."""
     walls, metal = _MODE_END_CONDITIONS[polarization]
-    text = ('Span ends, as at a usual port boundary: an end on a cpml domain edge continues the solve through the PML '
+    text = ('Span ends, as at an industry-standard port boundary: an end on a cpml domain edge continues the solve '
+            'through the PML '
             f'cells (open: radiation is absorbed); {walls}, as those walls do; an end inside the domain, or a partial '
             f'span of a periodic axis, is metal ({metal}), so extend the line well into the cladding (the build warns '
             'when the mode still exceeds 1% of its peak at a metal end); a span over a whole periodic axis is '

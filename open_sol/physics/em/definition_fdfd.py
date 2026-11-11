@@ -255,9 +255,9 @@ _MODE_SOURCE_PARAMS = (
           choice_labels=MODE_DIRECTION_CHOICE_LABELS),
     Param('power', 'float', 1.0, label='Mode power', unit='W/m', min=0.0, min_exclusive=True,
           help='Time-averaged power per unit z length carried by the launched mode, 1/2 Re of the integral of (E x '
-               'H*).n over the line (the usual 2D port input power); the launched mode amplitude is sqrt(power) '
-               'e^{j phase} on the line cells. Fields scale with sqrt(power) and are linear, so 1 W/m is the usual '
-               'choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).',
+               'H*).n over the line (the industry-standard 2D port input power); the launched mode amplitude is '
+               'sqrt(power) e^{j phase} on the line cells. Fields scale with sqrt(power) and are linear, so 1 W/m is '
+               'the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).',
           tip=MODE_POWER_TIP),
     _PHASE_PARAM,
 )

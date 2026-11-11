@@ -313,8 +313,9 @@ class StudySpec:
     stored_cuts: list = field(default_factory=list)   # 3D: [['x' | 'y' | 'z', position [m]], ...] ([] = none)
     adaptation: AdaptationSpec | None = None          # mesh refinement levels (S7.7); None = the model's meshes
     estimation: EstimationSpec | None = None          # parameter estimation (model.study_estimation); None = one run
-    # physics names the study itself solves; the others run as stationary background
-    # physics. [] = every physics whose solver has the study's solve (validate: studies with a background step only)
+    # physics names the study itself solves (industry-standard physics per study step); the others run as stationary
+    # background physics. [] = every physics whose solver has the study's solve (validate: studies with a background
+    # step only)
     solved_physics: list = field(default_factory=list)
 
     def solves(self, physics_name) -> bool:

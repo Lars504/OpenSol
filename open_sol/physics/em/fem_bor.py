@@ -16,10 +16,10 @@ through eigenfrequency.solve_resonances. Host numpy (scipy inside functions)."""
 # E_r(0) at |m| = 1, dw/dr = 0 at m = 0 and |m| >= 2); the Dunavant points are interior, so the large 1 / r weight acts
 # as that constraint (a penalty, not exact: degree-1 elements lock w and rot e in the axis layer, hence quadratic by
 # default; fields of |m| >= 2 vanish near the axis anyway).
-# Walls: pec faces and the outer side of the PML ring (pec exterior, as fem_modes; the Yee path ends a cpml layer
-# in a pmc edge instead) fix tangential e and w (E_phi is tangential to every (r, z) boundary); pmc faces are natural;
-# PEC elements leave the unknowns, their closure fixes tangential e and w (vertex contacts too). No mirror / periodic
-# faces (pec / pmc on z_lo are the mirrors).
+# Walls: pec faces and the outer side of the PML ring (industry-standard exterior, as fem_modes; the Yee path ends a
+# cpml layer in a pmc edge instead) fix tangential e and w (E_phi is tangential to every (r, z) boundary); pmc faces are
+# natural; PEC elements leave the unknowns, their closure fixes tangential e and w (vertex contacts too). No mirror /
+# periodic faces (pec / pmc on z_lo are the mirrors).
 # PML (fem_modes.pml_ring: the r_hi and z rings): s_r(r), s_z(z) and the stretched radius r~ = int_0^r s_r dr'
 # (Gauss-Legendre over the ring depth). In stretched coordinates with e = (s_r E~_r, s_z E~_z) (covariant) and w as is:
 #   K = int [ G^T diag(nu s_z / s_r, nu s_r / s_z) G / r~ + nu r~ rot(e)^2 / (s_r s_z) ],

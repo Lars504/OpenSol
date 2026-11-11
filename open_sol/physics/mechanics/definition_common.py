@@ -204,12 +204,12 @@ _TENSOR_FALLBACKS = {'c11': 'lambda + 2 mu', 'c22': 'lambda + 2 mu', 'c33': 'lam
 _TENSOR_TEXT = (
     'Anisotropic stiffness entry {name} [Pa] ({role}) of the Voigt matrix in model axes (1 xx, 2 yy, 3 zz, 6 xy; '
     'engineering shear g = 2 strain_xy): T_I = c_IJ S_J - beta_I dT with beta_I = c_IJ alpha_J. solid_mechanics (2D) '
-    'reads all ten (plane strain: the full law with S_zz = S_xz = S_yz = 0, stress_zz = T_3); plane stress '
-    'condenses T_3 = 0, generalized plane strain takes a uniform S_3, axisymmetric reads 3 as the hoop direction '
-    '(orthotropic only: c16 = c26 = c36 = 0, else the build fails). Unset (NaN) = the isotropic value {fallback} of '
-    'youngs_modulus / poisson_ratio per component (Lame constants), so a cell with only c_ij entries needs c11, c12, '
-    'c22, c66 (plane stress / axisymmetric / generalized: also c13, c23, c33); any entry set allocates the eight '
-    'arrays besides c16 / c26, which (as in elastic_waves) only c16 or c26 allocates. '
+    'reads all ten (industry-standard plane strain: the full law with S_zz = S_xz = S_yz = 0, stress_zz = T_3); plane '
+    'stress condenses T_3 = 0, generalized plane strain takes a uniform S_3, axisymmetric reads 3 as the hoop '
+    'direction (orthotropic only: c16 = c26 = c36 = 0, else the build fails). Unset (NaN) = the isotropic value '
+    '{fallback} of youngs_modulus / poisson_ratio per component (Lame constants), so a cell with only c_ij entries '
+    'needs c11, c12, c22, c66 (plane stress / axisymmetric / generalized: also c13, c23, c33); any entry set allocates '
+    'the eight arrays besides c16 / c26, which (as in elastic_waves) only c16 or c26 allocates. '
     'The set the formulation reads must be positive definite (build error). A cell is solid when its c11 > 0. Usually '
     "set by a {{'model': 'crystal'}} entry (rotated crystal data, with piezo_e* and eps_dc*). Not for guided (2.5D) "
     'modes (axial_wavenumber: isotropic only). solid_mechanics_3d on a tetrahedron mesh reads it too, as one of its 21 '
@@ -246,24 +246,25 @@ STIFFNESS_TENSOR_PROPERTIES_3D = tuple(
     for name in STIFFNESS_TENSOR_ARRAYS_3D)
 LOSS_PROPERTIES = (
     _material_property('mechanical_loss_factor', 'Mechanical loss factor', '1', 0.0,
-                       help_text='Isotropic structural loss factor eta (often written eta_s), read by '
-                                 'the frequency_response study of solid_mechanics (2D) and solid_mechanics_3d '
-                                 '(tetrahedron meshes) and by their eigenfrequency study on triangle / tetrahedron '
-                                 'meshes (damped complex modes, Q = Re omega / (2 Im omega) in the resonance table; not '
-                                 'with piezoelectric): every stiffness of the cell becomes c (1 + j eta) (exp(+j omega '
-                                 't)), so a resonance has Q ~ 1 / eta; the geometric stiffness of stress_stiffening '
-                                 'stays lossless (dissipation dilution: Q above 1 / eta). Default 0 (lossless); typical '
-                                 '1e-4 (quartz, LN) to 1e-2 (metals, polymers higher).',
+                       help_text='Isotropic structural loss factor eta (industry-standard isotropic loss factor '
+                                 'eta_s), read by the frequency_response study of solid_mechanics (2D) and '
+                                 'solid_mechanics_3d (tetrahedron meshes) and by their eigenfrequency study on '
+                                 'triangle / tetrahedron meshes (damped complex modes, Q = Re omega / (2 Im omega) in '
+                                 'the resonance table; not with piezoelectric): every stiffness of the cell becomes c '
+                                 '(1 + j eta) (exp(+j omega t)), so a resonance has Q ~ 1 / eta; the geometric '
+                                 'stiffness of stress_stiffening stays lossless (dissipation dilution: Q above 1 / '
+                                 'eta). Default 0 (lossless); typical 1e-4 (quartz, LN) to 1e-2 (metals, polymers '
+                                 'higher).',
                        tip='Damping of the vibration as a fraction of the stiffness; the quality factor of a resonance '
                            'is about 1 divided by it. Used by the frequency response study and, on triangle or '
                            'tetrahedron meshes, by the eigenfrequency study.'),
     _material_property('dielectric_loss_tangent', 'Dielectric loss tangent', '1', 0.0,
-                       help_text='Dielectric loss tangent tan delta (often written eta_epsilon), read '
-                                 'only by the frequency_response study of a piezoelectric solid_mechanics (2D) or '
-                                 'solid_mechanics_3d (tetrahedron meshes, every window element): the '
-                                 'static permittivity becomes eps0 eps_dc (1 - j tan delta) (exp(+j omega t)), a '
-                                 'conductance omega C tan delta in parallel with the electrode capacitance. Default 0; '
-                                 'typical 1e-4 to 1e-3 for lithium niobate, ~1e-2 for PZT.',
+                       help_text='Dielectric loss tangent tan delta (industry-standard dielectric loss factor '
+                                 'eta_epsilon), read only by the frequency_response study of a piezoelectric '
+                                 'solid_mechanics (2D) or solid_mechanics_3d (tetrahedron meshes, every window '
+                                 'element): the static permittivity becomes eps0 eps_dc (1 - j tan delta) (exp(+j '
+                                 'omega t)), a conductance omega C tan delta in parallel with the electrode '
+                                 'capacitance. Default 0; typical 1e-4 to 1e-3 for lithium niobate, ~1e-2 for PZT.',
                        tip='Electric loss of the material as the loss tangent. Used only by the frequency response '
                            'study with Piezoelectric on.'),
 )

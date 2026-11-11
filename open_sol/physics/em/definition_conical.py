@@ -49,16 +49,16 @@ _BC_HELP = ' '.join((
 ))
 _KZ_HELP = (
     'Out-of-plane wave number k_z in rad/m of every solve: the fields vary as exp(j (omega t - k_z z)) along the '
-    'z-invariant structure, so all six components couple. k_z = 0 gives the '
-    'decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell apart '
-    'from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n sin(theta) '
-    'of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a periodic axis), '
-    'a waveguide cross-section driven at a given propagation constant beta = k_z (a source excites the guided modes '
-    'resonantly where omega meets the mode dispersion), and in an eigenfrequency study the dispersion omega(k_z): the '
-    'resonances at fixed k_z are the guided modes with beta = k_z (same discrete problem as em_modes, read the other way; '
-    'sweep k_z for the band / dispersion diagram). k_z stays fixed over the wavelengths of a frequency_domain study '
-    '(the incidence angle then changes with wavelength). |k_z| above k0 n in a material makes the field evanescent in '
-    'it. A real number (no leaky / complex k_z through the model).')
+    'z-invariant structure (the industry-standard out-of-plane wave number), so all six components couple. k_z = 0 '
+    'gives the decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell '
+    'apart from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n '
+    'sin(theta) of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a '
+    'periodic axis), a waveguide cross-section driven at a given propagation constant beta = k_z (a source excites the '
+    'guided modes resonantly where omega meets the mode dispersion), and in an eigenfrequency study the dispersion '
+    'omega(k_z): the resonances at fixed k_z are the guided modes with beta = k_z (same discrete problem as em_modes, '
+    'read the other way; sweep k_z for the band / dispersion diagram). k_z stays fixed over the wavelengths of a '
+    'frequency_domain study (the incidence angle then changes with wavelength). |k_z| above k0 n in a material makes '
+    'the field evanescent in it. A real number (no leaky / complex k_z through the model).')
 _KZ_TIP = ('Wave number along the direction perpendicular to the drawing, in radians per metre: the fields vary as a '
            'wave of that wave number along that direction.\n\n'
            '0 gives the ordinary 2D problem. For light arriving with a component along that direction use 2 pi n '

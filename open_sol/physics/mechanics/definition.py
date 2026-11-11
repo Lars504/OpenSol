@@ -86,11 +86,11 @@ _DISCRETIZATION_PARAM = Param(
     'discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
     choice_labels=(('quadratic', 'Quadratic (P2)'), ('linear', 'Linear (P1)')),
     help="Triangle meshes only (mesh kind 'triangles'; a tensor mesh ignores it: bilinear cells): the displacement "
-         "elements. quadratic (default): P2 Lagrange, isoparametric on curved boundaries (circle / "
-         'ellipse edges follow the drawn curve), strain and stress linear per element; linear: P1, constant strain '
-         'per element (stiff in bending, locks toward poisson_ratio 0.5). Unknowns per element and component: ~2 '
-         '(quadratic) or ~0.5 (linear); one host SuperLU per assembly (sparse_direct). Displayed strain / stress are '
-         'averaged at the nodes over the solid elements around them (a material interface is smeared over one '
+         "elements. quadratic (default, the industry standard): P2 Lagrange, isoparametric on curved boundaries "
+         '(circle / ellipse edges follow the drawn curve), strain and stress linear per element; linear: P1, constant '
+         'strain per element (stiff in bending, locks toward poisson_ratio 0.5). Unknowns per element and component: '
+         '~2 (quadratic) or ~0.5 (linear); one host SuperLU per assembly (sparse_direct). Displayed strain / stress '
+         'are averaged at the nodes over the solid elements around them (a material interface is smeared over one '
          'element; displacements and the state() element values are not).',
     tip='How the displacement varies inside each triangle: quadratic is far more accurate per element, linear is '
         'cheaper.\n\nOnly used on a triangle mesh.')
@@ -172,14 +172,14 @@ _OUT_OF_PLANE_PARAM = Param(
          'are free). plane_stress: sigma_zz = 0, a thin plate in the drawing plane (top view of a film or membrane): the '
          'reduced stiffness lambda -> 2 mu lambda / (lambda + 2 mu) and thermal stress beta - lambda beta_z / (lambda + 2 '
          'mu); outputs elastic_strain_zz = eps_zz - alpha_zz dT with eps_zz = (beta_z dT - lambda (eps_xx + eps_yy)) / '
-         '(lambda + 2 mu) per cell, stress_zz = 0; forces per m of thickness (N/m). generalized_plane_strain (standard '
-         'form): eps_zz = e0 + e1 x + e2 y over the whole drawn cross-section (x, y of the drawing), e0 set by the net '
-         'axial force (setting axial_force; 0 = free ends) and the bending terms e1 / e2 (setting bending, default both '
-         'free) by the bending moments (bending_moment_x / _y; 0 = an unloaded, freely bending long body): the right '
-         'model of thermal stress in a long waveguide or fibre; solved by superposition (one pcg solve of the eps_zz = '
-         '0 problem plus, per assembly, one per free term; on a triangle mesh back substitutions on the K factor), '
-         'the force and moment conditions hold exactly in the elements; outputs stress_zz and elastic_strain_zz = '
-         'eps_zz - alpha_zz dT. Piezoelectric, '
+         '(lambda + 2 mu) per cell, stress_zz = 0; forces per m of thickness (N/m). generalized_plane_strain '
+         '(industry-standard form): eps_zz = e0 + e1 x + e2 y over the whole drawn cross-section (x, y of the '
+         'drawing), e0 set by the net axial force (setting axial_force; 0 = free ends) and the bending terms e1 / e2 '
+         '(setting bending, default both free) by the bending moments (bending_moment_x / _y; 0 = an unloaded, freely '
+         'bending long body): the right model of thermal stress in a long waveguide or fibre; solved by superposition '
+         '(one pcg solve of the eps_zz = 0 problem plus, per assembly, one per free term; on a triangle mesh back '
+         'substitutions on the K factor), the force and moment conditions hold exactly in the elements; outputs '
+         'stress_zz and elastic_strain_zz = eps_zz - alpha_zz dT. Piezoelectric, '
          'axial_wavenumber and the optomechanics study need plane_strain; the eigenfrequency study needs plane_strain '
          'or plane_stress.',
     tip='What happens along the depth of the drawing.\n\n'

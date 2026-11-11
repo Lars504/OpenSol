@@ -1136,9 +1136,9 @@ DISCRETIZATION_PARAM = Param(
          '- Quadratic: more accurate for the same mesh, the usual choice.\n'
          '- Linear: cheaper per element, needs a finer mesh.'),
     help=('Lagrange order of the unknown on a triangle or tetrahedron mesh (MeshSpec kind triangles / tetrahedra; '
-          'ignored on tensor meshes): quadratic (P2, the default) or linear (P1). On triangles elements '
-          'with an edge on a circle / ellipse are mapped isoparametrically with quadratic elements (geometry shape '
-          'order = the element order), straight with linear ones; tetrahedra are always straight (affine).'))
+          'ignored on tensor meshes): quadratic (P2, the industry-standard default) or linear (P1). On triangles '
+          'elements with an edge on a circle / ellipse are mapped isoparametrically with quadratic elements (geometry '
+          'shape order = the element order), straight with linear ones; tetrahedra are always straight (affine).'))
 
 
 def element_order(settings_values) -> int:

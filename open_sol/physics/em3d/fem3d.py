@@ -7,15 +7,15 @@ directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonanceP
 # coordinate stretches s = kappa + sigma / (alpha + j omega_t eps0) (em3d CPML grading over the shell width beyond each
 # cpml window face, sigma_max = cpml_sigma_max at width / cpml_npml); Lambda = 1 in the window. K = int curl W . nu'
 # curl W, M = int W . eps' W; A = -K + k_t^2 M on the free dofs (eigenfrequency.py sign, B = -M sparse). Walls:
-# pec / antisymmetric faces and the outer side of a PML shell (the usual default exterior) fix the tangential dofs;
-# pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every dof they touch.
-# Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same node order (the
-# builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands for its lo-side
-# master times e^{-j k L} per crossed period (fem.dofs3d.bloch_masters: F(x + L) = F(x) e^{-j k L}, L = the node
-# extent), u = P u_free, and the test space is the conjugate one, so A_free = P^H A P (likewise K, M, W): Hermitian
-# without loss / PML, not complex symmetric once a phase is complex (LU, no LDL^T or Rayleigh polish); k = 0 keeps P
-# real and the system symmetric. A master is pinned with any dof it stands for. Elements hold the material of their
-# region (fem.mesh3d: the last solid at the centroid clamped into the window, so the shell
+# pec / antisymmetric faces and the outer side of a PML shell (the industry-standard default exterior) fix the
+# tangential dofs; pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every
+# dof they touch. Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same
+# node order (the builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands
+# for its lo-side master times e^{-j k L} per crossed period (fem.dofs3d.bloch_masters: F(x + L) = F(x) e^{-j k L}, L =
+# the node extent), u = P u_free, and the test space is the conjugate one, so A_free = P^H A P (likewise K, M, W):
+# Hermitian without loss / PML, not complex symmetric once a phase is complex (LU, no LDL^T or Rayleigh polish); k = 0
+# keeps P real and the system symmetric. A master is pinned with any dof it stands for. Elements hold the material of
+# their region (fem.mesh3d: the last solid at the centroid clamped into the window, so the shell
 # extrudes the window-edge materials). PML share: the per-row energy of W = int W . |Re eps| W (no stretch), window
 # rows = dofs whose entity centre lies in the closed window. Equilibration of a cuDSS / MUMPS / PARDISO factor:
 # (|diag K| + k_t^2 |diag M|)^-1/2 (cudss_factor header). Rule degree 2 x degree, + 2 in PML elements (varying Lambda).

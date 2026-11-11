@@ -2560,9 +2560,10 @@ def _restored_value(flat, shape, dtype, module):
 
 
 def _stored_field_keys(session):
-    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or ([], 'all') every available
-    output field: first each physics' primary (frequency_domain: a renderer's harmonic_primary) and its '<base>_im'
-    partner, then the StudyType's default_stored_fields (e.g. optimization: design_density), then the rest."""
+    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or ([], the industry-standard 'all') every
+    available output field: first each physics' primary (frequency_domain: a renderer's harmonic_primary) and its
+    '<base>_im' partner, then the StudyType's default_stored_fields (e.g. optimization: design_density), then the
+    rest."""
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested

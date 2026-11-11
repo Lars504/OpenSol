@@ -292,13 +292,13 @@ GEOMETRY_KINDS = {kind.name: kind for kind in (
                   + _TIP_ONLY_3D)),
         composite=True,
         summary='Repeats one object on a rectangular grid of copies (holes of a photonic crystal, pillar arrays).',
-        description='Rectangular array of nx x ny (x nz in 3D) copies of the base object: copy (i, j, '
-                    'k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, 0) is the base itself; a '
-                    'cell centre inside any copy is inside (a union of the copies). The array is one domain object: '
-                    'materials, features, selections and mesh refinements naming it act on every copy; meshes follow '
-                    "every copy's outline (triangles: curved edges on circles, ellipses and rounded-rectangle "
-                    'arcs; tetrahedra (gmsh): the solids of each copy). Composite bases are copied whole (a hole '
-                    'with a ring cut out, nested arrays). At most ' + f'{ARRAY_MAX_COPIES}' + ' copies. '
+        description='Rectangular array (the industry-standard array operation) of nx x ny (x nz in 3D) copies of the '
+                    'base object: copy (i, j, k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, '
+                    '0) is the base itself; a cell centre inside any copy is inside (a union of the copies). The array '
+                    'is one domain object: materials, features, selections and mesh refinements naming it act on every '
+                    "copy; meshes follow every copy's outline (triangles: curved edges on circles, ellipses and "
+                    'rounded-rectangle arcs; tetrahedra (gmsh): the solids of each copy). Composite bases are copied '
+                    'whole (a hole with a ring cut out, nested arrays). At most ' + f'{ARRAY_MAX_COPIES}' + ' copies. '
                     + _CONSUMES_INPUTS + ' ' + _ORIGIN),
     GeometryKind('box', 'Box', 'domain', (
         _length('x0', 1.5e-6, 'Corner 1, x', f'x of one corner, {_FROM_ORIGIN}; corners in any order.',

@@ -158,10 +158,10 @@ _PARAMS = (
           tip='Frequencies in hertz, solved in this order; when filled, it replaces the range above.'),
     Param('snapshots', 'choice', 'all', label='Stored snapshots', choices=SNAPSHOT_CHOICES,
           choice_labels=(('all', 'Every frequency'), ('last', 'Last frequency only'), ('none', 'None')),
-          help="Which frequencies keep a snapshot of the stored fields: 'all' "
-               "(default) one per frequency, 'last' only the last solved one (also after a cancel), 'none' no "
-               'snapshot. Each snapshot holds the stored fields on up to 250,000 cells (~1 MB per field for a '
-               'large window), so a sweep over hundreds of frequencies may keep only the last. Feature records per '
+          help="Which frequencies keep a snapshot of the stored fields (the industry-standard store-fields-in-output "
+               "choice): 'all' (default) one per frequency, 'last' only the last solved one (also after a cancel), "
+               "'none' no snapshot. Each snapshot holds the stored fields on up to 250,000 cells (~1 MB per field for "
+               'a large window), so a sweep over hundreds of frequencies may keep only the last. Feature records per '
                'frequency (probes, port / support / mode_projection records, admittance) and the live last-frequency '
                "state are the same for every choice. With 'last' / 'none' the fields are formed for the last solved "
                'frequency only (every sweep_method; the live field view is not refreshed during the sweep).',

@@ -253,11 +253,11 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `mode_overlap` is unconjugated (0 between modes of one line); degenerate complex pairs are bilinear-orthogonalised
   (`_orthogonalise_degenerate`; selftest em_slab_degenerate_orthogonal). Complex lines > 600 cells shift-invert at
   (omega_t/C0)^2 max Re q (can miss modes far above). Plasmonic hz: selftest em_slab_spp_discrete.
-- Mode ports (`mode_ports`): `PortLine` maps a line to a SlabLine like a port boundary: a span end at a CPML window edge
-  continues through the PML; at a grid-edge wall or mirror the pinned outermost cell is dropped (end condition from
-  the wall type); a full periodic span is periodic; other ends are artificial metal (warned when the mode exceeds
-  1e-2 of its peak there). eps_t is the line cell's value (guide assumed invariant along the normal). PortLine serves
-  FDTD and FDFD ports and never reads `physics.engine`.
+- Mode ports (`mode_ports`): `PortLine` maps a line to a SlabLine like an industry-standard port boundary: a span end at
+  a CPML window edge continues through the PML; at a grid-edge wall or mirror the pinned outermost cell is dropped (end
+  condition from the wall type); a full periodic span is periodic; other ends are artificial metal (warned when the mode
+  exceeds 1e-2 of its peak there). eps_t is the line cell's value (guide assumed invariant along the normal). PortLine
+  serves FDTD and FDFD ports and never reads `physics.engine`.
 - ModeSource = one-sided TFSF line (interface face f = c-1 positive / c negative): magnetic correction uses the
   E-type incident at t, electric the H-type at t+dt/2; sign = sign_n x direction (ez x -1, y +1; hz x +1, y -1);
   incident(t) = Re(P) s(t) + Im(P) `temporal.quadrature(t)` (gaussian / cw only). After the first step the modes are

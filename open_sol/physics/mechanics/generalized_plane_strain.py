@@ -1,6 +1,7 @@
-"""Generalized plane strain of the planar 2D solid (symmetry plan 2.4, the usual form eps_zz = e0 + e1 x + e2 y): the
-axial force and the two bending moments fix the free terms by superposition of unit-term homogeneous solves; every
-load and condition integral is exact for bilinear u and element-constant coefficients. Backend arrays (numpy / cupy)."""
+"""Generalized plane strain of the planar 2D solid (symmetry plan 2.4, the industry-standard form eps_zz = e0 + e1 x +
+e2 y): the axial force and the two bending moments fix the free terms by superposition of unit-term homogeneous solves;
+every load and condition integral is exact for bilinear u and element-constant coefficients. Backend arrays (numpy /
+cupy)."""
 from dataclasses import dataclass
 
 import numpy as np

@@ -21,7 +21,7 @@ GUI. The general goal: vary one parameter, rerun the whole study per value, and 
 value (spectra, probes, derived values vs the inner axis), scalars vs the parameter, and optionally the fields of
 every value.
 
-## 1. The usual approach in multiphysics tools
+## 1. The industry-standard approach
 
 - **Outer parametric sweep** (a study-level loop): a table of parameter names and value lists (start, step, stop),
   either specified combinations or all combinations, optional reuse of the previous value's solution (continuation
@@ -118,7 +118,7 @@ frequency_domain wavelengths). A coupled solve at one wavelength is the stationa
   w, because a relaxed step is w times the Picard step. Without that, a small w would look converged. Relaxation is
   valid in stationary and frequency_domain; in time_dependent it is a validation error (it would low-pass the
   transfers). Per coupling rather than per study: it is explicit, works in the stationary study too, and mirrors
-  the per-step damping of other multiphysics tools.
+  the industry-standard per-step damping.
 - **Progress and log**: the progress message is 'lambda = 1550 nm, iteration 3'. The log gets one line per
   wavelength with its iteration count, plus a warning when a wavelength does not converge (the scan continues).
 - **Help texts to update**: the frequency_domain description, the em_heat_joule description, the FDFD wavelength

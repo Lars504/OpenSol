@@ -1,13 +1,13 @@
-"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default,
-quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane strain / plane stress
-/ generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij (stiffness.ElementStiffness,
-per element: D12), thermal strain, initial stress, supports, tractions on outer faces / lines, body forces; one factor
-of K per assembly (system_fem.ElasticFEMSystem); vibration modes (modal.solve_modes; a loss factor: damped modes; stress
-stiffening: K + K_sigma of the static state; a free body about a target > 0; an elastic PML ring: radiation Q; an
-azimuthal order m >= 1 of the axisymmetric solid) and the elastic frequency response with complex probes / reactions per
-frequency; strain / kinetic energy densities. Geometric nonlinearity (new_modules_plan K6, planar plane strain / plane
-stress and axisymmetric): total-Lagrangian Newton with load steps, reactions from the internal force, pencils on its
-tangent."""
+"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, the
+industry-standard quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane
+strain / plane stress / generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij
+(stiffness.ElementStiffness, per element: D12), thermal strain, initial stress, supports, tractions on outer faces /
+lines, body forces; one factor of K per assembly (system_fem.ElasticFEMSystem); vibration modes (modal.solve_modes; a
+loss factor: damped modes; stress stiffening: K + K_sigma of the static state; a free body about a target > 0; an
+elastic PML ring: radiation Q; an azimuthal order m >= 1 of the axisymmetric solid) and the elastic frequency response
+with complex probes / reactions per frequency; strain / kinetic energy densities. Geometric nonlinearity
+(new_modules_plan K6, planar plane strain / plane stress and axisymmetric): total-Lagrangian Newton with load steps,
+reactions from the internal force, pencils on its tangent."""
 import math
 from types import SimpleNamespace
 
