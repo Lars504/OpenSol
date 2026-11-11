@@ -650,6 +650,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   frequency-response HarmonicSystem, solid DevicePencils, device Newton tangents.
 
 ## Self-tests (`selftests.py`)
+- Shared case helpers (reuse, never a local copy): `selftests.py` (`_lame`, `_elastic`, `_rectangle`, `_reaction`,
+  `_window_fields`, the bilayer strip), `selftests_3d.py` (`_box`, 3D `_reaction`), `selftests_fem3d.py` (`_solid_spec`,
+  `_probe`, `_probes`, `_point`), `selftests_eigenfrequency.py` (`_symbols`, `_table_frequencies`, `_add_rank_items`:
+  rank-order table frequencies and snapshot counts), `selftests_formulations.py` (GPS layers: `_gps_materials`,
+  `_layer_constants`), `selftests_nonlinear.py` (string warm start / tangent update twins). Template modules
+  (`selftests.py`, `selftests_3d.py`, `selftests_bloch3d.py`, `selftests_optomechanics.py`) import no non-template
+  sibling at module level (get_registry loads them).
 - Nonlinear: `selftests_nonlinear3d.py` (definition3d loader; solid_fem3d_newton_gpu needs cuDSS), `selftests_nonlinear.py`
   (2D; its helpers serve the 3D twins), sweep_nonlinear_string_warm_start (model/selftests_sweep).
 - Exact-in-Q1 cases (1e-6, float64 CG to 1e-12): solid_bilayer_tension_graded, solid_simple_shear (the only gamma != 0
