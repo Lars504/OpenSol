@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 _LENGTH = 1e-6                     # box side [m]
 _QUADRATURE_RTOL = 1e-13
@@ -74,10 +74,8 @@ def _check_core(_):
     from .mesh3d import structured_box_mesh
     from .sampling3d import PointLocator3D, evaluate_nedelec_3d
 
-    checks, details = {}, {}
-
-    def add(name, value, tolerance):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+    checks, details = SubChecks(), {}
+    add = checks.add_bound
 
     for degree, error in _quadrature_errors().items():
         add(f'quadrature_degree_{degree}', error, _QUADRATURE_RTOL)
@@ -109,7 +107,7 @@ def _check_core(_):
         _REPRODUCTION_RTOL)
     add('constant_field_curl_free', float(np.abs(curls[found]).max()) * _LENGTH / float(np.abs(constant).max()),
         _REPRODUCTION_RTOL)
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 _PATCH_RTOL = 1e-10                # Lagrange patch solves (spsolve on a few hundred dofs)
@@ -153,10 +151,8 @@ def _check_lagrange(_):
     from .mesh3d import interface_faces, structured_box_mesh, window_faces
     from .sampling3d import PointLocator3D, centroid_values_3d, evaluate_lagrange_3d
 
-    checks = {}
-
-    def add(name, value, tolerance):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+    checks = SubChecks()
+    add = checks.add_bound
 
     def relative(values, reference):
         return float(np.abs(values - reference).max()) / max(float(np.abs(reference).max()), 1e-300)
@@ -237,7 +233,7 @@ def _check_lagrange(_):
                                      / (sides[1] * sides[2]) - 1.0),
                                  abs(face_areas_3d(shelled, window_faces(shelled, 'y_lo')).sum()
                                      / ((sides[0] - x_edges[1]) * sides[2]) - 1.0)), _INTEGRAL_RTOL)
-    return checks_result(checks, elements=mesh.n_elements)
+    return checks.result(elements=mesh.n_elements)
 
 
 TETRAHEDRA_SELFTEST_CASES = (

@@ -5,7 +5,7 @@ GPU twin (plan G5): the device assembler and the device-value cuDSS refactorisat
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 _LENGTH = 1e-6                      # box / rectangle side scale [m]
 _RTOL = 1e-13                       # same formulas, other summation order (first estimate)
@@ -71,10 +71,10 @@ def _check_tangent_assembler(_):
     from .elasticity3d import TangentAssembler3D, internal_force_and_tangent_3d, vector_dofs_3d
     from .mesh3d import structured_box_mesh
     from .selftests_harmonic import _rectangle_mesh
-    checks, details = {}, {}
+    checks, details = SubChecks(), {}
 
     def add(name, value, tolerance=_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     rng = np.random.default_rng(11)
     mesh3 = structured_box_mesh(_LENGTH * np.array([0.0, 0.3, 0.75, 1.2]), _LENGTH * np.array([0.0, 0.45, 0.8]),
@@ -128,7 +128,7 @@ def _check_tangent_assembler(_):
         zeros = _compare(add, name, assembler, reference, displacement, stress2, free, group_dofs,
                          np.zeros_like(displacement))
         details[name] = {'nnz': assembler.pattern.nnz, 'free': int(free.sum()), 'zero entries at u = 0': zeros}
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 # ---- fem3d_tangent_assembler_gpu (plan G5): the device TangentAssembler3D against the host one on the same box, and
@@ -160,10 +160,10 @@ def _check_device_assembler(_):
     from ..solvers.cudss_factor import CudssFactorization, cudss_available
     from .dofs3d import lagrange_dofs_3d
     from .elasticity3d import TangentAssembler3D
-    checks, details = {}, {}
+    checks, details = SubChecks(), {}
 
     def add(name, value, tolerance=_DEVICE_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     rng = np.random.default_rng(13)
     mesh, material, solid, stress = _box_problem(rng)
@@ -231,7 +231,7 @@ def _check_device_assembler(_):
             factor.release()
         reference.release()
         details['free_dofs'] = int(pattern.n_free)
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 TANGENT_ASSEMBLER_SELFTEST_CASES = (

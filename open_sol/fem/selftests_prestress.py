@@ -5,7 +5,7 @@ number of failed sub-checks (tolerance 0), values in details."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result, max_relative_error
+from ..model.selftest_helpers import SubChecks, max_relative_error
 from .selftests_elasticity3d import graded_box_mesh
 
 _LENGTH = 1e-6         # mesh scale [m]
@@ -22,10 +22,10 @@ _ROTATION_ANGLE = 0.4  # rad: the finite rotation of the Green-Lagrange checks
 
 
 def _recorder():
-    checks = {}
+    checks = SubChecks()
 
     def add(name, value, tolerance=_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
     return checks, add
 
 
@@ -304,7 +304,7 @@ def _check_identities(_):
     checks, add = _recorder()
     _check_identities_3d(add)
     _check_identities_2d(add)
-    return checks_result(checks)
+    return checks.result()
 
 
 # ---- tensioned strings ----
@@ -387,7 +387,7 @@ def _check_strings(_):
     mass = assemble_elastic_mass(dofs, _DENSITY, axisymmetric=True)
     tie = _tie(dofs.dof_points()[:, 1], spacing, 0, 2)
     compare('string_geometric_axisymmetric', _frequencies(geometric, mass, tie), _TENSION)
-    return checks_result(checks, frequencies=measured,
+    return checks.result(frequencies=measured,
                          expected={'geometric': _string_expected(length, _TENSION).tolist(),
                                    'total': _string_expected(length, _TENSION + _SHEAR).tolist()})
 

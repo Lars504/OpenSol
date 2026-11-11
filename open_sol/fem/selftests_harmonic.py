@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 # manufactured problems: complex symmetric tensors, b, damping, mass at omega, Robin admittance / damping
 _TENSOR_2D = np.array([[2.0 + 0.3j, 0.4 - 0.1j], [0.4 - 0.1j, 1.2 + 0.2j]])
@@ -59,13 +59,8 @@ def _graded(count, length=1.0):
 
 
 def _checker():
-    checks = {}
-
-    def add(name, value, limit, at_least=False):
-        value = float(value)
-        passed = value >= limit if at_least else value <= limit
-        checks[name] = {'value': value, ('minimum' if at_least else 'tolerance'): limit, 'passed': bool(passed)}
-    return checks, add
+    checks = SubChecks()
+    return checks, checks.add_bound
 
 
 # ---- S1: stretches ----
@@ -123,13 +118,9 @@ def _check_pml(_):
     samples = np.concatenate([shell_mesh.centroids(), shell_mesh.points])
     add('pml3d_stretches', np.abs(shell.stretches(samples) - reference.stretches(samples)).max(), 1e-13)
     add('pml3d_jacobian', np.abs(shell.jacobian(samples) - reference.jacobian(samples)).max(), 1e-12)
-    try:
-        pml_shell(shell_mesh, _SPEED, omega, _PML_REFLECTION, faces=('x_hi',))
-        refused = 0.0
-    except ValueError:
-        refused = 1.0
-    add('shell_face_mismatch_refused', 1.0 - refused, 0.0)
-    return checks_result(checks, beta_x_hi=float(pml.strength['x_hi']), beta_y_lo=float(pml.strength['y_lo']))
+    checks.add_raises('shell_face_mismatch_refused',
+                      lambda: pml_shell(shell_mesh, _SPEED, omega, _PML_REFLECTION, faces=('x_hi',)))
+    return checks.result(beta_x_hi=float(pml.strength['x_hi']), beta_y_lo=float(pml.strength['y_lo']))
 
 
 # ---- S2: manufactured fields ----
@@ -225,8 +216,8 @@ def _check_harmonic_2d(_):
         loaded.add_point_load([0.37, 0.41], 2.0 - 1.0j)
         loaded.add_point_load(graded.points[7], 0.5j)
         add(f'point_load_total_p{order}', abs(loaded.load_vector().sum() - (2.0 - 0.5j)), 1e-12)
-    return checks_result(checks, relative_l2_errors={f'p{order}_{cells}': float(value)
-                                                     for (order, cells), value in errors.items()})
+    return checks.result(relative_l2_errors={f'p{order}_{cells}': float(value)
+                                             for (order, cells), value in errors.items()})
 
 
 # ---- S2: waves (Robin absorber, PML) ----
@@ -274,7 +265,7 @@ def _check_harmonic_waves(_):
     _, _, forward, backward = _driven_strip(ScalarHarmonicSystem(ringed, 2, pml=pml), wavenumber, length)
     add('pml_reflection', abs(backward) / abs(forward), _REFLECTION_TOLERANCE)
     add('pml_incident_amplitude', abs(forward - 1.0), 2e-3)
-    return checks_result(checks, pml_reflection=abs(backward) / abs(forward), beta=float(pml.strength['x_hi']))
+    return checks.result(pml_reflection=abs(backward) / abs(forward), beta=float(pml.strength['x_hi']))
 
 
 # ---- S2: axisymmetric ----
@@ -325,8 +316,8 @@ def _check_harmonic_axisymmetric(_):
     inside = points[:, 0] <= outer * (1.0 + 1e-12)
     exact = hankel2(0, wavenumber * points[inside, 0])
     add('axisymmetric_pml_hankel', np.abs(system.values[inside] - exact).max() / np.abs(exact).max(), 5e-3)
-    return checks_result(checks, relative_l2_errors={f'p{order}_{cells}': float(value)
-                                                     for (order, cells), value in errors.items()})
+    return checks.result(relative_l2_errors={f'p{order}_{cells}': float(value)
+                                             for (order, cells), value in errors.items()})
 
 
 # ---- S2: tetrahedra ----
@@ -354,7 +345,7 @@ def _check_harmonic_3d(_):
     _, _, forward, backward = _driven_strip(ScalarHarmonicSystem3D(strip, 2, pml=pml), wavenumber, length)
     add('pml_reflection_3d', abs(backward) / abs(forward), _REFLECTION_TOLERANCE)
     add('pml_incident_amplitude_3d', abs(forward - 1.0), 2e-3)
-    return checks_result(checks, elements=box.n_elements, pml_reflection=abs(backward) / abs(forward))
+    return checks.result(elements=box.n_elements, pml_reflection=abs(backward) / abs(forward))
 
 
 # ---- S8: resonances ----
@@ -415,7 +406,7 @@ def _check_resonances(_):
     add('leaky_q_factor', abs(nearest.q_factor / (3.0 * math.pi / (2.0 * damping)) - 1.0) if nearest else math.inf,
         1e-2)
     add('leaky_complex_pencil', float(leaky.info['pencil'] != 'complex_symmetric'), 0.0)
-    return checks_result(checks, closed=closed.summary(), lossy=lossy.summary(), leaky=leaky.summary(),
+    return checks.result(closed=closed.summary(), lossy=lossy.summary(), leaky=leaky.summary(),
                          leaky_omegas=[[float(value.real), float(value.imag)] for value in leaky_omegas],
                          closed_form={n: [value.real, value.imag] for n, value in closed_form.items()})
 
@@ -459,7 +450,7 @@ def _check_device_pencil(_):
     checks, add = _checker()
     if not (gpu_available() and cudss_available()):
         add('skipped', 0.0, 0.0)
-        return checks_result(checks, skipped='no usable GPU or nvmath-python (cuDSS) not installed')
+        return checks.result(skipped='no usable GPU or nvmath-python (cuDSS) not installed')
     mesh, pml = _pencil_square(64)
     reference = _pencil_system(mesh, pml, None)   # host SuperLU
     omegas = [2.0 * math.pi * frequency for frequency in _PENCIL_FREQUENCIES]
@@ -522,7 +513,7 @@ def _check_device_pencil(_):
     add('asymmetric_pencil_detected', float(device is None or device.symmetric), 0.0)
     add('asymmetric_general_lu', float(asymmetric.factor.symmetric), 0.0)
     asymmetric.factor.release()
-    return checks_result(checks, timing=timing)
+    return checks.result(timing=timing)
 
 
 HARMONIC_SELFTEST_CASES = (

@@ -5,7 +5,7 @@ sub-checks (tolerance 0), values in details."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 _LENGTH = 1e-6        # box side scale [m]
 _RTOL = 1e-10         # exact identities in float64 (first estimates)
@@ -52,10 +52,10 @@ def _check_elasticity3d(_):
                                assemble_face_traction_3d, assemble_stress_load_3d, element_strains_3d,
                                isotropic_matrix_3d, local_dof_points_3d, nodal_average_3d, voigt_matrix_3d)
 
-    checks = {}
+    checks = SubChecks()
 
     def add(name, value, tolerance=_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     mesh = graded_box_mesh()
     n_elements = mesh.n_elements
@@ -119,7 +119,7 @@ def _check_elasticity3d(_):
         traction = assemble_face_traction_3d(dofs, top, _TRACTION).reshape(-1, 3).sum(axis=0)
         area = float(face_areas_3d(mesh, top).sum())
         add(f'traction_total_p{order}', float(np.abs(traction / (np.array(_TRACTION) * area) - 1.0).max()))
-    return checks_result(checks, elements=mesh.n_elements)
+    return checks.result(elements=mesh.n_elements)
 
 
 ELASTICITY_3D_SELFTEST_CASES = (

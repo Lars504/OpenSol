@@ -8,6 +8,7 @@ import numpy as np
 from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, checks_result
 from ..model.spec import DomainSpec, GeometrySpec, MeshFaceSizeSpec, MeshSpec, ModelSpec, RefinementSpec
+from .selftests_mesh_sizes3d import _refusal_text
 
 _UM = 1e-6
 _SIZE = (4.0 * _UM, 1.0 * _UM, 0.6 * _UM)
@@ -124,16 +125,11 @@ def _refusal_checks(add, registry):
     from ..model.meshing import tetrahedron_sizing
     from ..model.spec import MeshAxisSpec
 
-    refused = {}
     cases = {'size_points_builtin': _graded_mesh_spec(size_points=[[1.0 * _UM, 0.5 * _UM, 0.3 * _UM, _FINE]]),
              'axes_gmsh': _graded_mesh_spec(mesher='gmsh', refinements=[], axes=[MeshAxisSpec('z')]),
              'per_axis_gmsh': _graded_mesh_spec(mesher='gmsh')}
-    for name, mesh_spec in cases.items():
-        try:
-            tetrahedron_sizing(_spec(mesh_spec), mesh_spec, {}, registry)
-            refused[name] = ''
-        except ValueError as exc:
-            refused[name] = str(exc)
+    refused = {name: _refusal_text(lambda: tetrahedron_sizing(_spec(mesh_spec), mesh_spec, {}, registry))
+               for name, mesh_spec in cases.items()}
     add('refusals', all(refused.values()), refused)
 
 

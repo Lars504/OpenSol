@@ -39,6 +39,37 @@ def _sizing(with_sources=True):
         face_sizes=(_face(),) if with_sources else ())
 
 
+def _field_tree(geo):
+    """(formulas, kinds, lists, background field number or None) parsed from a .geo text."""
+    import re
+
+    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
+    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
+    lists = {int(number): [int(k) for k in members.split(',')]
+             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
+    background = re.search(r'Background Field = (\d+);', geo)
+    return formulas, kinds, lists, int(background.group(1)) if background else None
+
+
+def _field_value(tree, number, point, scale):
+    """Normalised value of field `number` of a _field_tree at point [m] (origin 0, coordinates / scale): MathEval
+    texts evaluated in Python (arithmetic and Sqrt), Min / Max fields over their lists."""
+    formulas, kinds, lists, _ = tree
+    if kinds[number] == 'MathEval':
+        names = {'x': point[0] / scale, 'y': point[1] / scale, 'z': point[2] / scale}
+        return eval(formulas[number], {'__builtins__': {}, 'Sqrt': math.sqrt}, names)   # noqa: S307 (own .geo)
+    return (min if kinds[number] == 'Min' else max)(_field_value(tree, k, point, scale) for k in lists[number])
+
+
+def _refusal_text(function) -> str:
+    """str of the ValueError function() raises, '' when it raises none (other exceptions propagate)."""
+    try:
+        function()
+    except ValueError as exc:
+        return str(exc)
+    return ''
+
+
 def _distance_checks(add):
     """SizedFace.face_distance at points above, beside and diagonal to the rectangle."""
     from .gmsh3d import SizedFace
@@ -64,10 +95,7 @@ def _geo_twin_checks(add):
     geo = geo_text(bounds, bounds, [], _H_MAX, _H_MAX / 100.0, 2.0 * _H_MAX, _GROWTH, sized_faces=(_face(),),
                    size_points=np.array([_POINT]))
     rows = geo.split('\n')
-    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
-    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
-    lists = {int(number): [int(k) for k in members.split(',')]
-             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
+    formulas, kinds, lists, _ = _field_tree(geo)
     in_min = next((lists.get(number, []) for number, kind in kinds.items() if kind == 'Min'), [])
     maxima = [number for number in in_min if kinds.get(number) == 'Max']
     parts = lists.get(maxima[0], []) if len(maxima) == 1 else []
@@ -312,12 +340,9 @@ def _region_geo_checks(add):
     region = SizedRegion('difference', _RING_SIZE, children=(_leaf(base), *(_leaf(solid) for solid in subtracted)))
     window = _RING_WINDOW
     geo = geo_text(window, window, [], _H_MAX, _H_MAX / 100.0, 2.0 * _H_MAX, _GROWTH, sized_regions=(region,))
-    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
-    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
-    lists = {int(number): [int(k) for k in members.split(',')]
-             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
-    background = re.search(r'Background Field = (\d+);', geo)
-    in_min = lists.get(int(background.group(1)), []) if background else []
+    tree = _field_tree(geo)
+    formulas, kinds, lists, background = tree
+    in_min = lists.get(background, []) if background is not None else []
     root = in_min[0] if len(in_min) == 1 else None
     children = lists.get(root, []) if root is not None and kinds.get(root) == 'Max' else []
 
@@ -333,18 +358,11 @@ def _region_geo_checks(add):
     longest = max((len(text) for text in re.findall(r'"([^"]*)"', geo)), default=0)
     add('region_geo_strings_fit', 0 < longest <= GEO_STRING_MAX, longest)
     scale = max(window[3] - window[0], window[4] - window[1], window[5] - window[2])   # origin: the window corner 0
-
-    def evaluate(number, point):
-        if kinds[number] == 'MathEval':
-            names = {'x': point[0] / scale, 'y': point[1] / scale, 'z': point[2] / scale}
-            return eval(formulas[number], {'__builtins__': {}, 'Sqrt': math.sqrt}, names)   # noqa: S307 (own .geo)
-        return (min if kinds[number] == 'Min' else max)(evaluate(k, point) for k in lists[number])
-
     if len(children) == 4:
         points = np.random.default_rng(11).uniform(window[:3], window[3:], size=(64, 3))
         errors = []
         for number, solid in zip(children[1:], subtracted):
-            values = np.array([evaluate(number, point) for point in points]) * scale
+            values = np.array([_field_value(tree, number, point, scale) for point in points]) * scale
             twin = _RING_SIZE + (_GROWTH - 1.0) * np.maximum(solid.depth(points, base.bounds()), 0.0)
             errors.append(float(np.max(np.abs(values - twin) / twin)))
         add('region_matheval_equals_twin', max(errors) <= _TWIN_RTOL, errors)
@@ -482,11 +500,9 @@ def _disk_cache_checks(add):
 def _sub_checks(*groups):
     """Run the check groups (each add(name, passed, value)); error = number of failed sub-checks, tolerance 0."""
     checks = SubChecks()
-    add = checks.add
-
     for group in groups:
-        group(add)
-    return checks_result(checks)
+        group(checks.add)
+    return checks.result()
 
 
 def _check_composite_sizes(results_by_name):

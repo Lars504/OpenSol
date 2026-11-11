@@ -4,7 +4,7 @@ source balances, one implicit-Euler loss step. error = number of failed sub-chec
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 _LENGTH = 1e-6                     # box side [m]
 _RTOL = 1e-10                      # exact identities through a host SuperLU solve
@@ -32,10 +32,10 @@ def _check_diffusion3d(_):
     from .mesh3d import interface_faces
     from .sampling3d import PointLocator3D
 
-    checks = {}
+    checks = SubChecks()
 
     def add(name, value, tolerance=_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     mesh = _box_mesh()
     side = mesh.window[3]
@@ -89,7 +89,7 @@ def _check_diffusion3d(_):
         decay.solve()
         stepped = 2.0 * _CAPACITY_OVER_DT / (_CAPACITY_OVER_DT + _LOSS)
         add(f'implicit_loss_step_p{order}', np.abs(decay.values - stepped).max() / stepped)
-    return checks_result(checks, elements=mesh.n_elements)
+    return checks.result(elements=mesh.n_elements)
 
 
 DIFFUSION_3D_SELFTEST_CASES = (

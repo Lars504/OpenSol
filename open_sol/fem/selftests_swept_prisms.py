@@ -9,6 +9,7 @@ from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, checks_result
 from ..model.spec import (DomainSpec, GeometrySpec, MeshAxisSpec, MeshFaceSizeSpec, MeshSpec, ModelSpec,
                           RefinementSpec)
+from .selftests_mesh_sizes3d import _refusal_text
 
 _UM = 1e-6
 _SQUARE = (1.0 * _UM, 0.8 * _UM)                     # footprint of the fem checks [m]
@@ -187,11 +188,7 @@ def _refusal_checks(add, registry):
     refused = {}
     for name, changes in cases.items():
         spec = _model_spec(**changes)
-        try:
-            tetrahedron_sizing(spec, spec.meshes[0], {}, registry)
-            refused[name] = ''
-        except ValueError as exc:
-            refused[name] = str(exc)
+        refused[name] = _refusal_text(lambda: tetrahedron_sizing(spec, spec.meshes[0], {}, registry))
     allowed = _model_spec(face_sizes=[MeshFaceSizeSpec('plate', _LAYER, face='z_hi')],
                           axes=[MeshAxisSpec('z', edges=[0.3 * _UM])])
     try:
