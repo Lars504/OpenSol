@@ -126,27 +126,25 @@ def model_solids(shapes, sizing, low, high) -> list:
 def sized_regions(shapes, sizing, low, high) -> tuple:
     """fem.gmsh3d SizedRegions of the refined composite domain objects (union, intersection, difference, array): the
     size holds inside the composite only, not over its inputs' whole volumes (plan D1)."""
-    overhang = SOLID_OVERHANG * float(np.max(high - low))
-    regions = []
-    for name, size in sizing.object_sizes.items():
-        shape = shapes.get(name)
-        if shape is None or GEOMETRY_KINDS[shape.kind].entity_kind != 'domain':
-            continue
-        if GEOMETRY_KINDS[shape.kind].composite:
-            region = _sized_region(name, shapes, float(size), low - overhang, high + overhang)
-            if region is not None:
-                regions.append(region)
-    return tuple(regions)
+    return _sized_regions(shapes, sizing.object_sizes, low, high, composites_only=True)
 
 
 def sized_surfaces(shapes, sizing, low, high) -> tuple:
     """fem.gmsh3d SizedRegions (plain objects too) of sizing.surface_sizes (RefinementSpec.where 'surface', plan D3b):
     the size holds at the object's surface, growing to both sides; objects without a gmsh solid drop out."""
+    return _sized_regions(shapes, sizing.surface_sizes, low, high)
+
+
+def _sized_regions(shapes, object_sizes, low, high, composites_only=False) -> tuple:
+    """_sized_region of each domain object of object_sizes (object -> size; composites_only: composites only), open
+    prism ends SOLID_OVERHANG beyond the box low .. high; None regions dropped."""
     overhang = SOLID_OVERHANG * float(np.max(high - low))
     regions = []
-    for name, size in sizing.surface_sizes.items():
+    for name, size in object_sizes.items():
         shape = shapes.get(name)
         if shape is None or GEOMETRY_KINDS[shape.kind].entity_kind != 'domain':
+            continue
+        if composites_only and not GEOMETRY_KINDS[shape.kind].composite:
             continue
         region = _sized_region(name, shapes, float(size), low - overhang, high + overhang)
         if region is not None:

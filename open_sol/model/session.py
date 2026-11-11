@@ -12,7 +12,7 @@ from .field_access import DISPLAY_MAX_PIXELS
 from .field_access_tensor import LineAccess, MappedAccess, TensorAccess
 from .field_access_tetrahedra import TetrahedraAccess
 from .field_access_triangles import TriangleAccess
-from .field_data import COORDINATE_AXES, PLANE_AXES, FieldData, LineProfile, VolumeData   # re-exported
+from .field_data import PLANE_AXES, FieldData, LineProfile, VolumeData   # re-exported
 from .geometry import domain_map
 from .schema import FIELD_DERIVED_OPERATIONS, GLOBAL_DERIVED_OPERATION, output_field_names, scalar_output_names
 
