@@ -17,19 +17,18 @@ from ..core.memory_estimate import (FLOAT32_BYTES, FLOAT64_BYTES, FLOAT64_CSR_EN
                                     combine, host_real_lu_bytes)
 from ..core.monitors import FieldProbe
 from ..core.solver_base import PhysicsSolver
-from .assembly import (assemble_edge_load, assemble_edge_mass, assemble_load, assemble_mass, assemble_stiffness,
-                       element_basis_integrals, element_gradient_integrals, pattern_sum)
+from .assembly import (_element_groups, _lagrange_at, _weights, assemble_edge_load, assemble_edge_mass, assemble_load,
+                       assemble_mass, assemble_stiffness, element_basis_integrals, element_gradient_integrals,
+                       pattern_sum)
 from .dofs import lagrange_dofs
-from .elements import curved_elements, element_geometry, lagrange_basis, physical_gradients
+from .elements import element_geometry, lagrange_basis
 from .mesh import one_sided, side_members
 from .mesher import MERGE_TOLERANCE
-from .quadrature import CURVED_DEGREE, triangle_rule
 from .sampling import evaluate, locator
 
 FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 RING_ANGLE = 2.0 * math.pi        # whole rings of an axisymmetric (r, z) solve (integrals here are per radian)
 ANCHOR_RTOL = 1e-10               # reduced row sum / diagonal above which a row anchors its connected region
-CHUNK_ELEMENTS = 16384            # elements per post-processing einsum block
 FEM_FILL_FACTOR = 2.0             # SuperLU fill of an FEM operator over the 5-point heuristic (uncalibrated)
 
 
@@ -44,20 +43,17 @@ class EdgeCondition:
     external: float = 0.0
 
 
-class FEMDiffusionSystem:
-    """Lagrange system of one scalar unknown on a TriangleMesh. The owner sets conditions and sources, calls assemble(
-    tensor, capacity_over_dt) while operator_dirty, then solve(source density); `values` = u in the full-mesh numbering
-    (nodes, then n_points + edge for P2): dofs of no active element keep their last value, the PML layer ring gets the
-    window field at the clamped position. Integrals, reactions and fluxes of an axisymmetric solve are per radian."""
+class FEMDiffusionSystemCommon:
+    """Dimension-free part of FEMDiffusionSystem (triangles) and diffusion3d.FEMDiffusionSystem3D (tetrahedra): the
+    linear solver, condition sequences and factor reuse, held regions, volumetric losses, the anchor check and the
+    factorisation / solve of the reduced operator. Subclasses provide `values`, `face_conditions` and _full_ids."""
 
-    def __init__(self, mesh, order=2, linear_solver=None, *, backend='cpu', axisymmetric=False,
-                 label=lambda: 'fem diffusion', unknown_name='unknown',
-                 anchor_text='Dirichlet or Robin edge, held region or volumetric loss', remedy_text='',
-                 require_anchors=True):
+    def __init__(self, mesh, order, linear_solver, backend, label, unknown_name, anchor_text, remedy_text,
+                 require_anchors):
         from ..solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
         if order not in (1, 2):
             raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the triangle Automatic (mesh plan D11)
+        if linear_solver is None:   # scripts: the triangle / tetrahedra Automatic (mesh plan D11: host SuperLU)
             linear_solver = SparseDirectSolver(backend=backend)
         if isinstance(linear_solver, SparseDirectSolver):
             linear_solver = DiffusionDirectSolver(linear_solver)
@@ -68,38 +64,27 @@ class FEMDiffusionSystem:
         self.linear_solver = linear_solver
         self.mesh = mesh
         self.order = int(order)
-        self.geometry_order = 1 if self.order == 1 else 2   # D6: isoparametric P2 on curved elements
         self.backend = backend
-        self.axisymmetric = bool(axisymmetric)
         self.label = label
         self.unknown_name = unknown_name
         self.anchor_text = anchor_text
         self.remedy_text = remedy_text
         self.require_anchors = bool(require_anchors)
-        self.full = lagrange_dofs(mesh, self.order, geometry_order=self.geometry_order)   # state / display numbering
-        self.element_map = lagrange_dofs(mesh, 0, geometry_order=self.geometry_order)     # P0 fields
-        self.values = np.zeros(self.full.n_dofs)
-        self.window_elements = mesh.pml_faces == 0
-        self.face_conditions = {face: (EdgeCondition(), 0) for face in FACES}   # face -> (condition, sequence)
-        self.edge_conditions = []   # [edges, EdgeCondition, sequence] of object outlines
-        self.held = []              # (element mask, value, sequence): every dof of the elements fixed
+        self.held = []              # (element mask, value, sequence): every (active) dof of the elements fixed
         self.loss_coefficient = np.zeros(mesh.n_elements)   # a per element
         self.loss_drive = np.zeros(mesh.n_elements)         # a u_ext per element
-        self.point_sources = {}     # node -> power (whole ring when axisymmetric)
-        self.dofs = None            # DofMap of the active elements (last assembly)
         self.n_solves = 0
         self.operator_dirty = True
         self._constants_stale = False   # a Dirichlet value / Robin external changed: new lift and loads, same factor
         self._sequence = 0          # later conditions win shared dofs
-        self._face_edges = {}
-        self._ring = None
         self._matrix = self._reduced = self._capacity_matrix = None
         self._free = self._fixed = self._dof_owner = None
         self._coupling = None       # reduced rows x fixed columns of the last assembly (the lift)
-        self._lift = None
-        self._static_load = None
-        self._load = None
-        self._solution = None
+        self._lift = self._static_load = self._load = self._solution = None
+
+    def _full_ids(self, ids) -> np.ndarray:
+        """Full-mesh ids (into `values`) of system dofs (the numbering of _free / _fixed)."""
+        raise NotImplementedError
 
     # ---- conditions and sources ----
     def _next_sequence(self) -> int:
@@ -115,15 +100,97 @@ class FEMDiffusionSystem:
             self._constants_stale = True
 
     def set_face_condition(self, face, condition, keep_sequence=False) -> None:
-        """Condition of an outer face (the window edge on that side); a value-only change keeps the factor;
-        keep_sequence (a value of time t): a set face keeps its place in the order, so shared corner dofs stay with
-        their build owner (else it becomes the latest condition)."""
+        """Condition of an outer face (the window edge / faces on that side); a value-only change keeps the factor;
+        keep_sequence (a value of time t): a set face keeps its place in the order, so shared corner / edge dofs stay
+        with their build owner (else it becomes the latest condition)."""
         previous, sequence = self.face_conditions[face]
         if not (keep_sequence and sequence):
-            sequence = self._next_sequence()
+            sequence = self._next_sequence()   # dof owners are re-read with the constants
         self.face_conditions[face] = (condition, sequence)
         self._note_change(previous, condition)
 
+    def add_held(self, element_mask, value) -> None:
+        """Fix u = value on every dof of the masked elements (held cells: a terminal / reservoir)."""
+        mask = np.asarray(element_mask, dtype=bool).copy()
+        self.held.append((mask, float(value), self._next_sequence()))
+        self.set_element_values(mask, value)
+        self.operator_dirty = True
+
+    def add_loss(self, element_mask, coefficient, external) -> None:
+        """Add a volumetric loss a (u - external) on the masked elements (a, external numbers or per element)."""
+        mask = np.asarray(element_mask, dtype=bool)
+        count = self.mesh.n_elements
+        coefficient = np.broadcast_to(np.asarray(coefficient, dtype=np.float64), (count,))
+        external = np.broadcast_to(np.asarray(external, dtype=np.float64), (count,))
+        if (coefficient[mask] < 0.0).any():
+            raise ValueError(f'{self.label()}: a volumetric loss coefficient must be >= 0')
+        self.loss_coefficient += np.where(mask, coefficient, 0.0)
+        self.loss_drive += np.where(mask, coefficient * external, 0.0)
+        self.operator_dirty = True
+
+    # ---- factor and solve ----
+    def _check_anchors(self, reduced, anchored_rows) -> None:
+        """ValueError when a connected region of free dofs has no anchor (no anchored_rows row and all its reduced row
+        sums ~0: u + const solves it too)."""
+        floating = floating_region_count(reduced, anchored_rows)
+        if floating:
+            raise ValueError(f'{self.label()}: {floating} connected region(s) of the {self.unknown_name} touch no '
+                             f'{self.anchor_text}, so the system is singular. {self.remedy_text}')
+
+    def _solve_dtype(self):
+        return np.float32 if getattr(self.linear_solver, 'precision', 'double') == 'single' else np.float64
+
+    def _factorize(self) -> None:
+        """Factorise (bind) the reduced operator on the run backend; the free values seed the iterative solution."""
+        self._solution = None
+        if not self._free.size:
+            return
+        dtype = self._solve_dtype()
+        operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype))   # gpu: one device copy
+        self.linear_solver.factorize(operator)
+        self._solution = array_module(self.backend).asarray(self.values[self._full_ids(self._free)], dtype=dtype)
+
+    def _solve_reduced(self, load) -> None:
+        """Keep the load (reactions) and solve the reduced operator for the free values of it (minus the lift)."""
+        self._load = load
+        if self._free.size:
+            rhs = array_module(self.backend).asarray(load[self._free] - self._lift, dtype=self._solve_dtype())
+            # pcg stop reference (PHY-1): a transient step's rhs is dominated by C/dt u_old, so stop against the
+            # step's initial residual (x0 = the previous step) instead of ||b||
+            reference = 'initial_residual' if self._capacity_matrix is not None else 'rhs'
+            self.linear_solver.solve(rhs, self._solution, reference)
+            self.values[self._full_ids(self._free)] = np.asarray(to_host(self._solution), dtype=np.float64)
+
+
+class FEMDiffusionSystem(FEMDiffusionSystemCommon):
+    """Lagrange system of one scalar unknown on a TriangleMesh. The owner sets conditions and sources, calls assemble(
+    tensor, capacity_over_dt) while operator_dirty, then solve(source density); `values` = u in the full-mesh numbering
+    (nodes, then n_points + edge for P2): dofs of no active element keep their last value, the PML layer ring gets the
+    window field at the clamped position. Integrals, reactions and fluxes of an axisymmetric solve are per radian."""
+
+    def __init__(self, mesh, order=2, linear_solver=None, *, backend='cpu', axisymmetric=False,
+                 label=lambda: 'fem diffusion', unknown_name='unknown',
+                 anchor_text='Dirichlet or Robin edge, held region or volumetric loss', remedy_text='',
+                 require_anchors=True):
+        super().__init__(mesh, order, linear_solver, backend, label, unknown_name, anchor_text, remedy_text,
+                         require_anchors)
+        self.geometry_order = 1 if self.order == 1 else 2   # D6: isoparametric P2 on curved elements
+        self.axisymmetric = bool(axisymmetric)
+        self.full = lagrange_dofs(mesh, self.order, geometry_order=self.geometry_order)   # state / display numbering
+        self.element_map = lagrange_dofs(mesh, 0, geometry_order=self.geometry_order)     # P0 fields
+        self.values = np.zeros(self.full.n_dofs)
+        self.window_elements = mesh.pml_faces == 0
+        self.face_conditions = {face: (EdgeCondition(), 0) for face in FACES}   # face -> (condition, sequence)
+        self.edge_conditions = []   # [edges, EdgeCondition, sequence] of object outlines
+        self.point_sources = {}     # node -> power (whole ring when axisymmetric)
+        self.dofs = None            # DofMap of the active elements (last assembly)
+        self._face_edges = {}
+        self._ring = None
+
+    def _full_ids(self, ids) -> np.ndarray:
+        return self.dofs.global_ids[ids]
+
+    # ---- conditions and sources ----
     def add_edge_condition(self, edges, condition) -> int:
         """Condition on mesh edges (object outlines); returns its handle for set_edge_condition."""
         self.edge_conditions.append([np.unique(np.asarray(edges, dtype=np.int64)), condition, self._next_sequence()])
@@ -137,29 +204,10 @@ class FEMDiffusionSystem:
         self._note_change(entry[1], condition)
         entry[1] = condition
 
-    def add_held(self, element_mask, value) -> None:
-        """Fix u = value on every dof of the masked elements (held cells: a terminal / reservoir)."""
-        mask = np.asarray(element_mask, dtype=bool).copy()
-        self.held.append((mask, float(value), self._next_sequence()))
-        self.set_element_values(mask, value)
-        self.operator_dirty = True
-
     def set_element_values(self, element_mask, value) -> None:
         """Write u = value on every dof of the masked elements (initial / held values)."""
         ids = np.unique(self.full.element_dofs[np.asarray(element_mask, dtype=bool)])
         self.values[ids] = value
-
-    def add_loss(self, element_mask, coefficient, external) -> None:
-        """Add a volumetric loss a (u - external) on the masked elements (a, external numbers or per element)."""
-        mask = np.asarray(element_mask, dtype=bool)
-        count = self.mesh.n_elements
-        coefficient = np.broadcast_to(np.asarray(coefficient, dtype=np.float64), (count,))
-        external = np.broadcast_to(np.asarray(external, dtype=np.float64), (count,))
-        if (coefficient[mask] < 0.0).any():
-            raise ValueError(f'{self.label()}: a volumetric loss coefficient must be >= 0')
-        self.loss_coefficient += np.where(mask, coefficient, 0.0)
-        self.loss_drive += np.where(mask, coefficient * external, 0.0)
-        self.operator_dirty = True
 
     def set_loss(self, element_mask, coefficient, external) -> None:
         """Replace every volumetric loss by a (u - external) on the masked elements (for a physics owning the whole
@@ -274,28 +322,6 @@ class FEMDiffusionSystem:
         self._static_load = static_load
         self._constants_stale = False
 
-    def _check_anchors(self, reduced, anchored_rows) -> None:
-        """ValueError when a connected region of free dofs has no anchor (no anchored_rows row and all its reduced row
-        sums ~0: u + const solves it too)."""
-        floating = floating_region_count(reduced, anchored_rows)
-        if floating:
-            raise ValueError(f'{self.label()}: {floating} connected region(s) of the {self.unknown_name} touch no '
-                             f'{self.anchor_text}, so the system is singular. {self.remedy_text}')
-
-    def _solve_dtype(self):
-        return np.float32 if getattr(self.linear_solver, 'precision', 'double') == 'single' else np.float64
-
-    def _factorize(self) -> None:
-        """Factorise (bind) the reduced operator on the run backend; the free values seed the iterative solution."""
-        self._solution = None
-        if not self._free.size:
-            return
-        dtype = self._solve_dtype()
-        operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype))   # gpu: one device copy
-        self.linear_solver.factorize(operator)
-        self._solution = array_module(self.backend).asarray(self.values[self.dofs.global_ids[self._free]],
-                                                            dtype=dtype)
-
     # ---- solve ----
     def solve(self, source_density=None) -> None:
         """Solve with the P0 source density f per element (None: none) on top of the edge, loss and point terms
@@ -318,14 +344,7 @@ class FEMDiffusionSystem:
             load[dofs.node_dofs([node])] += power / (RING_ANGLE if axisymmetric else 1.0)
         if self._capacity_matrix is not None:
             load += self._capacity_matrix @ self.values[dofs.global_ids]
-        self._load = load
-        if self._free.size:
-            rhs = array_module(self.backend).asarray(load[self._free] - self._lift, dtype=self._solve_dtype())
-            # pcg stop reference (PHY-1): a transient step's rhs is dominated by C/dt u_old, so stop against the
-            # step's initial residual (x0 = the previous step) instead of ||b||
-            reference = 'initial_residual' if self._capacity_matrix is not None else 'rhs'
-            self.linear_solver.solve(rhs, self._solution, reference)
-            self.values[dofs.global_ids[self._free]] = np.asarray(to_host(self._solution), dtype=np.float64)
+        self._solve_reduced(load)
         self._extend_into_ring()
         self.n_solves += 1
 
@@ -399,30 +418,18 @@ class FEMDiffusionSystem:
             result['value'][elements] = np.einsum('mn,mn->m', value_integrals[positions], local)
             result['gradient'][elements] = np.einsum('mnc,mn->mc', gradient_integrals[positions], local)
             return result
-        curved = (curved_elements(mesh, dofs.elements) if self.geometry_order == 2
-                  else np.zeros(len(dofs.elements), dtype=bool))
-        for group, degree in ((~curved, base_degree), (curved, max(base_degree, CURVED_DEGREE))):
-            positions = np.flatnonzero(group)
-            if not positions.size:
-                continue
-            rule = triangle_rule(degree)
-            basis, reference_gradients = lagrange_basis(self.order, rule.points)
-            for start in range(0, positions.size, CHUNK_ELEMENTS):
-                chunk = positions[start:start + CHUNK_ELEMENTS]
-                elements = dofs.elements[chunk]
-                geometry = element_geometry(mesh, elements, rule.points, self.geometry_order)
-                local = u[dofs.element_dofs[chunk]]
-                weights = rule.weights[None, :] * geometry.determinant
-                if self.axisymmetric:
-                    weights = weights * geometry.points[..., 0]
-                point_gradients = np.einsum('mqnc,mn->mqc', physical_gradients(reference_gradients, geometry.inverse),
-                                            local)
-                result['measure'][elements] = weights.sum(axis=1)
-                result['value'][elements] = np.einsum('qn,mn,mq->m', basis, local, weights)
-                result['gradient'][elements] = np.einsum('mqc,mq->mc', point_gradients, weights)
-                if tensor is not None:
-                    result['dissipation'][elements] = np.einsum('mqc,mcd,mqd,mq->m', point_gradients,
-                                                                tensor[elements], point_gradients, weights)
+        for positions, rule in _element_groups(dofs, base_degree):   # straight / curved chunks (CURVED_DEGREE)
+            elements = dofs.elements[positions]
+            geometry = element_geometry(mesh, elements, rule.points, self.geometry_order)
+            basis, gradients = _lagrange_at(dofs, geometry, rule)
+            local = u[dofs.element_dofs[positions]]
+            weights = _weights(geometry, rule, self.axisymmetric)
+            point_gradients = np.einsum('mqnc,mn->mqc', gradients, local)
+            result['measure'][elements] = weights.sum(axis=1)
+            result['value'][elements] = np.einsum('qn,mn,mq->m', basis, local, weights)
+            result['gradient'][elements] = np.einsum('mqc,mq->mc', point_gradients, weights)
+            result['dissipation'][elements] = np.einsum('mqc,mcd,mqd,mq->m', point_gradients, tensor[elements],
+                                                        point_gradients, weights)
         return result
 
 
