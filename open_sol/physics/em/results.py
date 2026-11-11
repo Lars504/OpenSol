@@ -38,6 +38,14 @@ def checked_freq_index(freq_index, n_freqs: int) -> int:
     return int(freq_index)
 
 
+def far_field_angles(n_angles):
+    """(n_angles,) float64 angles [rad] over the full circle (endpoint excluded); ValueError for n_angles < 1."""
+    n_angles = int(n_angles)
+    if n_angles < 1:
+        raise ValueError(f"n_angles must be >= 1, got {n_angles}")
+    return np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
+
+
 def _spectral_axes(monitor):
     """(frequency [Hz], wavelength [m]) float64 numpy copies of a spectral monitor's frequencies."""
     frequency = np.array(monitor.frequencies, dtype=np.float64)
@@ -157,11 +165,8 @@ def far_field_result(monitor, n_angles: int = 360) -> dict:
     """Far-field 'power' per angle |pattern|^2 / eta0 of a NearToFarField ('unit' a.u.: dt-weighted, no 1/2, so its
     angle integral matches a closed flux box's flux_result), 'angles' [rad from +x] (n_angles,), 'power' (n_f, n_angles)
     = |amplitude|^2 (amplitude_re / _im: the complex pattern / sqrt(eta0), combine_sector_far_fields)."""
-    n_angles = int(n_angles)
-    if n_angles < 1:
-        raise ValueError(f"n_angles must be >= 1, got {n_angles}")
+    angles = far_field_angles(n_angles)
     frequency, wavelength = _spectral_axes(monitor)
-    angles = np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
     amplitude = np.asarray(monitor.far_field(angles), dtype=np.complex128) / np.sqrt(float(ETA0))
     return {'kind': 'far_field', 'frequency': frequency, 'wavelength': wavelength, 'angles': angles,
             'power': np.abs(amplitude) ** 2, 'amplitude_re': amplitude.real, 'amplitude_im': amplitude.imag,
