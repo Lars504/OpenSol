@@ -258,11 +258,7 @@ class BORFDTDPhysics(PhysicsSolver):
         self.domain.validate_physical_pos(x, y, 'Point source')
         ix, iy = self.domain.pos_to_cell(x, y)
         temporal = _make_temporal(waveform, _resolve_frequency(wavelength, frequency), bandwidth)
-        source = BORCurrentSource(ix, iy, component, float(current), temporal)
-        self.sources.append(source)
-        if self.engine is not None:
-            source.attach(self.engine)
-        return source
+        return self._add_source(BORCurrentSource(ix, iy, component, float(current), temporal))
 
     def add_field_probe(self, x, y, field_component='ez'):
         """Time trace (core.monitors.FieldProbe) of one component on its Yee point of the cell containing (x, y)
@@ -301,7 +297,10 @@ class BORFDTDPhysics(PhysicsSolver):
         self._refuse_ports_in_order_sum('Mode source')
         row, span_cells, label = port_cells(self.domain, 'x', position, span, 'Mode source')
         temporal = _make_temporal(waveform, _resolve_frequency(wavelength, frequency), bandwidth)
-        source = BORFDTDModeSource(self, row, span_cells, temporal, power, mode_number, direction, phase, label)
+        return self._add_source(BORFDTDModeSource(self, row, span_cells, temporal, power, mode_number, direction, phase,
+                                                  label))
+
+    def _add_source(self, source):
         self.sources.append(source)
         if self.engine is not None:
             source.attach(self.engine)

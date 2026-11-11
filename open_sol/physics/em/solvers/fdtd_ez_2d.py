@@ -48,7 +48,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self._jz_totals = [None] * len(self._field_sets)
         self._drude_box = None
         # _ohmic_box: bounding box of the sigma_e > 0 cells (ohmic loss), refreshed by finalize / materials_changed.
-        self._refresh_ohmic_box()
+        self._sigma_e_changed()
 
     # --- PhysicsSolver contract -----------------------------------------------
 
@@ -64,16 +64,6 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             'q_accum': self.q_accum,
             'q_accum_time': self.q_accum_time,
         }
-
-    def finalize(self) -> None:
-        super().finalize()
-        self._refresh_ohmic_box()
-
-    def materials_changed(self, names) -> None:
-        """Rebuild the E (eps_r, sigma_e) and/or H (mu_r, sigma_m) update coefficients after in-place writes."""
-        super().materials_changed(names)
-        if 'sigma_e' in names:
-            self._refresh_ohmic_box()
 
     # --- time stepping ------------------------------------------------------------
 
@@ -137,7 +127,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             real = self._real
             self.drude_poles.append({'pole': drude_pole, 'box': box, 'damping': real(damping),
                                      'drive': weight * real(drive),
-                                     'j': [self.xp.zeros(weight.shape, dtype=self.dtype) for _ in self._field_sets]})
+                                     'j': self._set_buffers(weight.shape)})
             if self._jz_totals[0] is None:
                 self._jz_totals = [self.xp.zeros((self.nx, self.ny), dtype=self.dtype) for _ in self._field_sets]
             self._drude_box = _union_box(self._drude_box, box)
@@ -162,8 +152,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self.lorentz_poles.append({
             'pole': lorentz_pole, 'box': box,
             'damping': real(damping), 'restoring': real(restoring), 'drive': weight * real(drive),
-            'p': [self.xp.zeros(weight.shape, dtype=self.dtype) for _ in self._field_sets],
-            'dp': [self.xp.zeros(weight.shape, dtype=self.dtype) for _ in self._field_sets],
+            'p': self._set_buffers(weight.shape), 'dp': self._set_buffers(weight.shape),
         })
 
     def _pole_weight_box(self, mask, cell_weight=None):
@@ -201,9 +190,8 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         for lorentz in self.lorentz_poles:
             keep_box = keep[lorentz['box']]
             lorentz['drive'] *= keep_box
-            for polarization_density, polarization_step in zip(lorentz['p'], lorentz['dp']):
-                polarization_density *= keep_box
-                polarization_step *= keep_box
+            for buffer in (*lorentz['p'], *lorentz['dp']):
+                buffer *= keep_box
 
     def set_conformal_faces(self, face_cell, face_axis, face_extra):
         """Conformal PEC (physics/em/conformal_pec): each listed H face (host int32 lower cell, int32 axis 0 = hi-x H_y /
@@ -215,7 +203,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         self._conformal_faces = (xp.asarray(face_cell, dtype=np.int32), xp.asarray(face_axis, dtype=np.int32),
                                  xp.asarray(face_extra, dtype=self.dtype), sparse_launch(len(face_cell)))
 
-    def _refresh_ohmic_box(self):
+    def _sigma_e_changed(self):
         """Bounding box of the sigma_e > 0 cells for the ohmic loss (one host sync; never on the eps_r_update path)."""
         self._ohmic_box = _bounding_box(self.materials.sigma_e)
 
