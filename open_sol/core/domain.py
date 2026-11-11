@@ -18,6 +18,7 @@ class TensorDomainBase:
     _graded_widths."""
 
     _AXES = ('x', 'y')
+    _widths = _edges = _centers = None   # lazy caches of cell_widths / cell_edges / cell_centers (set per instance)
 
     def _origins(self) -> tuple:
         raise NotImplementedError
@@ -173,19 +174,13 @@ class Domain(TensorDomainBase):
             raise ValueError(f"Domain has no physical cells: grid {grid.nx} x {grid.ny}, "
                              f"PML sides {npml_sides}")
 
-        self._widths = None
-        self._edges = None
-        self._centers = None
         self._coordinate_cache = {}
 
     @classmethod
     def uniform(cls, size_x: float, size_y: float, dx: float,
                 npml: int = 15, courant: float = None, boundary_config=None,
                 verbose: bool = True, backend: str = None):
-        if boundary_config is not None:
-            sides = boundary_config.npml_sides
-        else:
-            sides = {face: npml for face in FACES}
+        sides = boundary_config.npml_sides if boundary_config is not None else {face: npml for face in FACES}
 
         total_x = size_x + (sides['x_lo'] + sides['x_hi']) * dx
         total_y = size_y + (sides['y_lo'] + sides['y_hi']) * dx
@@ -203,10 +198,7 @@ class Domain(TensorDomainBase):
     @classmethod
     def from_mesh(cls, mesh_config: MeshConfig, npml: int = 15,
                   boundary_config=None, courant: float = None, verbose: bool = True, backend: str = None):
-        if boundary_config is not None:
-            sides = boundary_config.npml_sides
-        else:
-            sides = {face: npml for face in FACES}
+        sides = boundary_config.npml_sides if boundary_config is not None else {face: npml for face in FACES}
 
         # mirror ghosts (EM BoundaryConfig.ghost_faces) take the window edge cell's width
         grid = mesh_config.build(pml_dx=mesh_config.dx_base, npml_sides=sides, courant=courant, verbose=verbose,

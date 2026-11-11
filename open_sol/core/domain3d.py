@@ -49,9 +49,6 @@ class Domain3D(TensorDomainBase):
                                  f'(radius_min {coordinates.radius_min:.6g} m is smaller than the x_lo padding); radii '
                                  'must stay positive in the whole grid')
             grid.use_polar_time_step(radius_first_face)
-        self._widths = None
-        self._edges = None
-        self._centers = None
         self._coordinate_cache = {}
 
     @classmethod

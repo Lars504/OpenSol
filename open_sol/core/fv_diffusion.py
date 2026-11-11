@@ -297,12 +297,13 @@ def _forwarded(owner_attribute, name, cast=None, check=None, doc=None):
     value written there)."""
     def getter(self):
         return getattr(getattr(self, owner_attribute), name)
-    setter = None
-    if cast is not None:
-        def setter(self, value):
-            if check is not None:
-                check(value)
-            setattr(getattr(self, owner_attribute), name, cast(value))
+    if cast is None:
+        return property(getter, doc=doc)
+
+    def setter(self, value):
+        if check is not None:
+            check(value)
+        setattr(getattr(self, owner_attribute), name, cast(value))
     return property(getter, setter, doc=doc)
 
 
@@ -1269,25 +1270,24 @@ class DiffusionPhysicsBase(PhysicsSolver):
 
     # --- shared API -------------------------------------------------------------
 
-    def set_face_bc(self, face: str, bc: BCSide) -> None:
-        """Set the boundary condition of one outer window face ('x_lo', 'x_hi', 'y_lo', 'y_hi'; 3D also 'z_lo',
-        'z_hi')."""
+    def _check_face_bc(self, face, bc):
         faces = self.system.faces
         if face not in faces:
             raise ValueError(f"unknown face {face!r}; expected one of {faces}")
         if not isinstance(bc, BCSide):
             raise TypeError(f"bc must be a BCSide, got {type(bc).__name__}")
+
+    def set_face_bc(self, face: str, bc: BCSide) -> None:
+        """Set the boundary condition of one outer window face ('x_lo', 'x_hi', 'y_lo', 'y_hi'; 3D also 'z_lo',
+        'z_hi')."""
+        self._check_face_bc(face, bc)
         setattr(self.bcs, face, bc)
         self.system.operator_dirty = True
 
     def set_face_value(self, face: str, bc: BCSide) -> None:
         """set_face_bc for a value-only change (a time-dependent feature value): the assembled rhs is updated in place
         (DiffusionSystem.update_face_value), else (no current assembly, other kind / h, 3D) the operator is dirtied."""
-        faces = self.system.faces
-        if face not in faces:
-            raise ValueError(f"unknown face {face!r}; expected one of {faces}")
-        if not isinstance(bc, BCSide):
-            raise TypeError(f"bc must be a BCSide, got {type(bc).__name__}")
+        self._check_face_bc(face, bc)
         previous = getattr(self.bcs, face)
         setattr(self.bcs, face, bc)
         if self.system.update_face_value(face, previous, bc):
