@@ -29,6 +29,15 @@ def _host_spectrum(spectra, freq_index):
     return to_host(spectra[freq_index]).astype(np.complex128)
 
 
+def checked_freq_index(freq_index, n_freqs: int) -> int:
+    """`freq_index` as an int in [0, n_freqs); TypeError for a non-int (bool included), IndexError out of range."""
+    if isinstance(freq_index, bool) or not isinstance(freq_index, (int, np.integer)):
+        raise TypeError(f"freq_index must be an int, got {freq_index!r}")
+    if not 0 <= int(freq_index) < n_freqs:
+        raise IndexError(f"freq_index {freq_index} out of range for {n_freqs} DFT frequencies")
+    return int(freq_index)
+
+
 def _spectral_axes(monitor):
     """(frequency [Hz], wavelength [m]) float64 numpy copies of a spectral monitor's frequencies."""
     frequency = np.array(monitor.frequencies, dtype=np.float64)
@@ -128,11 +137,7 @@ def dft_result(monitor, domain, freq_index=None, physics=None) -> dict:
     if shared is not None:
         result['intensity_per_cw_factor'] = _per_cw(np.ones_like(frequency), *shared)
     if freq_index is not None:
-        if isinstance(freq_index, bool) or not isinstance(freq_index, (int, np.integer)):
-            raise TypeError(f"freq_index must be an int, got {freq_index!r}")
-        if not 0 <= int(freq_index) < monitor.n_freqs:
-            raise IndexError(f"freq_index {freq_index} out of range for {monitor.n_freqs} DFT frequencies")
-        index = int(freq_index)
+        index = checked_freq_index(freq_index, monitor.n_freqs)
         result['freq_index'] = index
         # |E(omega)|^2 of the dt-weighted spectra (~1e-30 for 1 V/m fs pulses, |H_z|^2 ~1e-35) kept in float64:
         # float32 reaches denormals tens of dB below the peak.
