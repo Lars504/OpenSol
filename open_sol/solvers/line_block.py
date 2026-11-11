@@ -149,7 +149,6 @@ class LineBlockLayout:
         self.block_of = block_of.astype(np.int64)
         self.position = position
         self.slot = self.block_of * self.block_size + position
-        self.padding_fraction = 1.0 - self.n_unknowns / (self.n_blocks * self.block_size)
 
     @classmethod
     def from_grid_cells(cls, cell_index, grid_shape, block_axis=None):
