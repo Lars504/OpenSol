@@ -11,7 +11,8 @@ from ...core.renderer import FieldInfo
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
                                          host_direct_back_end, linear_solver_cudss, optimization_evaluations,
                                          resolved_back_end, validate_points_inside)
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, solver_backend
+from ...model.schema import (FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, known_physics,
+                             solver_backend)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
                                 HOST_DIRECT_NAMES,
@@ -801,11 +802,7 @@ def _time_dependent_issues(vctx, physics_spec, path):
     if vctx.study_type != TIME_DEPENDENT_STUDY:
         return []
     issues = []
-    for other in vctx.spec.physics:
-        try:
-            other_type = vctx.registry.physics_type(other.type)
-        except KeyError:
-            continue   # reported at that physics
+    for other, other_type in known_physics(vctx.spec, vctx.registry):   # unknown types: reported at that physics
         if other_type.family == EM_FAMILY and other_type.steps_in_time is not None:
             issues.append(Issue('error', path,
                                 f"a time_dependent study with '{physics_spec.name}' (frequency domain) cannot also step "
@@ -1006,6 +1003,25 @@ def _fdfd_physics_type(polarization):
 ASSEMBLY_BYTES_PER_ENTRY = 800
 
 
+def _source_count(context) -> int:
+    """Enabled source features of the estimated physics (one solve each per factorisation)."""
+    physics_type = context.registry.physics_type(context.physics_spec.type)
+    return sum(1 for feature in context.physics_spec.features
+               if feature.enabled and physics_type.feature_type(feature.type).category == 'source')
+
+
+def _driven_points(context) -> tuple:
+    """(count, count_kind, limit) of the driven solves: one per step of a time_dependent stride, the static solves x
+    the frequency_domain wavelengths, else the static solves."""
+    if context.time_dependent:
+        return 1.0, 'exact', None
+    solves, kind, limit = context.static_solves()
+    if context.study.type == FREQUENCY_DOMAIN_STUDY:
+        points = context.count('harmonic_points', 1)
+        return solves * points, kind, None if limit is None else limit * points
+    return solves, kind, limit
+
+
 def _fdfd_time_estimate(settings_values, mesh, context):
     """Per solved wavelength the Helmholtz assembly (host scipy) and one factorisation of the 'linear' role with one
     solve per enabled source; eigen-solved: one shift-invert of the 'eigen' role (2 n_resonances + 10 eigenpairs);
@@ -1015,9 +1031,7 @@ def _fdfd_time_estimate(settings_values, mesh, context):
         return _triangle_time_estimate(settings_values, mesh, context)
     unknowns = float(mesh.n_cells)
     nnz = 5.0 * unknowns
-    physics_type = context.registry.physics_type(context.physics_spec.type)
-    sources = sum(1 for feature in context.physics_spec.features
-                  if feature.enabled and physics_type.feature_type(feature.type).category == 'source')
+    sources = _source_count(context)
     assembly_ops = (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
     if eigen_solved(context.spec, context.name):
         eigenpairs = resonance_eigenpairs(context)
@@ -1025,17 +1039,11 @@ def _fdfd_time_estimate(settings_values, mesh, context):
                                             resonance_filter_time_item(context.backend, unknowns, nnz, eigenpairs))),
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
                                                factorizations=1.0, eigenpairs=eigenpairs)))
-    per_step, rhs, limit = context.time_dependent, float(max(sources, 1)), None
-    if per_step:
-        points, kind = 1.0, 'exact'
-    elif context.study.type == FREQUENCY_DOMAIN_STUDY:
-        solves, kind, limit = context.static_solves()
-        points = solves * context.count('harmonic_points', 1)
-        limit = None if limit is None else limit * context.count('harmonic_points', 1)
-    elif context.study.type == OPTIMIZATION_STUDY:
+    per_step, rhs = context.time_dependent, float(max(sources, 1))
+    if context.study.type == OPTIMIZATION_STUDY:
         (points, kind, limit), rhs = optimization_evaluations(context), 2.0 * rhs   # + the adjoint solve
     else:
-        points, kind, limit = context.static_solves()
+        points, kind, limit = _driven_points(context)
     assembly = te.TimeItem('Helmholtz assembly', 'assembly', points, kind, assembly_ops, limit=limit,
                            per_step=per_step)
     # the line_block block holds the runtime's block axis (the periodic one, else the cheaper)
@@ -1073,23 +1081,13 @@ def _triangle_time_estimate(settings_values, mesh, context):
                            context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
                                                factorizations=1.0, eigenpairs=eigenpairs,
                                                factor_scale=FEM_FDFD_LU_FILL[order], **host)))
-    physics_type = context.registry.physics_type(context.physics_spec.type)
-    sources = sum(1 for feature in context.physics_spec.features
-                  if feature.enabled and physics_type.feature_type(feature.type).category == 'source')
-    per_step, limit = context.time_dependent, None
-    if per_step:
-        points, kind = 1.0, 'exact'
-    elif context.study.type == FREQUENCY_DOMAIN_STUDY:
-        solves, kind, limit = context.static_solves()
-        points = solves * context.count('harmonic_points', 1)
-        limit = None if limit is None else limit * context.count('harmonic_points', 1)
-    else:
-        points, kind, limit = context.static_solves()
+    per_step = context.time_dependent
+    points, kind, limit = _driven_points(context)
     assembly = te.TimeItem('FEM Helmholtz assembly', 'assembly', points, kind, assembly_ops, limit=limit,
                            per_step=per_step)
     return te.combine((te.TimeEstimate((assembly,)),
                        context.solver_work('linear', unknowns=unknowns, nnz=nnz, value_bytes=16,
-                                           solves=points * float(max(sources, 1)), solves_kind=kind,
+                                           solves=points * float(max(_source_count(context), 1)), solves_kind=kind,
                                            factorizations=points, factorizations_kind=kind, per_step=per_step,
                                            factor_scale=FEM_FDFD_LU_FILL[order],
                                            **({} if linear_solver_cudss(context.solvers) else {'backend': 'cpu'}))))

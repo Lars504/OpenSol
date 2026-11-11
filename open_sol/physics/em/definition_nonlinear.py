@@ -120,8 +120,7 @@ def _time_domain_issues(vctx, physics_spec, path, feature_type):
                                            'linear pulse divided by its spectrum) cannot use it; run a time_dependent '
                                            'study'))
     physics_type = vctx.registry.physics_type(physics_spec.type)
-    settings = vctx.values(physics_type.settings,
-                           raw_settings(physics_spec))
+    settings = vctx.values(physics_type.settings, raw_settings(physics_spec))
     if settings is not None and bloch_active_axes(settings):
         issues.append(Issue('error', path, f'a {feature_type} is not available with a Bloch wave vector k != 0 (its '
                                            'response to the field intensity would mix the +k and -k parts of the '
