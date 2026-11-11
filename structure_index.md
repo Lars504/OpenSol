@@ -15,20 +15,20 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/model/: lines 227-295
 - open_sol/physics/: lines 297-299
 - open_sol/physics/acoustics/: lines 301-319
-- open_sol/physics/em/: lines 321-434
-- open_sol/physics/em/solvers/: lines 436-458
-- open_sol/physics/em3d/: lines 460-496
-- open_sol/physics/eme/: lines 498-515
-- open_sol/physics/fluid/: lines 517-528
-- open_sol/physics/heat/: lines 530-555
-- open_sol/physics/magnetic/: lines 557-586
-- open_sol/physics/mechanics/: lines 588-666
-- open_sol/physics/membrane/: lines 668-686
-- open_sol/physics/nlfd/: lines 688-707
-- open_sol/physics/potential/: lines 709-726
-- open_sol/physics/semiconductor/: lines 728-741
-- open_sol/solvers/: lines 743-757
-- open_sol/viz/: lines 759-766
+- open_sol/physics/em/: lines 321-433
+- open_sol/physics/em/solvers/: lines 435-457
+- open_sol/physics/em3d/: lines 459-495
+- open_sol/physics/eme/: lines 497-514
+- open_sol/physics/fluid/: lines 516-527
+- open_sol/physics/heat/: lines 529-554
+- open_sol/physics/magnetic/: lines 556-585
+- open_sol/physics/mechanics/: lines 587-665
+- open_sol/physics/membrane/: lines 667-685
+- open_sol/physics/nlfd/: lines 687-706
+- open_sol/physics/potential/: lines 708-725
+- open_sol/physics/semiconductor/: lines 727-740
+- open_sol/solvers/: lines 742-756
+- open_sol/viz/: lines 758-765
 
 ## open_sol/
 
@@ -380,7 +380,6 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `renderer_bor.py`: Renderer of the body-of-revolution FDFD (solvers/fdfd_bor.BORPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|), absorbed power and materials.
 - `renderer_conical.py`: Renderer of the conical FDFD (solvers/fdfd_conical.ConicalPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|, S_z), absorbed power and materials.
 - `renderer_fdtd_bor.py`: Renderer of the body-of-revolution FDTD (solvers/fdtd_bor.BORFDTDPhysics): window-shaped float32 instantaneous centre fields of the standing wave, their moduli, materials, and the frequency_domain phasors (Re / modulus per component, |E|) ...
-- `renderer_modes_fem.py`: Renderer of em_modes on a triangle mesh (solvers/modes_fem FEMModePhysics): the shared fem.renderer FEMFieldRenderer (fem_field coefficients; Session rasterises them) with ModeRenderer's field names and FieldInfos.
 - `results.py`: Result dicts of EM monitors (numpy arrays, builtin floats / ints / str) for plots, export and the GUI.
 - `selftests.py`: Analytic E_z-polarisation EM self-test cases (line-current Hankel field and far-field isotropy; the plane-wave, Fresnel and Drude Mie cylinder cases come from selftests_hz's polarisation-generic factories), the wall-plane case of both FDTD ...
 - `selftests_adjoint.py`: Finite-difference validation of the FDFD adjoint sensitivity (adjoint_objective features, output fields eps_sensitivity / eps_xy_sensitivity) in em_fdfd_ez and em_fdfd_hz (also with eps_xy); no physics imports.
