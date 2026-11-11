@@ -10,9 +10,9 @@ from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import with_exact_cg
 from ..model.spec import CouplingSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, \
     StudySpec
-from .selftests import (_CELL, _CONDUCTIVITY, _CURRENTS_LINE_CELLS, _EM, _HEAT, _MODE_DOWN, _MODE_UP, _N_CELLS, _SIZE,
-                        _SLAB_X_RANGE, _T0, _em_physics, _full_period_rectangle, _line_geometry, _mode_phase,
-                        _monitor_phase_shift, _summaries, _unconverged_failures, _window_field, _wrap)
+from .selftests import (_CELL, _CONDUCTIVITY, _CURRENTS_LINE_CELLS, _EM, _HEAT, _N_CELLS, _SIZE, _SLAB_X_RANGE, _T0,
+                        _em_physics, _full_period_rectangle, _line_geometry, _monitor_phase_shift, _monitor_phases,
+                        _strip_outcome, _summaries, _unconverged_failures, _window_field)
 from .selftests_pockels import (_BIASED, _CRYSTAL, _CRYSTAL_CELLS, _ELECTROSTATICS, _FIELD_Y, _INDEX, _INDEX_CHANGE,
                                 _R13, _R33, _REFERENCE, _VOLTAGE, POCKELS_DESCRIPTION, POCKELS_TYPE_NAME,
                                 _check_pockels_strip, _pockels_strip_specs)
@@ -94,12 +94,7 @@ def _check_index_sum(results_by_name):
     err_eps = max(eps_errors.values())
 
     # 3. phase between the mode monitors, combined minus reference (E_y tangential: eps_yy sets k)
-    phases = {}
-    for run_name in (_REFERENCE, _COMBINED):
-        for feature in (_MODE_UP, _MODE_DOWN):
-            phases[f'{run_name}_{feature}'] = _mode_phase(results_by_name[run_name], feature)[0]
-    dphi_measured = _wrap((phases[f'{_COMBINED}_{_MODE_DOWN}'] - phases[f'{_COMBINED}_{_MODE_UP}'])
-                          - (phases[f'{_REFERENCE}_{_MODE_DOWN}'] - phases[f'{_REFERENCE}_{_MODE_UP}']))
+    phases, _, dphi_measured = _monitor_phases(results_by_name, _COMBINED)
     dphi_predicted = _monitor_phase_shift(_combined_index('yy'), _INDEX)
     err_phase = abs(dphi_measured - dphi_predicted) / abs(dphi_predicted)
 
@@ -111,16 +106,11 @@ def _check_index_sum(results_by_name):
 
     normalized_errors = {'theta': err_theta / _EXACT_TOLERANCE, 'field': err_field / _EXACT_TOLERANCE,
                          'eps': err_eps / _EPS_TOLERANCE, 'phase': err_phase / _PHASE_TOLERANCE}
-    error = float(np.max(np.asarray(list(normalized_errors.values())))) + len(failed)   # NaN propagates
     details = {'err_theta': err_theta, 'err_field': err_field, 'err_eps': eps_errors, 'err_phase': err_phase,
-               'normalized_errors': normalized_errors, 'failed_checks': failed,
                'dn_thermal': _THERMAL_INDEX_CHANGE, 'dn_pockels': dict(_INDEX_CHANGE),
                'dphi_measured_rad': dphi_measured, 'dphi_predicted_rad': dphi_predicted,
-               'phase_positive_rad': phases,
-               'ticks': {run_name: int(summary['ticks']) for run_name, summary in summaries.items()},
-               'warnings': {run_name: list(summary['warnings']) for run_name, summary in summaries.items()}}
-    return {'measured': dphi_measured, 'expected': dphi_predicted, 'error': error, 'tolerance': 1.0,
-            'details': details}
+               'phase_positive_rad': phases}
+    return _strip_outcome(normalized_errors, failed, summaries, dphi_measured, dphi_predicted, details)
 
 
 def _check_pockels_index_sum(results_by_name):

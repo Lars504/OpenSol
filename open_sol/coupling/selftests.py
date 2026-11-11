@@ -298,6 +298,18 @@ def _mode_phase(results, feature):
             single_value(result['n_eff'], f'{feature} n_eff'))
 
 
+def _monitor_phases(results_by_name, run_name):
+    """(phases, n_eff, dphi) of the mode monitors of the reference run and run_name ({'<run>_<feature>': value}):
+    dphi = wrap([phi_down - phi_up] of run_name - [phi_down - phi_up] of the reference)."""
+    phases, n_eff = {}, {}
+    for name in (_REFERENCE, run_name):
+        for feature in (_MODE_UP, _MODE_DOWN):
+            phases[f'{name}_{feature}'], n_eff[f'{name}_{feature}'] = _mode_phase(results_by_name[name], feature)
+    dphi = _wrap((phases[f'{run_name}_{_MODE_DOWN}'] - phases[f'{run_name}_{_MODE_UP}'])
+                 - (phases[f'{_REFERENCE}_{_MODE_DOWN}'] - phases[f'{_REFERENCE}_{_MODE_UP}']))
+    return phases, n_eff, dphi
+
+
 def _dirichlet_profile(x_centres, power_density):
     """theta(x_i) of k theta'' = -q with theta = 0 at both window faces: sum_j G(x_i, s_j) q_j dx / k with G(x, s) =
     s (L - x) / L for s <= x, x (L - s) / L for s > x (the self-cell uses the same formula)."""
@@ -373,13 +385,7 @@ def _phase_check(results_by_name, heated_name=_HEATED, alpha=0.0, eps_fields=(f'
     monitors, heated_name minus reference, against the discrete-k prediction from its theta (index (n0 + _DNDT theta)
     (1 + alpha theta)); err_eps = its eps_fields against that index squared."""
     heated = results_by_name[heated_name]
-    phases, n_eff = {}, {}
-    for run_name in (_REFERENCE, heated_name):
-        for feature in (_MODE_UP, _MODE_DOWN):
-            phases[f'{run_name}_{feature}'], n_eff[f'{run_name}_{feature}'] = _mode_phase(results_by_name[run_name],
-                                                                                          feature)
-    dphi_measured = _wrap((phases[f'{heated_name}_{_MODE_DOWN}'] - phases[f'{heated_name}_{_MODE_UP}'])
-                          - (phases[f'{_REFERENCE}_{_MODE_DOWN}'] - phases[f'{_REFERENCE}_{_MODE_UP}']))
+    phases, n_eff, dphi_measured = _monitor_phases(results_by_name, heated_name)
     theta_heated = _window_field(heated, f'{_HEAT}.T').mean(axis=1) - _T0
     dphi_predicted = _monitor_phase_shift(_heated_index(theta_heated, _DNDT, alpha))
     err_phase = abs(dphi_measured - dphi_predicted) / abs(dphi_predicted)
