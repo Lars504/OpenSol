@@ -32,13 +32,6 @@ class SubChecks(dict):
         self[name] = {'passed': bool(math.isfinite(error) and error <= tolerance), 'error': error,
                       'tolerance': tolerance, **details}
 
-    def add_bound(self, name, value, bound, at_least=False, **details):
-        """Pass when the finite value is <= bound (>= bound with at_least)."""
-        value = float(value)
-        within = value >= bound if at_least else value <= bound
-        self[name] = {'passed': bool(math.isfinite(value) and within), 'value': value,
-                      ('lower_bound' if at_least else 'upper_bound'): bound, **details}
-
     def add_relative(self, name, value, expected, tolerance, **details):
         """add_error of relative_error of the real values (float() of each, so 'nan' strings read too), both recorded."""
         value, expected = float(value), float(expected)
@@ -85,6 +78,29 @@ def scaled_worst_result(errors, tolerances, **details):
     item, scaled = worst_item({name: error / tolerances[name] for name, error in errors.items()})
     return {'measured': scaled, 'expected': 0.0, 'error': scaled, 'tolerance': 1.0,
             'details': {'worst_item': item, 'errors': errors, 'tolerances': tolerances, **details}}
+
+
+def normalized_result(normalized, details, **recorded):
+    """Case record of {item: error / its tolerance} (NaN the worst): measured = error = the worst value, tolerance 1;
+    `details` (updated in place) gains `recorded` ({'normalized_errors': normalized} when none) and worst_item."""
+    item, worst = worst_item(normalized)
+    details.update(recorded or {'normalized_errors': normalized}, worst_item=item)
+    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+
+
+def tolerance_units_result(errors, tolerances, details):
+    """normalized_result of errors[item] / tolerances[item], recording the errors themselves (details 'errors')."""
+    return normalized_result({item: error / tolerances[item] for item, error in errors.items()}, details,
+                             errors=errors)
+
+
+def failed_count_result(checks, details=None):
+    """Case record of named sub-checks {name: (value, tolerance)} (SubChecks.add_error each): error = number failed,
+    tolerance 0."""
+    entries = SubChecks()
+    for name, (value, tolerance) in checks.items():
+        entries.add_error(name, value, tolerance)
+    return entries.result(**(details or {}))
 
 
 def skip_result(reason):

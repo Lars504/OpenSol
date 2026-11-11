@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from .schema import SelfTestCase
-from .selftest_helpers import SubChecks, with_exact_cg
+from .selftest_helpers import SubChecks, normalized_result, with_exact_cg
 from .spec import (AdaptationSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec,
                    ModelSpec, ParameterSpec, PhysicsSpec, SolverDefaultsSpec, StudySpec)
 
@@ -326,9 +326,7 @@ def _check_strip_heater(results):
     levels); measured = error = the worse item in its own tolerance units, tolerance 1."""
     items = {'uniform_order': _check_uniform_richardson(results), 'adaptive_gain': _strip_gain_check(results)}
     normalized = {name: item['error'] / item['tolerance'] for name, item in items.items()}
-    worst_item = max(normalized, key=lambda name: math.inf if math.isnan(normalized[name]) else normalized[name])
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': {'worst_item': worst_item, 'normalized': normalized, **items}}
+    return normalized_result(normalized, dict(items), normalized=normalized)
 
 
 def _cpu_heat(widths_x, widths_y, conductivity, source=0.0, x_lo_temperature=1.0):

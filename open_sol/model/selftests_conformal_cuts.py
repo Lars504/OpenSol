@@ -6,12 +6,12 @@ import math
 import numpy as np
 
 from .schema import SelfTestCase
-from .selftest_helpers import with_exact_cg
+from .selftest_helpers import failed_count_result, with_exact_cg
 from .selftests_conformal import (
     _AREA_TOLERANCE, _BESSEL_ZERO, _CAVITY_CELL, _CAVITY_CENTRE, _CAVITY_RADIUS, _CAVITY_SIZE, _FRACTION_TOLERANCE,
     _GEOMETRY_CELLS, _HALF_PLANE_ANGLE, _HALF_PLANE_OFFSET, _HEAT, _HEAT_CELL, _HEAT_CENTRE, _HEAT_SIZE, _INNER_RADIUS,
     _INSULATED_TOLERANCE, _OUTER_RADIUS, _SOURCE_DENSITY, _T_INNER, _T_OUTER, _exact_cell_free_area,
-    _exact_segment_free, _failed_count_result, _half_plane, _half_plane_side, _insulated_error, _insulated_spec)
+    _exact_segment_free, _half_plane, _half_plane_side, _insulated_error, _insulated_spec)
 from .spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                    SolverDefaultsSpec, StudySpec)
 
@@ -99,7 +99,7 @@ def _check_outline_geometry(results_by_name):
     p, q = np.nonzero((corners > 0) & (corners < 4))
     exact_area = np.clip([_exact_cell_free_area(centres[a], centres[a + 1], centres[b], centres[b + 1])
                           for a, b in zip(p, q)], DUAL_CUT_FLOOR, 1.0)
-    return _failed_count_result({
+    return failed_count_result({
         'line_length': (abs(float(line.length.sum()) / _window_chord(float(n)) - 1.0), _OUTLINE_TOLERANCE_EXACT),
         'line_offsets': (float(np.max(np.abs(line.offset - owner_side))), _OUTLINE_TOLERANCE_EXACT),
         'line_normals': (normal_error, _OUTLINE_TOLERANCE_EXACT),
@@ -193,9 +193,9 @@ def _check_outline_heat(results_by_name):
         checks[f'{kind}_far'] = (conformal['far'], _OUTLINE_HEAT_TOLERANCE)
         checks[f'{kind}_wall_ring'] = (conformal['wall_ring'], ring_tolerance)
         details[kind] = {'conformal': conformal}
-    return _failed_count_result(checks, {**details, 'ring_tolerance': ring_tolerance,
-                                         'radii_cells': [_INNER_RADIUS / _HEAT_CELL, _OUTER_RADIUS / _HEAT_CELL],
-                                         'biot': _TRANSFER * _INNER_RADIUS})
+    return failed_count_result(checks, {**details, 'ring_tolerance': ring_tolerance,
+                                        'radii_cells': [_INNER_RADIUS / _HEAT_CELL, _OUTER_RADIUS / _HEAT_CELL],
+                                        'biot': _TRANSFER * _INNER_RADIUS})
 
 
 # ---- k(T) walls ----
@@ -231,7 +231,7 @@ def _switch_specs():
 def _check_switch(results_by_name):
     """The static insulated ring (walls drawn at b) and, after the skin switched off, the k(T) ring (walls re-located
     from c to b) against the insulated-ring profile; error = number of failed sub-checks, tolerance 0."""
-    return _failed_count_result(
+    return failed_count_result(
         {name: (_insulated_error(results_by_name[name]), _INSULATED_TOLERANCE) for name in ('insulated', 'switch')},
         {'radii_cells': [_INNER_RADIUS / _HEAT_CELL, _OUTER_RADIUS / _HEAT_CELL, _SKIN_RADIUS / _HEAT_CELL]})
 
@@ -268,8 +268,8 @@ def _pipe_errors(results):
 def _check_pipe(results_by_name):
     """Conformal TE11 / TM01 cutoffs k_c R within tolerance of 1.8412 / 2.4048."""
     errors, cutoffs = _pipe_errors(results_by_name['on'])
-    return _failed_count_result({mode: (errors[mode], _PIPE_TOLERANCE[mode]) for mode in _PIPE_TOLERANCE},
-                                {'conformal_errors': errors, 'conformal_cutoffs_kc_r': cutoffs})
+    return failed_count_result({mode: (errors[mode], _PIPE_TOLERANCE[mode]) for mode in _PIPE_TOLERANCE},
+                               {'conformal_errors': errors, 'conformal_cutoffs_kc_r': cutoffs})
 
 
 CONFORMAL_CUT_SELFTEST_CASES = (
