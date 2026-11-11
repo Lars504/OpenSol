@@ -93,10 +93,6 @@ class TetrahedronDomain:
     def release_coordinate_grids(self):
         self._coordinate_cache.clear()
 
-    def element_volumes(self) -> np.ndarray:
-        """Float64 (n_elements,) volumes [m^3]."""
-        return self.mesh.volumes()
-
     def locate(self, points) -> tuple:
         """(elements (p,) int64, -1 outside; reference coordinates (p, 3)) of points (p, 3) [m], read-only arrays
         remembered per point set (lattice planes come again for every component) up to LOCATE_CACHE_POINTS."""
