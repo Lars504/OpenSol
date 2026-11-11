@@ -176,18 +176,24 @@ class PointLocator:
         return local
 
 
+def _cached(cache, key, build, valid=None):
+    """cache[key] (made the newest) when present and valid(it), else build() stored under key (a new key as the
+    newest; the oldest entries dropped beyond _RASTER_CACHE_SIZE)."""
+    cached = cache.get(key)
+    if cached is None or (valid is not None and not valid(cached)):
+        cached = build()
+        cache[key] = cached
+        while len(cache) > _RASTER_CACHE_SIZE:
+            cache.popitem(last=False)
+    else:
+        cache.move_to_end(key)
+    return cached
+
+
 def locator(mesh, geometry_order=2) -> PointLocator:
     """Cached PointLocator of a mesh (kept on the mesh object's identity for the mesh's lifetime)."""
-    key = (id(mesh), int(geometry_order))
-    cached = _LOCATORS.get(key)
-    if cached is None or cached.mesh is not mesh:
-        cached = PointLocator(mesh, geometry_order)
-        _LOCATORS[key] = cached
-        while len(_LOCATORS) > _RASTER_CACHE_SIZE:
-            _LOCATORS.popitem(last=False)
-    else:
-        _LOCATORS.move_to_end(key)
-    return cached
+    return _cached(_LOCATORS, (id(mesh), int(geometry_order)), lambda: PointLocator(mesh, geometry_order),
+                   lambda cached: cached.mesh is mesh)
 
 
 _LOCATORS = OrderedDict()
@@ -265,15 +271,7 @@ def raster_sampler(mesh, x_centres, y_centres, geometry_order=2) -> RasterSample
     x_centres = np.ascontiguousarray(x_centres, dtype=np.float64)
     y_centres = np.ascontiguousarray(y_centres, dtype=np.float64)
     key = (mesh.digest, x_centres.tobytes(), y_centres.tobytes(), int(geometry_order))
-    cached = _RASTERS.get(key)
-    if cached is None:
-        cached = RasterSampler(mesh, x_centres, y_centres, geometry_order)
-        _RASTERS[key] = cached
-        while len(_RASTERS) > _RASTER_CACHE_SIZE:
-            _RASTERS.popitem(last=False)
-    else:
-        _RASTERS.move_to_end(key)
-    return cached
+    return _cached(_RASTERS, key, lambda: RasterSampler(mesh, x_centres, y_centres, geometry_order))
 
 
 _RASTERS = OrderedDict()
