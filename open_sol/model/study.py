@@ -2013,18 +2013,11 @@ def register(registry):
         params=_MODE_ANALYSIS_PARAMS, background_study='stationary', run=_run_mode_analysis,
         validate=_with_parity_sectors(), supports_adaptation=True, time_counts=_fixed_point_counts,
         solver_protocols=(ModeSolver,)))
-    from .study_eigenfrequency import register as register_eigenfrequency   # it imports this module's helpers
-    register_eigenfrequency(registry)
-    from .study_optimization import register as register_optimization   # likewise
-    register_optimization(registry)
-    from .study_thermal_noise import register as register_thermal_noise   # likewise
-    register_thermal_noise(registry)
-    from .study_nonlinear import register as register_nonlinear   # likewise
-    register_nonlinear(registry)
-    from .study_optomechanics import register as register_optomechanics   # likewise
-    register_optomechanics(registry)
-    from .study_frequency_response import register as register_frequency_response   # likewise
-    register_frequency_response(registry)
+    from . import (study_eigenfrequency, study_frequency_response, study_nonlinear, study_optimization,
+                   study_optomechanics, study_thermal_noise)   # they import this module's helpers
+    for module in (study_eigenfrequency, study_optimization, study_thermal_noise, study_nonlinear, study_optomechanics,
+                   study_frequency_response):   # in this order: the registry's study type order
+        module.register(registry)
     registry.register_selftests(_selftest_cases)
 
 
