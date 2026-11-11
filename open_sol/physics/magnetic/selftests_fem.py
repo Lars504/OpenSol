@@ -10,7 +10,7 @@ import numpy as np
 
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import scaled_worst_result
+from ...model.selftest_helpers import last_value, scaled_worst_result
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverDefaultsSpec,
                            StudySpec, SweepSpec)
@@ -131,11 +131,7 @@ def _probes():
 
 def _probe_values(results):
     """float64 A [T m] of the probes' last samples."""
-    values = []
-    for index in range(len(_PROBE_X)):
-        samples = np.asarray(results.result(_MAGNETIC, f'probe{index}')['values'], dtype=np.float64)
-        values.append(float(samples[-1]) if samples.size else math.nan)
-    return np.array(values)
+    return np.array([last_value(results, _MAGNETIC, f'probe{index}') for index in range(len(_PROBE_X))])
 
 
 def _current_sheet_specs():
