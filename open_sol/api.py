@@ -1690,15 +1690,16 @@ class Results:
         its snapshot; the figure and curve_error share it."""
         start, end = line_endpoints(curve.line, parameters)
         title = f'{curve.field} along {curve.name}'
+        if curve.snapshot is not None:
+            stored = self._stored_snapshots()
+            index = snapshot_index(curve.snapshot, [snapshot.label for snapshot in stored])
+            title += f" ({stored[index].label or f't = {stored[index].time:.6g} s'})"
         if is_segment_3d(curve.line):
             if curve.snapshot is not None:   # the profile each snapshot stored (also in a saved run)
-                stored = self._stored_snapshots()
-                index = snapshot_index(curve.snapshot, [snapshot.label for snapshot in stored])
                 profile = stored[index].segments.get(curve.name)
                 if profile is None:
                     raise ValueError(f"snapshot {index} holds no profile of line curve '{curve.name}' (snapshots "
                                      'store the 3D segment line curves of the model they ran)')
-                title += f" ({stored[index].label or f't = {stored[index].time:.6g} s'})"
             elif not self.is_live:
                 raise ValueError('a 3D-segment line curve of the final state needs live Results (the run directory '
                                  'holds cut planes and the snapshot profiles only: give the curve a snapshot)')
@@ -1715,10 +1716,7 @@ class Results:
             plane = line_plane(curve, parameters)
             fields = [self.field(key, plane=plane, native=native) for key in keys]
         else:
-            stored = self._stored_snapshots()
-            index = snapshot_index(curve.snapshot, [snapshot.label for snapshot in stored])
             fields = [self.snapshot_field(index, key) for key in keys]
-            title += f" ({stored[index].label or f't = {stored[index].time:.6g} s'})"
         field_data, info = fields[0], fields[0].info
         if curve.interface:   # one-sided samples at the line points themselves (igor 1.8)
             distance, samples, (centre_x, centre_y) = interface_line_profile(
@@ -2053,30 +2051,41 @@ def _set_error(record, exc):
     record.update(status='error', message=_error_text(exc), details={'traceback': traceback.format_exc()})
 
 
-def _templates_validate_case(registry):
-    """Built-in case: every template (built-in and registered) validates without errors on the CPU."""
-    start = time.perf_counter()
-    record = _case_record('templates_validate', 'Templates validate',
-                          'Every template of model.templates.template_entries() validates without errors (CPU). '
-                          'error = number of validation errors (a failing factory counts as one), tolerance 0.')
-    try:
-        details = {}
-        for entry in template_entries(registry):
+def _builtin_case(name, label, description):
+    """Decorator of a built-in case body(registry, record) -> run(registry) returning its record: a fresh _case_record,
+    wall_time set."""
+    def decorate(body):
+        def run_case(registry):
+            start = time.perf_counter()
+            record = _case_record(name, label, description)
             try:
-                issues = validate(entry.factory(), registry)
-            except Exception as exc:   # a crashing factory is a template error, not a selftest crash
-                issues = [Issue('error', ('model',), f'the template factory failed: {_error_text(exc)}')]
-            errors = [_issue_record(issue) for issue in issues if issue.level == 'error']
-            if errors:
-                details[entry.key] = errors
-        n_errors = sum(len(errors) for errors in details.values())
-        _set_outcome(record, n_errors, 0, float(n_errors), 0.0, details)
-        if n_errors:
-            record['message'] = f"validation errors in the templates {', '.join(details)}"
-    except Exception as exc:   # reported as an 'error' case; the other cases still run
-        _set_error(record, exc)
-    record['wall_time'] = time.perf_counter() - start
-    return record
+                body(registry, record)
+            except Exception as exc:   # an 'error' case (describe's doc-check RuntimeError too); the others still run
+                _set_error(record, exc)
+            record['wall_time'] = time.perf_counter() - start
+            return record
+        return run_case
+    return decorate
+
+
+@_builtin_case('templates_validate', 'Templates validate',
+               'Every template of model.templates.template_entries() validates without errors (CPU). '
+               'error = number of validation errors (a failing factory counts as one), tolerance 0.')
+def _templates_validate_case(registry, record):
+    """Built-in case: every template (built-in and registered) validates without errors on the CPU."""
+    details = {}
+    for entry in template_entries(registry):
+        try:
+            issues = validate(entry.factory(), registry)
+        except Exception as exc:   # a crashing factory is a template error, not a selftest crash
+            issues = [Issue('error', ('model',), f'the template factory failed: {_error_text(exc)}')]
+        errors = [_issue_record(issue) for issue in issues if issue.level == 'error']
+        if errors:
+            details[entry.key] = errors
+    n_errors = sum(len(errors) for errors in details.values())
+    _set_outcome(record, n_errors, 0, float(n_errors), 0.0, details)
+    if n_errors:
+        record['message'] = f"validation errors in the templates {', '.join(details)}"
 
 
 def _example_model_paths():
@@ -2088,125 +2097,99 @@ def _example_model_paths():
     return sorted(model_paths)
 
 
-def _examples_validate_case(registry):
+@_builtin_case('examples_validate', 'Examples validate',
+               'Every model file under examples/ (GUI Examples menu) loads and validates without errors '
+               '(CPU). error = number of failing files, tolerance 0.')
+def _examples_validate_case(registry, record):
     """Built-in case: every examples/**/*.json loads and validates without errors (passes without an examples
     folder, e.g. an installed package)."""
-    start = time.perf_counter()
-    record = _case_record('examples_validate', 'Examples validate',
-                          'Every model file under examples/ (GUI Examples menu) loads and validates without errors '
-                          '(CPU). error = number of failing files, tolerance 0.')
-    try:
-        details = {}
-        model_paths = _example_model_paths() if EXAMPLES_DIR.is_dir() else []
-        for path in model_paths:
-            relative_path = path.relative_to(EXAMPLES_DIR).as_posix()
-            try:
-                issues = validate(load_model(path), registry)
-            except Exception as exc:   # a file that fails to load is a failing example, not a selftest crash
-                issues = [Issue('error', ('model',), f'loading failed: {_error_text(exc)}')]
-            errors = [_issue_record(issue) for issue in issues if issue.level == 'error']
-            if errors:
-                details[relative_path] = errors
-        _set_outcome(record, len(details), 0, float(len(details)), 0.0,
-                     {'n_files': len(model_paths), 'failing': details})
-        if details:
-            record['message'] = f"examples with load or validation errors: {', '.join(details)}"
-    except Exception as exc:   # reported as an 'error' case; the other cases still run
-        _set_error(record, exc)
-    record['wall_time'] = time.perf_counter() - start
-    return record
+    details = {}
+    model_paths = _example_model_paths() if EXAMPLES_DIR.is_dir() else []
+    for path in model_paths:
+        relative_path = path.relative_to(EXAMPLES_DIR).as_posix()
+        try:
+            issues = validate(load_model(path), registry)
+        except Exception as exc:   # a file that fails to load is a failing example, not a selftest crash
+            issues = [Issue('error', ('model',), f'loading failed: {_error_text(exc)}')]
+        errors = [_issue_record(issue) for issue in issues if issue.level == 'error']
+        if errors:
+            details[relative_path] = errors
+    _set_outcome(record, len(details), 0, float(len(details)), 0.0, {'n_files': len(model_paths), 'failing': details})
+    if details:
+        record['message'] = f"examples with load or validation errors: {', '.join(details)}"
 
 
-def _api_reference_case(registry):
+@_builtin_case('api_reference_current', 'API reference current',
+               f'{REFERENCE_FILE} and {TEMPLATES_FILE} (what agents read) equal the text describe '
+               'generates from the registry. error = number of differing lines (both files), tolerance 0.')
+def _api_reference_case(registry, record):
     """Built-in case: api_reference.md and api_templates.md equal describe's reference_files() texts (line endings,
     trailing newlines aside)."""
-    start = time.perf_counter()
-    record = _case_record('api_reference_current', 'API reference current',
-                          f'{REFERENCE_FILE} and {TEMPLATES_FILE} (what agents read) equal the text describe '
-                          'generates from the registry. error = number of differing lines (both files), tolerance 0.')
-    try:
-        details, messages, n_differing = {}, [], 0
-        for name, text in reference_files(registry).items():
-            path = API_REFERENCE_PATH.parent / name
-            file_details = details[name] = {'path': str(path)}
-            if not path.is_file():
-                file_details['missing'] = True
-                messages.append(f'{name} is missing')
-                n_differing += len(_normalized_lines(text))
-                continue
-            pairs = list(itertools.zip_longest(_normalized_lines(path.read_text(encoding='utf-8')),
-                                               _normalized_lines(text)))
-            differing = [index for index, (saved_line, generated_line) in enumerate(pairs)
-                         if saved_line != generated_line]
-            n_differing += len(differing)
-            if differing:
-                first_line = differing[0] + 1
-                file_line, generated_line = (_clipped_line(line) for line in pairs[differing[0]])
-                file_details.update(n_differing=len(differing), first_line=first_line, file_line=file_line,
-                                    generated_line=generated_line)
-                messages.append(f'{name} differs from the generated text at line {first_line}: file '
-                                f'{file_line!r}, generated {generated_line!r}')
-        _set_outcome(record, n_differing, 0, float(n_differing), 0.0, details)
-        if messages:
-            record['message'] = '; '.join(messages + [_REGENERATE_REFERENCE])
-    except Exception as exc:   # describe's documentation-check RuntimeError included: an 'error' case with its message
-        _set_error(record, exc)
-    record['wall_time'] = time.perf_counter() - start
-    return record
+    details, messages, n_differing = {}, [], 0
+    for name, text in reference_files(registry).items():
+        path = API_REFERENCE_PATH.parent / name
+        file_details = details[name] = {'path': str(path)}
+        if not path.is_file():
+            file_details['missing'] = True
+            messages.append(f'{name} is missing')
+            n_differing += len(_normalized_lines(text))
+            continue
+        n_file, first = _first_difference(_normalized_lines(path.read_text(encoding='utf-8')), _normalized_lines(text))
+        n_differing += n_file
+        if n_file:
+            file_details.update(n_differing=n_file, **first)
+            messages.append(f"{name} differs from the generated text at line {first['first_line']}: file "
+                            f"{first['file_line']!r}, generated {first['generated_line']!r}")
+    _set_outcome(record, n_differing, 0, float(n_differing), 0.0, details)
+    if messages:
+        record['message'] = '; '.join(messages + [_REGENERATE_REFERENCE])
 
 
-def _import_contracts_case(registry):
+@_builtin_case('import_contracts', 'Import contracts',
+               'Every import of the package keeps the layering / lazy-import rules of '
+               'model/import_contracts.py, and no rule there is stale (an importer pattern matching no '
+               'module, an exception no import uses). error = violations + stale rules, tolerance 0.')
+def _import_contracts_case(registry, record):
     """Built-in case: every package import keeps the import contracts of model.import_contracts (AST scan, CPU)."""
-    start = time.perf_counter()
-    record = _case_record('import_contracts', 'Import contracts',
-                          'Every import of the package keeps the layering / lazy-import rules of '
-                          'model/import_contracts.py, and no rule there is stale (an importer pattern matching no '
-                          'module, an exception no import uses). error = violations + stale rules, tolerance 0.')
-    try:
-        report = check_import_contracts()
-        n_violations = sum(len(found) for found in report['violations'].values())
-        n_problems = n_violations + len(report['stale'])
-        _set_outcome(record, n_problems, 0, float(n_problems), 0.0, report)
-        messages = [f"{name} ({rule_text(name)}): {'; '.join(found[:3])}{' ...' if len(found) > 3 else ''}"
-                    for name, found in report['violations'].items()]
-        messages += [f'stale rule {text}' for text in report['stale']]
-        if messages:
-            record['message'] = ' | '.join(messages)
-    except Exception as exc:   # reported as an 'error' case; the other cases still run
-        _set_error(record, exc)
-    record['wall_time'] = time.perf_counter() - start
-    return record
+    report = check_import_contracts()
+    n_violations = sum(len(found) for found in report['violations'].values())
+    n_problems = n_violations + len(report['stale'])
+    _set_outcome(record, n_problems, 0, float(n_problems), 0.0, report)
+    messages = [f"{name} ({rule_text(name)}): {'; '.join(found[:3])}{' ...' if len(found) > 3 else ''}"
+                for name, found in report['violations'].items()]
+    messages += [f'stale rule {text}' for text in report['stale']]
+    if messages:
+        record['message'] = ' | '.join(messages)
 
 
-def _structure_index_case(registry):
+@_builtin_case('structure_index_current', 'Structure index current',
+               f'{STRUCTURE_INDEX_PATH.name} (the module index agents read) equals the text generated from '
+               'the module docstrings. error = number of differing lines, tolerance 0.')
+def _structure_index_case(registry, record):
     """Built-in case: structure_index.md equals the text generated from the module docstrings (passes outside a
     repository checkout)."""
-    start = time.perf_counter()
-    record = _case_record('structure_index_current', 'Structure index current',
-                          f'{STRUCTURE_INDEX_PATH.name} (the module index agents read) equals the text generated from '
-                          'the module docstrings. error = number of differing lines, tolerance 0.')
-    try:
-        if not CONVENTIONS_PATH.is_file():   # an installed package: no repository documents to keep current
-            _set_outcome(record, 0, 0, 0.0, 0.0, {'note': 'not a repository checkout'})
-        else:
-            saved = (_normalized_lines(STRUCTURE_INDEX_PATH.read_text(encoding='utf-8'))
-                     if STRUCTURE_INDEX_PATH.is_file() else [])
-            pairs = list(itertools.zip_longest(saved, _normalized_lines(structure_index_text())))
-            differing = [index for index, (saved_line, generated_line) in enumerate(pairs)
-                         if saved_line != generated_line]
-            details = {'path': str(STRUCTURE_INDEX_PATH), 'n_differing': len(differing)}
-            if differing:
-                details.update(first_line=differing[0] + 1,
-                               file_line=_clipped_line(pairs[differing[0]][0]),
-                               generated_line=_clipped_line(pairs[differing[0]][1]))
-            _set_outcome(record, len(differing), 0, float(len(differing)), 0.0, details)
-            if differing:
-                record['message'] = (f"{STRUCTURE_INDEX_PATH.name} differs from the generated text at line "
-                                     f"{details['first_line']}; {_REGENERATE_REFERENCE}")
-    except Exception as exc:   # reported as an 'error' case; the other cases still run
-        _set_error(record, exc)
-    record['wall_time'] = time.perf_counter() - start
-    return record
+    if not CONVENTIONS_PATH.is_file():   # an installed package: no repository documents to keep current
+        _set_outcome(record, 0, 0, 0.0, 0.0, {'note': 'not a repository checkout'})
+        return
+    saved = (_normalized_lines(STRUCTURE_INDEX_PATH.read_text(encoding='utf-8'))
+             if STRUCTURE_INDEX_PATH.is_file() else [])
+    n_differing, first = _first_difference(saved, _normalized_lines(structure_index_text()))
+    details = {'path': str(STRUCTURE_INDEX_PATH), 'n_differing': n_differing, **first}
+    _set_outcome(record, n_differing, 0, float(n_differing), 0.0, details)
+    if n_differing:
+        record['message'] = (f"{STRUCTURE_INDEX_PATH.name} differs from the generated text at line "
+                             f"{details['first_line']}; {_REGENERATE_REFERENCE}")
+
+
+def _first_difference(saved_lines, generated_lines):
+    """(number of differing lines, {first_line (1-based), file_line, generated_line (clipped)} of the first one or {})
+    of two _normalized_lines lists."""
+    pairs = list(itertools.zip_longest(saved_lines, generated_lines))
+    differing = [index for index, (saved_line, generated_line) in enumerate(pairs) if saved_line != generated_line]
+    if not differing:
+        return 0, {}
+    file_line, generated_line = (_clipped_line(line) for line in pairs[differing[0]])
+    return len(differing), {'first_line': differing[0] + 1, 'file_line': file_line, 'generated_line': generated_line}
 
 
 def _normalized_lines(text):
@@ -2571,15 +2554,15 @@ def _device_record(backend=None):
     """{device_id, name, kind, device_total, device_free, budget} [bytes] (summary.json memory names) of the GPU, or of
     the host for backend 'cpu' (budget None); None when the query fails."""
     if backend == 'cpu':
-        info = gpu_memory.cpu_device_info()
-        return {'device_id': info.device_id, 'name': info.name, 'kind': info.kind, 'device_total': info.total_bytes,
-                'device_free': info.free_bytes, 'budget': None}
-    try:
-        info = gpu_memory.device_info()
-    except Exception:   # a report field: a failing query must not cost the report
-        return None
+        info, budget = gpu_memory.cpu_device_info(), None
+    else:
+        try:
+            info = gpu_memory.device_info()
+        except Exception:   # a report field: a failing query must not cost the report
+            return None
+        budget = gpu_memory.budget_bytes()
     return {'device_id': info.device_id, 'name': info.name, 'kind': info.kind, 'device_total': info.total_bytes,
-            'device_free': info.free_bytes, 'budget': gpu_memory.budget_bytes()}
+            'device_free': info.free_bytes, 'budget': budget}
 
 
 # ---- analytic examples (selftest --examples) ----

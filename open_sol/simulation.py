@@ -18,30 +18,23 @@ from .viz import Visualizer
 class Simulation:
     """Domain + named physics + couplings driven by one MultiphysicsRunner; single-physics attrs fall through."""
 
-    def __init__(self, size_x: float = None, size_y: float = None,
-                 dx: float = None, npml: int = 15, courant: float = None,
-                 boundaries=None, *, polarization: str = 'ez'):
+    def __init__(self, size_x: float = None, size_y: float = None, dx: float = None, npml: int = 15,
+                 courant: float = None, boundaries=None, *, polarization: str = 'ez'):
         """courant = fraction of the 2D CFL limit in (0, 1] (default 0.99, as the model's courant_factor), never
         C0 dt / dx; run() finalizes every physics once (Courant check, mode-port warnings, thermo-optic n0)."""
         if size_x is None or size_y is None or dx is None:
-            raise ValueError(
-                "Simulation() needs (size_x, size_y, dx, ...) for the single-physics EM-FDTD convenience path; "
-                "use Simulation.multiphysics(domain) for the multi-physics path."
-            )
+            raise ValueError("Simulation() needs (size_x, size_y, dx, ...) for the single-physics EM-FDTD convenience "
+                             "path; use Simulation.multiphysics(domain) for the multi-physics path.")
 
         bc = _resolve_em_boundary(boundaries, npml)
-        domain = Domain.uniform(size_x, size_y, dx,
-                                npml=npml, courant=courant,
-                                boundary_config=bc)
+        domain = Domain.uniform(size_x, size_y, dx, npml=npml, courant=courant, boundary_config=bc)
         self._init_common(domain)
         self.add_physics('em', EMPhysics(domain, polarization=polarization, boundary_config=bc))
 
     @classmethod
-    def from_mesh(cls, mesh_config, npml: int = 15, courant: float = None,
-                  boundaries=None, polarization: str = 'ez'):
+    def from_mesh(cls, mesh_config, npml: int = 15, courant: float = None, boundaries=None, polarization: str = 'ez'):
         bc = _resolve_em_boundary(boundaries, npml)
-        domain = Domain.from_mesh(mesh_config, npml=npml, boundary_config=bc,
-                                  courant=courant)
+        domain = Domain.from_mesh(mesh_config, npml=npml, boundary_config=bc, courant=courant)
         sim = cls.multiphysics(domain)
         sim.add_physics('em', EMPhysics(domain, polarization=polarization, boundary_config=bc))
         return sim
@@ -255,8 +248,7 @@ class Simulation:
     # --------------------------------------- physics access via __getattr__
 
     def __getattr__(self, name):
-        # Only fires when normal lookup fails. Dunder lookups (copy/pickle
-        # probes) never fall through to a physics.
+        # Only fires when normal lookup fails. Dunder lookups (copy/pickle probes) never fall through to a physics.
         if name.startswith('__'):
             raise AttributeError(name)
         by_name = self.__dict__.get('_physics_by_name')
@@ -268,23 +260,16 @@ class Simulation:
                 try:
                     return getattr(sole, name)
                 except AttributeError:
-                    raise AttributeError(
-                        f"'Simulation' has no attribute '{name}' and neither has its "
-                        f"only physics '{sole_name}'.") from None
+                    raise AttributeError(f"'Simulation' has no attribute '{name}' and neither has its only physics "
+                                         f"'{sole_name}'.") from None
             attached = list(by_name)
-            raise AttributeError(
-                f"'Simulation' has no attribute '{name}'. Multiple physics "
-                f"attached ({attached}); call sim.<name>.{name}(...) "
-                f"explicitly (e.g. sim.{attached[0]}.{name})."
-            )
-        raise AttributeError(
-            f"'Simulation' has no attribute '{name}' and no physics are attached."
-        )
+            raise AttributeError(f"'Simulation' has no attribute '{name}'. Multiple physics attached ({attached}); "
+                                 f"call sim.<name>.{name}(...) explicitly (e.g. sim.{attached[0]}.{name}).")
+        raise AttributeError(f"'Simulation' has no attribute '{name}' and no physics are attached.")
 
     # --------------------------------------------------------------- run loop
 
-    def run(self, duration: float = None, n_steps: int = None,
-            print_every: int = 500, flush: bool = True):
+    def run(self, duration: float = None, n_steps: int = None, print_every: int = 500, flush: bool = True):
         """finalize() new physics (warns their finalize_warnings), runner.prepare() (warns its prepare_warnings),
         advance by `duration` [s] or `n_steps` ticks, then runner.flush() and warn new runtime_warnings; pass
         flush=False for all but the last chunk of a chunked run (each flush is an extra end-of-run transfer)."""
@@ -362,11 +347,10 @@ class Simulation:
     def plot_mesh_quality(self, filename=None):
         return self.viz.plot_mesh_quality(filename=filename)
 
-    def plot_field(self, component=None, vmax=None, cmap=None,
-                   show_geometry=True, title=None, filename=None, physics=None):
+    def plot_field(self, component=None, vmax=None, cmap=None, show_geometry=True, title=None, filename=None,
+                   physics=None):
         """Plot a renderer field; component None = the primary field of `physics` (default the first physics)."""
-        return self.viz.plot_field(component=component, vmax=vmax, cmap=cmap,
-                                   show_geometry=show_geometry, title=title,
+        return self.viz.plot_field(component=component, vmax=vmax, cmap=cmap, show_geometry=show_geometry, title=title,
                                    filename=filename, physics=physics)
 
     def plot_dashboard(self, filename=None):
@@ -405,17 +389,11 @@ def _resolve_em_boundary(boundaries, npml):
     if boundaries is None:
         return BoundaryConfig.all_pml(npml)
     if isinstance(boundaries, str):
-        presets = {
-            'pml': BoundaryConfig.all_pml(npml),
-            'pec': BoundaryConfig.all_pec(),
-            'pmc': BoundaryConfig.all_pmc(),
-            'periodic_x': BoundaryConfig.with_periodic_x(npml),
-            'periodic_y': BoundaryConfig.with_periodic_y(npml),
-            'periodic': BoundaryConfig.periodic_xy(),
-        }
+        presets = {'pml': BoundaryConfig.all_pml(npml), 'pec': BoundaryConfig.all_pec(),
+                   'pmc': BoundaryConfig.all_pmc(), 'periodic_x': BoundaryConfig.with_periodic_x(npml),
+                   'periodic_y': BoundaryConfig.with_periodic_y(npml), 'periodic': BoundaryConfig.periodic_xy()}
         bc = presets.get(boundaries)
         if bc is None:
-            raise ValueError(f"Unknown boundary preset: '{boundaries}'. "
-                             f"Options: {list(presets.keys())}")
+            raise ValueError(f"Unknown boundary preset: '{boundaries}'. Options: {list(presets.keys())}")
         return bc
     return boundaries
