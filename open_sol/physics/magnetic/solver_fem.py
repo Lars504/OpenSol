@@ -23,7 +23,6 @@ from .system_fem import MagneticFEMSystem
 DISCRETIZATIONS = {'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order (mesh plan D5)
 ELEMENT_FIELDS = ('A', 'B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag', 'J_coupled', 'J_applied')
 NODAL_FIELDS = ('B_x', 'B_y', 'H_x', 'H_y')
-_ANCHOR_TEXT = 'magnetic insulation face, held potential or external field'
 _REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
 
 
@@ -185,8 +184,7 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         self.xp = domain.xp
         domain.materials.add_properties(self.material_schema)
         self.system = MagneticFEMSystem(domain.mesh, self.order, self._axisymmetric, self._label, self.linear_solver,
-                                        backend=domain.backend.name, anchor_text=_ANCHOR_TEXT,
-                                        remedy_text=_REMEDY_TEXT)
+                                        backend=domain.backend.name, remedy_text=_REMEDY_TEXT)
         self.fields = ElementFields(ELEMENT_FIELDS, domain.mesh.n_elements, self.xp)
         self.coils = []
         self.probes = []             # (FieldProbe, node)
