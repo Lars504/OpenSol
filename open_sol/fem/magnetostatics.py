@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .assembly import _element_groups, _tensor_blocks, _to_csr, append_blocks, scatter_local
+from .assembly import _element_groups, _tensor_blocks, _to_csr, _weights, append_blocks, scatter_local
 from .elements import element_geometry, lagrange_basis, physical_gradients
 
 PLANAR_DEGREES = {1: 2, 2: 4}   # rule degree per Lagrange order (P2: |B| varies within the element); +1 axisymmetric
@@ -50,17 +50,13 @@ def curl_quadrature(dofs, axisymmetric) -> tuple:
     degree = PLANAR_DEGREES[dofs.order] + int(axisymmetric)
     blocks = []
     for positions, rule in _element_groups(dofs, degree):
-        if not len(positions):
-            continue
         elements = dofs.elements[positions]
         geometry = element_geometry(dofs.mesh, elements, rule.points, dofs.geometry_order)
         values, reference_gradients = lagrange_basis(dofs.order, rule.points)
         gradients = physical_gradients(reference_gradients, geometry.inverse)
-        weights = rule.weights[None, :] * geometry.determinant
-        if axisymmetric:
-            weights = weights * geometry.points[..., 0]
-        blocks.append(CurlBlock(elements, dofs.element_dofs[positions], weights, geometry.points, values,
-                                curl_operator(values, gradients, geometry.points, axisymmetric)))
+        operator = curl_operator(values, gradients, geometry.points, axisymmetric)
+        blocks.append(CurlBlock(elements, dofs.element_dofs[positions], _weights(geometry, rule, axisymmetric),
+                                geometry.points, values, operator))
     return tuple(blocks)
 
 
@@ -71,8 +67,6 @@ def local_flux_density(dofs, coefficients, reference_points, axisymmetric, axis_
     result = np.empty((len(dofs.elements), len(reference_points), 2),
                       dtype=np.result_type(np.asarray(coefficients).dtype, np.float64))
     for positions, _ in _element_groups(dofs, 2):
-        if not len(positions):
-            continue
         geometry = element_geometry(dofs.mesh, dofs.elements[positions], reference_points, dofs.geometry_order)
         gradients = physical_gradients(reference_gradients, geometry.inverse)
         operator = curl_operator(values, gradients, geometry.points, axisymmetric, axis_radius)

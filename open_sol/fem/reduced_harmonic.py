@@ -295,25 +295,23 @@ class ReducedHarmonicModel:
 
     def _reduced_rhs(self, omegas) -> np.ndarray:
         """Complex (m, k) V^H b(omega) per frequency."""
-        rhs = np.zeros((len(omegas), self.basis_size), dtype=np.complex128)
-        for index in self._fixed_loads:
-            load = self.loads[index]
-            rhs += self._coefficients(load.coefficient, omegas)[:, None] * self._reduced_loads[index][None, :]
-        if self._varying_loads:
-            for row, omega in enumerate(omegas):
-                rhs[row] += self._varying_entry(omega)[2]
-        return rhs
+        return self._load_rows(omegas, self.basis_size, self._reduced_loads, 2)
 
     def _sketched_rhs(self, omegas) -> np.ndarray:
         """Complex (m, rows) S b(omega) per frequency."""
-        sketched = np.zeros((len(omegas), self._sketch.rows), dtype=np.complex128)
+        return self._load_rows(omegas, self._sketch.rows, self._sketched_loads, 1)
+
+    def _load_rows(self, omegas, width, fixed_rows, entry) -> np.ndarray:
+        """Complex (m, width) sum of the fixed loads' rows fixed_rows[index] x coefficient(omega) and of item `entry`
+        of the vector_of loads' _varying_entry, per frequency."""
+        rows = np.zeros((len(omegas), width), dtype=np.complex128)
         for index in self._fixed_loads:
             load = self.loads[index]
-            sketched += self._coefficients(load.coefficient, omegas)[:, None] * self._sketched_loads[index][None, :]
+            rows += self._coefficients(load.coefficient, omegas)[:, None] * fixed_rows[index][None, :]
         if self._varying_loads:
             for row, omega in enumerate(omegas):
-                sketched[row] += self._varying_entry(omega)[1]
-        return sketched
+                rows[row] += self._varying_entry(omega)[entry]
+        return rows
 
     def reduced_coordinates(self, omegas) -> np.ndarray:
         """Complex (m, k) Galerkin coordinates y at angular frequencies omegas [rad/s] (least squares where the reduced

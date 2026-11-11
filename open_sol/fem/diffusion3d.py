@@ -9,7 +9,7 @@ solve by a solver of the PCGSolver protocol on the run backend. FEMDiffusionPhys
 # active element keep their value; PML shell dofs get the field at their position clamped into the window.
 import numpy as np
 
-from ..core.backend import array_module, sparse_module, to_host
+from ..core.backend import to_host
 from ..core.constants import FACES_3D
 from ..core.fv_diffusion import BCSide
 from ..core.memory_estimate import MemoryEstimate, host_real_lu_bytes
@@ -19,9 +19,9 @@ from .assembly3d import (assemble_face_load_3d, assemble_face_mass_3d, assemble_
                          element_integrals_3d)
 from .assembly import pattern_sum
 from .diffusion import (EdgeCondition as FaceCondition,   # FaceCondition: the same kinds on faces
-                        FEMDiffusionPhysicsCommon, _same_operator, active_dofs, direct_factor_item,
-                        fem_system_estimate, floating_region_count, host_direct_name, lagrange_entries_per_dof,
-                        robin_anchoring, robin_assembled)
+                        FEMDiffusionPhysicsCommon, FEMDiffusionSystemCommon, active_dofs, direct_factor_item,
+                        fem_system_estimate, host_direct_name, lagrange_entries_per_dof, robin_anchoring,
+                        robin_assembled)
 from .dofs3d import lagrange_dofs_3d
 from .mesh import side_members
 from .mesh3d import PLANE_TOLERANCE, window_faces
@@ -30,7 +30,7 @@ from .sampling3d import PointLocator3D, centroid_values_3d, evaluate_lagrange_3d
 FEM_FILL_FACTOR_3D = {1: 2.0, 2: 3.0}      # SuperLU fill over the 7-point 3D heuristic at equal unknowns (uncalibrated)
 
 
-class FEMDiffusionSystem3D:
+class FEMDiffusionSystem3D(FEMDiffusionSystemCommon):
     """Lagrange system of one scalar unknown on a TetrahedronMesh. The owner sets conditions and sources, calls
     assemble(tensor, capacity_over_dt) while operator_dirty, then solve(source density); `values` = u in the full-mesh
     numbering (module header)."""
@@ -38,73 +38,25 @@ class FEMDiffusionSystem3D:
     def __init__(self, mesh, order=2, linear_solver=None, *, backend='cpu', label=lambda: 'fem diffusion',
                  unknown_name='unknown', anchor_text='Dirichlet or Robin face, held region or volumetric loss',
                  remedy_text='', require_anchors=True):
-        from ..solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
-        if order not in (1, 2):
-            raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the tetrahedra Automatic (host SuperLU)
-            linear_solver = SparseDirectSolver(backend=backend)
-        if isinstance(linear_solver, SparseDirectSolver):
-            linear_solver = DiffusionDirectSolver(linear_solver)
-        if getattr(linear_solver, 'backend', backend) != backend:
-            raise ValueError(f'{label()}: the linear solver runs on the {linear_solver.backend} backend, the mesh on '
-                             f'the {backend} one')
-        linear_solver.label = label
-        self.linear_solver = linear_solver
-        self.mesh = mesh
-        self.order = int(order)
-        self.backend = backend
-        self.label = label
-        self.unknown_name = unknown_name
-        self.anchor_text = anchor_text
-        self.remedy_text = remedy_text
-        self.require_anchors = bool(require_anchors)
+        super().__init__(mesh, order, linear_solver, backend, label, unknown_name, anchor_text, remedy_text,
+                         require_anchors)
         self.full = lagrange_dofs_3d(mesh, self.order)        # state / display numbering
         self.element_map = lagrange_dofs_3d(mesh, 0)          # P0 fields
         self.values = np.zeros(self.full.n_dofs)
         self.window_elements = mesh.window_elements()
         self.face_conditions = {face: (FaceCondition(), 0) for face in FACES_3D}   # face -> (condition, sequence)
         self.surface_conditions = []   # [faces, FaceCondition, sequence] of object interfaces
-        self.held = []                 # (element mask, value, sequence): every active dof of the elements fixed
         self.fixed_dofs = []           # [dof ids, values (per dof), sequence] of add_fixed_dofs (anchors, potentials)
-        self.loss_coefficient = np.zeros(mesh.n_elements)   # a per element
-        self.loss_drive = np.zeros(mesh.n_elements)         # a u_ext per element
         self.point_sources = []        # (element, reference (3,), power)
         self.active = None             # bool per element of the last assembly
         self._active_dofs = None       # bool per full dof of the last assembly
-        self.n_solves = 0
-        self.operator_dirty = True
-        self._constants_stale = False  # a Dirichlet value / Robin external changed: new lift and loads, same factor
-        self._sequence = 0             # later conditions win shared dofs
         self._window_faces = {}
         self._shell = None
-        self._matrix = self._reduced = self._capacity_matrix = None
-        self._free = self._fixed = self._dof_owner = None
-        self._coupling = None          # reduced rows x fixed columns of the last assembly (the lift)
-        self._lift = self._static_load = self._load = self._solution = None
+
+    def _full_ids(self, ids) -> np.ndarray:
+        return ids   # the system numbering is the full-mesh one
 
     # ---- conditions and sources ----
-    def _next_sequence(self) -> int:
-        self._sequence += 1
-        return self._sequence
-
-    def _note_change(self, previous, condition) -> None:
-        """Operator dirty when a condition change alters the matrix, else (a Dirichlet value, a Robin external at the
-        same h) only the lift and loads are refreshed at the next solve; Neumann values are read at every solve."""
-        if not _same_operator(previous, condition):
-            self.operator_dirty = True
-        elif condition.kind != 'neumann':
-            self._constants_stale = True
-
-    def set_face_condition(self, face, condition, keep_sequence=False) -> None:
-        """Condition of an outer face (the window faces on that side); a value-only change keeps the factor;
-        keep_sequence (a value of time t): a set face keeps its place in the order, so shared edge dofs stay with their
-        build owner (else it becomes the latest condition)."""
-        previous, sequence = self.face_conditions[face]
-        if not (keep_sequence and sequence):
-            sequence = self._next_sequence()   # dof owners are re-read with the constants
-        self.face_conditions[face] = (condition, sequence)
-        self._note_change(previous, condition)
-
     def add_surface_condition(self, faces, condition) -> int:
         """Condition on mesh faces (object interfaces); returns its handle for set_surface_condition."""
         self.surface_conditions.append([np.unique(np.asarray(faces, dtype=np.int64)), condition,
@@ -118,13 +70,6 @@ class FEMDiffusionSystem3D:
         entry = self.surface_conditions[handle]
         self._note_change(entry[1], condition)
         entry[1] = condition
-
-    def add_held(self, element_mask, value) -> None:
-        """Fix u = value on every dof of the masked elements (held cells: a terminal / reservoir)."""
-        mask = np.asarray(element_mask, dtype=bool).copy()
-        self.held.append((mask, float(value), self._next_sequence()))
-        self.set_element_values(mask, value)
-        self.operator_dirty = True
 
     def add_fixed_dofs(self, dof_ids, values) -> int:
         """Fix u = values (a number or one per dof) on explicit full-mesh dofs (an anchor, a boundary potential);
@@ -146,18 +91,6 @@ class FEMDiffusionSystem3D:
     def set_element_values(self, element_mask, value) -> None:
         """Write u = value on every dof of the masked elements (initial / held values)."""
         self.values[self.full.element_dofs_of(np.asarray(element_mask, dtype=bool))] = value
-
-    def add_loss(self, element_mask, coefficient, external) -> None:
-        """Add a volumetric loss a (u - external) on the masked elements (a, external numbers or per element)."""
-        mask = np.asarray(element_mask, dtype=bool)
-        count = self.mesh.n_elements
-        coefficient = np.broadcast_to(np.asarray(coefficient, dtype=np.float64), (count,))
-        external = np.broadcast_to(np.asarray(external, dtype=np.float64), (count,))
-        if (coefficient[mask] < 0.0).any():
-            raise ValueError(f'{self.label()}: a volumetric loss coefficient must be >= 0')
-        self.loss_coefficient += np.where(mask, coefficient, 0.0)
-        self.loss_drive += np.where(mask, coefficient * external, 0.0)
-        self.operator_dirty = True
 
     def add_point_source(self, element, reference, power) -> None:
         """Add a point source of total `power` at a located point (element >= 0, reference coordinates (3,)); dropped
@@ -230,10 +163,7 @@ class FEMDiffusionSystem3D:
         free_rows = matrix[free]   # sliced once for the reduced operator and the lift coupling
         reduced = free_rows[:, free].tocsr()
         if self.require_anchors:
-            floating = floating_region_count(reduced, anchored_dofs[free])
-            if floating:
-                raise ValueError(f'{self.label()}: {floating} connected region(s) of the {self.unknown_name} touch no '
-                                 f'{self.anchor_text}, so the system is singular. {self.remedy_text}')
+            self._check_anchors(reduced, anchored_dofs[free])
         self._matrix, self._reduced = matrix, reduced
         self._free, self._fixed = free, fixed
         self._coupling = free_rows[:, fixed].tocsr()
@@ -281,19 +211,6 @@ class FEMDiffusionSystem3D:
         self._static_load = static_load
         self._constants_stale = False
 
-    def _solve_dtype(self):
-        return np.float32 if getattr(self.linear_solver, 'precision', 'double') == 'single' else np.float64
-
-    def _factorize(self) -> None:
-        """Factorise (bind) the reduced operator on the run backend; the free values seed an iterative solution."""
-        self._solution = None
-        if not self._free.size:
-            return
-        dtype = self._solve_dtype()
-        operator = sparse_module(self.backend).csr_matrix(self._reduced.astype(dtype))   # gpu: one device copy
-        self.linear_solver.factorize(operator)
-        self._solution = array_module(self.backend).asarray(self.values[self._free], dtype=dtype)
-
     # ---- solve ----
     def solve(self, source_density=None, extra_load=None) -> None:
         """Solve with the P0 source density f per element (None: none) and an assembled (n_dofs,) extra_load (gradient
@@ -320,12 +237,7 @@ class FEMDiffusionSystem3D:
             load += assemble_point_load_3d(full, np.array(elements), np.array(references), np.array(powers))
         if self._capacity_matrix is not None:
             load += self._capacity_matrix @ self.values
-        self._load = load
-        if self._free.size:
-            rhs = array_module(self.backend).asarray(load[self._free] - self._lift, dtype=self._solve_dtype())
-            reference = 'initial_residual' if self._capacity_matrix is not None else 'rhs'   # PHY-1 stop rule
-            self.linear_solver.solve(rhs, self._solution, reference)
-            self.values[self._free] = np.asarray(to_host(self._solution), dtype=np.float64)
+        self._solve_reduced(load)
         self._extend_into_shell()
         self.n_solves += 1
 
