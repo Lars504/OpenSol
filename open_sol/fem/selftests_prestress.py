@@ -6,7 +6,7 @@ import numpy as np
 
 from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, max_relative_error
-from .selftests_elasticity3d import graded_box_mesh
+from .selftests_elasticity3d import _voigt_strain, graded_box_mesh
 
 _LENGTH = 1e-6         # mesh scale [m]
 _RTOL = 1e-10          # exact identities in float64 (first estimates)
@@ -70,12 +70,6 @@ def _rotation_matrix(axis, angle) -> np.ndarray:
     axis = np.asarray(axis, dtype=np.float64) / np.linalg.norm(axis)
     cross = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
     return np.eye(3) + np.sin(angle) * cross + (1.0 - np.cos(angle)) * cross @ cross
-
-
-def _voigt_strain_3d(gradient):
-    symmetric = gradient + gradient.T
-    return np.array([gradient[0, 0], gradient[1, 1], gradient[2, 2], symmetric[1, 2], symmetric[0, 2],
-                     symmetric[0, 1]])
 
 
 def _tangent_checks(add, label, force, tangent, n_vector, scale, rng):
@@ -152,11 +146,11 @@ def _check_identities_3d(add):
         # stress sampling: sigma0 + C eps(u) - beta dT of a linear field
         displacement = points @ gradient.T + 1e-9
         field = StressField(prescribed=stress, material=material, displacement=displacement, thermal=thermal)
-        expected = stress[:, None, :] + (voigt @ _voigt_strain_3d(gradient))[None, None, :] - thermal[:, None, :]
+        expected = stress[:, None, :] + (voigt @ _voigt_strain(gradient))[None, None, :] - thermal[:, None, :]
         add(f'sampled_stress_3d_p{order}', max_relative_error(sample_stress_3d(dofs, field, reference), expected))
         from_displacement = assemble_geometric_stiffness_3d(dofs, StressField(material=material,
                                                                               displacement=displacement))
-        constant = np.tile(voigt @ _voigt_strain_3d(gradient), (n_elements, 1))
+        constant = np.tile(voigt @ _voigt_strain(gradient), (n_elements, 1))
         add(f'geometric_from_displacement_3d_p{order}',
             _matrix_relative(from_displacement, assemble_geometric_stiffness_3d(dofs, constant)))
         stretched = assemble_geometric_stiffness_3d(

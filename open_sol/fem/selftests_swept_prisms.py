@@ -52,13 +52,9 @@ def _unique_edge_count(triangles) -> int:
     return len(np.unique(edges, axis=0))
 
 
-def _face_areas(mesh, faces) -> np.ndarray:
-    corners = mesh.points[mesh.faces[faces]]
-    return 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]), axis=1)
-
-
 def _split_checks(add):
     """Counts, conformity (boundary faces = the box surface, all on its sides), volume, random order keys, refusal."""
+    from .assembly3d import face_areas_3d
     from .prism_layers import split_prisms, swept_counts, swept_tetrahedron_mesh
     points, triangles = _square_triangles()
     mesh = swept_tetrahedron_mesh(points, triangles, _Z_EDGES)
@@ -72,7 +68,7 @@ def _split_checks(add):
     boundary = np.flatnonzero(mesh.face_elements[:, 1] < 0)
     surface = 2.0 * (size_x * size_y + size_y * height + height * size_x)
     tagged = sum(len(faces) for faces in mesh.face_tags.values())
-    add('conforming_surface', abs(float(_face_areas(mesh, boundary).sum()) / surface - 1.0) <= _EXACT_RTOL
+    add('conforming_surface', abs(float(face_areas_3d(mesh, boundary).sum()) / surface - 1.0) <= _EXACT_RTOL
         and tagged == len(boundary), {'boundary_faces': len(boundary), 'tagged': tagged})
     shuffled = swept_tetrahedron_mesh(points, triangles, _Z_EDGES,
                                       order_key=np.random.default_rng(11).permutation(len(points)))
@@ -146,6 +142,7 @@ def _model_checks(add, registry):
     from ..model.geometry import resolve_geometry
     from ..model.meshing import element_mesh_key, estimate_mesh, tetrahedron_sizing
     from ..model.tetrahedral_meshing import element_membership, tetrahedralize
+    from .assembly3d import face_areas_3d
     spec = _model_spec()
     estimate = estimate_mesh(spec, {}, registry, 'swept')
     mesh = tetrahedralize(spec, {}, registry, 'swept')
@@ -160,7 +157,7 @@ def _model_checks(add, registry):
         {'estimate': estimate.n_elements, 'built': mesh.n_elements, 'nodes': (estimate.n_nodes, mesh.n_points)})
     sides = [_PLATE[f'{axis}1'] - _PLATE[f'{axis}0'] for axis in 'xyz']
     plate_area = 2.0 * (sides[0] * sides[1] + sides[1] * sides[2] + sides[2] * sides[0])
-    found_area = float(_face_areas(mesh, mesh.object_faces['plate']).sum())
+    found_area = float(face_areas_3d(mesh, mesh.object_faces['plate']).sum())
     add('plate_faces_conform', abs(found_area / plate_area - 1.0) <= 1e-9, {'found': found_area, 'box': plate_area})
     shapes = resolve_geometry(spec, {})
     volumes = mesh.volumes()

@@ -27,6 +27,7 @@ def _box_mesh():
 
 
 def _check_diffusion3d(_):
+    from .assembly3d import face_areas_3d
     from .diffusion import EdgeCondition
     from .diffusion3d import FEMDiffusionSystem3D, shell_dof_locations
     from .mesh3d import interface_faces
@@ -72,9 +73,7 @@ def _check_diffusion3d(_):
         centroids = mesh.centroids()
         inner = np.all((centroids > 0.3 * side) & (centroids < 0.7 * side), axis=1)
         sheet = interface_faces(mesh, inner)
-        corners = mesh.points[mesh.faces[sheet]]
-        sheet_area = 0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]),
-                                          axis=1).sum()
+        sheet_area = face_areas_3d(mesh, sheet).sum()
         balance.add_surface_condition(sheet, EdgeCondition('neumann', value=_SHEET_FLUX))
         balance.assemble(tensor)
         balance.solve()

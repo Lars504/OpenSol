@@ -54,6 +54,7 @@ def _rectangle_mesh(x_edges, y_edges, window=None):
 
 
 def _graded(count, length=1.0):
+    """count increasing coordinates over [0, length], smoothly graded (cells differ: no accidental symmetry)."""
     t = np.linspace(0.0, 1.0, count)
     return length * (t + 0.15 * np.sin(np.pi * t) * t)
 
