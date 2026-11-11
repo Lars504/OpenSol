@@ -3,12 +3,12 @@ incident modes of both parities, and the half plate rectangle's eigen sectors ag
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, scaled_worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 from .selftests import (_FILM, _FREQUENCY_COLUMN, _MEMBRANE_TYPE, _MIRROR_MODES, _PHYSICS, _RECTANGLE, _SUPPORTED_MODES,
                         _SUPPORTED_TOLERANCE, _TABLE, _TRIANGLE_MESH, _TUNNEL_AMPLITUDE, _TUNNEL_H, _mirror_specs,
-                        _probe_phasors, _solver_defaults, _supported_frequencies, _tunnel_spec)
+                        _probe_phasors, _supported_frequencies, _tunnel_spec)
 
 # ---- membrane_parity_sectors_driven: the clamped template rectangle driven by a point force off the x mirror line at
 # three frequencies between its resonances; full model on a mirror_x mesh vs the half x <= a / 2 (symmetry on x_hi)
@@ -47,7 +47,7 @@ def _driven_spec(half):
         materials=[MaterialSpec('film', properties=dict(_FILM), selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=features)],
         meshes=[MeshSpec(name=_TRIANGLE_MESH, kind='triangles', mode='uniform', dx=_DRIVEN_H, mirror_x=not half)],
-        solver_defaults=_solver_defaults('cpu'),
+        solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings={'frequencies': list(_DRIVEN_FREQUENCIES),
                                                              'parity_sectors': half}),
         derived_values=[DerivedValueSpec('energy', 'w_re*w_re + w_im*w_im', ['all'], 'integral')])

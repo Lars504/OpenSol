@@ -4,11 +4,10 @@ against the direct sweep."""
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, float32_value, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import (_FILM, _MEMBRANE_TYPE, _PHYSICS, _RECTANGLE, _STRING_POINTS, _STRING_PROBE,
-                        _STRING_RESPONSE_TOLERANCE, _probe_phasors, _solver_defaults, _string_closed_form, _string_spec,
-                        _triangles)
+                        _STRING_RESPONSE_TOLERANCE, _probe_phasors, _string_closed_form, _string_spec, _triangles)
 
 _ROM_TOLERANCE = 1e-10            # training residual: Q x residual stays far below the checked errors
 _LINE_MAX_FACTORIZATIONS = 6      # expansions + the verification (plan A1)
@@ -73,7 +72,7 @@ def _window_spec(method):
             FeatureSpec('frame', 'clamped', ['x_lo', 'x_hi', 'y_lo', 'y_hi']),
             FeatureSpec('drive_force', 'point_force', ['drive'], {'force': 1e-6}),
             FeatureSpec(_WINDOW_PROBE, 'field_probe', ['probe_point'])])],
-        meshes=[_triangles(_WINDOW_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_WINDOW_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings=settings))
 
 

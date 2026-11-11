@@ -10,7 +10,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import float32_value, scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, float32_value, scaled_worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, StudySpec)
 
@@ -29,10 +29,6 @@ _FILM = {'tension': _TENSION, 'areal_density': _AREAL_DENSITY}
 def _wave_speed():
     """c = sqrt(T / rho_s) [m/s] of the film."""
     return math.sqrt(_TENSION / _AREAL_DENSITY)
-
-
-def _solver_defaults(backend):
-    return SolverDefaultsSpec(backend=backend)
 
 
 def _triangles(dx):
@@ -77,7 +73,7 @@ def rectangle_modes_spec(backend='auto'):
         materials=[MaterialSpec('silicon_nitride_film', properties=dict(_FILM), selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
             FeatureSpec('frame', 'clamped', ['x_lo', 'x_hi', 'y_lo', 'y_hi']), FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=_solver_defaults(backend),
+        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=SolverDefaultsSpec(backend=backend),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _RECTANGLE_MODES}))
 
 
@@ -117,7 +113,7 @@ def _drum_spec():
         materials=[MaterialSpec('film', properties=dict(_FILM), selection=['drum'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
             FeatureSpec('rim', 'clamped', ['drum']), FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[_triangles(_DRUM_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_DRUM_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': len(_DRUM_ZEROS)}))
 
 
@@ -148,7 +144,7 @@ def _iris_spec():
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
             FeatureSpec('frame', 'clamped', ['x_lo', 'x_hi', 'y_lo', 'y_hi']),
             FeatureSpec('wall', 'clamped_line', ['iris']), FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _IRIS_MODES}))
 
 
@@ -185,7 +181,7 @@ def _strip_spec():
         materials=[MaterialSpec('film', properties=dict(_FILM), selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings={'axial_wavenumber': _STRIP_WAVENUMBER}, features=[
             FeatureSpec('ends', 'clamped', ['x_lo', 'x_hi']), FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[MeshSpec(mode='uniform', dx=_STRIP_WIDTH / _STRIP_CELLS)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[MeshSpec(mode='uniform', dx=_STRIP_WIDTH / _STRIP_CELLS)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _STRIP_MODES}))
 
 
@@ -248,7 +244,7 @@ def _string_spec(run):
         geometry=[GeometrySpec('middle', 'point', {'x': 0.5 * _STRING_LENGTH, 'y': 0.0})],
         materials=[MaterialSpec('lossy_film', properties=material, selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings=settings, features=features)],
-        meshes=[MeshSpec(mode='uniform', dx=_STRING_LENGTH / _STRING_CELLS)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[MeshSpec(mode='uniform', dx=_STRING_LENGTH / _STRING_CELLS)], solver_defaults=cpu_defaults(),
         study=study, derived_values=derived)
 
 
@@ -312,7 +308,7 @@ def _guide_spec(title, length, frequency, probes, clamped_faces, settings=None):
         title=title, domain=DomainSpec(size_x=length, size_y=_GUIDE_WIDTH), geometry=points,
         materials=[MaterialSpec('film', properties=dict(_FILM), selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings=dict(settings or {}), features=features)],
-        meshes=[_triangles(_GUIDE_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_GUIDE_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings={'frequencies': [frequency]}))
 
 
@@ -416,7 +412,7 @@ def _plate_strip_specs():
             materials=[MaterialSpec('nitride_plate', properties=dict(material), selection=['all'])],
             physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings={'axial_wavenumber': wavenumber}, features=[
                 FeatureSpec('ends', 'clamped', ['x_lo', 'x_hi']), FeatureSpec(_TABLE, 'resonance_table')])],
-            meshes=[MeshSpec(mode='uniform', dx=_PLATE_WIDTH / _PLATE_CELLS)], solver_defaults=_solver_defaults('cpu'),
+            meshes=[MeshSpec(mode='uniform', dx=_PLATE_WIDTH / _PLATE_CELLS)], solver_defaults=cpu_defaults(),
             study=StudySpec(type='eigenfrequency', settings={'n_resonances': 2}))
     return specs
 
@@ -454,7 +450,7 @@ def _supported_specs():
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
             FeatureSpec('edges', 'simply_supported', ['x_lo', 'x_hi', 'y_lo', 'y_hi']),
             FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[_triangles(size_x / divisions)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(size_x / divisions)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _SUPPORTED_MODES}))
         for name, divisions in _SUPPORTED_DIVISIONS.items()}
 
@@ -501,7 +497,7 @@ def _mirror_specs():
             physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
                 FeatureSpec('edges', 'simply_supported', ['x_lo', 'y_lo', 'y_hi']),
                 FeatureSpec('mirror', mirror, ['x_hi']), FeatureSpec(_TABLE, 'resonance_table')])],
-            meshes=[_triangles(size_x / _SUPPORTED_DIVISIONS['fine'])], solver_defaults=_solver_defaults('cpu'),
+            meshes=[_triangles(size_x / _SUPPORTED_DIVISIONS['fine'])], solver_defaults=cpu_defaults(),
             study=StudySpec(type='eigenfrequency', settings={'n_resonances': _MIRROR_MODES}))
         specs[f'strip_{parity}'] = ModelSpec(
             title=f'Self-test: half 1D clamped plate strip, {mirror} end on x_hi',
@@ -510,7 +506,7 @@ def _mirror_specs():
             physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=[
                 FeatureSpec('end', 'clamped', ['x_lo']), FeatureSpec('mirror', mirror, ['x_hi']),
                 FeatureSpec(_TABLE, 'resonance_table')])],
-            meshes=[MeshSpec(mode='uniform', dx=_PLATE_WIDTH / _PLATE_CELLS)], solver_defaults=_solver_defaults('cpu'),
+            meshes=[MeshSpec(mode='uniform', dx=_PLATE_WIDTH / _PLATE_CELLS)], solver_defaults=cpu_defaults(),
             study=StudySpec(type='eigenfrequency', settings={'n_resonances': _MIRROR_STRIP_MODES}))
     return specs
 
@@ -562,7 +558,7 @@ def _bloch_specs():
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings={'periodic_y': True, 'bloch_ky': wavenumber},
                              features=[FeatureSpec('walls', 'clamped', ['x_lo', 'x_hi']),
                                        FeatureSpec(_TABLE, 'resonance_table')])],
-        meshes=[_triangles(_BLOCH_WIDTH / 100.0)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_BLOCH_WIDTH / 100.0)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _BLOCH_MODES}))
         for index, wavenumber in enumerate(_BLOCH_WAVENUMBERS)}
 
@@ -639,7 +635,7 @@ def _tunnel_spec(name, half=False):
         materials=[MaterialSpec('film', properties={'tension': _TUNNEL_TENSION, 'areal_density': _TUNNEL_DENSITY},
                                 selection=['guide'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=features)],
-        meshes=[_triangles(_TUNNEL_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_TUNNEL_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response',   # 'filter' also runs the study without snapshots
                         settings={'frequencies': [frequency], 'snapshots': 'all' if name == 't11' else 'none'}))
 
@@ -749,7 +745,7 @@ def _em_rectangle_spec():
         title='Self-test: em_fdfd_ez analogue of the membrane rectangle', domain=DomainSpec(size_x=size_x, size_y=size_y),
         physics=[PhysicsSpec(_EM_PHYSICS, 'em_fdfd_ez', settings=settings,
                              features=[FeatureSpec(_EM_TABLE, 'resonance_table')])],
-        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_RECTANGLE_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _RECTANGLE_MODES}))
 
 
