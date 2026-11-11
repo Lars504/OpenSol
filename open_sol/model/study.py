@@ -25,7 +25,7 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, resolve_values
+from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
 from .session import Snapshot, earlier_derived_names, live_snapshot_index
 from .solver_hooks import (HarmonicFrequencyPlanner, HarmonicSolver, ModeSolver, PrestressSolver, PulsedHarmonicSolver,
                            WarmStartSolver, hook_names)
@@ -1703,6 +1703,16 @@ def _scipy_issues(study_name, what_for) -> list:
         return []
     return [Issue('error', ('study',), f'the {study_name} study needs scipy ({what_for}), which is not installed: pip '
                                        'install scipy')]
+
+
+def _study_solved_types(vctx, study_name):
+    """Yield (PhysicsSpec, PhysicsType) of the registered physics whose type supports study_name and, with
+    StudySpec.solved_physics a non-empty list, that it lists (the physics a study validator checks)."""
+    selection = vctx.spec.study.solved_physics
+    listed = selection if isinstance(selection, list) and selection else None
+    for physics, physics_type in known_physics(vctx.spec, vctx.registry):
+        if study_name in physics_type.supported_studies and (listed is None or physics.name in listed):
+            yield physics, physics_type
 
 
 def _frequency_list(values, ascending=False) -> list:
