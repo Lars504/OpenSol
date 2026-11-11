@@ -13,7 +13,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CG_DIFFUSI
                                          evaluates_to, face_conflicts, geometry_param, held_object_conflicts,
                                          is_axisymmetric, linear_solver_direct, linear_solver_mixed,
                                          linear_solver_multigrid, linear_solver_precision, make_point_probe,
-                                         on_triangles, reports_model_checks, validate_points_inside)
+                                         on_triangles, reports_model_checks, selected_material_data,
+                                         validate_points_inside)
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
 from .materials import (BH_CURVE_PROPERTY, MAGNETIC_PROPERTY_ARRAYS, MAGNETIC_SCHEMA, OPTIONAL_MAGNETIC_SCHEMA,
@@ -262,22 +263,17 @@ _PHYSICS_SUMMARY = ('Static magnetic fields of coils, currents and permanent mag
 
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
-def _set_faces(solver, faces, kind):
-    """Dirichlet ('dirichlet', 0) or Neumann ('neumann') on the outer faces (2D A: insulation is Dirichlet,
-    axisymmetric x_lo a validation error; 3D phi_m: symmetry is Dirichlet)."""
-    from ...core.fv_diffusion import BCSide   # lazy: keeps cupy out of this module's import
-    for face in faces:
-        solver.set_face_bc(face, BCSide(kind, value=0.0))
+def _face_setter(kind):
+    """Apply callback of a face feature: Dirichlet ('dirichlet', 0) or Neumann ('neumann') on the selected outer
+    faces (2D A: insulation is Dirichlet, axisymmetric x_lo a validation error; 3D phi_m: symmetry is Dirichlet)."""
+    def apply_faces(ctx, solver, feature_spec, values, selection):
+        from ...core.fv_diffusion import BCSide   # lazy: keeps cupy out of this module's import
+        for face in selection.outer_faces:
+            solver.set_face_bc(face, BCSide(kind, value=0.0))
+    return apply_faces
 
 
-def _apply_insulation(ctx, solver, feature_spec, values, selection):
-    _set_faces(solver, selection.outer_faces, 'dirichlet')
-    return None
-
-
-def _apply_symmetry(ctx, solver, feature_spec, values, selection):
-    _set_faces(solver, selection.outer_faces, 'neumann')
-    return None
+_apply_insulation, _apply_symmetry = _face_setter('dirichlet'), _face_setter('neumann')
 
 
 def _apply_external_field(ctx, solver, feature_spec, values, selection):
@@ -329,14 +325,19 @@ def _selection_entities(vctx, feature):
         return []
 
 
+def _validate_whole_window(vctx, physics_spec, feature_spec, values):
+    """Selection 'all' only (external_field of the 2D and 3D types)."""
+    entities = _selection_entities(vctx, feature_spec)
+    if entities and entities != ['all']:
+        return [Issue('error', feature_path(physics_spec, feature_spec),
+                      "external_field holds the outer ring of the whole window: select 'all' only")]
+    return []
+
+
 def _validate_external_field(vctx, physics_spec, feature_spec, values):
     """Selection 'all' only; axisymmetric: B_x = 0."""
     path = feature_path(physics_spec, feature_spec)
-    issues = []
-    entities = _selection_entities(vctx, feature_spec)
-    if entities and entities != ['all']:
-        issues.append(Issue('error', path, "external_field holds the outer ring of the whole window: select 'all' "
-                                           'only'))
+    issues = _validate_whole_window(vctx, physics_spec, feature_spec, values)
     try:   # magnetostatics or magnetic_fields_ac (they share this feature)
         settings = vctx.registry.physics_type(physics_spec.type).settings
     except KeyError:
@@ -360,17 +361,8 @@ def _face_kinds(vctx, physics_spec):
 
 def _remanence_x_materials(vctx):
     """Names of the selected spec materials (library merged) that may set a non-zero remanence_x."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    names = []
-    for material in vctx.spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
-        if material.selection and evaluates_to(properties.get('remanence_x'), vctx.parameters,
-                                               lambda value: value != 0.0):
-            names.append(material.name)
-    return names
+    return [material.name for material, properties, _ in selected_material_data(vctx.spec)
+            if evaluates_to(properties.get('remanence_x'), vctx.parameters, lambda value: value != 0.0)]
 
 
 def _axisymmetric_issues(vctx, physics_spec, path, type_text):
@@ -396,46 +388,47 @@ def _bh_curve_rows(raw_rows, parameters):
         return None
 
 
+def _curve_material_issues(material, properties, parameters, remanence_names, permeability_names):
+    """One selected material's B-H curve issues (2D and 3D): a saturation (saturation_polarization or bh_curve) with
+    a remanence of remanence_names, both saturations, a bh_curve the curve rules reject (errors); one of
+    permeability_names beside a bh_curve (warning: ignored)."""
+    path = ('material', material.name)
+    issues = []
+    saturates = evaluates_to(properties.get(SATURATION_ARRAY), parameters, lambda value: value > 0.0)
+    raw_rows = properties.get(BH_CURVE_PROPERTY)
+    tabulated = raw_rows is not None
+    if (saturates or tabulated) and any(evaluates_to(properties.get(name), parameters, lambda value: value != 0.0)
+                                        for name in remanence_names):
+        issues.append(Issue('error', path, f"material '{material.name}' sets "
+                                           f"{BH_CURVE_PROPERTY if tabulated else SATURATION_ARRAY} and a "
+                                           'remanence: a saturating permanent magnet is not modelled (remove one)'))
+    if not tabulated:
+        return issues
+    if saturates:
+        issues.append(Issue('error', path, f"material '{material.name}' sets both {SATURATION_ARRAY} and "
+                                           f'{BH_CURVE_PROPERTY}: give one B-H curve (remove one)'))
+    set_names = [name for name in permeability_names if properties.get(name) is not None]
+    if set_names:
+        issues.append(Issue('warning', path, f"material '{material.name}': {', '.join(set_names)} "
+                                             f'{"is" if len(set_names) == 1 else "are"} ignored in its '
+                                             f'cells, where {BH_CURVE_PROPERTY} sets the permeability'))
+    rows = _bh_curve_rows(raw_rows, parameters)
+    if rows is not None:
+        try:
+            bh_curve(rows)
+        except ValueError as exc:
+            issues.append(Issue('error', path, f"property '{BH_CURVE_PROPERTY}': {exc}"))
+    return issues
+
+
 def _saturation_issues(vctx, physics_spec):
-    """Once per model, per selected material: a saturation (saturation_polarization or bh_curve) with a remanence,
-    both saturations, a bh_curve the curve rules reject (errors); mu_dc beside a bh_curve (warning: ignored)."""
+    """Once per model, per selected material: _curve_material_issues."""
     if not reports_model_checks(vctx, physics_spec, MAGNETOSTATICS_TYPE_NAME):
         return []
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     issues = []
-    for material in vctx.spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
-        if not material.selection:
-            continue
-        path = ('material', material.name)
-        saturates = evaluates_to(properties.get(SATURATION_ARRAY), vctx.parameters, lambda value: value > 0.0)
-        raw_rows = properties.get(BH_CURVE_PROPERTY)
-        tabulated = raw_rows is not None
-        if (saturates or tabulated) and any(
-                evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0)
-                for name in REMANENCE_ARRAYS):
-            issues.append(Issue('error', path, f"material '{material.name}' sets "
-                                               f"{BH_CURVE_PROPERTY if tabulated else SATURATION_ARRAY} and a "
-                                               'remanence: a saturating permanent magnet is not modelled (remove one)'))
-        if not tabulated:
-            continue
-        if saturates:
-            issues.append(Issue('error', path, f"material '{material.name}' sets both {SATURATION_ARRAY} and "
-                                               f'{BH_CURVE_PROPERTY}: give one B-H curve (remove one)'))
-        permeability_names = [name for name in ('mu_dc', 'mu_dc_xx', 'mu_dc_yy') if properties.get(name) is not None]
-        if permeability_names:
-            issues.append(Issue('warning', path, f"material '{material.name}': {', '.join(permeability_names)} "
-                                                 f'{"is" if len(permeability_names) == 1 else "are"} ignored in its '
-                                                 f'cells, where {BH_CURVE_PROPERTY} sets the permeability'))
-        rows = _bh_curve_rows(raw_rows, vctx.parameters)
-        if rows is not None:
-            try:
-                bh_curve(rows)
-            except ValueError as exc:
-                issues.append(Issue('error', path, f"property '{BH_CURVE_PROPERTY}': {exc}"))
+    for material, properties, _ in selected_material_data(vctx.spec):
+        issues.extend(_curve_material_issues(material, properties, vctx.parameters, REMANENCE_ARRAYS,
+                                             ('mu_dc', 'mu_dc_xx', 'mu_dc_yy')))
     return issues
 
 
@@ -445,20 +438,26 @@ def _validate_magnetostatics(vctx, physics_spec, settings_values):
             + _saturation_issues(vctx, physics_spec) + _mesh_kind_issues(vctx, physics_spec, settings_values))
 
 
-def _saturating_materials(spec, parameters):
-    """(material, properties) of the selected materials (library merged) with saturation_polarization > 0 or a
-    bh_curve."""
+def _selected_material_properties(spec):
+    """(material, properties) of the selected materials, library merged (failures are reported at the material)."""
     from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    saturating = []
+    selected = []
     for material in spec.materials:
         try:
             properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):   # reported at the material
+        except (ValueError, TypeError):
             continue
-        if material.selection and (properties.get(BH_CURVE_PROPERTY) is not None or evaluates_to(
-                properties.get(SATURATION_ARRAY), parameters, lambda value: value > 0.0)):
-            saturating.append((material, properties))
-    return saturating
+        if material.selection:
+            selected.append((material, properties))
+    return selected
+
+
+def _saturating_materials(spec, parameters):
+    """(material, properties) of the selected materials (library merged) with saturation_polarization > 0 or a
+    bh_curve."""
+    return [(material, properties) for material, properties in _selected_material_properties(spec)
+            if properties.get(BH_CURVE_PROPERTY) is not None
+            or evaluates_to(properties.get(SATURATION_ARRAY), parameters, lambda value: value > 0.0)]
 
 
 def _method_misfit(settings_values, triangles):
@@ -597,15 +596,8 @@ _CURVE_PROPOSAL_ARRAYS = 4   # float64 window temporaries of one table proposal 
 
 def _bh_curve_material_count(spec):
     """Selected materials (library merged) setting a bh_curve: one window mask each in the build."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    count = 0
-    for material in spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):   # reported by validate
-            continue
-        count += int(bool(material.selection) and properties.get(BH_CURVE_PROPERTY) is not None)
-    return count
+    return sum(1 for _, properties in _selected_material_properties(spec)
+               if properties.get(BH_CURVE_PROPERTY) is not None)
 
 
 def _memory_estimate(settings_values, mesh, context):

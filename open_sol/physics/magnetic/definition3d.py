@@ -15,18 +15,19 @@ from ...model.definition_helpers import (CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATIO
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
                                          linear_solver_precision, point_cells, reports_model_checks,
                                          validate_points_inside)
-from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
+from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.roles import resolved_precision
 from .definition_magnetostatics import (_ANDERSON_STATE_ARRAYS, _BH_CURVE, _CURVE_PROPOSAL_ARRAYS, _MU_DC_TIP,
                                         _NONLINEAR_SETTINGS, _bh_curve_material_count, _bh_curve_rows, _coil_result,
-                                        _material_property as _material_property_2d, _method_misfit, _set_faces,
+                                        _curve_material_issues, _face_setter,
+                                        _material_property as _material_property_2d, _method_misfit,
+                                        _scalar_outputs, _selected_material_properties, _validate_whole_window,
                                         saturation_iterations)
 from .fields import MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PROBE_COMPONENTS
 from .materials import (BH_CURVE_PROPERTY, MAGNETIC_3D_PROPERTY_ARRAYS, MAGNETIC_3D_SCHEMA,
                         OPTIONAL_MAGNETIC_3D_SCHEMA, REMANENCE_3D_ARRAYS, SATURATION_ARRAY)
 from .renderer import MAGNETIC_3D_FIELD_INFOS
-from .saturation import TENSOR_NONLINEAR_METHODS, bh_curve
+from .saturation import TENSOR_NONLINEAR_METHODS
 from .selftests_3d import NEEDLE_3D_DESCRIPTION, NEEDLE_3D_LABEL, needle_3d_spec
 
 MAGNETOSTATICS_3D_TYPE_NAME = 'magnetostatics_3d'   # = selftests_3d.MAGNETOSTATICS_3D_TYPE_NAME (not imported)
@@ -163,14 +164,7 @@ _PHYSICS_SUMMARY = ('Static magnetic fields of coils, permanent magnets, magneti
 
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
-def _apply_insulation(ctx, solver, feature_spec, values, selection):
-    _set_faces(solver, selection.outer_faces, 'neumann')
-    return None
-
-
-def _apply_symmetry(ctx, solver, feature_spec, values, selection):
-    _set_faces(solver, selection.outer_faces, 'dirichlet')
-    return None
+_apply_insulation, _apply_symmetry = _face_setter('neumann'), _face_setter('dirichlet')
 
 
 def _apply_external_field(ctx, solver, feature_spec, values, selection):
@@ -231,33 +225,8 @@ def _probe_result(session, solver, probe, feature_spec, options):
 
 
 # ---- validation (CPU only) ----
-def _validate_external_field(vctx, physics_spec, feature_spec, values):
-    """Selection 'all' only."""
-    try:
-        entities = expand_entities(vctx.spec, feature_spec.selection)
-    except (ValueError, KeyError, TypeError):   # bad selection: reported by the selection checks
-        return []
-    if entities and entities != ['all']:
-        return [Issue('error', feature_path(physics_spec, feature_spec),
-                      "external_field holds the outer ring of the whole window: select 'all' only")]
-    return []
-
-
 _CANCELLATION_PERMEABILITY = 1e3   # decision 7: above it T - grad phi_m in a coil's core loses float32 digits
-
-
-def _selected_material_properties(spec):
-    """(material, properties) of the selected materials, library merged (failures are reported at the material)."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    selected = []
-    for material in spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):
-            continue
-        if material.selection:
-            selected.append((material, properties))
-    return selected
+_PERMEABILITY_NAMES = ('mu_dc', 'mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')
 
 
 def _table_peak_permeability(raw_rows, parameters):
@@ -273,7 +242,7 @@ def _high_permeability_materials(vctx):
     for material, properties in _selected_material_properties(vctx.spec):
         raw_rows = properties.get(BH_CURVE_PROPERTY)
         if any(evaluates_to(properties.get(name), vctx.parameters, lambda value: value > _CANCELLATION_PERMEABILITY)
-               for name in ('mu_dc', 'mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')) or (
+               for name in _PERMEABILITY_NAMES) or (
                 raw_rows is not None
                 and _table_peak_permeability(raw_rows, vctx.parameters) > _CANCELLATION_PERMEABILITY):
             names.append(material.name)
@@ -294,39 +263,17 @@ def _saturation_issues(vctx, physics_spec, settings_values):
         return issues
     parameters = vctx.parameters
     for material, properties in _selected_material_properties(vctx.spec):
-        path = ('material', material.name)
-        saturates = evaluates_to(properties.get(SATURATION_ARRAY), parameters, lambda value: value > 0.0)
-        raw_rows = properties.get(BH_CURVE_PROPERTY)
-        tabulated = raw_rows is not None
-        if (saturates or tabulated) and any(
-                evaluates_to(properties.get(name), parameters, lambda value: value != 0.0)
-                for name in REMANENCE_3D_ARRAYS):
-            issues.append(Issue('error', path, f"material '{material.name}' sets "
-                                               f"{BH_CURVE_PROPERTY if tabulated else SATURATION_ARRAY} and a "
-                                               'remanence: a saturating permanent magnet is not modelled (remove one)'))
-        if saturates and not tabulated:
-            components = [properties.get(name, properties.get('mu_dc')) for name in ('mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')]
-            if components[1] != components[0] or components[2] != components[0]:
-                issues.append(Issue('error', path, f"material '{material.name}' sets {SATURATION_ARRAY} with "
-                                                   'different mu_dc_xx / mu_dc_yy / mu_dc_zz: the saturating curve is '
-                                                   'isotropic; give one mu_dc'))
-        if not tabulated:
-            continue
-        if saturates:
-            issues.append(Issue('error', path, f"material '{material.name}' sets both {SATURATION_ARRAY} and "
-                                               f'{BH_CURVE_PROPERTY}: give one B-H curve (remove one)'))
-        permeability_names = [name for name in ('mu_dc', 'mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')
-                              if properties.get(name) is not None]
-        if permeability_names:
-            issues.append(Issue('warning', path, f"material '{material.name}': {', '.join(permeability_names)} "
-                                                 f'{"is" if len(permeability_names) == 1 else "are"} ignored in its '
-                                                 f'cells, where {BH_CURVE_PROPERTY} sets the permeability'))
-        rows = _bh_curve_rows(raw_rows, parameters)
-        if rows is not None:
-            try:
-                bh_curve(rows)
-            except ValueError as exc:
-                issues.append(Issue('error', path, f"property '{BH_CURVE_PROPERTY}': {exc}"))
+        # remanence / curve issues first; the isotropy check fires only without a bh_curve, where those are at most
+        # the remanence error
+        issues.extend(_curve_material_issues(material, properties, parameters, REMANENCE_3D_ARRAYS,
+                                             _PERMEABILITY_NAMES))
+        components = [properties.get(name, properties.get('mu_dc')) for name in _PERMEABILITY_NAMES[1:]]
+        if (properties.get(BH_CURVE_PROPERTY) is None
+                and evaluates_to(properties.get(SATURATION_ARRAY), parameters, lambda value: value > 0.0)
+                and (components[1] != components[0] or components[2] != components[0])):
+            issues.append(Issue('error', ('material', material.name), f"material '{material.name}' sets "
+                                f'{SATURATION_ARRAY} with different mu_dc_xx / mu_dc_yy / mu_dc_zz: the saturating '
+                                'curve is isotropic; give one mu_dc'))
     return issues
 
 
@@ -516,7 +463,7 @@ _FEATURES = (
                               tip='Strength of the applied field along z.\n\nThe Earth field is about 0.00005.')),
                 summary='Applies a uniform magnetic field, held at the domain faces, around the objects inside.',
                 description=_EXTERNAL_FIELD_DESCRIPTION, apply=_apply_external_field,
-                validate=_validate_external_field, grids=_GRIDS),
+                validate=_validate_whole_window, grids=_GRIDS),
     FeatureType('ideal_iron', 'Ideal iron (fixed magnetic potential)', 'domain_condition', 'domain',
                 params=(Param('potential', 'float', 0.0, label='Magnetic scalar potential', unit='A',
                               help='Held phi_m [A] (magnetomotive force against phi_m = 0); 0 for a single iron '
@@ -555,15 +502,6 @@ _FEATURES = (
 )
 
 _FIELD_INFOS = tuple(MAGNETIC_3D_FIELD_INFOS.values())
-
-
-def _scalar_outputs(settings_values, physics_spec):
-    """energy, then <coil>_flux_linkage / <coil>_inductance per enabled coil feature."""
-    names = ['energy']
-    for feature in physics_spec.features:
-        if feature.enabled and feature.type == 'coil':
-            names.extend((f'{feature.name}_flux_linkage', f'{feature.name}_inductance'))
-    return tuple(names)
 
 
 MAGNETOSTATICS_3D = PhysicsType(
