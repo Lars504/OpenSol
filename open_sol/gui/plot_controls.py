@@ -112,6 +112,17 @@ _DEFAULT_CURVE_SETTINGS = {'visible': True, 'label': '', 'color': '', 'line': ''
 _SIZE_EDITORS = {'line_width': ((0.1, 10.0), 0.25), 'marker_size': ((1.0, 20.0), 0.5)}   # (range, step) in pt
 
 
+def _short_edit(tip, on_finished, placeholder=''):
+    """Narrow QLineEdit (a limit or tick step field) calling on_finished() on editingFinished."""
+    edit = QtWidgets.QLineEdit()
+    edit.setMaximumWidth(90)
+    if placeholder:
+        edit.setPlaceholderText(placeholder)
+    edit.setToolTip(tip)
+    edit.editingFinished.connect(on_finished)
+    return edit
+
+
 class PlotAxisControls(QtWidgets.QWidget):
     """Grid 'x / y: Log, lowest, highest, tick step' + Auto acting on `plot` (this plot only, not saved); empty limit
     fields show the current view range (mouse zoom included) as grey placeholders. The owner calls apply() after
@@ -141,19 +152,13 @@ class PlotAxisControls(QtWidgets.QWidget):
                 check.hide()
                 layout.addWidget(QtWidgets.QLabel(axis), row, 0)
             for side, side_text in zip(_LIMIT_SIDES, ('lowest', 'highest')):
-                edit = QtWidgets.QLineEdit()
-                edit.setMaximumWidth(90)
-                edit.setToolTip(f'{side_text.capitalize()} {axis} value shown, in the plotted unit without prefix '
-                                '(for example Hz rather than MHz; wavelengths in nm). Leave empty for automatic; the '
-                                'grey text is the current view.')
-                edit.editingFinished.connect(lambda axis=axis: self._apply_axis(axis, fit_unset=True))
+                edit = _short_edit(f'{side_text.capitalize()} {axis} value shown, in the plotted unit without prefix '
+                                   '(for example Hz rather than MHz; wavelengths in nm). Leave empty for automatic; '
+                                   'the grey text is the current view.',
+                                   lambda axis=axis: self._apply_axis(axis, fit_unset=True))
                 self._limit_edits[(axis, side)] = edit
                 layout.addWidget(edit, row, 1 + side)
-            step_edit = QtWidgets.QLineEdit()
-            step_edit.setMaximumWidth(90)
-            step_edit.setPlaceholderText('tick step')
-            step_edit.setToolTip(_STEP_TIP)
-            step_edit.editingFinished.connect(lambda axis=axis: self._on_step_edited(axis))
+            step_edit = _short_edit(_STEP_TIP, lambda axis=axis: self._on_step_edited(axis), 'tick step')
             self._step_edits[axis] = step_edit
             layout.addWidget(step_edit, row, 3)
         self._color_log_check = None
@@ -166,20 +171,14 @@ class PlotAxisControls(QtWidgets.QWidget):
             self._color_log_check.toggled.connect(lambda _checked: self.color_changed.emit())
             layout.addWidget(self._color_log_check, row, 0)
             for side, side_text in zip(_LIMIT_SIDES, ('lowest', 'highest')):
-                edit = QtWidgets.QLineEdit()
-                edit.setMaximumWidth(90)
-                edit.setToolTip(f'{side_text.capitalize()} value of the colour bar, in the unit of the field. Leave '
-                                'empty for automatic (the field\'s own range, or the replay range); the grey text is '
-                                'the current range.')
-                edit.editingFinished.connect(self.color_changed.emit)
+                edit = _short_edit(f'{side_text.capitalize()} value of the colour bar, in the unit of the field. Leave '
+                                   'empty for automatic (the field\'s own range, or the replay range); the grey text '
+                                   'is the current range.', self.color_changed.emit)
                 self._limit_edits[('colour', side)] = edit
                 layout.addWidget(edit, row, 1 + side)
-            step_edit = QtWidgets.QLineEdit()
-            step_edit.setMaximumWidth(90)
-            step_edit.setPlaceholderText('tick step')
-            step_edit.setToolTip(f'Distance between the colour-bar ticks in the unit of the field. Empty = automatic; '
-                                 f'a step giving more than {_MAX_FIXED_TICKS} ticks is ignored.')
-            step_edit.editingFinished.connect(lambda: self._on_step_edited('colour'))
+            step_edit = _short_edit(f'Distance between the colour-bar ticks in the unit of the field. Empty = '
+                                    f'automatic; a step giving more than {_MAX_FIXED_TICKS} ticks is ignored.',
+                                    lambda: self._on_step_edited('colour'), 'tick step')
             self._step_edits['colour'] = step_edit
             layout.addWidget(step_edit, row, 3)
         auto_button = QtWidgets.QPushButton('Auto')

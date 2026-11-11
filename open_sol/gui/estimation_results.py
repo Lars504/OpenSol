@@ -7,7 +7,7 @@ from PySide6 import QtCore, QtWidgets
 
 from ..model.expressions import error_message
 from .estimation_form import ESTIMATION_METHOD_LABELS
-from .forms import fill_table, read_only_table, rich_tooltip, selectable, table_number
+from .forms import fill_table, read_only_table, rich_tooltip, table_number, wrapped_label
 from .helpers import USER_ERRORS
 from .plot_view import POINT_OPTIONS, curve_xy
 
@@ -108,9 +108,7 @@ class EstimationTab(QtWidgets.QWidget):
         self._document = document
         self._report = None
         self.plot_view = plot_view
-        self._info = selectable(QtWidgets.QLabel(NO_ESTIMATION))
-        self._info.setWordWrap(True)
-        self._info.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._info = wrapped_label(NO_ESTIMATION, QtCore.Qt.TextFormat.PlainText)
         self._parameters_table = read_only_table(_PARAMETER_COLUMNS, _PARAMETERS_TABLE_TIP)
         self._data_table = read_only_table(_DATA_COLUMNS, _DATA_TABLE_TIP)
         self._statistics = QtWidgets.QLabel()
