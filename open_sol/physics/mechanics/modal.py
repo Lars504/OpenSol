@@ -313,7 +313,7 @@ class ModalPencil:
         elif self.kind == 'damped':
             if not (math.isfinite(omega) and omega >= 0.0) or (self.in_shell is not None and omega <= 0.0):
                 what = ('an elastic PML needs an eigenfrequency target > 0' if self.in_shell is not None else
-                        'solve_damped_modes needs a finite target angular frequency >= 0')
+                        'a damped modal solve needs a finite target angular frequency >= 0')
                 raise ValueError(f'{what}, got omega = {omega_target!r} rad/s')
         elif not (math.isfinite(omega) and omega >= 0.0):
             raise ValueError(f'solve_modes needs a finite target angular frequency >= 0 [rad/s], got {omega_target!r}')
