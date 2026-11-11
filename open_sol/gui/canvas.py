@@ -26,7 +26,7 @@ from ..viz.common import (color_limits, containing_cells, edges_from_centers, le
                           tetrahedron_mesh_cut)
 from ..viz.visualization import DARK_CMAPS
 from .document import COMPUTED_RESULTS_NODE, MESHES_NODE, harmonic_channel_polarizations, mesh_of_node
-from .forms import display_label, face_cell_counts_text, format_quantity, rich_tooltip, selectable
+from .forms import display_label, face_cell_counts_text, format_quantity, rich_tooltip, wrapped_label
 from .helpers import (coupling_mesh_text, field_mesh_name, memory_estimate_text, mesh_badge_html, mesh_color,
                       mesh_summary_text, several_meshes)
 from .mesh_preview import AUTO_PREVIEW_MAX_ELEMENTS, AUTO_PREVIEW_MAX_TETRAHEDRA
@@ -618,18 +618,13 @@ class ModelCanvas(QtWidgets.QWidget):
         self._polygon_vertices = []            # scene coordinates of the polygon being drawn
         self._polygon_preview = None           # (edge curve, vertex markers) while a polygon is drawn
 
-        self._banner = selectable(QtWidgets.QLabel())
-        self._banner.setWordWrap(True)
-        self._banner.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._banner = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         self._banner.setStyleSheet('background:#fff3cd; color:#664d03; border:1px solid #ffe69c; padding:4px;')
         self._banner.hide()
-        self._legend = selectable(QtWidgets.QLabel())
-        self._legend.setWordWrap(True)
-        self._legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self._legend = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
         self._legend.setStyleSheet('color:#333; padding:2px;')
-        self._mesh_badge = selectable(QtWidgets.QLabel())   # names the active mesh (mesh view; every view with several meshes)
-        self._mesh_badge.setWordWrap(True)
-        self._mesh_badge.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        # names the active mesh (mesh view; every view with several meshes)
+        self._mesh_badge = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
         self._mesh_badge.hide()
         self._show_field_mesh = False          # the field view draws its field's mesh lines (Results 'Show mesh')
         self._results_meshes = {}              # mesh refinement: {mesh name: estimate} of the results' last level
@@ -658,8 +653,7 @@ class ModelCanvas(QtWidgets.QWidget):
         buttons_layout.setContentsMargins(0, 0, 0, 0)
         buttons_layout.addWidget(self._sweep_reset_button)
         buttons_layout.addWidget(self._sweep_mesh_button)
-        self._sweep_status = selectable(QtWidgets.QLabel())
-        self._sweep_status.setWordWrap(True)
+        self._sweep_status = wrapped_label()
         self._sweep_box.hide()
         self._mesh_store = None               # mesh_preview.ElementMeshStore: built / previewed element meshes
         self._tetrahedron_cut_cache = None    # (data id, axis, position, scene axes) -> cut segments of the last draw
@@ -1777,19 +1771,10 @@ class ModelCanvas(QtWidgets.QWidget):
         if self._tetrahedron_cut_cache is None or self._tetrahedron_cut_cache[0] != key:
             self._tetrahedron_cut_cache = (key, tetrahedron_mesh_cut(data, axis, position, model.scene_axes))
         segments, shell_segments = self._tetrahedron_cut_cache[1]
-        inverse_scale = 1.0 / model.scale
-        for pairs, alpha in ((shell_segments, 45), (segments, 90)):
-            if len(pairs):
-                self._add_overlay(pg.PlotCurveItem(x=pairs[:, 0] * inverse_scale, y=pairs[:, 1] * inverse_scale,
-                                                   connect='pairs', pen=pg.mkPen((0, 0, 0, alpha))), -4)
         u_index, v_index = ('xyz'.index(name) for name in model.scene_axes)
-        u0, u1 = data.window[u_index], data.window[3 + u_index]
-        v0, v1 = data.window[v_index], data.window[3 + v_index]
-        window = np.array([[u0, v0], [u1, v0], [u1, v1], [u0, v1], [u0, v0]])
-        self._add_overlay(self._polyline_item([window], pg.mkPen('#606060', width=1,
-                                                                 style=QtCore.Qt.PenStyle.DashLine)), -3)
-        source = ('built with the model' if drawing.source == 'built' else
-                  f'Build mesh preview, {drawing.seconds:.2g} s' if drawing.seconds is not None else 'Build mesh preview')
+        source = self._draw_element_edges(model, drawing, ((shell_segments, 45), (segments, 90)),
+                                          (data.window[u_index], data.window[3 + u_index],
+                                           data.window[v_index], data.window[3 + v_index]))
         lines = [f'{data.n_elements:,} tetrahedra, {data.n_points:,} nodes ({source}), cut at {axis} = '
                  f"{format_quantity(position, 'm')}; smallest radius ratio {data.smallest_quality:.2g}"]
         if data.n_poor:
@@ -2184,11 +2169,7 @@ class ModelCanvas(QtWidgets.QWidget):
         line_u = np.concatenate([np.repeat(u_lines, 2), np.tile(full_u, v_lines.size)]) * inverse_scale
         line_v = np.concatenate([np.tile(full_v, u_lines.size), np.repeat(v_lines, 2)]) * inverse_scale
         self._add_overlay(pg.PlotCurveItem(x=line_u, y=line_v, connect='pairs', pen=pg.mkPen((0, 0, 0, 80))), -4)
-        window_u0, window_u1, window_v0, window_v1 = cells.window_extent(model.scene_axes)
-        window = np.array([[window_u0, window_v0], [window_u1, window_v0], [window_u1, window_v1],
-                           [window_u0, window_v1], [window_u0, window_v0]])
-        self._add_overlay(self._polyline_item([window], pg.mkPen('#606060', width=1,
-                                                                 style=QtCore.Qt.PenStyle.DashLine)), -3)
+        self._add_window_outline(*cells.window_extent(model.scene_axes))
 
         # wording of the Mesh node's estimate (settings panel)
         dt_text = 'no time step' if mesh.dt is None else f"time step {format_quantity(float(mesh.dt), 's')}"
@@ -2220,20 +2201,31 @@ class ModelCanvas(QtWidgets.QWidget):
         lines.append(self._element_mesh_status(name, 'triangles', '', AUTO_PREVIEW_MAX_ELEMENTS))
         return lines
 
+    def _add_window_outline(self, u0, u1, v0, v1):
+        """Dashed outline of the window rectangle."""
+        outline = np.array([[u0, v0], [u1, v0], [u1, v1], [u0, v1], [u0, v0]])
+        self._add_overlay(self._polyline_item([outline], pg.mkPen('#606060', width=1,
+                                                                  style=QtCore.Qt.PenStyle.DashLine)), -3)
+
+    def _draw_element_edges(self, model, drawing, edge_sets, window_extent):
+        """Element edge pairs of a MeshDrawing (edge_sets: (pairs, alpha), drawn in order) and the dashed window outline
+        (window_extent: u0, u1, v0, v1); returns the text of where the drawing comes from."""
+        inverse_scale = 1.0 / model.scale
+        for pairs, alpha in edge_sets:
+            if len(pairs):
+                self._add_overlay(pg.PlotCurveItem(x=pairs[:, 0] * inverse_scale, y=pairs[:, 1] * inverse_scale,
+                                                   connect='pairs', pen=pg.mkPen((0, 0, 0, alpha))), -4)
+        self._add_window_outline(*window_extent)
+        if drawing.source == 'built':
+            return 'built with the model'
+        return f'Build mesh preview, {drawing.seconds:.2g} s' if drawing.seconds is not None else 'Build mesh preview'
+
     def _draw_triangle_lines(self, model, drawing):
         """Element edges of a MeshDrawing (absorbing-ring edges fainter) and the dashed window outline; legend lines."""
         mesh_lines = drawing.lines
-        inverse_scale = 1.0 / model.scale
-        for segments, alpha in ((mesh_lines.ring_segments, 45), (mesh_lines.segments, 90)):
-            if len(segments):
-                self._add_overlay(pg.PlotCurveItem(x=segments[:, 0] * inverse_scale, y=segments[:, 1] * inverse_scale,
-                                                   connect='pairs', pen=pg.mkPen((0, 0, 0, alpha))), -4)
         x0, y0, x1, y1 = mesh_lines.window
-        window = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]])
-        self._add_overlay(self._polyline_item([window], pg.mkPen('#606060', width=1,
-                                                                 style=QtCore.Qt.PenStyle.DashLine)), -3)
-        source = ('built with the model' if drawing.source == 'built' else
-                  f'Build mesh preview, {drawing.seconds:.2g} s' if drawing.seconds is not None else 'Build mesh preview')
+        source = self._draw_element_edges(model, drawing, ((mesh_lines.ring_segments, 45), (mesh_lines.segments, 90)),
+                                          (x0, x1, y0, y1))
         quality = mesh_lines.quality
         angle = quality.get('min_angle')
         angle_text = (f'; smallest angle {float(angle):.1f}° (outside the absorbing ring)'
