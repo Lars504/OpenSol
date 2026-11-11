@@ -1,7 +1,7 @@
 """The 'frequency_response' StudyType (piezoelectric plan stage 5): background physics to a stationary fixed point, then
 the driven time-harmonic response of every solver with solve_frequency_response (solid_mechanics, membrane, pressure_acoustics) at each
 frequency of a list in Hz, one labelled snapshot per frequency (setting snapshots: all, last or none)."""
-# COMSOL's Frequency Domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays
+# A frequency-domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays
 # wavelength-based. Each frequency is one complex factorisation per solved physics (a cuDSS factor reuses its plan).
 import time
 
@@ -158,7 +158,7 @@ _PARAMS = (
           tip='Frequencies in hertz, solved in this order; when filled, it replaces the range above.'),
     Param('snapshots', 'choice', 'all', label='Stored snapshots', choices=SNAPSHOT_CHOICES,
           choice_labels=(('all', 'Every frequency'), ('last', 'Last frequency only'), ('none', 'None')),
-          help="Which frequencies keep a snapshot of the stored fields (COMSOL's store fields in output): 'all' "
+          help="Which frequencies keep a snapshot of the stored fields: 'all' "
                "(default) one per frequency, 'last' only the last solved one (also after a cancel), 'none' no "
                'snapshot. Each snapshot holds the stored fields on up to 250,000 cells (~1 MB per field for a '
                'large window), so a sweep over hundreds of frequencies may keep only the last. Feature records per '
@@ -175,7 +175,7 @@ _PARAMS = (
           choice_labels=(('direct', 'Direct (one solve per frequency)'), ('adaptive', 'Adaptive reduced model'),
                          ('modal', 'Modal superposition')),
           help="How the frequencies are solved. 'direct' (default): one complex sparse factorisation per frequency. "
-               "'adaptive' (COMSOL's asymptotic waveform evaluation / an adaptive fast sweep): a reduced model trained "
+               "'adaptive' (asymptotic waveform evaluation / an adaptive fast sweep): a reduced model trained "
                'on the frequency list: factorisations at the ends and the middle, each adding the solution and '
                'rom_moments frequency derivatives (back-solves on the same factor) to a Galerkin basis, then one more '
                'at the frequency of the largest estimated relative residual until it is <= rom_tolerance or '
@@ -225,8 +225,8 @@ _PARAMS = (
     _PARITY_SECTORS_PARAM,
 )
 _DESCRIPTION = (
-    'Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies in Hz, the COMSOL '
-    'Frequency Domain study of the mechanics (the EM frequency_domain study takes wavelengths). Solved physics: every '
+    'Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies in Hz, the '
+    'frequency-domain study of the mechanics (the EM frequency_domain study takes wavelengths). Solved physics: every '
     f'type listing frequency_response among its supported studies ({_SOLVED_TYPES_TEXT}; solid_mechanics, 2D: planar '
     'plane strain / plane '
     'stress or axisymmetric; not generalized plane strain or guided modes; solid_mechanics_3d on a tetrahedron mesh; '

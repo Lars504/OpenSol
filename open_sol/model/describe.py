@@ -377,7 +377,7 @@ _SPEC_FIELD_HELP = {
     'MeshSegmentSpec.ratio': 'Size ratio of the profile (see profile); 1 = uniform.',
     'StudySpec.type': 'Registered study type name (see the study type sections).',
     'StudySpec.settings': 'Values of the study type params by name; missing keys take the defaults.',
-    'StudySpec.solved_physics': "Physics names the study solves itself (COMSOL's physics in study step), e.g. "
+    'StudySpec.solved_physics': "Physics names the study solves itself, e.g. "
                                 "['membrane']; the others run first as stationary background physics (also those of a "
                                 'type the study could solve), so couplings from them into the listed physics are '
                                 'allowed. [] = every physics whose solver has the study\'s solve. Only frequency_domain, '
@@ -410,7 +410,7 @@ _SPEC_FIELD_HELP = {
     'AdaptationSpec.anisotropic': 'Tensor meshes: refine x and y bands separately by the indicator part that '
                                   'dominates (true) or both axes alike.',
     'AdaptationSpec.keep_levels': 'true: keep every level\'s snapshots, not only the last level\'s.',
-    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec; COMSOL Parameter Estimation): the study is '
+    'StudySpec.estimation': 'Optional parameter estimation (EstimationSpec): the study is '
                             'rebuilt and rerun per evaluation with the estimated parameters set, until the weighted '
                             'misfit of measured derived values and curves is least; then one run at the best point '
                             'stays live (summary estimation). null = one run. Any study type; no sweep or adaptation '
@@ -482,7 +482,7 @@ _SPEC_FIELD_HELP = {
                                    'normal of the object outline, tangent = the normal turned +90 deg; on a polar / '
                                    'spherical domain their radial / angular components, as the fields _x / _y there; '
                                    'they shadow parameters), e.g. "em_ex_re*normal_x + em_ey_re*normal_y". Operation '
-                                   "'expression' (source null, COMSOL's global evaluation): one number of parameters, "
+                                   "'expression' (source null, a global evaluation): one number of parameters, "
                                    'scalar outputs, t and the derived values listed before this one, no fields, x, y, '
                                    'z or selection, e.g. c_eff = "sqrt(N_int / rho_int)" of two integrals listed '
                                    'above; evaluated in float64 in list order like every derived value. With a '
@@ -1873,8 +1873,8 @@ def _mesh_section(physics_types):
             'Mesh kind triangles (S7.5, 2D Cartesian models): free triangles following curved boundaries for the '
             'physics, features and solvers that declare them (the Mesh kinds line of each type: '
             f"{', '.join(on_triangles) or 'none registered'}; some only in one study, validation names the limits). "
-            'Sizes as COMSOL Free '
-            'Triangular: dx = maximum element size, max_ratio = maximum growth rate (null: 1.3), refinements = '
+            'Sizes as a free '
+            'triangular mesher: dx = maximum element size, max_ratio = maximum growth rate (null: 1.3), refinements = '
             'maximum sizes in / along / at their objects, h_min (null: dx / 100), curvature_factor 0.3 along circle '
             'and ellipse edges; auto: the wavelength rule with points_per_wavelength (null: 5), else the '
             'physics-controlled rule; the absorbing ring has pml_layers structured layers over the PML cells x dx.',

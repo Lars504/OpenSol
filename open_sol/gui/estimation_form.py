@@ -20,8 +20,8 @@ from .helpers import remember_directory, start_directory
 
 ESTIMATION_METHOD_LABELS = {'least_squares': 'Least squares (trust region, finite-difference derivatives)',
                             'nelder_mead': 'Nelder-Mead (no derivatives, for noisy results)'}
-ESTIMATION_TIP = ('Adjusts model parameters until the results match measured values and curves (as COMSOL '
-                  'Parameter Estimation). Each try is a full build and run of the study; the search ends with a run at '
+ESTIMATION_TIP = ('Adjusts model parameters until the results match measured values and curves (parameter '
+                  'estimation). Each try is a full build and run of the study; the search ends with a run at '
                   'the best parameters, whose results stay shown.\n\n'
                   'The fitted values, their standard errors and the misfit of every run are in the Estimation tab of '
                   'Results.')

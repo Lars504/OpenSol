@@ -49,7 +49,7 @@ _BC_HELP = ' '.join((
 ))
 _KZ_HELP = (
     'Out-of-plane wave number k_z in rad/m of every solve: the fields vary as exp(j (omega t - k_z z)) along the '
-    'z-invariant structure (COMSOL out-of-plane wave number), so all six components couple. k_z = 0 gives the '
+    'z-invariant structure, so all six components couple. k_z = 0 gives the '
     'decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell apart '
     'from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n sin(theta) '
     'of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a periodic axis), '
@@ -283,7 +283,7 @@ _FEATURES = (
 # ---- type ----
 _DESCRIPTION = (
     'Conical (out-of-plane wave number) finite-difference frequency-domain solver of a z-invariant structure: the '
-    'drawing is its xy cross-section, the fields vary as exp(j (omega t - k_z z)) with the k_z setting (COMSOL 2D '
+    'drawing is its xy cross-section, the fields vary as exp(j (omega t - k_z z)) with the k_z setting (2D '
     'frequency domain with an out-of-plane wave number), so E_x, E_y, E_z and H_x, H_y, H_z all couple. Projected 3D '
     'Yee cell (the em_modes layout and wall rules): E_z at the cell centres, E_x and H_y on the +x faces, E_y and H_x '
     'on the +y faces, H_z at the +x+y corner; unknowns E (3 per cell, PML included), curl-curl operator (k0^2 eps - '

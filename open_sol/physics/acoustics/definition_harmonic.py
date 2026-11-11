@@ -41,7 +41,7 @@ INSTANCE_NAME = 'pressure_acoustics'
 FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 _TETRAHEDRA = 'tetrahedra'
 _BOUNDARY_FEATURES = ('sound_hard', 'sound_soft', 'prescribed_pressure', 'impedance', 'vibrating_boundary')
-_MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, COMSOL's rule of thumb)
+_MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, the usual rule of thumb)
 _DIRECTIONS = ('+x', '-x', '+y', '-y', '+z', '-z', 'custom')
 _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j omega)^power x amplitude = acceleration
 # 'linear' role: sparse_direct, the cuDSS back ends (gpu backend: fem.harmonic keeps the reduced K, C, M on the device
@@ -876,7 +876,7 @@ PRESSURE_ACOUSTICS = PhysicsType(
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     summary='Sound in air or water at given frequencies: the steady sound pressure around obstacles, with absorbing '
             'boundaries, incoming waves and pressure probes. Planar, rotationally symmetric or 3D.',
-    description='Frequency-domain pressure acoustics (COMSOL Pressure Acoustics, Frequency Domain) for the frequency_'
+    description='Frequency-domain pressure acoustics for the frequency_'
                 'response study: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j omega t), peak '
                 'amplitudes), p the complex pressure, rho / c the material density and sound_speed (every fluid '
                 'element needs both > 0; elastic_waves shares the Params; no losses but impedance and PML), on a '

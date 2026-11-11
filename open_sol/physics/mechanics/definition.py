@@ -86,7 +86,7 @@ _DISCRETIZATION_PARAM = Param(
     'discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
     choice_labels=(('quadratic', 'Quadratic (P2)'), ('linear', 'Linear (P1)')),
     help="Triangle meshes only (mesh kind 'triangles'; a tensor mesh ignores it: bilinear cells): the displacement "
-         "elements. quadratic (default, COMSOL's choice): P2 Lagrange, isoparametric on curved boundaries (circle / "
+         "elements. quadratic (default): P2 Lagrange, isoparametric on curved boundaries (circle / "
          'ellipse edges follow the drawn curve), strain and stress linear per element; linear: P1, constant strain '
          'per element (stiff in bending, locks toward poisson_ratio 0.5). Unknowns per element and component: ~2 '
          '(quadratic) or ~0.5 (linear); one host SuperLU per assembly (sparse_direct). Displayed strain / stress are '
@@ -172,7 +172,7 @@ _OUT_OF_PLANE_PARAM = Param(
          'are free). plane_stress: sigma_zz = 0, a thin plate in the drawing plane (top view of a film or membrane): the '
          'reduced stiffness lambda -> 2 mu lambda / (lambda + 2 mu) and thermal stress beta - lambda beta_z / (lambda + 2 '
          'mu); outputs elastic_strain_zz = eps_zz - alpha_zz dT with eps_zz = (beta_z dT - lambda (eps_xx + eps_yy)) / '
-         '(lambda + 2 mu) per cell, stress_zz = 0; forces per m of thickness (N/m). generalized_plane_strain (COMSOL\'s '
+         '(lambda + 2 mu) per cell, stress_zz = 0; forces per m of thickness (N/m). generalized_plane_strain (standard '
          'form): eps_zz = e0 + e1 x + e2 y over the whole drawn cross-section (x, y of the drawing), e0 set by the net '
          'axial force (setting axial_force; 0 = free ends) and the bending terms e1 / e2 (setting bending, default both '
          'free) by the bending moments (bending_moment_x / _y; 0 = an unloaded, freely bending long body): the right '

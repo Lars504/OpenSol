@@ -52,7 +52,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   = C : alpha. Rules are written for plane strain unless they say otherwise.
 - out_of_plane (planar only): plane_strain eps_zz = 0; plane_stress = static condensation of sigma_zz = 0
   (`stiffness.operator_coefficients(plane_stress=True)`, c33 = 1 in void cells; eps_zz output per cell, stress_zz 0);
-  generalized_plane_strain eps_zz = e0 + e1 x + e2 y (COMSOL's form, setting bending picks the free terms) by
+  generalized_plane_strain eps_zz = e0 + e1 x + e2 y (the usual form, setting bending picks the free terms) by
   superposition (`generalized_plane_strain.py`, `_solve_generalized`): the e = 0 solve + one
   `ElasticSystem.solve_homogeneous` per free term (f_k = -int B^T (c13, c23, c36) h_k dA, h about the window centre,
   kept in `_unit_axial_solve` until the next `_assemble`); the 3 x 3 Schur matrix S_mk = int c33 h_k h_m - u_k . f_m is
@@ -102,7 +102,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_stiffness_follows_state`).
 
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries; piezoelectric plan stage 5)
-- COMSOL's plane-strain choice: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
+- Plane-strain choice: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
   out-of-plane strains held (anti-plane u_z clamped, no c_4J / c_5J). Arrays c11, c12, c13, c22, c23, c33, c16, c26,
   c36, c66 (`materials.OPTIONAL_STIFFNESS_SCHEMA`): any entry allocates the eight besides c16 / c26; those only by
   themselves (an allocated pair switches elastic_waves' monoclinic kernel on in a shared model). c11 / c12 / c22 /

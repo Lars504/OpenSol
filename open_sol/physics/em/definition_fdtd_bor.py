@@ -201,7 +201,7 @@ _MODE_SOURCE_DESCRIPTION = (
     'Port source launching one guided mode of a waveguide along the axis (fibre, pillar, metal pipe, coaxial guide) '
     'from a horizontal line in one direction: a one-sided total-field / scattered-field interface between the line row '
     'and the row upstream in time, the mode at the carrier frequency on the two rows (Re and Im of its profile driven '
-    'by the waveform and its quadrature; as COMSOL\'s transient ports, the mode of one frequency). At the carrier the '
+    'by the waveform and its quadrature; as usual for transient ports, the mode of one frequency). At the carrier the '
     'launch is exact and one-sided; at other frequencies of a pulse the carrier profile launches a somewhat different '
     'power and leaks a little backward (both grow with the change of n_eff over the band, strongest near a cutoff), so '
     'for spectra divide by the forward power of a mode_monitor between the source and the device. '

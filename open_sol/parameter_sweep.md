@@ -13,7 +13,7 @@ filling in live; GUI Sweep tab series per xy / flux result and derived-series en
 the plot view's Curves tab and Export curve data); `Results.sweep`; self-tests frequency_domain_feedback_strip,
 sweep_power_strip, sweep_overlay_helpers (model/selftests_sweep.py); the TFLN example (4.7, see its status there). Open:
 per-coupling Aitken relaxation and its oscillating self-test (4.8), the later items of 4.4. The path:line
-references below are from the tree of the original writing and are stale; COMSOL labels are from memory of COMSOL 6.x.
+references below are from the tree of the original writing and are stale.
 
 Driving use case: the TFLN ring with self-heating (`examples/multiphysics/tfln_ring_thermo_optic.json`). Run the whole
 wavelength spectrum twice, at two optical powers, and plot the two through-port spectra on top of each other in the
@@ -21,22 +21,22 @@ GUI. The general goal: vary one parameter, rerun the whole study per value, and 
 value (spectra, probes, derived values vs the inner axis), scalars vs the parameter, and optionally the fields of
 every value.
 
-## 1. How COMSOL does it
+## 1. The usual approach in multiphysics tools
 
-- **Parametric Sweep** (a study node, the outer loop): a table of parameter names and value lists (`range(start,
-  step, stop)`), sweep type "specified combinations" or "all combinations", "reuse solution from previous step"
-  (continuation across values), and "keep solutions in memory: all / only last / only on disk". Every study step
-  runs once per value, so the model can change between values (geometry, mesh, materials, source power).
-- **Inner sweeps** belong to the study step: the frequency list of a Frequency Domain step, the output times of a
-  Time Dependent step, or an *auxiliary sweep* of a Stationary step. These run inside one solver sequence, where
-  "run continuation for" makes each point start from the previous solution. This is what tracks a branch: a
-  bistable or thermal-triangle response exists only with continuation.
-- **EM heating with a frequency scan**: the Frequency-Stationary study (EM in the frequency domain at one frequency,
-  heat stationary, solved coupled), plus an auxiliary sweep over the frequency with continuation. The power is an
-  outer Parametric Sweep.
-- **Results**: each outer value is a stored "outer solution". 1D plot groups (line, point, global graphs) take a
-  parameter selection for the inner axis and "outer solutions: all", which draws one curve per parameter value with
-  an automatic legend. 2D plots pick one parameter value from a list. Global evaluation tables get one row per value.
+- **Outer parametric sweep** (a study-level loop): a table of parameter names and value lists (start, step, stop),
+  either specified combinations or all combinations, optional reuse of the previous value's solution (continuation
+  across values), and a choice of keeping every solution, only the last one, or writing them to disk. Every study
+  step runs once per value, so the model can change between values (geometry, mesh, materials, source power).
+- **Inner sweeps** belong to the study step: the frequency list of a frequency-domain step, the output times of a
+  time-dependent step, or an auxiliary sweep of a stationary step. These run inside one solver sequence, where
+  continuation makes each point start from the previous solution. This is what tracks a branch: a bistable or
+  thermal-triangle response exists only with continuation.
+- **EM heating with a frequency scan**: a combined study (EM in the frequency domain at one frequency, heat
+  stationary, solved coupled), plus an auxiliary sweep over the frequency with continuation. The power is an outer
+  parametric sweep.
+- **Results**: each outer value is a stored outer solution. 1D plots (line, point, global graphs) take a parameter
+  selection for the inner axis and can draw every outer solution, one curve per parameter value with an automatic
+  legend. 2D plots pick one parameter value from a list. Global evaluation tables get one row per value.
 
 Mapping to open_sol: the outer sweep is `StudySpec.sweep`. The inner sweep is the study's own axis (time steps,
 frequency_domain wavelengths). A coupled solve at one wavelength is the stationary fixed point.
@@ -118,7 +118,7 @@ frequency_domain wavelengths). A coupled solve at one wavelength is the stationa
   w, because a relaxed step is w times the Picard step. Without that, a small w would look converged. Relaxation is
   valid in stationary and frequency_domain; in time_dependent it is a validation error (it would low-pass the
   transfers). Per coupling rather than per study: it is explicit, works in the stationary study too, and mirrors
-  COMSOL's per-step damping.
+  the per-step damping of other multiphysics tools.
 - **Progress and log**: the progress message is 'lambda = 1550 nm, iteration 3'. The log gets one line per
   wavelength with its iteration count, plus a warning when a wavelength does not converge (the scan continues).
 - **Help texts to update**: the frequency_domain description, the em_heat_joule description, the FDFD wavelength

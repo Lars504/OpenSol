@@ -313,7 +313,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   '' non-numeric; units with spaces ('W/(m K)'), never '*'. A unit that depends on the space (planar W/m, axisymmetric
   / 3D W) goes in `Param.space_units` (`schema.param_in_space`). A gotcha a user can hit belongs in a help text or
   validation message, not only here.
-- Shared names (COMSOL's where it has one): magnitudes `<name>_abs` (u_abs, e_abs, heat_flux_abs); resonance tables
+- Shared names (the customary name where one exists): magnitudes `<name>_abs` (u_abs, e_abs, heat_flux_abs); resonance tables
   resonance_number / frequency / frequency_imag [Hz, > 0 decays] / q_factor (FDFD / BOR eigenfrequency and every
   resonance_monitor; + region_energy_fraction last with a region selection); mode results n_eff (real part) / n_eff_imag; 1-based mode choices `mode_number`; a body force
   feature `body_force` (params f_x / f_y, slots and coupled fields body_force_x / _y); probe choice `component`.

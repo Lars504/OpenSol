@@ -292,7 +292,7 @@ GEOMETRY_KINDS = {kind.name: kind for kind in (
                   + _TIP_ONLY_3D)),
         composite=True,
         summary='Repeats one object on a rectangular grid of copies (holes of a photonic crystal, pillar arrays).',
-        description='Rectangular array (COMSOL Array) of nx x ny (x nz in 3D) copies of the base object: copy (i, j, '
+        description='Rectangular array of nx x ny (x nz in 3D) copies of the base object: copy (i, j, '
                     'k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, 0) is the base itself; a '
                     'cell centre inside any copy is inside (a union of the copies). The array is one domain object: '
                     'materials, features, selections and mesh refinements naming it act on every copy; meshes follow '

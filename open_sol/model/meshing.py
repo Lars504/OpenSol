@@ -120,7 +120,7 @@ class MeshEstimate:
 
 @dataclass
 class TriangleSizing:
-    """Resolved size parameters of a 'triangles' mesh (COMSOL Free Triangular): the one size rule of the element-count
+    """Resolved size parameters of a 'triangles' mesh: the one size rule of the element-count
     estimate and the mesher (model.triangle_meshing, S7.5 2.2)."""
     h_max: float                  # maximum element size [m]
     h_min: float                  # minimum element size [m]
@@ -220,7 +220,7 @@ class TriangleMeshEstimate:
 
 
 class TetrahedronSizing(TriangleSizing):
-    """Resolved sizes of a 'tetrahedra' mesh (COMSOL Free Tetrahedral; igor3d_plan T4b): the TriangleSizing fields,
+    """Resolved sizes of a 'tetrahedra' mesh (igor3d_plan T4b): the TriangleSizing fields,
     pml_widths over the six 3D faces (the shell thickness), size_points [x, y, z, h], pml_layers and mirror_axes
     unused."""
 

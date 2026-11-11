@@ -7,7 +7,7 @@ directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonanceP
 # coordinate stretches s = kappa + sigma / (alpha + j omega_t eps0) (em3d CPML grading over the shell width beyond each
 # cpml window face, sigma_max = cpml_sigma_max at width / cpml_npml); Lambda = 1 in the window. K = int curl W . nu'
 # curl W, M = int W . eps' W; A = -K + k_t^2 M on the free dofs (eigenfrequency.py sign, B = -M sparse). Walls:
-# pec / antisymmetric faces and the outer side of a PML shell (COMSOL's default exterior) fix the tangential dofs;
+# pec / antisymmetric faces and the outer side of a PML shell (the usual default exterior) fix the tangential dofs;
 # pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every dof they touch.
 # Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same node order (the
 # builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands for its lo-side

@@ -1,4 +1,4 @@
-"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, COMSOL's
+"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default,
 quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane strain / plane stress
 / generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij (stiffness.ElementStiffness,
 per element: D12), thermal strain, initial stress, supports, tractions on outer faces / lines, body forces; one factor

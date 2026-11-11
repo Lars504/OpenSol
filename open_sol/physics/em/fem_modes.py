@@ -19,7 +19,7 @@ omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
 # runs ARPACK on loose solves (eigenfrequency.MIXED_EIGS_REFINEMENTS float64 steps, ARPACK
 # to MIXED_ARPACK_TOLERANCE) and then replaces beta^2 by the float64 Rayleigh quotient sigma - x^T (A + sigma B) x /
 # x^T B x of each vector: stationary for a complex symmetric pencil (left = right eigenvector), error ~ (vector error)^2.
-# Walls: pec / antisymmetric faces, the outer side of a PML ring (pec, COMSOL's default exterior) and the closure of
+# Walls: pec / antisymmetric faces, the outer side of a PML ring (pec, the usual default exterior) and the closure of
 # PEC elements: tangential E_t and E_z fixed 0; pmc / symmetric faces natural; mirror planes = the window edge.
 # Periodic faces need a periodic mesh (not built): refused.
 # Recovery (coefficients stored physical: E_t = e_t, E_z = -j beta e_z): H = curl E / (-j omega mu0 mu'):

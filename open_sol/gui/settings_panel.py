@@ -267,7 +267,7 @@ _STORED_CUTS = Param('stored_cuts', 'float', None, label='Extra cut planes', uni
                          'number or an expression of parameters in metres; the plane runs through the mesh cells at '
                          'that position.\n\n'
                          'Pick one under Results with Cut plane to replay its snapshots.')
-# Study 'Mesh refinement' group (StudySpec.adaptation, S7.7; COMSOL 'Adaptation and error estimates'): AdaptationSpec
+# Study 'Mesh refinement' group (StudySpec.adaptation, S7.7; adaptation and error estimates): AdaptationSpec
 # attribute -> (row label, tooltip)
 _ADAPTATION_METHOD_LABELS = {'adaptive': 'Adaptive: refine where the estimated error is largest',
                              'uniform': 'Uniform: refine everywhere (a mesh-convergence check)'}
@@ -2409,8 +2409,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         return box
 
     def _element_build_group(self, kind):
-        """'Triangles' / 'Tetrahedra' group of an element mesh form: Build mesh (the mesher alone, on the worker;
-        COMSOL's Build All) and the state of the elements the canvas shows (tetrahedra: cut by its shown plane)."""
+        """'Triangles' / 'Tetrahedra' group of an element mesh form: Build mesh (the mesher alone, on the worker)
+        and the state of the elements the canvas shows (tetrahedra: cut by its shown plane)."""
         noun = 'tetrahedra' if kind == 'tetrahedra' else 'triangles'
         auto_limit = AUTO_PREVIEW_MAX_TETRAHEDRA if kind == 'tetrahedra' else AUTO_PREVIEW_MAX_ELEMENTS
         button = QtWidgets.QPushButton('Build mesh')

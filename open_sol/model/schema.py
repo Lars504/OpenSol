@@ -39,7 +39,7 @@ FIELD_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'mode_volume', 'at
 SOURCE_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'last', 'at', 'argmax', 'fwhm', 'polyfit', 'exp_fit',
                              'lorentz_fit', 'two_exp_fit', 'two_wave_fit', 'richardson', 'multi_lorentz_fit',
                              'pole_fit')   # a DerivedValueSpec.source (1D result or derived curve)
-# source None, no fields: one number from parameters, scalar outputs, t and earlier derived values (COMSOL's global
+# source None, no fields: one number from parameters, scalar outputs, t and earlier derived values (a global
 # evaluation of other results, e.g. sqrt(N_int / rho_int))
 GLOBAL_DERIVED_OPERATION = 'expression'
 SOURCE_FREE_DERIVED_OPERATIONS = FIELD_DERIVED_OPERATIONS + (GLOBAL_DERIVED_OPERATION,)   # source None
@@ -60,7 +60,7 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
 MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
-# MeshSpec values whose null means a default of the mesh kind (COMSOL Free Triangular / Tetrahedral 'Normal' growth
+# MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: growth
 # 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
                       'triangles': {'max_ratio': 1.3, 'points_per_wavelength': 5.0},
@@ -1461,8 +1461,7 @@ MESH_PARAMS = (
               'cells. Empty: 1.15 for rectangular cells, 1.3 for triangles.',
           help='Largest size ratio of neighbouring cells on a graded mesh, or the maximum element growth rate of a '
                'triangle mesh (> 1); typically 1.1-1.3. Smaller ratios grade more smoothly (less numerical '
-               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, COMSOL '
-               "'Normal')."),
+               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles).'),
     Param('wavelength_min', 'float', None, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Shortest vacuum wavelength the automatic mesh must resolve, in metres: 1.55e-6 for 1550 nm. Used in '
@@ -1485,7 +1484,7 @@ MESH_PARAMS = (
               "size' is set: it fixes the smallest cells instead.",
           help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
                'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
-               "distance). null = the kind default: 20 (tensor), 5 (triangles: COMSOL's five quadratic elements "
+               "distance). null = the kind default: 20 (tensor), 5 (triangles: five quadratic elements "
                'per wavelength). Unused while dx is set (the finest cells take dx).'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
@@ -1516,7 +1515,7 @@ MESH_PARAMS = (
           tip='Element edges along a curved boundary are at most this fraction of its radius of curvature: '
               'smaller values follow circles, ellipses, spheres and cylinders more closely.',
           help="Triangles / tetrahedra: element size along circle / ellipse / sphere / cylinder boundaries <= "
-               "curvature_factor x the local radius of curvature (COMSOL's curvature factor; 0.3 = 'Normal')."),
+               "curvature_factor x the local radius of curvature."),
     Param('mesher', 'choice', 'builtin', label='Mesher', choices=('builtin', 'gmsh'),
           choice_labels=(('builtin', 'Built-in'), ('gmsh', 'Gmsh (external program)')),
           visible_if=(('kind', FREE_MESH_KINDS),),

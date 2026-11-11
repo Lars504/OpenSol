@@ -1770,7 +1770,7 @@ _FIELD_INFOS = tuple(MEMBRANE_FIELD_INFOS.values())
 _STATE_FIELD_INFOS = tuple(MEMBRANE_FIELD_INFOS[name] for name in STATE_FIELD_NAMES)
 
 _DESCRIPTION = (
-    'Tensioned film (COMSOL Membrane), optionally with plate bending (a tensioned Kirchhoff plate), time-harmonic '
+    'Tensioned film, optionally with plate bending (a tensioned Kirchhoff plate), time-harmonic '
     '(exp(+j omega t)): D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega^2 w = p, w the out-of-plane '
     'displacement [m], T the tension tensor [[tension_xx, tension_xy], [tension_xy, tension_yy]] [N/m] (film stress x '
     'thickness; material + the coupled_tension_* slots), D = bending_stiffness [N m] (unset: no bending), rho_s = '
