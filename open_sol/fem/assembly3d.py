@@ -526,8 +526,6 @@ def element_integrals_3d(dofs, coefficients, elements=None, tensor=None, degree=
     count = mesh.n_elements
     coefficients = np.asarray(coefficients)
     result = {'measure': np.zeros(count), 'value': np.zeros(count), 'gradient': np.zeros((count, 3))}
-    if tensor is not None:
-        result['dissipation'] = np.zeros(count)
     elements = _element_list(mesh, elements)
     if tensor is None:   # linear in the field: affine per-element integrals (no per-point geometry)
         measure, value_integrals, gradient_integrals = element_basis_integrals_3d(dofs, elements, degree)
@@ -536,6 +534,7 @@ def element_integrals_3d(dofs, coefficients, elements=None, tensor=None, degree=
         result['value'][elements] = np.einsum('mn,mn->m', value_integrals, local)
         result['gradient'][elements] = np.einsum('mnc,mn->mc', gradient_integrals, local)
         return result
+    result['dissipation'] = np.zeros(count)
     rule = tetrahedron_rule(_rule_degree(2 * dofs.order, degree))
     basis, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
     for chunk, geometry in element_chunks_3d(mesh, elements):
@@ -545,7 +544,6 @@ def element_integrals_3d(dofs, coefficients, elements=None, tensor=None, degree=
         result['measure'][chunk] = weights.sum(axis=1)
         result['value'][chunk] = np.einsum('qn,mn,mq->m', basis, local, weights)
         result['gradient'][chunk] = np.einsum('mqi,mq->mi', point_gradients, weights)
-        if tensor is not None:
-            result['dissipation'][chunk] = np.einsum('mqi,mij,mqj,mq->m', point_gradients, tensor[chunk],
-                                                     point_gradients, weights)
+        result['dissipation'][chunk] = np.einsum('mqi,mij,mqj,mq->m', point_gradients, tensor[chunk],
+                                                 point_gradients, weights)
     return result

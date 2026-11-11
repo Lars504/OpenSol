@@ -255,7 +255,6 @@ class HarmonicSystemBase:
         self.active = None              # bool per element, None = the default selection
         self.face_conditions = {}       # face -> (HarmonicCondition, sequence)
         self.boundary_conditions = []   # [entities int64, HarmonicCondition, sequence]
-        self.fixed_values = []          # (full ids, complex values, sequence)
         self.source = None              # volume source f (number, per element or callable)
         self.point_loads = []           # (point (d,), complex value)
         self.frequency_load = None      # complex (n_full,) extra load (set_frequency_load) or None
@@ -330,18 +329,6 @@ class HarmonicSystemBase:
         self.operator_dirty = True
         return len(self.boundary_conditions) - 1
 
-    def set_boundary_condition(self, handle, condition) -> None:
-        """Replace the condition of an add_boundary_condition handle."""
-        self.boundary_conditions[handle][1] = condition
-        self.operator_dirty = True
-
-    def set_fixed_values(self, full_ids, values) -> None:
-        """Hold full-numbering dofs at complex values (number or per id; the latest call wins shared dofs)."""
-        full_ids = np.asarray(full_ids, dtype=np.int64).ravel()
-        values = np.broadcast_to(np.asarray(values, dtype=np.complex128), full_ids.shape).copy()
-        self.fixed_values.append((full_ids, values, self._next_sequence()))
-        self.operator_dirty = True
-
     def set_source(self, source) -> None:
         """Volume source density f (number, per element or callable; None = none); keeps the operator."""
         self.source = source
@@ -350,10 +337,6 @@ class HarmonicSystemBase:
     def add_point_load(self, point, value) -> None:
         """Point load of complex `value` at a point [m] (2D: per unit length; axisymmetric: whole-ring total)."""
         self.point_loads.append((np.asarray(point, dtype=np.float64).ravel(), complex(value)))
-        self._load = None
-
-    def clear_point_loads(self) -> None:
-        self.point_loads = []
         self._load = None
 
     def set_frequency_load(self, full_load) -> None:
@@ -400,13 +383,9 @@ class HarmonicSystemBase:
         terms = self._assemble_terms()
         global_ids = terms['global_ids']
         n_system = len(global_ids)
-        constraints = list(terms['constraints'])
-        for full_ids, values, sequence in self.fixed_values:
-            positions, keep = system_positions(global_ids, full_ids)
-            constraints.append((sequence, positions, values[keep]))
         fixed_mask = np.zeros(n_system, dtype=bool)
         fixed_value = np.zeros(n_system, dtype=np.complex128)
-        for _, positions, values in sorted(constraints, key=lambda entry: entry[0]):
+        for _, positions, values in sorted(terms['constraints'], key=lambda entry: entry[0]):
             fixed_mask[positions] = True
             fixed_value[positions] = values
         from scipy.sparse import csr_matrix

@@ -47,8 +47,8 @@ def _coefficient_values(coefficient, points, elements, tensor):
 
 
 def _element_groups(dofs, degree):
-    """Yield (positions into dofs.elements, rule) per element chunk: straight elements at `degree`, curved ones (when
-    the geometry order is 2) at max(degree, CURVED_DEGREE)."""
+    """Yield (positions into dofs.elements, rule) per element chunk (never empty): straight elements at `degree`,
+    curved ones (when the geometry order is 2) at max(degree, CURVED_DEGREE)."""
     if dofs.geometry_order == 2:
         curved = curved_elements(dofs.mesh, dofs.elements)
     else:
@@ -252,8 +252,6 @@ def element_basis_integrals(dofs, degree, axisymmetric=False) -> tuple:
         measure = np.zeros(len(dofs.elements))
         integrals = np.zeros((len(dofs.elements), dofs.n_local))
         for positions, rule in _element_groups(dofs, degree):
-            if not positions.size:
-                continue
             geometry = element_geometry(dofs.mesh, dofs.elements[positions], rule.points, dofs.geometry_order)
             weights = _weights(geometry, rule, axisymmetric)
             measure[positions] = weights.sum(axis=1)
@@ -268,8 +266,6 @@ def element_gradient_integrals(dofs, degree, axisymmetric=False) -> np.ndarray:
     def build():
         integrals = np.zeros((len(dofs.elements), dofs.n_local, 2))
         for positions, rule in _element_groups(dofs, degree):
-            if not positions.size:
-                continue
             geometry = element_geometry(dofs.mesh, dofs.elements[positions], rule.points, dofs.geometry_order)
             _, gradients = _lagrange_at(dofs, geometry, rule)
             integrals[positions] = np.einsum('mqnc,mq->mnc', gradients, _weights(geometry, rule, axisymmetric))
