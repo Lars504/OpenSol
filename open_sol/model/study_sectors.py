@@ -11,7 +11,7 @@ from ..core.mirror import (MIRROR_SIGNS, combine_sector_fields, combine_sector_p
 from .analytic import derived_curve_result, derived_references, is_curve_source, result_value
 from .expressions import ExpressionError, compile_expression, evaluate_parameters, evaluate_scalar, referenced_names
 from .session import Snapshot, earlier_derived_names, live_snapshot_index
-from .study import (Cancelled, LogEvent, StudyFailed, StudyStarted, SweepStep, SweepValueDone, _KeptSweepFields,
+from .study import (LogEvent, StudyFailed, StudyStarted, SweepStep, SweepValueDone, _KeptSweepFields,
                     _fail_sweep_setup, _feature_results, _record_failure, _run_built, build_session, release_session,
                     summed_runs, sweep_table_copy, sweep_value_spec, sweep_values_of)
 
@@ -68,12 +68,9 @@ def _run_sectors(spec, registry, build, emit, control, service, on_session, prev
     sectors = ordered_sector_specs(spec)
     runs, unavailable, status = [], set(), 'completed'
     for index, (label, sector_spec) in enumerate(sectors):
-        if index > 0:
-            try:
-                control.checkpoint(service)
-            except Cancelled:
-                status = 'cancelled'
-                break
+        if index > 0 and control.checkpoint_cancelled(service):
+            status = 'cancelled'
+            break
         release_session(on_session, previous_session, emit if previous_session is not None else None)
         previous_session = None
         emit(LogEvent('info', f'parity sector {index + 1}/{len(sectors)}: {label}'))
@@ -140,12 +137,9 @@ def _run_sector_sweep(spec, parameter, sweep_values, registry, build, emit, cont
     first_failure = None   # (message, traceback text, out_of_memory) of the first failed value
     value_runs = []        # [(label, merged summary)] of every computed value (summed_runs)
     for index, value in enumerate(sweep_values):
-        if index > 0:
-            try:
-                control.checkpoint(service)
-            except Cancelled:
-                status = 'cancelled'
-                break
+        if index > 0 and control.checkpoint_cancelled(service):
+            status = 'cancelled'
+            break
         emit(SweepStep(index, len(sweep_values), parameter, value))
         value_spec = sweep_value_spec(spec, parameter, value)
         outcome = _run_sectors(value_spec, registry, build, emit, control, service, on_session, previous_session,

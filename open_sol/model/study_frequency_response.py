@@ -7,7 +7,7 @@ import time
 
 from .schema import Issue, Param, StudyType
 from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
-from .study import (_PARITY_SECTORS_PARAM, Cancelled, LogEvent, _background_fixed_point_params, _background_stage,
+from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
                     _count_progress, _frequency_list, _frequency_range_issues, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
@@ -48,9 +48,7 @@ def _run_frequency_response(session, values, emit, control, service):
         frequency_sweep = _plan_reduced_sweeps(solvers, frequencies, values, emit, emit_stage, runner)
         wall_start = time.perf_counter()
         for index, frequency in enumerate(frequencies):
-            try:
-                control.checkpoint(service)
-            except Cancelled:
+            if control.checkpoint_cancelled(service):
                 status = 'cancelled'
                 break
             label = frequency_label(frequency)

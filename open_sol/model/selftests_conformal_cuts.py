@@ -11,7 +11,7 @@ from .selftests_conformal import (
     _AREA_TOLERANCE, _BESSEL_ZERO, _CAVITY_CELL, _CAVITY_CENTRE, _CAVITY_RADIUS, _CAVITY_SIZE, _FRACTION_TOLERANCE,
     _GEOMETRY_CELLS, _HALF_PLANE_ANGLE, _HALF_PLANE_OFFSET, _HEAT, _HEAT_CELL, _HEAT_CENTRE, _HEAT_SIZE, _INNER_RADIUS,
     _INSULATED_TOLERANCE, _OUTER_RADIUS, _SOURCE_DENSITY, _T_INNER, _T_OUTER, _exact_cell_free_area,
-    _exact_segment_free, _half_plane, _half_plane_side, _insulated_error, _insulated_spec)
+    _exact_segment_free, _half_plane, _half_plane_side, _heat_radial, _insulated_error, _insulated_spec)
 from .spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                    SolverDefaultsSpec, StudySpec)
 
@@ -171,11 +171,7 @@ def profile_band_errors(temperature, distance, exact, drop, exact_rise, cell, in
 
 def _outline_errors(results, kind):
     """profile_band_errors of T against T_b + C ln(b / r) relative to the rise C ln(b / a)."""
-    field = results.field(f'{_HEAT}.T')
-    temperature = np.asarray(field.values, dtype=np.float64)
-    x = np.asarray(field.x_centers, dtype=np.float64)[:, None] - _HEAT_CENTRE[0]
-    y = np.asarray(field.y_centers, dtype=np.float64)[None, :] - _HEAT_CENTRE[1]
-    radius = np.sqrt(x ** 2 + y ** 2)
+    temperature, radius = _heat_radial(results)
     slope = _outline_slope(kind)
     log_ratio = np.log(_OUTER_RADIUS / np.where(radius > _INNER_RADIUS, radius, _OUTER_RADIUS))
     return profile_band_errors(temperature, radius, _T_OUTER + slope * log_ratio,

@@ -239,6 +239,14 @@ class RunControl:
                 return
             time.sleep(_PAUSE_POLL_SECONDS)
 
+    def checkpoint_cancelled(self, service=None) -> bool:
+        """checkpoint(service) as a flag: True when it raised Cancelled (the caller ends its loop)."""
+        try:
+            self.checkpoint(service)
+        except Cancelled:
+            return True
+        return False
+
 
 # ---- study driver ----
 def run_study(spec, emit, control, build=None, service=None, on_session=None):
@@ -451,12 +459,9 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
     warm_state = None          # host state of the last computed value (warm_start only), seeds the next build
     reused_session = None      # reuse_build: the kept session that takes the next value (None: build it)
     for index, value in enumerate(sweep_values):
-        if index > 0:
-            try:
-                control.checkpoint(service)
-            except Cancelled:
-                status = 'cancelled'
-                break
+        if index > 0 and control.checkpoint_cancelled(service):
+            status = 'cancelled'
+            break
         emit(SweepStep(index, len(sweep_values), parameter, value))
         value_spec = sweep_value_spec(spec, parameter, value)
         built_now = reused_session is None
@@ -1113,9 +1118,7 @@ def _run_coupled_wavelengths(session, harmonic, background, pulsed, readers, wav
     names, n_wavelengths, status, records = list(runner.physics), len(wavelengths), 'completed', []
     wall_start = time.perf_counter()
     for index, wavelength in enumerate(wavelengths):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             status = 'cancelled'
             break
         label = wavelength_label(wavelength)
@@ -1360,9 +1363,7 @@ def _solve_wavelength_list(session, harmonic, wavelengths, recorder, live, emit,
     n_wavelengths = len(wavelengths)
     wall_start = time.perf_counter()
     for index, wavelength in enumerate(wavelengths):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             return index, 'cancelled'
         label = wavelength_label(wavelength)
         # Before the solve too: one factorisation can take minutes, and cancel acts only between wavelengths.
@@ -1521,9 +1522,7 @@ def _numbered_snapshots(session, names, solve, select, reselect, noun, tick_unit
     parity_text = f' [{parity}]' if parity else ''
     texts = {}
     for index, (name, solver) in enumerate(solvers.items()):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             return 'cancelled', 0
         emit(_count_progress(runner, index / len(solvers), index, wall_start,
                              f'Solving the {noun}s of {_physics_text(session, name)}; stopping waits for this solve',

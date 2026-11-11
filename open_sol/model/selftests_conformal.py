@@ -307,13 +307,17 @@ def _annulus_spec():
         study=StudySpec(type='stationary')))
 
 
-def _annulus_error(results):
-    """max |T - T_exact| over the free cells (a < r < b) / (T_inner - T_outer), T_exact the logarithmic profile."""
+def _heat_radial(results):
+    """(T [K], distance r [m] from _HEAT_CENTRE) of the heat window cells, float64."""
     field = results.field(f'{_HEAT}.T')
-    temperature = np.asarray(field.values, dtype=np.float64)
     x = np.asarray(field.x_centers, dtype=np.float64)[:, None] - _HEAT_CENTRE[0]
     y = np.asarray(field.y_centers, dtype=np.float64)[None, :] - _HEAT_CENTRE[1]
-    radius = np.sqrt(x ** 2 + y ** 2)
+    return np.asarray(field.values, dtype=np.float64), np.sqrt(x ** 2 + y ** 2)
+
+
+def _annulus_error(results):
+    """max |T - T_exact| over the free cells (a < r < b) / (T_inner - T_outer), T_exact the logarithmic profile."""
+    temperature, radius = _heat_radial(results)
     free = (radius > _INNER_RADIUS) & (radius < _OUTER_RADIUS)
     shape = np.log(np.where(free, radius, _INNER_RADIUS) / _INNER_RADIUS) / math.log(_OUTER_RADIUS / _INNER_RADIUS)
     exact = _T_INNER + (_T_OUTER - _T_INNER) * shape
@@ -349,11 +353,7 @@ def _insulated_spec():
 def _insulated_error(results):
     """max |T - T_exact| over the cells a < r < b / the rise T(b) - T_a, T_exact = T_a + Q (a^2 - r^2) / (4 k) + Q b^2
     ln(r / a) / (2 k) (dT/dr = 0 on r = b)."""
-    field = results.field(f'{_HEAT}.T')
-    temperature = np.asarray(field.values, dtype=np.float64)
-    x = np.asarray(field.x_centers, dtype=np.float64)[:, None] - _HEAT_CENTRE[0]
-    y = np.asarray(field.y_centers, dtype=np.float64)[None, :] - _HEAT_CENTRE[1]
-    radius = np.sqrt(x ** 2 + y ** 2)
+    temperature, radius = _heat_radial(results)
     free = (radius > _INNER_RADIUS) & (radius < _OUTER_RADIUS)
 
     def exact(r):
