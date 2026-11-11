@@ -567,11 +567,6 @@ def _validate(vctx, physics_spec, settings_values):
     return issues
 
 
-def _physics_settings(vctx, physics_spec):
-    """Resolved settings of the feature's physics (None when they do not resolve)."""
-    return vctx.values(_SETTINGS, physics_spec.settings)
-
-
 def _validate_background(vctx, physics_spec, feature_spec, values):
     """Direction rules: z directions need 3D, axisymmetric needs +y / -y, standing waves need an axis direction, a
     custom direction needs length (and no z component in 2D)."""
@@ -591,8 +586,7 @@ def _validate_background(vctx, physics_spec, feature_spec, values):
             issues.append(Issue('error', path, 'the custom direction has no length'))
         if not three_d and values['direction_z']:
             issues.append(Issue('error', path, 'direction_z must be 0 in a 2D model'))
-    settings_values = _physics_settings(vctx, physics_spec)
-    if is_axisymmetric(settings_values) and not three_d and direction not in ('+y', '-y'):
+    if is_axisymmetric(vctx.values(_SETTINGS, physics_spec.settings)) and not three_d and direction not in ('+y', '-y'):
         issues.append(Issue('error', path, 'geometry axisymmetric: the background wave must travel along the axis '
                                            '(direction +y or -y); an oblique wave is not rotationally symmetric'))
     return issues

@@ -7,7 +7,7 @@ import dataclasses
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import cases_named
+from ...model.selftest_helpers import NUMBA_MISSING_DETAILS, cases_named
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 from ..em.selftests_backend import PARITY_TOLERANCE, backend_parity_case
@@ -141,7 +141,7 @@ def _check_step_numba(results_by_name):
     from . import lattice
     if not numba_available():
         return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _NUMBA_TOLERANCE,
-                'details': {'numba': 'not installed (or OPEN_SOL_CPU_KERNELS=numpy): nothing compared'}}
+                'details': dict(NUMBA_MISSING_DETAILS)}
     import numba
     rng = np.random.default_rng(20261018)
     errors, worst = {}, 0.0

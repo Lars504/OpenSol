@@ -254,32 +254,36 @@ def _lossy_indices():
     return indices
 
 
+def lossy_film_details(results, indices, lengths, polarization, model_tolerance, lossy_tolerance):
+    """Details {errors, errors_in_tolerance_units, section_lengths, P_abs, P_abs_reference} of a lossy thin-film model
+    run: port entries of mode 1, section lengths and scalars T1 / R vs the complex-index transfer matrix of the stack
+    (model_tolerance), the absorbed_power integral P_abs over the layer vs 1 - R - T (lossy_tolerance)."""
+    s11, s21 = stack_reference(indices, lengths, polarization)
+    s22, s12 = stack_reference(indices[::-1], lengths[::-1], polarization)
+    errors = {name: abs(value - reference) for name, value, reference
+              in zip(('s11', 's21', 's12', 's22'), _port_entries(results), (s11, s21, s12, s22))}
+    sections = [float(row[2]) for row in results.result(_PHYSICS, 'sections')['rows']]
+    errors['sections'] = (max(abs(a - b) / b for a, b in zip(sections, lengths))
+                          if len(sections) == len(lengths) else 1.0)   # 1 = wrong section count
+    derived = results.summary()['derived']
+    errors['T1'] = abs(float(derived['T1']) - abs(s21) ** 2)   # lossless port media: no loss term
+    errors['R'] = abs(float(derived['R']) - abs(s11) ** 2)
+    absorbed = 1.0 - abs(s11) ** 2 - abs(s21) ** 2
+    errors['P_abs'] = abs(float(derived['P_abs']) - absorbed)
+    scaled = {name: float(value) / (lossy_tolerance if name == 'P_abs' else model_tolerance)
+              for name, value in errors.items()}
+    return {'errors': {name: float(value) for name, value in errors.items()}, 'errors_in_tolerance_units': scaled,
+            'section_lengths': float_list(sections), 'P_abs': float(derived['P_abs']), 'P_abs_reference': absorbed}
+
+
 def _check_lossy_film(results_by_name):
-    """Port entries of mode 1, section lengths and scalars T1 / R vs the complex-index transfer matrix (_MODEL_TOLERANCE),
-    the absorbed_power integral over the layer vs 1 - R - T (_LOSSY_TOLERANCE); error in tolerance units."""
+    """lossy_film_details of the ez and hz runs (_MODEL_TOLERANCE, _LOSSY_TOLERANCE); error in tolerance units."""
     details, worst = {}, 0.0
     indices = _lossy_indices()
     for polarization in ('ez', 'hz'):
-        results = results_by_name[polarization]
-        s11, s21 = stack_reference(indices, _FILM_LENGTHS, polarization)
-        s22, s12 = stack_reference(indices[::-1], _FILM_LENGTHS[::-1], polarization)
-        measured = _port_entries(results)
-        errors = {name: abs(value - reference) for name, value, reference
-                  in zip(('s11', 's21', 's12', 's22'), measured, (s11, s21, s12, s22))}
-        lengths = [float(row[2]) for row in results.result(_PHYSICS, 'sections')['rows']]
-        errors['sections'] = (max(abs(a - b) / b for a, b in zip(lengths, _FILM_LENGTHS))
-                              if len(lengths) == len(_FILM_LENGTHS) else 1.0)   # 1 = wrong section count
-        derived = results.summary()['derived']
-        errors['T1'] = abs(float(derived['T1']) - abs(s21) ** 2)   # lossless port media: no loss term
-        errors['R'] = abs(float(derived['R']) - abs(s11) ** 2)
-        absorbed = 1.0 - abs(s11) ** 2 - abs(s21) ** 2
-        errors['P_abs'] = abs(float(derived['P_abs']) - absorbed)
-        scaled = {name: float(value) / (_LOSSY_TOLERANCE if name == 'P_abs' else _MODEL_TOLERANCE)
-                  for name, value in errors.items()}
-        details[polarization] = {'errors': {name: float(value) for name, value in errors.items()},
-                                 'errors_in_tolerance_units': scaled, 'section_lengths': float_list(lengths),
-                                 'P_abs': float(derived['P_abs']), 'P_abs_reference': absorbed}
-        worst = max(worst, max(scaled.values()))
+        details[polarization] = lossy_film_details(results_by_name[polarization], indices, _FILM_LENGTHS,
+                                                   polarization, _MODEL_TOLERANCE, _LOSSY_TOLERANCE)
+        worst = max(worst, max(details[polarization]['errors_in_tolerance_units'].values()))
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
 
 
@@ -600,8 +604,9 @@ def _eme_model_fractions(results):
 
 
 def _step_comparison(results_by_name, transverse, polarization='ez'):
-    """(errors in units of their allowances, details): CPU discrete EME vs FDFD (allowance from the x-PML floor),
-    em_eme model run vs the CPU continuum interface (skipped without a usable GPU: api.selftest drops that run)."""
+    """Case record (measured / expected = the discrete EME / FDFD T1, error in units of the allowances, tolerance 1):
+    CPU discrete EME vs FDFD (allowance from the x-PML floor), em_eme model run vs the CPU continuum interface (skipped
+    without a usable GPU: api.selftest drops that run)."""
     floor_up = _fdfd_fraction(results_by_name['uniform'], 'upstream', 'fraction_negative')
     floor_down = abs(_fdfd_fraction(results_by_name['uniform'], 'down_1', 'fraction_positive') - 1.0)
     floor = max(floor_up, floor_down)
@@ -620,31 +625,29 @@ def _step_comparison(results_by_name, transverse, polarization='ez'):
                'fdfd_pml_floor': floor, 'fdfd_allowance': allowance, 'fdfd_error': fdfd_error,
                'model_error': model_error,
                'continuum_vs_fdfd_recorded': max(abs(continuum[name] - fdfd[name]) for name in fdfd)}
-    return max(fdfd_error / allowance, model_error / _STEP_MODEL_TOLERANCE), details
+    return {'measured': discrete['T1'], 'expected': fdfd['T1'],
+            'error': max(fdfd_error / allowance, model_error / _STEP_MODEL_TOLERANCE), 'tolerance': 1.0,
+            'details': details}
 
 
 def _check_step_pec(results_by_name):
     """pec y faces: CPU discrete EME (complete basis) vs em_fdfd_ez within 10 x its x-PML floor; model path."""
-    error, details = _step_comparison(results_by_name, 'pec')
-    return {'measured': details['eme_discrete_cpu']['T1'], 'expected': details['fdfd']['T1'], 'error': error,
-            'tolerance': 1.0, 'details': details}
+    return _step_comparison(results_by_name, 'pec')
 
 
 def _check_step_pec_hz(results_by_name):
     """The same with H_z: em_fdfd_hz (its x-face eps = the A / B mean, which the discrete matching reproduces)."""
-    error, details = _step_comparison(results_by_name, 'pec', 'hz')
-    return {'measured': details['eme_discrete_cpu']['T1'], 'expected': details['fdfd']['T1'], 'error': error,
-            'tolerance': 1.0, 'details': details}
+    return _step_comparison(results_by_name, 'pec', 'hz')
 
 
 def _check_step_cpml(results_by_name):
     """cpml y faces: the same with PML modes kept (1e-3 or 10 x the floor); the PML-dropped basis recorded."""
-    error, details = _step_comparison(results_by_name, 'cpml')
+    record = _step_comparison(results_by_name, 'cpml')
+    details = record['details']
     dropped = _step_cpu_fractions('cpml', _STEP_CELL, drop_pml_modes=True)
     details['eme_discrete_pml_dropped_recorded'] = dropped
     details['pml_dropped_vs_fdfd_recorded'] = max(abs(dropped[name] - details['fdfd'][name]) for name in dropped)
-    return {'measured': details['eme_discrete_cpu']['T1'], 'expected': details['fdfd']['T1'], 'error': error,
-            'tolerance': 1.0, 'details': details}
+    return record
 
 
 def _step_text(polarization):

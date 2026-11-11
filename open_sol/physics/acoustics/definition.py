@@ -13,8 +13,8 @@ from ...core.mirror import mirror_faces
 from ...core.monitors import probe_result
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, HALF_STORAGE_STEPPER_ROLE,
                                          axisymmetric_issues, geometry_param, is_axisymmetric, optional_material_param,
-                                         plain_number, point_cells, resolved_stepper_precision, selected_material_data,
-                                         study_duration, validate_points_inside)
+                                         plain_number, point_cells, reports_model_checks, resolved_stepper_precision,
+                                         selected_material_data, study_duration, validate_points_inside)
 from ...model.definition_resonance import ResonanceProbe, point_trace_items, resonance_monitor_feature
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import line_orientation
@@ -917,8 +917,7 @@ def _validate_physics(vctx, physics_spec, settings_values):
         return issues
     issues += _layer_issues(vctx, physics_spec, values, path)
     issues += _mirror_plane_issues(vctx, values, path)
-    first_of_type = [physics for physics in vctx.spec.physics if physics.type == PHYSICS_TYPE_NAME][0]
-    if first_of_type.name == physics_spec.name:
+    if reports_model_checks(vctx, physics_spec, PHYSICS_TYPE_NAME):
         issues += _material_issues(vctx, physics_spec, path)
         issues += _crystal_issues(vctx)
         if axisymmetric:
@@ -944,11 +943,8 @@ def _validate_heat_pulse(vctx, physics_spec, feature_spec, values):
     mesh = vctx.mesh
     if mesh is None or not values:
         return []
-    speeds = []
-    for _, properties in _selected_material_properties(vctx.spec):
-        longitudinal = _material_speeds(properties, vctx.parameters)[1]
-        if longitudinal:
-            speeds.append(longitudinal)
+    speeds = [speed for speed in (_material_speeds(properties, vctx.parameters)[1]
+                                  for _, properties in _selected_material_properties(vctx.spec)) if speed]
     if speeds and max(speeds) * values['pulse_width'] < 2.0 * mesh.dx_max:
         return [Issue('warning', feature_path(physics_spec, feature_spec),
                       f"pulse_width {values['pulse_width']:.3g} s: sound crosses only "

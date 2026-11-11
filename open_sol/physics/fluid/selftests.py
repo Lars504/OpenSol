@@ -122,12 +122,8 @@ def _check_startup(results_by_name, expected_precision):
     precision = solver_role(results, _FLUID, 'stepper').get('precision')
     if precision != expected_precision:
         raise ValueError(f"expected the stepper to run {expected_precision}, summary 'solvers' records {precision!r}")
-    shape = (_cells(_STARTUP_LENGTH), _cells(_CHANNEL_HEIGHT))
-    velocity_x, _, y_centres = _window_field(results, f'{_FLUID}.u_x', shape)
-    velocity_y, _, _ = _window_field(results, f'{_FLUID}.u_y', shape)
-    expected = _startup_profile(y_centres, _STARTUP_DURATION)
-    errors = {'u_x': float(np.max(np.abs(velocity_x - expected[None, :]))) / _PEAK_VELOCITY,
-              'u_y': float(np.max(np.abs(velocity_y))) / _PEAK_VELOCITY}
+    errors, velocity_x, _, expected = _channel_errors(results, _STARTUP_LENGTH, _CHANNEL_HEIGHT,
+                                                      lambda y: _startup_profile(y, _STARTUP_DURATION))
     return {'measured': float(np.max(velocity_x)), 'expected': float(np.max(expected)),
             'error': max(errors.values()), 'tolerance': _STARTUP_TOLERANCE,
             'details': {'errors': errors, 'duration_s': _STARTUP_DURATION, 'n_cells': list(velocity_x.shape)}}
@@ -178,25 +174,23 @@ def _poiseuille(y_centres, gradient, height):
     return gradient / (2.0 * _VISCOSITY) * y_centres * (height - y_centres)
 
 
-def _channel_errors(results, length, height, gradient):
-    """(errors dict, u_x window, y centres, x centres) of a Poiseuille channel: u_x against the parabola in every
-    column, u_y against 0, both relative to the peak velocity."""
+def _channel_errors(results, length, height, profile):
+    """(errors dict, u_x window, x centres, expected u_x at the y centres) of a channel: u_x against profile(y
+    centres) in every column, u_y against 0, both relative to the peak velocity."""
     shape = (_cells(length), _cells(height))
     velocity_x, x_centres, y_centres = _window_field(results, f'{_FLUID}.u_x', shape)
     velocity_y, _, _ = _window_field(results, f'{_FLUID}.u_y', shape)
-    expected = _poiseuille(y_centres, gradient, height)
+    expected = profile(y_centres)
     errors = {'u_x': float(np.max(np.abs(velocity_x - expected[None, :]))) / _PEAK_VELOCITY,
               'u_y': float(np.max(np.abs(velocity_y))) / _PEAK_VELOCITY}
-    return errors, velocity_x, y_centres, x_centres
+    return errors, velocity_x, x_centres, expected
 
 
 def _check_force(results_by_name):
     """Force-driven channel: u_x = G y (H - y) / (2 mu) in every column, u_y = 0."""
-    errors, velocity_x, y_centres, _ = _channel_errors(results_by_name[_RUN], _FORCE_LENGTH, _FORCE_HEIGHT,
-                                                       _FORCE_GRADIENT)
-    centre = float(np.max(velocity_x))
-    expected_centre = float(np.max(_poiseuille(y_centres, _FORCE_GRADIENT, _FORCE_HEIGHT)))
-    return {'measured': centre, 'expected': expected_centre, 'error': max(errors.values()),
+    errors, velocity_x, _, expected = _channel_errors(results_by_name[_RUN], _FORCE_LENGTH, _FORCE_HEIGHT,
+                                                      lambda y: _poiseuille(y, _FORCE_GRADIENT, _FORCE_HEIGHT))
+    return {'measured': float(np.max(velocity_x)), 'expected': float(np.max(expected)), 'error': max(errors.values()),
             'tolerance': _FORCE_TOLERANCE,
             'details': {'errors': errors, 'force_density_N_per_m3': _FORCE_GRADIENT,
                         'mean_velocity_m_per_s': float(np.mean(velocity_x)),
@@ -207,8 +201,8 @@ def _check_force(results_by_name):
 def _check_pressure(results_by_name):
     """Pressure-driven channel: the parabola of G = dp / L in every column, u_y = 0, p = dp (1 - x / L)."""
     results = results_by_name[_RUN]
-    errors, velocity_x, y_centres, x_centres = _channel_errors(results, _PRESSURE_LENGTH, _CHANNEL_HEIGHT,
-                                                               _DRIVE_GRADIENT)
+    errors, velocity_x, x_centres, _ = _channel_errors(results, _PRESSURE_LENGTH, _CHANNEL_HEIGHT,
+                                                       lambda y: _poiseuille(y, _DRIVE_GRADIENT, _CHANNEL_HEIGHT))
     pressure, _, _ = _window_field(results, f'{_FLUID}.pressure', velocity_x.shape)
     expected_pressure = _PRESSURE_DROP * (1.0 - x_centres / _PRESSURE_LENGTH)
     errors['pressure'] = float(np.max(np.abs(pressure - expected_pressure[:, None]))) / _PRESSURE_DROP
