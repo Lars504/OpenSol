@@ -8,7 +8,7 @@ from .schema import Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, MultiShiftEigenSolver
 from .study import (_PARITY_SECTORS_PARAM, _background_fixed_point_params, _background_stage, _log_eigen_solve,
                     _numbered_snapshots, _reselect_first_resonance, _scipy_issues, _selected_physics,
-                    _solve_static_states, _solver_roles, _with_parity_sectors)
+                    _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
 STUDY_NAME = 'eigenfrequency'
 _RESONANCE_STAGE = 'Resonance solve'
@@ -107,15 +107,7 @@ def _search_issues(vctx, values):
     if search == 'band' and not values['frequency_max'] > values['frequency_min']:
         issues.append(Issue('error', ('study',), f"search 'band': frequency_max {values['frequency_max']:.6g} Hz must "
                                                  f"exceed frequency_min {values['frequency_min']:.6g} Hz"))
-    selection = vctx.spec.study.solved_physics
-    listed = selection if isinstance(selection, list) and selection else None
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:   # reported at the physics
-            continue
-        if STUDY_NAME not in physics_type.supported_studies or (listed is not None and physics.name not in listed):
-            continue
+    for physics, physics_type in _study_solved_types(vctx, STUDY_NAME):
         if search not in physics_type.eigen_searches:
             issues.append(Issue('error', ('physics', physics.name),
                                 f"eigenfrequency search '{search}': physics '{physics.name}' ({physics_type.label}) "

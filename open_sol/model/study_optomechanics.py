@@ -5,7 +5,7 @@ import time
 
 from .schema import Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, ModeSolver, OptomechanicalSolver
-from .study import (Cancelled, LogEvent, _background_fixed_point_params, _background_stage, _count_progress,
+from .study import (LogEvent, _background_fixed_point_params, _background_stage, _count_progress,
                     _log_eigen_solve, _numbered_snapshots, _refuse_stepping_background, _reselect_first_resonance,
                     _scipy_issues, _selected_physics, _solve_static_states)
 
@@ -72,9 +72,7 @@ def _solve_optical(session, optical, mechanical, values, emit, control, service)
     runner = session.runner
     wall_start = time.perf_counter()
     for index, name in enumerate(optical):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             return 'cancelled'
         solver = runner.physics[name]
         emit(_count_progress(runner, index / len(optical), index, wall_start,

@@ -19,7 +19,7 @@ from .meshing import backend_memory, estimate_memory, estimate_mesh
 from .schema import memory_check_level, solver_backend
 from .session import live_snapshot_index
 from .solver_hooks import ErrorIndicatorSolver
-from .study import (Cancelled, LogEvent, StudyFailed, StudyStarted, _StageProgress, _failure_message, _fail_sweep_setup,
+from .study import (LogEvent, StudyFailed, StudyStarted, _StageProgress, _failure_message, _fail_sweep_setup,
                     _record_failure, _run_built, build_session, release_session, summed_runs)
 
 # stop reasons of the convergence report ('converged' alone means converged)
@@ -56,9 +56,7 @@ def run_adaptation(spec, registry, build, emit, control, service, on_session):
     level_runs = []   # [(label, summary)] of every computed level (summed_runs)
     for level in range(adaptation.max_levels + 1):
         if level > 0:
-            try:
-                control.checkpoint(service)
-            except Cancelled:
+            if control.checkpoint_cancelled(service):
                 stop_reason, message = 'cancelled', f'cancelled before level {level}'
                 break
             emit(LogEvent('info', f'mesh refinement level {level}: {_cells_text(estimates, setup.meshes)}'))

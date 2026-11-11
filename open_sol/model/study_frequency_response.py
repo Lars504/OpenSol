@@ -7,9 +7,9 @@ import time
 
 from .schema import Issue, Param, StudyType
 from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
-from .study import (_PARITY_SECTORS_PARAM, Cancelled, LogEvent, _background_fixed_point_params, _background_stage,
+from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
                     _count_progress, _frequency_list, _frequency_range_issues, _scipy_issues, _selected_physics,
-                    _solve_static_states, _solver_roles, _with_parity_sectors)
+                    _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
 STUDY_NAME = 'frequency_response'
 _FREQUENCY_STAGE = 'Frequency solves'
@@ -48,9 +48,7 @@ def _run_frequency_response(session, values, emit, control, service):
         frequency_sweep = _plan_reduced_sweeps(solvers, frequencies, values, emit, emit_stage, runner)
         wall_start = time.perf_counter()
         for index, frequency in enumerate(frequencies):
-            try:
-                control.checkpoint(service)
-            except Cancelled:
+            if control.checkpoint_cancelled(service):
                 status = 'cancelled'
                 break
             label = frequency_label(frequency)
@@ -125,16 +123,8 @@ def _sweep_method_issues(vctx, method):
     """Errors for a sweep_method a solved physics' type does not list in frequency_sweep_methods."""
     if method == 'direct':
         return []
-    selection = vctx.spec.study.solved_physics
-    listed = selection if isinstance(selection, list) and selection else None
     issues = []
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:   # reported at the physics
-            continue
-        if STUDY_NAME not in physics_type.supported_studies or (listed is not None and physics.name not in listed):
-            continue
+    for physics, physics_type in _study_solved_types(vctx, STUDY_NAME):
         if method not in physics_type.frequency_sweep_methods:
             issues.append(Issue('error', ('study',), f"sweep_method '{method}': physics '{physics.name}' "
                                                      f"({physics_type.label}) supports "

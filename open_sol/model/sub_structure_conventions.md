@@ -126,6 +126,9 @@ templates, describe. Current state, no changelog.
   points_per_wavelength); refinement dx sweeps are not detected.
 - Reused (cached) selftest records come back through read_json: non-finite numbers are the strings 'nan' / 'inf', so
   report code reading them must `float()` first.
+- Case records come from `selftest_helpers`, not hand-built dicts: `SubChecks.result` / `failed_count_result` ({name:
+  (value, tolerance)}) count failed sub-checks; `worst_result` (one tolerance), `scaled_worst_result` /
+  `tolerance_units_result` / `normalized_result` (worst error in tolerance units, tolerance 1) rank NaN as the worst.
 - `selftest_cache.py` (no api import; root file "Selftest reuse"): `UNTRACKED_PATHS` files add no units and no
   followed names, and their units are dropped from every set. Dependencies are code units: per package file each
   top-level function, each undecorated class with methods, and MODULE_UNIT (the rest: imports, constants, kernel
@@ -693,7 +696,8 @@ templates, describe. Current state, no changelog.
   non-OOM failure of a single run keeps its session. The sweep table lists failed values in `failed` [{index, value,
   message}] (study status stays 'completed'; api reports status 'partial', CLI exit 1). A feature result a value cannot
   produce (`_feature_results`: an FDFD probe in an eigenfrequency sweep) is left out with one warning per key, never
-  fails the value. The summary carries `parameters` (of the session its values come from) and `sweep_index`.
+  fails the value. The summary carries `parameters` (of the session its values come from) and `sweep_index`. Loops
+  that stop on a cancel between items test `control.checkpoint_cancelled(service)` (RunControl.checkpoint as a flag).
 - `solve_stationary` returns `fixed_point` {converged, iterations, relative_change, tolerance} (None without a loop);
   stationary / frequency_domain summaries carry it and the sweep table a `converged` per value. Non-convergence keeps
   status 'completed'; `api._final_status` only notes it in the message.

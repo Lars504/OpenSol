@@ -6,9 +6,9 @@ import numpy as np
 
 from ..core.mirror import MIRROR_SIGNS, physics_mirror_faces
 from .definition_helpers import GEOMETRY_SETTING, is_axisymmetric
-from .geometry import (GEOMETRY_KINDS, cross_section_runs, expand_entities, material_paint_order,
+from .geometry import (GEOMETRY_KINDS, cross_section_runs, material_paint_order, material_selections,
                        rasterize_window)
-from .schema import Issue
+from .schema import Issue, known_physics
 
 SAMPLES_PER_SIDE_2D = 160   # material samples per axis on each side of the plane (2D)
 SAMPLES_PER_SIDE_3D = 40    # likewise per axis in 3D (z layers included)
@@ -27,12 +27,7 @@ def symmetry_issues(vctx) -> list:
     if three_d and vctx.size_z is None:
         return []
     sizes = (*sizes, vctx.size_z) if three_d else tuple(sizes)
-    selections = []
-    for material in vctx.spec.materials:
-        try:
-            selections.append(expand_entities(vctx.spec, material.selection))
-        except (ValueError, TypeError):   # reported by the selection checks
-            selections.append(None)
+    selections = material_selections(vctx.spec)   # None for one that fails to expand (the selection checks)
     names = sorted({entity for entities in selections if entities is not None for entity in entities
                     if entity in vctx.shapes and GEOMETRY_KINDS[vctx.shapes[entity].kind].entity_kind == 'domain'})
     if not names:
@@ -66,11 +61,7 @@ def _symmetry_planes(vctx) -> dict:
                                 'The run solves the drawn half and its mirror image, ignoring what lies beyond')
     if vctx.spec.domain.size_z is not None or 'x_lo' in planes:
         return planes
-    for physics_spec in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics_spec.type)
-        except KeyError:   # reported by the physics checks
-            continue
+    for physics_spec, physics_type in known_physics(vctx.spec, vctx.registry):
         if not any(param.name == GEOMETRY_SETTING for param in physics_type.settings):
             continue
         if is_axisymmetric(vctx.values(physics_type.settings, physics_spec.settings)):
