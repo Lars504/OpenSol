@@ -15,6 +15,7 @@ from ....solvers.sparse_direct import scipy_available
 from ..fem_modes import size_issue_for_unknowns
 from ..harmonic import cell_permeability, cell_permittivity, write_float32
 from ..materials import DrudePole, LorentzPole, register_em_arrays
+from .fdtd_2d_base import add_pec_cells
 
 
 class TriangleEMPhysics(PhysicsSolver):
@@ -271,10 +272,7 @@ class TriangleEMPhysics(PhysicsSolver):
         """Perfect electric conductor on a run-backend bool per-element mask: those elements leave the unknowns, their
         closure holds tangential E at 0 (exact on curved outlines)."""
         self._check_element_mask(mask, 'PEC mask')
-        if self.pec_cells is None:
-            self.pec_cells = mask.copy()
-        else:
-            self.pec_cells |= mask
+        self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._system_changed()
 
     def _check_element_mask(self, mask, what):

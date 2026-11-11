@@ -355,14 +355,8 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         grid, block = _kernels.launch(box_nx, box_ny)
         return grid, block, tuple(np.int32(value) for value in (box[0].start, box[1].start, box_nx, box_ny))
 
-    def finalize(self) -> None:
-        super().finalize()
-        self._loss_box_args = None
-
-    def materials_changed(self, names) -> None:
-        super().materials_changed(names)
-        if 'sigma_e' in names:
-            self._loss_box_args = None
+    def _sigma_e_changed(self) -> None:
+        self._loss_box_args = None   # refreshed at the next accumulation
 
     def _component_arrays(self, component):
         """(E field, face cb, face pole power total or None, keep mask or None) of 'ex' / 'ey'."""
@@ -465,9 +459,8 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         for lorentz in self.lorentz_poles:
             for face in lorentz['faces']:
                 keep_box = face_keep[face['component']][face['box']]
-                for polarization_density, polarization_step in zip(face['p'], face['dp']):
-                    polarization_density *= keep_box
-                    polarization_step *= keep_box
+                for buffer in (*face['p'], *face['dp']):
+                    buffer *= keep_box
 
     def set_conformal_cells(self, cell, cell_extra):
         """Conformal PEC (physics/em/conformal_pec): each listed H_z cell (host int32 flat, off the grid edge) adds db x
@@ -479,10 +472,6 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         self._conformal_cells = (xp.asarray(cell, dtype=np.int32),
                                  xp.ascontiguousarray(xp.asarray(cell_extra, dtype=self.dtype)),
                                  sparse_launch(len(cell)))
-
-    def _set_buffers(self, shape):
-        """One zeroed pole buffer of `shape` in the field dtype per field set."""
-        return [self.xp.zeros(shape, dtype=self.dtype) for _ in self._field_sets]
 
     def _pole_region_faces(self, cell_mask, face_weights=None):
         """Region face list of `cell_mask` (or of the host face_weights): an existing region with equal boxes and

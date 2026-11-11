@@ -9,14 +9,13 @@ import numpy as np
 from ....core.backend import to_host
 
 from ....core.constants import C0, EPS0
-from ....core.gpu_memory import format_bytes
 from ....core.solver_base import PhysicsSolver
 from ..boundaries import BCType, solver_boundary_config
 from ..conical import (COMPONENTS, FIELD_COMPONENTS, assemble_conical, centre_phasors, conical_fields,
                        conical_row_scale, driven_rhs, line_flux, point_current_terms, size_issue_for,
                        solve_conical_resonances, source_power)
 from ..cross_section_modes import CrossSectionMaterials
-from ..fdfd_monitors import CentrePhasorProbe, _ascending_wavelength, probe_phasor_result
+from ..fdfd_monitors import _ascending_wavelength, probe_phasor_result
 from ..harmonic import cell_permeability, cell_permittivity, shown_phasor_fields
 from ..materials import register_em_arrays
 from ..placement import flux_line_cells, line_mirror_factor
@@ -56,6 +55,8 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
     permittivity_arrays = CONICAL_PERMITTIVITY_ARRAYS   # eps_r (= eps_zz, E_z), eps_xx (E_x), eps_yy (E_y)
     permittivity_slots = CONICAL_PERMITTIVITY_SLOTS
     state_names = CONICAL_STATE_NAMES
+    field_components = FIELD_COMPONENTS
+    component_units = COMPONENT_UNITS
 
     def __init__(self, domain, boundary_config=None, wavelength=1.55e-6, k_z=0.0, linear_solver=None,
                  eigen_solver=None):
@@ -133,25 +134,12 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
         """One line on the last driven solve for the study log (unknowns, k_z, wall times, factor size); None before."""
         if self.last_solve_seconds is None:
             return None
-        linear = self.linear_solver
+        text = f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m'
         if self._linear_on_cudss:
-            factor = '' if self.last_factor_seconds is None else f'factorisation {self.last_factor_seconds:.3g} s; '
-            return (f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m, '
-                    f'{getattr(self._factorization, "description", "cuDSS")}, solve {self.last_solve_seconds:.3g} s '
-                    f'({factor}{linear.n_factorizations} cuDSS factorisations on {linear.n_cudss_plans} plan(s))')
-        host_direct = is_host_direct_factor(self._factorization)   # MUMPS / PARDISO: the library's own factor bytes
-        text = (f'{self.system.n_unknowns:,} unknowns (E_x, E_y, E_z) at k_z = {self.k_z:.6g} rad/m, '
-                f'{direct_text(self._factorization)}, solve {self.last_solve_seconds:.3g} s')
-        if linear.n_recycled_solves:
-            last = (f'{self.last_recycled_iterations} GMRES iterations' if self.last_recycled_iterations is not None
-                    else 'factorised')
-            text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
-                     f'GMRES-preconditioned by an earlier factor; last solve {last}')
-        if self.last_factor_seconds is not None:
-            factors = 'factor' if host_direct else 'L + U factors'
-            text += (f' (factorisation {self.last_factor_seconds:.3g} s, {factors} '
-                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
-        return text
+            return self._cudss_summary(f'{text}, {getattr(self._factorization, "description", "cuDSS")}, solve '
+                                       f'{self.last_solve_seconds:.3g} s')
+        return (f'{text}, {direct_text(self._factorization)}, solve {self.last_solve_seconds:.3g} s'
+                + self._host_factor_summary(is_host_direct_factor(self._factorization)))
 
     def scalars(self) -> dict:
         """{'source_power': W/m delivered by the sources in the last driven solve} (E5 scalar outputs; {} before)."""
@@ -232,7 +220,7 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
                                      mu=to_host(cell_permeability(materials, omega, xp=xp)), pec=pec,
                                      eps_point_deltas=deltas)
 
-    # --- sources and monitors (poles / PEC masks: HostFDFDBase) ---
+    # --- sources and monitors (poles / PEC masks, field probes: HostFDFDBase) ---
 
     def add_point_source(self, x, y, component='z', current=1e-3, phase=0.0):
         """Current element (conical.point_current_terms) along `component` 'x' | 'y' | 'z' in the cell containing (x, y)
@@ -299,14 +287,6 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
             hi = n_along
         return line_cell, (lo, hi)
 
-    def add_field_probe(self, x, y, field_component='ez'):
-        """Complex centre phasor of one component (FIELD_COMPONENTS) in the cell containing (x, y) per driven solve."""
-        if field_component not in FIELD_COMPONENTS:
-            raise ValueError(f'field probe component must be one of {FIELD_COMPONENTS}, got {field_component!r}')
-        self.domain.validate_physical_pos(x, y, 'Field probe')
-        ix, iy = self.domain.pos_to_cell(x, y)
-        return self._add_monitor(CentrePhasorProbe(ix, iy, field_component, COMPONENT_UNITS[field_component]))
-
     def add_flux_monitor(self, axis, position, span):
         """Power per unit z length [W/m] through a line per driven solve (axis 'x' = along x at y = position: flux along
         +y; 'y': flux along +x), span = (start, end) along it [m]; conical.line_flux on the hi face of the line cells."""
@@ -318,11 +298,6 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
                              'hi face is the outer grid edge; move the line inside')
         mirror_factor = line_mirror_factor(self.domain, self.boundary_config, normal_axis, span_cells)
         return self._add_monitor(ConicalFluxMonitor(normal_axis, line_cell, span_cells, mirror_factor))
-
-    def _add_source(self, source):
-        self.sources.append(source)
-        self._solution_dirty = True
-        return source
 
     def _add_monitor(self, monitor):
         """Append a monitor; it records the shown driven solve at once when there is one."""

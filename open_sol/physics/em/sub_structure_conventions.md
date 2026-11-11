@@ -62,8 +62,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `add_pec_cells` shared with FDFDPhysics; the base holds inject_source (slot `<pol>_source` kept as
   `_out_of_plane_source`), update_e, add_nonlinear / add_gain): a new engine sets `_E_COEFFICIENT_MATERIALS`,
   `_rebuild_e_coefficients`, `_update_e_set`, `_accumulate_e_new_half` and the hooks `_permittivity_written` /
-  `_nonlinear_added`, never copies. Bad cell masks raise TypeError (`xp=` default cupy: cpu-ready callers such
-  as ModePhysics / EMEPhysics pass `domain.xp`).
+  `_nonlinear_added` / `_sigma_e_changed` (finalize and sigma_e writes: loss boxes), never copies. Bad cell masks
+  raise TypeError (`xp=` default cupy: cpu-ready callers such as ModePhysics / EMEPhysics pass `domain.xp`).
 - FDTD on both backends: `EMPhysics.xp = domain.xp`; the engine raises unless fields, BoundaryManager / CPMLSided
   share the MaterialGrid's xp; sources and monitors take `xp=` (None = default backend). Every FDTD-path kernel is a
   `core.kernels` twin (core sub file "Kernel twins"): a new kernel gets its numpy twin in the same edit, host reads
@@ -802,8 +802,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 ## Body of revolution (em_fdfd_bor; body_of_revolution, bor_ports, solvers/fdfd_bor, renderer_bor, definition_bor; symmetry 2.3)
 - BORPhysics and ConicalPhysics share `solvers/host_fdfd.HostFDFDBase` (solver setup and cusolver_qr refusal, omega,
   state / slots / finalize / loss protocol / labels / counters, the kept driven factor: `_operator_replaced`,
-  `_factorize_operator`, `_solve_kept_factor`, cuDSS plan keep / release, the float32 display writer, poles / PEC);
-  their probes are `fdfd_monitors.CentrePhasorProbe`, their display fields `harmonic.shown_phasor_fields`.
+  `_factorize_operator`, `_solve_kept_factor`, cuDSS plan keep / release, the solve_summary factor texts, the float32
+  display writer, poles / PEC, `_add_source`, `add_field_probe`: `fdfd_monitors.CentrePhasorProbe` of the class'
+  field_components); their display fields are `harmonic.shown_phasor_fields`.
   `bor_boundary_config`, `bor_flux_line`, `bor_far_field_box` (solvers/fdfd_bor) serve BOR FDFD and FDTD alike.
   Wavelength batches keep their later members' (materials, assembly) for their own solve (`_batch_assemblies`).
 - Host only (numpy / scipy; module header = the formulation). x = r from the x_lo grid edge (the axis: never a PML

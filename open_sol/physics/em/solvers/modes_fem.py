@@ -16,7 +16,6 @@ from .modes_2d import (HOST_DIRECT_KINDS, MODE_PERMITTIVITY_ARRAYS, MODE_PERMITT
                        _ModeStudyMixin)
 
 
-
 class FEMModePhysics(_ModeStudyMixin, TriangleEMPhysics):
     """Full-vector cross-section modes at omega on a fem.domain.TriangleDomain: n_modes modes (descending Re beta^2) of
     per-element diagonal eps and mu, solved by the study hooks solve_modes / solve_harmonic; the selected one feeds
@@ -64,17 +63,13 @@ class FEMModePhysics(_ModeStudyMixin, TriangleEMPhysics):
         info = self.last_solve_info
         degree = 'quadratic' if info['order'] == 2 else 'linear'
         kind = info.get('factor_kind', 'SuperLU')
-        if kind.startswith('cuDSS'):   # the eigen solver's factorization cudss / cudss_mixed
-            factor = (f'{kind} on the GPU {info["factor_seconds"]:.3g} s, factor + operator '
-                      f'{format_bytes(info["factor_device_bytes"])} of device memory')
-            if 'single_residual' in info:
-                factor += f', unrefined residual {info["single_residual"]:.2g}'
-            if 'rayleigh_change' in info:
-                factor += (f', loose solves + Rayleigh quotients (n_eff^2 moved by up to '
-                           f'{info["rayleigh_change"]:.2g})')
-        elif kind.startswith(HOST_DIRECT_KINDS):   # mumps / pardiso (+ _mixed: polished like cudss_mixed)
-            factor = (f'{kind} factorisation {info["factor_seconds"]:.3g} s, factor '
-                      f'{format_bytes(info["factor_host_bytes"])} of host memory')
+        if kind.startswith('cuDSS') or kind.startswith(HOST_DIRECT_KINDS):
+            if kind.startswith('cuDSS'):   # the eigen solver's factorization cudss / cudss_mixed
+                factor = (f'{kind} on the GPU {info["factor_seconds"]:.3g} s, factor + operator '
+                          f'{format_bytes(info["factor_device_bytes"])} of device memory')
+            else:   # mumps / pardiso (+ _mixed: polished like cudss_mixed)
+                factor = (f'{kind} factorisation {info["factor_seconds"]:.3g} s, factor '
+                          f'{format_bytes(info["factor_host_bytes"])} of host memory')
             if 'single_residual' in info:
                 factor += f', unrefined residual {info["single_residual"]:.2g}'
             if 'rayleigh_change' in info:

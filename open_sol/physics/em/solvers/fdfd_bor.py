@@ -9,7 +9,6 @@ import numpy as np
 from ....core.backend import to_host
 
 from ....core.constants import C0, EPS0, FACES
-from ....core.gpu_memory import format_bytes
 from ....core.solver_base import PhysicsSolver
 from ..body_of_revolution import (BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS, BORAssembly, BORMaterials, axis_class,
                                   bor_row_scale, centre_fields, distinct_orders, far_field_power, far_field_samples,
@@ -23,7 +22,7 @@ from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.sparse_direct import CUDSS_BACK_ENDS
 from ..bor_ports import BORModeMonitor, BORModeSource
 from ..eigenfrequency import resonance_table_result
-from ..fdfd_monitors import CentrePhasorProbe, _ascending_wavelength, probe_phasor_result
+from ..fdfd_monitors import _ascending_wavelength, probe_phasor_result
 from ..harmonic import cell_permeability, cell_permittivity, shown_phasor_fields
 from ..materials import register_em_arrays
 from ..placement import box_cells, flux_line_cells, port_cells
@@ -118,6 +117,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
     permittivity_arrays = BOR_PERMITTIVITY_ARRAYS   # eps_r (E_phi), eps_xx (E_r), eps_yy (E_z)
     permittivity_slots = BOR_PERMITTIVITY_SLOTS
     state_names = BOR_STATE_NAMES
+    field_components = BOR_FIELD_COMPONENTS
+    component_units = COMPONENT_UNITS
 
     def __init__(self, domain, boundary_config=None, wavelength=1.55e-6, azimuthal_order=0, linear_solver=None,
                  eigen_solver=None, shifted_solver=None, azimuthal_orders=None, driven_orders=None):
@@ -226,12 +227,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         self._release_kept_cudss()   # the eigen-solve's own factor needs the device memory
         assembly = self.assembly
         orders = self.azimuthal_orders
-        if self._line_block is not None:
-            self._drop_line_factor()   # the shared solver is re-bound to the order families
-            self._release_batch()
-            factorizations = order_factorizations(self._line_block, assembly, orders, owner=self)
-        else:
-            factorizations = ((order, None) for order in orders)
+        factorizations = self._order_factorizations(assembly, orders)
         solves, warnings = {}, []
         for order, factorization in factorizations:
             order_system = system if order == system.azimuthal_order else assembly.system(order)
@@ -274,19 +270,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
                 text += f' (one batch of {self.last_batch_size} wavelengths: later ones in it are solve-only)'
             return text
         if linear.back_end in CUDSS_BACK_ENDS:
-            factor = '' if self.last_factor_seconds is None else f'factorisation {self.last_factor_seconds:.3g} s; '
-            return (f'{text} ({factor}{linear.n_factorizations} cuDSS factorisations on {linear.n_cudss_plans} '
-                    'plan(s))')
-        if linear.n_recycled_solves:
-            last = (f'{self.last_recycled_iterations} GMRES iterations' if self.last_recycled_iterations is not None
-                    else 'factorised')
-            text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
-                     f'GMRES-preconditioned by an earlier factor; last solve {last}')
-        if self.last_factor_seconds is not None:   # MUMPS / PARDISO: the library's own factor bytes
-            factor = 'factor' if linear.back_end in HOST_DIRECT_BACK_ENDS else 'L + U factors'
-            text += (f' (factorisation {self.last_factor_seconds:.3g} s, {factor} '
-                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
-        return text
+            return self._cudss_summary(text)
+        return text + self._host_factor_summary(linear.back_end in HOST_DIRECT_BACK_ENDS)
 
     def yee(self):
         """body_of_revolution.yee_fields of the last driven solve (host, cached per solve; an order sum: the phi = 0
@@ -346,6 +331,15 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
                 raise ValueError(f'the line-block solve was rejected and its host SuperLU fallback is too '
                                  f'large: {issue[1]}')
         return self._factorize_operator(system.operator, lambda: {'row_scale': bor_row_scale(system)})
+
+    def _order_factorizations(self, assembly, orders):
+        """(order, line-block factorization) per order of `orders`, batched per axis class when the shifted solver is a
+        line_block (re-bound to the order families), else (order, None): host factors."""
+        if self._line_block is None:
+            return ((order, None) for order in orders)
+        self._drop_line_factor()   # the shared solver is re-bound to the order families
+        self._release_batch()
+        return order_factorizations(self._line_block, assembly, orders, owner=self)
 
     def _drop_line_factor(self):
         """Release the driven line-block factor (another system, or the solver re-bound elsewhere); a wavelength batch
@@ -487,12 +481,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
             self._retire_factorization()   # the order terms refactorise it (one device factor at a time)
         assembly = self.assembly
         orders = self._driven_orders
-        if self._line_block is not None:
-            self._drop_line_factor()   # the shared solver is re-bound to the order families
-            self._release_batch()
-            factorizations = order_factorizations(self._line_block, assembly, orders, owner=self)
-        else:
-            factorizations = ((order, None) for order in orders)
+        factorizations = self._order_factorizations(assembly, orders)
         total, mean_e_squared, texts, unknowns = None, None, set(), 0
         for order, factorization in factorizations:
             order_system = system if order == system.azimuthal_order else assembly.system(order)
@@ -551,7 +540,7 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         return BORMaterials(eps=eps['eps_r'], mu=to_host(cell_permeability(materials, omega, xp=self.xp)), pec=pec,
                             eps_rr=eps['eps_xx'], eps_zz=eps['eps_yy'])
 
-    # --- sources and monitors (poles / PEC masks: HostFDFDBase) ---
+    # --- sources and monitors (poles / PEC masks, field probes: HostFDFDBase) ---
 
     def add_point_source(self, x, y, component='z', current=1e-3, phase=0.0):
         """Current element (body_of_revolution.point_current_rhs) of `component` 'r' | 'phi' | 'z' and current [A] in
@@ -560,28 +549,14 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
             raise ValueError(f'point source component must be one of {BOR_SOURCE_COMPONENTS}, got {component!r}')
         self.domain.validate_physical_pos(x, y, 'Point source')
         ix, iy = self.domain.pos_to_cell(x, y)
-        source = BORPointCurrent(ix, iy, component, float(current) * cmath.exp(1j * math.radians(float(phase))))
-        self.sources.append(source)
-        self._solution_dirty = True
-        return source
+        return self._add_source(BORPointCurrent(ix, iy, component,
+                                                float(current) * cmath.exp(1j * math.radians(float(phase)))))
 
     def add_mode_source(self, position, span, power=1.0, mode_number=1, direction='positive', phase=0.0):
         """Port source (bor_ports.BORModeSource) on the z = position line over r = span (from the axis, or annular):
         `power` [W] of guided mode `mode_number` toward +z ('positive') or -z, phase [deg]."""
         row, span_cells, label = port_cells(self.domain, 'x', position, span, 'Mode source')
-        source = BORModeSource(self, row, span_cells, power, mode_number, direction, phase, label)
-        self.sources.append(source)
-        self._solution_dirty = True
-        return source
-
-    def add_field_probe(self, x, y, field_component='ez'):
-        """Complex centre phasor of one component (BOR_FIELD_COMPONENTS) in the cell containing (x, y) per driven
-        solve."""
-        if field_component not in BOR_FIELD_COMPONENTS:
-            raise ValueError(f'field probe component must be one of {BOR_FIELD_COMPONENTS}, got {field_component!r}')
-        self.domain.validate_physical_pos(x, y, 'Field probe')
-        ix, iy = self.domain.pos_to_cell(x, y)
-        return self._add_monitor(CentrePhasorProbe(ix, iy, field_component, COMPONENT_UNITS[field_component]))
+        return self._add_source(BORModeSource(self, row, span_cells, power, mode_number, direction, phase, label))
 
     def add_flux_monitor(self, axis, position, span):
         """Power [W] through a line per driven solve (axis 'x' = along r at z = position: flux along +z; 'y' = along z
