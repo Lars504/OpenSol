@@ -12,7 +12,7 @@ from ...core.backend import array_module_of, to_host
 from ...core.constants import C0, ETA0
 from .monitors import near_to_far_geometry, near_to_far_pattern
 from .placement import line_mirror_factor
-from .results import _FAR_FIELD_QUANTITY   # 'quantity' of the far-field 'power' per polarisation, as FDTD
+from .results import _FAR_FIELD_QUANTITY, far_field_angles   # _FAR_FIELD_QUANTITY: 'quantity' per polarisation
 from .yee_grid import lower_face
 
 _COMPONENT_LABELS = {'ez': 'E_z', 'hx': 'H_x', 'hy': 'H_y', 'hz': 'H_z', 'ex': 'E_x', 'ey': 'E_y'}
@@ -219,12 +219,9 @@ def harmonic_far_field_result(monitor, n_angles=360) -> dict:
     """'far_field' of a HarmonicNearToFar vs ascending wavelength, keys as results.far_field_result: 'power' = radiated
     power per unit z length and angle |pattern|^2 / (2 eta0) [W/(m rad)] (n_wavelengths, n_angles) at 'angles' =
     |amplitude|^2 (amplitude_re / _im: pattern / sqrt(2 eta0), combine_sector_far_fields)."""
-    n_angles = int(n_angles)
-    if n_angles < 1:
-        raise ValueError(f"n_angles must be >= 1, got {n_angles}")
+    angles = far_field_angles(n_angles)
     omegas, faces = monitor.recorded()
     frequency = omegas / (2.0 * math.pi)
-    angles = np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
     pattern = near_to_far_pattern(monitor.polarization, frequency, angles, faces, monitor.geometry)
     amplitude = np.asarray(pattern, dtype=np.complex128) / math.sqrt(2.0 * float(ETA0))
     return {'kind': 'far_field', 'frequency': frequency, 'wavelength': C0 / frequency, 'angles': angles,

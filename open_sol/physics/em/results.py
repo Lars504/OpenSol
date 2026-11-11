@@ -29,6 +29,23 @@ def _host_spectrum(spectra, freq_index):
     return to_host(spectra[freq_index]).astype(np.complex128)
 
 
+def checked_freq_index(freq_index, n_freqs: int) -> int:
+    """`freq_index` as an int in [0, n_freqs); TypeError for a non-int (bool included), IndexError out of range."""
+    if isinstance(freq_index, bool) or not isinstance(freq_index, (int, np.integer)):
+        raise TypeError(f"freq_index must be an int, got {freq_index!r}")
+    if not 0 <= int(freq_index) < n_freqs:
+        raise IndexError(f"freq_index {freq_index} out of range for {n_freqs} DFT frequencies")
+    return int(freq_index)
+
+
+def far_field_angles(n_angles):
+    """(n_angles,) float64 angles [rad] over the full circle (endpoint excluded); ValueError for n_angles < 1."""
+    n_angles = int(n_angles)
+    if n_angles < 1:
+        raise ValueError(f"n_angles must be >= 1, got {n_angles}")
+    return np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
+
+
 def _spectral_axes(monitor):
     """(frequency [Hz], wavelength [m]) float64 numpy copies of a spectral monitor's frequencies."""
     frequency = np.array(monitor.frequencies, dtype=np.float64)
@@ -128,11 +145,7 @@ def dft_result(monitor, domain, freq_index=None, physics=None) -> dict:
     if shared is not None:
         result['intensity_per_cw_factor'] = _per_cw(np.ones_like(frequency), *shared)
     if freq_index is not None:
-        if isinstance(freq_index, bool) or not isinstance(freq_index, (int, np.integer)):
-            raise TypeError(f"freq_index must be an int, got {freq_index!r}")
-        if not 0 <= int(freq_index) < monitor.n_freqs:
-            raise IndexError(f"freq_index {freq_index} out of range for {monitor.n_freqs} DFT frequencies")
-        index = int(freq_index)
+        index = checked_freq_index(freq_index, monitor.n_freqs)
         result['freq_index'] = index
         # |E(omega)|^2 of the dt-weighted spectra (~1e-30 for 1 V/m fs pulses, |H_z|^2 ~1e-35) kept in float64:
         # float32 reaches denormals tens of dB below the peak.
@@ -152,11 +165,8 @@ def far_field_result(monitor, n_angles: int = 360) -> dict:
     """Far-field 'power' per angle |pattern|^2 / eta0 of a NearToFarField ('unit' a.u.: dt-weighted, no 1/2, so its
     angle integral matches a closed flux box's flux_result), 'angles' [rad from +x] (n_angles,), 'power' (n_f, n_angles)
     = |amplitude|^2 (amplitude_re / _im: the complex pattern / sqrt(eta0), combine_sector_far_fields)."""
-    n_angles = int(n_angles)
-    if n_angles < 1:
-        raise ValueError(f"n_angles must be >= 1, got {n_angles}")
+    angles = far_field_angles(n_angles)
     frequency, wavelength = _spectral_axes(monitor)
-    angles = np.linspace(0.0, 2.0 * np.pi, n_angles, endpoint=False)
     amplitude = np.asarray(monitor.far_field(angles), dtype=np.complex128) / np.sqrt(float(ETA0))
     return {'kind': 'far_field', 'frequency': frequency, 'wavelength': wavelength, 'angles': angles,
             'power': np.abs(amplitude) ** 2, 'amplitude_re': amplitude.real, 'amplitude_im': amplitude.imag,

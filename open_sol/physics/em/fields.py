@@ -14,49 +14,40 @@ def _field_dtype(dtype):
     return dtype
 
 
-class Fields2D_Ez:
-    """Ez-polarisation fields (Ez, Hx, Hy), (nx, ny) arrays of `xp` (cupy / numpy: the run backend, None = the default
-    backend) in `dtype` (float32, float64 for the double stepper); `imag` = the imaginary field set of the same class
-    under Bloch k != 0 (set by the engine; DFT monitors add it as j F_im), else None."""
+class _FieldSet2D:
+    """(nx, ny) zero arrays `components` of `xp` (cupy / numpy: the run backend, None = the default backend) in `dtype`
+    (float32, float64 for the double stepper); `imag` = the imaginary field set of the same class under Bloch k != 0
+    (set by the engine; DFT monitors add it as j F_im), else None."""
+
+    components = ()
 
     def __init__(self, nx: int, ny: int, xp=None, dtype=None):
         self.nx = nx
         self.ny = ny
         self.xp = array_module_or_default(xp)
         self.dtype = _field_dtype(dtype)
-        self.ez = self.xp.zeros((nx, ny), dtype=self.dtype)
-        self.hx = self.xp.zeros((nx, ny), dtype=self.dtype)
-        self.hy = self.xp.zeros((nx, ny), dtype=self.dtype)
+        for name in self.components:
+            setattr(self, name, self.xp.zeros((nx, ny), dtype=self.dtype))
         self.imag = None
 
     def reset(self):
-        self.ez[:] = 0
-        self.hx[:] = 0
-        self.hy[:] = 0
+        for name in self.components:
+            getattr(self, name)[:] = 0
         if self.imag is not None:
             self.imag.reset()
 
 
-class Fields2D_Hz:
-    """Hz-polarisation fields, (nx, ny) arrays of `xp` in `dtype` (as Fields2D_Ez): hz at the cell centres, ex[i, j] on
-    the hi-y face and ey[i, j] on the hi-x face of cell (i, j); `imag` as Fields2D_Ez."""
+class Fields2D_Ez(_FieldSet2D):
+    """Ez-polarisation fields (Ez, Hx, Hy) as _FieldSet2D."""
 
-    def __init__(self, nx: int, ny: int, xp=None, dtype=None):
-        self.nx = nx
-        self.ny = ny
-        self.xp = array_module_or_default(xp)
-        self.dtype = _field_dtype(dtype)
-        self.hz = self.xp.zeros((nx, ny), dtype=self.dtype)
-        self.ex = self.xp.zeros((nx, ny), dtype=self.dtype)
-        self.ey = self.xp.zeros((nx, ny), dtype=self.dtype)
-        self.imag = None
+    components = ('ez', 'hx', 'hy')
 
-    def reset(self):
-        self.hz[:] = 0
-        self.ex[:] = 0
-        self.ey[:] = 0
-        if self.imag is not None:
-            self.imag.reset()
+
+class Fields2D_Hz(_FieldSet2D):
+    """Hz-polarisation fields as _FieldSet2D: hz at the cell centres, ex[i, j] on the hi-y face and ey[i, j] on the
+    hi-x face of cell (i, j)."""
+
+    components = ('hz', 'ex', 'ey')
 
 
 def collocate_to_centres(face_field, axis: int, periodic: bool):

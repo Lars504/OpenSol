@@ -8,7 +8,7 @@ from ...core.kernels import twin
 from dataclasses import dataclass
 from enum import Enum
 
-from ...core.constants import DTYPE, EPS0
+from ...core.constants import DTYPE, EPS0, FACES
 from .yee_grid import yee_inverse_spacings
 
 
@@ -63,11 +63,30 @@ _HZ_PEC_PLANE_TYPES = frozenset({BCType.PEC, BCType.ANTISYMMETRIC})
 # Face types that make E_z even about the inner face of the outermost cell (tangential H = 0 there) in E_z
 # polarisation: the same row copy serves the pmc wall and the symmetric mirror.
 _EZ_EVEN_PLANE_TYPES = frozenset({BCType.PMC, BCType.SYMMETRIC})
+# Per face: (outermost cell-centre row, its inner neighbour) and the inner face of the outermost cell (hi-face rows
+# 0 / n-2) as 2D indices.
+_CENTRE_ROWS = {'x_lo': (np.s_[0, :], np.s_[1, :]), 'x_hi': (np.s_[-1, :], np.s_[-2, :]),
+                'y_lo': (np.s_[:, 0], np.s_[:, 1]), 'y_hi': (np.s_[:, -1], np.s_[:, -2])}
+_PLANE_FACE_ROWS = {'x_lo': np.s_[0, :], 'x_hi': np.s_[-2, :], 'y_lo': np.s_[:, 0], 'y_hi': np.s_[:, -2]}
 
 
 def _check_polarization(polarization):
     if polarization not in _POLARIZATIONS:
         raise ValueError(f"polarization must be 'ez' (E_z, H_x, H_y) or 'hz' (H_z, E_x, E_y), got {polarization!r}")
+
+
+def _set_outer_rows(field, config, bc_types, sign, xp):
+    """Outermost cell-centre row of every face (FACES order) whose type is in `bc_types` = sign x its inner neighbour:
+    0 zeroes it, 1 copies the neighbour, -1 copies it negated in place (out=, no per-step temporary)."""
+    for face in FACES:
+        if getattr(config, face) in bc_types:
+            outer, inner = _CENTRE_ROWS[face]
+            if sign == 0:
+                field[outer] = 0
+            elif sign > 0:
+                field[outer] = field[inner]
+            else:
+                xp.negative(field[inner], out=field[outer])
 
 
 def _face_property(face):
@@ -123,14 +142,10 @@ class BoundaryConfig:
         construction and again in solver_boundary_config (settings may be reassigned in between)."""
         if not (math.isfinite(self.bloch_kx) and math.isfinite(self.bloch_ky)):
             raise ValueError(f"bloch_kx / bloch_ky must be finite [rad/m], got {self.bloch_kx!r}, {self.bloch_ky!r}")
-        for axis_name, lo, hi in [('x', self.x_lo, self.x_hi),
-                                   ('y', self.y_lo, self.y_hi)]:
-            periodic_types = {BCType.PERIODIC, BCType.BLOCH}
-            if lo in periodic_types or hi in periodic_types:
-                if lo != hi:
-                    raise ValueError(
-                        f"{axis_name}: periodic/bloch BCs must be paired. "
-                        f"Got {lo.value}/{hi.value}")
+        periodic_types = {BCType.PERIODIC, BCType.BLOCH}
+        for axis_name, lo, hi in (('x', self.x_lo, self.x_hi), ('y', self.y_lo, self.y_hi)):
+            if (lo in periodic_types or hi in periodic_types) and lo != hi:
+                raise ValueError(f"{axis_name}: periodic/bloch BCs must be paired. Got {lo.value}/{hi.value}")
 
         if self.needs_cpml:
             if int(self.cpml_npml) != self.cpml_npml or self.cpml_npml < 1:
@@ -146,17 +161,11 @@ class BoundaryConfig:
 
     @property
     def needs_cpml(self) -> bool:
-        return any(s == BCType.CPML for s in
-                   [self.x_lo, self.x_hi, self.y_lo, self.y_hi])
+        return any(getattr(self, face) == BCType.CPML for face in FACES)
 
     @property
     def cpml_sides(self):
-        return {
-            'x_lo': self.x_lo == BCType.CPML,
-            'x_hi': self.x_hi == BCType.CPML,
-            'y_lo': self.y_lo == BCType.CPML,
-            'y_hi': self.y_hi == BCType.CPML,
-        }
+        return {face: getattr(self, face) == BCType.CPML for face in FACES}
 
     @property
     def periodic_x(self) -> bool:
@@ -188,17 +197,13 @@ class BoundaryConfig:
     @property
     def npml_sides(self):
         """Domain padding cells per face: cpml_npml on cpml faces, MIRROR_GHOST_CELLS on mirror faces, else 0."""
-        sides = {}
-        for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi'):
-            bc_type = getattr(self, face)
-            sides[face] = (self.cpml_npml if bc_type == BCType.CPML
-                           else MIRROR_GHOST_CELLS if bc_type in MIRROR_TYPES else 0)
-        return sides
+        return {face: (self.cpml_npml if getattr(self, face) == BCType.CPML
+                       else MIRROR_GHOST_CELLS if getattr(self, face) in MIRROR_TYPES else 0) for face in FACES}
 
     @property
     def ghost_faces(self):
         """Mirror faces, whose padding cell copies the window edge cell's width (core.mesh cell_spacings)."""
-        return tuple(face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi') if getattr(self, face) in MIRROR_TYPES)
+        return tuple(face for face in FACES if getattr(self, face) in MIRROR_TYPES)
 
     @classmethod
     def all_pml(cls, npml: int = 15):
@@ -247,7 +252,7 @@ class BoundaryConfig:
         CPML settings count only when either needs CPML, bloch_kx / bloch_ky only when either has that Bloch axis."""
         if not isinstance(other, BoundaryConfig):
             return ('type',)
-        names = ['x_lo', 'x_hi', 'y_lo', 'y_hi']
+        names = list(FACES)
         if self.needs_cpml or other.needs_cpml:
             names += ['cpml_npml', 'cpml_order', 'cpml_sigma_factor', 'cpml_kappa_max', 'cpml_alpha_max']
         if self.bloch_x or other.bloch_x:
@@ -335,16 +340,9 @@ class BoundaryManager:
     def apply_h_walls(self, hx, hy):
         """Tangential H = 0 on the pmc planes (H_y on x faces, H_x on y faces): the inner face of the outermost cell
         (face 0 / n-2, as apply_exy_walls), where apply_ez_walls copies the E_z row."""
-        c = self.config
-
-        if c.x_lo == BCType.PMC:
-            hy[0, :] = 0
-        if c.x_hi == BCType.PMC:
-            hy[-2, :] = 0
-        if c.y_lo == BCType.PMC:
-            hx[:, 0] = 0
-        if c.y_hi == BCType.PMC:
-            hx[:, -2] = 0
+        for face in FACES:
+            if getattr(self.config, face) == BCType.PMC:
+                (hy if face[0] == 'x' else hx)[_PLANE_FACE_ROWS[face]] = 0
 
     def apply_e_post(self, hx, hy, ez, cb):
         """CPML psi update from H_x / H_y + correction of E_z (cb = the engine's live E coefficient), then the
@@ -356,37 +354,11 @@ class BoundaryManager:
     def apply_ez_walls(self, ez):
         """Outer-face E_z rows: pec (E_z = 0), pmc and symmetric (E_z even: the neighbour's row copied), antisymmetric
         (E_z odd: copied negated); the H face on each plane keeps its Yee update, which vanishes for an even row."""
-        c = self.config
-
-        if c.x_lo == BCType.PEC:
-            ez[0, :] = 0
-        if c.x_hi == BCType.PEC:
-            ez[-1, :] = 0
-        if c.y_lo == BCType.PEC:
-            ez[:, 0] = 0
-        if c.y_hi == BCType.PEC:
-            ez[:, -1] = 0
-
-        if c.x_lo in _EZ_EVEN_PLANE_TYPES:
-            ez[0, :] = ez[1, :]
-        if c.x_hi in _EZ_EVEN_PLANE_TYPES:
-            ez[-1, :] = ez[-2, :]
-        if c.y_lo in _EZ_EVEN_PLANE_TYPES:
-            ez[:, 0] = ez[:, 1]
-        if c.y_hi in _EZ_EVEN_PLANE_TYPES:
-            ez[:, -1] = ez[:, -2]
-
-        # In-place negation (out=) avoids a per-step temporary. A corner cell takes both of its faces' copies; each
-        # overwrites the whole row / column from the already pinned neighbour, so the order does not matter.
-        xp = self.xp
-        if c.x_lo == BCType.ANTISYMMETRIC:
-            xp.negative(ez[1, :], out=ez[0, :])
-        if c.x_hi == BCType.ANTISYMMETRIC:
-            xp.negative(ez[-2, :], out=ez[-1, :])
-        if c.y_lo == BCType.ANTISYMMETRIC:
-            xp.negative(ez[:, 1], out=ez[:, 0])
-        if c.y_hi == BCType.ANTISYMMETRIC:
-            xp.negative(ez[:, -2], out=ez[:, -1])
+        # A corner cell takes both of its faces' copies; each overwrites the whole row / column from the already pinned
+        # neighbour, so the order does not matter.
+        _set_outer_rows(ez, self.config, (BCType.PEC,), 0, self.xp)
+        _set_outer_rows(ez, self.config, _EZ_EVEN_PLANE_TYPES, 1, self.xp)
+        _set_outer_rows(ez, self.config, (BCType.ANTISYMMETRIC,), -1, self.xp)
 
     # ---- H_z polarisation (H_z at cell centres, E_x on hi-y faces, E_y on hi-x faces) ----------------------------
     # Engine order per step: H_z kernel, apply_hz_post, E kernel, apply_exy_post; each post runs the fused CPML psi
@@ -408,36 +380,9 @@ class BoundaryManager:
 
     def apply_hz_walls(self, hz):
         """Outer-face H_z rows: pec / antisymmetric (H_z even), pmc (H_z = 0) and symmetric (H_z odd) faces."""
-        c = self.config
-
-        if c.x_lo in _HZ_PEC_PLANE_TYPES:
-            hz[0, :] = hz[1, :]
-        if c.x_hi in _HZ_PEC_PLANE_TYPES:
-            hz[-1, :] = hz[-2, :]
-        if c.y_lo in _HZ_PEC_PLANE_TYPES:
-            hz[:, 0] = hz[:, 1]
-        if c.y_hi in _HZ_PEC_PLANE_TYPES:
-            hz[:, -1] = hz[:, -2]
-
-        if c.x_lo == BCType.PMC:
-            hz[0, :] = 0
-        if c.x_hi == BCType.PMC:
-            hz[-1, :] = 0
-        if c.y_lo == BCType.PMC:
-            hz[:, 0] = 0
-        if c.y_hi == BCType.PMC:
-            hz[:, -1] = 0
-
-        # In-place negation (out=) avoids a per-step temporary.
-        xp = self.xp
-        if c.x_lo == BCType.SYMMETRIC:
-            xp.negative(hz[1, :], out=hz[0, :])
-        if c.x_hi == BCType.SYMMETRIC:
-            xp.negative(hz[-2, :], out=hz[-1, :])
-        if c.y_lo == BCType.SYMMETRIC:
-            xp.negative(hz[:, 1], out=hz[:, 0])
-        if c.y_hi == BCType.SYMMETRIC:
-            xp.negative(hz[:, -2], out=hz[:, -1])
+        _set_outer_rows(hz, self.config, _HZ_PEC_PLANE_TYPES, 1, self.xp)
+        _set_outer_rows(hz, self.config, (BCType.PMC,), 0, self.xp)
+        _set_outer_rows(hz, self.config, (BCType.SYMMETRIC,), -1, self.xp)
 
     def apply_exy_post(self, hz, ex, ey, cb_x, cb_y):
         """CPML psi update from H_z + correction of E_x / E_y (cb_x / cb_y = the engine's live face coefficients), then
@@ -448,16 +393,9 @@ class BoundaryManager:
 
     def apply_exy_walls(self, ex, ey):
         """Tangential E = 0 on the pec / antisymmetric faces (E_y on x faces, E_x on y faces)."""
-        c = self.config
-
-        if c.x_lo in _HZ_PEC_PLANE_TYPES:
-            ey[0, :] = 0
-        if c.x_hi in _HZ_PEC_PLANE_TYPES:
-            ey[-2, :] = 0
-        if c.y_lo in _HZ_PEC_PLANE_TYPES:
-            ex[:, 0] = 0
-        if c.y_hi in _HZ_PEC_PLANE_TYPES:
-            ex[:, -2] = 0
+        for face in FACES:
+            if getattr(self.config, face) in _HZ_PEC_PLANE_TYPES:
+                (ey if face[0] == 'x' else ex)[_PLANE_FACE_ROWS[face]] = 0
 
 
 # ---- CPML grading profiles (single source of truth) ------------------------------------------------------------

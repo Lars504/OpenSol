@@ -41,7 +41,7 @@ from ...solvers.sparse_direct import factorize_host, size_issue
 from .boundaries import cpml_axis_profiles
 from .cross_section_modes import assemble_cross_section, cross_section_layout, fill_images, to_centres
 from .eigenfrequency import EigenSolve, solve_resonances
-from .operators import bloch_wrap_phases, pml_stretch
+from .operators import axis_stretch, bloch_wrap_phases
 from .placement import dipole_faces
 from .yee_grid import yee_inverse_spacings
 
@@ -166,11 +166,9 @@ def _symmetrizer(layout, boundary_config, pml_dx, omega, active_index):
     face / centre length times the CPML stretch of that face / centre row at omega (yee_operators' stretches)."""
     lengths = []
     for axis, axis_layout in (('x', layout.x), ('y', layout.y)):
-        profile = cpml_axis_profiles(boundary_config, axis_layout.centre_length.size, axis, pml_dx)
-        lengths.append((axis_layout.centre_length * pml_stretch(profile.sigma_e, profile.kappa_e, profile.alpha_e,
-                                                                 omega),
-                        axis_layout.face_length * pml_stretch(profile.sigma_h, profile.kappa_h, profile.alpha_h,
-                                                               omega)))
+        stretch_e, stretch_h = axis_stretch(
+            cpml_axis_profiles(boundary_config, axis_layout.centre_length.size, axis, pml_dx), omega)
+        lengths.append((axis_layout.centre_length * stretch_e, axis_layout.face_length * stretch_h))
     (x_centre, x_face), (y_centre, y_face) = lengths
     full = np.concatenate((np.outer(x_face, y_centre).ravel(), np.outer(x_centre, y_face).ravel(),
                            -np.outer(x_centre, y_centre).ravel()))

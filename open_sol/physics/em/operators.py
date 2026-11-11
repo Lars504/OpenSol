@@ -86,11 +86,7 @@ def difference_matrix_1d(inverse_spacing, location, periodic, stretch=None, xp=n
         row_index, col_index = np.append(row_index, 0).astype(np.int32), np.append(col_index, 0).astype(np.int32)
         data = np.append(data, weights[0])
     if sparse:
-        sparse_module = _sparse_module(xp)
-        if xp is not np:
-            data, row_index, col_index = xp.asarray(data), xp.asarray(row_index), xp.asarray(col_index)
-        return sparse_module.coo_matrix((data, (row_index, col_index)), shape=(n_cells, n_cells),
-                                        dtype=data.dtype).tocsr()
+        return _sparse_1d(data, row_index, col_index, n_cells, xp)
     dense = np.zeros((n_cells, n_cells), dtype=data.dtype)
     np.add.at(dense, (row_index, col_index), data)
     return xp.asarray(dense)
