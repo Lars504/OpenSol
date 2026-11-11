@@ -7,7 +7,8 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from ..core.constants import FACES, FACES_3D
 from .expressions import (ExpressionError, is_identifier, is_reserved_name, referenced_names,
                           rename_in_expression)
-from .schema import INTERFACE_VARIABLES, MESH_PARAMS, output_field_names, scalar_output_names, state_field_names
+from .schema import (INTERFACE_VARIABLES, MESH_PARAMS, known_physics, output_field_names, scalar_output_names,
+                     state_field_names)
 
 # version 2 adds DomainSpec.size_z and the geometry z params (3D); version 1 files load unchanged (read as version 2)
 SPEC_VERSION = 2
@@ -719,11 +720,8 @@ class ModelSpec:
         parameter.name = new
         for other in self.parameters:
             other.expression = _rename_value(other.expression, rename)
-        self.domain.size_x = _rename_value(self.domain.size_x, rename)
-        self.domain.size_y = _rename_value(self.domain.size_y, rename)
-        self.domain.size_z = _rename_value(self.domain.size_z, rename)
-        self.domain.radius_min = _rename_value(self.domain.radius_min, rename)
-        self.domain.angle_min = _rename_value(self.domain.angle_min, rename)
+        for name in ('size_x', 'size_y', 'size_z', 'radius_min', 'angle_min'):
+            setattr(self.domain, name, _rename_value(getattr(self.domain, name), rename))
         for mesh_spec in self.meshes:
             _rename_typed(vars(mesh_spec), MESH_PARAMS, _PARAMETER_EXPRESSION_KINDS, rename)
             for refinement in mesh_spec.refinements:
@@ -938,11 +936,7 @@ class ModelSpec:
 
     def _typed_param_dicts(self, registry):
         """Yield (values dict, Param tuple) for settings, features, couplings, solvers and study of registered types."""
-        for physics in self.physics:
-            try:
-                physics_type = registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(self, registry):
             if isinstance(physics.settings, dict):
                 yield physics.settings, physics_type.settings
             for feature in physics.features:

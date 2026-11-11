@@ -200,6 +200,15 @@ class _Validator:
             self.error(path, internal_error_text(owner, exc))
             return None, False
 
+    def _known_type(self, path, lookup, name):
+        """lookup(name) (a registry or PhysicsType.feature_type lookup), or None after an error at path naming the
+        registered names."""
+        try:
+            return lookup(name)
+        except KeyError as exc:
+            self.error(path, error_message(exc))
+            return None
+
     def _delegate_issues(self, path, owner, callback, *args):
         """Append the Issues returned by a type's validate callback (iterated inside the exception guard)."""
         result, ok = self._call(path, owner, lambda: list(callback(*args) or ()))
@@ -401,6 +410,17 @@ class _Validator:
             elif selection.side != '':
                 self.error(path, "side applies to 'interface' selections only; clear it")
 
+    def _check_selection(self, path, selection, kind, *entity_rules):
+        """'selection: ...' errors at path for an entity list (_entity_problems; entity_rules: object_kinds,
+        allow_outer_faces, allow_interior), then the empty-object warnings of its domain / boundary objects; returns
+        (problems, expanded entity list or None)."""
+        problems, expanded = self._entity_problems(selection, kind, *entity_rules)
+        for problem in problems:
+            self.error(path, f'selection: {problem}')
+        if expanded and not problems and kind in ('domain', 'boundary'):
+            self._check_object_cells(path, expanded)
+        return problems, expanded
+
     def _entity_problems(self, entities, kind, object_kinds=(), allow_outer_faces=True, allow_interior=True):
         """(messages, expanded entity list or None) for an entity list that must hold `kind` entities."""
         if not isinstance(entities, (list, tuple)):
@@ -511,13 +531,9 @@ class _Validator:
                     self.error(path, f"property '{key}': {message}")
             if present_reads is not None:
                 self._check_unread_properties(path, properties, property_params, *present_reads)
-            problems, expanded = self._entity_problems(material.selection, 'domain')
-            for problem in problems:
-                self.error(path, f'selection: {problem}')
+            problems, expanded = self._check_selection(path, material.selection, 'domain')
             if expanded == [] and not problems:
                 self.warning(path, 'not assigned to any domain; it has no effect')
-            if expanded and not problems:
-                self._check_object_cells(path, expanded)
             expanded_selections.append(None if problems else expanded)
         self._check_material_overrides(expanded_selections)
 
@@ -655,19 +671,8 @@ class _Validator:
             _rasterised_cell_count(name, shapes, x_centres, y_centres) for name in own_objects + winner_objects)
         if tested_cells > MAX_COVERAGE_TEST_CELLS:
             return None
-        if own_objects:
-            kept = np.zeros((len(x_centres), len(y_centres)), dtype=bool)
-            for name in own_objects:
-                window, mask = rasterize_window(name, shapes, x_centres, y_centres, np)
-                kept[window] |= mask
-        else:
-            kept = np.ones((len(x_centres), len(y_centres)), dtype=bool)
-        if not kept.any():
-            return False   # selects no cell centre: the empty-object check reports it
-        for name in winner_objects:
-            window, mask = rasterize_window(name, shapes, x_centres, y_centres, np)
-            kept[window] &= ~mask
-        return not kept.any()
+        return _covered_by_winners((len(x_centres), len(y_centres)), own_objects, winner_objects,
+                                   lambda name: rasterize_window(name, shapes, x_centres, y_centres, np))
 
     def _overridden_in_3d(self, mesh, x_centres, y_centres, own_entities, own_objects, winner_objects):
         """_overridden_on_mesh on a 3D tensor window: the same test on the (x, y, z) window cell centres, one
@@ -684,16 +689,8 @@ class _Validator:
                            for name in own_objects + winner_objects)
         if int(np.prod(window_shape)) + object_cells > MAX_COVERAGE_TEST_CELLS:
             return None
-        kept = np.zeros(window_shape, dtype=bool) if own_objects else np.ones(window_shape, dtype=bool)
-        for name in own_objects:
-            window, mask = rasterize_box(name, shapes, *centres, np)
-            kept[window] |= mask
-        if not kept.any():
-            return False   # selects no cell centre: the empty-object check reports it
-        for name in winner_objects:
-            window, mask = rasterize_box(name, shapes, *centres, np)
-            kept[window] &= ~mask
-        return not kept.any()
+        return _covered_by_winners(window_shape, own_objects, winner_objects,
+                                   lambda name: rasterize_box(name, shapes, *centres, np))
 
     def _domain_objects(self, entities):
         """Resolved domain-object names among expanded entities ('all', outer faces and failed objects dropped)."""
@@ -774,8 +771,8 @@ class _Validator:
 
     # ---- physics and features ----
     def _physics_mesh(self, physics, physics_type=None):
-        """(mesh name the physics' checks see, or None: unknown mesh name or a mesh kind its type (and feature_type,
-        when given) does not run on, so no estimate)."""
+        """Mesh name of the physics (the one its checks see), or None: an unknown mesh name (reported at the physics)
+        or, with physics_type, a mesh kind the type does not run on (so no estimate)."""
         mesh_spec = self.spec.find_mesh(physics)
         if mesh_spec is None:
             return None
@@ -787,10 +784,8 @@ class _Validator:
         boundary_providers = {}   # mesh name -> [(physics name, boundary config)] of the physics defining one
         for physics in self.spec.physics:
             path = ('physics', physics.name)
-            try:
-                physics_type = self.registry.physics_type(physics.type)
-            except KeyError as exc:
-                self.error(path, error_message(exc))
+            physics_type = self._known_type(path, self.registry.physics_type, physics.type)
+            if physics_type is None:
                 continue
             model_dimensions = self.spec.dimensions
             if model_dimensions not in physics_type.dimensions:
@@ -927,10 +922,8 @@ class _Validator:
                 if not feature.enabled:
                     continue
                 path = ('feature', physics.name, feature.name)
-                try:
-                    feature_type = physics_type.feature_type(feature.type)
-                except KeyError as exc:
-                    self.error(path, error_message(exc))
+                feature_type = self._known_type(path, physics_type.feature_type, feature.type)
+                if feature_type is None:
                     continue
                 if feature_type.result_kind is not None and feature.name in field_names:
                     self.error(path, f"a result feature named like the output field '{physics.name}."
@@ -960,7 +953,7 @@ class _Validator:
         must share one mesh."""
         if not isinstance(raw_values, dict):
             return
-        own_mesh = self._mesh_name_of(physics)
+        own_mesh = self._physics_mesh(physics)
         for param in feature_type.params:
             if param.ref_kind != 'physics' or param.name not in raw_values:
                 continue
@@ -969,16 +962,11 @@ class _Validator:
                 if not isinstance(other_name, str):   # a malformed value: reported by _check_values
                     continue
                 other = self.physics_by_name.get(other_name)
-                other_mesh = self._mesh_name_of(other) if other is not None else None
+                other_mesh = self._physics_mesh(other) if other is not None else None
                 if own_mesh is not None and other_mesh is not None and other_mesh != own_mesh:
                     self.error(path, f"{param.name} '{other_name}' runs on mesh '{other_mesh}', '{physics.name}' on "
                                      f"'{own_mesh}': a feature reading another physics needs both on one mesh "
                                      f"(set the mesh of '{other_name}' to '{own_mesh}' or the reverse)")
-
-    def _mesh_name_of(self, physics):
-        """Name of the physics' mesh, None for an unknown mesh name (reported at the physics)."""
-        mesh_spec = self.spec.find_mesh(physics)
-        return None if mesh_spec is None else mesh_spec.name
 
     def _check_feature_selection(self, path, feature_type, selection):
         kind = feature_type.selection_kind
@@ -986,14 +974,10 @@ class _Validator:
             if selection:
                 self.warning(path, f'{feature_type.label} takes no selection; the selection is ignored')
             return
-        problems, expanded = self._entity_problems(selection, kind, feature_type.object_kinds,
-                                                   feature_type.allow_outer_faces, feature_type.allow_interior)
-        for problem in problems:
-            self.error(path, f'selection: {problem}')
+        _, expanded = self._check_selection(path, selection, kind, feature_type.object_kinds,
+                                            feature_type.allow_outer_faces, feature_type.allow_interior)
         if expanded is None:
             return
-        if not problems and kind in ('domain', 'boundary'):
-            self._check_object_cells(path, expanded)
         count = len(expanded)
         wanted = (' or '.join(feature_type.object_kinds) + ' object') if feature_type.object_kinds \
             else _ENTITY_KIND_TEXT[kind]
@@ -1014,10 +998,8 @@ class _Validator:
             if not coupling.enabled:
                 continue
             path = ('coupling', coupling.name)
-            try:
-                coupling_type = self.registry.coupling_type(coupling.type)
-            except KeyError as exc:
-                self.error(path, error_message(exc))
+            coupling_type = self._known_type(path, self.registry.coupling_type, coupling.type)
+            if coupling_type is None:
                 continue
             errors_before = self.n_errors
             for role, physics_name in (('source', coupling.source), ('target', coupling.target)):
@@ -1059,8 +1041,8 @@ class _Validator:
     def _check_coupling_meshes(self, path, coupling, coupling_type):
         """S7.2: source and target on different meshes need a CouplingType.mesh_transfer (error naming both physics and
         the fix); with one, an info names the transfer the build makes."""
-        source_mesh = self._mesh_name_of(self.physics_by_name[coupling.source])
-        target_mesh = self._mesh_name_of(self.physics_by_name[coupling.target])
+        source_mesh = self._physics_mesh(self.physics_by_name[coupling.source])
+        target_mesh = self._physics_mesh(self.physics_by_name[coupling.target])
         if source_mesh is None or target_mesh is None or source_mesh == target_mesh:
             return
         if coupling_type.mesh_transfer is None:
@@ -1314,7 +1296,7 @@ class _Validator:
             return
         meshes = {}   # physics name -> mesh name (known meshes only)
         for physics in self.spec.physics:
-            name = self._mesh_name_of(physics)
+            name = self._physics_mesh(physics)
             if name is not None:
                 meshes[physics.name] = name
         em_physics = [physics.name for physics, physics_type, _ in self.physics_entries
@@ -1492,10 +1474,8 @@ class _Validator:
         node_values = {}   # solver node name -> (SolverType, resolved values) of the nodes without errors
         for node in spec.solvers:
             path = ('solver', node.name)
-            try:
-                solver_type = self.registry.solver_type(node.type)
-            except KeyError as exc:
-                self.error(path, error_message(exc))
+            solver_type = self._known_type(path, self.registry.solver_type, node.type)
+            if solver_type is None:
                 continue
             if not self._check_values(path, solver_type.params, node.settings, 'setting', frozenset()):
                 continue
@@ -1658,11 +1638,7 @@ class _Validator:
         path = ('study',)
         if not self.spec.physics:
             self.error(path, 'the model has no physics; add one to compute anything')
-        try:
-            study_type = self.registry.study_type(study.type)
-        except KeyError as exc:
-            self.error(path, error_message(exc))
-            study_type = None
+        study_type = self._known_type(path, self.registry.study_type, study.type)
         if study_type is not None:
             background = study_type.background_study
             for physics, physics_type, _ in self.physics_entries:
@@ -1904,9 +1880,8 @@ class _Validator:
                 self.error(path, f"stored field '{entry}': no physics named '{physics_name}'; valid physics: "
                                  f"{_name_list(other.name for other in self.spec.physics)}")
                 continue
-            try:
-                physics_type = self.registry.physics_type(physics.type)
-            except KeyError:
+            physics_type = self._registered_type(physics)
+            if physics_type is None:
                 continue   # reported at the physics
             components = [info.name for info in physics_type.output_fields]
             if component not in components:
@@ -2112,11 +2087,7 @@ class _Validator:
                     self.error(path, f"selection: operation '{GLOBAL_DERIVED_OPERATION}' reads no fields; clear the "
                                      'selection')
             elif derived.source is None and interface is None:   # an interface: checked at its selection node
-                problems, expanded = self._entity_problems(derived.selection, 'domain')
-                for problem in problems:
-                    self.error(path, f'selection: {problem}')
-                if expanded and not problems:
-                    self._check_object_cells(path, expanded)
+                self._check_selection(path, derived.selection, 'domain')
             elif derived.source is not None and derived.selection:
                 self.error(path, 'selection: a derived value of a feature result reduces over its samples; '
                                  'clear the selection')
@@ -2143,7 +2114,7 @@ class _Validator:
         physics_order = [physics.name for physics in self.spec.physics]
         named = sorted({field_physics[name][0] for name in names if name in field_physics},
                        key=lambda name: physics_order.index(name) if name in physics_order else len(physics_order))
-        meshes = {name: self._mesh_name_of(self.physics_by_name[name]) for name in named
+        meshes = {name: self._physics_mesh(self.physics_by_name[name]) for name in named
                   if name in self.physics_by_name}
         if len({mesh for mesh in meshes.values() if mesh is not None}) < 2:
             return
@@ -2677,6 +2648,21 @@ def _window_edges(mesh):
     sides = mesh.npml_sides
     return (mesh.x_edges[sides['x_lo']:mesh.nx - sides['x_hi'] + 1],
             mesh.y_edges[sides['y_lo']:mesh.ny - sides['y_hi'] + 1])
+
+
+def _covered_by_winners(shape, own_objects, winner_objects, rasterize_object):
+    """_overridden_on_mesh on a tensor window of `shape` cell centres: False when the own objects (none: every cell)
+    select no cell, else whether the winner objects take every selected one (rasterize_object(name) -> window, mask)."""
+    kept = np.zeros(shape, dtype=bool) if own_objects else np.ones(shape, dtype=bool)
+    for name in own_objects:
+        window, mask = rasterize_object(name)
+        kept[window] |= mask
+    if not kept.any():
+        return False   # selects no cell centre: the empty-object check reports it
+    for name in winner_objects:
+        window, mask = rasterize_object(name)
+        kept[window] &= ~mask
+    return not kept.any()
 
 
 def _rasterised_cell_count(name, shapes, x_centres, y_centres):
