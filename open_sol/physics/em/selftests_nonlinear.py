@@ -368,9 +368,9 @@ def nonlinear_silicon_slab_spec():
     size_x, size_y = 8e-6, 0.1e-6
     return ModelSpec(
         title=TEMPLATE_LABEL, domain=DomainSpec(size_x=size_x, size_y=size_y),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': 1.5e-6, 'y0': 0.0, 'x1': 1.5e-6, 'y1': size_y}),
+        geometry=[vertical_line('source_line', 1.5e-6, 0.0, size_y),
                   GeometrySpec('slab', 'rectangle', {'x0': 3e-6, 'y0': 0.0, 'x1': 5e-6, 'y1': size_y}),
-                  GeometrySpec('flux_line', 'line', {'x0': 6.5e-6, 'y0': 0.0, 'x1': 6.5e-6, 'y1': size_y}),
+                  vertical_line('flux_line', 6.5e-6, 0.0, size_y),
                   GeometrySpec('probe_point', 'point', {'x': 6.01e-6, 'y': 0.05e-6})],
         materials=[MaterialSpec('silicon', properties={'eps_r': 12.1}, selection=['slab'])],
         physics=[PhysicsSpec(_PHYSICS_NAME, 'em_fdtd_ez', settings=dict(PERIODIC_Y), features=[

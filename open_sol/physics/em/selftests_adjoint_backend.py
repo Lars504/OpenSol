@@ -10,7 +10,7 @@ from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import worst_item
 from .selftests_adjoint import (_GRADIENT_VALUE, _OBJECTIVES, _PHYSICS_NAME, _XY_GRADIENT_VALUE, _adjoint_specs,
                                 _gradient_run, _objective_value, _xy_adjoint_specs)
-from .selftests_fdfd_backend import _difference, _role_backends
+from .selftests_fdfd_backend import _difference, _role_backends, _run_name
 from .selftests_optimization import _DESIGN_FEATURE, _gap_spec
 
 _BACKENDS = ('cpu', 'gpu')
@@ -23,10 +23,6 @@ _OPTIMIZATION_MIN_GAIN = 1.1     # J_final / J_initial of the cpu run at least (
 _TOLERANCE = 1e-5                # relative: complex128 assembly; host SuperLU on the cpu, Automatic on the gpu (cuDSS
                                  # double with nvmath-python: ~1e-10, well inside)
 _OPTIMIZATION_TOLERANCE = 1e-4   # relative per history point: L-BFGS-B follows round-off differences of the gradient
-
-
-def _run_name(group, key, backend):
-    return f'{group}__{key}__{backend}'
 
 
 def _optimization_spec():
