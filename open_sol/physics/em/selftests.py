@@ -9,6 +9,8 @@ import numpy as np
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import PERIODIC_Y, vertical_line, worst_item
+# re-exported for the sibling em selftests modules (imported from .selftests)
+from ...model.selftest_helpers import normalized_result, tolerance_units_result  # noqa: F401
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_hz import (cw_duration, fresnel_case, fresnel_device_spec, mie_drude_cylinder_case, plane_wave_case,
                            steady_peak)
@@ -154,20 +156,6 @@ def _wall_specs():
 
 
 # ---- case records (shared by the em selftests modules) ----
-def normalized_result(normalized, details, **recorded):
-    """Case record of {item: error / its tolerance} (NaN the worst): measured = error = the worst value, tolerance 1;
-    `details` (updated in place) gains `recorded` ({'normalized_errors': normalized} when none) and worst_item."""
-    item, worst = worst_item(normalized)
-    details.update(recorded or {'normalized_errors': normalized}, worst_item=item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
-
-
-def tolerance_units_result(errors, tolerances, details):
-    """normalized_result of errors[item] / tolerances[item], recording the errors themselves (details 'errors')."""
-    return normalized_result({item: error / tolerances[item] for item, error in errors.items()}, details,
-                             errors=errors)
-
-
 # ---- checks ----
 def _hankel0_modulus(argument):
     """|H0^(2)(x)| at x = argument (scipy.special.hankel2)."""

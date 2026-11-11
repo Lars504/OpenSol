@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import SubChecks
+from ...model.selftest_helpers import failed_count_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec,
                            StudySpec)
 
@@ -33,15 +33,6 @@ _DURATION = 0.5e-12                   # s: ~115 periods of TM101, ~120 decimated
 _OPERATOR_TOLERANCE = 1.5e-2
 _RING_DOWN_TOLERANCE = 1e-3           # FDTD frequency vs the leap-frog frequency of the host operator (same arrays)
 _LARGEST_TOLERANCE = 1e-4             # ARPACK tolerance of the largest eigenvalue
-
-
-def _failed_count_result(checks, details=None):
-    """Case record of named sub-checks {name: (value, tolerance)} (SubChecks.add_error each; the em3d selftests
-    share it): error = number failed, tolerance 0."""
-    entries = SubChecks()
-    for name, (value, tolerance) in checks.items():
-        entries.add_error(name, value, tolerance)
-    return entries.result(**(details or {}))
 
 
 def _cavity_spec(conformal, backend='gpu'):
@@ -186,7 +177,7 @@ def _check_cavity(results_by_name):
                         'closed_form_error': abs(measured / exact_frequency - 1.0)}
     if not ring_down_checked:
         checks['runs'] = (math.inf, 0.0)
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 _CAVITY_TEXT = (f'vacuum sphere of radius {_RADIUS * 1e9:g} nm (11.37 cells of {_CELL * 1e9:g} nm, centre (0.31, 0.17, '

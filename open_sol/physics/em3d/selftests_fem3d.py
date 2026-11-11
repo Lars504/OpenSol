@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from .selftests_conformal3d import _failed_count_result
+from ...model.selftest_helpers import failed_count_result
 
 _LENGTH = 1e-6                    # cube side [m]
 _UNIT = (math.pi / _LENGTH) ** 2  # (pi / L)^2: PEC cube eigenvalues are integer multiples
@@ -138,7 +138,7 @@ def _check_sparse_mass(_):
     nearest = [float(np.min(np.abs(exact_omegas - omega.real)) / omega.real) for omega in results['sparse']]
     agreement = (float(np.max(np.abs(results['sparse'] - results['diagonal']) / np.abs(results['diagonal'])))
                  if len(results['sparse']) == len(results['diagonal']) else math.inf)
-    return _failed_count_result(
+    return failed_count_result(
         {'found': (abs(len(results['sparse']) - 4), 0.0), 'sparse_equals_diagonal': (agreement, _SPARSE_MASS_RTOL),
          'sparse_vs_dense_eig': (max(nearest, default=math.inf), _SPARSE_MASS_RTOL)},
         {'omegas_sparse': [[omega.real, omega.imag] for omega in results['sparse']]})
@@ -176,7 +176,7 @@ def _check_pec_cube(_):
         checks[f'mirror_{mirror}'] = (error, _MIRROR_RTOL)
         details[f'mirror_{mirror}'] = {'eigenvalues_over_unit': (nonzero[:6] / _UNIT).tolist(),
                                        'expected_over_unit': (reference / _UNIT).tolist()}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- em3d_fem_eigen_solver ----
@@ -211,7 +211,7 @@ def _check_eigen_solver(_):
               'pml_complex': (float(not np.abs(operator.data.imag).max() > 0.0), 0.0)}
     details = {'unknowns': physics.n_unknowns, 'omega_errors': errors, 'q_factors': [r.q_factor for r in solve.resonances],
                'solve_summary': solve.summary(), 'pml_unknowns': shell.n_unknowns}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- em3d_fem_bloch_lattice ----
@@ -276,7 +276,7 @@ def _check_bloch_lattice(_):
                    'solver_lu': (float(physics.system.symmetric), 0.0),
                    'bloch_phase': (mismatch, _BLOCH_PHASE_TOLERANCE)})
     details['solver'] = {'unknowns': physics.n_unknowns, 'omega_errors': errors, 'solve_summary': solve.summary()}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- em3d_fem_model_cube (model layer, T4b) ----
@@ -321,7 +321,7 @@ def _check_model_cube(results_by_name):
     expected = _nearest([C0 * math.sqrt(value / _SOLVER_EPS) for value in nonzero], omega_target, len(found))
     error = _pairwise_error([omega.real for omega in found], expected) if len(found) == _MODEL_RESONANCES else math.inf
     inverse_q = max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf)
-    return _failed_count_result(
+    return failed_count_result(
         {'omega': (error, _SOLVER_RTOL), 'inverse_q': (inverse_q, _SOLVER_RTOL)},
         {'found_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in found],
          'expected_wavelengths': [2.0 * math.pi * C0 / omega for omega in expected]})
@@ -388,7 +388,7 @@ def _check_model_bloch(results_by_name):
     def relative(value, reference):
         return abs(value / reference - 1.0) if math.isfinite(value) else math.inf
 
-    return _failed_count_result(
+    return failed_count_result(
         {'omega': (error, _SOLVER_RTOL),
          'eps_volume': (relative(derived['eps_volume'], _SOLVER_EPS * volume), _DERIVED_EXACT_RTOL),
          'inner_eps_volume': (relative(derived['inner_eps_volume'], _SOLVER_EPS * _INNER_FRACTION * volume),

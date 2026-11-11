@@ -78,7 +78,8 @@ ones that shape everyday code:
   Chains inside physics/em: em sub file "Imports".
 - `selftests*.py`: at module level only core.constants, model.spec / schema / selftest_helpers and sibling selftests
   modules (reuse `model.selftest_helpers`, never a local copy: SubChecks for pass / fail sub-checks, worst_result /
-  scaled_worst_result, relative errors, solver_role, probe_phasor; repeat type names as literals); physics modules and
+  scaled_worst_result / normalized_result / tolerance_units_result / failed_count_result, relative errors,
+  solver_role, probe_phasor, skip_result; repeat type names as literals); physics modules and
   scipy inside their checks. Nothing else imports a selftests module at module level or in `register` (contract
   selftests_lazy): a definition imports its cases inside its selftest loader, so `get_registry()` (GUI, check,
   describe) loads only the selftests modules that hold templates (`TEMPLATE_SOURCES` in import_contracts).

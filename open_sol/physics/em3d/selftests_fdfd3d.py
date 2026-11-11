@@ -11,9 +11,10 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import failed_count_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec, SweepSpec)
-from .selftests_conformal3d import _failed_count_result, _leapfrog_frequency
+from .selftests_conformal3d import _leapfrog_frequency
 
 _PHYSICS_NAME = 'em'
 _PHYSICS_TYPE = 'em_fdfd_3d'          # literal (selftests never import the definition)
@@ -144,7 +145,7 @@ def _check_identities(_results):
                                        _IDENTITY_TOLERANCE)
     details['cpml_asymmetry_without_stretches'] = relative_asymmetry(scipy.sparse.diags(volumes) @ operator)
     details['cpml_unknowns'] = cpml_live.n_unknowns
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 def _dense_spectrum(cells, faces, window):
@@ -193,7 +194,7 @@ def _check_pec_box_discrete(_results):
     checks['sector_static_count'] = (abs(union_static - full_static), 0)
     details['sectors'] = {'full_modes': int(full_values.size), 'union_modes': int(union.size),
                           'full_static': full_static, 'union_static': union_static, 'per_sector': sectors}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- stage 1: model runs ----
@@ -273,7 +274,7 @@ def _check_box(results_by_name):
                         'expected_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in expected]}
     if not results_by_name:
         checks['runs'] = (math.inf, 0.0)
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 def _lossy_target():
@@ -339,7 +340,7 @@ def _check_lattice(results_by_name):
         expected = _nearest(_lattice_omegas(k_fraction, float(np.float32(_CELL))), omega_target, len(found))
         _add_band_checks(checks, run, found, [omega.real for omega in expected], _LATTICE_RESONANCES)
         details[run] = {'found': [omega.real for omega in found], 'expected': [omega.real for omega in expected]}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 _SECTOR_RESONANCES = 4                # per sector; the full box's 4 nearest must be among them
@@ -372,7 +373,7 @@ def _check_sectors(results_by_name):
     checks['union'] = (_pairwise_error(_nearest(union, omega_target, _SECTOR_RESONANCES), nearest_expected),
                        _RUN_TOLERANCE)
     details['expected_nearest_wavelengths'] = [2.0 * math.pi * C0 / value for value in nearest_expected]
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- FDTD ring-down vs the FDFD eigenvalues on one grid (heavy) ----
@@ -563,7 +564,7 @@ def _check_bragg(results_by_name):
                         'discrete_wavelengths': [2.0 * math.pi * C0 / omega for omega in expected],
                         'continuum_wavelengths': [2.0 * math.pi * C0 / omega
                                                   for omega in _nearest(continuum, omega_target, _BRAGG_RESONANCES)]}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- host factor ordering: minimum degree vs nested dissection (heavy, cpu) ----
@@ -615,7 +616,7 @@ def _check_ordering(_results):
     minimum_degree, nested = details['minimum_degree'], details['nested_dissection']
     details['speedup'] = minimum_degree['factor_seconds'] / max(nested['factor_seconds'], 1e-9)
     checks['fill_ratio'] = (nested['lu_bytes'] / minimum_degree['lu_bytes'], _ORDERING_FILL_RATIO)
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- template ----
