@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 # (case, runs or None = all)
@@ -16,20 +17,16 @@ def _specs():
     return {f'{case}__{run}': spec for case, runs in CASES for run, spec in case_specs(case, runs).items()}
 
 
-def _methods(owner, label, names):
-    return tuple((f'{owner}.{name}', f'{label}: {name}') for name in names)
-
-
 EME = 'open_sol.physics.eme'
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.model.study:solve_stationary', 'study: solve_stationary'),
     ('open_sol.model.study:_SnapshotRecorder.record', 'study: _SnapshotRecorder.record'),
     ('open_sol.model.study:_feature_results', 'study: _feature_results'),
-) + _methods('open_sol.model.study_optimization:_DesignProblem', 'optimization', ('evaluate', 'accept', 'record')
-) + _methods('open_sol.physics.em.design_density:DesignRegion', 'design', ('write', 'set_density', 'density_gradient')
-) + _methods(f'{EME}.solver:EMEBase', 'eme', (
+) + methods('open_sol.model.study_optimization:_DesignProblem', 'optimization', ('evaluate', 'accept', 'record')
+) + methods('open_sol.physics.em.design_density:DesignRegion', 'design', ('write', 'set_density', 'density_gradient')
+) + methods(f'{EME}.solver:EMEBase', 'eme', (
     'step', 'solve_harmonic', '_solve', '_section_modes', 'eps_sensitivity', '_port_scalars', 'port_fractions')
-) + _methods(f'{EME}.solver:EMEPhysics', 'eme 2d', (
+) + methods(f'{EME}.solver:EMEPhysics', 'eme 2d', (
     '_find_sections', '_host_stack', '_solve_section', '_reconstruct', '_fill_wall_cells', '_loss',
     '_cascade_sensitivity', '_add_section_gradients', '_sensitivity_slices', 'state')
 ) + (

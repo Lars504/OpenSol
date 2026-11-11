@@ -2,6 +2,7 @@
 cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites)."""
 import argparse
 import cProfile
+import copy
 import functools
 import importlib
 import inspect
@@ -244,6 +245,29 @@ def case_specs(case_name, runs=None, variant=None):
             raise KeyError(f"case {case_name!r} has no runs {unknown} (has: {', '.join(specs)})")
         specs = {name: specs[name] for name in runs}
     return specs
+
+
+def _scaled(value, factor):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value / factor
+    return f'({value}) / {factor}'
+
+
+def refined(spec, factor):
+    """Copy of spec with every mesh size (dx, h_min, refinement / band dx) divided by factor."""
+    spec = copy.deepcopy(spec)
+    for mesh in spec.meshes:
+        mesh.dx = _scaled(mesh.dx, factor)
+        mesh.h_min = _scaled(mesh.h_min, factor)
+        for refinement in mesh.refinements:
+            for name in ('dx', 'dx_x', 'dx_y', 'dx_z'):
+                setattr(refinement, name, _scaled(getattr(refinement, name), factor))
+        for axis in mesh.axes:
+            for band in axis.bands:
+                band.dx = _scaled(band.dx, factor)
+    return spec
 
 
 def _run_one(spec, run_dir, backend, parameters, save_arrays):
