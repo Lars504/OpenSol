@@ -9,14 +9,15 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, norm_relative_error
+from ...model.selftest_helpers import float_list, norm_relative_error, skip_result, solver_role
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverSpec,
                            StudySpec)
+from .selftests import normalized_result
 from .selftests_bor import (_BOX_R_CELLS, _BOX_Z_ROWS, _CAVITY_CELL, _CAVITY_CELLS, _CAVITY_TARGET, _DIPOLE_CELL,
                             _DIPOLE_CURRENT, _DIPOLE_PML, _DIPOLE_WAVELENGTH, _DIPOLE_WINDOW, _EIGEN_STUDY, _IDENTITY_SOURCE_ROW,
                             _IDENTITY_TOLERANCE, _PATTERN_TOLERANCE, _PHYSICS, _POWER_TOLERANCE, _RADIATION_THETA,
                             _RECYCLE_CELL, _RECYCLE_EPS, _TABLE, _TYPE, _analytic_cavity, _match,
-                            _open_dielectric_assembly, _trapezoid)
+                            _open_dielectric_assembly, _open_vacuum_grid, _trapezoid)
 from .selftests_fdfd import cpu_specs
 
 # ---- line-block solves of the order family A(m) = base + m K1 + m^2 K2 on the anisotropic identity grid of
@@ -264,16 +265,8 @@ def _order_shares(theta):
 
 def _open_vacuum_assembly():
     """BORAssembly of the em_bor_radiation grid (vacuum, cpml on r_hi and both z faces) at its wavelength."""
-    from .body_of_revolution import BORAssembly, BORMaterials
-    from .boundaries import BoundaryConfig
-    config = BoundaryConfig(x_lo='pmc', x_hi='cpml', y_lo='cpml', y_hi='cpml')
-    config.cpml_npml = _DIPOLE_PML
-    shape = (_DIPOLE_WINDOW[0] + _DIPOLE_PML, _DIPOLE_WINDOW[1] + 2 * _DIPOLE_PML)
-    widths = tuple(np.full(count, _DIPOLE_CELL) for count in shape)
-    window = (slice(0, _DIPOLE_WINDOW[0]), slice(_DIPOLE_PML, _DIPOLE_PML + _DIPOLE_WINDOW[1]))
-    materials = BORMaterials(eps=np.ones(shape, dtype=np.complex128), mu=np.ones(shape, dtype=np.complex128),
-                             pec=np.zeros(shape, dtype=bool))
-    omega = 2.0 * math.pi * C0 / _DIPOLE_WAVELENGTH
+    from .body_of_revolution import BORAssembly
+    config, widths, window, materials, omega = _open_vacuum_grid()
     return BORAssembly(widths, config, _DIPOLE_CELL, materials, omega, window=window)
 
 
@@ -479,8 +472,7 @@ def _check_model_wavelength_batch(results_by_name):
         results = results_by_name[f'line_block_{precision}']
         powers = _box_powers(results)
         deviation = float(np.max(np.abs(powers - reference))) / scale if powers.shape == reference.shape else math.inf
-        roles = ((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}
-        shifted = roles.get('shifted') or {}
+        shifted = solver_role(results, _PHYSICS, 'shifted')
         counters = shifted.get('counters') or {}
         good = (shifted.get('type') == 'line_block'
                 and float(counters.get('batched_operators', -1)) == len(_BATCH_WAVELENGTHS)
@@ -488,9 +480,7 @@ def _check_model_wavelength_batch(results_by_name):
         errors[f'{precision} power'] = deviation / tolerance
         errors[f'{precision} record'] = 0.0 if good else math.inf
         details[precision] = {'power_W': float_list(powers), 'deviation': deviation, 'counters': dict(counters)}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    details.update(normalised_errors=errors, worst_item=worst)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': 1.0, 'details': details}
+    return normalized_result(errors, details, normalised_errors=errors)
 
 
 def _cudss_driven_specs():
@@ -527,8 +517,7 @@ def _check_cudss_driven(results_by_name):
     """Per model and back end: max |P - P_SuperLU| / max |P_SuperLU| in tolerance units, and the linear record: that
     back end, _CUDSS_EXPECTED factorisations (all LDL^T) on its plans (+ one per cudss_mixed double fallback)."""
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     errors, details = {}, {}
     for model, (factors, plans) in _CUDSS_EXPECTED.items():
         reference = _cudss_compared_powers(results_by_name[f'{model}_sparse_direct'], model)
@@ -539,8 +528,7 @@ def _check_cudss_driven(results_by_name):
             powers = _cudss_compared_powers(results, model)
             deviation = (float(np.max(np.abs(powers - reference))) / scale if powers.shape == reference.shape
                          else math.inf)
-            roles = ((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}
-            counters = (roles.get('linear') or {}).get('counters') or {}
+            counters = solver_role(results, _PHYSICS).get('counters') or {}
             expected = {'back_end': back_end, 'factorizations': factors, 'cudss_symmetric_factors': factors,
                         'cudss_plans': plans + int(counters.get('cudss_double_fallbacks') or 0)}
             record = {name: counters.get(name) for name in expected}
@@ -548,9 +536,7 @@ def _check_cudss_driven(results_by_name):
             errors[f'{model} {back_end} record'] = 0.0 if record == expected else math.inf
             details[f'{model}_{back_end}'] = {'deviation': deviation, 'power_W': float_list(powers),
                                               'counters': dict(counters)}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    details.update(normalised_errors=errors, worst_item=worst)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': 1.0, 'details': details}
+    return normalized_result(errors, details, normalised_errors=errors)
 
 
 BOR_ORDER_SELFTEST_CASES = (

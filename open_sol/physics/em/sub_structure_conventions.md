@@ -1186,6 +1186,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (`directional_coupler_spec(physics_type, source_params, spectral, study)`; em_hz_directional_coupler_fdtd_vs_fdfd),
   selftests_fdfd the 'fd_joule_heating' template; graded `*_graded` Fresnel variants (`selftests_hz.graded_interface_mesh`,
   inv_dx != inv_dy) raise when the mesh fell back to uniform (`require_graded`).
+- Case records in tolerance units (worst of {item: error / tolerance}, tolerance 1) come from
+  `selftests.normalized_result` / `tolerance_units_result`, never a local copy; selftests imports selftests_hz, so
+  selftests_hz never imports it.
 
 ## Effective index 2.5D (effective_index, definition_effective_index; B4)
 - `effective_index(indices, thicknesses, wavelength, slab_polarization, mode_number, cell_size)` (host, lru-cached:

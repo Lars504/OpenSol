@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, float_list
+from ...model.selftest_helpers import PERIODIC_Y, checks_result, float_list, vertical_line
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 
@@ -87,18 +87,16 @@ def _check_pole_weights(results_by_name):
               'staircase_far': (staircase_change, 0.0)}
     entries = {name: {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
                for name, (value, tolerance) in checks.items()}
-    failed = [name for name, entry in entries.items() if not entry['passed']]
-    return {'measured': float(len(failed)), 'expected': 0.0, 'error': float(len(failed)), 'tolerance': 0.0,
-            'details': {'failed': failed, 'checks': entries, 'staircase_area_ratio': float(region.sum()) / area,
-                        'cut_cells': ez.summary(), 'cut_faces': hz.summary()}}
+    return checks_result(entries, staircase_area_ratio=float(region.sum()) / area, cut_cells=ez.summary(),
+                         cut_faces=hz.summary())
 
 
 # ---- film ----
 def _film_spec(polarization, run):
     """y-periodic strip: gaussian line source at 0.3 um, flux line at 1.3 um; run 'reference' (vacuum) or 'on' (the
     Drude film, conformal_boundaries on)."""
-    geometry = [GeometrySpec('source_line', 'line', {'x0': _SOURCE_X, 'y0': 0.0, 'x1': _SOURCE_X, 'y1': _SIZE_Y}),
-                GeometrySpec('flux_line', 'line', {'x0': _FLUX_X, 'y0': 0.0, 'x1': _FLUX_X, 'y1': _SIZE_Y})]
+    geometry = [vertical_line('source_line', _SOURCE_X, 0.0, _SIZE_Y),
+                vertical_line('flux_line', _FLUX_X, 0.0, _SIZE_Y)]
     materials = []
     if run != 'reference':
         geometry.append(GeometrySpec('film', 'rectangle', {'x0': _FILM[0], 'y0': 0.0, 'x1': _FILM[1], 'y1': _SIZE_Y}))

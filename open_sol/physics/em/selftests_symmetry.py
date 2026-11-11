@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, max_relative_error, worst_result
+from ...model.selftest_helpers import float_list, max_relative_error, vertical_line, worst_item, worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 from .selftests_fdfd import cpu_specs
@@ -213,9 +213,7 @@ def _check_mirror(results_by_name):
             full_value, half_value = float(full_derived[value_name]), float(half_derived[value_name])
             errors[f'{run}_{value_name}'] = max_relative_error(half_value, full_value)
             details[f'{run}_{value_name}'] = [full_value, half_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 # ---- parity sectors (symmetry 2.6) ----
@@ -252,9 +250,7 @@ def _check_parity(results_by_name):
             full_value = float(full.summary()['derived'][value_name])
             errors[f'{polarization}_{value_name}'] = max_relative_error(combined_value, full_value)
             details[f'{polarization}_{value_name}'] = [full_value, combined_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 # ---- parity sectors inside one study (symmetry 2.6, study setting parity_sectors) ----
@@ -312,9 +308,7 @@ def _check_parity_study(results_by_name):
             full_value = float(full.summary()['derived'][value_name])
             errors[f'{polarization}_{value_name}'] = max_relative_error(combined_value, full_value)
             details[f'{polarization}_{value_name}'] = [full_value, combined_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 def _eigen_sector_spec():
@@ -384,9 +378,7 @@ def _check_parity_eigen(results_by_name):
         details[sector] = {'orders': [list(orders) for _, orders in expected],
                            'wavelength_expected': [2.0 * math.pi * C0 / reference for reference, _ in expected],
                            'wavelength_measured': float_list([2.0 * math.pi * C0 / value.real for value in measured])}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': 1.0,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, 1.0, **details)
 
 
 # ---- parity sectors with a parameter sweep ----
@@ -522,8 +514,7 @@ def _tfsf_mirror_spec(run, half):
     block_x0, block_x1, block_half = _TFSF_BLOCK
     geometry = [_rectangle('tfsf_box', box_x0, 0.0 if half else plane - box_half, box_x1, plane + box_half),
                 _rectangle('block', block_x0, 0.0 if half else plane - block_half, block_x1, plane + block_half),
-                GeometrySpec('forward_line', 'line', {'x0': _TFSF_LINE_X, 'y0': 0.0, 'x1': _TFSF_LINE_X,
-                                                      'y1': size_y})]
+                vertical_line('forward_line', _TFSF_LINE_X, 0.0, size_y)]
     time_domain = physics_type.startswith('em_fdtd')
     plane_wave = {'amplitude': 1.0, **(_FDTD_PULSE if time_domain else {'phase': 0.0})}
     features = [FeatureSpec('plane_wave', 'plane_wave_tfsf', ['tfsf_box'], plane_wave),
@@ -571,7 +562,7 @@ def _check_tfsf_mirror(results_by_name):
 def _reciprocity_spec(polarization, lossy):
     """The two-physics parallel-plate model: 'forward' and 'backward' mode sources, mode monitors at ports A and B."""
     size_x, size_y = _RECIPROCITY_SIZE
-    geometry = [GeometrySpec(f'{name}_line', 'line', {'x0': x, 'y0': 0.0, 'x1': x, 'y1': size_y})
+    geometry = [vertical_line(f'{name}_line', x, 0.0, size_y)
                 for name, x in _RECIPROCITY_LINES]
     geometry += [_rectangle('block_1', 2.2e-6, 0.0, 2.7e-6, 0.3e-6), _rectangle('block_2', 2.7e-6, 0.3e-6, 2.9e-6,
                                                                               0.55e-6)]
@@ -646,8 +637,8 @@ def _check_reciprocity(results_by_name):
             absorbed = 1.0 - np.sum(np.abs(matrices) ** 2, axis=1)   # per incidence column: 1 - |S_.j|^2
             details[f'{run}_absorbed'] = float_list(absorbed.ravel())
             errors[f'{run}_absorption'] = 0.0 if float(np.min(absorbed)) > _RECIPROCITY_MIN_LOSS else math.inf
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst] / _RECIPROCITY_TOLERANCE,
+    worst, error = worst_item(errors)
+    return {'measured': error, 'expected': 0.0, 'error': error / _RECIPROCITY_TOLERANCE,
             'tolerance': 1.0, 'details': {'worst_item': worst, 'errors': errors, **details}}
 
 

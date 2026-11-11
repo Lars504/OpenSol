@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, glass_half_space
+from ...model.selftest_helpers import float_list, glass_half_space, vertical_line
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec, SweepSpec)
 
@@ -231,7 +231,7 @@ def _oblique_tfsf_spec(polarization):
                                                        'y1': period})]
     features = [FeatureSpec('plane_wave', 'plane_wave_tfsf', ['tfsf_box'], {'amplitude': _TFSF_AMPLITUDE, 'phase': 0.0})]
     for name, position in _TFSF_FLUX_LINES.items():
-        geometry.append(GeometrySpec(f'{name}_line', 'line', {'x0': position, 'y0': 0.0, 'x1': position, 'y1': period}))
+        geometry.append(vertical_line(f'{name}_line', position, 0.0, period))
         features.append(FeatureSpec(name, 'flux_monitor', [f'{name}_line']))
     settings = {'bc_y_lo': 'periodic', 'bc_y_hi': 'periodic', 'bloch_ky': _OBLIQUE_KY,
                 'wavelength': _BREWSTER_WAVELENGTH}

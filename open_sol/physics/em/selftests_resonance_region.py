@@ -10,6 +10,7 @@ from ...core.constants import C0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float_list
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
+from .selftests import tolerance_units_result
 from .selftests_fdfd import cpu_specs
 
 _N_RESONANCES = 3
@@ -163,16 +164,7 @@ def _check_chains(results_by_name):
     rows = element_region_rows(dofs, np.array([0, 2, 3]), np.array([True, True, False]))
     errors['element_region_rows'] = 0.0 if rows.tolist() == [True, False, False] else math.inf
     tolerances['element_region_rows'] = 0.5
-    return _outcome(errors, tolerances, details)
-
-
-def _outcome(errors, tolerances, details):
-    """measured = error = the worst errors[item] / tolerances[item] (NaN ranks worst), tolerance 1."""
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return tolerance_units_result(errors, tolerances, details)
 
 
 # ---- model runs: em_fdfd_ez resonance_table with a region ----
@@ -251,7 +243,7 @@ def _check_box(results_by_name):
             errors[f'{name} snapshots'] = abs(len(labels) - _N_RESONANCES)
             tolerances[f'{name} snapshots'] = 0.5
             details[f'{name} columns'] = columns
-    return _outcome(errors, tolerances, details)
+    return tolerance_units_result(errors, tolerances, details)
 
 
 RESONANCE_REGION_SELFTEST_CASES = (

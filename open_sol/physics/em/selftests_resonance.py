@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ...core.constants import C0, EPS0, MU0
+from ...core.constants import EPS0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import cell_centre
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec

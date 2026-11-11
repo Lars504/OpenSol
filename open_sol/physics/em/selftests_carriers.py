@@ -6,7 +6,7 @@ import numpy as np
 
 from ...core.constants import C0, ELEMENTARY_CHARGE, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import with_exact_cg
+from ...model.selftest_helpers import scaled_worst_result, with_exact_cg
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 
@@ -204,13 +204,6 @@ def pn_phase_shifter_electrostatics_spec():
     return _pn_phase_shifter_spec(True)
 
 
-def _normalized_worst(errors, tolerances):
-    """(worst item, its error / tolerance) of the named relative errors (NaN counts as the worst)."""
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    return worst, normalized[worst]
-
-
 # ---- carriers_depletion_junction: 1D abrupt junction, electrostatics -> Boltzmann carriers -> eps_r / sigma_e ----
 # A 0.5 um x 50 nm silicon strip of 5 nm cells (100 x 10, pec em_modes: no PML), insulated y faces (1D in x); contacts
 # = terminals on cells 0..9 (p, 0 V) and 90..99 (n, V_bi + V_R), junction x_j = 0.25 um. N_A = 2e24, N_D = 1e24 m^-3
@@ -307,17 +300,14 @@ def _check_depletion_junction(results_by_name):
               'charge_n': abs(charge_n) / depletion_charge,
               'eps_r': float(np.max(np.abs(eps_field - eps_expected) / eps_expected)),
               'sigma_e': float(np.max(np.abs(sigma_field - sigma_expected))) / float(np.max(sigma_expected))}
-    worst, normalized = _normalized_worst(errors, _JUNCTION_TOLERANCES)
     probe = int(np.searchsorted(centres, _JUNCTION_X))   # first n-side cell
-    return {'measured': normalized, 'expected': 0.0, 'error': normalized, 'tolerance': 1.0,
-            'details': {'errors': errors, 'tolerances': _JUNCTION_TOLERANCES, 'worst_item': worst,
-                        'V_bi': built_in, 'V_R': reverse_bias, 'V_total': total,
-                        'Q_contact_p_C_per_m': charge_p, 'Q_contact_n_C_per_m': charge_n,
-                        'Q_depletion_C_per_m': depletion_charge, 'D_lo_discrete_C_per_m2': flux_lo,
-                        'V_junction_cell': float(potential[probe, 0]),
-                        'electrons_junction_cell_per_m3': float(electrons[probe, 0]),
-                        'sigma_e_range_S_per_m': [float(np.min(sigma_field)), float(np.max(sigma_field))],
-                        'n_cells': list(potential.shape)}}
+    return scaled_worst_result(errors, _JUNCTION_TOLERANCES, V_bi=built_in, V_R=reverse_bias, V_total=total,
+                               Q_contact_p_C_per_m=charge_p, Q_contact_n_C_per_m=charge_n,
+                               Q_depletion_C_per_m=depletion_charge, D_lo_discrete_C_per_m2=flux_lo,
+                               V_junction_cell=float(potential[probe, 0]),
+                               electrons_junction_cell_per_m3=float(electrons[probe, 0]),
+                               sigma_e_range_S_per_m=[float(np.min(sigma_field)), float(np.max(sigma_field))],
+                               n_cells=list(potential.shape))
 
 
 CARRIER_SELFTEST_CASES = (

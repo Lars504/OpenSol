@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y
+from ...model.selftest_helpers import PERIODIC_Y, vertical_line, worst_item
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_hz import (cw_duration, fresnel_case, fresnel_device_spec, mie_drude_cylinder_case, plane_wave_case,
                            steady_peak)
@@ -115,7 +115,7 @@ def wall_reflection_spec(physics_type, polarization, wall, source_values, extra_
     source_x = (column + 0.5) * _WALL_CELL
     probe_x, probe_y = _WALL_PROBE_XY
     settings = {**PERIODIC_Y, **extra_settings}
-    geometry = [GeometrySpec('source_line', 'line', {'x0': source_x, 'y0': 0.0, 'x1': source_x, 'y1': size_y}),
+    geometry = [vertical_line('source_line', source_x, 0.0, size_y),
                 GeometrySpec('probe_point', 'point', {'x': probe_x, 'y': probe_y})]
     features = [FeatureSpec('source', 'line_source', ['source_line'], dict(source_values)),
                 FeatureSpec(_PROBE_FEATURE, 'field_probe', ['probe_point'],
@@ -151,6 +151,21 @@ def _wall_specs():
         spec.title = f'Self-test: em_fdtd_ez and em_fdtd_hz reflection off a {wall} wall'
         specs[wall] = spec
     return specs
+
+
+# ---- case records (shared by the em selftests modules) ----
+def normalized_result(normalized, details, **recorded):
+    """Case record of {item: error / its tolerance} (NaN the worst): measured = error = the worst value, tolerance 1;
+    `details` (updated in place) gains `recorded` ({'normalized_errors': normalized} when none) and worst_item."""
+    item, worst = worst_item(normalized)
+    details.update(recorded or {'normalized_errors': normalized}, worst_item=item)
+    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+
+
+def tolerance_units_result(errors, tolerances, details):
+    """normalized_result of errors[item] / tolerances[item], recording the errors themselves (details 'errors')."""
+    return normalized_result({item: error / tolerances[item] for item, error in errors.items()}, details,
+                             errors=errors)
 
 
 # ---- checks ----
@@ -216,7 +231,7 @@ def wall_reflection_result(measured_by_run):
         polarization, wall = name.split('_', 1)
         expected[name] = wall_expected_amplitude(polarization, wall)
         errors[name] = abs(measured / expected[name] - 1.0)
-    worst = max(errors, key=lambda name: math.inf if math.isnan(errors[name]) else errors[name])
+    worst, _ = worst_item(errors)
     return {'measured': measured_by_run[worst], 'expected': expected[worst], 'error': errors[worst],
             'tolerance': _WALL_TOLERANCE,
             'details': {'unit': 'V/m', 'worst_run': worst, 'measured_by_run': dict(measured_by_run),

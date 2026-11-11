@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, float_list, glass_half_space
+from ...model.selftest_helpers import PERIODIC_Y, float_list, glass_half_space, vertical_line, worst_item
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, RefinementSpec, StudySpec)
 
@@ -166,7 +166,7 @@ def _plane_wave_spec(physics_type, polarization, run_name):
     return ModelSpec(
         title=f"Self-test: {text['title']}plane-wave amplitude ({run_name})",
         domain=DomainSpec(size_x=4e-6, size_y=_PLANE_WAVE_STRIP),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': 1e-6, 'y0': 0.0, 'x1': 1e-6, 'y1': _PLANE_WAVE_STRIP}),
+        geometry=[vertical_line('source_line', 1e-6, 0.0, _PLANE_WAVE_STRIP),
                   GeometrySpec('probe_point', 'point', {'x': 3.01e-6, 'y': 0.03e-6})],
         materials=materials,
         physics=[PhysicsSpec(_PHYSICS_NAME, physics_type, settings=dict(PERIODIC_Y), features=[
@@ -184,8 +184,8 @@ def _fresnel_reference_spec(physics_type, polarization, duration=_FRESNEL_TEMPLA
     return ModelSpec(
         title=f"{_ANALYTIC_CASE_TEXT[polarization]['title']}Fresnel transmission: vacuum reference",
         domain=DomainSpec(size_x=5e-6, size_y=0.1e-6),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': 1e-6, 'y0': 0.0, 'x1': 1e-6, 'y1': 0.1e-6}),
-                  GeometrySpec('flux_line', 'line', {'x0': 3.5e-6, 'y0': 0.0, 'x1': 3.5e-6, 'y1': 0.1e-6})],
+        geometry=[vertical_line('source_line', 1e-6, 0.0, 0.1e-6),
+                  vertical_line('flux_line', 3.5e-6, 0.0, 0.1e-6)],
         physics=[PhysicsSpec(_PHYSICS_NAME, physics_type, settings=dict(PERIODIC_Y), features=[
             FeatureSpec('source', 'line_source', ['source_line'],
                         {'waveform': 'gaussian', 'wavelength': 1e-6, 'bandwidth': 0.5, 'amplitude': 1.0}),
@@ -215,10 +215,8 @@ def _fresnel_specs(physics_type, polarization):
 def graded_interface_mesh(spec, interface_x, interface_cell=GRADED_INTERFACE_CELL):
     """Switch spec in place to mode 'nonuniform' graded in x toward the vertical refinement line 'refine_line' at
     interface_x (interface_cell there, the old dx as base); returns spec."""
-    size_y = spec.domain.size_y
     spec.title = f'{spec.title}, graded mesh'
-    spec.geometry.append(GeometrySpec('refine_line', 'line',
-                                      {'x0': interface_x, 'y0': 0.0, 'x1': interface_x, 'y1': size_y}))
+    spec.geometry.append(vertical_line('refine_line', interface_x, 0.0, spec.domain.size_y))
     spec.mesh = MeshSpec(mode='nonuniform', dx=spec.mesh.dx, refinements=[
         RefinementSpec('refine_line', interface_cell, GRADED_INTERFACE_REACH)])
     return spec
@@ -453,7 +451,7 @@ def _check_plane_wave(results_by_name):
         errors[run_name] = abs(peak - _PLANE_WAVE_AMPLITUDE) / _PLANE_WAVE_AMPLITUDE
         details.update({f'{run_name}_peak': peak, f'{run_name}_window_start': window_start,
                         f'{run_name}_window_samples': window_samples})
-    worst = max(errors, key=lambda run_name: math.inf if math.isnan(errors[run_name]) else errors[run_name])
+    worst, _ = worst_item(errors)
     details['worst_run'] = worst
     return {'measured': peaks[worst], 'expected': _PLANE_WAVE_AMPLITUDE, 'error': errors[worst],
             'tolerance': _PLANE_WAVE_TOLERANCE, 'details': details}
