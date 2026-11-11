@@ -511,6 +511,9 @@ all but drift_diffusion.
   selftests_periodic_mesh, selftests_builtin_tetrahedra, selftests_swept_prisms, selftests_rounded_rectangle,
   selftests_prestress, selftests_reduced_harmonic, selftests_elasticity3d, selftests_tetrahedra,
   selftests_diffusion3d, selftests_diffusion, selftests_mesher, selftests_elements, selftests_display.
+- Shared tetrahedron-mesh check helpers live in selftests_mesh_sizes3d (`_field_tree` / `_field_value`: parse and
+  evaluate a .geo field tree; `_refusal_text`, `_ring_spec`, `_ring_point`, `_tet_stats`); selftests_harmonic's
+  `_checker` (SubChecks + add_bound) also serves reduced_harmonic, resonance_search and mechanics squeeze_film.
 - `fem_array_triangle_mesh` (model/selftests_geometry_array): an array of circles meshes to the same digest as the
   circles written out; keep it when build_pslg's merging or ordering changes.
 - `fem_diffusion3d_identities`: the loss step uses a, c / dt ~1e12 (a weaker mass term leaves the uniform mode

@@ -8,7 +8,7 @@ import numpy as np
 from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, checks_result
 from ..model.spec import DomainSpec, GeometrySpec, MeshSpec, ModelSpec, RefinementSpec
-from .selftests_mesh_sizes3d import _field_tree, _field_value, _refusal_text, _ring_point
+from .selftests_mesh_sizes3d import _field_tree, _field_value, _refusal_text, _ring_point, _ring_spec, _tet_stats
 
 _UM = 1e-6
 _H_MAX = 0.1 * _UM
@@ -232,36 +232,14 @@ def _gmsh_checks(add):
         return
     um = _UM
     registry = get_registry()
-
-    def ring_spec(where):
-        window = _WINDOW
-        spec = ModelSpec(title='Self-test: surface refinement',
-                         domain=DomainSpec(size_x=window[3], size_y=window[4], size_z=window[5]))
-        cylinder = {'cx': _CENTRE[0], 'cy': _CENTRE[1], 'z0': 0.0, 'z1': window[5]}
-        spec.geometry = [GeometrySpec('outer', 'cylinder_z', dict(cylinder, r=_OUTER)),
-                         GeometrySpec('hole', 'cylinder_z', dict(cylinder, r=_HOLE)),
-                         GeometrySpec('ring', 'difference', {'base': 'outer', 'subtract': ['hole']})]
-        refinements = [] if where is None else [RefinementSpec('ring', _RING_SIZE, where=where)]
-        spec.meshes = [MeshSpec(name='tets', kind='tetrahedra', mode='nonuniform', dx=_H_MAX, max_ratio=_GROWTH,
-                                mesher='gmsh', refinements=refinements)]
-        return spec
-
-    def stats(built):
-        corners = built.points[built.tets]
-        centroids = corners.mean(axis=1)
-        radial = np.hypot(centroids[:, 0] - _CENTRE[0], centroids[:, 1] - _CENTRE[1])
-        volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
-        edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
-        node_radial = np.hypot(built.points[:, 0] - _CENTRE[0], built.points[:, 1] - _CENTRE[1])
-        touching = (np.abs(node_radial - _HOLE) <= 1e-3 * _HOLE)[built.tets].sum(axis=1) >= 3
-        return radial, volumes, edges, touching
-
-    spec = ring_spec('surface')
+    title = 'Self-test: surface refinement'
+    spec = _ring_spec(True, 'surface', title)   # the annulus of _WINDOW / _CENTRE / _OUTER / _HOLE (equal values)
     mesh = tetrahedralize(spec, {}, registry, 'tets')
-    plain = tetrahedralize(ring_spec(None), {}, registry, 'tets')
-    radial, volumes, edges, touching = stats(mesh)
-    plain_radial, plain_volumes, _, _ = stats(plain)
+    plain = tetrahedralize(_ring_spec(False, title=title), {}, registry, 'tets')
+    _, radial, volumes, edges = _tet_stats(mesh)
+    node_radial = np.hypot(mesh.points[:, 0] - _CENTRE[0], mesh.points[:, 1] - _CENTRE[1])
+    touching = (np.abs(node_radial - _HOLE) <= 1e-3 * _HOLE)[mesh.tets].sum(axis=1) >= 3
+    _, plain_radial, plain_volumes, _ = _tet_stats(plain)
     core, plain_core = radial < 0.05 * um, plain_radial < 0.05 * um
     near_edge = float(edges[touching].mean()) if touching.any() else None
     core_ratio = (float(volumes[core].mean() / plain_volumes[plain_core].mean())
@@ -277,11 +255,7 @@ def _gmsh_checks(add):
     cx, cy, z0, radius, height = _CYLINDER
     window = (0.0, 0.0, 0.0, 1.0 * um, 1.0 * um, 1.0 * um)
     rod = Solid('rod', 'cylinder', _CYLINDER, size=_CYLINDER_SIZE)
-    built = mesh_solids_with_gmsh(window, [rod], _H_MAX, growth=_GROWTH)
-    corners = built.points[built.tets]
-    centroids = corners.mean(axis=1)
-    rod_edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
+    centroids, _, _, rod_edges = _tet_stats(mesh_solids_with_gmsh(window, [rod], _H_MAX, growth=_GROWTH))
     axial = np.hypot(centroids[:, 0] - cx, centroids[:, 1] - cy) < 0.5 * radius
     top = z0 + height
     above = axial & (centroids[:, 2] > top + 0.05 * um) & (centroids[:, 2] < top + 0.1 * um)

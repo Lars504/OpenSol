@@ -213,10 +213,7 @@ def _gmsh_checks(density, voxel, add):
     window = (0.0, 0.0, 0.0, _SIDE, _SIDE, _SIDE)
     mesh = mesh_solids_with_gmsh(window, [], _H_MAX, growth=_GROWTH, sized_faces=(_face(),),
                                  size_points=np.array([_POINT]))
-    corners = mesh.points[mesh.tets]
-    pairs = [(a, b) for a in range(4) for b in range(a + 1, 4)]
-    edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1) for a, b in pairs], axis=0)
-    centroids = corners.mean(axis=1)
+    centroids, _, _, edges = _tet_stats(mesh)
     to_face = _SIDE - centroids[:, 2]
     to_point = np.linalg.norm(centroids - np.array(_POINT[:3]), axis=1)
     near = to_face <= 2.0 * _BAND / 3.0
@@ -368,19 +365,31 @@ def _region_geo_checks(add):
         add('region_matheval_equals_twin', max(errors) <= _TWIN_RTOL, errors)
 
 
-def _ring_spec(refined):
+def _ring_spec(refined, where='inside', title='Self-test: composite refinement'):
     """ModelSpec of the annulus 'ring' = 'outer' minus 'hole' (z cylinders through the window), gmsh tetrahedra, the
-    ring refined to _RING_SIZE or not."""
+    ring refined to _RING_SIZE (RefinementSpec.where `where`) or not."""
     window = _RING_WINDOW
-    spec = ModelSpec(title='Self-test: composite refinement',
+    spec = ModelSpec(title=title,
                      domain=DomainSpec(size_x=window[3], size_y=window[4], size_z=window[5]))
     cylinder = {'cx': _RING_CENTRE[0], 'cy': _RING_CENTRE[1], 'z0': 0.0, 'z1': window[5]}
     spec.geometry = [GeometrySpec('outer', 'cylinder_z', dict(cylinder, r=_RING_OUTER)),
                      GeometrySpec('hole', 'cylinder_z', dict(cylinder, r=_RING_HOLE)),
                      GeometrySpec('ring', 'difference', {'base': 'outer', 'subtract': ['hole']})]
+    refinements = [RefinementSpec('ring', _RING_SIZE, where=where)] if refined else []
     spec.meshes = [MeshSpec(name='tets', kind='tetrahedra', mode='nonuniform', dx=_H_MAX, max_ratio=_GROWTH,
-                            mesher='gmsh', refinements=[RefinementSpec('ring', _RING_SIZE)] if refined else [])]
+                            mesher='gmsh', refinements=refinements)]
     return spec
+
+
+def _tet_stats(built):
+    """(centroids (m, 3), their distance from the ring axis, volumes, mean edge lengths) per element of a mesh."""
+    corners = built.points[built.tets]
+    centroids = corners.mean(axis=1)
+    radial = np.hypot(centroids[:, 0] - _RING_CENTRE[0], centroids[:, 1] - _RING_CENTRE[1])
+    volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
+    edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
+                     for a in range(4) for b in range(a + 1, 4)], axis=0)
+    return centroids, radial, volumes, edges
 
 
 def _region_gmsh_checks(add):
@@ -402,18 +411,9 @@ def _region_gmsh_checks(add):
     mesh = tetrahedralize(spec, {}, registry, 'tets', log=lambda level, text: lines.append((level, text)))
     estimate = estimate_mesh(spec, {}, registry, 'tets').n_elements
     unrefined = tetrahedralize(_ring_spec(False), {}, registry, 'tets')
-
-    def element_stats(built):
-        corners = built.points[built.tets]
-        centroids = corners.mean(axis=1)
-        radial = np.hypot(centroids[:, 0] - _RING_CENTRE[0], centroids[:, 1] - _RING_CENTRE[1])
-        volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
-        edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
-        return radial, centroids[:, 2], volumes, edges
-
-    radial, z, volumes, edges = element_stats(mesh)
-    plain_radial, _, plain_volumes, _ = element_stats(unrefined)
+    centroids, radial, volumes, edges = _tet_stats(mesh)
+    z = centroids[:, 2]
+    _, plain_radial, plain_volumes, _ = _tet_stats(unrefined)
     core, plain_core = radial < 0.15 * um, plain_radial < 0.15 * um
     ring = ((radial > _RING_HOLE + 0.03 * um) & (radial < _RING_OUTER - 0.03 * um) & (z > 0.05 * um)
             & (z < _RING_WINDOW[5] - 0.05 * um))
