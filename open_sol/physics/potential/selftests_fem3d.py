@@ -4,13 +4,13 @@ gmsh tetrahedra (skipped without gmsh) and a resistor bar (current and Joule pow
 results (held tables), scalar outputs and derived integrals. Registered by definition.register."""
 import math
 
-import numpy as np
-
 from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value
+from ...model.selftest_helpers import float32_value, skip_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, StudySpec)
+from .selftests import _held_flux
+from .selftests_fem import _scaled_result
 
 ELECTROSTATICS_TYPE_NAME = 'electrostatics'   # = definition.ELECTROSTATICS_TYPE_NAME (definition imports this module)
 CURRENTS_TYPE_NAME = 'electric_currents'
@@ -72,19 +72,6 @@ def _model(title, size, physics_name, type_name, features, discretization, mesh,
         derived_values=list(derived))
 
 
-def _held(results, physics, feature, quantity):
-    return float(results.result(physics, feature)[quantity])
-
-
-def _scaled_result(relative, tolerances, **details):
-    """Self-test result: error = the largest relative error over its tolerance (NaN when any is not finite), tolerance
-    1."""
-    scaled = [value / tolerances[name] for name, value in relative.items()]
-    error = max(scaled) if all(np.isfinite(scaled)) else math.nan
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': 1.0,
-            'details': {'relative_errors': relative, 'tolerances': tolerances, **details}}
-
-
 # ---- layered plate capacitor ----
 def _layer_boxes(size):
     """GeometrySpecs 'lower' (z < LAYER_Z) and 'upper' (z > LAYER_Z) covering the window."""
@@ -120,8 +107,8 @@ def _check_plates(results_by_name):
     relative, capacitances = {}, {}
     for run, (axis, _) in PLATE_RUNS.items():
         results = results_by_name[run]
-        charge_lo = _held(results, 'electrostatics', 'plate_lo', 'charge')
-        charge_hi = _held(results, 'electrostatics', 'plate_hi', 'charge')
+        charge_lo = _held_flux(results, 'electrostatics', 'plate_lo', 'charge')
+        charge_hi = _held_flux(results, 'electrostatics', 'plate_hi', 'charge')
         expected = _plates_expected_capacitance(axis)
         capacitances[run] = {'measured_F': charge_lo / PLATE_VOLTAGE, 'expected_F': expected}
         relative[f'{run}_capacitance'] = abs(charge_lo / PLATE_VOLTAGE / expected - 1.0)
@@ -158,13 +145,12 @@ def _coax_runs():
 def _check_coax(results_by_name):
     """C = Q_inner / V0 against 2 pi eps0 eps H / ln(b / a) and the charge balance; skipped without gmsh."""
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'gmsh not found (set OPEN_SOL_GMSH or put gmsh on PATH)'}}
+        return skip_result('gmsh not found (set OPEN_SOL_GMSH or put gmsh on PATH)')
     results = results_by_name['quadratic']
     expected = (2.0 * math.pi * EPS0 * float32_value(COAX_EPS) * COAX_HEIGHT
                 / math.log(COAX_OUTER_RADIUS / COAX_INNER_RADIUS))
-    inner = _held(results, 'electrostatics', 'inner_electrode', 'charge')
-    outer = _held(results, 'electrostatics', 'outer_electrode', 'charge')
+    inner = _held_flux(results, 'electrostatics', 'inner_electrode', 'charge')
+    outer = _held_flux(results, 'electrostatics', 'outer_electrode', 'charge')
     relative = {'capacitance': abs(inner / COAX_VOLTAGE / expected - 1.0), 'balance': abs(inner + outer) / abs(inner)}
     return _scaled_result(relative, {'capacitance': COAX_TOLERANCE, 'balance': COAX_BALANCE},
                           measured_capacitance_F=inner / COAX_VOLTAGE, expected_capacitance_F=expected)
@@ -199,8 +185,8 @@ def _check_resistor(results_by_name):
     for run, (axis, _) in BAR_RUNS.items():
         results = results_by_name[run]
         derived = results.summary()['derived']
-        current_left = _held(results, 'currents', 'left', 'current')
-        current_right = _held(results, 'currents', 'right', 'current')
+        current_left = _held_flux(results, 'currents', 'left', 'current')
+        current_right = _held_flux(results, 'currents', 'right', 'current')
         power = float(derived['P_joule'])
         measured[run] = {'I_left_A': current_left, 'I_expected_A': _bar_expected_current(axis), 'P_joule_W': power}
         for name, value in (('current', abs(current_left / _bar_expected_current(axis) - 1.0)),
