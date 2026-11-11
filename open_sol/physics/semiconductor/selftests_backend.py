@@ -5,8 +5,7 @@ gpu run without a usable GPU."""
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import solver_role
-from ...model.spec import SolverSpec
+from ...model.selftest_helpers import solver_role, with_direct_node
 from . import selftests as semiconductor_selftests
 
 _MODEL = 'pn_junction'
@@ -25,9 +24,8 @@ def _backend_runs():
     for backend in ('cpu', 'gpu'):
         spec = semiconductor_selftests._pn_junction_specs()[semiconductor_selftests._RUN]
         spec.solver_defaults.backend = backend
-        spec.solvers.append(SolverSpec(_SUPERLU_NODE, 'sparse_direct', {'back_end': 'scipy_splu'}))
-        spec.physics_by_name(semiconductor_selftests._PHYSICS).solvers['linear'] = _SUPERLU_NODE
-        runs[_run_name(backend)] = spec
+        runs[_run_name(backend)] = with_direct_node(spec, 'scipy_splu', node_name=_SUPERLU_NODE,
+                                                    physics_names=(semiconductor_selftests._PHYSICS,))
     return runs
 
 

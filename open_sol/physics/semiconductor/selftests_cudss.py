@@ -8,8 +8,8 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import available_host_direct, skip_without_host_direct, solver_role, with_direct_node
-from ...model.spec import SolverSpec
+from ...model.selftest_helpers import (available_host_direct, skip_result, skip_without_host_direct, solver_role,
+                                       with_direct_node, worst_item)
 from . import selftests as semiconductor_selftests
 
 _BACK_ENDS = ('cudss', 'cudss_mixed')
@@ -46,11 +46,9 @@ def _cudss_specs():
     specs = {}
     for model, factory in _MODELS.items():
         for back_end in (_REFERENCE, *_BACK_ENDS):
-            spec = factory()
-            node = _NODE_PREFIX + back_end
-            spec.solvers.append(SolverSpec(node, 'sparse_direct', {'back_end': back_end}))
-            spec.physics_by_name(semiconductor_selftests._PHYSICS).solvers['linear'] = node
-            specs[f'{model}_{back_end}'] = spec
+            specs[f'{model}_{back_end}'] = with_direct_node(factory(), back_end,
+                                                            physics_names=(semiconductor_selftests._PHYSICS,),
+                                                            node_name=_NODE_PREFIX + back_end)
         specs[f'{model}_{_AUTOMATIC}'] = factory()
     return specs
 
@@ -81,8 +79,7 @@ def _check_cudss(results_by_name):
     factorisations than plans and 2 plans (+ one per double fallback of cudss_mixed)."""
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     normalized_errors, details = {}, {}
     for model in _MODELS:
         reference = results_by_name[f'{model}_{_REFERENCE}']
@@ -103,10 +100,8 @@ def _check_cudss(results_by_name):
             details[f'{model}_{back_end}'] = {'deviations': deviations, 'counters': dict(counters),
                                               'superlu_factor_seconds': _linear_counters(reference).get(
                                                   'factor_seconds')}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
+    item, worst = worst_item(normalized_errors)
+    details.update(normalized_errors=normalized_errors, worst_item=item)
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
 
 
@@ -153,10 +148,8 @@ def _check_host_direct(results_by_name):
         normalized_errors[f'{back_end} record'] = 0.0 if record_ok else math.inf
         details[back_end] = {'deviations': deviations, 'counters': dict(counters),
                              'superlu_factor_seconds': _linear_counters(reference).get('factor_seconds')}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
+    item, worst = worst_item(normalized_errors)
+    details.update(normalized_errors=normalized_errors, worst_item=item)
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
 
 
