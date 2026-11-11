@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result
+from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result, skip_without_cudss
 from ...model.spec import FeatureSpec, MaterialSpec, StudySpec
 from .selftests import _lame
 from .selftests_fem3d import _MODES_CELL, _MODES_DENSITY, _MODES_ELASTIC, _MODES_SIZE, _continuum_modes, _solid_spec
@@ -167,13 +167,12 @@ def _check_cudss(_):
     inputs; passes with a note without nvmath-python."""
     from ...fem.elasticity3d import isotropic_matrix_3d
     from ...fem.mesh3d import structured_box_mesh
-    from ...solvers.cudss_factor import cudss_available
     from ...solvers.sparse_direct import SparseDirectSolver
     from .frequency_response import HarmonicSystem
     from .system_fem3d import ElasticFEMSystem3D
-    if not cudss_available():
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+    skipped = skip_without_cudss()
+    if skipped:
+        return skipped
     axes = [np.linspace(0.0, side, int(round(side / _CUDSS_CELL)) + 1) for side in _MODES_SIZE]
     mesh = structured_box_mesh(*axes)
     system = ElasticFEMSystem3D(mesh, 2, lambda: 'cuDSS harmonic self-test')

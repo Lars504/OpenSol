@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import scaled_worst_result
+from ...model.selftest_helpers import scaled_worst_result, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 
@@ -96,9 +96,7 @@ def _check_operator(_):
     except ValueError:
         errors['unsupported order 1 refused'] = 0.0
     details['rigid motion counts'] = counts
-    worst = float(max(errors.values()))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _OPERATOR_TOLERANCE,
-            'details': {**details, 'errors': errors}}
+    return worst_result(errors, _OPERATOR_TOLERANCE, **details)
 
 
 # ---- solid_fem_azimuthal_annular_plate: the silica annulus of the Basiri microdisk (a = 148 um, b = 82 um, t = 1.8
