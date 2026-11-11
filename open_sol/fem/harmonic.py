@@ -10,7 +10,8 @@ HarmonicPencil (K, C, M on one pattern, one complex factor per frequency), Harmo
 # (per condition / coefficient change) on one CSR pattern (HarmonicPencil), so every frequency's reduced operator has the
 # same pattern (cuDSS plan / MUMPS / PARDISO analysis reuse through previous=; on a cuDSS back end the reduced K, C,
 # M values stay on the device, sparse_direct.DevicePencil, so a frequency combines, equilibrates and factorises there
-# without a host CSR; ports'
+# without a host CSR; on a MUMPS / PARDISO back end they are a sparse_direct.HostPencil: a frequency combines host
+# values and refreshes the factor on its analysis, no host A(omega), canonicalising copy or asymmetry check; ports'
 # frequency_terms blocks are added there too, at slots mapped once per block pattern (factorize_pencil(extra=), E7-8;
 # a block outside the pattern, or unsymmetric with a symmetric pencil, takes factorize_host). A direct solve on a cuDSS
 # factor also keeps its full-numbering values on the device (device_values(), R6: device consumers such as a cupy
@@ -273,7 +274,7 @@ class HarmonicSystemBase:
         self._assembled_fixed_value = None   # complex per fixed system dof, as assembled
         self._fixed_value = None        # the same + held_offsets
         self._factor = None
-        self._device_pencil = None      # (pencil, DevicePencil or None, term names) of _device_terms
+        self._device_pencil = None      # (pencil, DevicePencil / HostPencil or None, term names) of _device_terms
         self._extra_slots = None        # (DevicePencil, block indptr, indices, slots) of _extra_on_device
         self._solution = None           # system numbering of the last solve
         self._device_values = None      # cupy full-numbering values of the last direct cuDSS solve (device_values, R6)
@@ -516,7 +517,7 @@ class HarmonicSystemBase:
         of a factorize_pencil factor is judged by this solve: on a miss an 'auto' runtime falls back to SuperLU (B1b,
         SparseDirectSolver.fall_back) and the frequency is factorised and solved again, else ValueError."""
         from ..solvers.cudss_factor import CudssAccuracyError, CudssFactorization
-        from ..solvers.host_direct import HostDirectAccuracyError   # host factors probe at factorize: never expected
+        from ..solvers.host_direct import HostDirectAccuracyError   # a deferred check of a HostPencil factor
         for attempt in range(2):
             try:
                 if isinstance(self._factor, CudssFactorization):   # R6: the solution stays on the device as well
@@ -573,8 +574,8 @@ class HarmonicSystemBase:
         return full
 
     def _device_terms(self):
-        """sparse_direct.DevicePencil of the reduced K, C, M (once per assembly) when the linear solver factorises on
-        the device (cuDSS back end), else None; with the names of its terms."""
+        """Pencil of the reduced K, C, M (once per assembly) for factorize_pencil: a sparse_direct.DevicePencil on a
+        cuDSS back end, a HostPencil on a MUMPS / PARDISO one, else None; with the names of its terms."""
         from ..solvers.sparse_direct import SparseDirectSolver
         pencil = self.pencil
         if self._device_pencil is None or self._device_pencil[0] is not pencil:
@@ -585,19 +586,19 @@ class HarmonicSystemBase:
                                                       ('damping', pencil.damping_data), ('mass', pencil.mass_data))
                               if name == 'stiffness' or np.any(data != 0))
                 data = {'stiffness': pencil.stiffness_data, 'damping': pencil.damping_data, 'mass': pencil.mass_data}
-                device = self.linear_solver.device_pencil(indptr, indices, [data[name][positions] for name in names],
-                                                          symmetric=self.symmetric)
+                device = self.linear_solver.pencil(indptr, indices, [data[name][positions] for name in names],
+                                                   symmetric=self.symmetric)
             self._device_pencil = (pencil, device, names)
         return self._device_pencil[1], self._device_pencil[2]
 
     def _extra_on_device(self, device, extra):
-        """(slots, values) of a free x free frequency_terms block in the DevicePencil's stored layout (lower entries of
-        a lower-stored one), slots mapped once per (pencil, block pattern); None when the block leaves the pattern or is
-        unsymmetric with a symmetric pencil (the host route then)."""
+        """(slots, values) of a free x free frequency_terms block in the pencil's stored layout (lower entries of a
+        lower-stored one), slots mapped once per (pencil, block pattern); None when the block leaves the pattern or is
+        unsymmetric with a symmetric pencil (the host route then: its factor checks symmetry itself)."""
         from ..solvers.cudss_factor import SYMMETRY_TOLERANCE, relative_asymmetry
         block = extra.tocsr(copy=True)
         block.sum_duplicates()
-        if device.lower_stored and relative_asymmetry(block) > SYMMETRY_TOLERANCE:
+        if device.symmetric and relative_asymmetry(block) > SYMMETRY_TOLERANCE:
             return None
         rows = np.repeat(np.arange(block.shape[0], dtype=np.int64), np.diff(block.indptr))
         columns, values = block.indices, block.data
@@ -625,10 +626,10 @@ class HarmonicSystemBase:
                           'ill-conditioned, e.g. a drive on a nearly lossless resonance')
 
     def _factorize(self, omega, extra=None) -> None:
-        """Factor of the reduced A(omega) (+ extra, a free x free CSR whose pattern sits in K): from the device pencil
-        terms on a cuDSS back end (extra: its values added on the device at slots mapped once, E7-8), else of the host
-        matrix (plan reuse through previous= either way; extra outside the pattern, or unsymmetric with a symmetric
-        pencil, takes the host route)."""
+        """Factor of the reduced A(omega) (+ extra, a free x free CSR whose pattern sits in K): from the pencil terms
+        (cuDSS: on the device; MUMPS / PARDISO: host values on the kept analysis, no host A(omega); extra: its values
+        added at slots mapped once, E7-8), else of the host matrix (plan reuse through previous= either way; extra
+        outside the pattern, or unsymmetric with a symmetric pencil, takes the host route)."""
         from ..solvers.cudss_factor import CudssAccuracyError
         from ..solvers.host_direct import HostDirectAccuracyError   # a RuntimeError: caught before the singular case
         try:

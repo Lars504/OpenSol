@@ -11,7 +11,8 @@ from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float32_value, last_value, scaled_worst_result
 from ...model.spec import FeatureSpec, MaterialSpec
 from .selftests_fem3d import _point, _probes, _solid_spec
-from .selftests_nonlinear import (TANGENT_LOAD_STEPS, TANGENT_RATIOS, WARM_RATIOS, WARM_TOLERANCE, pinned_duffing_fit,
+from .selftests_nonlinear import (TANGENT_LOAD_STEPS, TANGENT_RATIOS, WARM_RATIOS, WARM_TANGENT_UPDATE, WARM_TOLERANCE,
+                                  pinned_duffing_fit,
                                   tangent_update_errors, tangent_update_runs, warm_start_errors, warm_start_runs,
                                   warm_string_load)
 
@@ -281,7 +282,7 @@ def _check_warm_start(_):
         physics.inject_source('body_force_z', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
         physics.step(0.0, math.inf)
 
-    runs = warm_start_runs(lambda: _string_physics(False), apply_load,
+    runs = warm_start_runs(lambda: _string_physics(False, tangent_update=WARM_TANGENT_UPDATE), apply_load,
                            lambda physics: np.array(physics.system.unknown, dtype=np.float64))
     errors, tolerances, details = warm_start_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
@@ -499,7 +500,7 @@ NONLINEAR_3D_CASES = (
     SelfTestCase(
         name='solid_fem3d_nonlinear_warm_start',
         label='Solid mechanics 3D on tetrahedra: sweep warm start of the nonlinear Newton solve',
-        description=('The axial-free Hirsch E4 string of solid_fem3d_duffing_string (CPU, no model): a solve at alpha '
+        description=('The axial-free Hirsch E4 string of solid_fem3d_duffing_string (CPU, no model, full Newton): a solve at alpha '
                      f'a^2 / k = {WARM_RATIOS[0]:g} hands warm_start_fields to seed_warm_start of a new physics on the '
                      f'same mesh solving {WARM_RATIOS[1]:g} (the sweep warm start path); its displacement equals a '
                      f'cold solve within {WARM_TOLERANCE:g} of max |u| with fewer Newton iterations (work_counters), '

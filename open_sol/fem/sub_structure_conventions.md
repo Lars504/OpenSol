@@ -33,17 +33,46 @@ all but drift_diffusion.
   new), so the pattern is value-independent; never sort / eliminate_zeros / sum_duplicates those CSRs in place
   (`full(copy_pattern=True)` / `tangent()` give own copies, e.g. for pencils). The reduced CSR is canonical: hand it to
   `DiffusionDirectSolver.factorize_host_operator(symmetric_known=True)`. The per-group bincount spans the group's slot
-  range: element orderings that scatter a chunk over the whole matrix make each call O(nnz) per chunk.
+  range: element orderings that scatter a chunk over the whole matrix make each call O(nnz) per chunk. With numba,
+  `add` from ROW_SUM_MIN_ENTRIES block entries runs a row-parallel sum instead (next-gains N2: per group the (element,
+  local row) pairs sorted by global row once, `_row_orders`; a thread owns whole rows, so no atomics and a fixed order;
+  `add(numba=False)` forces the bincount; self-test fem_fixed_pattern_row_sum_numba). A pair's columns all lie in its
+  row: keep that if slot maps ever change. `add_elements` (slots searched per call) stays bincount. The row sum, the
+  block expansion and the free restriction are `core.kernels.host_twin`s of their numpy forms (`_row_sum_host`,
+  `_expand_host`, `_restrict_host`: change both of a pair); every bincount sum (scatter_add, `_sum_into`, `summed`)
+  goes through `_add_bincount`.
   TangentAssembler3D caches rule gradients / weights only below `TANGENT_GRADIENT_CACHE_BYTES` (P2 ~6.7 kB per element;
-  the int32 scatter map is always kept); `internal_force_and_tangent[_3d]` stays the one-off COO assembly (the
-  self-test's reference).
+  the int32 scatter map is always kept); `internal_force_and_tangent[_3d]` stays the one-off COO assembly of the full
+  (unmirrored) element products (the self-test's reference).
+- Block patterns (`FixedPatternCsr(block=3)`, interleaved vector dofs 3 d + component): group dofs are the SCALAR
+  element dofs; the scalar pattern is built and every entry expanded to a dense 3 x 3 block, slots from the scalar
+  ones. `fixed_pattern.kept_pattern(mesh, ...)` keeps the slot-free base per (mesh weakly, n, block, element dofs)
+  and the latest grouped / free-restricted copy (`with_groups`, shares the index arrays), so a sweep value on a reused
+  mesh (`element_meshes_kept`, run_study only) skips the build: `assemble_elastic_stiffness_3d` sums its chunks into
+  the base by `add_elements` (slots searched per chunk, no kept slot map; `check=False` there, since its chunks are
+  rows of the element dofs the base was built from: any other caller keeps the check) and TangentAssembler3D takes its grouped
+  copy of the same base. Kept objects are shared: never write into their index arrays. Symmetric element products
+  (elastic stiffness, the batched tangent) go through `_symmetric_operator_blocks` (column groups on and below the diagonal
+  multiplied, the rest mirrored; `SYMMETRIC_COLUMN_GROUPS`); a non-symmetric C would need `_operator_blocks`.
 - Device tangents (`TangentAssembler3D(device=True)`): the Green-Lagrange helpers take xp from their first array
   (`elasticity3d._array_module`): keep new code in them xp-generic. S0 is uploaded once per `initial_stress` object (a
   new S0 value needs a new StressField). `force` / `force_and_tangent` return the force on the host, the data on the
   device; `full` / `reduced` give cupyx CSRs, `reduced_values` the values in the HOST reduced pattern order (what
   `DiffusionDirectSolver.factorize_device_values` takes with `pattern.reduced_indptr / reduced_indices`),
   `full_product` a host vector, `tangent()` a host CSR. Device sums are atomic scatter_add (round-off differs from the
-  host bincount). The 2D TangentAssembler has no device twin.
+  host bincount). Device chunks are sized at construction (`device_tangent_chunk_elements`: temporaries
+  `tangent_chunk_element_bytes` per element within TANGENT_DEVICE_CHUNK_BYTES and TANGENT_DEVICE_CHUNK_SHARE of the
+  pool budget left), host chunks stay CHUNK_ELEMENTS; the memory estimate books the byte-cap chunk (mechanics
+  definition3d imports both helpers). The 2D TangentAssembler has no device twin.
+- Element kernel (`tangent_kernel3d`, next-gains R1; `TangentAssembler3D(element_kernel=True)`, the default): one raw
+  twin 'fem.element_tangent_3d' computes per element H, E, S, B + B_NL, the force and the full (mirrored) tangent block:
+  CUDA one block per element with the q x 6 x 3 n operator and w C (B + B_NL) in static shared memory (P2 on the
+  14-point rule 46.8 kB; `kernel_fits` <= 48 kB, a larger rule on the device takes the batched cupy formulas), numba
+  prange over the elements, numpy twin = the batched `_green_lagrange_terms_3d` / `_tangent_blocks_3d` (the reference;
+  `element_kernel=False` runs them directly). Chunk temporaries are then only forces, blocks and gathered displacements
+  (`element_bytes`, ~7.7 kB per P2 element against ~117 kB batched). A change to one formula changes the CUDA source,
+  the numba twin and the batched helpers together (fem3d_tangent_assembler / _gpu compare kernel vs batched,
+  fem3d_tangent_kernel_numba numba vs numpy).
 - `assembly._to_csr` only sums duplicates and keeps explicit zeros, so every assembly over one dof map (same free /
   fixed split) has one CSR pattern whatever the coefficients: the precondition of cuDSS plan reuse for Newton tangents
   and coefficient updates. Never `eliminate_zeros` an operator a factor will be refreshed with; sum terms with
@@ -54,7 +83,8 @@ all but drift_diffusion.
   (core.constants / material_grid / metric), `diffusion.py` / `diffusion3d.py` (core.backend / constants / fv_diffusion
   BCSide / memory_estimate / monitors / solver_base; solvers.sparse_direct / multigrid inside functions), `renderer.py` /
   `renderer3d.py` (core.renderer), `transfer.py` (core.backend inside `FEMTransfer.apply`), `fixed_pattern.py` /
-  `elasticity3d.py` (core.backend inside functions); `fem/__init__` imports none of these (import by module); core
+  `elasticity3d.py` (core.backend, elasticity3d also core.gpu_memory, inside functions), `tangent_kernel3d.py`
+  (core.kernels at module level: its raw twin; core.backend inside functions); `fem/__init__` imports none of these (import by module); core
   never imports fem. physics imports fem, never the reverse. Model side: `model/triangle_meshing.py` (the only reader
   of geometry shape internals for the mesher; sizes from `meshing.triangle_sizing`); `meshing.make_domain` of a
   'triangles' mesh returns `TriangleDomain(triangulate(...))`. selftests*.py follow the root selftest import rule.
@@ -416,6 +446,17 @@ all but drift_diffusion.
   COO is summed into CSR every 2e7 entries (`assembly.CsrAccumulator`, P2: 900 entries per element), int32 indices below 2^31.
   `stretch=` (elastic PML: callable -> complex (m, q, 3)): gradients / s per axis, weights x s_x s_y s_z, rule + 2;
   unconjugated, so complex symmetric.
+- Point evaluations (`element_strains_3d` (linear / green_lagrange; `green_lagrange_strains_3d` is it),
+  `element_gradients_3d`): per chunk of POINT_CHUNK_ELEMENTS one GEMM of the element values with the constant
+  reference tables, then grad = J^-T grad_ref by components from `element_inverse_jacobians_3d` (J^-1 of every mesh
+  element, cached on `DofMap3D.element_geometry` per array module, host copy read-only; a degenerate element anywhere
+  in the mesh raises on first use). element_strains_3d runs on the displacement's module (cupy: J^-1 and element dofs
+  uploaded once per map); the physics outputs stay on the host.
+- `elements3d.lagrange_basis_3d` memoises point sets up to LAGRANGE_MEMO_POINTS (latest LAGRANGE_MEMO_ENTRIES) and
+  returns those arrays READ-ONLY: never write into a basis / reference gradient table; the lookup stays inside the
+  function so a memo hit still traces it (root "Selftest reuse"). A caller that needs no gradients passes
+  `gradients=False` (None in their place; `evaluate_lagrange_3d` of located samples: the P2 (p, 10, 3) table cost most
+  of its time).
 - Piezo pieces (the block operator is physics/mechanics/piezo_fem3d.py): `assemble_piezo_coupling_3d` = CSR (3 n, n)
   of int B^T e^T grad N (K_uphi; K_phiu = its transpose); the phi block is `assemble_lagrange_stiffness_3d` with the
   full eps0 eps; `element_gradients_3d` returns sorted elements.
@@ -429,12 +470,16 @@ all but drift_diffusion.
   shared pattern as is, else the pattern_sum union; index maps from one pass over the stored entries (scipy fancy
   indexing is slow at 1e7 entries). Active elements = `set_active(mask)`, not a > 0. Robin: n . a grad u = value -
   (admittance + j omega damping) u.
-- MUMPS / PARDISO back ends take the host route (`device_pencil` is None off cuDSS): `factorize_host(previous=)`
-  refactorises on the kept analysis while the pattern holds. Factor errors become ValueErrors at `_factorize`:
+- MUMPS / PARDISO back ends: `_device_terms` asks `linear_solver.pencil(...)`, a HostPencil (full pattern, host
+  values), so `_factorize` takes the same factorize_pencil branch: the analysis kept, no host A(omega), canonical copy
+  or asymmetry check per frequency; `_extra_on_device` tests `pencil.symmetric` (not lower_stored) before adding a
+  block. Real K, M without damping give a real pencil, hence a real LDL^T solving the complex rhs as two real solves
+  (the host route's A(omega) was always complex). Factor errors become ValueErrors at `_factorize`:
   CudssAccuracyError / HostDirectAccuracyError (a RuntimeError, caught first) -> `_accuracy_error` naming the library
   (`host_direct.factor_label` of the runtime's back end), any other RuntimeError (zero pivot) -> the singular text;
-  HostDirectMemoryError (a ValueError) passes as is. Host factors probe at factorize, so `_solve_free` never expects
-  their accuracy error (caught all the same; no fallback: only an 'auto' cuDSS runtime falls back).
+  HostDirectMemoryError (a ValueError) passes as is. A HostPencil refresh defers its probe to the first solve (double
+  factors), so `_solve_free` meets a HostDirectAccuracyError there too (no fallback: only an 'auto' cuDSS runtime
+  falls back).
 - PML stretch = the pml3d map with beta fixed at build from a reference frequency (`pml_ring` / `pml_shell`), so K and
   M do not depend on omega; PML faces held at 0 on their outer side by default (`pml_outer`). `stretch_derivatives`
   (C1 profile) serves fourth-order forms (membrane plate). Only ring / shell elements (a node beyond a layered face) are

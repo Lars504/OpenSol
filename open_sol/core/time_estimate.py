@@ -161,7 +161,12 @@ class SolverWork:
     preconditioner_ops: tuple = ()  # callback preconditioner per application (empty: Jacobi / the pcg setting)
     refinement_ops: tuple = ()     # pcg mixed: the float64 matrix-free product of an outer refinement (empty: a CSR
                                    # Spmv of nnz); product_ops / preconditioner_ops are then the float32 inner ones
-    rhs: float = 1.0               # right-hand sides per solve (line_block: per shift; eigen: solves per application)
+    iteration_ops: tuple = ()      # pcg fused_iteration: one whole CG iteration (and the start) in the physics' fused
+                                   # launches (empty: built from product_ops / preconditioner_ops)
+    setup_ops: tuple = ()          # pcg: a caller-built preconditioner's setup per factorization (empty: the pcg one)
+    setup_counters: tuple = ()     # pcg with setup_ops: (count, seconds) counter names of that setup when the caller
+                                   # times it itself (empty: 'factorizations', 'factorize_seconds')
+    rhs: float = 1.0              # right-hand sides per solve (line_block: per shift; eigen: solves per application)
     backend: str = 'gpu'
     block_size: int = 0            # line_block: unknowns per grid line (0: sqrt of unknowns)
     eigenpairs: int = 0            # eigen role: eigenpairs per eigen solve (solves = eigen solves)

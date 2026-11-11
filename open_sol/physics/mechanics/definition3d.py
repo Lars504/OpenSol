@@ -11,13 +11,17 @@ from ...core.constants import FACES_3D
 from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES,
                                      MemoryEstimate, combine, host_real_lu_bytes)
 from ...fem.diffusion import lagrange_entries_per_dof
-from ...fem.assembly3d import CHUNK_ELEMENTS
-from ...fem.elasticity3d import TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRADIENT_CACHE_BYTES
+from ...core.kernels import numba_available
+from ...fem.elasticity3d import (TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRADIENT_CACHE_BYTES,
+                                 device_tangent_chunk_elements, tangent_chunk_element_bytes)
+from ...fem.tangent_kernel3d import element_flops
+from ...fem.fixed_pattern import EXPAND_ENTRIES
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATION_PARAM, SQUEEZE_FILM_GAS_PARAMS,
                                          cg_solver_issues, cudss_external, eigen_factorization, eigen_role,
                                          eigen_search_counts, eigen_subspace_size, host_direct_back_end,
-                                         element_order, linear_solver_mixed, linear_solver_precision, on_tetrahedra,
+                                         element_order, linear_solver_mixed, linear_solver_multigrid,
+                                         linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
 from ...model.geometry import expand_entities
@@ -45,6 +49,8 @@ from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, PIEZO_DEFAULTS_3D,
                         PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
+from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, coarsest_host_bytes, hierarchy_bytes,
+                          level_element_shapes)
 from .pml3d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, PMLPadding
 from .renderer3d import SolidRenderer3D
 from .squeeze_film import GAP_SIDES, VENT_CHOICES
@@ -76,23 +82,31 @@ _PERIODIC_SEPARATOR_WIDTH = 2.0
 _TET_NODAL_OUTPUTS = 22
 _TET_ELECTRIC_NODAL_OUTPUTS = 7
 # geometric nonlinearity: Newton iterations per load step (a priori: a linear predictor and quadratic convergence to
-# the default 1e-8 take ~4-6) and the host numpy bytes per COO entry of one tangent + internal-force assembly (the
-# total-Lagrangian rule: P1 1 point, P2 the 27-point degree-4 rule, 6 Voigt rows, operator + stress passes); uncalibrated
+# the default 1e-8 take ~4-6) and the host numpy bytes per COO entry of one tangent + internal-force assembly on the
+# batched formulas (no numba: the total-Lagrangian rule, P1 1 point, P2 the 14-point degree-4 rule, 6 Voigt rows,
+# operator + stress passes); uncalibrated
 _NEWTON_ITERATIONS_PER_STEP = 5
 _TANGENT_BYTES_PER_COO = {1: 400.0, 2: 6000.0}
-# device tangent assembly (plan G5, uncalibrated): operator-sized arrays read and written per chunk, kernels per chunk
-_DEVICE_TANGENT_PASSES = 6.0
-_DEVICE_TANGENT_LAUNCHES = 60
-_TANGENT_RULE_POINTS = {1: 1, 2: 27}   # points of that total-Lagrangian rule (TangentAssembler3D's gradient cache)
-# tensor bricks (kernels3d elastic_product / elastic_mass_product, a priori counts): each node gathers its <= 8
-# elements, applying the 3 x 3 block to each of the element's 8 nodes, so 64 blocks per element and product; a
-# stiffness block = add_table_block (~45 flops) on the axis tables its node builds once per element (8 per element:
-# ~12 flops + 6 divisions), a mass block ~8 multiplies + 3 FMAs
-_BRICK_BLOCKS_PER_ELEMENT = 64
-_BRICK_BLOCK_FLOPS = 45
-_BRICK_ELEMENT_FLOPS = (_BRICK_BLOCKS_PER_ELEMENT * _BRICK_BLOCK_FLOPS
-                        + 8 * (12 + 6 * te.DIVISION_FLOPS))   # stiffness product per element
-_BRICK_MASS_BLOCK_FLOPS = 14
+# the element kernel (fem.tangent_kernel3d; device, or numba on the host): its flops priced as dense flops, the block
+# sum per COO entry (host bincount / device scatter_add: value + slot read, the data entry updated) and the launches
+# (gather, kernel, force and block sums) per chunk; uncalibrated
+_TANGENT_SCATTER_BYTES_PER_COO = 24.0
+_ELEMENT_KERNEL_LAUNCHES = 6
+_TANGENT_RULE_POINTS = {1: 1, 2: 14}   # tetrahedron_rule(4 (order - 1)): TangentAssembler3D's rule and gradient cache
+# tensor bricks (kernels3d elastic_product / elastic_mass_product, a priori counts of the gpu Walsh-basis gather): each
+# element is visited by its 8 nodes; a stiffness visit = 24 loads, Walsh transform (72 add / sub), gradients (36),
+# stresses (~56), back-scaling (36), mode sums (15), the own-corner evaluation (21) and 3 accumulations; a mass visit =
+# transform 72, scaling 24, evaluation 21 + 3; 6 divisions per node (inverse widths)
+_BRICK_VISITS_PER_ELEMENT = 8
+_BRICK_VISIT_FLOPS = 240
+_BRICK_ELEMENT_FLOPS = _BRICK_VISITS_PER_ELEMENT * _BRICK_VISIT_FLOPS   # stiffness product per element
+_BRICK_NODE_FLOPS = 6 * te.DIVISION_FLOPS                              # ... and per node
+_BRICK_MASS_VISIT_FLOPS = 120
+# fused CG step (kernels3d FusedBrickIteration): update + block precondition + r . z (per dof: p, q, x, r, 2 block
+# entries read, x, r, z written, ~10 flops), direction + product + next . q (z, p read; next, q written; 3 flops per dof
+# on top of the product)
+_FUSED_UPDATE_FLOPS_PER_DOF = 10
+_FUSED_DIRECTION_FLOPS_PER_DOF = 3
 _PROBE_FIELDS = OUTPUT_ARRAYS_3D + ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D
 _TETRAHEDRA_ONLY_FIELDS = ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D   # the tensor state() has none
 # frequency response: a complex factor over the real one at equal unknowns (complex multiply-adds ~4 real flops, each
@@ -1148,16 +1162,51 @@ def _tetrahedra_entries(settings_values, mesh, spec) -> int:
                      * _tetrahedra_unknowns(settings_values, mesh, spec)))
 
 
+def _window_shape(mesh) -> tuple:
+    """Window element counts (x, y, z) of a 3D MeshEstimate."""
+    sides = mesh.npml_sides
+    return tuple(int(count) - sides.get(f'{axis}_lo', 0) - sides.get(f'{axis}_hi', 0)
+                 for axis, count in zip(_AXES, (mesh.nx, mesh.ny, mesh.nz)))
+
+
 def _window_counts(mesh):
     """(window elements, window nodes) of a 3D MeshEstimate."""
-    sides = mesh.npml_sides
-    counts = [int(count) - sides.get(f'{axis}_lo', 0) - sides.get(f'{axis}_hi', 0)
-              for axis, count in zip(_AXES, (mesh.nx, mesh.ny, mesh.nz))]
     elements, nodes = 1, 1
-    for count in counts:
+    for count in _window_shape(mesh):
         elements *= count
         nodes *= count + 1
     return elements, nodes
+
+
+def _multigrid_ops(element_shape, item_bytes, brick_product) -> tuple:
+    """(one V-cycle, one hierarchy build) of multigrid3d.BrickMultigrid as op tuples: per non-coarsest level the
+    smoother / correction products and Chebyshev passes and six separable transfer passes, the coarsest dense product;
+    the build's Lame means, blocks, power iterations, the 81 coarsest probes and the host eigh."""
+    shapes = level_element_shapes(element_shape)
+    products = 2 * CHEBYSHEV_DEGREE   # pre: degree, correction: 1, post: degree - 1
+    chebyshev_passes = 2 * CHEBYSHEV_DEGREE + 2
+    cycle, setup = [], []
+    for index, shape in enumerate(shapes):
+        level_elements = int(np.prod(shape))
+        level_nodes = int(np.prod([n + 1 for n in shape]))
+        level_dofs = 3 * level_nodes
+        product = brick_product(item_bytes, level_elements, level_nodes)
+        if index + 1 < len(shapes):
+            cycle += [(products, product),
+                      (chebyshev_passes, te.Elementwise(18 * level_nodes * item_bytes, 9 * level_nodes * item_bytes,
+                                                        flops=30 * level_nodes, flop_bytes=item_bytes)),
+                      (6, te.elementwise(level_dofs, 3, 1, item_bytes))]
+            setup += [(POWER_ITERATIONS, product), (POWER_ITERATIONS, te.elementwise(level_nodes, 9, 3, item_bytes)),
+                      (2 * POWER_ITERATIONS, te.Reduction(level_dofs, item_bytes, read_back=True))]
+        setup += [te.elementwise(level_elements, 2, 6, FLOAT64_BYTES), te.elementwise(level_nodes, 2, 6, item_bytes)]
+    coarsest = 3 * int(np.prod([n + 1 for n in shapes[-1]]))
+    cycle.append(te.Elementwise(coarsest * coarsest * item_bytes, coarsest * item_bytes, flops=2 * coarsest ** 2,
+                                flop_bytes=item_bytes))
+    coarsest_shape = shapes[-1]
+    setup += [(81, brick_product(item_bytes, int(np.prod(coarsest_shape)), coarsest // 3)),
+              (81, te.Transfer(2 * coarsest * item_bytes)), (81, te.PythonCalls(27)),
+              te.DenseFlops(float(coarsest) ** 3 * 4.0, host=True), te.Transfer(coarsest * coarsest * item_bytes)]
+    return tuple(cycle), tuple(setup)
 
 
 def _time_estimate(settings_values, mesh, context):
@@ -1174,22 +1223,41 @@ def _time_estimate(settings_values, mesh, context):
     elements, nodes = _window_counts(mesh)
     dofs = 3 * nodes
 
-    def brick_product(item_bytes):   # bytes and arithmetic of one matrix-free stiffness product
-        return te.Elementwise((2 * elements + 8 * dofs) * item_bytes, dofs * item_bytes, launches=2, numba=True,
-                              flops=_BRICK_ELEMENT_FLOPS * elements, flop_bytes=item_bytes)
+    def brick_product(item_bytes, level_elements=elements, level_nodes=nodes):   # one matrix-free stiffness product
+        return te.Elementwise((2 * level_elements + 24 * level_nodes) * item_bytes, 3 * level_nodes * item_bytes,
+                              launches=2, numba=True,
+                              flops=_BRICK_ELEMENT_FLOPS * level_elements + _BRICK_NODE_FLOPS * level_nodes,
+                              flop_bytes=item_bytes)
+
+    def fused_iteration(item_bytes):   # FusedBrickIteration.step: two launches (the cpu numba twins: four passes)
+        product = brick_product(item_bytes)
+        update = te.Elementwise(6 * dofs * item_bytes, 3 * dofs * item_bytes, numba=True,
+                                flops=_FUSED_UPDATE_FLOPS_PER_DOF * dofs, flop_bytes=item_bytes)
+        direction = replace(product, bytes_read=product.bytes_read + (dofs * item_bytes + BOOL_BYTES * dofs),
+                            bytes_written=2 * dofs * item_bytes, launches=1,
+                            flops=product.flops + _FUSED_DIRECTION_FLOPS_PER_DOF * dofs)
+        return update, direction
     # mixed: the inner CG iterates on the float32 kernel copies, each outer refinement applies the float64 product
     inner_bytes = FLOAT32_BYTES if linear_solver_mixed(context) else value_bytes
     common = dict(unknowns=float(dofs), value_bytes=value_bytes, dimensions=3, longest_axis=context.longest_axis(),
                   product_ops=(brick_product(inner_bytes),),
                   preconditioner_ops=(te.elementwise(nodes, 9, 3, inner_bytes),),
-                  refinement_ops=(brick_product(value_bytes),))
+                  refinement_ops=(brick_product(value_bytes),), iteration_ops=fused_iteration(inner_bytes))
+    if linear_solver_multigrid(context):   # multigrid3d V-cycle (float32 at every precision), no fused iteration
+        cycle, setup = _multigrid_ops(_window_shape(mesh), FLOAT32_BYTES, brick_product)
+        if inner_bytes != FLOAT32_BYTES:   # double CG: residual cast in, correction cast back per cycle
+            cycle += (te.Elementwise(dofs * (inner_bytes + FLOAT32_BYTES), dofs * (inner_bytes + FLOAT32_BYTES),
+                                     launches=2),)
+            setup += (te.elementwise(elements, 2, 2, FLOAT32_BYTES), te.elementwise(nodes, 6, 6, FLOAT32_BYTES))
+        common.update(preconditioner_ops=cycle, iteration_ops=(), setup_ops=setup,   # built in assemble, timed there
+                      setup_counters=('multigrid_builds', 'multigrid_build_seconds'))
     if context.study.type == EIGENFREQUENCY_STUDY:
         eigenpairs = int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
         resolved = context.solvers.get('eigen')
         subspace = int(resolved.values.get('subspace_size', 0)) if resolved is not None else 0
         applications = APPLICATIONS_PER_BASIS_GUESS * arnoldi_basis_size(eigenpairs, dofs, subspace)
-        mass = (te.Elementwise(3 * dofs * FLOAT64_BYTES, dofs * FLOAT64_BYTES, launches=2,
-                               flops=_BRICK_BLOCKS_PER_ELEMENT * _BRICK_MASS_BLOCK_FLOPS * elements,
+        mass = (te.Elementwise(3 * dofs * FLOAT64_BYTES, dofs * FLOAT64_BYTES, launches=2, numba=True,
+                               flops=_BRICK_VISITS_PER_ELEMENT * _BRICK_MASS_VISIT_FLOPS * elements,
                                flop_bytes=FLOAT64_BYTES),)
         eigen = context.solver_work('eigen', unknowns=float(dofs), dimensions=3, solves=1.0, factorizations=0.0,
                                     eigenpairs=eigenpairs, product_ops=mass)
@@ -1339,17 +1407,21 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
     iterations = float(solves) * int(settings_values.get('load_steps') or 1) * _NEWTON_ITERATIONS_PER_STEP
     count_kind = 'guess' if kind == 'exact' else kind
     coo_entries = float(int(mesh.n_elements) * (3 * local) ** 2)
+    points, elements = _TANGENT_RULE_POINTS[order], float(mesh.n_elements)
+    kernel_flops = element_flops(local, points) * elements
+    scatter_bytes = _TANGENT_SCATTER_BYTES_PER_COO * coo_entries
     linear = (context.solvers or {}).get('linear')
     if context.backend == 'gpu' and linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS:
-        # device TangentAssembler3D (plan G5): per chunk ~_DEVICE_TANGENT_LAUNCHES kernels streaming operator-sized
-        # (q x 6 x 3 n) arrays, the batched block matmul, the displacement up and the force down
-        points, elements = _TANGENT_RULE_POINTS[order], float(mesh.n_elements)
-        chunks = -(-int(mesh.n_elements) // CHUNK_ELEMENTS)
-        operator_bytes = _DEVICE_TANGENT_PASSES * FLOAT64_BYTES * points * 6 * 3 * local * elements
-        ops = (te.Elementwise(operator_bytes, operator_bytes, launches=_DEVICE_TANGENT_LAUNCHES * chunks),
-               te.DenseFlops(2.0 * points * 6 * (3 * local) ** 2 * elements),
-               te.Transfer(2.0 * FLOAT64_BYTES * 3 * unknowns), te.PythonCalls(_DEVICE_TANGENT_LAUNCHES * chunks))
+        # device TangentAssembler3D (plan G5) on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
+        # block per element, the block scatter_add, the displacement up and the force down
+        chunks = -(-int(mesh.n_elements) // device_tangent_chunk_elements(local, points, element_kernel=True))
+        ops = (te.DenseFlops(kernel_flops),
+               te.Elementwise(scatter_bytes, FLOAT64_BYTES * coo_entries, launches=_ELEMENT_KERNEL_LAUNCHES * chunks),
+               te.Transfer(2.0 * FLOAT64_BYTES * 3 * unknowns), te.PythonCalls(_ELEMENT_KERNEL_LAUNCHES * chunks))
         label = 'tangent and internal force assembly on the GPU'
+    elif numba_available():   # the numba twin of the element kernel, then the host bincount block sums
+        ops = (te.DenseFlops(kernel_flops), te.HostStream(scatter_bytes), te.PythonCalls(60))
+        label = 'tangent and internal force assembly'
     else:
         ops = (te.HostStream(_TANGENT_BYTES_PER_COO[order] * coo_entries), te.PythonCalls(60))
         label = 'tangent and internal force assembly'
@@ -1372,10 +1444,10 @@ def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries
               + FLOAT64_BYTES * elements * (36 + 6 * points)
               + INT32_BYTES * (entries + 3 * scalar_dofs) + 2 * INT32_BYTES * reduced_entries + INT32_BYTES * factored)
     values = FLOAT64_BYTES * (entries + 3 * reduced_entries) + 4 * FLOAT64_BYTES * 3 * scalar_dofs
-    # per element of a chunk: B, B_NL, their sum, C (B + B_NL) and the weighted copy (q x 6 x 3 n each), the
-    # displacement gradient, the blocks and their geometric part
-    chunk = min(elements, CHUNK_ELEMENTS) * (FLOAT64_BYTES * points * (5 * 6 * columns + 9 + 12)
-                                             + 2 * FLOAT64_BYTES * columns ** 2)
+    # one chunk of TangentAssembler3D's device size (the byte cap; a tighter pool gives smaller chunks) on the element
+    # kernel: forces, blocks and gathered displacements
+    chunk = (min(elements, device_tangent_chunk_elements(local, points, element_kernel=True))
+             * tangent_chunk_element_bytes(local, points, element_kernel=True))
     maps = INT32_BYTES * (2 * reduced_entries + (reduced_entries + factored) // 2) + (_INT64_BYTES + 1) * factored
     return ([('device Newton tangent assembler caches (gradients, scatter slots, dofs, C, S0, pattern)', caches),
              ('device Newton tangent values (full, reduced, equilibrated) and vectors', values),
@@ -1453,11 +1525,23 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                    12 * FLOAT64_BYTES * elements + 8 * FLOAT64_BYTES * 3 * scalar_dofs),
                   ('6 x 6 element stiffness (kept, its isotropic copy, a build temporary)',
                    3 * 36 * FLOAT64_BYTES * elements),
-                  ('COO assembly batch (rows, columns, values)',
-                   min(coo_entries, 20_000_000) * (2 * INT32_BYTES + FLOAT64_BYTES)),
+                  # fixed_pattern.kept_pattern (block 3): vector indptr / indices, scalar keys and row starts, kept
+                  # per mesh (the Newton tangent shares it); its build: the scalar COO batch, then the int64 block
+                  # expansion batch
+                  ('stiffness block pattern kept per mesh (vector indices, scalar keys)',
+                   INT32_BYTES * (entries + 3 * scalar_dofs) + _INT64_BYTES * (entries // 9 + scalar_dofs)),
+                  ('stiffness pattern build (scalar COO batch or block expansion batch)',
+                   max(min(elements * local ** 2, 20_000_000) * (2 * _INT64_BYTES + FLOAT32_BYTES),
+                       3 * _INT64_BYTES * min(entries, EXPAND_ENTRIES))),
                   ('stiffness CSR and its free-dof copy', 2 * csr_bytes),
                   (f'nodal outputs ({_TET_NODAL_OUTPUTS} x float64) and their element point values',
-                   _TET_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))]
+                   _TET_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements)),
+                  # solver_fem3d._point_values: (values (m, q, 3), Voigt strains (m, q, 6)) float64 of the solid
+                  # elements at the dof points and the centroid, kept until the last point group is written; a complex
+                  # solution (frequency response, a complex modal pencil) adds its imaginary part
+                  ('shared output point values (displacement and strains at the dof points and centroid)',
+                   (2 if frequency_response or eigen_bytes == _COMPLEX_BYTES else 1) * 9 * FLOAT64_BYTES * (local + 1)
+                   * int(round(elements * _solid_fraction(spec, mesh))))]
     if piezoelectric:
         host_items.extend([
             ('piezoelectric coupled operator, G^T A G and its free restriction (float64 CSR)', 3 * coupled_csr),
@@ -1468,18 +1552,19 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
              _TET_ELECTRIC_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))])
     if settings_values.get('geometric_nonlinearity'):   # the Newton tangent replaces K in the 'linear' factor
         # TangentAssembler3D: rule gradients + weights (kept up to its cache limit), the int32 scatter map of every
-        # element-block entry, element vector dofs, the pattern and its free-free take; the pattern build's COO batch
+        # element-block entry, element vector dofs and the free-free restriction (indices, take) on the stiffness's
+        # kept block pattern; building the restriction: int64 rows of every entry and the gathered renumbering
         rule_points = _TANGENT_RULE_POINTS[order]
         gradient_bytes = 0 if device_tangent else min(FLOAT64_BYTES * elements * rule_points * (3 * local + 1),
                                                       TANGENT_GRADIENT_CACHE_BYTES)   # device: kept on the GPU
         host_items.extend([('Newton tangent K_T CSR and its free-dof copy', 2 * csr_bytes),
                            ('Newton vectors (state, internal force, residual, correction, proposal, load)',
                             6 * FLOAT64_BYTES * 3 * scalar_dofs),
-                           ('Newton tangent assembler: rule gradients, scatter map, pattern and free take',
+                           ('Newton tangent assembler: rule gradients, scatter map, free restriction',
                             gradient_bytes + INT32_BYTES * coo_entries + _INT64_BYTES * 3 * local * elements
-                            + (2 * INT32_BYTES + _INT64_BYTES) * entries),
-                           ('Newton tangent pattern build (COO batch, a run item)',
-                            min(coo_entries, 20_000_000) * (3 * _INT64_BYTES + FLOAT32_BYTES))])
+                            + (INT32_BYTES + _INT64_BYTES) * entries),
+                           ('Newton tangent free restriction build (a run item)',
+                            (2 * _INT64_BYTES + 3) * entries)])
         if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
             host_items.append(('modified Newton: values of the held tangent', FLOAT64_BYTES * entries))
     if eigenfrequency:
@@ -1562,9 +1647,12 @@ def _memory_estimate(settings_values, mesh, context):
     fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
     # unknown, held values, applied load, load, rhs, fixed values, fixed coupling, CG unknown; the matrix-free
-    # PCGSolver workspace (residual, direction, product, preconditioned; mixed: float32 + the float64 outer vectors)
+    # PCGSolver workspace (residual, two directions of the fused iteration, product, preconditioned; mixed: float32 +
+    # the float64 outer vectors; the fused iteration's block partial sums are negligible)
+    multigrid = linear_solver_multigrid(context)   # multigrid3d: no fused iteration (one direction vector)
     vectors = (8 * value_bytes * dofs
-               + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False))
+               + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
+                                 fused=not multigrid))
     masks = 3 * BOOL_BYTES * dofs + BOOL_BYTES * elements   # held, free, rigid-check held copy; rigid-check solid copy
     blocks = 6 * value_bytes * nodes                         # reduced inverse 3 x 3 blocks
     # lambda, mu, applied body force (3); the physics' solid mask
@@ -1578,18 +1666,31 @@ def _memory_estimate(settings_values, mesh, context):
         build_extra += 7 * value_bytes * dofs + 30 * value_bytes * 3 * elements
     items = [('node vectors', vectors), ('dof masks', masks), ('inverse node blocks', blocks),
              ('element arrays', element_arrays)]
-    if mixed:   # float32 lambda, mu and reduced inverse blocks of the inner CG (widths negligible)
-        items.append(('float32 operator copy (mixed)', 2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes))
+    double_cycle = multigrid and not mixed and value_bytes != FLOAT32_BYTES   # float32 V-cycle of a double CG
+    if mixed or double_cycle:   # float32 lambda, mu and reduced inverse blocks of the inner CG / cycle (widths small)
+        items.append(('float32 operator copy (mixed / multigrid)',
+                      2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes))
+    if double_cycle:
+        items.append(('float32 cycle output (double multigrid)', FLOAT32_BYTES * dofs))
     transient_items = []   # freed when their re-assembly / eigen solve ends
     if stiffness_follows_state(context):
         transient_items.append(('stiffness re-assembly', 'stiffness re-assembly (state-dependent stiffness)',
                                 8 * value_bytes * elements))
     host_items = ()
+    if multigrid:   # BrickMultigrid levels (float32 cycle at every precision) and its per-assembly build
+        items.append(('multigrid levels (vectors, coarse operators, transfers, coarsest inverse)',
+                      hierarchy_bytes(_window_shape(mesh), FLOAT32_BYTES)))
+        # float64 lambda x V, mu x V, V and the solid mask of the fine level while the level means are formed
+        transient_items.append(('multigrid build', 'multigrid build (float64 volume-weighted Lame values)',
+                                (3 * FLOAT64_BYTES + BOOL_BYTES) * elements))
     if context.spec.study.type == EIGENFREQUENCY_STUDY:
         # density copy + masked copy, massless mask; free-dof index (int64), Lanczos vector, per-step gathers
         transient_items.append(('eigen solve', 'eigen solve vectors', (2 * FLOAT64_BYTES + BOOL_BYTES) * elements
                                 + 4 * FLOAT64_BYTES * dofs))
         host_items = _eigen_host_items(context, dofs)
+    if multigrid:
+        host_items = tuple(host_items) + (('multigrid coarsest build (float64, transient)',
+                                           coarsest_host_bytes(_window_shape(mesh))),)
     system = MemoryEstimate.from_items(items, build_extra=build_extra, host_items=host_items,
                                        transient_items=transient_items)
     return combine((fields, system))
@@ -1912,7 +2013,8 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'cell corners, matrix-free stiffness product, 3 x 3 block-Jacobi PCG (about 20 iterations per cell '
                 "along the longest window axis; pcg precision mixed runs them in float32 on float32 copies of the "
                 'operator, refined against the float64 residual to the double answer: much cheaper per iteration '
-                'on GPUs with slow float64 arithmetic); outputs at the cell centres (u = mean of the 8 corners; strain, '
+                'on GPUs with slow float64 arithmetic, so the Automatic linear solver on the gpu backend is pcg mixed; '
+                'cpu: double); outputs at the cell centres (u = mean of the 8 corners; strain, '
                 'stress and von Mises from the centre gradients), 0 in void cells (youngs_modulus 0: not solved, carry '
                 'nothing), edge-extended into any PML shell. Forces and reactions in N. strain_xy / _xz / _yz are '
                 'tensor shear strains (half the engineering strain); elastic_strain_* = strain - alpha dT. Faces '
@@ -2013,10 +2115,11 @@ SOLID_MECHANICS_3D = PhysicsType(
                        OPTOMECHANICS_STUDY),
     default_study={'type': 'stationary'},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
-    # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy)
+    # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy). Automatic is the double factor:
+    # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined)
     solver_roles={'linear': CG_ELASTIC_3D_LINEAR_ROLE,
                   'eigen': eigen_role(_MODAL_STUDIES, mixed_factorization=True,
-                                      auto_factorizations={'tetrahedra': 'cudss_mixed'})},
+                                      auto_factorizations={'tetrahedra': 'cudss'})},
     frequency_sweep_methods=('direct', 'adaptive', 'modal'),   # tetrahedra: frequency_response.HarmonicSystem
     backends=('gpu', 'cpu'),   # cpu: numpy twins of the kernels3d RawKernels (Gauss points), numba product
     create=_create_solid_3d,

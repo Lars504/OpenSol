@@ -1,7 +1,8 @@
 """Profile solid_mechanics_3d on tetrahedra (P2 FEM: shift-invert modes on the 'eigen' runtime, complex frequency
-response on the 'linear' runtime) on the gpu: solid_fem3d_roller_box_modes runs lowest / shifted (24k free dofs),
-solid_fem3d_pml_bar_radiation (damped PML pencil) and the elastic solid_fem3d_frequency_response_bar run as a 30-point
-sweep on 2x finer cells (snapshot per frequency); ~9-10 s. Run from any folder:
+response on the 'linear' runtime) on the gpu: solid_fem3d_roller_box_modes runs lowest / shifted (24k free dofs;
+lowest also on the mixed cuDSS eigen factor), solid_fem3d_pml_bar_radiation (damped PML pencil) and the elastic
+solid_fem3d_frequency_response_bar run as a 30-point sweep on 2x finer cells (snapshot per frequency); ~9-10 s.
+--warmup runs only the PML bar (cuDSS load). Run from any folder:
 python profiler_solver_solid_mechanics_3d_tetrahedra.py [--warmup] [--no-cprofile]"""
 import copy
 import sys
@@ -16,6 +17,7 @@ RESPONSE_CASE = 'solid_fem3d_frequency_response_bar'
 SWEEP_POINTS = 30           # frequencies of the response sweep (one complex factor each)
 SWEEP_SPAN = 0.1            # +- relative band around the selftest's single elastic frequency
 RESPONSE_REFINEMENT = 2     # cell / 2: 4 x 4 x 32 Kuhn cubes, ~2e4 P2 displacement dofs
+_MIXED_EIGEN_NODE = 'eigen_mixed_factor'
 
 
 def _response_sweep():
@@ -30,12 +32,29 @@ def _response_sweep():
     return spec
 
 
+def _mixed_eigen_factor(spec):
+    """Deep copy of spec with its 'eigen' role on an arpack_shift_invert node of factorization cudss_mixed (float32
+    factor + GMRES refinement per application; Automatic is the double factor)."""
+    from open_sol.model.spec import SolverSpec
+    spec = copy.deepcopy(spec)
+    spec.solvers.append(SolverSpec(_MIXED_EIGEN_NODE, 'arpack_shift_invert', {'factorization': 'cudss_mixed'}))
+    spec.physics[0].solvers['eigen'] = _MIXED_EIGEN_NODE
+    return spec
+
+
 def _specs():
-    """{run: ModelSpec}: roller-box modes (lowest, shifted), the PML bar and the response sweep."""
+    """{run: ModelSpec}: roller-box modes (lowest, also on a mixed eigen factor; shifted), the PML bar and the
+    response sweep."""
     modes = case_specs(MODES_CASE, runs=['lowest', 'shifted'])
     pml = case_specs(PML_CASE)
-    return {'modes_lowest': modes['lowest'], 'modes_shifted': modes['shifted'],
+    return {'modes_lowest': modes['lowest'], 'modes_lowest_mixed_factor': _mixed_eigen_factor(modes['lowest']),
+            'modes_shifted': modes['shifted'],
             **{f'pml_{name}': spec for name, spec in pml.items()}, 'response_sweep': _response_sweep()}
+
+
+def _warmup_specs():
+    """{run: ModelSpec} of --warmup: the small PML bar runs (cuDSS library load, plan and factor kernels)."""
+    return {f'pml_{name}': spec for name, spec in case_specs(PML_CASE).items()}
 
 
 PHYSICS = 'open_sol.physics.mechanics.solver_fem3d:SolidMechanicsFEMPhysics3D'
@@ -53,7 +72,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     '_write_energy_outputs', '_write_electric_outputs', '_point_outputs', '_write_element_field', 'lagrange_field',
     'state', '_record_probes',
 )) + tuple((f'{SYSTEM}.{method}', f'system: {method}') for method in (
-    'assemble', '_check_rigid_modes', '_factorize', 'solve', 'mass', 'shell_only_dofs', 'reaction', 'release_factor',
+    'assemble', '_check_rigid_modes', '_solve_free', 'solve', 'mass', 'shell_only_dofs', 'reaction', 'release_factor',
 )) + tuple((f'{PENCIL}.{method}', f'modal pencil: {method}') for method in (
     '__init__', '_reduced', '_pencil', 'solve_at', '_shift_solve', '_candidates', '_resonance', 'release', '_info',
 )) + tuple((f'{HARMONIC}.{method}', f'harmonic system: {method}') for method in (
@@ -85,4 +104,4 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
 )
 
 if __name__ == '__main__':
-    main('solid_mechanics_3d_tetrahedra', PARTS, __doc__, case=None, specs=_specs)
+    main('solid_mechanics_3d_tetrahedra', PARTS, __doc__, case=None, specs=_specs, warmup_specs=_warmup_specs)

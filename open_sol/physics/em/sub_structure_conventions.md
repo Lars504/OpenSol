@@ -502,7 +502,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (first-order error; help texts say so). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the sign to
   round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents); `_solution_dirty`
   stays True so a later step() re-solves the driven problem. Region (P2): `set_resonance_region`, column
-  `region_energy_fraction` last. Self-tests em_fdfd_eigenfrequency_pec_cavity, em_resonance_region_fraction,
+  `region_energy_fraction` last; on tensor grids the region is `ctx.domain_mask`, so an object touching the window
+  edge counts the PML cells beyond it (clamped centres; example dbr_cavity_q stops its gaps one cell short). Self-tests em_fdfd_eigenfrequency_pec_cavity, em_resonance_region_fraction,
   em_fdfd_resonance_region; template disk_resonator_eigenmodes.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
@@ -783,7 +784,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (`_solved_materials`): jumps of H . t, H_z and normal D across interior non-PEC window edges; ring, PEC and outer edges none, no element
   residual. The model self-test `adaptation_triangle_parts` imports this file's slab helpers.
 - Shift offset: `prepare_fem_modes` takes cross_section_modes' `_SHIFT_RELATIVE_OFFSET` (1e-6) and recovers beta^2 with
-  that same shift; otherwise the default guess sits exactly on a TEM mode (em_modes_fem_tem_on_guess).
+  that same shift; otherwise the default guess sits exactly on a TEM mode (em_modes_fem_tem_on_guess). A shift that
+  close to a mode makes its theta ~1e6 x the far wanted ones: ARPACK at tolerance 0 (eps) may then not converge them
+  (rounding noise, 300 restarts, a warning); that self-test runs ARPACK at 1e-8.
 - Factor: `solve_fem_modes` calls `factorize_host(operator, symmetric=True, row_scale=problem.row_scale)`: the pencil is
   complex symmetric (D = I), so cudss factors an LDL^T (LU if the symmetry check fails); row_scale replaces
   |diag A|^-1/2, which nearly cancels. SuperLU ignores both. A change that breaks the symmetry (conjugated tests, full

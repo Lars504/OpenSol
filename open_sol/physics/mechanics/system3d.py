@@ -2,12 +2,16 @@
 (u_x, u_y, u_z) on the cell corners, matrix-free stiffness product, constrained dofs eliminated, 3 x 3 block-Jacobi PCG.
 Forces in N. Arrays on the run backend (ElasticSystemBase xp / ndimage; kernels3d twins dispatch on them)."""
 import itertools
+import warnings
 
 import numpy as np
 from ...core.backend import to_host
 
 from ...core.constants import FACES_3D
-from .kernels3d import BrickKernels
+from ...solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, PCGSolver
+from .kernels3d import BrickKernels, FusedBrickIteration
+from .multigrid3d import (CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
+                          BrickMultigrid)
 from .modal import LANCZOS_TOLERANCE_PER_CG, solve_lowest_modes_matrix_free
 from .solver_common import ElasticSystemBase
 
@@ -24,8 +28,8 @@ _CORNER_SHIFTS = tuple(itertools.product((0, 1), repeat=3))
 
 class ElasticSystem3D(ElasticSystemBase):
     """Window system of the 3D displacement: element Lame coefficients (the operator), held dofs (eliminated),
-    rigid-mode rank check, block-Jacobi PCG (matrix-free PCGSolver; 'mixed': float32 inner copies of the operator),
-    fused load / output kernels and reactions."""
+    rigid-mode rank check, block-Jacobi PCG (matrix-free PCGSolver; 'mixed': float32 inner copies of the operator) or
+    the geometric multigrid preconditioner (multigrid3d), fused load / output kernels and reactions."""
 
     # --- allocation -----------------------------------------------------------
 
@@ -69,13 +73,36 @@ class ElasticSystem3D(ElasticSystemBase):
         self.inverse_blocks = xp.zeros((self.n_nodes, 6), dtype=dtype)   # reduced inverse 3 x 3 blocks per node
         # CG unknown w = u - u_fix; between solves the scratch of reaction (solve rebuilds it from unknown)
         self._solution = xp.zeros(n_dofs, dtype=dtype)
+        # reaction: K u of the last solve kept in _solution while (solves, assemblies) are unchanged (every PCG solve,
+        # the Lanczos inner ones too, counts in n_solves and overwrites _solution)
+        self._assemblies = 0
+        self._reaction_key = None
         # 'mixed' solver: float32 widths here, float32 (lame_lambda, mu, inverse blocks) per assembly for the inner CG
         mixed = self.linear_solver.precision == 'mixed'
+        # pcg preconditioner 'multigrid': the geometric V-cycle of multigrid3d, float32 at every precision (double: on
+        # the float32 copies, cast at both ends) in place of block Jacobi, until a solve trips the guard
+        # (_guarded_solve); no fused iteration then
+        uses_multigrid = (isinstance(self.linear_solver, PCGSolver)
+                          and self.linear_solver.preconditioner == 'multigrid')
+        double_cycle_cast = uses_multigrid and not mixed and np.dtype(dtype) != np.float32
         self.widths_single = (tuple(xp.asarray(widths, dtype=np.float32) for widths in self.widths_host)
-                              if mixed else None)
+                              if mixed or double_cycle_cast else None)
         self._single_operator = None
+        self._cycle_out = xp.zeros(n_dofs, dtype=np.float32) if double_cycle_cast else None
         single_callbacks = ({'single_operator': self._apply_single_operator,
                              'single_preconditioner': self._precondition_single} if mixed else {})
+        self.multigrid = BrickMultigrid(self.element_shape, np.float32, xp) if uses_multigrid else None
+        self._multigrid_active = uses_multigrid
+        if uses_multigrid:
+            self.linear_solver.preconditioner_counters = self.multigrid.work_counters
+            single_callbacks['capture_blocks'] = True
+        elif isinstance(self.linear_solver, PCGSolver):   # two fused launches per CG step, check blocks as CUDA graphs
+            if mixed:
+                single_callbacks['single_fused_iteration'] = FusedBrickIteration(
+                    self.kernels, self._fused_operator_single, np.float32, xp)
+            else:
+                single_callbacks['fused_iteration'] = FusedBrickIteration(self.kernels, self._fused_operator, dtype, xp)
+            single_callbacks['capture_blocks'] = True
         # matrix-free binding (the callbacks read the operator of the latest assembly); allocates the PCG workspace
         self.linear_solver.factorize(self._apply_solve_operator, self._precondition, n_unknowns=n_dofs,
                                      **single_callbacks)
@@ -176,14 +203,25 @@ class ElasticSystem3D(ElasticSystemBase):
         xp.copyto(self.fixed_values, self.held_values.reshape(-1), where=held)
         kernels.product(self.fixed_values, self.fixed_coupling, lame_lambda, mu, widths, self.free, masked=False)
         kernels.reduce_invert_blocks(self.inverse_blocks, self.free)
-        if self.widths_single is not None:   # mixed: the inner CG's float32 operator (blocks inverted in float64)
+        if self.widths_single is not None:   # mixed / double multigrid: float32 operator (blocks inverted in float64)
             self._single_operator = None   # free the previous copies first
             self._single_operator = tuple(values.astype(np.float32)
                                           for values in (lame_lambda, mu, self.inverse_blocks))
         xp.copyto(self.unknown, self.fixed_values, where=~self.free)
         self.lame_lambda, self.mu = lame_lambda, mu
+        if self.multigrid is not None:   # the hierarchy of this assembly, level 0 = the CG's own (inner) operator
+            if self.widths_single is not None:
+                level_lambda, level_mu, level_blocks = self._single_operator
+                level_widths = self.widths_single
+            else:
+                level_lambda, level_mu, level_blocks, level_widths = lame_lambda, mu, self.inverse_blocks, widths
+            self.multigrid.build(level_lambda, level_mu, self.free, level_blocks, level_widths, self.widths_host,
+                                 kernels)
+        if isinstance(self.linear_solver, PCGSolver):
+            self.linear_solver.release_block_graphs()   # captured CG blocks hold the replaced operator arrays
         self._rhs_built = False
         self.operator_dirty = False
+        self._assemblies += 1
 
     def _check_rigid_modes(self, solid_elements):
         """Raise ValueError when a solid region (26-connected solid elements) admits a rigid motion: rank of the 6 x 6
@@ -290,7 +328,53 @@ class ElasticSystem3D(ElasticSystemBase):
         self.kernels.product(vector, out, self.lame_lambda, self.mu, self.widths_device, self.free, masked=True)
 
     def _precondition(self, residual, out):
+        if self._multigrid_active and residual.dtype == self.multigrid.dtype:
+            self.multigrid.precondition(residual, out)
+            return
+        if self._multigrid_active and self._cycle_out is not None:   # double CG: float32 cycle, cast back
+            self.multigrid.precondition(residual, self._cycle_out)
+            self.xp.copyto(out, self._cycle_out)
+            return
         self.kernels.precondition(self.inverse_blocks, residual, out)
+
+    def solve(self) -> None:
+        """The base PCG solve under the multigrid guard (_guarded_solve)."""
+        self._guarded_solve(super().solve)
+
+    def multigrid_budget(self) -> int:
+        """CG iterations a multigrid solve may take (_guarded_solve): the block-Jacobi estimate (pcg
+        CG_ITERATIONS_PER_AXIS_CELL x the longest window axis) in V-cycles, within the multigrid3d fallback bounds."""
+        jacobi = CG_ITERATIONS_PER_AXIS_CELL * max(self.element_shape)
+        return int(min(FALLBACK_ITERATIONS, max(FALLBACK_MIN_ITERATIONS, jacobi // CYCLE_COST_IN_JACOBI_ITERATIONS)))
+
+    def _guarded_solve(self, solve_once) -> None:
+        """solve_once(); with multigrid capped at multigrid_budget() iterations: a solve that did not converge within
+        them switches this system to block Jacobi for good (warning) and re-solves from where it stopped (that attempt
+        then does not count as unconverged)."""
+        solver = self.linear_solver
+        unconverged_before = solver.n_unconverged
+        budget = self.multigrid_budget() if self._multigrid_active else None
+        limit = solver.max_iterations
+        if budget is not None:
+            solver.max_iterations = min(limit, budget)
+        try:
+            solve_once()
+        finally:
+            solver.max_iterations = limit
+        if not self._multigrid_active or (solver.last_converged and solver.last_iters <= budget):
+            return
+        self._multigrid_active = False
+        self.multigrid.fallbacks += 1
+        solver.release_block_graphs()   # captured blocks hold the V-cycle launches
+        converged = solver.last_converged
+        warnings.warn(f'{self.label()}: the multigrid preconditioner '
+                      + (f'needed {solver.last_iters} CG iterations' if converged
+                         else f'did not converge within {solver.last_iters} CG iterations (the block-Jacobi cost)')
+                      + ' on this geometry (coarse levels of thin solids in void, strong stiffness contrast or strong '
+                        'grading are weak); this solid continues with block Jacobi', RuntimeWarning, stacklevel=3)
+        if not converged:
+            solver.n_unconverged = unconverged_before
+            solve_once()
 
     def _apply_single_operator(self, vector, out):
         """Float32 A_solve vector of the mixed inner CG (the float32 RawKernel on the copies of the last assembly)."""
@@ -298,7 +382,19 @@ class ElasticSystem3D(ElasticSystemBase):
         self.kernels.product(vector, out, lame_lambda, mu, self.widths_single, self.free, masked=True)
 
     def _precondition_single(self, residual, out):
+        if self._multigrid_active:
+            self.multigrid.precondition(residual, out)
+            return
         self.kernels.precondition(self._single_operator[2], residual, out)
+
+    def _fused_operator(self):
+        """(lame_lambda, mu, inverse blocks, widths, free dofs) of the latest assembly (the fused CG iteration)."""
+        return self.lame_lambda, self.mu, self.inverse_blocks, self.widths_device, self.free
+
+    def _fused_operator_single(self):
+        """The float32 copies of _fused_operator (mixed inner CG)."""
+        lame_lambda, mu, inverse_blocks = self._single_operator
+        return lame_lambda, mu, inverse_blocks, self.widths_single, self.free
 
     # --- post-processing --------------------------------------------------------
 
@@ -307,9 +403,12 @@ class ElasticSystem3D(ElasticSystemBase):
         if self.n_solves == 0:
             raise RuntimeError(f'{self.label()}: reactions need a solve first')
         xp = self.xp
-        product = self._solution   # free between solves
-        self.kernels.product(self.unknown, product, self.lame_lambda, self.mu, self.widths_device, self.free,
-                             masked=False)
+        product = self._solution   # free between solves: K u kept there for the next reaction of the same solve
+        key = (self.n_solves, self._assemblies)
+        if self._reaction_key != key:
+            self.kernels.product(self.unknown, product, self.lame_lambda, self.mu, self.widths_device, self.free,
+                                 masked=False)
+            self._reaction_key = key
         dofs = xp.flatnonzero(xp.asarray(dof_mask))
         nodal = product[dofs].astype(np.float64) - self.load_full[dofs].astype(np.float64)
         totals = to_host(xp.bincount(dofs % 3, weights=nodal, minlength=3)) if dofs.size else np.zeros(3)
@@ -352,7 +451,7 @@ class ElasticSystem3D(ElasticSystemBase):
             rhs.fill(0)
             rhs[free_index] = xp.asarray(vector, dtype=self.dtype)
             solution.fill(0)
-            solver.solve(rhs, solution)
+            self._guarded_solve(lambda: solver.solve(rhs, solution))
             return np.array(to_host(solution[free_index]))
 
         modal_solve = solve_lowest_modes_matrix_free(

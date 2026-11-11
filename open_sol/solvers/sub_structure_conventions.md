@@ -38,8 +38,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `schema.with_default_precision(spec, solver_type, settings, solver_role)` to settings without a 'precision' key when
   both the type and the role offer it (else unchanged, no error), per (physics, role) in resolved_solvers, validate and
   the GUI role combos. An explicit node precision overrides; GUI-added nodes start with the default written in, JSON
-  nodes without one follow it. `schema.default_precision_ignored` = the validate info. Code resolving solver values
-  outside resolved_solvers must go through the helper.
+  nodes without one follow it. A precision in a role's Automatic settings (`backend_defaults` / `grid_defaults`, e.g.
+  solid_mechanics_3d gpu 'mixed') is the role's own default: resolved_solvers replaces it by a non-'auto'
+  solver_defaults.precision the role takes, and a node of the Automatic type that sets no precision (and gets none from
+  solver_defaults) takes it too (`schema.with_node_precision`: resolved_solvers, validate, GUI role combos; so a node
+  added only for a tolerance keeps mixed). `schema.default_precision_ignored` = the validate info. Code resolving
+  solver values outside resolved_solvers must go through the helpers.
 - Backends (S6): the run backend must be in `PhysicsType.backends` (default ('gpu',); see each definition; misfits are
   validate errors per physics, greyed out in Add physics: `schema.physics_type_misfit`) and fit every role. Automatic
   resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid)` (register_physics checks
@@ -57,7 +61,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   dimensions=3)`.
 - `schema.resolved_solvers(spec, registry, physics_spec, study, parameters)` is the one resolution rule (validate,
   `meshing.estimate_memory` -> `MemoryContext.solvers`, builder): only roles `used_in(study)`. A pcg preconditioner the
-  node does not set resolves 'jacobi' at precision 'mixed' (so the Automatic multigrid never meets mixed); a
+  node does not set resolves 'jacobi' at precision 'mixed' unless the role lists it in `mixed_preconditioners` (so
+  the Automatic CSR multigrid never meets mixed); a
   sparse_direct back_end 'auto' becomes the role's `auto_back_ends[grid]` on the gpu with nvmath (sparse_direct
   section). Solver knobs never come from physics settings (CG keys on a physics fail validation as unknown settings).
   Estimators read `context.solvers` only (`definition_helpers.linear_solver_precision(context)`, `resolved_back_end`,
@@ -70,7 +75,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   node 'host_direct_<back_end>' / 'host_direct_eigen_<back_end>'), `available_host_direct()` (installed libraries) and
   `skip_without_host_direct()` (skip_result when none is installed).
 - Shared roles (model.definition_helpers): `CG_LINEAR_ROLE` (pcg single / double, jacobi only: solid_mechanics),
-  `CG_ELASTIC_3D_LINEAR_ROLE` (+ 'mixed', jacobi only: solid_mechanics_3d), `CG_DIFFUSION_LINEAR_ROLE` (+ 'mixed': heat,
+  `CG_ELASTIC_3D_LINEAR_ROLE` (+ 'mixed', jacobi only, Automatic on the gpu backend pcg 'mixed': solid_mechanics_3d),
+  `CG_DIFFUSION_LINEAR_ROLE` (+ 'mixed': heat,
   electric_currents, electrostatics, magnetostatics; Automatic on the gpu = pcg multigrid), `DIRECT_LINEAR_ROLE`
   (sparse_direct double, setting_choices back_end auto / scipy_splu / cusolver_qr + the host direct names:
   em_fdfd_nonlinear), `MAGNETIC_AC_LINEAR_ROLE` (auto / scipy_splu / cudss + the double host names), `FDFD_LINEAR_ROLE`
@@ -124,17 +130,30 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   and named by the recipe in the same edit.
 
 ## pcg (`PCGSolver`)
-- `factorize(operator, preconditioner=None, n_unknowns=None, single_operator=None, single_preconditioner=None)` (single_*
-  only for a mixed pcg; sparse_direct / banded factorize do not take them): cupyx / scipy CSR or matrix-free
-  `apply(vector, out)` (the CSR product writes one owned vector that the next product overwrites); preconditioner None
-  = Jacobi from the diagonal, a flat inverse diagonal (fused, z never stored on the gpu) or `precondition(residual,
-  out)` (block Jacobi). gpu dots are multi-block RawKernels (deterministic per size and device), so gpu inputs must be
-  C-contiguous (solve raises).
+- `factorize(operator, preconditioner=None, n_unknowns=None, single_operator=None, single_preconditioner=None,
+  fused_iteration=None, single_fused_iteration=None, capture_blocks=False)` (all but the first three only for pcg;
+  sparse_direct / banded factorize do not take them, so a caller passes them only to a PCGSolver): cupyx / scipy CSR or
+  matrix-free `apply(vector, out)` (the CSR product writes one owned vector that the next product overwrites);
+  preconditioner None = Jacobi from the diagonal, a flat inverse diagonal (fused, z never stored on the gpu) or
+  `precondition(residual, out)` (block Jacobi). gpu dots are multi-block RawKernels (deterministic per size and device),
+  so gpu inputs must be C-contiguous (solve raises).
+- Fused iteration (speed plan A3, `FUSED_ITERATION_PROTOCOL`; matrix-free + callback preconditioner only, else
+  TypeError; mixed: the float32 `single_fused_iteration`): the caller's object runs `start` (z0, rho, p0, q0) and
+  `step` (x / r update, z, rho_next, the next direction into the second direction buffer, its product and p . q) in its
+  own launches, keeping its own partial sums; scalars and directions ping-pong, so CG blocks of an even length start in
+  the same order. User: ElasticSystem3D (kernels3d.FusedBrickIteration, 2 launches per step instead of 8).
+  `workspace_bytes(fused=True)` books the second direction.
+- CUDA graphs (`capture_blocks`, gpu, `CG_BLOCK_GRAPHS`): each full even-length check block runs once eagerly per
+  (operator, fused object, solution pointer, length), then is captured once and replayed as one launch (`_BlockGraphs`,
+  at most MAX_BLOCK_GRAPHS kept); a failed capture warns and stays eager. Graphs bake every pointer the callbacks read:
+  an opting-in caller calls `release_block_graphs()` whenever it replaces those arrays (ElasticSystem3D.assemble);
+  factorize drops them. Nothing inside a block may sync or allocate (the residual read sits between blocks).
 - cpu: numpy twins of the fused kernels (`_HOST_KERNELS`, same signatures: a kernel change changes its twin),
   allocation-free (BLAS axpy, scipy's private `_sparsetools.csr_matvec` into the workspace product, falling back to
-  `dot` when missing or dtypes differ; Jacobi z in the product vector). Workspace reallocated only when size, dtype or
-  kinds change; `workspace_bytes` is what the physics' estimator counts (SolverType estimate empty). The solution
-  vector stays physics-owned.
+  `dot` when missing or dtypes differ; Jacobi z in the product vector); dots / axpys of vectors shorter than
+  HOST_SMALL_VECTOR_LIMIT run as serial numba loops when numba imports (threaded BLAS start-up was ~20 us per call:
+  speed plan A6). Workspace reallocated only when size, dtype or kinds change; `workspace_bytes` is what the physics'
+  estimator counts (SolverType estimate empty). The solution vector stays physics-owned.
 - `solve(rhs, solution, reference)`: warm start, in place; flat arrays of the solver dtype (ValueError otherwise); b = 0
   returns 0. The residual is read every `check_interval(preconditioner, backend)` iterations (gpu 16, multigrid 2; cpu
   4, multigrid 1), so cg_iterations round up to that block (the estimate rounds too, by `SolverWork.backend`). A
@@ -168,11 +187,23 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. The block sum merges
   only equal block counts (binary counter): a running sum recopies A_c per block. A cupyx / scipy CSR row slice copies
   the matrix even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
+- gpu Galerkin products also run in column chunks of P (`_column_ranges`, <= PRODUCT_MAX_COLUMNS): cuSPARSE's default
+  SpGEMM raises INSUFFICIENT_RESOURCES when a segment of intermediate products overflows its 32-bit coding, which grows
+  with the right factor's columns, so smaller row blocks do not cure it (carey2026 E2 mesh_fine, 5.6e6 cells). A chunk
+  gives the column block R A P_c of A_c; its transpose (A_c symmetric) is the row block, stacked by `_stack_rows`.
+  `_column_block` slices by array masks; its P_c copy is not in `setup_extra_bytes` (a few % of the setup peak). The
+  prolongation smoothing A_F,b T (all coarse columns, one product per entry) is not chunked.
 - Hierarchy (T, P, R, coarse operators / vectors) is HIERARCHY_DTYPE float32 at every precision; a float64 fine level
   casts its residual before R. `precondition` scales the residual by a power of two to max |r| in [0.5, 1) and back
   (exact, no sync): unscaled ~1e-40 residuals underflowed the float32 levels and CG ran to its limit.
-- PCGSolver builds it in `factorize`: assembled scalar CSR only (TypeError for matrix-free / callback preconditioners;
-  the passed inverse diagonal is ignored), not with 'mixed' (ValueError; validate errors at the node). Automatic for
+- PCGSolver builds it in `factorize`: assembled scalar CSR only (TypeError for a CSR with a callback preconditioner;
+  the passed inverse diagonal is ignored), not with 'mixed' (ValueError in `_factorize_mixed`). A matrix-free operator
+  with a callback brings its own multigrid: pcg uses the callback as given (ElasticSystem3D:
+  `physics.mechanics.multigrid3d`, any precision; its counters through `PCGSolver.preconditioner_counters`, its
+  setup ops through `SolverWork.setup_ops`). Whether a role runs multigrid at 'mixed' is the role's
+  `SolverRole.mixed_preconditioners` (default ('jacobi',); `solver_misfit` reports it at the physics; the node-level
+  pcg validate no longer checks it), and `resolved_solvers` falls back to jacobi only for a preconditioner the node
+  does not set and the role does not list there. Automatic for
   `CG_DIFFUSION_LINEAR_ROLE` (gpu, and 3D tensor meshes on the cpu; jacobi at mixed); a pcg node without the setting is
   jacobi (`with_exact_cg` too).
 - Aggregation (host numpy): strength -a_ij >= STRENGTH_THRESHOLD sqrt(a_ii a_jj) (negative off-diagonals only) plus each
@@ -273,8 +304,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (solve_recycled*), inertia, previous= refactorises on the kept analysis. Size rules: the SuperLU ones (size_issue /
   diffusion_size_issue(back_end=) with library-named texts; uncalibrated, LDL^T / nested dissection usually allow
   more) plus the library's own estimate after the analysis (HOST_FRACTION of the available RAM); refusals
-  (HOST_DIRECT_REFUSALS) raise, no fallback. `fall_back`, `device_pencil`, `factorize_pencil` and
-  `factorize_device_csr` stay cuDSS / auto only. Counters (host direct runtimes): host_direct_analyses (fallback
+  (HOST_DIRECT_REFUSALS) raise, no fallback. `fall_back`, `device_pencil` and `factorize_device_csr` stay cuDSS /
+  auto only; `pencil` / `factorize_pencil` serve them by a HostPencil (Device pencils below). Counters (host direct runtimes): host_direct_analyses (fallback
   re-analyses included), host_direct_reused_analyses, host_direct_peak_bytes (the library estimate), host_direct_lu_entries,
   host_direct_symmetric_factors, host_direct_refinement_steps, host_direct_single_residual, host_direct_double_fallbacks,
   host_direct_threads; host_factor_bytes = the library's factor bytes. Time recipe: the SuperLU items (labels named by
@@ -305,9 +336,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   Cholesky.
 - DiffusionDirectSolver on cuDSS: `factorize_device_csr(operator, real=True, positive_definite=True, previous=)`
   (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation.
-  `factorize_host_operator(host_csr, symmetric_known=)` (FEM Newton tangents): symmetric_known = a canonical symmetric
-  CSR (values copied only, index arrays shared and never modified, asymmetry check skipped); never pass it for an
-  operator that may be unsorted, duplicated or unsymmetric. `factorize_device_values(values, indptr, indices)` (cupy
+  `factorize_host_operator(host_csr, symmetric_known=, defer_check=)` (FEM Newton tangents): symmetric_known = a
+  canonical symmetric CSR (values copied only, index arrays shared and never modified, asymmetry check skipped; MUMPS /
+  PARDISO then refresh by `host_direct_values_factorization`, pattern matched by identity); never pass it for an
+  operator that may be unsorted, duplicated or unsymmetric. defer_check (both tangent routes; Newton solves right after
+  factorising): a reused analysis / plan skips its probe, the next solve is the check, so a CudssAccuracyError of an
+  'auto' runtime then comes from that solve (no SuperLU fallback). `factorize_device_values(values, indptr, indices)` (cupy
   values on the HOST canonical pattern) -> `refactorize_device_values` / `from_device_values`: equilibration, lower take
   and refresh or plan on the device by index maps built once per plan (`_device_maps`), no host value copy. Either
   symmetry vouched (pencils, device tangents) or `check_symmetry=True` (device transpose map), which also serves
@@ -329,6 +363,13 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   outside the pattern: keep factorize_host). `device_pencil_bytes(entries, term_value_bytes, symmetric)`; users
   (fem.harmonic, mechanics frequency_response.HarmonicSystem) book it + factor maps + transients as a run item. The
   operator norm of a device refresh is lazy.
+- Host pencils: consumers ask `SparseDirectSolver.pencil(...)` (same arguments): a `HostPencil` on a host direct back
+  end (either backend), else device_pencil's answer. HostPencil keeps the terms on the host on the full pattern
+  (`lower_stored` False: an extra block gives both triangles; consumers test `pencil.symmetric`, never lower_stored, before
+  adding an unsymmetric block), symmetry checked once per term; `factorize_pencil` combines on the host and calls
+  `host_direct_values_factorization` (refactorize_values: identity-matched pattern, no canonical copy, no asymmetry check,
+  defer_check; host_direct section). Users: fem.harmonic (acoustics / membrane estimators book its terms as a host
+  item) and mechanics HarmonicSystem (references its own term arrays: nothing new to book).
 - defer_check: a factor on a reused plan whose earlier probe passed skips its probe; its first (full-accuracy) solve is
   the check, so probe_residual / single_residual / refinement_steps counters lag one factor. A double miss turns on
   cuDSS refinement and solves again; a second miss releases the factor and raises CudssAccuracyError from the solve
@@ -508,7 +549,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   runtime maps an unresolved auto to superlu). A runtime resolved from auto falls back to SuperLU for good on
   CUDSS_REFUSALS (factorize_host, the ShiftPencil device path, the deferred check inside eigsh_shifted / eigs_shifted;
   counter eigen_auto_fallbacks) and counts a Hermitian pencil by a counting SuperLU (`_superlu_count`). Opted in:
-  solid_mechanics triangles (cudss), solid_mechanics_3d tetrahedra (cudss_mixed), em_fdfd_conical (cudss); other em /
+  solid_mechanics triangles (cudss), solid_mechanics_3d tetrahedra (cudss), em_fdfd_conical (cudss); other em /
   membrane / eme eigen roles stay superlu (own-factor and SuperLU-inertia consumers, unchecked).
 - Several shifts: eigsh_shifted / eigs_shifted / factorize_host take `previous=` (cuDSS refactorised in place,
   `last_plan_reused`; SuperLU ignores it). Only because the shifted operator is built by `pattern_combination((K, M), (1,
@@ -535,6 +576,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   error -> LDL^T, sticky); MUMPS always LDL^T for symmetric kinds (python-mumps sets SYM=2 and exposes no SYM=1).
   `back_end` = the library ('mumps' / 'pardiso'), `precision` the request, `factor_precision` what is factored;
   `description` starts with the library label ('MUMPS LDL^T', 'PARDISO LU float32 + float64 GMRES refinement').
+  The scaling itself is `scaled_values` (a new array; a core.kernels.host_twin: numba prange over rows from
+  HOST_SCALE_MIN_ENTRIES entries, else the numpy form `_scale_host`; next-gains N6, self-test solver_host_scale_numba).
 - Solves: A x = b as x = R E^-1 R (D) b; A^T x = b as R E^-T R b (no symmetrizer) or D R E^-T R b (symmetrizer;
   E^-T = E^-1 for a symmetric kind); a real factor takes a complex rhs as two real solves; solve() of a cupy rhs moves it
   to the host and the solution back (host_arrays / numpy rhs: numpy). `_lu_solve(rhs, trans)` serves
@@ -557,7 +600,19 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   from host_direct_lu_entries / host_factor_bytes) + `solver_host_bytes` (E, row scale, the wrapper's matrix copy,
   mixed: the factor-dtype CSR and one solve's GMRES vectors).
 - Refactorize: the same canonical pattern and kind = numeric factorisation on the kept analysis (last_plan_reused);
-  pydiso's refactor checks only the nnz count, so the pattern is compared here first.
+  pydiso's refactor checks only the nnz count, so the pattern is compared here first. The per-entry rows and diagonal
+  positions are kept per pattern and ||E|| (`operator_norm`) is lazy: a double probe whose relative residual passes
+  ACCEPT_RESIDUAL leaves probe_backward_error None (cuDSS R4).
+- `refactorize_values(values, indptr, indices, row_scale, symmetric_known, defer_check)` (HostPencil route; no
+  symmetrizer): the pattern matched by identity with the last refactorize_values arrays (a plain refactorize clears
+  that), so its caller never modifies them in place. defer_check: a double factor on the kept analysis whose last
+  probe passed unrefined skips the probe and `_checked_solve` judges the next solve (miss: GMRES-IR and solve again;
+  second miss: released, HostDirectAccuracyError from solve / solve_host, which consumers translate as at factorize);
+  probe_residual lags one factor. Mixed factors always probe (no in-place double re-factor from a solve).
+- PARDISO values: `_PardisoFactor` checks once per analysis that pydiso's private `_data` / `_indptr` / `_indices`
+  hold the pattern as kept here (the upper take of a symmetric type) and then writes the values straight into the
+  handle and calls `_factor` (no sp.triu / sort / sum_duplicates per refactor); any other pydiso layout uses the
+  public refactor. A pydiso update that renames those: the check fails quietly and the gain is lost, never results.
 - Library notes (PARDISO: run on pydiso 0.3.1 / oneMKL 2026.2; MUMPS: verified against the python-mumps 0.0.6
   sources, not run): python-mumps
   `Context.set_matrix(a, symmetric=True)` keeps scipy.sparse.triu itself and creates the s/d/c/z instance only when
@@ -577,7 +632,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (iparm[23]) and iparm[24] (nothing on 4 threads; untested on more).
 - Where a PARDISO refactorisation spends its time (2D FDFD, 160 000 unknowns, 4 threads: ~185 ms): the numeric
   factorisation ~50 %, the equilibration + asymmetry check ~30 % (single-threaded numpy / scipy; `symmetric_known`
-  skips the check), pydiso's own `scipy.sparse.triu` of a symmetric type ~6 %, the probe solve ~12 %. *_mixed halves
+  skips the check), pydiso's own `scipy.sparse.triu` of a symmetric type ~6 %, the probe solve ~12 % (before the
+  HostPencil route; FEM sweeps on factorize_host measured 2026-11: pressure_acoustics_tetrahedra ~250 ms per frequency
+  of which MKL ~100 ms, host A(omega) 20, equilibration 26, asymmetry 17, probe 17). *_mixed halves
   the factor memory but costs time in 2D (every full-accuracy solve = 3 library solves + GMRES; the float32
   factorisation is only ~1.4 x faster): it pays for memory, or where the factorisation dominates (large 3D).
 - Availability (GUI-thread safe, nothing imported): MUMPS = find_spec('mumps') and the python-mumps distribution
@@ -598,8 +655,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   It is process-wide while held: only vector-sized BLAS work belongs inside, never a dense factorisation. BLAS calls
   of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those.
 - Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
-  per-pattern caches of the equilibration / asymmetry index work, a factorisation through the pydiso handle (no
-  triu per refactorisation), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
+  a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
+  checks of mixed factors, pydiso >= 0.3 in the conda env (0.2.0 has no fill_reducing_ordering: METIS analysis), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
   calibrated memory / time
   constants and profile curves.
 

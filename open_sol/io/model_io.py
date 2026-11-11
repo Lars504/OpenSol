@@ -2,7 +2,7 @@
 import csv
 import json
 import os
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +15,9 @@ _EXPORT_FORMATS = ('.npz', '.csv')
 # export_result kinds read_curve_data also plots ('line_profile': the GUI's 'Raw profile…')
 _RAW_CURVE_KINDS = ('timeseries', 'flux_spectrum', 'far_field', 'line_profile')
 _FAR_FIELD_DB_FLOOR = -60.0   # dB floor of a read far field (as the GUI far-field view draws it)
+# .npz archives up to this many array bytes are zipped in memory and written once: np.savez through a file object
+# seeks and flushes twice per member (~45 us each, 0.46 s for a 2571-member results file)
+_NPZ_BUFFER_BYTES = 256 * 1024 ** 2
 _CSV_TEXT_KEYS = frozenset({'kind', 'x_label', 'x_unit', 'y_label', 'model', 'plot'})   # read back as text, not JSON
 _CURVE_PLOT_KEYS = {'x_label': '', 'x_unit': '', 'y_label': '', 'series_units': {}, 'log_x': False,
                     'log_y': False}   # per-plot metadata of an export_curve_plots .npz (key: default)
@@ -556,14 +559,20 @@ def _csv_cell_text(value):
 
 def _write_npz(path, arrays, metadata):
     """np.savez of the arrays plus 'metadata' (0-d unicode JSON array, loads without pickle) to '<file>.partial',
-    then os.replace over exactly `path` (never a truncated archive)."""
+    then os.replace over exactly `path` (never a truncated archive); up to _NPZ_BUFFER_BYTES zipped in memory first."""
     if 'metadata' in arrays:
         raise ValueError("array key 'metadata' clashes with the .npz metadata entry")
     entries = dict(arrays, metadata=np.array(_to_json(metadata)))
+    array_bytes = sum(int(getattr(value, 'nbytes', 0)) for value in entries.values())
     partial_path = path.with_name(path.name + '.partial')
     try:
         with open(partial_path, 'wb') as handle:   # a file object: numpy does not append '.npz' to the name
-            np.savez(handle, **entries)
+            if array_bytes <= _NPZ_BUFFER_BYTES:
+                buffer = BytesIO()
+                np.savez(buffer, **entries)
+                handle.write(buffer.getbuffer())
+            else:
+                np.savez(handle, **entries)
         os.replace(partial_path, path)
     except BaseException:
         partial_path.unlink(missing_ok=True)

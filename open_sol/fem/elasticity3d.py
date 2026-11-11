@@ -8,8 +8,12 @@ and the total-Lagrangian Green-Lagrange internal force / tangent (the K6 Newton 
 iterations on TangentAssembler3D: fixed pattern, cached rule gradients; device=True runs them on cupy). Affine
 elements; host numpy, scipy / core.backend inside functions."""
 # The matrices keep the full vector numbering (3 x the scalar map's dofs); rows of dofs no listed element touches stay
-# empty, callers restrict to their free dofs (as fem.assembly3d). The stiffness COO is summed into CSR in batches
-# (fem.assembly.CsrAccumulator) so the assembly peak stays bounded (P2: 900 entries per element).
+# empty, callers restrict to their free dofs (as fem.assembly3d). The elastic stiffness sums its blocks into the block
+# pattern of fem.fixed_pattern.kept_pattern (scalar pattern x dense 3 x 3 blocks, kept per mesh and element set; slots
+# searched per chunk, no kept slot map), the same base TangentAssembler3D groups; the other matrices sum COO into CSR in
+# batches (fem.assembly.CsrAccumulator) so the assembly peak stays bounded (P2: 900 entries per element). Symmetric
+# element products (B^T C B, the tangent) multiply only the column groups on and below the diagonal
+# (_symmetric_operator_blocks, SYMMETRIC_COLUMN_GROUPS) and mirror the rest.
 import numpy as np
 
 from .assembly import CsrAccumulator, element_dof_mean
@@ -17,20 +21,56 @@ from .assembly3d import (CHUNK_ELEMENTS, _element_list, _rule_degree, _volume_we
                          assemble_lagrange_load_3d, assemble_lagrange_mass_3d, element_chunks_3d)
 from .elasticity import _fixed_field, as_stress_field, component_dofs, fixed_stress_at, stress_degree
 from .elements3d import LOCAL_EDGES, REFERENCE_VERTICES_3D, lagrange_basis_3d, piola_vectors_3d, tetrahedron_geometry
-from .fixed_pattern import FixedPatternCsr, scatter_add
+from .fixed_pattern import kept_pattern, scatter_add
 from .quadrature3d import tetrahedron_rule
+from .tangent_kernel3d import element_bytes, element_force_tangent_3d, kernel_fits
 
 COMPONENTS = 3            # u_x, u_y, u_z per scalar dof
 STRAIN_ROWS = 6           # Voigt xx, yy, zz, yz, xz, xy (engineering shear 2 strain_ij)
 VOIGT_PAIRS = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))   # Voigt row -> tensor indices
 STIFFNESS_NAMES = tuple(f'c{row}{column}' for row in range(1, 7) for column in range(row, 7))   # 21 upper entries
 CENTROID_3D = np.full((1, 3), 0.25)
+# elements per GEMM of the point evaluations (element_strains_3d, element_gradients_3d; P2 vector at 10 points: three
+# float64 temporaries of ~24 MB) and per tetrahedron_geometry call of element_inverse_jacobians_3d
+POINT_CHUNK_ELEMENTS = 2 ** 15
 # host bytes up to which TangentAssembler3D keeps the rule gradients and weights (P2: ~6.7 kB per element); above it
 # they are recomputed per call (the scatter map is always kept)
 TANGENT_GRADIENT_CACHE_BYTES = 2 * 2 ** 30
 # pool bytes up to which a device TangentAssembler3D keeps them on the GPU (above: host gradients uploaded per chunk
 # and call); its other device caches (scatter slots, dofs, C, S0, pattern) are always kept
 TANGENT_DEVICE_GRADIENT_CACHE_BYTES = 2 ** 30
+# a device TangentAssembler3D sizes its chunks so one chunk's temporaries (tangent_chunk_element_bytes per element)
+# stay within these pool bytes and within this share of the pool budget left at its construction
+TANGENT_DEVICE_CHUNK_BYTES = 2 ** 30
+TANGENT_DEVICE_CHUNK_SHARE = 0.25
+# column groups of the symmetric element products: (groups + 1) / (2 groups) of the full matmul flops, groups launches
+SYMMETRIC_COLUMN_GROUPS = 3
+
+
+def tangent_chunk_element_bytes(n_local, points, element_kernel=False) -> int:
+    """Device bytes per element of one tangent chunk's temporaries. element_kernel (tangent_kernel3d): force, blocks and
+    gathered displacements; else B, B_NL and their sum, C (B + B_NL), the weighted transposed copy and the
+    column-group copies (q x 6 x 3 n each), strain / stress rows, blocks and lower products."""
+    if element_kernel:
+        return element_bytes(n_local)
+    columns = COMPONENTS * int(n_local)
+    return 8 * (int(points) * (5 * STRAIN_ROWS * columns + 21) + 2 * columns ** 2)
+
+
+def device_tangent_chunk_elements(n_local, points, available=None, element_kernel=False) -> int:
+    """Elements per device tangent chunk: its temporaries within TANGENT_DEVICE_CHUNK_BYTES and, with `available` pool
+    bytes, within TANGENT_DEVICE_CHUNK_SHARE of them (at least one element)."""
+    limit = TANGENT_DEVICE_CHUNK_BYTES
+    if available is not None:
+        limit = min(limit, int(TANGENT_DEVICE_CHUNK_SHARE * max(int(available), 0)))
+    return max(1, limit // tangent_chunk_element_bytes(n_local, points, element_kernel))
+
+
+def _available_pool_bytes():
+    """Pool budget minus the live pool bytes (host counters), None without a budget (scripts)."""
+    from ..core import gpu_memory
+    budget = gpu_memory.budget_bytes()
+    return None if budget is None else budget - gpu_memory.pool_used_bytes()
 
 
 def local_dof_points_3d(order) -> np.ndarray:
@@ -117,17 +157,23 @@ def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, st
     if material.shape != (mesh.n_elements, STRAIN_ROWS, STRAIN_ROWS):
         raise ValueError(f'material has shape {material.shape}, expected ({mesh.n_elements}, 6, 6)')
     elements = _element_list(mesh, elements)
+    n_vector = COMPONENTS * dofs.n_dofs
+    if not len(elements):
+        import scipy.sparse
+        return scipy.sparse.csr_matrix((n_vector, n_vector))
     rule = tetrahedron_rule(_rule_degree(2 * dofs.order - 2 + (2 if stretch is not None else 0), degree))
     _, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
-    n_vector = COMPONENTS * dofs.n_dofs
-    accumulator = CsrAccumulator((n_vector, n_vector))
+    pattern = kept_pattern(mesh, n_vector, dofs.element_dofs[elements], block=COMPONENTS)
+    data = np.zeros(pattern.nnz, dtype=np.float64 if stretch is None else np.complex128)
     for chunk, geometry in element_chunks_3d(mesh, elements):
         gradients, weights = _stretched(piola_vectors_3d(reference_gradients, geometry), _volume_weights(geometry, rule),
                                         stretch, geometry, rule, chunk)
         operator = strain_operator_3d(gradients)                                       # (m, q, 6, 3 n)
         stress_operator = np.matmul(material[chunk][:, None], operator)                # C B
-        accumulator.add(vector_dofs_3d(dofs.element_dofs[chunk]), _operator_blocks(operator, stress_operator, weights))
-    return accumulator.result()
+        # chunk rows of the element dofs the kept pattern was built from (its digest): no slot check needed
+        pattern.add_elements(data, dofs.element_dofs[chunk],
+                             _symmetric_operator_blocks(operator, stress_operator, weights), check=False)
+    return pattern.full(data, copy_pattern=True)
 
 
 def assemble_piezo_coupling_3d(dofs, piezo, elements=None, degree=None, stretch=None):
@@ -212,29 +258,87 @@ def assemble_face_traction_3d(dofs, faces, traction) -> np.ndarray:
 
 
 # ---- strains and recovery ----
-def element_strains_3d(dofs, displacement, reference_points, elements=None) -> tuple:
-    """(displacement (m, q, 3), Voigt strains (m, q, 6), engineering shear) of the listed elements (sorted; None = all)
-    at reference points (q, 3) from the nodal displacement (n_dofs, 3)."""
+def _module_name(xp) -> str:
+    return getattr(xp, '__name__', type(xp).__name__)
+
+
+def element_inverse_jacobians_3d(dofs, xp=np):
+    """(n_elements, 3, 3) float64 J^-1 of every mesh element on module xp (numpy / cupy), cached on the dof map
+    (DofMap3D.element_geometry; host copy read-only)."""
+    key = ('inverse_jacobians', _module_name(xp))
+    found = dofs.element_geometry.get(key)
+    if found is None:
+        if xp is np:
+            mesh = dofs.mesh
+            found = np.empty((mesh.n_elements, 3, 3))
+            for start in range(0, mesh.n_elements, POINT_CHUNK_ELEMENTS):
+                chunk = np.arange(start, min(start + POINT_CHUNK_ELEMENTS, mesh.n_elements))
+                found[chunk] = tetrahedron_geometry(mesh, chunk).inverse
+            found.flags.writeable = False
+        else:
+            found = xp.asarray(element_inverse_jacobians_3d(dofs))
+        dofs.element_geometry[key] = found
+    return found
+
+
+def _element_dofs_on(dofs, xp):
+    """dofs.element_dofs on module xp (a device copy cached on the dof map)."""
+    if xp is np:
+        return dofs.element_dofs
+    key = ('element_dofs', _module_name(xp))
+    found = dofs.element_geometry.get(key)
+    if found is None:
+        found = dofs.element_geometry[key] = xp.asarray(dofs.element_dofs)
+    return found
+
+
+def _point_derivative_chunks(dofs, field, reference_points, elements):
+    """Yield (rows, values (c, q, k), derivatives (c, k, q, 3) = d f_k / d x_d) of a Lagrange field (n_dofs, k) (numpy
+    or cupy) at reference points (q, 3) per chunk of the element list: one GEMM per chunk with the reference tables,
+    then grad = J^-T grad_ref by components from the cached J^-1."""
+    xp = _array_module(field)
+    components = field.shape[1]
+    basis, reference_gradients = lagrange_basis_3d(dofs.order, reference_points)    # (q, n), (q, n, 3)
+    q, n = basis.shape
+    basis_columns = xp.asarray(np.ascontiguousarray(basis.T))                          # (n, q)
+    gradient_columns = xp.asarray(reference_gradients.transpose(1, 0, 2).reshape(n, 3 * q))   # (n, q 3)
+    inverses = element_inverse_jacobians_3d(dofs, xp)
+    element_dofs = _element_dofs_on(dofs, xp)
+    element_index = elements if xp is np else xp.asarray(elements)
+    for start in range(0, len(elements), POINT_CHUNK_ELEMENTS):
+        rows = slice(start, start + POINT_CHUNK_ELEMENTS)
+        chunk = element_index[rows]
+        count = int(chunk.shape[0])
+        local = field[element_dofs[chunk]].transpose(0, 2, 1).reshape(count * components, n)   # (c k, n)
+        values = (local @ basis_columns).reshape(count, components, q).transpose(0, 2, 1)
+        reference = (local @ gradient_columns).reshape(count, components, q, 3)        # d f_k / d xi_a
+        inverse = inverses[chunk]                                                       # (c, 3, 3) [a, d]
+        derivatives = reference[..., 0, None] * inverse[:, None, None, 0, :]
+        for axis in (1, 2):
+            derivatives += reference[..., axis, None] * inverse[:, None, None, axis, :]
+        yield rows, values, derivatives
+
+
+def element_strains_3d(dofs, displacement, reference_points, elements=None, green_lagrange=False) -> tuple:
+    """(displacement (m, q, 3), Voigt strains (m, q, 6), engineering shear; Green-Lagrange with green_lagrange) of the
+    listed elements (sorted; None = all) at reference points (q, 3) from the nodal displacement (n_dofs, 3), on the
+    displacement's module (numpy or cupy)."""
     _require_vector(dofs, 'element_strains_3d')
-    mesh = dofs.mesh
-    elements = _element_list(mesh, elements)
-    displacement = np.asarray(displacement, dtype=np.float64).reshape(dofs.n_dofs, COMPONENTS)
+    xp = _array_module(displacement)
+    elements = _element_list(dofs.mesh, elements)
+    displacement = xp.asarray(displacement, dtype=np.float64).reshape(dofs.n_dofs, COMPONENTS)
     reference_points = np.asarray(reference_points, dtype=np.float64).reshape(-1, 3)
-    basis, reference_gradients = lagrange_basis_3d(dofs.order, reference_points)
     m, q = len(elements), len(reference_points)
-    values = np.empty((m, q, COMPONENTS))
-    strains = np.empty((m, q, STRAIN_ROWS))
-    for start in range(0, m, CHUNK_ELEMENTS):
-        rows = slice(start, start + CHUNK_ELEMENTS)
-        chunk = elements[rows]
-        geometry = tetrahedron_geometry(mesh, chunk)
-        gradients = piola_vectors_3d(reference_gradients, geometry)                 # (c, q, n, 3)
-        local = displacement[dofs.element_dofs[chunk]]                              # (c, n, 3)
-        values[rows] = np.einsum('qn,mnc->mqc', basis, local)
-        derivative = np.einsum('mqnd,mnc->mqcd', gradients, local)                  # d u_c / d x_d
-        for row, (first, second) in enumerate(VOIGT_PAIRS):
-            strains[rows, :, row] = (derivative[..., first, first] if first == second
-                                     else derivative[..., first, second] + derivative[..., second, first])
+    values = xp.empty((m, q, COMPONENTS))
+    strains = xp.empty((m, q, STRAIN_ROWS))
+    for rows, chunk_values, derivative in _point_derivative_chunks(dofs, displacement, reference_points, elements):
+        values[rows] = chunk_values
+        if green_lagrange:
+            strains[rows] = _voigt_of_gradient(derivative.transpose(0, 2, 1, 3), green_lagrange=True)
+            continue
+        for row, (first, second) in enumerate(VOIGT_PAIRS):   # derivative[e, c, q, d] = d u_c / d x_d
+            strains[rows, :, row] = (derivative[:, first, :, first] if first == second
+                                     else derivative[:, first, :, second] + derivative[:, second, :, first])
     return values, strains
 
 
@@ -242,21 +346,15 @@ def element_gradients_3d(dofs, coefficients, reference_points, elements=None) ->
     """(values (m, q), gradients (m, q, 3)) of a scalar Lagrange field (coefficients (n_dofs,)) on the listed elements
     (sorted; None = all) at reference points (q, 3): the potential and -E of a piezoelectric solve."""
     _require_vector(dofs, 'element_gradients_3d')
-    mesh = dofs.mesh
-    elements = _element_list(mesh, elements)
-    coefficients = np.asarray(coefficients, dtype=np.float64)
+    elements = _element_list(dofs.mesh, elements)
+    coefficients = np.asarray(coefficients, dtype=np.float64).reshape(dofs.n_dofs, 1)
     reference_points = np.asarray(reference_points, dtype=np.float64).reshape(-1, 3)
-    basis, reference_gradients = lagrange_basis_3d(dofs.order, reference_points)
     m, q = len(elements), len(reference_points)
     values = np.empty((m, q))
     gradients = np.empty((m, q, 3))
-    for start in range(0, m, CHUNK_ELEMENTS):
-        rows = slice(start, start + CHUNK_ELEMENTS)
-        chunk = elements[rows]
-        local = coefficients[dofs.element_dofs[chunk]]                             # (c, n)
-        values[rows] = np.einsum('qn,mn->mq', basis, local)
-        gradients[rows] = np.einsum('mqnd,mn->mqd', piola_vectors_3d(reference_gradients,
-                                                                     tetrahedron_geometry(mesh, chunk)), local)
+    for rows, chunk_values, derivative in _point_derivative_chunks(dofs, coefficients, reference_points, elements):
+        values[rows] = chunk_values[..., 0]
+        gradients[rows] = derivative[:, 0]
     return values, gradients
 
 
@@ -322,6 +420,24 @@ def _operator_blocks(operator, product, weights) -> np.ndarray:
     m = operator.shape[0]
     weighted = (operator * weights[:, :, None, None]).reshape(m, -1, operator.shape[-1])
     return xp.matmul(weighted.transpose(0, 2, 1), product.reshape(m, -1, product.shape[-1]))
+
+
+def _symmetric_operator_blocks(operator, product, weights, column_groups=None) -> np.ndarray:
+    """(m, c, c) _operator_blocks of a symmetric product (P = C B, C symmetric): per group of columns only the rows
+    from that group on are multiplied, the rest mirrored (SYMMETRIC_COLUMN_GROUPS; 1 = the full product)."""
+    xp = _array_module(operator)
+    groups = SYMMETRIC_COLUMN_GROUPS if column_groups is None else int(column_groups)
+    m, columns = operator.shape[0], operator.shape[-1]
+    weighted = (operator * weights[:, :, None, None]).reshape(m, -1, columns)
+    weighted = xp.ascontiguousarray(weighted.transpose(0, 2, 1))                        # (m, c, q k)
+    product = product.reshape(m, -1, columns)                                            # (m, q k, c)
+    blocks = xp.empty((m, columns, columns), dtype=xp.result_type(weighted, product))
+    bounds = [round(columns * group / groups) for group in range(groups + 1)]
+    for first, last in zip(bounds[:-1], bounds[1:]):
+        lower = xp.matmul(weighted[:, first:], product[:, :, first:last])               # rows first.., columns of the group
+        blocks[:, first:, first:last] = lower
+        blocks[:, first:last, last:] = lower[:, last - first:].transpose(0, 2, 1)        # mirrored above the group
+    return blocks
 
 
 def _scalar_geometric_blocks(gradients, stress, weights) -> np.ndarray:
@@ -406,20 +522,8 @@ def nonlinear_strain_operator_3d(gradients, displacement_gradient) -> np.ndarray
 
 def green_lagrange_strains_3d(dofs, displacement, reference_points, elements=None) -> np.ndarray:
     """(m, q, 6) Green-Lagrange strain (H + H^T + H^T H) / 2 (engineering shear 2 E_ij) of the listed elements (sorted;
-    None = all) at reference points (q, 3) from the nodal displacement (n_dofs, 3)."""
-    _require_vector(dofs, 'green_lagrange_strains_3d')
-    mesh = dofs.mesh
-    elements = _element_list(mesh, elements)
-    displacement = np.asarray(displacement, dtype=np.float64).reshape(dofs.n_dofs, COMPONENTS)
-    reference_points = np.asarray(reference_points, dtype=np.float64).reshape(-1, 3)
-    _, reference_gradients = lagrange_basis_3d(dofs.order, reference_points)
-    parts = []
-    for start in range(0, len(elements), CHUNK_ELEMENTS):
-        chunk = elements[start:start + CHUNK_ELEMENTS]
-        gradients = piola_vectors_3d(reference_gradients, tetrahedron_geometry(mesh, chunk))
-        gradient = np.einsum('mqnd,mnc->mqcd', gradients, displacement[dofs.element_dofs[chunk]])
-        parts.append(_voigt_of_gradient(gradient, green_lagrange=True))
-    return np.concatenate(parts) if parts else np.zeros((0, len(reference_points), STRAIN_ROWS))
+    None = all) at reference points (q, 3) from the nodal displacement (n_dofs, 3) (element_strains_3d's evaluation)."""
+    return element_strains_3d(dofs, displacement, reference_points, elements=elements, green_lagrange=True)[1]
 
 
 def _green_lagrange_terms_3d(gradients, local_displacement, material_chunk, fixed_stress):
@@ -438,16 +542,18 @@ def _internal_force_blocks_3d(operator, stress, weights) -> np.ndarray:
     return _array_module(operator).einsum('mqki,mqk,mq->mi', operator, stress, weights)
 
 
-def _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk) -> np.ndarray:
-    """(m, 3 n, 3 n) element tangents int (B + B_NL)^T C (B + B_NL) dV + K_sigma(S) (one batched matmul; numpy or
-    cupy)."""
+def _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk, column_groups=None) -> np.ndarray:
+    """(m, 3 n, 3 n) element tangents int (B + B_NL)^T C (B + B_NL) dV + K_sigma(S): the symmetric product of
+    _symmetric_operator_blocks, the geometric term added per component through a strided view (numpy or cupy)."""
     xp = _array_module(operator)
-    stress_operator = xp.einsum('mkl,mqlj->mqkj', material_chunk, operator)
-    m = operator.shape[0]
-    blocks = _operator_blocks(operator, stress_operator, weights)                     # sum over (q, k) of w B_ki (C B)_kj
+    stress_operator = xp.matmul(material_chunk[:, None], operator)                    # C (B + B_NL)
+    blocks = _symmetric_operator_blocks(operator, stress_operator, weights, column_groups)
+    del stress_operator
     scalar = _scalar_geometric_blocks(gradients, stress, weights)                     # (m, n, n)
-    n = scalar.shape[1]
-    blocks += xp.einsum('mab,cd->macbd', scalar, xp.eye(COMPONENTS)).reshape(m, COMPONENTS * n, COMPONENTS * n)
+    m, n = scalar.shape[:2]
+    interleaved = blocks.reshape(m, n, COMPONENTS, n, COMPONENTS)                     # a view: rows / columns 3 a + c
+    for component in range(COMPONENTS):
+        interleaved[:, :, component, :, component] += scalar
     return blocks
 
 
@@ -490,25 +596,31 @@ def assemble_tangent_stiffness_3d(dofs, displacement, material, elements=None, d
 
 def internal_force_and_tangent_3d(dofs, displacement, material, elements=None, degree=None, initial_stress=None):
     """(internal_force_3d vector, assemble_tangent_stiffness_3d CSR) of one displacement in one pass over the elements
-    (a Newton iteration needs both). One-off COO assembly; repeated Newton iterations use TangentAssembler3D."""
+    (a Newton iteration needs both). One-off COO assembly of the full (unmirrored) element products: the self-test
+    reference of TangentAssembler3D; repeated Newton iterations use TangentAssembler3D."""
     force = np.zeros(COMPONENTS * dofs.n_dofs)
     accumulator = CsrAccumulator((COMPONENTS * dofs.n_dofs, COMPONENTS * dofs.n_dofs))
     for chunk, gradients, weights, operator, stress, material_chunk in _green_lagrange_chunks_3d(
             dofs, displacement, material, elements, degree, initial_stress):
         local_dofs = vector_dofs_3d(dofs.element_dofs[chunk])
         scatter_add(force, local_dofs, _internal_force_blocks_3d(operator, stress, weights))
-        accumulator.add(local_dofs, _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk))
+        accumulator.add(local_dofs, _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk,
+                                                       column_groups=1))
     return force, accumulator.result()
 
 
 class TangentAssembler3D:
     """Total-Lagrangian internal force and tangent of one solid assembly on a fixed CSR pattern
-    (fixed_pattern.FixedPatternCsr): rule gradients / weights cached per chunk (while within cache_bytes), per call
-    only values; the full and free-free reduced CSRs share the cached index arrays (pattern constant by construction).
-    device=True (plan G5): the same formulas on cupy (gradients, weights, C, dofs and S0 on the GPU, blocks summed by
-    fixed_pattern.DevicePatternCsr), the force returned on the host, tangent data kept on the device."""
+    (fixed_pattern.kept_pattern: per mesh, element set, chunks and free mask): rule gradients / weights cached per chunk
+    (while within cache_bytes), per call only values; the full and free-free reduced CSRs share the cached index arrays
+    (pattern constant by construction). device=True (plan G5): the same formulas on cupy (gradients, weights, C, dofs
+    and S0 on the GPU, blocks summed by fixed_pattern.DevicePatternCsr) in chunks sized from the pool budget
+    (device_tangent_chunk_elements), the force returned on the host, tangent data kept on the device. element_kernel
+    (default): per-element force / tangent by fem.tangent_kernel3d (CUDA block per element, numba / numpy twins);
+    False, or a device rule too large for the kernel: the batched formulas."""
 
-    def __init__(self, dofs, material, elements=None, free=None, degree=None, cache_bytes=None, device=False):
+    def __init__(self, dofs, material, elements=None, free=None, degree=None, cache_bytes=None, device=False,
+                 element_kernel=True):
         _require_vector(dofs, 'TangentAssembler3D')
         mesh = dofs.mesh
         self.dofs = dofs
@@ -519,13 +631,24 @@ class TangentAssembler3D:
         elements = _element_list(mesh, elements)
         self.rule = tetrahedron_rule(_rule_degree(4 * (dofs.order - 1), degree))
         _, self._reference_gradients = lagrange_basis_3d(dofs.order, self.rule.points)
-        self.chunks = [elements[start:start + CHUNK_ELEMENTS] for start in range(0, len(elements), CHUNK_ELEMENTS)]
-        self._vector_dofs = [vector_dofs_3d(dofs.element_dofs[chunk]) for chunk in self.chunks]
         self.n_vector = COMPONENTS * dofs.n_dofs
-        self.pattern = FixedPatternCsr(self.n_vector, self._vector_dofs, free=free)
         points = len(self.rule.weights)
+        self.element_kernel = bool(element_kernel) and (not self.device or kernel_fits(dofs.n_local, points))
         gradient_bytes = 8 * len(elements) * points * (3 * dofs.n_local + 1)
         self.gradients_cached = gradient_bytes <= cache_bytes
+        self.chunk_elements = CHUNK_ELEMENTS   # host; device: from the pool budget (T3 a)
+        if self.device:
+            available = _available_pool_bytes()
+            if available is not None:   # less the kept gradients and int32 scatter slots allocated below
+                available -= ((gradient_bytes if self.gradients_cached else 0)
+                              + 4 * len(elements) * (COMPONENTS * dofs.n_local) ** 2)
+            self.chunk_elements = device_tangent_chunk_elements(dofs.n_local, points, available, self.element_kernel)
+        step = self.chunk_elements
+        self.chunks = [elements[start:start + step] for start in range(0, len(elements), step)]
+        self._vector_dofs = [vector_dofs_3d(dofs.element_dofs[chunk]) for chunk in self.chunks]
+        # the block pattern of the element set, kept per mesh with these groups and free mask (later sweep values)
+        self.pattern = kept_pattern(mesh, self.n_vector, dofs.element_dofs[elements], block=COMPONENTS,
+                                    groups=[dofs.element_dofs[chunk] for chunk in self.chunks], free=free)
         self._fixed_cache = None   # device: (initial_stress object, {chunk index: device S0}) of the latest S0
         self.device_pattern = None
         self.device_bytes = 0      # pool bytes of the device caches (device=True)
@@ -578,8 +701,8 @@ class TangentAssembler3D:
                                                                  dtype=np.float64))
         return stored[index]
 
-    def _chunk_terms(self, index, displacement, fixed, initial_stress):
-        """(gradients, weights, B + B_NL, S, C) of chunk index at the displacement (n_dofs, 3) (assembler's module)."""
+    def _chunk_inputs(self, index, displacement, fixed, initial_stress):
+        """(gradients, weights, element displacements (m, n, 3), C, S0 or None) of chunk index (assembler's module)."""
         chunk = self.chunks[index]
         gradients, weights = self._geometry[index] if self.gradients_cached else self._chunk_geometry(chunk)
         fixed_stress = None if fixed is None else self._chunk_fixed_stress(index, fixed, initial_stress)
@@ -587,8 +710,19 @@ class TangentAssembler3D:
             material_chunk, local = self._materials[index], displacement[self._element_dofs[index]]
         else:
             material_chunk, local = self.material[chunk], displacement[self.dofs.element_dofs[chunk]]
+        return gradients, weights, local, material_chunk, fixed_stress
+
+    def _chunk_blocks(self, index, displacement, fixed, initial_stress, want_tangent=True):
+        """(element forces (m, 3 n), element tangents (m, 3 n, 3 n) or None) of chunk index at the displacement."""
+        gradients, weights, local, material_chunk, fixed_stress = self._chunk_inputs(index, displacement, fixed,
+                                                                                     initial_stress)
+        if self.element_kernel:
+            return element_force_tangent_3d(gradients, weights, local, material_chunk, fixed_stress, want_tangent)
         operator, stress = _green_lagrange_terms_3d(gradients, local, material_chunk, fixed_stress)
-        return gradients, weights, operator, stress, material_chunk
+        forces = _internal_force_blocks_3d(operator, stress, weights)
+        if not want_tangent:
+            return forces, None
+        return forces, _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk)
 
     def _displacement(self, displacement):
         """(n_dofs, 3) float64 displacement on the assembler's module (device: one upload)."""
@@ -613,8 +747,8 @@ class TangentAssembler3D:
         fixed = _fixed_field(initial_stress)
         force = self.xp.zeros(self.n_vector)
         for index in range(len(self.chunks)):
-            _, weights, operator, stress, _ = self._chunk_terms(index, displacement, fixed, initial_stress)
-            self._add_force(force, index, _internal_force_blocks_3d(operator, stress, weights))
+            self._add_force(force, index, self._chunk_blocks(index, displacement, fixed, initial_stress,
+                                                             want_tangent=False)[0])
         return self._host(force)
 
     def force_and_tangent(self, displacement, initial_stress=None) -> tuple:
@@ -626,10 +760,10 @@ class TangentAssembler3D:
         pattern = self.device_pattern if self.device else self.pattern
         data = pattern.zeros()
         for index in range(len(self.chunks)):
-            gradients, weights, operator, stress, material_chunk = self._chunk_terms(index, displacement, fixed,
-                                                                                     initial_stress)
-            self._add_force(force, index, _internal_force_blocks_3d(operator, stress, weights))
-            pattern.add(data, index, _tangent_blocks_3d(gradients, weights, operator, stress, material_chunk))
+            forces, blocks = self._chunk_blocks(index, displacement, fixed, initial_stress)
+            self._add_force(force, index, forces)
+            pattern.add(data, index, blocks)
+            del forces, blocks
         return self._host(force), data
 
     def _on_device(self, data) -> bool:

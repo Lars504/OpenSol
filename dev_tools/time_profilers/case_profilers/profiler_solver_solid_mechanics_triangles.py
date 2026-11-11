@@ -96,8 +96,6 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     ('open_sol.physics.mechanics.stiffness:element_stiffness', 'assembly: element_stiffness'),
     ('open_sol.physics.mechanics.stiffness:check_positive_definite', 'assembly: check_positive_definite'),
     ('open_sol.solvers.sparse_direct:DiffusionDirectSolver._factorize_superlu', 'solver: diffusion _factorize_superlu'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.__init__', 'solver: DevicePencil.__init__'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.combined', 'solver: DevicePencil.combined'),
     ('open_sol.solvers.arpack_shift_invert:ArpackShiftInvertSolver.shift_pencil', 'solver: arpack shift_pencil'),
     ('open_sol.solvers.arpack_shift_invert:ArpackShiftInvertSolver._factorize_shift', 'solver: arpack _factorize_shift'),
     ('open_sol.solvers.arpack_shift_invert:ShiftPencil.__init__', 'solver: ShiftPencil.__init__'),

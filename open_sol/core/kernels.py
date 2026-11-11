@@ -131,6 +131,15 @@ def raw_twin(name, gpu, cpu, numba=None):
     return _register(KernelTwin(name, gpu, cpu, numba=numba, raw=True))
 
 
+def host_twin(name, cpu, numba):
+    """Host-only twin (no cupy kernel), registered at the first call of its name and returned by later ones (modules
+    that import this one inside functions): a call runs the numba function of factory `numba` when numba is available
+    (a typing failure: the numpy form `cpu` from then on, with a warning), else `cpu`; callers with a size threshold
+    call `.cpu` below it and read `.host_kind` where numba is required."""
+    found = REGISTRY.get(name)
+    return found if found is not None else _register(KernelTwin(name, None, cpu, numba=numba))
+
+
 # A cp.ReductionKernel to one scalar runs on ONE thread block. Over the shortest axis first it spreads over many
 # (RTX 3050, float64 window energy: 904 -> 124 us at 1e6 values, 3636 -> 319 us at 4e6); below this many values the
 # single block is faster (13 vs 24 us at 1e4)

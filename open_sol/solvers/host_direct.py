@@ -26,6 +26,15 @@ helpers here are GUI-thread safe."""
 # iparm[16]) KiB) above HOST_FRACTION of core.host_memory.available_bytes() is HostDirectMemoryError (no check when
 # that is unknown). The factor lives in library memory outside numpy: holders release() it before replacing it.
 # Refactorize: the same canonical pattern (indptr, indices) and kind refactors numerically on the kept analysis.
+# Value refreshes (refactorize_values, the sparse_direct.HostPencil route of frequency sweeps): values of a canonical
+# pattern the caller never modifies in place, matched by identity first (no canonicalising copy, no array compare);
+# the per-entry rows and diagonal positions are kept per pattern, ||E|| is lazy (built only when a residual misses
+# ACCEPT_RESIDUAL), and with defer_check a double factor on the kept analysis whose last probe passed unrefined skips
+# its probe: the next solve is the check (a miss: GMRES-IR and solve again, a second miss releases and raises), so
+# probe_residual / refinement_steps lag one factor (as cuDSS R3). Mixed factors always probe.
+# PARDISO values: when pydiso's private arrays match the analysed pattern (checked once per analysis) a factorisation
+# writes the kept values straight into the handle (`_data`, then `_factor`), skipping pydiso's refactor (sp.triu of a
+# symmetric type, sort, sum_duplicates per call); otherwise the public refactor.
 # Threads: library defaults (MUMPS: OMP_NUM_THREADS / BLAS; PARDISO: MKL_NUM_THREADS); both wrappers release the GIL
 # in their library calls (python-mumps 0.0.6, pydiso 0.3.1), which are uninterruptible like SuperLU.
 # PARDISO beside an OpenBLAS numpy / scipy (pip wheels, conda-forge defaults): two thread pools that both spin after a
@@ -89,6 +98,44 @@ class HostDirectMemoryError(ValueError):
 
 
 HOST_DIRECT_REFUSALS = (HostDirectSingularError, HostDirectAccuracyError, HostDirectMemoryError)
+
+# equilibration E = R S R of every (re)factorisation (next-gains N6): a numba row loop writing the scaled values into
+# the new array from this many stored entries (below, or without numba: the numpy gathers)
+HOST_SCALE_MIN_ENTRIES = 200_000
+
+
+def _scale_host(out, values, indptr, indices, row_factor, row_scale) -> None:
+    """out[k] = values[k] x row_factor[row] x row_scale[column] by numpy gathers."""
+    np.multiply(values, np.repeat(row_factor, np.diff(indptr)), out=out)
+    out *= row_scale[indices]
+
+
+def _scale_numba(numba):
+    @numba.njit(parallel=True, cache=True)
+    def scale(out, values, indptr, indices, row_factor, row_scale):
+        for prange_row in numba.prange(indptr.size - 1):
+            row = np.int64(prange_row)
+            factor = row_factor[row]
+            for position in range(indptr[row], indptr[row + 1]):
+                out[position] = values[position] * (factor * row_scale[indices[position]])
+    return scale
+
+
+def scaled_values(values, indptr, indices, row_scale, symmetrizer, value_dtype, numba=None) -> np.ndarray:
+    """New value_dtype array of values x symmetrizer[row] x row_scale[row] x row_scale[column] on the CSR pattern
+    (symmetrizer None: 1). numba None: the numba row loop from HOST_SCALE_MIN_ENTRIES (core.kernels.host_twin), True /
+    False: forced."""
+    from ..core.kernels import host_twin
+    scale = host_twin('solvers.host_scale', _scale_host, _scale_numba)
+    values = np.asarray(values).reshape(-1)
+    if numba and scale.host_kind != 'numba':
+        raise RuntimeError('host_direct.scaled_values(numba=True): the numba scaling is not available')
+    if not (values.size >= HOST_SCALE_MIN_ENTRIES if numba is None else numba):
+        scale = scale.cpu
+    out = np.empty(values.size, dtype=value_dtype)
+    scale(out, values.astype(value_dtype, copy=False), indptr, indices,
+          row_scale if symmetrizer is None else symmetrizer * row_scale, row_scale)
+    return out
 
 
 def library_of(name) -> str:
@@ -220,15 +267,16 @@ def factor_host_bytes(n_unknowns, dimensions=2, complex_values=True, symmetric=F
 
 def solver_host_bytes(n_unknowns, entries, complex_values=True, mixed=False, symmetric=False) -> int:
     """Host bytes a HostDirectFactorization keeps beside the library factor for `entries` stored operator entries: the
-    float64 / complex128 E (value + int32 index per entry, indptr; probes, residuals, refinement), the row scale, the
-    copy of the matrix the wrapper hands to the library (MUMPS: COO of one triangle for symmetric kinds; PARDISO: the
-    upper triangle, or E itself in double), mixed: the factor-dtype CSR and the GMRES vectors of one solve."""
+    float64 / complex128 E (value + int32 index per entry, indptr; probes, residuals, refinement), its int64 row per
+    entry kept per pattern, the row scale, the copy of the matrix the wrapper hands to the library (MUMPS: COO of one
+    triangle for symmetric kinds; PARDISO: the upper triangle, or E itself in double, + the int64 take of the values
+    written into its handle), mixed: the factor-dtype CSR and the GMRES vectors of one solve."""
     n_unknowns, entries = int(n_unknowns), int(entries)
     value_bytes = 16 if complex_values else 8
     factor_value_bytes = value_bytes // 2 if mixed else value_bytes
     stored = (entries + n_unknowns) // 2 if symmetric else entries
-    kept = (value_bytes + 4) * entries + 4 * (n_unknowns + 1) + 8 * n_unknowns
-    library_copy = (factor_value_bytes + 8) * stored
+    kept = (value_bytes + 4 + 8) * entries + 4 * (n_unknowns + 1) + 8 * n_unknowns
+    library_copy = (factor_value_bytes + 8 + (8 if symmetric else 0)) * stored
     if mixed:
         kept += (factor_value_bytes + 4) * entries + 4 * (n_unknowns + 1)
         kept += (2 * GMRES_RESTART + 10) * value_bytes * n_unknowns
@@ -336,9 +384,14 @@ class HostDirectFactorization:
         self._library = None              # _MumpsFactor / _PardisoFactor of the analysed pattern
         self._operator = self._operator_transpose = self._row_scale = self._symmetrizer = None
         self._pattern = None              # (indptr, indices) copies of the analysed canonical pattern
+        self._pattern_source = None       # (indptr, indices) of the refactorize_values caller, matched by identity
+        self._pattern_rows = None         # int64 row of every stored entry of that pattern (kept per pattern)
+        self._diagonal_entries = None     # positions of its diagonal entries (kept per pattern)
         self._diagonal_rows = None        # PARDISO symmetric kinds: rows of that pattern without a diagonal entry
         self._probe = None
-        self.operator_norm = None         # sqrt(||E||_1 ||E||_inf) of the factorised E (backward errors)
+        self._operator_norm = None        # lazy sqrt(||E||_1 ||E||_inf) of the factorised E (operator_norm)
+        self._check_pending = False       # defer_check: the next solve judges this factor (_checked_solve)
+        self._probe_clean = False         # the last probe / check of a double factor passed unrefined
         self.matrix_kind = None           # 'general' | 'symmetric' | 'spd' of the analysed factor
         self.asymmetry = None             # relative asymmetry of the last E (None: symmetry not requested)
         self.description = f'{self.label} (not factorised)'
@@ -382,6 +435,17 @@ class HostDirectFactorization:
         return self.matrix_kind in ('symmetric', 'spd')
 
     @property
+    def operator_norm(self):
+        """sqrt(||E||_1 ||E||_inf) of the factorised E (backward errors), built on first use per factorisation."""
+        if self._operator_norm is None and self._operator is not None:
+            magnitudes = np.abs(self._operator.data)
+            n_rows = self.n_unknowns
+            self._operator_norm = float(np.sqrt(
+                np.bincount(self._pattern_rows, magnitudes, minlength=n_rows).max(initial=0.0)
+                * np.bincount(self._operator.indices, magnitudes, minlength=n_rows).max(initial=0.0)))
+        return self._operator_norm
+
+    @property
     def mixed_factor(self) -> bool:
         """True while the factor is low precision (precision 'mixed' and no double fallback yet)."""
         return self._factor_dtype != self.value_dtype
@@ -419,12 +483,25 @@ class HostDirectFactorization:
         canonical pattern and the kind are unchanged, else a new analysis. symmetric_known: a canonical CSR known to be
         symmetric (no asymmetry check). True when the analysis was reused. Raises HOST_DIRECT_REFUSALS (released)."""
         with quiet_openblas(self.back_end, refresh=True) as self.openblas_pools:
-            return self._refactorize(host_operator, row_scale, symmetrizer, symmetric_known)
+            return self._refactorize(lambda: self._equilibrated(host_operator, row_scale, symmetrizer),
+                                     symmetric_known)
 
-    def _refactorize(self, host_operator, row_scale, symmetrizer, symmetric_known) -> bool:
+    def refactorize_values(self, values, indptr, indices, row_scale=None, symmetric_known=False,
+                           defer_check=False) -> bool:
+        """Factorise `values` of a canonical CSR pattern (indptr, indices: sorted, no duplicates) of the same size, the
+        sparse_direct.HostPencil route (module header "Value refreshes"): the pattern matched by identity first, so
+        callers never modify those arrays in place; symmetric_known as refactorize; defer_check: the next solve checks a
+        double factor on the kept analysis whose last probe passed unrefined. True when the analysis was reused."""
+        if self.has_symmetrizer:
+            raise ValueError('HostDirectFactorization.refactorize_values: not for a factor built with a symmetrizer')
+        with quiet_openblas(self.back_end, refresh=True) as self.openblas_pools:
+            return self._refactorize(lambda: self._equilibrated_values(values, indptr, indices, row_scale),
+                                     symmetric_known, defer_check)
+
+    def _refactorize(self, equilibrate, symmetric_known, defer_check=False) -> bool:
         started = time.perf_counter()
         analyses = self.n_analyses
-        operator, same_pattern = self._equilibrated(host_operator, row_scale, symmetrizer)   # raises before any change
+        operator, same_pattern = equilibrate()   # raises before any change
         if not self.symmetric_requested:
             self.asymmetry = None
         else:
@@ -438,7 +515,8 @@ class HostDirectFactorization:
         try:
             while True:
                 try:
-                    self._factorize(attempt_kind, analyse=retried or not reuse)
+                    self._factorize(attempt_kind, analyse=retried or not reuse,
+                                    defer=defer_check and reuse and not retried)
                     break
                 except _FactorRejected as rejected:
                     attempt_kind = self._next_attempt(rejected, attempt_kind)
@@ -459,10 +537,8 @@ class HostDirectFactorization:
         return self.last_plan_reused
 
     def _equilibrated(self, host_operator, row_scale, symmetrizer):
-        """(host CSR E = R S R in value_dtype on this object's own copy of the canonical pattern, same_pattern):
-        sets _operator / _operator_transpose / _row_scale / _symmetrizer / operator_norm; the caller's operator is
-        never modified."""
-        import scipy.sparse
+        """(host CSR E = R S R in value_dtype on this object's own copy of the canonical pattern, same_pattern) of a
+        host scipy operator (_scaled_operator); the caller's operator is never modified."""
         n_rows, n_columns = host_operator.shape
         if n_rows != n_columns:
             raise ValueError(f'HostDirectFactorization needs a square operator, got shape {host_operator.shape}')
@@ -477,12 +553,42 @@ class HostDirectFactorization:
         csr = canonical_csr(host_operator, self.value_dtype)   # the caller's operator itself when already canonical
         same_pattern = (self._pattern is not None and np.array_equal(self._pattern[0], csr.indptr)
                         and np.array_equal(self._pattern[1], csr.indices))
+        # no identity matching afterwards: a refactorize caller may change its arrays in place
+        return self._scaled_operator(csr.data, csr.indptr, csr.indices, same_pattern, row_scale, symmetrizer, None)
+
+    def _equilibrated_values(self, values, indptr, indices, row_scale):
+        """(E, same_pattern) of values on a canonical pattern (refactorize_values): matched by identity with the last
+        refactorize_values pattern, else compared; no canonicalising copy."""
+        values = np.asarray(values).reshape(-1)
+        n_rows = int(np.asarray(indptr).size) - 1
+        if self.n_unknowns is not None and n_rows != self.n_unknowns:
+            raise ValueError(f'HostDirectFactorization.refactorize_values: {n_rows} unknowns, the factor has '
+                             f'{self.n_unknowns}')
+        if values.size != np.asarray(indices).size:
+            raise ValueError(f'HostDirectFactorization.refactorize_values: {values.size} values for '
+                             f'{np.asarray(indices).size} stored entries')
+        if self.real and np.iscomplexobj(values):
+            raise ValueError('HostDirectFactorization(real=True) needs real values')
+        source = self._pattern_source
+        same_pattern = self._pattern is not None and (
+            (source is not None and source[0] is indptr and source[1] is indices)
+            or (np.array_equal(self._pattern[0], indptr) and np.array_equal(self._pattern[1], indices)))
+        return self._scaled_operator(values, indptr, indices, same_pattern, _host_vector(row_scale), None,
+                                     (indptr, indices))
+
+    def _scaled_operator(self, values, indptr, indices, same_pattern, row_scale, symmetrizer, source):
+        """(E = R S R on this object's own int32 copy of the pattern, same_pattern): sets _operator /
+        _operator_transpose / _row_scale / _symmetrizer, the per-pattern rows and diagonal positions and
+        _pattern_source (source: the caller's arrays for identity matching, None: none); ||E|| left lazy."""
+        import scipy.sparse
+        n_rows = int(np.asarray(indptr).size) - 1
         # own int32 copies of a new pattern (E is built on them: a caller changing its arrays cannot alias E)
-        pattern = self._pattern if same_pattern else (np.array(csr.indptr, dtype=np.int32),
-                                                      np.array(csr.indices, dtype=np.int32))
+        pattern = self._pattern if same_pattern else (np.array(indptr, dtype=np.int32), np.array(indices, dtype=np.int32))
         indptr, indices = pattern
-        rows = csr_rows(indptr)
-        values = np.array(csr.data, dtype=self.value_dtype)   # a copy, scaled below
+        kept = same_pattern and self._pattern_rows is not None
+        rows = self._pattern_rows if kept else csr_rows(indptr)
+        diagonal_entries = self._diagonal_entries if kept else np.flatnonzero(indices == rows)
+        values = np.asarray(values).reshape(-1)   # the caller's values: scaled_values writes a new array
         if symmetrizer is not None:
             symmetrizer = np.asarray(symmetrizer)
             if self.real and np.iscomplexobj(symmetrizer):
@@ -490,28 +596,29 @@ class HostDirectFactorization:
             symmetrizer = symmetrizer.astype(self.value_dtype)
             if symmetrizer.shape != (n_rows,) or not (np.isfinite(symmetrizer).all() and (symmetrizer != 0).all()):
                 raise ValueError(f'HostDirectFactorization symmetrizer must be ({n_rows},), finite and nonzero')
-            values *= symmetrizer[rows]
-        if row_scale is None:
+        if row_scale is None:   # from the (symmetrized) diagonal
+            diagonal_values = values[diagonal_entries].astype(self.value_dtype)
+            if symmetrizer is not None:
+                diagonal_values = diagonal_values * symmetrizer[rows[diagonal_entries]]
             diagonal = np.zeros(n_rows)
-            on_diagonal = indices == rows
-            diagonal[rows[on_diagonal]] = np.abs(values[on_diagonal])
+            diagonal[rows[diagonal_entries]] = np.abs(diagonal_values)
             usable = np.isfinite(diagonal) & (diagonal > 0.0)
             row_scale = 1.0 / np.sqrt(np.where(usable, diagonal, 1.0))
         row_scale = np.asarray(row_scale, dtype=np.float64)
         if row_scale.shape != (n_rows,) or not (np.isfinite(row_scale).all() and (row_scale > 0.0).all()):
             raise ValueError(f'HostDirectFactorization row_scale must be ({n_rows},), finite and > 0')
-        values *= row_scale[rows] * row_scale[indices]
-        magnitudes = np.abs(values)
-        self.operator_norm = float(np.sqrt(np.bincount(rows, magnitudes, minlength=n_rows).max(initial=0.0)
-                                           * np.bincount(indices, magnitudes, minlength=n_rows).max(initial=0.0)))
+        values = scaled_values(values, indptr, indices, row_scale, symmetrizer, self.value_dtype)
         operator = scipy.sparse.csr_matrix((values, indices, indptr), shape=(n_rows, n_rows))
         operator.has_canonical_format = True
         if not same_pattern:   # every check passed: the state changes from here on
             self._pattern, self._diagonal_rows = pattern, None
+        self._pattern_rows, self._diagonal_entries = rows, diagonal_entries
+        self._pattern_source = source
         self.n_unknowns = int(n_rows)
         self._operator = operator
         self._operator_transpose = operator.T   # a CSC view sharing the arrays (transposed residuals)
         self._row_scale, self._symmetrizer = row_scale, symmetrizer
+        self._operator_norm = None
         return operator, same_pattern
 
     def _next_attempt(self, rejected, kind):
@@ -528,10 +635,14 @@ class HostDirectFactorization:
             return kind if kind == 'general' else self._requested_kind()
         return None
 
-    def _factorize(self, kind, analyse):
+    def _factorize(self, kind, analyse, defer=False):
         """Library factorisation of the current E as `kind` (analyse: a new analysis, the memory guard after it; else
-        numeric only on the kept analysis), then the probe; _FactorRejected on a zero pivot or a missed probe."""
+        numeric only on the kept analysis), then the probe (defer: a double factor whose last probe passed unrefined
+        leaves it to the next solve); _FactorRejected on a zero pivot or a missed probe."""
+        deferred = (defer and not analyse and self._probe_clean
+                    and self._wanted_factor_dtype() == self.value_dtype)
         self._double_refined = False
+        self._check_pending = False
         self._factor_dtype = self._wanted_factor_dtype()
         matrix = self._library_matrix(kind)
         try:
@@ -554,6 +665,9 @@ class HostDirectFactorization:
         self.lu_entries = self._library.lu_entries()
         self.perturbed_pivots = self._library.perturbed_pivots()
         self.threads = self._library.threads()
+        if deferred:
+            self._check_pending = True   # _checked_solve: the next solve judges this factor
+            return
         self._probe_factor()
 
     def _library_matrix(self, kind):
@@ -644,6 +758,7 @@ class HostDirectFactorization:
     def _probe_factor(self) -> None:
         """Probe of a fresh factor (module header); _FactorRejected when it misses."""
         probe = self._probe_vector()
+        self._probe_clean = False
         if self.mixed_factor:
             self.single_residual, _ = self._probe_errors(probe, refinement_steps=0)   # the low-precision factor alone
             self.probe_residual, self.probe_backward_error = self._probe_errors(probe)
@@ -653,14 +768,52 @@ class HostDirectFactorization:
             return
         self.single_residual = None
         self.refinement_steps = 0
-        self.probe_residual, self.probe_backward_error = self._probe_errors(probe)
-        if self._probe_accepted(ACCEPT_RESIDUAL):
+        if self._solve_accepted(probe, self._solve_equilibrated(probe, stall_test=True)):
+            self._probe_clean = True   # a later value refresh may defer its probe (refactorize_values)
             return
         self._double_refined = True   # GMRES-IR on this double factor from now on (every solve)
-        self.probe_residual, self.probe_backward_error = self._probe_errors(probe)
+        solution = self._solve_equilibrated(probe, stall_test=True)
         self.refinement_steps = self.last_refinements
-        if not self._probe_accepted(ACCEPT_RESIDUAL):
+        if not self._solve_accepted(probe, solution):
             raise _FactorRejected(self._double_accuracy_error())
+
+    def _solve_accepted(self, rhs, solution, transpose=False):
+        """Probe gate of a double solve of E y = rhs (E^T y with transpose), its errors the probe values: True / False,
+        None for a zero rhs (nothing judged). A relative residual within ACCEPT_RESIDUAL decides alone
+        (probe_backward_error None, the lazy ||E|| not built; as cuDSS R4)."""
+        rhs_norm = float(np.linalg.norm(rhs))
+        if rhs_norm == 0.0:
+            return None
+        operator = self._operator_transpose if transpose else self._operator
+        residual_norm = float(np.linalg.norm(rhs - operator @ solution))
+        self.probe_residual = residual_norm / rhs_norm
+        if self.probe_residual <= ACCEPT_RESIDUAL:
+            self.probe_backward_error = None
+            return True
+        self.probe_backward_error = residual_norm / (self.operator_norm * float(np.linalg.norm(solution)) + rhs_norm)
+        return self._probe_accepted(ACCEPT_RESIDUAL)
+
+    def _checked_solve(self, rhs, transpose=False) -> np.ndarray:
+        """y of E y = rhs judging a deferred check (_factorize defer): a miss switches this factor to float64 GMRES-IR
+        and solves again, a second miss releases it and raises HostDirectAccuracyError; a zero rhs leaves the check
+        pending."""
+        solution = self._library_solve(rhs, transpose)
+        accepted = self._solve_accepted(rhs, solution, transpose)
+        if accepted is None:
+            return solution
+        self._check_pending = False
+        if accepted:
+            return solution
+        self._probe_clean = False
+        self._double_refined = True   # GMRES-IR on this double factor from now on (every solve)
+        solution = self._solve_equilibrated(rhs, transpose, stall_test=True)
+        self.refinement_steps = self.last_refinements
+        if not self._solve_accepted(rhs, solution, transpose):
+            error = self._double_accuracy_error()
+            self.release()
+            raise error
+        self._describe()
+        return solution
 
     def _double_accuracy_error(self) -> HostDirectAccuracyError:
         return HostDirectAccuracyError(
@@ -696,7 +849,10 @@ class HostDirectFactorization:
         """value_dtype y of E y = rhs (transpose: E^T, general kinds only): one library solve for an unrefined double
         factor (refinement_steps ignored, as cuDSS double); a mixed factor (or a refined double one) refines by
         gmres_refine (refinement_steps None; target backward_error, None = solve_backward_error; stall_test: a probe,
-        target at most BACKWARD_ERROR_TOLERANCE), a mixed one with an int takes that many plain refinement steps."""
+        target at most BACKWARD_ERROR_TOLERANCE), a mixed one with an int takes that many plain refinement steps; a
+        pending deferred check is judged by this solve (_checked_solve)."""
+        if self._check_pending:
+            return self._checked_solve(rhs, transpose)
         if not (self.mixed_factor or self._double_refined):
             return self._library_solve(rhs, transpose)
         operator = self._operator_transpose if transpose else self._operator
@@ -816,6 +972,7 @@ class HostDirectFactorization:
         """Free the library factor and the operator copies (idempotent)."""
         self._free_library()
         self._operator = self._operator_transpose = self._row_scale = self._symmetrizer = None
+        self._check_pending = self._probe_clean = False
 
     def __del__(self):
         try:
@@ -848,6 +1005,31 @@ def host_direct_factorization(host_operator, back_end, previous=None, real=False
     return HostDirectFactorization(host_operator, back_end, real=real, symmetric=symmetric,
                                    positive_definite=positive_definite, symmetrizer=symmetrizer, row_scale=row_scale,
                                    symmetric_known=symmetric_known)
+
+
+def host_direct_values_factorization(values, indptr, indices, back_end, previous=None, real=False, symmetric=False,
+                                     row_scale=None, symmetric_known=False, defer_check=False, positive_definite=False):
+    """HostDirectFactorization of values on a canonical CSR pattern (sparse_direct.HostPencil, Newton tangents): a
+    valid `previous` of the same library, size and options refactorises them in place (refactorize_values:
+    identity-matched pattern, defer_check), any other `previous` with a release() is released first."""
+    if back_end not in HOST_DIRECT_BACK_ENDS:
+        raise ValueError(f"host_direct_values_factorization needs back_end one of {', '.join(HOST_DIRECT_BACK_ENDS)}, "
+                         f'got {back_end!r}')
+    n_rows = int(np.asarray(indptr).size) - 1
+    if (isinstance(previous, HostDirectFactorization) and previous.back_end == library_of(back_end)
+            and previous.n_unknowns == n_rows
+            and previous.can_refactorize(real, host_direct_precision(back_end), symmetric, positive_definite)):
+        previous.refactorize_values(values, indptr, indices, row_scale=row_scale, symmetric_known=symmetric_known,
+                                    defer_check=defer_check)
+        return previous
+    release = getattr(previous, 'release', None)
+    if release is not None:
+        release()
+    import scipy.sparse
+    matrix = scipy.sparse.csr_matrix((np.asarray(values).reshape(-1), indices, indptr), shape=(n_rows, n_rows))
+    matrix.has_canonical_format = True   # the caller's canonical pattern: no sort / duplicate pass
+    return HostDirectFactorization(matrix, back_end, real=real, symmetric=symmetric, row_scale=row_scale,
+                                   symmetric_known=symmetric_known, positive_definite=positive_definite)
 
 
 # --- library adapters: every MUMPS / PARDISO call ---------------------------------------------------------------------
@@ -987,6 +1169,27 @@ class _PardisoFactor:
                     if not options:
                         raise
         self._solver = self._call(create, 'analysis')
+        self._direct, self._value_take = self._direct_values(matrix)
+
+    def _direct_values(self, matrix):
+        """(direct, take): direct True when pydiso's private value / index arrays hold this analysed pattern as kept
+        here (a symmetric type: the upper triangle in CSR order; take = its positions in matrix.data, None = all),
+        checked once per analysis; factor() then writes values straight into the handle. (False, None) otherwise."""
+        solver = self._solver
+        if not all(hasattr(solver, name) for name in ('_data', '_indptr', '_indices', '_data_dtype', '_factor')):
+            return False, None
+        take, indptr, indices = None, matrix.indptr, matrix.indices
+        if self.kind != 'general':   # pydiso keeps sp.triu(A) of a symmetric type
+            rows = csr_rows(matrix.indptr)
+            take = np.flatnonzero(matrix.indices >= rows)
+            indices = matrix.indices[take]
+            indptr = np.concatenate([[0], np.cumsum(np.bincount(rows[take], minlength=matrix.shape[0]))])
+        try:
+            same = (np.asarray(solver._data).size == indices.size and np.array_equal(solver._indptr, indptr)
+                    and np.array_equal(solver._indices, indices))
+        except Exception:   # an unexpected pydiso layout: the public refactor
+            same = False
+        return (True, take) if same else (False, None)
 
     def _call(self, function, phase):
         try:
@@ -1007,9 +1210,17 @@ class _PardisoFactor:
         return 1024 * int(max(iparm[14], iparm[15] + iparm[16]))   # KiB: peak of analysis vs permanent + factor
 
     def factor(self) -> None:
+        """Phase 22 of the kept matrix: its values written into the handle (direct) or pydiso's refactor."""
+        if self._direct:
+            data = self._matrix.data if self._value_take is None else self._matrix.data[self._value_take]
+            solver = self._solver
+            solver._data = np.require(data, solver._data_dtype, requirements='C')
+            self._call(solver._factor, 'factorisation')
+            return
         self._call(lambda: self._solver.refactor(self._matrix), 'factorisation')
 
     def refactor(self, matrix) -> None:
+        """Phase 22 of a matrix on the analysed (padded) pattern (the caller compared patterns)."""
         self._matrix = matrix
         self.factor()
 

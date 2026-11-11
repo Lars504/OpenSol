@@ -75,7 +75,9 @@ coordinate rules stay in the root file.
   range checks (model sub file, Schema); the laminar-flow velocity check once per lattice check interval (>= 100
   steps); per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the displacement
   up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter sums are
-  cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call).
+  cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call); per assembly of a solid_mechanics_3d system
+  with the multigrid preconditioner (`physics.mechanics.multigrid3d.BrickMultigrid.build`) the power-iteration dots of
+  every level (2 x POWER_ITERATIONS + norms) and the 81 coarsest probe reads (never inside a V-cycle).
 
 ## Kernel twins (`kernels`; solver_plan S6, the explicit engines on the cpu backend)
 - `twin(name, gpu_kernel, cpu_fn, numba=None)` (Elementwise / Reduction / any cupy callable) and `raw_twin(...)`
@@ -98,8 +100,15 @@ coordinate rules stay in the root file.
   `set_numba(False)` / OPEN_SOL_CPU_KERNELS=numpy). A factory failure or a numba error / TypeError at a call (typing,
   dispatch: before the twin writes) warns once and falls back to numpy for good; any other exception is re-raised
   (in-place outputs may be partly updated). numba twins only for per-step / per-iteration kernels (2D / 3D Yee updates,
-  em3d CPML / ohmic loss, elastic_waves velocity / stress, laminar_flow lattice step, solid_mechanics_3d stiffness
-  product). `@njit(parallel=True)` loops over i with prange reading arrays by [i, j(, k)]: every array a numba twin
+  em3d CPML / ohmic loss, elastic_waves velocity / stress, laminar_flow lattice step, solid_mechanics_3d CG step:
+  stiffness / mass products, block preconditioner, fused CG pair; fem.element_tangent_3d per Newton iteration).
+  Host-only numba loops without a cupy kernel are `host_twin(name, numpy_form, numba_factory)` (pcg short-vector dot /
+  axpy, fixed_pattern row sum / block expansion / restriction, host_direct scaled_values): never a hand-rolled
+  try / except around njit. It registers at its first call and returns the same twin later, so modules that must not
+  import core.kernels at module level (pcg, host_direct, fixed_pattern) call it inside the function. The numpy form
+  takes the numba loop's arguments; a size threshold calls `twin.cpu` below it, `add(numba=True)`-style switches check
+  `twin.host_kind == 'numba'`.
+  `@njit(parallel=True)` loops over i with prange reading arrays by [i, j(, k)]: every array a numba twin
   indexes must have that dimensionality even when unread (placeholders (1, 1, 1)), numba types every branch. The prange
   index is uint64: a conditional mixing it with a signed int (`j if c else i`, `0 if c else i + 1`) unifies to float64
   and fails as an index (the twin then falls back to numpy), so every numba twin rebinds it at the loop top: `for
@@ -107,7 +116,7 @@ coordinate rules stay in the root file.
   wrapper may unpack / reshape the args (absent arrays -> same-type dummies). Each numba twin gets a CPU case
   `<...>_numba` (numba vs numpy on random inputs, `selftest_helpers.numba_twin_result`). `host_kinds()` lists which
   host twin each name runs.
-- Precision variants (the 2D FDTD 'double' stepper): `real_raw_twin(name, source, entry, cpu, numba=None,
+- Precision variants (the 2D FDTD 'double' stepper, mechanics kernels3d / multigrid3d): `real_raw_twin(name, source, entry, cpu, numba=None,
   dtype_argument=0)` wraps a `RealRawKernel` (CUDA source with `real_t` / `REAL_IS_DOUBLE`, compiled per dtype of
   args[dtype_argument]; intrinsics such as __fmul_rn need an `#if REAL_IS_DOUBLE` branch); ElementwiseKernels take the
   field dtype as a type placeholder (T / F) and cast float32 material inputs explicitly. Their scalars must be numpy

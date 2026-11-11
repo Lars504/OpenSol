@@ -4,7 +4,8 @@ rigid-mode rank check) and the 'heated_chip_stress_3d' template; definition3d re
 import numpy as np
 
 from ...model.schema import SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import EXACT_CG_TOLERANCE, cell_edges, max_relative_error, with_exact_cg, worst_error
+from ...model.selftest_helpers import (EXACT_CG_NAME, EXACT_CG_TOLERANCE, cell_edges, max_relative_error,
+                                       solver_role, with_exact_cg, worst_error)
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, StudySpec)
 from .selftests import (_BILAYER_INTERFACE_Y, _BILAYER_LAYERS, _BILAYER_PULL, _BILAYER_SIZE, _bilayer_closed_forms,
@@ -124,6 +125,94 @@ def _check_block(results_by_name):
             'details': {'errors': errors, 'unit_force': 'N', 'F_pull': list(pull), 'F_left': list(left),
                         'strain_xx': strain, 'stress_xx_Pa': stress, 'z_cut_m': z_cut,
                         'cut_cells': list(fields['u_x'].shape)}}
+
+
+# ---- solid_3d_multigrid: the graded block and the extruded bilayer with the geometric multigrid preconditioner ----
+# pcg preconditioner 'multigrid' (physics.mechanics.multigrid3d) on two exact cases: graded widths (non-1/2 transfer
+# weights), a stiffness jump and rollers on both z faces of a 2-cell-deep strip (an axis that stops coarsening early).
+# The guard would hide a weak cycle (it falls back to block Jacobi and still passes), so the check also requires no
+# fallback and at most _MULTIGRID_MAX_ITERATIONS CG iterations per run.
+_MULTIGRID_MAX_ITERATIONS = 60   # measured 24 / 26 (mixed) / 12
+
+
+def _multigrid_specs():
+    """'block' (_block_specs) and 'bilayer' (_extruded_bilayer_specs) with the exact_cg node on multigrid."""
+    specs = {'block': _block_specs()[_RUN], 'bilayer': _extruded_bilayer_specs()[_RUN]}
+    for spec in specs.values():
+        for node in spec.solvers:
+            if node.name == EXACT_CG_NAME:
+                node.settings['preconditioner'] = 'multigrid'
+    return specs
+
+
+def _check_multigrid(results_by_name):
+    """Both exact checks at their tolerance, no multigrid fallback and the CG iterations within the bound."""
+    block = _check_block({_RUN: results_by_name['block']})
+    bilayer = _check_extruded_bilayer({_RUN: results_by_name['bilayer']})
+    errors = {'block': block['error'], 'bilayer': bilayer['error']}
+    work = {}
+    for run, results in results_by_name.items():
+        counters = solver_role(results, _SOLID).get('counters') or {}
+        work[run] = {name: counters.get(name) for name in ('cg_iterations', 'multigrid_levels', 'multigrid_fallbacks',
+                                                           'multigrid_coarsest_dofs')}
+        iterations, fallbacks = counters.get('cg_iterations'), counters.get('multigrid_fallbacks')
+        # a missing counter (multigrid not built) or a fallback fails the check, as does a slow cycle
+        errors[f'{run}_iterations'] = (0.0 if iterations is not None and iterations <= _MULTIGRID_MAX_ITERATIONS
+                                       else 1.0)
+        errors[f'{run}_fallback'] = 0.0 if fallbacks == 0 else 1.0
+    return {'measured': block['measured'], 'expected': block['expected'], 'error': worst_error(errors),
+            'tolerance': _TOLERANCE, 'details': {'errors': errors, 'work': work, 'block': block['details'],
+                                                 'bilayer': bilayer['details']}}
+
+
+# ---- solid_3d_multigrid_void: a thin cantilever plate in void (next-gains N4: where rediscretised levels are weakest)
+# 32 x 8 x 8 um of 1 um cells (2 levels); the plate y in [3, 5] um (2 cells thick), z in [1, 7] um spans x, void
+# around it (E = 0), clamped on x_lo, body force f_y on the plate. Reference: the same model on block Jacobi (both
+# exact_cg); the multigrid run must match it on the mid-height cut, with no fallback and within the iteration bound.
+_VOID_SIZE = (32e-6, 8e-6, 8e-6)
+_VOID_PLATE = (0.0, 3e-6, 1e-6, 32e-6, 5e-6, 7e-6)   # x0, y0, z0, x1, y1, z1
+_VOID_BODY_FORCE = -1e10                             # N/m^3 along y: tip deflection ~4e-8 m
+_VOID_TOLERANCE = 1e-6                               # relative to the peak |u| (two 1e-12 CG solves)
+
+
+def _void_plate_specs():
+    """'jacobi' and 'multigrid': the clamped plate in void, the exact_cg node on each preconditioner."""
+    specs = {}
+    for run in ('jacobi', 'multigrid'):
+        spec = _solid_spec(
+            'Self-test: cantilever plate in void (solid mechanics 3D, multigrid)', _VOID_SIZE,
+            [MaterialSpec('void', properties=_elastic(0.0, _BLOCK_ELASTIC[1]), selection=['all']),
+             MaterialSpec('plate', properties=_elastic(*_BLOCK_ELASTIC), selection=['plate'])],
+            [FeatureSpec('clamp', 'fixed', ['x_lo']),
+             FeatureSpec('weight', 'body_force', ['plate'], {'f_x': 0.0, 'f_y': _VOID_BODY_FORCE, 'f_z': 0.0})],
+            [_box('plate', *_VOID_PLATE)])
+        if run == 'multigrid':
+            for node in spec.solvers:
+                if node.name == EXACT_CG_NAME:
+                    node.settings['preconditioner'] = 'multigrid'
+        specs[run] = spec
+    return specs
+
+
+def _check_void_plate(results_by_name):
+    """Multigrid displacements = the block-Jacobi ones on the mid-height cut; no fallback, iterations within bound."""
+    names = ('u_x', 'u_y', 'u_z')
+    reference = _cut_fields(results_by_name['jacobi'], names)[0]
+    fields = _cut_fields(results_by_name['multigrid'], names)[0]
+    peak = max(float(np.max(np.abs(reference[name]))) for name in names)
+    errors = {name: float(np.max(np.abs(fields[name] - reference[name]))) / peak for name in names}
+    counters = solver_role(results_by_name['multigrid'], _SOLID).get('counters') or {}
+    iterations, fallbacks = counters.get('cg_iterations'), counters.get('multigrid_fallbacks')
+    # a fallback hides a weak cycle behind the guard (the answer still matches): it fails the case
+    errors['iterations'] = 0.0 if iterations is not None and iterations <= _MULTIGRID_MAX_ITERATIONS else 1.0
+    errors['fallback'] = 0.0 if fallbacks == 0 else 1.0
+    jacobi = solver_role(results_by_name['jacobi'], _SOLID).get('counters') or {}
+    return {'measured': max(errors[name] for name in names), 'expected': 0.0, 'error': worst_error(errors),
+            'tolerance': _VOID_TOLERANCE,
+            'details': {'errors': errors, 'peak_u_m': peak,
+                        'multigrid': {name: counters.get(name) for name in (
+                            'cg_iterations', 'multigrid_levels', 'multigrid_fallbacks', 'multigrid_coarsest_dofs')},
+                        'jacobi_cg_iterations': jacobi.get('cg_iterations')}}
 
 
 # ---- solid_3d_extruded_bilayer: the 2D bilayer with depth and rollers on both z faces ----
@@ -493,6 +582,33 @@ SELFTEST_CASES_3D = (
                      f'{_BUDGET_TEXT}. This pins the z rollers and the plane-strain limit of the 3D law. Not yet run '
                      'on the shorter, thinner strip.'),
         specs=_extruded_bilayer_specs, check=_check_extruded_bilayer),
+    SelfTestCase(
+        name='solid_3d_multigrid', label='Solid mechanics 3D: geometric multigrid preconditioner',
+        description=('The solid_3d_uniaxial_block_graded block (graded x widths) and the solid_3d_extruded_bilayer '
+                     'strip (stiffness jump, 2-cell depth with rollers on both z faces) solved with pcg preconditioner '
+                     'multigrid (geometric V(2,2)-cycle on the brick operator: 2:1 cell pairs, volume-mean Lame '
+                     'values, trilinear transfers in the node coordinates, Chebyshev block-Jacobi smoothing, dense '
+                     f'coarsest level). Both exact checks at tolerance {_TOLERANCE:g}; the check also fails when a run '
+                     'fell back to block Jacobi or needed more than '
+                     f'{_MULTIGRID_MAX_ITERATIONS} CG iterations (the 1e-12 exact_cg tolerance; block Jacobi needs '
+                     'hundreds), so a weak cycle cannot pass behind the guard. Variant mixed: the float32 cycle of the '
+                     'inner CG (its iterations summed over the refinements); variant cpu: the cpu twins of the '
+                     'transfer / smoother / coarsest kernels. Measured 11 Nov: block 24 (mixed 26), bilayer 12 '
+                     'iterations on 3 / 2 levels, the bound about twice that.'),
+        specs=_multigrid_specs, check=_check_multigrid,
+        variants=_MIXED_VARIANTS + (SelfTestVariant('cpu', tolerance=_TOLERANCE, backend='cpu'),)),
+    SelfTestCase(
+        name='solid_3d_multigrid_void', label='Solid mechanics 3D: multigrid on a thin plate in void',
+        description=(f'A {_VOID_SIZE[0] * 1e6:g} x {_VOID_SIZE[1] * 1e6:g} x {_VOID_SIZE[2] * 1e6:g} um box of '
+                     f'{_CELL * 1e6:g} um cells, void (E = 0) except a plate 2 cells thick (y 3..5 um, z 1..7 um) '
+                     f'along x, clamped on x_lo, body force f_y = {_VOID_BODY_FORCE:g} N/m^3 on the plate: the same '
+                     'model solved with pcg block Jacobi and with preconditioner multigrid (both exact_cg). The '
+                     'multigrid u_x / u_y / u_z on the mid-height cut equal the Jacobi ones within '
+                     f'{_VOID_TOLERANCE:g} of the peak |u|; the case also fails on a multigrid fallback or more than '
+                     f'{_MULTIGRID_MAX_ITERATIONS} CG iterations (a thin solid in void is where rediscretised '
+                     'coarse levels are weakest; this decides whether multigrid can become the Automatic). Variant '
+                     'mixed: float32 inner CG. Not yet run.'),
+        specs=_void_plate_specs, check=_check_void_plate, variants=_MIXED_VARIANTS),
     SelfTestCase(
         name='solid_3d_column_z_expressions',
         label='Solid mechanics 3D: confined column with z-dependent body force and temperature change',

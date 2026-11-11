@@ -7,28 +7,28 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/: lines 33-38
 - open_sol/core/: lines 40-75
 - open_sol/coupling/: lines 77-103
-- open_sol/fem/: lines 105-168
-- open_sol/gui/: lines 170-190
-- open_sol/io/: lines 192-196
-- open_sol/materials/: lines 198-213
-- open_sol/mesh_study/: lines 215-225
-- open_sol/model/: lines 227-295
-- open_sol/physics/: lines 297-299
-- open_sol/physics/acoustics/: lines 301-319
-- open_sol/physics/em/: lines 321-434
-- open_sol/physics/em/solvers/: lines 436-458
-- open_sol/physics/em3d/: lines 460-496
-- open_sol/physics/eme/: lines 498-515
-- open_sol/physics/fluid/: lines 517-528
-- open_sol/physics/heat/: lines 530-555
-- open_sol/physics/magnetic/: lines 557-586
-- open_sol/physics/mechanics/: lines 588-666
-- open_sol/physics/membrane/: lines 668-686
-- open_sol/physics/nlfd/: lines 688-707
-- open_sol/physics/potential/: lines 709-726
-- open_sol/physics/semiconductor/: lines 728-741
-- open_sol/solvers/: lines 743-757
-- open_sol/viz/: lines 759-766
+- open_sol/fem/: lines 105-169
+- open_sol/gui/: lines 171-191
+- open_sol/io/: lines 193-197
+- open_sol/materials/: lines 199-214
+- open_sol/mesh_study/: lines 216-226
+- open_sol/model/: lines 228-296
+- open_sol/physics/: lines 298-300
+- open_sol/physics/acoustics/: lines 302-320
+- open_sol/physics/em/: lines 322-435
+- open_sol/physics/em/solvers/: lines 437-459
+- open_sol/physics/em3d/: lines 461-497
+- open_sol/physics/eme/: lines 499-516
+- open_sol/physics/fluid/: lines 518-529
+- open_sol/physics/heat/: lines 531-556
+- open_sol/physics/magnetic/: lines 558-587
+- open_sol/physics/mechanics/: lines 589-668
+- open_sol/physics/membrane/: lines 670-688
+- open_sol/physics/nlfd/: lines 690-709
+- open_sol/physics/potential/: lines 711-728
+- open_sol/physics/semiconductor/: lines 730-743
+- open_sol/solvers/: lines 745-759
+- open_sol/viz/: lines 761-768
 
 ## open_sol/
 
@@ -165,6 +165,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_tetrahedra.py`: Self-tests of the tetrahedral FEM core (igor3d_plan section 7, T1 / T2; CPU, specs() empty, check({}) on structured Kuhn meshes, no gmsh): quadrature exactness, mesh conformity, Nedelec tangential continuity, point location and the ...
 - `squeeze_film.py`: Physics-neutral squeeze-film gas damping (new_modules_plan S6, Basiri E4): SqueezeFilm solves the linearised compressible Reynolds equation by fem.harmonic.ScalarHarmonicSystem on a planar TriangleMesh (a solid's footprint or a membrane's ...
 - `surface_mesh.py`: Planar triangle meshes of flat tetrahedron boundary faces (new_modules_plan S6): surface_triangle_mesh builds a TriangleMesh with node / edge / face maps back into the TetrahedronMesh from faces on one coordinate plane, normal_displacement ...
+- `tangent_kernel3d.py`: Per-element total-Lagrangian force and tangent of P1 / P2 tetrahedra (next-gains R1): one core.kernels raw twin 'fem.element_tangent_3d' = a CUDA block per element (rule-point operators in shared memory), a numba prange over the elements, ...
 - `transfer.py`: Transfers between tensor grids and triangle meshes (mesh plan 2.9 / 1.4), the GridTransfer interface (apply(array, out=None)) over one host CSR
 
 ## open_sol/gui/
@@ -605,6 +606,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `material_params.py`: Material property Params shared verbatim by solid_mechanics and elastic_waves (one help text per name: the library youngs_modulus / poisson_ratio / photoelastic data serve both); definition-layer module (imports model.schema).
 - `materials.py`: Material vocabulary of the solid (2D plane strain and 3D): Young's modulus, Poisson ratio, the anisotropic c_ij (2D ten, 3D 21), the piezoelectric e and clamped permittivity (2D in-plane, 3D full), the thermal expansion arrays (the ...
 - `modal.py`: Vibration modes (eigenfrequencies) K u = omega^2 M u on the free dofs, host numpy / scipy: shift-invert Lanczos of an assembled host pencil about the target (the 'eigen' role: SuperLU, or cuDSS LDL^T on the GPU), or matrix-free at sigma = ...
+- `multigrid3d.py`: Geometric multigrid V-cycle preconditioner of the matrix-free 3D brick elasticity (ElasticSystem3D, speed plan A2): 2:1 coarsened tensor levels on kernels3d.BrickKernels, separable trilinear transfers, Chebyshev block-Jacobi smoothing and ...
 - `nonlinear_start.py`: Start states of the total-Lagrangian Newton of the nonlinear solids (2D triangles, 3D tetrahedra): a sweep seed of another build, the last converged state of the same assembly or u = 0, the load ramp from that state, and the cold-ramp ...
 - `optical_force.py`: Time-averaged optical (Maxwell-stress) force density of an em_fdfd_ez solution on the solid: f = -(eps0 / 4) |E_z|^2 grad eps_r (peak phasor, non-magnetic, no electrostriction), integrated per cell face and handed to the solid cells.
 - `optomechanics.py`: Vacuum optomechanical coupling g0 between one optical mode and the solid vibration modes of a 2D model (host numpy): moving-boundary face sums and the photoelastic overlap of the nodal mode shape, effective mass and zero-point motion.

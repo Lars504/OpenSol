@@ -25,8 +25,9 @@ class HarmonicSystem:
     """The pencil (operator, loss, mass) of one assembly reduced once to the free dofs (G^T X G with G = column_map, None
     = identity) for the frequency solves; each solve factorises the complex symmetric operator + j loss - omega^2 mass
     of the free dofs: on a cuDSS back end from the term values kept on the device (sparse_direct.DevicePencil,
-    factorize_pencil: LDL^T, the previous factor's plan reused), else by the runtime's factorize_host (host SuperLU;
-    counted there) or, runtime None, a private host SuperLU. The summed pattern never depends on the
+    factorize_pencil: LDL^T, the previous factor's plan reused), on MUMPS / PARDISO from host term values
+    (sparse_direct.HostPencil, the analysis reused, no per-frequency asymmetry check), else by the runtime's
+    factorize_host (host SuperLU; counted there) or, runtime None, a private host SuperLU. The summed pattern never depends on the
     values (fem.assembly.pattern_sum), so the cuDSS plan holds across frequencies. loads = [(reduced free dof, b)]: + j b
     / omega on that diagonal (a resistive electrode load, piezo.PiezoSystem). Direct solves with fields False after
     set_output_rows (no column map): x and A x only at those rows, the free solution kept (on the device after a cuDSS
@@ -65,7 +66,8 @@ class HarmonicSystem:
         # |diag K|, |diag M| of the free dofs: the row scale of every cuDSS factorisation (computed once)
         self._diagonals = (np.abs(stiffness.diagonal()), np.abs(mass.diagonal()))
         self.runtime = runtime
-        self._device = None      # sparse_direct.DevicePencil of the terms (cuDSS back end; made on the first factorize)
+        self._pencil = None      # sparse_direct DevicePencil (cuDSS) / HostPencil (MUMPS / PARDISO) of the terms, False
+        #                          for the host route (made on the first factorize)
         self.factor = previous   # the last factor (a CudssFactorization is refactorised in place)
         self.factorizations = 0  # factorisations made (direct solves, reduced-model expansions and verification)
         self._planned = None     # (ReducedHarmonicModel, fixed, load, extra_rhs) of plan_reduced, or None
@@ -115,15 +117,15 @@ class HarmonicSystem:
         import scipy.sparse
         from ...solvers.sparse_direct import SparseDirectSolver, factorize_host
         coefficients = [1.0, -omega * omega] + ([] if self._load_values is None else [1j / omega])
-        if self._device is None:
+        if self._pencil is None:
             terms = [self._fixed_values, self._mass_values] + ([] if self._load_values is None else [self._load_values])
-            self._device = isinstance(self.runtime, SparseDirectSolver) and self.runtime.device_pencil(
+            self._pencil = isinstance(self.runtime, SparseDirectSolver) and self.runtime.pencil(
                 self._pattern.indptr, self._pattern.indices, terms, symmetric=True) or False
         # the scale of diag(K) + omega^2 diag(M) never cancels near a resonance (cuDSS equilibration)
         stiffness_diagonal, mass_diagonal = self._diagonals
         scale = None if self.runtime is None else 1.0 / np.sqrt(stiffness_diagonal + (omega * omega) * mass_diagonal)
-        if self._device:   # cuDSS: the pencil values stay on the device (no host CSR per frequency)
-            self.factor = self.runtime.factorize_pencil(self._device, coefficients, row_scale=scale,
+        if self._pencil:   # cuDSS: values on the device; MUMPS / PARDISO: host values on the kept analysis
+            self.factor = self.runtime.factorize_pencil(self._pencil, coefficients, row_scale=scale,
                                                         previous=self.factor)
         else:
             values = self._fixed_values - (omega * omega) * self._mass_values

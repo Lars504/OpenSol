@@ -71,6 +71,7 @@ def _check_tangent_assembler(_):
     from .elasticity3d import TangentAssembler3D, internal_force_and_tangent_3d, vector_dofs_3d
     from .mesh3d import structured_box_mesh
     from .selftests_harmonic import _rectangle_mesh
+    from .tangent_kernel3d import ELEMENT_TANGENT_3D
     checks, details = {}, {}
 
     def add(name, value, tolerance=_RTOL):
@@ -100,9 +101,18 @@ def _check_tangent_assembler(_):
         _, data = assembler.force_and_tangent(displacement, initial_stress=stress3)
         _, data_uncached = uncached.force_and_tangent(displacement, initial_stress=stress3)
         add(f'3D P{order} gradients recomputed', _relative_vector(data_uncached, data))
+        # fixed_pattern.kept_pattern: same mesh, elements, chunks and free mask -> the same pattern object
+        add(f'3D P{order} pattern kept per mesh', 0.0 if uncached.pattern is assembler.pattern else 1.0, 0.0)
+        batched = TangentAssembler3D(dofs, material, elements=solid, free=free, element_kernel=False)
+        batched_force, batched_data = batched.force_and_tangent(displacement, initial_stress=stress3)
+        kernel_force = assembler.force_and_tangent(displacement, initial_stress=stress3)[0]
+        add(f'3D P{order} element kernel vs batched force', _relative_vector(kernel_force, batched_force))
+        add(f'3D P{order} element kernel vs batched tangent', _relative_vector(data, batched_data))
         details[f'3D P{order}'] = {'nnz': assembler.pattern.nnz, 'free': int(free.sum()), 'zero entries at u = 0': zeros,
                                    'cached_bytes': assembler.cached_bytes,
-                                   'gradients_cached': (assembler.gradients_cached, uncached.gradients_cached)}
+                                   'gradients_cached': (assembler.gradients_cached, uncached.gradients_cached),
+                                   'element_kernel': assembler.element_kernel,
+                                   'host_twin': ELEMENT_TANGENT_3D.host_kind}
     # 2D: P2 triangles, planar monoclinic and axisymmetric (r from 0.2 L: off the axis), an initial stress
     coefficients = {'c11': 2.5e11, 'c12': 1.0e11, 'c22': 2.2e11, 'c66': 0.7e11, 'c16': 0.1e11, 'c26': -0.05e11,
                     'c13': 0.9e11, 'c23': 0.95e11, 'c33': 2.4e11}
@@ -159,7 +169,7 @@ def _check_device_assembler(_):
     from ..core.backend import cp
     from ..solvers.cudss_factor import CudssFactorization, cudss_available
     from .dofs3d import lagrange_dofs_3d
-    from .elasticity3d import TangentAssembler3D
+    from .elasticity3d import TangentAssembler3D, element_strains_3d
     checks, details = {}, {}
 
     def add(name, value, tolerance=_DEVICE_RTOL):
@@ -195,7 +205,26 @@ def _check_device_assembler(_):
             add(f'{label} no S0 after a cached one', _relative_vector(cp.asnumpy(device_data), data))
             add(f'{label} tangent()', _relative_matrix(device.tangent(displacement, initial_stress=stress),
                                                        host.tangent(displacement, initial_stress=stress)))
-            details[label] = {'device_bytes': device.device_bytes, 'gradients_cached': device.gradients_cached}
+            details[label] = {'device_bytes': device.device_bytes, 'gradients_cached': device.gradients_cached,
+                              'element_kernel': device.element_kernel, 'chunk_elements': device.chunk_elements}
+        # the CUDA element kernel (the default above) against the batched cupy formulas
+        batched = TangentAssembler3D(dofs, material, elements=solid, free=free, device=True, element_kernel=False)
+        kernel = TangentAssembler3D(dofs, material, elements=solid, free=free, device=True)
+        displacement = _DISPLACEMENT * rng.standard_normal((dofs.n_dofs, 3))
+        kernel_force, kernel_data = kernel.force_and_tangent(displacement, initial_stress=stress)
+        batched_force, batched_data = batched.force_and_tangent(displacement, initial_stress=stress)
+        add(f'P{order} device element kernel vs batched force', _relative_vector(kernel_force, batched_force))
+        add(f'P{order} device element kernel vs batched tangent', _relative_vector(cp.asnumpy(kernel_data),
+                                                                                   cp.asnumpy(batched_data)))
+        points = rng.dirichlet(np.ones(4), size=5)[:, 1:]   # element_strains_3d on cupy (the output twin)
+        displacement = _DISPLACEMENT * rng.standard_normal((dofs.n_dofs, 3))
+        for green_lagrange, kind in ((False, 'linear'), (True, 'Green-Lagrange')):
+            values, strains = element_strains_3d(dofs, displacement, points, elements=solid,
+                                                 green_lagrange=green_lagrange)
+            device_values, device_strains = element_strains_3d(dofs, cp.asarray(displacement), points, elements=solid,
+                                                               green_lagrange=green_lagrange)
+            add(f'P{order} {kind} element strains on the device', _relative_vector(cp.asnumpy(device_strains), strains))
+            add(f'P{order} {kind} element values on the device', _relative_vector(cp.asnumpy(device_values), values))
     if not cudss_available():
         details['factor'] = 'skipped: nvmath-python (cuDSS) is not installed'
     else:   # P2, free = 80 % of the dofs the solid touches: the reduced tangent is SPD
@@ -234,6 +263,108 @@ def _check_device_assembler(_):
     return checks_result(checks, **details)
 
 
+# ---- fem3d_tangent_kernel_numba: numba vs numpy twin of fem.element_tangent_3d (tangent_kernel3d) on random inputs
+_NUMBA_TOLERANCE = 1e-12      # same sums, other order
+_NUMBA_ELEMENTS = 64          # compared elements per (order, S0) variant
+_NUMBA_SPEED_ELEMENTS = 2048  # P2 elements of the timed call (numpy twin ~86 us and ~117 kB temporaries per element)
+_NUMBA_SPEED_CALLS = (1, 5)   # (numpy, numba) timed calls
+
+
+def _kernel_arguments(rng, elements, n_local, points, has_fixed, want_tangent):
+    """The element_tangent_3d args tuple of random P1 / P2-sized inputs: gradients ~1 / L, ~1 % strains, SPD C, S0."""
+    columns = 3 * n_local
+    factor = rng.standard_normal((elements, 6, 6))
+    material = 1e10 * (np.einsum('mij,mkj->mik', factor, factor) + 6.0 * np.eye(6))
+    fixed = (_INITIAL_STRESS * rng.standard_normal((elements, points, 6)) if has_fixed else np.zeros((1, 1, 1)))
+    return (rng.standard_normal((elements, points, n_local, 3)) / _LENGTH,
+            rng.random((elements, points)) * _LENGTH ** 3,
+            _DISPLACEMENT * rng.standard_normal((elements, n_local, 3)), material, fixed,
+            np.zeros((elements, columns)),
+            np.zeros((elements, columns, columns)) if want_tangent else np.zeros((1, 1, 1)),
+            np.int32(elements), np.int32(has_fixed), np.int32(want_tangent))
+
+
+def _check_kernel_numba(_):
+    """numba vs numpy element_tangent_3d: P1 (1 point) and P2 (14 points), with and without S0, force alone too."""
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    from . import tangent_kernel3d
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _NUMBA_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    numpy_twin = tangent_kernel3d._element_tangent_host
+    numba_twin = tangent_kernel3d._element_tangent_numba(numba)
+    rng = np.random.default_rng(20261111)
+    comparisons = {}
+    for n_local, points in ((4, 1), (10, 14)):
+        for has_fixed in (0, 1):
+            for want_tangent in (1, 0):
+                label = f'n{n_local} q{points} S0 {has_fixed} tangent {want_tangent}'
+                comparisons[label] = (numpy_twin, numba_twin, _kernel_arguments(rng, _NUMBA_ELEMENTS, n_local, points,
+                                                                                has_fixed, want_tangent))
+    timings = {'P2 force and tangent': (numpy_twin, numba_twin,
+                                        _kernel_arguments(rng, _NUMBA_SPEED_ELEMENTS, 10, 14, 1, 1),
+                                        *_NUMBA_SPEED_CALLS)}
+    result = numba_twin_result(comparisons, timings, _NUMBA_TOLERANCE, numba)
+    result['details']['speed_elements'] = _NUMBA_SPEED_ELEMENTS
+    result['details']['registered_host_kind'] = tangent_kernel3d.ELEMENT_TANGENT_3D.host_kind
+    return result
+
+
+# ---- fem_fixed_pattern_row_sum_numba: numba row sum vs bincount of FixedPatternCsr.add (next-gains N2)
+_ROW_SUM_NODES = 4000          # scalar nodes of the random block-3 pattern
+_ROW_SUM_LOCAL = 10            # nodes per element (P2-sized blocks 30 x 30)
+_ROW_SUM_ELEMENTS = 256        # compared elements (real and complex)
+_ROW_SUM_SPEED_ELEMENTS = 6144  # timed elements (the nonlinear profiler's 5.5e6 block entries per tangent)
+_ROW_SUM_SPEED_CALLS = (2, 10)
+
+
+def _row_sum_case(rng, elements):
+    """(FixedPatternCsr block 3 of `elements` random distinct-node elements, its zero data)."""
+    from .fixed_pattern import FixedPatternCsr
+    dofs = np.array([rng.choice(_ROW_SUM_NODES, _ROW_SUM_LOCAL, replace=False) for _ in range(elements)])
+    pattern = FixedPatternCsr(3 * _ROW_SUM_NODES, [dofs], block=3)
+    return pattern, pattern.zeros()
+
+
+def _check_row_sum_numba(_):
+    """numba row sum vs bincount of FixedPatternCsr.add on random real / complex P2-sized blocks."""
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _NUMBA_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    rng = np.random.default_rng(20261112)
+    width = 3 * _ROW_SUM_LOCAL
+    comparisons, timings = {}, {}
+    pattern, data = _row_sum_case(rng, _ROW_SUM_ELEMENTS)
+
+    def twins(target_pattern):
+        return (lambda values, blocks: target_pattern.add(values, 0, blocks, numba=False),
+                lambda values, blocks: target_pattern.add(values, 0, blocks, numba=True))
+    numpy_twin, numba_twin = twins(pattern)
+    comparisons['real'] = (numpy_twin, numba_twin, (data, rng.standard_normal((_ROW_SUM_ELEMENTS, width, width))))
+    complex_blocks = (rng.standard_normal((_ROW_SUM_ELEMENTS, width, width))
+                      + 1j * rng.standard_normal((_ROW_SUM_ELEMENTS, width, width)))
+
+    def as_float(twin):   # complex data summed, then written as float64 pairs (the compared output)
+        def run(values, blocks, out):
+            twin(values, blocks)
+            out[...] = values.view(np.float64)
+        return run
+    comparisons['complex'] = (as_float(numpy_twin), as_float(numba_twin),
+                              (data.astype(np.complex128), complex_blocks, np.zeros(2 * data.size)))
+    speed_pattern, speed_data = _row_sum_case(rng, _ROW_SUM_SPEED_ELEMENTS)
+    timings['P2 tangent sum'] = (*twins(speed_pattern),
+                                 (speed_data, rng.standard_normal((_ROW_SUM_SPEED_ELEMENTS, width, width))),
+                                 *_ROW_SUM_SPEED_CALLS)
+    result = numba_twin_result(comparisons, timings, _NUMBA_TOLERANCE, numba)
+    result['details']['speed_block_entries'] = _ROW_SUM_SPEED_ELEMENTS * width * width
+    return result
+
+
 TANGENT_ASSEMBLER_SELFTEST_CASES = (
     SelfTestCase(
         name='fem3d_tangent_assembler',
@@ -245,7 +376,8 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
                     'internal force (with the tangent and alone), full tangent and free-free reduced tangent equal '
                     f'internal_force_and_tangent[_3d] and its [free][:, free] slicing within {_RTOL:g} relative; the '
                     'reduced CSR is canonical; the pattern equals the structural pattern of the element blocks and is '
-                    'the same at u = 0; 3D also with the gradient cache off (cache_bytes 0). error = number of failed '
+                    'the same at u = 0; 3D also with the gradient cache off (cache_bytes 0), and the element kernel '
+                    '(tangent_kernel3d host twin, the default) against element_kernel=False. error = number of failed '
                     'sub-checks, tolerance 0 (first estimates, not yet run).',
         specs=lambda: {},
         check=_check_tangent_assembler,
@@ -257,8 +389,10 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
                     'TangentAssembler3D (gradients cached and recomputed) against the host one at two random '
                     'displacements (the second reusing the device S0), without S0, and tangent(): force (with the '
                     'tangent and alone), tangent data, full pattern, reduced values / CSR and the full product within '
-                    f'{_DEVICE_RTOL:g} relative. With nvmath-python: a P2 SPD reduced tangent planned at one displacement '
-                    'and refreshed at another by CudssFactorization.refactorize_device_values (double and mixed): plan '
+                    f'{_DEVICE_RTOL:g} relative; the CUDA element kernel against the batched cupy formulas '
+                    '(element_kernel=False: force, tangent data); element_strains_3d (linear and Green-Lagrange, values and strains) of '
+                    'a cupy displacement against the host at random points within the same tolerance. With '
+                    'nvmath-python: a P2 SPD reduced tangent planned at one displacement and refreshed at another by CudssFactorization.refactorize_device_values (double and mixed): plan '
                     f'reused, operator norm within {_DEVICE_RTOL:g}, solves against SuperLU within {_SOLVE_RTOL:g} '
                     f'(mixed {_MIXED_SOLVE_RTOL:g}) and against a host-refreshed cuDSS factor. error = number of '
                     'failed sub-checks, tolerance 0 (first estimates, not yet run).',
@@ -266,4 +400,32 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
         check=_check_device_assembler,
         backends=('gpu',),
         max_wall_time=120.0),
+    SelfTestCase(
+        name='fem3d_tangent_kernel_numba',
+        label='FEM: numba vs numpy per-element total-Lagrangian force and tangent (CPU)',
+        description='The numba twin of fem.element_tangent_3d (fem.tangent_kernel3d: per element H, Green-Lagrange E, '
+                    'S = C E + S0, B + B_NL, force, (B + B_NL)^T C (B + B_NL) + K_sigma) against its numpy twin (the '
+                    f'batched elasticity3d formulas) on {_NUMBA_ELEMENTS} random elements per variant: P1-sized (4 '
+                    'nodes, 1 point) and P2-sized (10 nodes, 14 points), with and without S0, force with the tangent '
+                    'and alone; measured = error = the worst max |numba - numpy| relative to the peak of each output, '
+                    f'tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both on {_NUMBA_SPEED_ELEMENTS} P2 '
+                    'elements. Without numba nothing is compared (error 0). Not yet run.',
+        specs=lambda: {},
+        check=_check_kernel_numba,
+        backends=('cpu',),
+        max_wall_time=300.0),
+    SelfTestCase(
+        name='fem_fixed_pattern_row_sum_numba',
+        label='FEM: numba row-parallel block sum vs bincount of FixedPatternCsr.add (CPU)',
+        description='fem.fixed_pattern.FixedPatternCsr.add with numba=True (prange over global rows, each thread adding '
+                    'the block rows of its rows at their kept slots) against numba=False (one bincount) on a random '
+                    f'block-3 pattern of {_ROW_SUM_ELEMENTS} elements of {_ROW_SUM_LOCAL} distinct nodes out of '
+                    f'{_ROW_SUM_NODES}, real and complex blocks; measured = error = the worst max |numba - bincount| '
+                    f'relative to the peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both on '
+                    f'{_ROW_SUM_SPEED_ELEMENTS} elements (5.5e6 block entries). Without numba nothing is compared. '
+                    'Not yet run.',
+        specs=lambda: {},
+        check=_check_row_sum_numba,
+        backends=('cpu',),
+        max_wall_time=300.0),
 )

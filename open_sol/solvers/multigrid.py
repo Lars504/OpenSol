@@ -45,6 +45,11 @@ HOST_BYTES_PER_UNKNOWN = 80
 PRODUCT_BLOCK_PRODUCTS = 1 << 23
 PRODUCT_BYTES_PER_PRODUCT = 32
 PRODUCT_WORKSPACE_BYTES = PRODUCT_BYTES_PER_PRODUCT * PRODUCT_BLOCK_PRODUCTS
+# gpu Galerkin products take at most this many columns of P per SpGEMM (_column_ranges): cuSPARSE's default SpGEMM
+# returns INSUFFICIENT_RESOURCES when a segment of intermediate products cannot be coded in 32 bits, which grows with
+# the right factor's columns, not the products (NVIDIA: split B by columns). carey2026 E2 mesh_fine (5.6e6 cells)
+# failed in R_b (A_b P) at every row-block size; window_check (3.0e6 cells, ~1e6 coarse columns) ran
+PRODUCT_MAX_COLUMNS = 1 << 19
 # share of the n entries_per_row^2 bound a small operator's whole A @ P takes (magnet3d_magnetized_sphere coarse,
 # 149k unknowns at 7 per row: the bound gave ~2x the measured setup peak; the capped fine case is unaffected)
 SETUP_PRODUCT_SHARE = 0.5
@@ -691,7 +696,8 @@ class MultigridPreconditioner:
     def _build_level(self, operator, depth):
         """(_Level, coarse operator) of operator with the depth's aggregates: P = (I - W_F A_F) T (A_F: the filtered
         operator, `_filtered_rows`), R = P^T, A_c = R A P (Galerkin with the full A, so SPD) in HIERARCHY_DTYPE, in
-        row blocks b (P_b = T_b - W_F,b A_F,b T, A_c = sum_b P_b^T (A_b P)) so no full A T or A P is ever held."""
+        row blocks b (P_b = T_b - W_F,b A_F,b T, A_c = sum_b P_b^T (A_b P)) so no full A T or A P is ever held; on the
+        gpu A_c in column chunks c of P (_column_ranges: rows c of A_c = (sum_b P_b^T (A_b P_c))^T)."""
         n_unknowns = operator.shape[0]
         tentative = self._tentative(depth, n_unknowns, HIERARCHY_DTYPE)
         weights = self._smoother_weights(operator)   # the cycle's smoother: the full operator
@@ -705,28 +711,63 @@ class MultigridPreconditioner:
         del diagonal
         prolongation = self._stack_rows(blocks, tentative.shape[1])
         del blocks
-        row_blocks = self._row_blocks(operator, prolongation.indptr)
-        # a single block's left factor is R itself (no second transpose); several blocks transpose their own rows
-        restriction = prolongation.T.tocsr() if len(row_blocks) == 1 else None
-        # binary-counter sum of the block contributions: merging only partial sums of equal block counts costs
-        # O(nnz log blocks); a running sum recopies the whole coarse operator per block (297 s of a 303 s 3D build)
-        partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
-        for start, stop in row_blocks:
-            left = restriction if restriction is not None else prolongation[start:stop].T.tocsr()
-            partial_sum = left @ (self._low(self._rows(operator, start, stop)) @ prolongation)
-            del left
-            n_blocks = 1
-            while partial_sums and partial_sums[-1][1] == n_blocks:
-                earlier_sum, earlier_blocks = partial_sums.pop()
-                partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
-            partial_sums.append((partial_sum, n_blocks))
-        coarse_operator = partial_sums.pop()[0]
-        while partial_sums:
-            coarse_operator = partial_sums.pop()[0] + coarse_operator
+        n_coarse = prolongation.shape[1]
+        column_ranges = self._column_ranges(n_coarse)
+        restriction = None
+        coarse_rows = []   # several column chunks: row blocks first:last of A_c
+        for first, last in column_ranges:
+            columns = (prolongation if len(column_ranges) == 1
+                       else self._column_block(prolongation, first, last))   # P_c = P[:, first:last]
+            row_blocks = self._row_blocks(operator, columns.indptr)
+            # a single block's left factor is R itself (no second transpose); several blocks transpose their own rows
+            if len(row_blocks) == 1 and restriction is None:
+                restriction = prolongation.T.tocsr()
+            # binary-counter sum of the block contributions: merging only partial sums of equal block counts costs
+            # O(nnz log blocks); a running sum recopies the whole coarse operator per block (297 s of a 303 s 3D build)
+            partial_sums = []   # [(partial sum, number of blocks in it)], counts strictly decreasing
+            for start, stop in row_blocks:
+                left = restriction if len(row_blocks) == 1 else prolongation[start:stop].T.tocsr()
+                partial_sum = left @ (self._low(self._rows(operator, start, stop)) @ columns)
+                del left
+                n_blocks = 1
+                while partial_sums and partial_sums[-1][1] == n_blocks:
+                    earlier_sum, earlier_blocks = partial_sums.pop()
+                    partial_sum, n_blocks = earlier_sum + partial_sum, earlier_blocks + n_blocks
+                partial_sums.append((partial_sum, n_blocks))
+            del columns
+            column_block = partial_sums.pop()[0]
+            while partial_sums:
+                column_block = partial_sums.pop()[0] + column_block
+            if len(column_ranges) == 1:
+                coarse_rows.append(column_block)
+            else:   # R A P_c = A_c[:, first:last] of the symmetric A_c: its transpose is the row block first:last
+                coarse_rows.append(column_block.T.tocsr())
+            del column_block
+        coarse_operator = self._stack_rows(coarse_rows, n_coarse)
+        del coarse_rows
         if restriction is None:
             restriction = prolongation.T.tocsr()
         return (_Level(operator, weights, prolongation, restriction, self._xp, host=self.backend == 'cpu'),
                 coarse_operator.tocsr())
+
+    def _column_ranges(self, n_columns):
+        """[(first, last)] column chunks of P for the Galerkin products: at most PRODUCT_MAX_COLUMNS each on the gpu
+        (cuSPARSE SpGEMM limit), one range on the cpu (scipy has no such limit)."""
+        if self.backend == 'cpu' or n_columns <= PRODUCT_MAX_COLUMNS:
+            return [(0, n_columns)]
+        n_chunks = -(-n_columns // PRODUCT_MAX_COLUMNS)
+        edges = np.linspace(0, n_columns, n_chunks + 1).round().astype(np.int64).tolist()
+        return list(zip(edges[:-1], edges[1:]))
+
+    def _column_block(self, matrix, first, last):
+        """Columns first:last of a CSR (columns renumbered from 0) by array masks, no cuSPARSE call."""
+        xp = self._xp
+        keep = (matrix.indices >= first) & (matrix.indices < last)
+        kept_per_entry = xp.concatenate((xp.zeros(1, dtype=np.int32), xp.cumsum(keep, dtype=np.int32)))
+        block = self._sparse.csr_matrix((matrix.data[keep], matrix.indices[keep] - np.int32(first),
+                                         kept_per_entry[matrix.indptr]), shape=(matrix.shape[0], last - first))
+        del keep, kept_per_entry
+        return block
 
     def _row_blocks(self, left, right_indptr):
         """Host [(start, stop)] row blocks of left @ right (right's CSR indptr) with about PRODUCT_BLOCK_PRODUCTS

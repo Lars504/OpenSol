@@ -641,7 +641,10 @@ def _memory_estimate(settings_values, mesh, context):
                          int(factor * superlu_bytes_scale(host_direct, symmetric=True, complex_values=True))),
                         (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
                          solver_host_bytes(dofs, entries, complex_values=True, symmetric=True,
-                                           mixed=host_direct_precision(host_direct) == 'mixed'))]
+                                           mixed=host_direct_precision(host_direct) == 'mixed')),
+                        # fem.harmonic's sparse_direct.HostPencil: the reduced K, C, M values (as the device item)
+                        (f'{label} host pencil terms (K, C, M values on the free pattern)',
+                         3 * COMPLEX128_BYTES * entries)]
     # fem.harmonic on a cuDSS back end keeps the reduced K, C, M values on the device (sparse_direct.DevicePencil)
     # and keeps a direct solve's solution there (R6): complex128 full-numbering values, int64 free / fixed / system ids
     run_items = []

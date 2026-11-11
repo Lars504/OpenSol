@@ -103,8 +103,6 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     ('open_sol.fem.assembly:pattern_sum', 'fem: pattern_sum'),
     ('open_sol.fem.assembly:congruence', 'fem: congruence'),
     ('open_sol.solvers.sparse_direct:factorize_host', 'solver: sparse_direct.factorize_host (private SuperLU)'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.__init__', 'solver: DevicePencil.__init__'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.combined', 'solver: DevicePencil.combined'),
     ('open_sol.solvers.arpack_shift_invert:ArpackShiftInvertSolver.shift_pencil', 'solver: arpack shift_pencil'),
     ('open_sol.solvers.arpack_shift_invert:ArpackShiftInvertSolver._factorize_shift', 'solver: arpack _factorize_shift'),
     ('open_sol.solvers.arpack_shift_invert:ArpackShiftInvertSolver.count_below', 'solver: arpack count_below'),

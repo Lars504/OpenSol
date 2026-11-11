@@ -14,7 +14,7 @@ class TangentPolicy:
     """Factor bookkeeping of one nonlinear solid: 'every_iteration' refactorises the tangent per Newton iteration,
     'when_slow' keeps the held factor while each iteration cut the free residual below SLOW_RESIDUAL_RATIO."""
 
-    def __init__(self, tangent_update='every_iteration'):
+    def __init__(self, tangent_update='when_slow'):
         if tangent_update not in TANGENT_UPDATES:
             raise ValueError(f"tangent_update must be one of {', '.join(TANGENT_UPDATES)}, got {tangent_update!r}")
         self.tangent_update = tangent_update

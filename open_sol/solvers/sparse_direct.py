@@ -25,7 +25,8 @@ import numpy as np
 
 from .cudss_factor import csr_rows
 from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
-                          host_direct_factorization, is_host_direct_factor, missing_text)
+                          host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
+                          missing_text)
 
 CUDSS_BACK_ENDS = ('cudss', 'cudss_mixed')
 BACK_ENDS = ('scipy_splu', 'cusolver_qr') + CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS
@@ -669,18 +670,7 @@ class DevicePencil:
         """Host int64 positions in the stored layout of the entries (rows, columns) (E7-8: a small per-frequency block,
         e.g. a port DtN, added by factorize_pencil(extra=)); a lower_stored pencil takes lower entries only (rows >=
         columns); None when an entry is not in the pattern (or not lower)."""
-        rows, columns = np.asarray(rows, dtype=np.int64), np.asarray(columns, dtype=np.int64)
-        if self.lower_stored and np.any(columns > rows):
-            return None
-        pattern_rows = self._host_rows
-        keys = pattern_rows * self.n_rows + self.indices   # ascending: a canonical pattern
-        wanted = rows * self.n_rows + columns
-        where = np.minimum(np.searchsorted(keys, wanted), max(keys.size - 1, 0))
-        if keys.size == 0 or not np.array_equal(keys[where], wanted):
-            return None
-        if self.lower_stored:   # full position -> position in the lower take
-            where = (np.cumsum(self.indices <= pattern_rows) - 1)[where]
-        return where
+        return _pattern_slots(self._host_rows, self.indices, self.n_rows, rows, columns, self.lower_stored)
 
     def full_term(self, index):
         """Device (nnz,) values of term `index` on the full pattern (a lower_stored pencil mirrors its lower triangle:
@@ -701,6 +691,79 @@ class DevicePencil:
             mirror = cp.searchsorted(rows * self.n_rows + columns, columns * self.n_rows + rows)   # symmetric pattern
             self._full_take = cp.where(is_lower, lower_rank, lower_rank[mirror])
         return term[self._full_take]
+
+
+def _pattern_slots(pattern_rows, indices, n_rows, rows, columns, lower_stored):
+    """Host int64 positions of the entries (rows, columns) in a pencil's stored layout (the canonical pattern of
+    pattern_rows / indices, or its lower take when lower_stored: lower entries only); None when one is not stored."""
+    rows, columns = np.asarray(rows, dtype=np.int64), np.asarray(columns, dtype=np.int64)
+    if lower_stored and np.any(columns > rows):
+        return None
+    keys = pattern_rows * n_rows + indices   # ascending: a canonical pattern
+    wanted = rows * n_rows + columns
+    where = np.minimum(np.searchsorted(keys, wanted), max(keys.size - 1, 0))
+    if keys.size == 0 or not np.array_equal(keys[where], wanted):
+        return None
+    if lower_stored:   # full position -> position in the lower take
+        where = (np.cumsum(indices <= pattern_rows) - 1)[where]
+    return where
+
+
+class HostPencil:
+    """Terms X_k of a pencil sum_k c_k X_k on one canonical host CSR pattern (sorted, no duplicates) for
+    SparseDirectSolver.factorize_pencil on a host direct back end (MUMPS / PARDISO, either backend): term values kept on
+    the host (the caller's arrays when already flat, no copy), the full pattern always (lower_stored False); symmetric
+    = asked for and every term complex symmetric (relative_asymmetry <= SYMMETRY_TOLERANCE per term, checked once;
+    symmetric_known: vouched), so the factors skip the per-frequency check. Callers never modify indptr / indices (or
+    the term arrays) in place: factors match the pattern by identity."""
+
+    lower_stored = False
+
+    def __init__(self, indptr, indices, term_values, symmetric=False, symmetric_known=False):
+        self.indptr, self.indices = np.asarray(indptr), np.asarray(indices)
+        self.n_rows = int(self.indptr.size) - 1
+        self.stored_terms = [np.asarray(values).reshape(-1) for values in term_values]
+        if any(term.size != self.indices.size for term in self.stored_terms):
+            raise ValueError(f'HostPencil: every term needs {self.indices.size} values (one per stored entry)')
+        self.symmetric = bool(symmetric) and (bool(symmetric_known) or self._terms_symmetric())
+        self.host_bytes = sum(int(term.nbytes) for term in self.stored_terms)
+        self._host_rows = None   # int64 row per stored entry (slots; built on first use)
+
+    def _terms_symmetric(self) -> bool:
+        """Every term complex symmetric (transpose, not conjugate) on this pattern."""
+        import scipy.sparse
+        from .cudss_factor import SYMMETRY_TOLERANCE, relative_asymmetry
+        shape = (self.n_rows, self.n_rows)
+        return all(relative_asymmetry(scipy.sparse.csr_matrix((term, self.indices, self.indptr), shape=shape))
+                   <= SYMMETRY_TOLERANCE for term in self.stored_terms)
+
+    def combined(self, coefficients) -> np.ndarray:
+        """Host values of sum_k c_k X_k on the full pattern (a new array; complex128, float64 when every term and
+        coefficient is real)."""
+        if len(coefficients) != len(self.stored_terms):
+            raise ValueError(f'HostPencil: {len(coefficients)} coefficients for {len(self.stored_terms)} terms')
+        complex_values = any(term.dtype.kind == 'c' for term in self.stored_terms) or any(
+            isinstance(coefficient, complex) or np.iscomplexobj(coefficient) for coefficient in coefficients)
+        total = np.zeros(self.indices.size, dtype=np.complex128 if complex_values else np.float64)
+        for coefficient, term in zip(coefficients, self.stored_terms):
+            if coefficient != 0:
+                total += coefficient * term
+        return total
+
+    def slots(self, rows, columns):
+        """Host int64 positions of the entries (rows, columns) in the pattern (factorize_pencil(extra=): both triangles
+        of a symmetric block); None when an entry is not in the pattern."""
+        if self._host_rows is None:
+            self._host_rows = csr_rows(self.indptr)
+        return _pattern_slots(self._host_rows, self.indices, self.n_rows, rows, columns, False)
+
+    def full_values(self, values):
+        """Full-pattern values of stored-layout values: the same array (the full pattern is stored)."""
+        return values
+
+    def full_term(self, index):
+        """Values of term `index` on the full pattern (the kept array)."""
+        return self.stored_terms[index]
 
 
 def _superlu_factorization(host_csc, value_dtype=np.complex128, ordering=None) -> Factorization:
@@ -913,14 +976,25 @@ class SparseDirectSolver:
             return None
         return DevicePencil(indptr, indices, term_values, symmetric=symmetric, symmetric_known=symmetric_known)
 
+    def pencil(self, indptr, indices, term_values, symmetric=False, symmetric_known=False):
+        """Pencil of these terms for factorize_pencil: a HostPencil on a host direct back end (MUMPS / PARDISO, either
+        backend), a DevicePencil on a cuDSS back end (gpu backend), else None (the caller factorises host matrices by
+        factorize_host); symmetric_known skips the symmetry check."""
+        if self.back_end in HOST_DIRECT_BACK_ENDS:
+            return HostPencil(indptr, indices, term_values, symmetric=symmetric, symmetric_known=symmetric_known)
+        return self.device_pencil(indptr, indices, term_values, symmetric=symmetric, symmetric_known=symmetric_known)
+
     def factorize_pencil(self, pencil, coefficients, row_scale=None, previous=None, extra=None, defer_check=True):
         """CudssFactorization of sum_k c_k X_k (+ extra) of a DevicePencil (symmetric request = pencil.symmetric),
         counted, all on the device (CudssFactorization.refactorize_device_values: values, equilibration, lower-triangle
         take, no host CSR or asymmetry check): a previous factor of the same options is refreshed (checked by its first
         solve with defer_check: a CudssAccuracyError may come from solve; defer_check False probes now, for factors
-        read without a solve, e.g. inertia counts), else a new one is planned from the device values.
+        read without a solve, e.g. inertia counts), else a new one is planned from the device values. A HostPencil:
+        the HostDirectFactorization of the host values (_factorize_host_pencil, the same rules).
         extra: (pencil.slots positions, values) added to the combined values (E7-8: a port DtN block; symmetric with a
-        symmetric pencil, its lower entries only, as the caller vouches)."""
+        symmetric pencil, its lower entries only for a lower_stored one, as the caller vouches)."""
+        if isinstance(pencil, HostPencil):
+            return self._factorize_host_pencil(pencil, coefficients, row_scale, previous, extra, defer_check)
         import cupy as cp
         from .cudss_factor import CUDSS_REFUSALS, CudssFactorization
         start = time.perf_counter()
@@ -957,6 +1031,25 @@ class SparseDirectSolver:
         host = scipy.sparse.csr_matrix((cp.asnumpy(pencil.full_values(values)), pencil.indices, pencil.indptr),
                                        shape=(pencil.n_rows, pencil.n_rows))
         return self._counted(factorize_host(host, real=real, orderings=self.orderings), start)
+
+    def _factorize_host_pencil(self, pencil, coefficients, row_scale, previous, extra, defer_check):
+        """HostDirectFactorization of sum_k c_k X_k (+ extra) of a HostPencil, counted: a previous factor of the same
+        options refactorised on its analysis (refactorize_values: the pattern matched by identity, no canonicalising
+        copy, no asymmetry check: pencil.symmetric vouches; defer_check as factorize_pencil), else a new one."""
+        if self.back_end not in HOST_DIRECT_BACK_ENDS:
+            raise ValueError(f"{self.label()}: a HostPencil needs a host direct back end, got '{self.back_end}'")
+        start = time.perf_counter()
+        values = pencil.combined(coefficients)
+        if extra is not None:
+            positions, added = np.asarray(extra[0]), np.asarray(extra[1])
+            if added.dtype.kind == 'c' and values.dtype.kind != 'c':
+                values = values.astype(np.complex128)
+            values[positions] += added   # unique positions (one CSR entry each)
+        factor = host_direct_values_factorization(values, pencil.indptr, pencil.indices, self.back_end,
+                                                  previous=previous, real=values.dtype.kind != 'c',
+                                                  symmetric=pencil.symmetric, row_scale=row_scale,
+                                                  symmetric_known=pencil.symmetric, defer_check=defer_check)
+        return self._counted(factor, start)
 
     def factorize_device_csr(self, operator, real=False, symmetric=False, positive_definite=False, previous=None):
         """CudssFactorization of a cupyx CSR (cuDSS back ends) without a host copy of its values (H1), counted: the
@@ -1158,14 +1251,14 @@ class DiffusionDirectSolver(ExactSolveRecord):
             return
         self._factorize_superlu(operator if on_host else operator.get())
 
-    def factorize_host_operator(self, host_operator, symmetric_known=False) -> None:
+    def factorize_host_operator(self, host_operator, symmetric_known=False, defer_check=False) -> None:
         """factorize of a host scipy operator on either backend, no device copy made: cuDSS and the host direct back
         ends take it as it is (symmetric_known: a canonical symmetric CSR, the canonicalising copy and asymmetry check
-        skipped), else SuperLU."""
+        skipped; host direct: its values refresh the kept analysis, defer_check as refactorize_values), else SuperLU."""
         back_end = self.runtime.back_end
         self._refuse_cusolver_qr(back_end)
         if back_end in HOST_DIRECT_BACK_ENDS:
-            self._factorize_host_direct(host_operator, symmetric_known=symmetric_known)
+            self._factorize_host_direct(host_operator, symmetric_known=symmetric_known, defer_check=defer_check)
             return
         if back_end in CUDSS_BACK_ENDS:
             from .cudss_factor import CUDSS_REFUSALS
@@ -1181,11 +1274,11 @@ class DiffusionDirectSolver(ExactSolveRecord):
                     raise
         self._factorize_superlu(host_operator)
 
-    def factorize_device_values(self, values, indptr, indices) -> None:
+    def factorize_device_values(self, values, indptr, indices, defer_check=False) -> None:
         """factorize of a canonical symmetric CSR given as device values (cupy (nnz,)) on the host pattern (indptr,
         indices) (gpu backend, plan G5): cuDSS refreshes a factor of the same options on the device
-        (CudssFactorization.refactorize_device_values: no host CSR once planned on that pattern), else plans a new one
-        from the device values; SuperLU factorises a host copy."""
+        (CudssFactorization.refactorize_device_values: no host CSR once planned on that pattern; defer_check: the next
+        solve checks it), else plans a new one from the device values; SuperLU factorises a host copy."""
         import cupy as cp
         import scipy.sparse
         from .cudss_factor import CudssFactorization
@@ -1199,7 +1292,7 @@ class DiffusionDirectSolver(ExactSolveRecord):
             try:
                 if (isinstance(previous, CudssFactorization) and previous.valid and previous.n_unknowns == n_rows
                         and previous.can_refactorize(True, precision, positive_definite=True)):
-                    previous.refactorize_device_values(values, indptr, indices)
+                    previous.refactorize_device_values(values, indptr, indices, defer_check=defer_check)
                     factor = previous
                 else:
                     if isinstance(previous, CudssFactorization):
@@ -1213,7 +1306,7 @@ class DiffusionDirectSolver(ExactSolveRecord):
                 if not self.runtime.fall_back(error, n_rows):
                     raise
         host_operator = scipy.sparse.csr_matrix((cp.asnumpy(values), indices, indptr), shape=(n_rows, n_rows))
-        self.factorize_host_operator(host_operator, symmetric_known=True)
+        self.factorize_host_operator(host_operator, symmetric_known=True, defer_check=defer_check)
 
     def _factorize_superlu(self, host_operator) -> None:
         """Host SuperLU of a host scipy operator, counted on the runtime: the runtime's kept order of this pattern,
@@ -1238,18 +1331,24 @@ class DiffusionDirectSolver(ExactSolveRecord):
         self._factor = self.runtime._counted(factor, start)
         self._host_operator = host_csr if self.compute_residual else None
 
-    def _factorize_host_direct(self, host_operator, symmetric_known=False) -> None:
+    def _factorize_host_direct(self, host_operator, symmetric_known=False, defer_check=False) -> None:
         """MUMPS / PARDISO factor of a host scipy operator (real, positive_definite: PARDISO Cholesky, MUMPS LDL^T),
-        counted on the runtime; the previous host direct factor refactorised on its kept analysis. The SuperLU size
-        rule applies (SPLU_LIMIT_UNKNOWNS); refusals raise (no fallback)."""
+        counted on the runtime; the previous host direct factor refactorised on its kept analysis (symmetric_known: by
+        its values on the identity-matched pattern, defer_check). SPLU_LIMIT_UNKNOWNS applies; refusals raise."""
         back_end = self.runtime.back_end
         n_unknowns = int(host_operator.shape[0])
         if n_unknowns > SPLU_LIMIT_UNKNOWNS:   # validation's diffusion_size_issue refuses 3D earlier
             raise ValueError(f'{self.label()}: {diffusion_size_issue(n_unknowns, back_end=back_end)[1]}')
         start = time.perf_counter()
         previous = self._factor if is_host_direct_factor(self._factor) else None
-        factor = host_direct_factorization(host_operator, back_end, previous=previous, real=True,
-                                           positive_definite=True, symmetric_known=symmetric_known)
+        if symmetric_known:   # a canonical symmetric CSR (FEM Newton tangents): no copy, compare or asymmetry check
+            csr = host_operator.tocsr()
+            factor = host_direct_values_factorization(csr.data, csr.indptr, csr.indices, back_end, previous=previous,
+                                                      real=True, symmetric_known=True, defer_check=defer_check,
+                                                      positive_definite=True)
+        else:
+            factor = host_direct_factorization(host_operator, back_end, previous=previous, real=True,
+                                               positive_definite=True)
         factor.host_arrays = True
         self._factor = self.runtime._counted(factor, start)
         self._host_operator = host_operator.tocsr() if self.compute_residual else None

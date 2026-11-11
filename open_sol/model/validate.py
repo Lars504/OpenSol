@@ -37,7 +37,7 @@ from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DER
                      PRECISIONS, SELECTION_KINDS, SOURCE_DERIVED_OPERATIONS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                      SOLVER_ROLES, Issue, ValidationContext, check_value,
                      conformal_boundaries_physics, coupling_role_text, coupling_type_accepts, coupling_writes,
-                     default_precision_ignored, effective_coupling_every, with_default_precision,
+                     default_precision_ignored, effective_coupling_every, with_default_precision, with_node_precision,
                      feature_precision_misfit, fill_defaults, get_registry, memory_check_level,
                      output_field_names, param_visible, short_repr, solver_backend, solver_grid, solver_misfit,
                      state_field_names,
@@ -1595,8 +1595,8 @@ class _Validator:
                 continue
             if solver_role is not None:   # the default precision applies per role (schema.resolved_solvers)
                 settings = self.spec.solver(node_name).settings
-                role_values = self.vctx.values(solver_type.params,
-                                               with_default_precision(self.spec, solver_type, settings, solver_role))
+                role_values = self.vctx.values(solver_type.params, with_node_precision(
+                    self.spec, solver_type, settings, solver_role, backend, solver_grid(self.spec, physics)))
                 values = values if role_values is None else role_values
             misfit = solver_misfit(solver_type, values, physics_type, role, study, backend,
                                    solver_grid(self.spec, physics))

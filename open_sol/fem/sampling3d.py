@@ -94,7 +94,7 @@ def evaluate_lagrange_3d(dofs, coefficients, elements, reference, gradients=True
     found = np.flatnonzero(elements >= 0)
     if found.size == 0:
         return values, point_gradients
-    basis, reference_gradients = lagrange_basis_3d(dofs.order, reference[found])   # (p, n), (p, n, 3)
+    basis, reference_gradients = lagrange_basis_3d(dofs.order, reference[found], gradients)   # (p, n), (p, n, 3)
     local = coefficients[dofs.element_dofs[elements[found]]]   # (p, n)
     values[found] = np.einsum('pn,pn->p', local, basis)
     if gradients:
@@ -106,7 +106,7 @@ def evaluate_lagrange_3d(dofs, coefficients, elements, reference, gradients=True
 def centroid_values_3d(dofs, coefficients, elements=None) -> np.ndarray:
     """(m,) Lagrange field values at element reference centroids (all elements by default): the per-element state of
     D12, no point location needed."""
-    basis, _ = lagrange_basis_3d(dofs.order, np.full((1, 3), 0.25))
+    basis, _ = lagrange_basis_3d(dofs.order, np.full((1, 3), 0.25), gradients=False)
     local = dofs.element_dofs if elements is None else dofs.element_dofs[elements]
     return np.asarray(coefficients)[local] @ basis[0]
 

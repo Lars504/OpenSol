@@ -19,6 +19,11 @@ LOCAL_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
 LOCAL_FACES = ((1, 2, 3), (0, 2, 3), (0, 1, 3), (0, 1, 2))   # face k opposite local node k, nodes ascending
 LAGRANGE_COUNTS_3D = {0: 1, 1: 4, 2: 10}
 NEDELEC_COUNTS_3D = {1: 6, 2: 20}
+# lagrange_basis_3d memoises point sets up to LAGRANGE_MEMO_POINTS points (rules, local dof points, centroids, probes),
+# the latest LAGRANGE_MEMO_ENTRIES of them; larger sets (located samples) are computed per call
+LAGRANGE_MEMO_POINTS = 1024
+LAGRANGE_MEMO_ENTRIES = 256
+_LAGRANGE_MEMO = {}   # (order, shape, point bytes) -> read-only (values, gradients); insertion order = recency
 
 
 def barycentric_3d(points) -> np.ndarray:
@@ -27,27 +32,53 @@ def barycentric_3d(points) -> np.ndarray:
     return np.concatenate([1.0 - points.sum(axis=-1, keepdims=True), points], axis=-1)
 
 
-def lagrange_basis_3d(order, points) -> tuple:
-    """(values (..., n), reference gradients (..., n, 3)) of the P0 / P1 / P2 basis at reference points (..., 3); P2
-    local nodes: corners, then 4 + e = midpoint of LOCAL_EDGES[e]; P0 = the element indicator."""
+def lagrange_basis_3d(order, points, gradients=True) -> tuple:
+    """(values (..., n), reference gradients (..., n, 3); None with gradients False) of the P0 / P1 / P2 basis at
+    reference points (..., 3); P2 local nodes: corners, then 4 + e = midpoint of LOCAL_EDGES[e]; P0 = the element
+    indicator. Sets up to LAGRANGE_MEMO_POINTS points are memoised and returned READ-ONLY."""
+    # the memo lookup and the formulas stay in this one function: a memo hit still runs (and traces) this code unit
+    points = np.asarray(points, dtype=np.float64)
+    want_gradients = bool(gradients)
+    key = None
+    if points.size <= 3 * LAGRANGE_MEMO_POINTS:
+        key = (order, points.shape, points.tobytes(), want_gradients)
+        found = _LAGRANGE_MEMO.pop(key, None)
+        if found is not None:
+            _LAGRANGE_MEMO[key] = found   # most recent last
+            return found
     bary = barycentric_3d(points)
     lead = bary.shape[:-1]
+    gradients_l = np.broadcast_to(REFERENCE_GRADIENTS_3D, lead + (4, 3)) if want_gradients else None
+    basis_gradients = None
     if order == 0:
-        return np.ones(lead + (1,)), np.zeros(lead + (1, 3))
-    gradients_l = np.broadcast_to(REFERENCE_GRADIENTS_3D, lead + (4, 3))
-    if order == 1:
-        return bary, np.array(gradients_l)
-    if order != 2:
+        values = np.ones(lead + (1,))
+        if want_gradients:
+            basis_gradients = np.zeros(lead + (1, 3))
+    elif order == 1:
+        values = bary
+        if want_gradients:
+            basis_gradients = np.array(gradients_l)
+    elif order == 2:
+        values = np.empty(lead + (10,))
+        values[..., :4] = bary * (2.0 * bary - 1.0)
+        for edge, (a, b) in enumerate(LOCAL_EDGES):
+            values[..., 4 + edge] = 4.0 * bary[..., a] * bary[..., b]
+        if want_gradients:
+            basis_gradients = np.empty(lead + (10, 3))
+            basis_gradients[..., :4, :] = (4.0 * bary - 1.0)[..., None] * gradients_l
+            for edge, (a, b) in enumerate(LOCAL_EDGES):
+                basis_gradients[..., 4 + edge, :] = 4.0 * (bary[..., b, None] * REFERENCE_GRADIENTS_3D[a]
+                                                           + bary[..., a, None] * REFERENCE_GRADIENTS_3D[b])
+    else:
         raise ValueError(f'lagrange_basis_3d: order must be 0, 1 or 2, got {order!r}')
-    values = np.empty(lead + (10,))
-    gradients = np.empty(lead + (10, 3))
-    values[..., :4] = bary * (2.0 * bary - 1.0)
-    gradients[..., :4, :] = (4.0 * bary - 1.0)[..., None] * gradients_l
-    for edge, (a, b) in enumerate(LOCAL_EDGES):
-        values[..., 4 + edge] = 4.0 * bary[..., a] * bary[..., b]
-        gradients[..., 4 + edge, :] = 4.0 * (bary[..., b, None] * REFERENCE_GRADIENTS_3D[a]
-                                             + bary[..., a, None] * REFERENCE_GRADIENTS_3D[b])
-    return values, gradients
+    if key is not None:
+        values.flags.writeable = False
+        if basis_gradients is not None:
+            basis_gradients.flags.writeable = False
+        _LAGRANGE_MEMO[key] = (values, basis_gradients)
+        if len(_LAGRANGE_MEMO) > LAGRANGE_MEMO_ENTRIES:
+            del _LAGRANGE_MEMO[next(iter(_LAGRANGE_MEMO))]
+    return values, basis_gradients
 
 
 def _whitney(bary, a, b):

@@ -53,6 +53,9 @@ class SolverRole:
     # of pressure_acoustics / membrane: cudss_mixed; an 'eigen' role: a factorization of setting_choices['factorization']);
     # other grids, the cpu or no nvmath keep 'auto' (host SuperLU)
     auto_back_ends: dict = field(default_factory=dict)
+    # pcg preconditioner values the role runs at precision 'mixed' (solver_misfit; solid_mechanics_3d: its own
+    # matrix-free multigrid too)
+    mixed_preconditioners: tuple = ('jacobi',)
 
     def automatic(self, backend='gpu', grid='tensor') -> tuple:
         """(SolverType name, settings dict) Automatic resolves to on the backend and grid kind."""
@@ -197,6 +200,11 @@ def solver_misfit(solver_type, values, physics_type, role, study, backend, grid=
     precision = resolved_precision(solver_type, values)
     if precision not in solver_type.precisions or precision not in solver_role.precisions:
         return f'{physics_label} cannot run its {SOLVER_ROLES[role].lower()} in {PRECISIONS[precision]}'
+    if (precision == 'mixed' and 'preconditioner' in values
+            and values['preconditioner'] not in solver_role.mixed_preconditioners):
+        return (f"{physics_label} cannot use {solver_type.label} with preconditioner '{values['preconditioner']}' at "
+                'mixed precision (the float32 copy of its operator runs with Jacobi only; set precision double or '
+                'single)')
     for name, accepted in solver_role.setting_choices.items():
         if name in values and values[name] not in accepted:
             return (f"{physics_label} cannot use {solver_type.label} with {name} '{values[name]}' (accepts "

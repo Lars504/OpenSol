@@ -354,16 +354,17 @@ def build_session(spec, emit, on_session=None, build=None, registry=None, live_p
     return session, None
 
 
-def release_session(on_session=None, session=None, emit=None, baseline_bytes=None):
-    """on_session(None), session.close(), then free cupy's pools (GPU thread); with emit, pool use above the baseline
-    (baseline_bytes, else session.pool_baseline_bytes) is logged as a leak. Returns the pool's used bytes after."""
+def release_session(on_session=None, session=None, emit=None, baseline_bytes=None, collect_garbage=True):
+    """on_session(None), session.close(), then free cupy's pools (GPU thread; collect_garbage: gc.collect first); with
+    emit, pool use above the baseline (baseline_bytes, else session.pool_baseline_bytes) is logged as a leak. Returns
+    the pool's used bytes after."""
     if baseline_bytes is None and session is not None:
         baseline_bytes = session.pool_baseline_bytes
     if on_session is not None:
         on_session(None)
     if session is not None:
         session.close()
-    gpu_memory.release_all()
+    gpu_memory.release_all(collect_garbage=collect_garbage)
     used_bytes = gpu_memory.pool_used_bytes()
     if emit is not None and baseline_bytes is not None:
         residual_bytes = used_bytes - baseline_bytes
@@ -377,7 +378,9 @@ def release_session(on_session=None, session=None, emit=None, baseline_bytes=Non
 
 def _run_single(spec, registry, build, emit, control, service, on_session):
     """Build and run one spec; summary dict, or None after a build failure (StudyFailed emitted)."""
-    release_session(on_session)
+    # the last close collected already: gc.collect (25 ms) only while device arrays or cuDSS solvers are still live
+    release_session(on_session, collect_garbage=gpu_memory.pool_used_bytes() > 0
+                    or cudss_factor.external_live_bytes() > 0)
     session, failure = build_session(spec, emit, on_session, build=build, registry=registry)
     if failure is not None:
         emit(StudyFailed(f'build failed: {failure.message}', failure.traceback,

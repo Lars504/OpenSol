@@ -106,7 +106,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                  bending_moment_x: float = 0.0, bending_moment_y: float = 0.0, stress_stiffening: bool = False,
                  free_body=None, azimuthal_order: int = 0, pml_faces=(), pml_reflection: float = DEFAULT_PML_REFLECTION,
                  geometric_nonlinearity: bool = False, load_steps: int = 1, nonlinear_tolerance: float = 1e-8,
-                 nonlinear_max_iterations: int = 25, tangent_update: str = 'every_iteration'):
+                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow'):
         # K_sigma of the static state in every pencil (new_modules_plan K2); free rigid motions allowed (None: target > 0)
         self.stress_stiffening = bool(stress_stiffening)
         self._free_body = None if free_body is None else bool(free_body)
@@ -1455,12 +1455,14 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
 
 class SolidFEMRenderer(SolidRenderer):
     """SolidRenderer of a SolidMechanicsFEMPhysics: fem_field (Session on triangle meshes) and per-window-element
-    device_field values."""
+    device_field values. No om_integrand (the BOR coupling table has none), so default snapshots do not store it."""
+
+    def __init__(self, physics):
+        super().__init__(physics)
+        self.field_infos = {name: info for name, info in self.field_infos.items() if name != 'om_integrand'}
 
     def device_field(self, component: str):
         self.field_info(component)
-        if component == 'om_integrand':
-            raise ValueError("field 'om_integrand' exists only in the optomechanics study (tensor meshes)")
         return self.physics.window_field(component)
 
     def fem_field(self, component: str):

@@ -1,10 +1,12 @@
 """'pcg' LinearSolver runtime: preconditioned CG on an assembled CSR or matrix-free operator, device-side scalars, the
 residual read on the host every check_interval iterations; 'mixed' = float32 CG corrections (a float32 CSR copy, or
 the caller's float32 matrix-free callbacks) refined against the float64 residual. Backend 'gpu' (cupy / cupyx CSR,
-fused kernels built lazily) or 'cpu' (numpy / scipy CSR, the numpy twins of the kernels, BLAS axpy and scipy's CSR
-kernel into preallocated vectors); cupy and scipy only inside functions."""
+fused kernels built lazily, opt-in CUDA graphs of whole check blocks) or 'cpu' (numpy / scipy CSR, the numpy twins of
+the kernels, BLAS axpy and scipy's CSR kernel into preallocated vectors, numba loops on short vectors); cupy and scipy
+only inside functions."""
 import math
 import time
+import warnings
 
 import numpy as np
 
@@ -45,8 +47,19 @@ MIXED_REFINEMENTS_GUESS = 3
 STOP_REFERENCES = ('rhs', 'initial_residual')
 ROUNDOFF_FLOOR_EPSILONS = 16           # 'initial_residual' never asks for less than this x eps(dtype) x ||b||
 
+# gpu, callers opting in (factorize capture_blocks): each full check block (no host sync inside: alpha / beta / rho are
+# device scalars, every launch a RawKernel or cupy kernel) runs once eagerly per (operator, solution, length), then as
+# one captured CUDA graph (speed plan A3: 8 launches of ~12 us per block-Jacobi iteration were the whole iteration at
+# 6e3 nodes). Graphs hold the callbacks' array pointers: the caller drops them (release_block_graphs) whenever those
+# arrays change; factorize drops them too.
+CG_BLOCK_GRAPHS = True       # False: launch every block eagerly
+MAX_BLOCK_GRAPHS = 4         # kept graphs; a further key clears them
+
 _KERNELS = {}
 _HOST_AXPY = {}   # dtype -> scipy BLAS axpy of the cpu backend (fetched on first use)
+# cpu: below this length dots and axpys run as serial numba loops (when numba imports): threaded BLAS spent ~20 us per
+# call on 1.7e4-long vectors (solid_mechanics_3d profile, 1.35 s of 6.35 s), its thread start-up, not the arithmetic
+HOST_SMALL_VECTOR_LIMIT = 100_000
 
 # gpu reductions to one scalar: a cp.ReductionKernel runs those on ONE thread block (RTX 3050: 25 GB/s float64 against
 # ~200 GB/s, 636 vs 84 us at 1e6 values), so the CG dots are two launches instead: a grid-stride kernel writing one
@@ -326,7 +339,40 @@ def _device_update_solution_jacobi_dot(direction, product, rho, direction_dot_pr
                                                                 inverse_diagonal, solution, residual, out)
 
 
+def _small_dot_numba(numba):
+    @numba.njit(cache=True)
+    def dot(a, b):
+        total = 0.0
+        for index in range(a.size):
+            total += a[index] * b[index]
+        return total
+    return dot
+
+
+def _small_axpy_numba(numba):
+    @numba.njit(cache=True)
+    def axpy(alpha, x, y):
+        for index in range(y.size):
+            y[index] += alpha * x[index]
+    return axpy
+
+
+def _host_small(name, a, b):
+    """The short-vector twin 'dot' / 'axpy' (core.kernels.host_twin: a serial numba loop, the BLAS form without numba)
+    for C-contiguous host vectors a, b shorter than HOST_SMALL_VECTOR_LIMIT, else its BLAS form."""
+    blas, factory = _HOST_SMALL[name]
+    if a.size >= HOST_SMALL_VECTOR_LIMIT or not (a.flags.c_contiguous and b.flags.c_contiguous):
+        return blas
+    from ..core.kernels import host_twin
+    return host_twin(f'pcg.small_{name}', blas, factory)
+
+
 def _host_axpy(alpha, x, y):
+    """y += alpha x in place: a serial numba loop on short vectors, else BLAS axpy."""
+    _host_small('axpy', x, y)(float(alpha), x, y)
+
+
+def _blas_axpy(alpha, x, y):
     """y += alpha x in place by BLAS axpy (one pass, no temporary; scipy imported on first use)."""
     axpy = _HOST_AXPY.get(y.dtype)
     if axpy is None:
@@ -347,8 +393,12 @@ def host_csr_matvec():
     return getattr(_sparsetools, 'csr_matvec', None)
 
 
+# name -> (BLAS form, numba factory) of the short-vector twins (_host_small)
+_HOST_SMALL = {'dot': (np.dot, _small_dot_numba), 'axpy': (_blas_axpy, _small_axpy_numba)}
+
+
 def _host_vector_dot(a, b, out=None):
-    total = np.dot(a, b)
+    total = _host_small('dot', a, b)(a, b)
     if out is None:
         return total
     out[...] = total
@@ -428,12 +478,13 @@ def resolve_max_iterations(max_iterations, domain) -> int:
                                    for window, count in zip(domain.physical_window(), domain.materials.shape)))
 
 
-def workspace_bytes(n_unknowns, precision, jacobi=True, csr_entries=0) -> int:
+def workspace_bytes(n_unknowns, precision, jacobi=True, csr_entries=0, fused=False) -> int:
     """Device bytes of the PCGSolver workspace (residual, direction, product (matrix-free workspace, the gpu CSR
-    operator's or the cpu workspace's), + preconditioned unless Jacobi); mixed: those in float32 plus the float64 residual and product, float32
-    correction, (Jacobi) inverse diagonal and the float32 copy of the csr_entries operator values. No solution vector;
-    a matrix-free mixed caller counts its own float32 operator copy."""
-    n_vectors = 3 + int(not jacobi)
+    operator's or the cpu workspace's), + preconditioned unless Jacobi, + the second direction of a fused iteration);
+    mixed: those in float32 plus the float64 residual and product, float32 correction, (Jacobi) inverse diagonal and the
+    float32 copy of the csr_entries operator values. No solution vector; a matrix-free mixed caller counts its own
+    float32 operator copy (and a fused caller its partial sums)."""
+    n_vectors = 3 + int(not jacobi) + int(fused)
     if precision == 'mixed':
         return (n_vectors * int(n_unknowns) * 4 + 3 * 4
                 + (8 + 8 + 4 + 4 * int(jacobi)) * int(n_unknowns) + 4 * int(csr_entries))
@@ -524,7 +575,7 @@ class _JacobiPreconditioner:
     def start(self, residual, rho, direction, workspace):
         if self.backend == 'cpu':
             np.multiply(self.inverse_diagonal, residual, out=direction)
-            rho[...] = np.dot(residual, direction)
+            _host_vector_dot(residual, direction, out=rho)
             return
         _kernels(self.backend)['jacobi_residual_dot'](residual, self.inverse_diagonal, out=rho)
         _array_module(self.backend).multiply(self.inverse_diagonal, residual, out=direction)
@@ -534,7 +585,7 @@ class _JacobiPreconditioner:
         if self.backend == 'cpu':
             _host_update_solution(direction, product, rho_old, direction_dot_product, solution, residual)
             preconditioned = np.multiply(self.inverse_diagonal, residual, out=workspace.product)
-            rho_new[...] = np.dot(residual, preconditioned)
+            _host_vector_dot(residual, preconditioned, out=rho_new)
             _host_update_direction(preconditioned, rho_new, rho_old, direction)
             return
         kernels = _kernels(self.backend)
@@ -568,23 +619,81 @@ class _CallbackPreconditioner:
 
 class PCGWorkspace:
     """Preallocated CG vectors of one system size and dtype (product: matrix-free or cpu (CSR product, Jacobi z);
-    preconditioned unless Jacobi) and the three device scalars."""
+    preconditioned unless Jacobi; next_direction: a fused iteration's second direction) and the three device
+    scalars."""
 
-    __slots__ = ('n_unknowns', 'dtype', 'residual', 'direction', 'product', 'preconditioned', 'scalars')
+    __slots__ = ('n_unknowns', 'dtype', 'residual', 'direction', 'next_direction', 'product', 'preconditioned',
+                 'scalars')
 
-    def __init__(self, n_unknowns, dtype, matrix_free, jacobi, backend='gpu'):
+    def __init__(self, n_unknowns, dtype, matrix_free, jacobi, backend='gpu', fused=False):
         cp = _array_module(backend)
         self.n_unknowns = int(n_unknowns)
         self.dtype = np.dtype(dtype)
         self.residual = cp.zeros(self.n_unknowns, dtype=self.dtype)
         self.direction = cp.zeros(self.n_unknowns, dtype=self.dtype)
+        self.next_direction = cp.zeros(self.n_unknowns, dtype=self.dtype) if fused else None
         self.product = cp.zeros(self.n_unknowns, dtype=self.dtype) if matrix_free or backend == 'cpu' else None
         self.preconditioned = None if jacobi else cp.zeros(self.n_unknowns, dtype=self.dtype)
         self.scalars = tuple(cp.zeros((), dtype=self.dtype) for _ in range(3))
 
-    def fits(self, n_unknowns, dtype, matrix_free, jacobi) -> bool:
+    def fits(self, n_unknowns, dtype, matrix_free, jacobi, fused=False) -> bool:
         return (self.n_unknowns == n_unknowns and self.dtype == np.dtype(dtype)
-                and (self.product is not None or not matrix_free) and (self.preconditioned is not None or jacobi))
+                and (self.product is not None or not matrix_free) and (self.preconditioned is not None or jacobi)
+                and (self.next_direction is not None or not fused))
+
+
+class _BlockGraphs:
+    """gpu CUDA graphs of whole CG check blocks (CG_BLOCK_GRAPHS): per key one eager run (kernels loaded), then one
+    capture, replayed as a single launch; a failed capture warns and keeps every block eager."""
+
+    def __init__(self):
+        import cupy as cp
+        self._cp = cp
+        self.enabled = CG_BLOCK_GRAPHS
+        self._graphs = {}   # key -> captured graph, or None after the eager run
+        self.n_graphs = 0   # captures made
+
+    def clear(self):
+        self._graphs.clear()
+
+    def run(self, key, block):
+        """block(): the block's launches (no host sync, no allocation); eagerly, or replayed from its graph."""
+        if not self.enabled:
+            block()
+            return
+        if key not in self._graphs:
+            if len(self._graphs) >= MAX_BLOCK_GRAPHS:
+                self._graphs.clear()
+            self._graphs[key] = None
+            block()
+            return
+        graph = self._graphs[key]
+        if graph is None:
+            graph = self._capture(block)
+            if graph is None:
+                block()
+                return
+            self._graphs[key] = graph
+        graph.launch(self._cp.cuda.get_current_stream())
+
+    def _capture(self, block):
+        """CUDA graph of block() (None, with a warning and eager blocks from now on, when capture fails)."""
+        stream = self._cp.cuda.Stream(non_blocking=True)
+        try:
+            with stream:
+                stream.begin_capture()
+                try:
+                    block()
+                finally:
+                    graph = stream.end_capture()
+        except Exception as error:   # capture unsupported here: the same kernels launched one by one
+            self.enabled = False
+            self._graphs.clear()
+            warnings.warn(f'pcg: CUDA graph capture of a CG block failed ({type(error).__name__}: {error}); '
+                          'launching its kernels one by one from now on', RuntimeWarning, stacklevel=4)
+            return None
+        self.n_graphs += 1
+        return graph
 
 
 # --- runtime object -----------------------------------------------------------------------------------------------
@@ -607,8 +716,15 @@ class _MixedWorkspace:
 
 
 # 'jacobi': the physics' diagonal (block) preconditioner; 'multigrid': solvers.multigrid V-cycles built from an
-# assembled scalar CSR operator (DiffusionSystem; not mixed, not matrix-free, not a block preconditioner)
+# assembled scalar CSR operator (DiffusionSystem; not mixed, not a block preconditioner), or a matrix-free caller's own
+# V-cycle callback (ElasticSystem3D: physics.mechanics.multigrid3d; mixed too)
 PRECONDITIONERS = ('jacobi', 'multigrid')
+# fused_iteration protocol (factorize; ElasticSystem3D: kernels3d.FusedBrickIteration), device scalars as 0-d arrays,
+# no host sync and no allocation (CUDA graph capture): start(residual, preconditioned, direction, product, scratch,
+# rho): z = M^-1 r, rho = r . z, direction = z, product = A direction; step(solution, residual, preconditioned,
+# direction, next_direction, product, rho, rho_next): alpha = rho / (p . q of the last product), x += alpha p, r -=
+# alpha q, z = M^-1 r, rho_next = r . z, next_direction = z + (rho_next / rho) direction, product = A next_direction
+FUSED_ITERATION_PROTOCOL = ('start', 'step')
 
 
 class PCGSolver:
@@ -623,10 +739,8 @@ class PCGSolver:
             raise ValueError(f"precision must be one of {', '.join(PRECISION_DTYPES)}, got {precision!r}")
         if preconditioner not in PRECONDITIONERS:
             raise ValueError(f"preconditioner must be one of {', '.join(PRECONDITIONERS)}, got {preconditioner!r}")
-        if preconditioner == 'multigrid' and precision == 'mixed':
-            raise ValueError("the multigrid preconditioner needs precision 'single' or 'double' (mixed iterates on "
-                             'a Jacobi float32 operator copy)')
-        self.preconditioner = preconditioner
+        self.preconditioner = preconditioner   # mixed + multigrid: only a matrix-free caller's own V-cycle (_factorize)
+        self.preconditioner_counters = None   # () -> dict: a caller-built preconditioner's work (multigrid3d levels)
         self._multigrid = None              # multigrid: solvers.multigrid.MultigridPreconditioner, built on factorize
         if not tolerance > 0.0 or int(max_iterations) < 1:
             raise ValueError(f'need tolerance > 0 and max_iterations >= 1, got tolerance={tolerance}, '
@@ -645,6 +759,8 @@ class PCGSolver:
         self._workspace = None
         self._inner_operator = None         # mixed: float32 CSR sharing the operator's indices
         self._mixed = None                  # mixed: _MixedWorkspace
+        self._fused = None                  # the caller's fused_iteration of the CG loop (mixed: the float32 one)
+        self._block_graphs = None           # gpu, capture_blocks: _BlockGraphs
         self.n_solves = 0
         self.last_iters = 0
         self.total_iters = 0
@@ -659,20 +775,40 @@ class PCGSolver:
         self.total_solve_seconds = 0.0      # host wall time: a solve ends in a residual read-back (synced)
 
     def factorize(self, operator, preconditioner=None, n_unknowns=None, single_operator=None,
-                  single_preconditioner=None) -> None:
+                  single_preconditioner=None, fused_iteration=None, single_fused_iteration=None,
+                  capture_blocks=False) -> None:
         """Bind a CSR operator of the backend (cupyx / scipy) or a matrix-free apply(vector, out) (then n_unknowns
         required); preconditioner None (Jacobi from the CSR diagonal), an inverse diagonal or precondition(residual, out).
-        Mixed matrix-free: single_operator / single_preconditioner = their float32 twins for the inner CG."""
+        Mixed matrix-free: single_operator / single_preconditioner = their float32 twins for the inner CG.
+        fused_iteration (single_: the mixed inner one): an object whose start / step run the whole CG iteration of the
+        matrix-free operator and callback preconditioner in a few fused launches (FUSED_ITERATION_PROTOCOL).
+        capture_blocks: gpu check blocks replayed as CUDA graphs (the caller calls release_block_graphs whenever the
+        arrays its callbacks read are replaced)."""
         start = time.perf_counter()
-        self._factorize(operator, preconditioner, n_unknowns, single_operator, single_preconditioner)
+        self._fused = None
+        self._factorize(operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
+                        single_fused_iteration)
+        self._block_graphs = _BlockGraphs() if capture_blocks and self.backend == 'gpu' else None
         self.total_factorize_seconds += time.perf_counter() - start
         self.n_factorizations += 1
 
-    def _factorize(self, operator, preconditioner, n_unknowns, single_operator, single_preconditioner):
+    def release_block_graphs(self) -> None:
+        """Drop the captured CG blocks (they hold the pointers of the arrays the callbacks read at capture)."""
+        if self._block_graphs is not None:
+            self._block_graphs.clear()
+
+    def _factorize(self, operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
+                   single_fused_iteration):
         if not callable(operator):
             self._require_backend_array('operator', operator.data)
         if not (preconditioner is None or callable(preconditioner)):
             self._require_backend_array('inverse diagonal', preconditioner)
+        fused = single_fused_iteration if self.precision == 'mixed' else fused_iteration
+        if fused is not None and not (callable(operator) and callable(preconditioner)
+                                      or self.precision == 'mixed' and callable(operator)):
+            raise TypeError(f'{self.label()}: a fused iteration needs a matrix-free operator and a precondition '
+                            'callback')
+        self._fused = fused
         if self.precision == 'mixed':
             if callable(operator):
                 self._factorize_mixed_matrix_free(operator, n_unknowns, single_operator, single_preconditioner)
@@ -700,12 +836,16 @@ class PCGSolver:
                                  f'{self._operator.n_unknowns} values, got {preconditioner.dtype} {preconditioner.shape}')
             self._preconditioner = _JacobiPreconditioner(preconditioner, self.backend)
         shape_key = (self._operator.n_unknowns, self.dtype, self._operator.matrix_free, self._preconditioner.jacobi)
-        if self._workspace is None or not self._workspace.fits(*shape_key):
-            self._workspace = PCGWorkspace(*shape_key, backend=self.backend)
+        fused = self._fused is not None
+        if self._workspace is None or not self._workspace.fits(*shape_key, fused=fused):
+            self._workspace = PCGWorkspace(*shape_key, backend=self.backend, fused=fused)
 
     def _multigrid_preconditioner(self, operator, preconditioner):
         """precondition callback of the (re)built multigrid hierarchy of a CSR operator; the inverse diagonal a
-        DiffusionSystem passes is not needed (block preconditioners and matrix-free operators raise TypeError)."""
+        DiffusionSystem passes is not needed. A matrix-free operator brings its own multigrid callback
+        (ElasticSystem3D: multigrid3d), used as given; a block preconditioner of a CSR raises TypeError."""
+        if callable(operator) and callable(preconditioner):
+            return preconditioner
         if callable(operator) or callable(preconditioner):
             raise TypeError(f'{self.label()}: the multigrid preconditioner needs an assembled scalar CSR operator '
                             '(heat, electric_currents, electrostatics, magnetostatics), not a matrix-free operator '
@@ -732,6 +872,9 @@ class PCGSolver:
         from ..core.backend import sparse_module
         cp = _array_module(self.backend)
         sparse = sparse_module(self.backend)
+        if self.preconditioner == 'multigrid':
+            raise ValueError(f"{self.label()}: the multigrid preconditioner of a CSR operator needs precision 'single' "
+                             "or 'double' (mixed iterates on a Jacobi float32 operator copy)")
         if callable(inverse_diagonal):
             raise TypeError(f'{self.label()}: mixed precision on a CSR operator needs a Jacobi preconditioner (a block '
                             'preconditioner: single or double, or a matrix-free operator with float32 callbacks)')
@@ -765,8 +908,9 @@ class PCGSolver:
     def _bind_mixed_workspaces(self, n_unknowns, matrix_free, jacobi):
         """(Re)allocate the float32 inner workspace and the float64 outer vectors when their size or kinds changed."""
         shape_key = (n_unknowns, np.float32, matrix_free, jacobi)
-        if self._workspace is None or not self._workspace.fits(*shape_key):
-            self._workspace = PCGWorkspace(*shape_key, backend=self.backend)
+        fused = self._fused is not None
+        if self._workspace is None or not self._workspace.fits(*shape_key, fused=fused):
+            self._workspace = PCGWorkspace(*shape_key, backend=self.backend, fused=fused)
         if self._mixed is None or not self._mixed.fits(n_unknowns, matrix_free):
             self._mixed = _MixedWorkspace(n_unknowns, matrix_free, self.backend)
 
@@ -813,22 +957,30 @@ class PCGSolver:
         return converged, iterations, reference_norm
 
     def _cg_loop(self, operator, solution, threshold_squared, max_iterations):
-        """PCG from the residual already in the workspace until ||r||^2 <= threshold_squared; (converged, iterations)."""
+        """PCG from the residual already in the workspace until ||r||^2 <= threshold_squared; (converged, iterations).
+        Blocks of an even length start with the scalars (and fused directions) in their initial order, so a captured
+        block replays from any block start."""
         vector_dot = _kernels(self.backend)['vector_dot']
-        preconditioner, workspace = self._preconditioner, self._workspace
-        residual, direction = workspace.residual, workspace.direction
-        rho, rho_next, direction_dot_product = workspace.scalars
-        preconditioner.start(residual, rho, direction, workspace)
+        workspace = self._workspace
+        residual, scalars = workspace.residual, workspace.scalars
+        fused = self._fused
+        if fused is not None:   # z0, rho = r0 . z0, p0 = z0, q0 = A p0 (+ its p . q partials)
+            fused.start(residual, workspace.preconditioned, workspace.direction, workspace.product, scalars[1],
+                        scalars[0])
+        else:
+            self._preconditioner.start(residual, scalars[0], workspace.direction, workspace)
         interval = check_interval(self.preconditioner, self.backend)
-        iterations, converged = 0, False
+        graphs = self._block_graphs
+        iterations, converged, parity = 0, False, 0
         while not converged and iterations < max_iterations:
             n_block = min(interval, max_iterations - iterations)
-            for _ in range(n_block):
-                product = operator.product(direction, workspace.product)
-                vector_dot(direction, product, out=direction_dot_product)
-                # solution / residual update, rho_next = r . z, direction (Jacobi: one fused pass for the first two)
-                preconditioner.update(product, direction_dot_product, rho, rho_next, solution, workspace)
-                rho, rho_next = rho_next, rho
+            run_block = self._fused_block if fused is not None else self._plain_block
+            if graphs is not None and n_block % 2 == 0 and parity == 0:
+                graphs.run((id(operator), id(fused), solution.data.ptr, solution.size, n_block),
+                           lambda: run_block(operator, solution, n_block, 0))
+            else:
+                run_block(operator, solution, n_block, parity)
+            parity = (parity + n_block) % 2
             iterations += n_block
             residual_squared = float(vector_dot(residual, residual))
             if not math.isfinite(residual_squared):   # a collapsed preconditioner / NaN operator: stop now
@@ -836,6 +988,31 @@ class PCGSolver:
                 break
             converged = residual_squared <= threshold_squared
         return converged, iterations
+
+    def _plain_block(self, operator, solution, n_block, parity):
+        """n_block CG iterations: product, p . q, then the preconditioner's update (solution / residual, rho_next = r .
+        z, direction; Jacobi on the gpu: one fused pass for the first two); parity 1 starts with rho in scalars[1]."""
+        vector_dot = _kernels(self.backend)['vector_dot']
+        preconditioner, workspace = self._preconditioner, self._workspace
+        rho, rho_next, direction_dot_product = workspace.scalars
+        if parity:
+            rho, rho_next = rho_next, rho
+        for _ in range(n_block):
+            product = operator.product(workspace.direction, workspace.product)
+            vector_dot(workspace.direction, product, out=direction_dot_product)
+            preconditioner.update(product, direction_dot_product, rho, rho_next, solution, workspace)
+            rho, rho_next = rho_next, rho
+
+    def _fused_block(self, operator, solution, n_block, parity):
+        """n_block CG iterations of the caller's fused_iteration: step = x += alpha p, r -= alpha q, z = M^-1 r, rho_next
+        = r . z, then the next direction (the other direction buffer), its product and p . q; parity 1 starts from
+        scalars[1] / next_direction."""
+        workspace = self._workspace
+        directions, scalars = (workspace.direction, workspace.next_direction), workspace.scalars
+        for step in range(n_block):
+            current = (parity + step) % 2
+            self._fused.step(solution, workspace.residual, workspace.preconditioned, directions[current],
+                             directions[1 - current], workspace.product, scalars[current], scalars[1 - current])
 
     def _iterate_mixed(self, rhs, solution, reference):
         """Mixed: float64 residual r = b - A x, float32 PCG on A d = r / ||r|| (unit scale: float32 dots of small
@@ -921,6 +1098,8 @@ class PCGSolver:
             counters['refinements'] = self.total_refinements
         if self._multigrid is not None:
             counters.update(self._multigrid.work_counters())
+        if self.preconditioner_counters is not None:
+            counters.update(self.preconditioner_counters())
         return counters
 
 
@@ -981,9 +1160,12 @@ def time_estimate(values, work):
     else:   # gpu Jacobi: the update and r . z in one pass (+ the partial-sum launch), z fused into the direction update
         update = (te.elementwise(n_unknowns, 5, 2, item_bytes, launches=2),)
         precondition = (te.elementwise(n_unknowns, 3, 1, item_bytes),)
-    iteration = product + (te.Reduction(n_unknowns, item_bytes),) + update + precondition \
-        + ((1.0 / check_interval(values.get('preconditioner'), work.backend),
-            te.Reduction(n_unknowns, item_bytes, read_back=True)),)
+    iteration = product + (te.Reduction(n_unknowns, item_bytes),) + update + precondition
+    if work.iteration_ops:   # the physics' fused iteration (fused_iteration: product, dots, updates in its launches)
+        iteration = work.iteration_ops
+        start = work.iteration_ops
+    iteration = iteration + ((1.0 / check_interval(values.get('preconditioner'), work.backend),
+                              te.Reduction(n_unknowns, item_bytes, read_back=True)),)
     # ||b||^2 and ||r0||^2 read back, r0 = b - A x0, then the preconditioner start (the solve's first iteration
     # follows only when r0 is above the stop threshold: counted always, an upper bound)
     per_solve = product + (te.Reduction(n_unknowns, item_bytes, read_back=True),
@@ -1006,12 +1188,15 @@ def time_estimate(values, work):
         items.append(te.TimeItem('mixed CG refinements', 'refinement', solves * MIXED_REFINEMENTS_GUESS, 'guess',
                                  refinement, limit=solves * MIXED_MAX_REFINEMENTS, per_step=work.per_step,
                                  counter=work.counter('refinements'), seconds_counter=work.counter('solve_seconds')))
-    if multigrid:
+    if work.setup_ops:   # a caller-built preconditioner's setup (solid_mechanics_3d geometric multigrid)
+        setup = work.setup_ops
+    elif multigrid:
         from .multigrid import setup_ops
         setup = setup_ops(n_unknowns, work.nnz, item_bytes)
     else:
         setup = (te.elementwise(n_unknowns, 1, 1, item_bytes),)
+    count_name, seconds_name = work.setup_counters or ('factorizations', 'factorize_seconds')
     items.append(te.TimeItem('CG setup', 'setup', float(work.factorizations), work.factorizations_kind, setup,
-                             per_step=work.factor_per_step, counter=work.counter('factorizations'),
-                             seconds_counter=work.counter('factorize_seconds')))
+                             per_step=work.factor_per_step, counter=work.counter(count_name),
+                             seconds_counter=work.counter(seconds_name)))
     return te.TimeEstimate(tuple(items))

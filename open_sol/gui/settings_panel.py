@@ -29,7 +29,7 @@ from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE
                             SOURCE_DERIVED_OPERATIONS, SOLVER_ROLES, Param, coupling_type_accepts, feature_precision_note, fill_defaults,
                             instance_space, output_field_names, param_in_space,
                             memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
-                            with_default_precision)
+                            with_default_precision, with_node_precision)
 from ..model.meshing import PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR, line_block_hint, mesh_values
 from ..model.spec import AdaptationSpec, MeshAxisSpec, MeshBandSpec, MeshSegmentSpec, RefinementSpec, SweepSpec
 from ..physics.em.definition import DISPERSION_POLE_PARAMS
@@ -1970,7 +1970,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             entries.append((node.name, f'{node.name}  ({solver_type.label})'))
             tips[node.name] = solver_type.summary or solver_type.description
             settings = node.settings if isinstance(node.settings, dict) else {}
-            values = fill_defaults(solver_type.params, with_default_precision(spec, solver_type, settings, solver_role))
+            values = fill_defaults(solver_type.params,
+                                   with_node_precision(spec, solver_type, settings, solver_role, backend, grid))
             reason = (solver_misfit(solver_type, values, physics_type, role, spec.study.type, backend, grid)
                       if backend in ('gpu', 'cpu') else '')
             if reason:

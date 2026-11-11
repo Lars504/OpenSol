@@ -468,13 +468,17 @@ def _to_host(xp):
 def _orthogonalized(basis, vector, xp):
     """Classical Gram-Schmidt, twice, of a vector of the array module xp (cupy or numpy; in place) against the
     orthonormal rows of `basis`: (host coefficients, host norm of what is left) in one device-to-host read (B8: was one
-    .item() per row)."""
-    coefficients = xp.conj(basis @ xp.conj(vector))   # <b_i, v> without a conjugated copy of the basis
+    .item() per row). Real values skip the conjugations (identity there; each one a kernel launch and a copy)."""
+    complex_values = vector.dtype.kind == 'c'
+
+    def inner_products(vector):   # <b_i, v> without a conjugated copy of the basis
+        return xp.conj(basis @ xp.conj(vector)) if complex_values else basis @ vector
+    coefficients = inner_products(vector)
     vector -= coefficients @ basis
-    correction = xp.conj(basis @ xp.conj(vector))     # the second pass keeps the basis orthogonal to rounding
+    correction = inner_products(vector)   # the second pass keeps the basis orthogonal to rounding
     vector -= correction @ basis
     coefficients += correction
-    norm = xp.asarray(xp.linalg.norm(vector)).reshape(1).astype(coefficients.dtype)
+    norm = xp.asarray(xp.linalg.norm(vector)).reshape(1).astype(coefficients.dtype, copy=False)
     packed = _to_host(xp)(xp.concatenate((coefficients, norm)))
     return packed[:-1], float(packed[-1].real)
 
@@ -548,7 +552,7 @@ def gmres_refine(xp, product, single_solve, rhs, solution, operator_norm, stall_
                 if estimate / rate ** remaining > MIXED_STALL_MARGIN * gate:
                     stalled = True
                     break
-            basis[column + 1] = vector / next_norm
+            xp.divide(vector, next_norm, out=basis[column + 1])   # no temporary + copy
         weights = np.linalg.solve(np.triu(hessenberg[:filled, :filled]), projected[:filled])
         solution += xp.asarray(weights) @ directions[:filled]
 
@@ -846,7 +850,8 @@ class CudssFactorization:
         factors")."""
         if _rejected_mixed is None or self._wanted_factor_dtype() == self.value_dtype:
             return False
-        key = (kind, self.real, *_pattern_key(indptr, indices))
+        planned = self._pattern is not None and indptr is self._pattern[0] and indices is self._pattern[1]
+        key = (kind, self.real, *(self._planned_pattern_key() if planned else _pattern_key(indptr, indices)))
         text = _rejected_mixed.get(key)
         if text is None:
             return False
@@ -856,11 +861,18 @@ class CudssFactorization:
         self.mixed_rejection = f'{text} (remembered: no new low-precision attempt on this pattern)'
         return True
 
+    def _planned_pattern_key(self):
+        """_pattern_key of the planned pattern (an own copy, never changed in place), hashed once per plan."""
+        kept = getattr(self, '_planned_digest', None)
+        if kept is None or kept[0] is not self._pattern:
+            kept = self._planned_digest = (self._pattern, _pattern_key(*self._pattern))
+        return kept[1]
+
     def _remember_mixed_rejection(self, kind, text) -> None:
         """Keep a mixed rejection of the planned pattern while remember_cudss_orderings is on (oldest dropped)."""
         if _rejected_mixed is None or self._pattern is None:
             return
-        key = (kind, self.real, *_pattern_key(*self._pattern))
+        key = (kind, self.real, *self._planned_pattern_key())
         _rejected_mixed[key] = text
         _rejected_mixed.move_to_end(key)
         while len(_rejected_mixed) > KEPT_ORDERINGS:
@@ -1302,7 +1314,7 @@ class CudssFactorization:
         operators of one pattern share the key."""
         if self._pattern is None:
             return None
-        return (ORDERING_FAMILIES[kind], *_pattern_key(*self._pattern))
+        return (ORDERING_FAMILIES[kind], *self._planned_pattern_key())
 
     def _known_ordering(self, key):
         """(permutation, tree) kept for this key: this object's last plan, else the remember_cudss_orderings store."""

@@ -36,8 +36,12 @@ class DirectElasticSystem:
     _release_solution = False   # release_factor also drops the free-dof solution vector (3D: device memory)
     _reaction_components = 2    # components a reaction reports (F_x, F_y; 3D F_z too)
 
+    def _operator_missing(self) -> bool:
+        """No K of an assembly (3D: neither assembled nor deferred; reading `operator` there would assemble it)."""
+        return self.operator is None
+
     def _require_assembled(self) -> None:
-        if self.operator_dirty or self.operator is None:
+        if self.operator_dirty or self._operator_missing():
             raise RuntimeError(f'{self.label()}: assemble before solve')
 
     def _check_static(self) -> None:
@@ -111,13 +115,14 @@ class DirectElasticSystem:
         n_free = int(np.count_nonzero(self.free))
         if reduced.shape != (n_free, n_free):
             raise ValueError(f'{self.label()}: reduced tangent of shape {reduced.shape}, expected ({n_free}, {n_free})')
-        self.linear_solver.factorize_host_operator(reduced, symmetric_known=True)
+        # host direct: a value refresh of the kept analysis, checked by the solve right after (no probe solves)
+        self.linear_solver.factorize_host_operator(reduced, symmetric_known=True, defer_check=True)
         return self._tangent_solution(rhs)
 
     def solve_last_tangent(self, rhs) -> np.ndarray:
         """Host free-dof solution on the tangent factor of the latest tangent solve (modified Newton: one back
         substitution); the caller guarantees no other factorisation on the runtime since."""
-        if self.operator_dirty or self.operator is None or self._solution is None or not self._tangent_held:
+        if self.operator_dirty or self._operator_missing() or self._solution is None or not self._tangent_held:
             raise RuntimeError(f'{self.label()}: no tangent factor to reuse (solve_tangent_reduced first)')
         xp = array_module(self.backend)
         self.linear_solver.solve(xp.asarray(np.asarray(rhs, dtype=np.float64)), self._solution, 'rhs')

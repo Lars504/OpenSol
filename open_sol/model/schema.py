@@ -1080,6 +1080,18 @@ def with_default_precision(spec, solver_type, settings, solver_role=None) -> dic
     return {**settings, 'precision': precision}
 
 
+def with_node_precision(spec, solver_type, settings, solver_role, backend, grid) -> dict:
+    """with_default_precision of a node's settings; when that sets no precision and the node's type is the role's
+    Automatic type on backend / grid, the Automatic precision (solid_mechanics_3d gpu tensor: mixed)."""
+    filled = with_default_precision(spec, solver_type, settings, solver_role)
+    if 'precision' in filled:
+        return filled
+    automatic_type, automatic_settings = solver_role.automatic(backend, grid)
+    if automatic_type != solver_type.name or 'precision' not in automatic_settings:
+        return filled
+    return {**filled, 'precision': automatic_settings['precision']}
+
+
 def default_precision_ignored(spec, registry, study) -> list:
     """[(physics name, role, reason)] of the roles in `study` whose resolved solver does not take
     solver_defaults.precision (type or role without it, or a node setting another one); [] when it is 'auto'."""
@@ -1184,7 +1196,8 @@ def conformal_boundaries_physics(spec, registry) -> tuple:
 def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
     """{role: ResolvedSolver} of the roles the physics' type uses in `study`: its assigned solver node, else Automatic
     (SolverRole.automatic of the run backend and solver_grid: default_type with default_settings unless grid_defaults /
-    backend_defaults differ); solver_defaults.precision fills a precision neither sets (with_default_precision); a
+    backend_defaults differ); solver_defaults.precision fills a precision no node sets (with_default_precision; it
+    also replaces an Automatic one), else a node of the Automatic type takes the Automatic one (with_node_precision); a
     preconditioner the node does not set resolves 'jacobi' at precision 'mixed'; back_end 'auto' resolves by
     auto_back_end_values (the role's cuDSS back end on the gpu backend). CPU, GUI-thread safe; ValueError
     naming the physics for an unknown node / type or bad values (validate reports them at their nodes first)."""
@@ -1203,10 +1216,16 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
                 if node is None or not isinstance(node.settings, dict):
                     raise ValueError(f"unknown solver '{node_name}'" if node is None
                                      else f"solver '{node_name}' settings must be a mapping")
-                solver_type, raw = registry.solver_type(node.type), node.settings
+                solver_type = registry.solver_type(node.type)
+                raw = with_node_precision(spec, solver_type, node.settings, solver_role, backend, grid)
             else:
                 type_name, raw = solver_role.automatic(backend, grid)
                 solver_type = registry.solver_type(type_name)
+                # a role's Automatic precision (solid_mechanics_3d gpu: mixed) yields to solver_defaults.precision
+                filled = with_default_precision(spec, solver_type,
+                                                {key: value for key, value in raw.items() if key != 'precision'},
+                                                solver_role)
+                raw = filled if 'precision' in filled else raw
             values = resolve_values(solver_type.params, with_default_precision(spec, solver_type, raw, solver_role),
                                     parameters)
         except (KeyError, ValueError) as exc:
@@ -1214,7 +1233,7 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
             raise ValueError(f"physics '{physics_spec.name}' {role} solver: {text}") from exc
         node_sets_preconditioner = node_name is not None and 'preconditioner' in raw
         if (not node_sets_preconditioner and values.get('precision') == 'mixed'
-                and values.get('preconditioner') == 'multigrid'):
+                and values.get('preconditioner', 'jacobi') not in solver_role.mixed_preconditioners):
             values = {**values, 'preconditioner': 'jacobi'}   # mixed runs Jacobi only (Automatic multigrid, mesh M0)
         resolved[role] = ResolvedSolver(solver_type, auto_back_end_values(values, solver_role, backend, grid),
                                         node_name)

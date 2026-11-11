@@ -60,7 +60,6 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + _methods(PHYSICS, 'physics', (
 )) + (
     ('open_sol.fem.assembly:pattern_sum', 'fem: pattern_sum'),
     ('open_sol.solvers.cudss_factor:canonical_csr', 'cudss: canonical_csr'),
-    ('open_sol.solvers.cudss_factor:relative_asymmetry', 'cudss: relative_asymmetry'),
     ('open_sol.solvers.arpack_shift_invert:pattern_combination', 'arpack: pattern_combination'),
     ('open_sol.fem.sampling3d:evaluate_lagrange_3d', 'fem: evaluate_lagrange_3d'),
     ('open_sol.fem.sampling3d:centroid_values_3d', 'fem: centroid_values_3d'),

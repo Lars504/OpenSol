@@ -93,10 +93,30 @@ class ElasticFEMSystem3D(DirectElasticSystem):
         return dof_mask
 
     # ---- assembly and solve ----
-    def assemble(self, material, solid) -> None:
+    @property
+    def operator(self):
+        """K (host CSR) of the last assembly; a deferred one (assemble(defer_operator=True)) is assembled here at first
+        use (a geometric-nonlinear static solve never reads it: Newton uses the tangent assembler, reactions the
+        residual)."""
+        if self._operator is None and self._operator_build is not None:
+            build, self._operator_build = self._operator_build, None
+            started = time.perf_counter()
+            self._operator = build()
+            self.assembly_seconds['stiffness K'] = time.perf_counter() - started
+        return self._operator
+
+    @operator.setter
+    def operator(self, value):
+        self._operator, self._operator_build = value, None
+
+    def _operator_missing(self) -> bool:
+        return self._operator is None and self._operator_build is None
+
+    def assemble(self, material, solid, defer_operator=False) -> None:
         """K of the solid elements (host bool (n_elements,)) from the per-element Voigt stiffness (n_elements, 6, 6),
         the free set and the rigid-mode check (K_ff is factorised by the next solve); with `pml` the shell's solid
-        elements stretched (complex symmetric K)."""
+        elements stretched (complex symmetric K). defer_operator: K is assembled at the first read of `operator`
+        (the caller keeps material unchanged until then)."""
         solid = np.asarray(solid, dtype=bool)
         if not solid.any():
             raise ValueError(f'{self.label()}: no element of the physical window has stiffness (youngs_modulus or '
@@ -104,20 +124,26 @@ class ElasticFEMSystem3D(DirectElasticSystem):
         full = self.full
         self.solid = solid.copy()
         started = time.perf_counter()
-        if self.pml is None:
-            self.operator = assemble_elastic_stiffness_3d(full, material, elements=solid).tocsr()
-        else:
+        pml, solid_elements = self.pml, self.solid
+
+        def build():
+            if pml is None:
+                return assemble_elastic_stiffness_3d(full, material, elements=solid_elements).tocsr()
             window = self.mesh.window_elements()
             # pattern_sum: a scipy `+` would drop entries summing to 0, so the pencils' patterns would follow the values
-            self.operator = pattern_sum([assemble_elastic_stiffness_3d(full, material, elements=solid & window),
-                                         assemble_elastic_stiffness_3d(full, material, elements=solid & ~window,
-                                                                       stretch=self.pml.stretches)])
+            return pattern_sum([assemble_elastic_stiffness_3d(full, material, elements=solid_elements & window),
+                                assemble_elastic_stiffness_3d(full, material, elements=solid_elements & ~window,
+                                                              stretch=pml.stretches)])
+        self.operator = None if defer_operator else build()
+        if defer_operator:
+            self._operator_build = build
         assembled = time.perf_counter()
         active = np.zeros(self.n_dofs, dtype=bool)
         active[full.element_dofs[solid].ravel()] = True
         self.active = active
         self._check_rigid_modes(self.held & active[:, None])
-        self.assembly_seconds = {'stiffness K': assembled - started, 'rigid-mode check': time.perf_counter() - assembled}
+        self.assembly_seconds = ({} if defer_operator else {'stiffness K': assembled - started})
+        self.assembly_seconds['rigid-mode check'] = time.perf_counter() - assembled
         free = (active[:, None] & ~self.held).reshape(-1)
         if not free.any():
             raise ValueError(f'{self.label()}: every displacement is held, nothing is solved')
@@ -140,7 +166,8 @@ class ElasticFEMSystem3D(DirectElasticSystem):
         n_free = int(np.count_nonzero(self.free))
         if len(indptr) != n_free + 1:
             raise ValueError(f'{self.label()}: reduced tangent of {len(indptr) - 1} rows, expected {n_free}')
-        self.linear_solver.factorize_device_values(values, indptr, indices)
+        # the solve right after is the factor's check (a reused plan skips its probe solves)
+        self.linear_solver.factorize_device_values(values, indptr, indices, defer_check=True)
         return self._tangent_solution(rhs)
 
     def fixed_values(self) -> np.ndarray:

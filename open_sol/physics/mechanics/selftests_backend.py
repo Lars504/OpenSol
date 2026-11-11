@@ -180,9 +180,41 @@ def _random_product_arguments(rng, element_shape, dtype, masked):
             *(np.int32(n) for n in element_shape))
 
 
+def _random_iteration_arguments(rng, element_shape, dtype):
+    """{twin name: args} of the other numba twins (mass product, block precondition, the fused CG pair) on one random
+    window: densities with void elements, random SPD-like inverse blocks, nonzero device scalars."""
+    product_args = _random_product_arguments(rng, element_shape, dtype, True)
+    u, _, lame_lambda, mu, wx, wy, wz, free_dofs = product_args[:8]
+    element_args = product_args[9:]
+    n_dofs = u.size
+    n_nodes = n_dofs // 3
+
+    def vector():
+        return rng.standard_normal(n_dofs).astype(dtype)
+    inverse = np.zeros((n_nodes, 6), dtype=dtype)
+    inverse[:, :3] = rng.uniform(0.5, 1.5, (n_nodes, 3))
+    inverse[:, 3:] = rng.uniform(-0.2, 0.2, (n_nodes, 3))
+    inverse = inverse.reshape(-1)
+    density = (rng.uniform(1e3, 5e3, element_shape) * (rng.random(element_shape) > 0.2)).astype(dtype)
+
+    def scalar(value):
+        return np.array(value, dtype=dtype)
+    one = np.int32(1)
+    return {'elastic_mass_product': (u, np.zeros(n_dofs, dtype=dtype), density, wx, wy, wz, free_dofs, *element_args),
+            'block_precondition3': (inverse, vector(), np.zeros(n_dofs, dtype=dtype), np.int32(n_nodes)),
+            'elastic_update_precondition': (vector(), vector(), vector(), vector(), np.zeros(n_dofs, dtype=dtype),
+                                            inverse, scalar(0.7), np.array([2.3], dtype=dtype),
+                                            np.zeros(1, dtype=dtype), one, one, np.int32(n_nodes)),
+            'elastic_direction_product': (vector(), vector(), np.zeros(n_dofs, dtype=dtype),
+                                          np.zeros(n_dofs, dtype=dtype), lame_lambda, mu, wx, wy, wz, free_dofs,
+                                          scalar(1.9), scalar(0.0), np.array([0.8], dtype=dtype),
+                                          np.zeros(1, dtype=dtype), one, np.int32(0), *element_args)}
+
+
 def _check_product_numba(results_by_name):
-    """numba vs numpy elastic_product on random windows (float32 / float64, masked or not); ms per call on the speed
-    window."""
+    """numba vs numpy elastic_product on random windows (float32 / float64, masked or not), plus the mass product,
+    block precondition (both dtypes) and the fused CG pair (float64: float32 dots differ by their summation order); ms per
+    call of the product on the speed window."""
     from ...core.kernels import numba_available
     from ...model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
     from . import kernels3d
@@ -195,6 +227,12 @@ def _check_product_numba(results_by_name):
     comparisons = {f'{np.dtype(dtype).name}:{"masked" if masked else "full"}': (
         numpy_twin, numba_twin, _random_product_arguments(rng, _NUMBA_ELEMENTS, dtype, masked))
         for dtype in (np.float32, np.float64) for masked in (False, True)}
+    for dtype in (np.float32, np.float64):
+        for name, arguments in _random_iteration_arguments(rng, _NUMBA_ELEMENTS, dtype).items():
+            if dtype == np.float32 and name in ('elastic_update_precondition', 'elastic_direction_product'):
+                continue
+            comparisons[f'{name}:{np.dtype(dtype).name}'] = (
+                kernels3d._HOST_TWINS[name], kernels3d._NUMBA_TWINS[name](numba), arguments)
     timings = {np.dtype(dtype).name: (numpy_twin, numba_twin,
                                       _random_product_arguments(rng, _NUMBA_SPEED_ELEMENTS, dtype, True),
                                       *_NUMBA_SPEED_CALLS)
@@ -211,7 +249,10 @@ _PRODUCT_NUMBA_CASE = SelfTestCase(
                  'the per-node gather of the closed-form brick blocks) against its numpy twin (2-point Gauss element '
                  f'integrals) on random {_NUMBA_ELEMENTS[0]} x {_NUMBA_ELEMENTS[1]} x {_NUMBA_ELEMENTS[2]}-element '
                  'windows with void elements and graded widths, fixed-dof masking off and on, float32 and float64; '
-                 'measured = error = the worst max |numba - numpy| relative to the peak of K u, tolerance '
+                 'likewise the numba twins of the mass product and block precondition (both dtypes) and of the fused '
+                 'CG pair elastic_update_precondition / elastic_direction_product (float64; every output array and '
+                 'device scalar compared); '
+                 'measured = error = the worst max |numba - numpy| relative to the peak of each output, tolerance '
                  f'{_NUMBA_TOLERANCE:g}. Details: ms per call of both on {_NUMBA_SPEED_ELEMENTS[0]}^3 elements '
                  f'({_NUMBA_SPEED_CALLS[0]} numpy / {_NUMBA_SPEED_CALLS[1]} numba calls after one numba warm-up; '
                  'was 48^3 with 3 / 20). Without numba nothing is compared (error 0). Not yet run with the smaller '

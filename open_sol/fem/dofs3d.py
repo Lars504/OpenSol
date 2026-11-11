@@ -26,6 +26,8 @@ class DofMap3D:
     element_dofs: np.ndarray      # int64 (n_elements, n_local)
     n_dofs: int
     face_quadrature: dict = field(default_factory=dict, init=False, repr=False)   # assembly3d's face term cache
+    # elasticity3d's per-element J^-1 / element dofs per array module (element_inverse_jacobians_3d), read-only
+    element_geometry: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
     def n_local(self) -> int:

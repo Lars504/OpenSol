@@ -1212,6 +1212,9 @@ def _memory_estimate(settings_values, mesh, context):
                        int(factor_bytes * superlu_bytes_scale(scaled, symmetric=True, complex_values=complex_values))),
                       (f'{label} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
                        solver_host_bytes(dofs, entries, complex_values=complex_values, mixed=mixed, symmetric=True))]
+        if study == FREQUENCY_RESPONSE_STUDY:   # fem.harmonic's sparse_direct.HostPencil: K complex, C / M real
+            host_items.append((f'{label} host pencil terms (K, C, M values on the free pattern)',
+                               (COMPLEX128_BYTES + 8 + 8) * entries))
     elif cudss is None:
         host_items = [('complex factor L + U (heuristic, uncalibrated)', factor_bytes)]
     else:   # cudss_factor.CudssFactorization (LDL^T): rhs / equilibration / solution vectors

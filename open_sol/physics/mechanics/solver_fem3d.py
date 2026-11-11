@@ -32,7 +32,7 @@ from ...fem.elasticity import StressField
 from ...fem.elasticity3d import (CENTROID_3D, COMPONENTS, TangentAssembler3D, assemble_body_load_3d,
                                  assemble_elastic_stiffness_3d, assemble_face_traction_3d,
                                  assemble_geometric_stiffness_3d, assemble_stress_load_3d, element_gradients_3d,
-                                 element_strains_3d, green_lagrange_strains_3d, initial_stress_force_3d,
+                                 element_strains_3d, initial_stress_force_3d,
                                  local_dof_points_3d, nodal_average_3d)
 from ...fem.elements3d import lagrange_basis_3d
 from ...fem.mesh3d import POOR_RADIUS_RATIO
@@ -108,7 +108,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                  piezoelectric: bool = False, periodic=(False, False, False), bloch_k=(0.0, 0.0, 0.0), pml_faces=(),
                  pml_reflection: float = DEFAULT_PML_REFLECTION, stress_stiffening: bool = False, free_body=None,
                  geometric_nonlinearity: bool = False, load_steps: int = 1, nonlinear_tolerance: float = 1e-8,
-                 nonlinear_max_iterations: int = 25, tangent_update: str = 'every_iteration'):
+                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow'):
         if order not in (1, 2):
             raise ValueError(f'order must be 1 (linear) or 2 (quadratic), got {order!r}')
         if stress_stiffening and piezoelectric:
@@ -211,6 +211,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._solid = None
         self._nodal = {}                                         # output name -> host float64 full-mesh nodal values
         self._pending_outputs = set()                            # _OUTPUT_GROUPS of the shown solution not computed
+        self._point_cache = {}                                   # (imaginary, points) -> _point_values of the solid
         self._output_thermal = True                              # their stress includes -beta dT
         self._complex_displacement = None                        # host (n_dofs, 3): u_abs = |u| of a complex solution
         self._shows_mode = False
@@ -1186,6 +1187,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._drop_host_inputs()   # beta and the solid-masked inputs follow the new stiffness
         self._stiffness = stiffness.matrix
         self._solid = stiffness.solid
+        self._point_cache = {}                    # its point values are per solid element
         self._harmonic_operators = self._prestress = None
         self._drop_harmonic()
         self._tangent_assembler = None            # the solid / held sets or the stiffness may have changed
@@ -1193,7 +1195,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if self.pml_faces:
             self.system.pml = self._pml_shell()
         self._assembly_seconds = {'element stiffness': time.perf_counter() - started}
-        self.system.assemble(stiffness.matrix, stiffness.solid)
+        # geometric nonlinearity: K at first use (a static Newton solve never reads it; pencils / piezo do)
+        self.system.assemble(stiffness.matrix, stiffness.solid,
+                             defer_operator=self.geometric_nonlinearity and not self.piezoelectric)
         self._assembly_seconds.update(self.system.assembly_seconds)
         if self.piezoelectric:
             self._assemble_piezo()
@@ -1338,6 +1342,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._output_omega = None if omega is None else float(omega)
         self._complex_displacement = complex_displacement
         self._pending_outputs = set(_OUTPUT_GROUPS)
+        self._point_cache = {}
 
     def _write_element_field(self, name, elements, values):
         """The per-element state array `name`: values on `elements`, 0 elsewhere."""
@@ -1384,34 +1389,52 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         solid = np.flatnonzero(self._solid)
         thermal = self._output_thermal
         local_points = local_dof_points_3d(self.order)
-        local_strains = self._output_strains(solid, local_points)
+        local_strains = self._point_values(local_points)[1]
         prestress = self._output_prestress
         local = self._point_outputs(solid, local_strains, thermal, self._electric_field(solid, local_points), prestress)
         names = list(local)
         averaged = nodal_average_3d(full, np.stack([local[name] for name in names], axis=-1), elements=solid)
         self._nodal.update({name: averaged[:, column] for column, name in enumerate(names)})
-        centre_strains = self._output_strains(solid, CENTROID_3D)
+        centre_strains = self._point_values(CENTROID_3D)[1]
         centre = self._point_outputs(solid, centre_strains, thermal, self._electric_field(solid, CENTROID_3D),
                                      prestress)
         for name in names:
             self._write_element_field(name, solid, centre[name][:, 0])
+        self._release_point_values('mechanical')
 
-    def _output_strains(self, elements, reference_points, displacement=None):
-        """Voigt strains (m, q, 6) of the shown solution (or a nodal displacement (n_dofs, 3)) at reference points of
-        mesh elements: Green-Lagrange after a nonlinear static solve, else linear."""
-        full = self.system.full
-        displacement = self.system.unknown if displacement is None else displacement
-        if self._output_green_lagrange:
-            return green_lagrange_strains_3d(full, displacement, reference_points, elements=elements)
-        return element_strains_3d(full, displacement, reference_points, elements=elements)[1]
+    def _point_values(self, reference_points, imaginary=False):
+        """Read-only (values (m, q, 3), Voigt strains (m, q, 6)) of the shown solution (imaginary: the imaginary part of
+        a complex one) at reference points of the solid elements (Green-Lagrange after a nonlinear static solve, else
+        linear); one evaluation per solution, part and point set, shared by the output groups."""
+        key = (bool(imaginary), np.asarray(reference_points, dtype=np.float64).tobytes())
+        found = self._point_cache.get(key)
+        if found is None:
+            displacement = (np.ascontiguousarray(self._complex_displacement.imag) if imaginary
+                            else self.system.unknown)
+            found = element_strains_3d(self.system.full, displacement, reference_points,
+                                       elements=np.flatnonzero(self._solid),
+                                       green_lagrange=self._output_green_lagrange and not imaginary)
+            for array in found:
+                array.flags.writeable = False
+            self._point_cache[key] = found
+        return found
+
+    def _release_point_values(self, group):
+        """Drop the shared _point_values once no other pending output group (besides `group`, being written) reads
+        them (electric only with a potential)."""
+        readers = self._pending_outputs - {'primary', group}
+        if self._potential is None:
+            readers.discard('electric')
+        if not readers:
+            self._point_cache = {}
 
     def _energy_values(self, elements, reference_points):
-        """(strain, kinetic) energy densities (m, q) [J/m^3] at reference points of solid mesh elements: static 1/2
-        eps_el : C eps_el and 0 (eps_el = eps - alpha dT, Green-Lagrange after a nonlinear solve); a mode / response at
-        omega the time averages 1/4 (eps_r : C eps_r + eps_i : C eps_i) and 1/4 rho omega^2 |u|^2 (u = u_r + j u_i)."""
-        full = self.system.full
+        """(strain, kinetic) energy densities (m, q) [J/m^3] at reference points of the solid elements (elements =
+        np.flatnonzero(_solid)): static 1/2 eps_el : C eps_el and 0 (eps_el = eps - alpha dT, Green-Lagrange after a
+        nonlinear solve); a mode / response at omega the time averages 1/4 (eps_r : C eps_r + eps_i : C eps_i) and
+        1/4 rho omega^2 |u|^2 (u = u_r + j u_i)."""
         stiffness = self._stiffness[elements]
-        strains = self._output_strains(elements, reference_points)
+        values, strains = self._point_values(reference_points)
         if self._output_thermal:
             change = self._temperature_change()[elements][:, None]
             strains = strains.copy()
@@ -1421,11 +1444,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         strain_energy = factor * np.einsum('mqi,mij,mqj->mq', strains, stiffness, strains)
         if omega is None:
             return strain_energy, np.zeros_like(strain_energy)
-        values, _ = element_strains_3d(full, self.system.unknown, reference_points, elements=elements)
         squared = np.sum(values ** 2, axis=-1)
         if self._complex_displacement is not None:
-            imaginary, imaginary_strains = element_strains_3d(full, np.ascontiguousarray(self._complex_displacement.imag),
-                                                              reference_points, elements=elements)
+            imaginary, imaginary_strains = self._point_values(reference_points, imaginary=True)
             strain_energy = strain_energy + 0.25 * np.einsum('mqi,mij,mqj->mq', imaginary_strains, stiffness,
                                                              imaginary_strains)
             squared = squared + np.sum(imaginary ** 2, axis=-1)
@@ -1442,6 +1463,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         for column, name in enumerate(ENERGY_OUTPUT_ARRAYS_3D):
             self._nodal[name] = averaged[:, column]
             self._write_element_field(name, solid, centre[column][:, 0])
+        self._release_point_values('energy')
 
     def _electric_field(self, elements, reference_points):
         """E = -grad phi (m, q, 3) [V/m] of the last static solve at reference points of mesh elements; None without
@@ -1460,8 +1482,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         field = -gradients
         flux = EPS0 * np.einsum('mij,mqj->mqi', self._permittivity[window], field)
         solid_rows = self._solid[window]
-        if solid_rows.any():
-            _, strains = element_strains_3d(full, system.unknown, reference_points, elements=window[solid_rows])
+        if solid_rows.any():   # the solid window elements' rows of the shared _point_values (over every solid element)
+            strains = self._point_values(reference_points)[1][np.searchsorted(np.flatnonzero(self._solid),
+                                                                              window[solid_rows])]
             flux[solid_rows] += np.einsum('miJ,mqJ->mqi', self._piezo_tensor[window[solid_rows]], strains)
         values = {'electric_potential': potential}
         for axis, letter in enumerate('xyz'):
@@ -1481,6 +1504,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         _, centre = self._electric_values(CENTROID_3D)
         for name in _ELECTRIC_POINT_OUTPUTS:
             self._write_element_field(name, window, centre[name][:, 0])
+        self._release_point_values('electric')
 
     def _record_probes(self, t):
         self._ensure_outputs(probe.field_component for probe, _, _ in self.probes)

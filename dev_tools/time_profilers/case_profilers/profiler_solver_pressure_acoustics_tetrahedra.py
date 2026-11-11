@@ -53,7 +53,6 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.fem.sampling3d:PointLocator3D.locate', 'fem sampling: PointLocator3D.locate'),
     ('open_sol.fem.sampling3d:evaluate_lagrange_3d', 'fem sampling: evaluate_lagrange_3d'),
     ('open_sol.model.field_access_tetrahedra:TetrahedraAccess._plane', 'session: tetrahedra plane cut'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.combined', 'role: DevicePencil.combined'),
 )
 
 

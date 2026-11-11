@@ -57,7 +57,9 @@ PCG_PARAMS = (
                'solid_mechanics_3d: float32 copies of the element Lame pair and the block-Jacobi inverses drive a '
                'float32 matrix-free product, which on GPUs with slow float64 arithmetic (most consumer cards) is '
                'several times cheaper than the float64 one (the stiffness product is compute bound). Not for 2D '
-               'solid_mechanics (block preconditioner on the assembled operator).',
+               'solid_mechanics (block preconditioner on the assembled operator). A node that sets no precision '
+               'takes solver_defaults.precision, else the physics\' Automatic one (solid_mechanics_3d on the gpu '
+               'backend with a tensor mesh: mixed), else double.',
           tip='Number precision of the iterative solver.\n\n'
               '- Double precision: suits almost every model.\n'
               "- Single precision: saves memory, but cannot reach a 'Solver tolerance' below about "
@@ -102,12 +104,19 @@ PCG_PARAMS = (
                'host pass over the operator. Best for steady solves on large or strongly graded meshes; for implicit '
                'time steps the warm-started Jacobi is often cheaper. Automatic (no node) of heat, electric_currents, '
                'electrostatics and magnetostatics on the gpu backend is pcg with multigrid (jacobi when '
-               'solver_defaults.precision is mixed); a pcg node without this setting uses jacobi.',
+               'solver_defaults.precision is mixed); a pcg node without this setting uses jacobi. '
+               'solid_mechanics_3d on a tensor mesh (any precision, mixed included): a geometric multigrid '
+               'V(2,2)-cycle on the brick operator itself (cells paired 2:1 per axis, volume-mean Lame values, '
+               'trilinear transfers, Chebyshev block-Jacobi smoothing, a small dense coarsest level), each iteration '
+               'costing ~6-8 block-Jacobi iterations and the hierarchy ~1/6 of the system arrays; a solve that needs '
+               'far more iterations than multigrid should, or stalls (thin solids in void, strong stiffness contrast '
+               'or grading make the coarse levels weak), switches that solid to block Jacobi with a warning. Not '
+               'Automatic there yet.',
           tip='How the iterative solver is accelerated.\n\n'
               '- Jacobi (diagonal): light per step; suits small or uniform meshes and time-stepped heat.\n'
               '- Multigrid: far fewer steps on large or strongly graded meshes and with very different materials; '
-              'heat and electric or magnetic field models only, not with mixed precision. The automatic solver of '
-              'these models uses it.'),
+              'heat and electric or magnetic field models (not with mixed precision) and 3D solid mechanics on a '
+              'regular grid. The automatic solver of the field models uses it.'),
 )
 
 
@@ -126,9 +135,7 @@ def _validate_pcg(vctx, values, path):
         issues.append(Issue('warning', path,
                             f'single precision: CG stalls near a relative residual of ~{_TOLERANCE_FLOOR:g}, so '
                             f'tolerance {tolerance:g} is usually not reached (use double)'))
-    if values.get('preconditioner') == 'multigrid' and values.get('precision') == 'mixed':
-        issues.append(Issue('error', path, "preconditioner 'multigrid' needs precision 'double' or 'single' (mixed "
-                                           'iterates on a float32 copy of the operator with Jacobi only)'))
+    # multigrid at precision mixed: a role rule (SolverRole.mixed_preconditioners, solver_misfit), reported at the physics
     return issues
 
 

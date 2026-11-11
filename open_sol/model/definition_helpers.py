@@ -248,13 +248,20 @@ CG_LINEAR_ROLE = SolverRole('spd', 'pcg', setting_choices={'preconditioner': ('j
                             grid_defaults={'triangles': ('sparse_direct', {})},
                             auto_back_ends={'triangles': 'cudss'})
 # ... of solid_mechanics_3d: the same + 'mixed' (float32 inner CG on float32 copies of the matrix-free brick operator and
-# its block inverses; the 2D CSR + block preconditioner has no float32 path); on a tetrahedron mesh (FEM) Automatic =
+# its block inverses; the 2D CSR + block preconditioner has no float32 path); Automatic on the gpu backend (tensor mesh)
+# = pcg mixed (speed plan A1: the float64 brick product runs at the FP64 rate of consumer cards, slower than a 10-thread
+# CPU; mixed reached the same 1e-12 answer 17x faster at 2e5 nodes; a pcg node setting no precision takes it too,
+# schema.with_node_precision); on a tetrahedron mesh (FEM) Automatic =
 # sparse_direct, one host SuperLU per assembly through DiffusionDirectSolver (a new sparse_direct back end belongs in
 # DIFFUSION_DIRECT_BACK_ENDS); back_end 'auto' = cudss_mixed there on the gpu backend (B1a: the 3D factor dominates and
-# double runs ~12x the mixed factor time; a failing float32 factor is rejected early and remembered per pattern, H4)
+# double runs ~12x the mixed factor time; a failing float32 factor is rejected early and remembered per pattern, H4).
+# preconditioner 'multigrid' (any precision, mixed included): the geometric V-cycle of physics.mechanics.multigrid3d on
+# the brick operator (speed plan A2), opt-in until void / bilayer / graded cases pass with it
 CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mixed'),
-                                       setting_choices={'preconditioner': ('jacobi',),
+                                       setting_choices={'preconditioner': ('jacobi', 'multigrid'),
                                                         'back_end': DIFFUSION_DIRECT_BACK_ENDS},
+                                       mixed_preconditioners=('jacobi', 'multigrid'),
+                                       backend_defaults={'gpu': ('pcg', {'precision': 'mixed'})},
                                        grid_defaults={'tetrahedra': ('sparse_direct', {})},
                                        auto_back_ends={'tetrahedra': 'cudss_mixed'})
 # ... of the DiffusionSystem types (heat, electric_currents, electrostatics, magnetostatics): an assembled scalar CSR,

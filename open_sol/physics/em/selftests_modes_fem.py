@@ -155,14 +155,21 @@ def _check_slab(results_by_name):
 # ---- em_modes_fem_tem_on_guess: the slab window filled uniformly (n 1.5) between pec x walls, pmc y walls: the
 # parallel-plate TEM (e_t = constant E_x, e_z = 0) is an exact discrete mode, beta = k0 n, and the default guess max Re
 # sqrt(eps mu) = n puts the shift on it before the 1e-6 offset of prepare_fem_modes (else a singular factor).
+# ARPACK at tolerance 1e-8, not 0 (machine eps): theta_TEM ~ 1 / (1e-6 sigma) is ~1e6 x the far wanted theta (evanescent
+# TE_m / TM_m pairs), so its rounding noise in each solve (~eps theta_TEM ~ 1e-9 of those) puts eps |theta| out of reach:
+# convergence of all 14 was rounding luck (300 restarts, ~3 s, when it misses). 1e-8 moves beta_TEM^2 by ~1e-14 relative.
 _TEM_INDEX = 1.5
 _TEM_TOLERANCE = 1e-9   # relative n_eff
+_TEM_ARPACK_TOLERANCE = 1e-8
 
 
 def _check_tem_on_guess(results_by_name):
-    """Default guess on the TEM: mode 1 n_eff = n (1e-9 relative), |power| 1, every eigenvalue converged."""
+    """Default guess on the TEM: mode 1 n_eff = n (1e-9 relative), |power| 1, every eigenvalue converged (ARPACK 1e-8)."""
+    from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
+
     solve, layout = _direct_solve(_slab_spec(), _sizing(_SLAB_LINEAR_SIZES[0]), {'core': _TEM_INDEX}, _TEM_INDEX,
-                                  {'x_lo': 'pec', 'x_hi': 'pec', 'y_lo': 'pmc', 'y_hi': 'pmc'}, _SLAB_WAVELENGTH, 2, 2)
+                                  {'x_lo': 'pec', 'x_hi': 'pec', 'y_lo': 'pmc', 'y_hi': 'pmc'}, _SLAB_WAVELENGTH, 2, 2,
+                                  eigen_solver=ArpackShiftInvertSolver(tolerance=_TEM_ARPACK_TOLERANCE))
     if not solve.modes:
         raise ValueError('no mode found with the guess on the TEM mode')
     mode, info = solve.modes[0], solve.info
@@ -564,8 +571,9 @@ MODES_FEM_SELFTEST_CASES = (
                     'parallel-plate TEM (constant E_x) is an exact discrete mode with n_eff = n, and the default '
                     'guess (max Re sqrt(eps mu) = n) puts the shift on it before the 1e-6 relative offset of '
                     f'prepare_fem_modes. Expected: mode 1 n_eff = {_TEM_INDEX:g} to {_TEM_TOLERANCE:g} relative, '
-                    '|power| = 1 W, every requested eigenvalue converged. measured = error = the worst item in '
-                    'tolerance units, tolerance 1. Written, not run.',
+                    '|power| = 1 W, every requested eigenvalue converged (ARPACK tolerance '
+                    f'{_TEM_ARPACK_TOLERANCE:g}: the shift 1e-6 from the TEM makes machine-eps convergence of the far '
+                    'eigenvalues rounding luck). measured = error = the worst item in tolerance units, tolerance 1.',
         specs=lambda: {},
         check=_check_tem_on_guess),
     SelfTestCase(

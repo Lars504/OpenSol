@@ -1,5 +1,6 @@
 """Shared harness of the profiler_solver_*.py scripts: runs selftest case specs with GPU-synchronised part timers and
-cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites)."""
+cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites) and runs.md
+(one column per run, e.g. per --compare value)."""
 import argparse
 import cProfile
 import functools
@@ -24,8 +25,12 @@ PACKAGE_PATTERN = '(?i)' + re.escape(str(REPOSITORY / 'open_sol') + os.sep)
 # asarray / array live in from_data.py); implicit syncs of float(cupy scalar) are slot calls cProfile cannot see
 SYNC_PATTERN = (r"'get' of 'cupy|asnumpy|'item' of 'cupy|'tolist' of 'cupy|synchronize|from_data\.py|"
                 r"cupyx[\\/]scipy[\\/]sparse.*\(get\)")
+SYNC_NOISE_PATTERN = r'multiprocessing[\\/]synchronize\.py'   # matches 'synchronize' by its file name only
 N_ROWS = 45
 N_CALLER_TARGETS = 15
+CALLER_MIN_SECONDS = 0.001   # callers of an outside function below this (own and cumulative) fold into one line
+# one record per part: [calls, inclusive s, exclusive s, inclusive process-CPU s, device wait s (own exit synchronize)]
+EMPTY_RECORD = (0, 0.0, 0.0, 0.0, 0.0)
 
 # parts every profiler times: (target 'module:qualname', label)
 STUDY_PARTS = (
@@ -39,6 +44,7 @@ _ROLE_TARGETS = (
     'open_sol.solvers.sparse_direct:SparseDirectSolver.factorize',
     'open_sol.solvers.sparse_direct:SparseDirectSolver.factorize_host',
     'open_sol.solvers.sparse_direct:SparseDirectSolver.device_pencil',
+    'open_sol.solvers.sparse_direct:SparseDirectSolver.pencil',
     'open_sol.solvers.sparse_direct:SparseDirectSolver.factorize_pencil',
     'open_sol.solvers.sparse_direct:SparseDirectSolver.factorize_device_csr',
     'open_sol.solvers.sparse_direct:SparseDirectSolver.solve_recycled',
@@ -68,9 +74,57 @@ _ROLE_TARGETS = (
     'open_sol.solvers.line_block:LineBlockSolver.factorize_operators',
     'open_sol.solvers.line_block:LineBlockSolver.solve_shifted',
     'open_sol.solvers.line_block:LineBlockFactor.solve',
+    # cuDSS phases inside refactorize / factorize_pencil (once per factorisation or solve, so the edge syncs are cheap)
+    'open_sol.solvers.cudss_factor:CudssFactorization._equilibrated',
+    'open_sol.solvers.cudss_factor:CudssFactorization._plan_solver',
+    'open_sol.solvers.cudss_factor:CudssFactorization._device_plan',
+    'open_sol.solvers.cudss_factor:CudssFactorization._upload_values',
+    'open_sol.solvers.cudss_factor:CudssFactorization._factorize_and_probe',
+    'open_sol.solvers.cudss_factor:CudssFactorization._gmres_refine',
+    'open_sol.solvers.cudss_factor:relative_asymmetry',
+    'open_sol.solvers.cudss_factor:_lower_triangle',
+    'open_sol.solvers.sparse_direct:DevicePencil.__init__',
+    'open_sol.solvers.sparse_direct:DevicePencil.combined',
+    'open_sol.solvers.sparse_direct:HostPencil.__init__',
+    'open_sol.solvers.sparse_direct:HostPencil.combined',
+    # host direct (PARDISO / MUMPS, double and mixed): open_sol's side, then the library calls of the adapters
+    # (adapter __init__ = analysis, factor / refactor = numeric factorisation, solve = one library solve)
+    'open_sol.solvers.host_direct:HostDirectFactorization.refactorize',
+    'open_sol.solvers.host_direct:HostDirectFactorization.refactorize_values',
+    'open_sol.solvers.host_direct:HostDirectFactorization._equilibrated',
+    'open_sol.solvers.host_direct:HostDirectFactorization._equilibrated_values',
+    'open_sol.solvers.host_direct:HostDirectFactorization._checked_solve',
+    'open_sol.solvers.host_direct:HostDirectFactorization._factorize',
+    'open_sol.solvers.host_direct:HostDirectFactorization._probe_factor',
+    'open_sol.solvers.host_direct:HostDirectFactorization.solve',
+    'open_sol.solvers.host_direct:HostDirectFactorization.solve_host',
+    'open_sol.solvers.host_direct:HostDirectFactorization.solve_preconditioned',
+    'open_sol.solvers.host_direct:HostDirectFactorization.solve_preconditioned_host',
+    'open_sol.solvers.host_direct:_PardisoFactor.__init__',
+    'open_sol.solvers.host_direct:_PardisoFactor.factor',
+    'open_sol.solvers.host_direct:_PardisoFactor.refactor',
+    'open_sol.solvers.host_direct:_PardisoFactor.solve',
+    'open_sol.solvers.host_direct:_MumpsFactor.__init__',
+    'open_sol.solvers.host_direct:_MumpsFactor.factor',
+    'open_sol.solvers.host_direct:_MumpsFactor.refactor',
+    'open_sol.solvers.host_direct:_MumpsFactor.solve',
+    # multigrid PCG: set-up phases once per factorize; precondition is one V-cycle per CG iteration (10-40 per solve,
+    # each far dearer than the edge syncs)
+    'open_sol.solvers.multigrid:MultigridPreconditioner.setup',
+    'open_sol.solvers.multigrid:aggregate_strong_links',
+    'open_sol.solvers.multigrid:MultigridPreconditioner._build_level',
+    'open_sol.solvers.multigrid:MultigridPreconditioner._coarsest_solver',
+    'open_sol.solvers.multigrid:MultigridPreconditioner.precondition',
 )
 # solver-role runtimes: parts nobody calls stay out of the table
 SOLVER_ROLE_PARTS = tuple((target, 'role: ' + target.split(':', 1)[1]) for target in _ROLE_TARGETS)
+# library clocks: after a call of the target, the float seconds attribute its instance set is a row of its own (a
+# sub-part: out of the target's exclusive time); the attribute must be a new value, so a call that raised first is
+# not counted twice
+LIBRARY_CLOCKS = {
+    'open_sol.solvers.cudss_factor:CudssFactorization._factorize_and_probe': (
+        ('factorize_seconds', 'library: cuDSS numeric factorize (open_sol host clock)'),),
+}
 
 
 def _no_sync():
@@ -103,15 +157,16 @@ def _resolve(target):
 
 
 class PartTimers:
-    """Calls, inclusive / exclusive wall and inclusive process-CPU seconds per wrapped callable; the GPU is
+    """Calls, inclusive / exclusive wall, inclusive process-CPU and device-wait seconds per wrapped callable; the GPU is
     synchronised at entry and exit, so queued kernels count in the part that launched them."""
 
     def __init__(self, synchronize=True):
-        self.records = {}      # label -> [calls, inclusive s, exclusive s, inclusive process-CPU s]
+        self.records = {}      # label -> list(EMPTY_RECORD) layout
         self.missing = []      # targets that did not resolve (listed in the report, never raised)
         self._frames = []      # child wall seconds of each active call
         self._depth = {}       # label -> active calls (recursion: inclusive counted at the outermost only)
         self._patches = []     # (owner, name, original or None = delete on restore)
+        self.library_labels = set()   # rows read from LIBRARY_CLOCKS (no process-CPU reading)
         self._synchronize = _gpu_synchronizer() if synchronize else _no_sync
 
     def wrap(self, target, label=None):
@@ -131,7 +186,7 @@ class PartTimers:
         if hasattr(function, '_profiler_label'):
             self.missing.append(f"{target}: already timed as '{function._profiler_label}'")
             return
-        timed = self._timed(label, function)
+        timed = self._timed(label, function, LIBRARY_CLOCKS.get(target, ()))
         if isinstance(raw, staticmethod):
             replacement = staticmethod(timed)
         elif isinstance(raw, classmethod):
@@ -165,7 +220,7 @@ class PartTimers:
                 setattr(owner, name, original)
         self._patches.clear()
 
-    def _timed(self, label, function):
+    def _timed(self, label, function, clocks=()):
         if inspect.isgeneratorfunction(function):
             @functools.wraps(function)
             def timed(*args, **kwargs):   # creation and every next() step are timed (calls count the steps)
@@ -179,13 +234,15 @@ class PartTimers:
         else:
             @functools.wraps(function)
             def timed(*args, **kwargs):
-                return self._call(label, function, args, kwargs)
+                return self._call(label, function, args, kwargs, clocks)
         timed._profiler_label = label
         return timed
 
-    def _call(self, label, function, args, kwargs):
-        record = self.records.setdefault(label, [0, 0.0, 0.0, 0.0])
+    def _call(self, label, function, args, kwargs, clocks=()):
+        record = self.records.setdefault(label, list(EMPTY_RECORD))
         outermost = not self._depth.get(label)
+        instance = args[0] if clocks and args else None
+        clocks_before = [getattr(instance, attribute, None) for attribute, _ in clocks] if instance is not None else []
         self._synchronize()
         start_wall, start_cpu = time.perf_counter(), time.process_time()
         frame = [0.0]
@@ -194,11 +251,24 @@ class PartTimers:
         try:
             return function(*args, **kwargs)
         finally:
+            # the exit synchronize waits for device work this call queued and no timed sub-part waited for already
+            sync_start = time.perf_counter()
             self._synchronize()
-            wall = time.perf_counter() - start_wall
+            sync_end = time.perf_counter()
+            wall = sync_end - start_wall
             cpu = time.process_time() - start_cpu
+            record[4] += sync_end - sync_start
             self._frames.pop()
             self._depth[label] -= 1
+            for (attribute, clock_label), previous in zip(clocks, clocks_before):
+                seconds = getattr(instance, attribute, None)
+                if isinstance(seconds, float) and seconds is not previous:
+                    clock = self.records.setdefault(clock_label, list(EMPTY_RECORD))
+                    clock[0] += 1
+                    clock[1] += seconds
+                    clock[2] += seconds
+                    frame[0] += seconds   # a sub-part of this call
+                    self.library_labels.add(clock_label)
             if self._frames:
                 self._frames[-1][0] += wall
             record[0] += 1
@@ -210,17 +280,47 @@ class PartTimers:
     def table(self, total):
         """Parts by exclusive seconds, then the untimed rest of total."""
         total = max(total, 1e-12)
-        lines = [f'{"part":64s} {"calls":>7s} {"incl s":>9s} {"excl s":>9s} {"excl %":>7s} {"cpu/wall":>8s}']
+        lines = [f'{"part":64s} {"calls":>7s} {"incl s":>9s} {"excl s":>9s} {"excl %":>7s} {"cpu/wall":>8s} '
+                 f'{"wait s":>8s}']
         timed = 0.0
-        for label, (calls, inclusive, exclusive, cpu) in sorted(self.records.items(), key=lambda item: -item[1][2]):
+        for label, (calls, inclusive, exclusive, cpu, wait) in sorted(self.records.items(),
+                                                                       key=lambda item: -item[1][2]):
             timed += exclusive
-            share = cpu / inclusive if inclusive > 0.0 else 0.0
+            library = label in self.library_labels
+            share = '-' if library else f'{cpu / inclusive if inclusive > 0.0 else 0.0:.2f}'
+            waited = '-' if library or self._synchronize is _no_sync else f'{wait:.3f}'
             lines.append(f'{label[:64]:64s} {calls:7d} {inclusive:9.3f} {exclusive:9.3f} '
-                         f'{100.0 * exclusive / total:6.1f}% {share:8.2f}')
+                         f'{100.0 * exclusive / total:6.1f}% {share:>8s} {waited:>8s}')
         rest = total - timed
         lines.append(f'{"untimed rest (run wall - timed exclusive)":64s} {"":7s} {"":9s} {rest:9.3f} '
                      f'{100.0 * rest / total:6.1f}%')
         return '\n'.join(lines)
+
+    def snapshot(self):
+        """Copy of the records (per-run parts are the difference of two snapshots)."""
+        return {label: list(record) for label, record in self.records.items()}
+
+
+def _records_since(records, before):
+    """{part: record (EMPTY_RECORD layout)} added to records since the snapshot `before`."""
+    added = {}
+    for label, record in records.items():
+        previous = before.get(label, EMPTY_RECORD)
+        if record[0] > previous[0]:
+            added[label] = [record[0] - previous[0]] + [now - then for now, then in zip(record[1:], previous[1:])]
+    return added
+
+
+def run_columns_table(run_parts, run_walls):
+    """Markdown table with one column per run, cells 'inclusive ms per call x calls' (compare variants side by side)."""
+    names = sorted({label for parts in run_parts.values() for label in parts})
+    lines = ['| part (ms per call x calls) | ' + ' | '.join(run_parts) + ' |', '|' + '---|' * (len(run_parts) + 1)]
+    for label in names:
+        cells = [f'{1e3 * parts[label][1] / parts[label][0]:.1f} x {parts[label][0]}' if label in parts else '-'
+                 for parts in run_parts.values()]
+        lines.append(f'| {label} | ' + ' | '.join(cells) + ' |')
+    lines.append('| run wall s | ' + ' | '.join(f'{run_walls[run]:.2f}' for run in run_parts) + ' |')
+    return '\n'.join(lines)
 
 
 def case_specs(case_name, runs=None, variant=None):
@@ -246,6 +346,90 @@ def case_specs(case_name, runs=None, variant=None):
     return specs
 
 
+# --compare: the direct-factor setting is back_end on sparse_direct and factorization on arpack_shift_invert (the
+# pair schema.auto_back_end_values resolves alike), so either name sets both
+SETTING_ALIASES = {'back_end': ('back_end', 'factorization'), 'factorization': ('factorization', 'back_end')}
+
+
+def _compared_variant(spec, setting, value, backend, registry):
+    """(spec copy, ['physics.role', ...] changed): every solver role the study uses whose solver type has `setting` (or
+    its alias) and whose setting_choices accept `value` gets a new node with it (over its node's settings, or its
+    Automatic type and settings on `backend`)."""
+    import copy
+    from open_sol.model.schema import solver_grid
+    from open_sol.model.spec import SolverSpec
+    variant = copy.deepcopy(spec)
+    nodes = {node.name: node for node in variant.solvers}
+    changed = []
+    for physics_spec in variant.physics:
+        physics_type = registry.physics_type(physics_spec.type)
+        for role, solver_role in physics_type.solver_roles.items():
+            if not solver_role.used_in(variant.study.type):
+                continue
+            node = nodes.get((physics_spec.solvers or {}).get(role) or '')
+            type_name, settings = ((node.type, node.settings) if node is not None else
+                                   solver_role.automatic(backend, solver_grid(variant, physics_spec)))
+            names = {param.name for param in registry.solver_type(type_name).params}
+            key = next((name for name in SETTING_ALIASES.get(setting, (setting,)) if name in names), None)
+            if key is None or value not in solver_role.setting_choices.get(key, (value,)):
+                continue
+            node_name = f'compared_{physics_spec.name}_{role}'
+            variant.solvers.append(SolverSpec(node_name, type_name, {**dict(settings), key: value}))
+            physics_spec.solvers[role] = node_name
+            changed.append(f'{physics_spec.name}.{role}')
+    return variant, changed
+
+
+def _run_key(variant, spec) -> str:
+    """JSON text of a compared variant without the solver nodes the comparison displaced (named by a physics of spec,
+    by none of the variant): equal for two runs that solve the same model under the compared value."""
+    import copy
+
+    def named(model):
+        return {name for physics_spec in model.physics for name in (physics_spec.solvers or {}).values()}
+    displaced = named(spec) - named(variant)
+    kept = copy.copy(variant)
+    kept.solvers = [node for node in variant.solvers if node.name not in displaced]
+    return json.dumps(kept.to_dict(), sort_keys=True, default=str)
+
+
+def setting_variants(specs, assignment, backend, keep_unchanged=True):
+    """{'<run> NAME=value': spec copy} per spec and value of assignment 'NAME=v1,v2,...' (_compared_variant); a value no
+    role of a run accepts is skipped, a run no value applies to runs once as written (keep_unchanged) or is dropped, a
+    run that under a value is the same model as an earlier one (it differed only by the node the value replaces) is
+    dropped (all printed). Values stay strings (choice settings such as back_end)."""
+    from open_sol.model.schema import get_registry
+    setting, separator, values_text = assignment.partition('=')
+    values = [value.strip() for value in values_text.split(',') if value.strip()]
+    if not separator or not setting.strip() or not values:
+        raise SystemExit(f'--compare needs NAME=v1,v2,..., got {assignment!r}')
+    setting = setting.strip()
+    registry = get_registry()
+    variants, first_with_key = {}, {}
+    for run_name, spec in specs.items():
+        skipped = []
+        for value in values:
+            variant, changed = _compared_variant(spec, setting, value, backend, registry)
+            if not changed:
+                skipped.append(value)
+                continue
+            label = f'{run_name} {setting}={value}'
+            twin = first_with_key.setdefault(_run_key(variant, spec), label)
+            if twin != label:
+                print(f'--compare: run {label!r} is the same model as {twin!r}; dropped', flush=True)
+                continue
+            variants[label] = variant
+        if len(skipped) == len(values):
+            if keep_unchanged:
+                variants[run_name] = spec
+            print(f'--compare: run {run_name!r}: no solver role takes {setting} {values}; '
+                  + ('runs as written' if keep_unchanged else 'dropped (--compare-only)'), flush=True)
+        elif skipped:
+            print(f'--compare: run {run_name!r}: no solver role takes {setting} {skipped}; those values skipped',
+                  flush=True)
+    return variants
+
+
 def _run_one(spec, run_dir, backend, parameters, save_arrays):
     """api.run of one spec into run_dir -> its summary.json dict (status from the Results when no summary)."""
     from open_sol import api
@@ -258,6 +442,75 @@ def _run_one(spec, run_dir, backend, parameters, save_arrays):
     summary = json.loads(summary_path.read_text(encoding='utf-8')) if summary_path.is_file() else {}
     summary.setdefault('status', status)
     return summary
+
+
+def _run_memory(summary, backend):
+    """{gpu_peak_bytes: the larger of the build peak and the run's pool high-water + cuDSS factors outside the pool
+    (None on the cpu backend: not measured), host_peak_bytes: this process's peak working set / RSS so far} of one run."""
+    from dev_tools.time_profilers.case_runner import current_and_peak_rss
+    host_peak = current_and_peak_rss()[1]
+    if backend == 'cpu':   # build.gpu_peak_bytes there is the tracemalloc peak of host numpy, not device memory
+        return {'gpu_peak_bytes': None, 'host_peak_bytes': host_peak}
+    build_peak = (summary.get('build') or {}).get('gpu_peak_bytes')
+    pool_peak = (summary.get('run_memory') or {}).get('measured_bytes')
+    external_peak = (summary.get('external_memory') or {}).get('measured_bytes') or 0
+    run_peak = None if pool_peak is None else pool_peak + external_peak
+    known = [value for value in (build_peak, run_peak) if value is not None]
+    return {'gpu_peak_bytes': max(known) if known else None, 'host_peak_bytes': host_peak}
+
+
+def _run_choices(spec, summary, backend):
+    """[{role 'physics.role', type, back_end, preconditioner, factorizations}] the run's solvers used: back_end from
+    the runtime counters (sparse_direct), else the setting with 'auto' resolved as schema.auto_back_end_values does;
+    factorizations: the role's counter (eigen: eigen_factorizations; None without one), 0 = the role never factorised
+    (a matrix-free eigen solve: run_all does not count such a run for a compared back end)."""
+    from open_sol.model.schema import auto_back_end_values, get_registry, solver_grid
+    registry = get_registry()
+    physics_specs = {physics_spec.name: physics_spec for physics_spec in spec.physics}
+    choices = []
+    for physics_name, record in (summary.get('solvers') or {}).items():
+        for role, solver in (record.get('roles') or {}).items():
+            settings = solver.get('settings') or {}
+            key = 'back_end' if 'back_end' in settings else 'factorization'
+            counters = solver.get('counters') or {}
+            back_end = counters.get('back_end') or settings.get(key)
+            physics_spec = physics_specs.get(physics_name)
+            if back_end == 'auto' and physics_spec is not None:
+                solver_role = registry.physics_type(physics_spec.type).solver_roles.get(role)
+                if solver_role is not None:
+                    back_end = auto_back_end_values({key: 'auto'}, solver_role, backend,
+                                                    solver_grid(spec, physics_spec))[key]
+            choices.append({'role': f'{physics_name}.{role}', 'type': solver.get('type'), 'back_end': back_end,
+                            'preconditioner': settings.get('preconditioner'),
+                            'factorizations': counters.get('factorizations', counters.get('eigen_factorizations'))})
+    return choices
+
+
+AUTOMATIC_BACKEND = 'gpu'   # the backend whose Automatic the run_all plot rings (the model default)
+
+
+def _automatic_choices(spec, backend=AUTOMATIC_BACKEND):
+    """[{role 'physics.role', type, back_end, preconditioner}] Automatic resolves to for every role the study uses on
+    `backend`, whatever nodes the spec has: back_end 'auto' resolved as the model does (cuDSS where the role lists it,
+    else host SuperLU 'scipy_splu'); a runtime cuDSS refusal (fallback to SuperLU) is not seen here."""
+    from open_sol.model.schema import auto_back_end_values, fill_defaults, get_registry, solver_grid
+    from open_sol.solvers.sparse_direct import expected_back_end
+    registry = get_registry()
+    choices = []
+    for physics_spec in spec.physics:
+        for role, solver_role in registry.physics_type(physics_spec.type).solver_roles.items():
+            if not solver_role.used_in(spec.study.type):
+                continue
+            grid = solver_grid(spec, physics_spec)
+            type_name, settings = solver_role.automatic(backend, grid)
+            values = auto_back_end_values(fill_defaults(registry.solver_type(type_name).params, settings),
+                                          solver_role, backend, grid)
+            back_end = values.get('back_end', values.get('factorization'))
+            if back_end in ('auto', 'superlu'):
+                back_end = expected_back_end('auto', backend)
+            choices.append({'role': f'{physics_spec.name}.{role}', 'type': type_name, 'back_end': back_end,
+                            'preconditioner': values.get('preconditioner')})
+    return choices
 
 
 def _run_text(label, wall, summary):
@@ -277,9 +530,31 @@ def _run_text(label, wall, summary):
     return '\n'.join(lines)
 
 
+def _caller_lines(stats, function, min_seconds) -> list:
+    """Lines of one cProfile entry and its callers (calls, own s, cumulative s of the calls from each, largest first);
+    callers below min_seconds in both fold into one count line."""
+    _, calls, own, cumulative, callers = stats.stats[function]
+    lines = [f'{pstats.func_std_string(function)}: {calls} calls, own {own:.3f} s, cumulative {cumulative:.3f} s']
+    rows = []
+    for caller, value in callers.items():   # cProfile: (calls, primitive calls, own s, cumulative s) from this caller
+        caller_calls, caller_own, caller_cumulative = ((value[0], value[2], value[3]) if isinstance(value, tuple)
+                                                       else (value, 0.0, 0.0))
+        rows.append((max(caller_own, caller_cumulative), caller_calls, caller_own, caller_cumulative,
+                     pstats.func_std_string(caller)))
+    rows.sort(key=lambda row: (-row[0], row[4]))
+    shown = [row for row in rows if row[0] >= min_seconds]
+    lines += [f'  <- {caller_calls:>8} {caller_own:8.3f} {caller_cumulative:8.3f}  {text}'
+              for _, caller_calls, caller_own, caller_cumulative, text in shown]
+    folded = rows[len(shown):]
+    if folded:
+        lines.append(f'  <- {sum(row[1] for row in folded):>8} calls from {len(folded)} callers below '
+                     f'{1e3 * min_seconds:g} ms each')
+    return lines
+
+
 def _cprofile_text(profiler):
     """Own / cumulative time of open_sol functions, own time of all, callers of the top non-open_sol host functions
-    and of the sync / transfer entries."""
+    (those above CALLER_MIN_SECONDS) and every caller of the sync / transfer entries."""
     stream = io.StringIO()
     stats = pstats.Stats(profiler, stream=stream)
     stream.write('===== own time (tottime), open_sol functions: python-level host work incl. numpy operators =====\n')
@@ -294,11 +569,17 @@ def _cprofile_text(profiler):
                if not package.search(pstats.func_std_string(function))
                and not pstats.func_std_string(function).startswith(harness)]
     outside.sort(key=lambda item: -item[0])
-    stream.write(f'===== callers of the {N_CALLER_TARGETS} largest own-time functions outside open_sol =====\n')
+    stream.write(f'===== callers of the {N_CALLER_TARGETS} largest own-time functions outside open_sol '
+                 '(<- calls, own s, cumulative s, caller) =====\n')
     for _, function in outside[:N_CALLER_TARGETS]:
-        stats.print_callers(re.escape(pstats.func_std_string(function)))
-    stream.write('===== device syncs and transfers (callers; the harness synchronize is its own part timing) =====\n')
-    stats.print_callers(SYNC_PATTERN)
+        stream.write('\n'.join(_caller_lines(stats, function, CALLER_MIN_SECONDS)) + '\n')
+    stream.write('===== device syncs and transfers (every caller; the harness synchronize is its own part timing; '
+                 'syncdetect._declare_synchronize callers = implicit syncs) =====\n')
+    sync, noise = re.compile(SYNC_PATTERN), re.compile(SYNC_NOISE_PATTERN)
+    sites = [(entry[2], function) for function, entry in stats.stats.items()
+             if sync.search(pstats.func_std_string(function)) and not noise.search(pstats.func_std_string(function))]
+    for _, function in sorted(sites, key=lambda item: (-item[0], pstats.func_std_string(item[1]))):
+        stream.write('\n'.join(_caller_lines(stats, function, 0.0)) + '\n')
     return stream.getvalue()
 
 
@@ -327,10 +608,12 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
         timers.records.clear()
     profiler = cProfile.Profile() if use_cprofile else None
     run_texts, total = [], 0.0
+    run_parts, run_walls, run_memory = {}, {}, {}   # per run: its parts (records difference), wall and memory peaks
     try:
         for index in range(repeat):
             for run_name, spec in specs.items():
                 label = run_name if repeat == 1 else f'{run_name}_{index + 1}'
+                before = timers.snapshot()
                 start = time.perf_counter()
                 if profiler is not None:
                     profiler.enable()
@@ -341,17 +624,34 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
                         profiler.disable()
                 wall = time.perf_counter() - start
                 total += wall
+                run_parts[label], run_walls[label] = _records_since(timers.records, before), wall
+                run_memory[label] = {'status': summary.get('status'), **_run_memory(summary, backend),
+                                     'solvers': _run_choices(spec, summary, backend),
+                                     'automatic': _automatic_choices(spec)}
                 run_texts.append(_run_text(label, wall, summary))
                 print(run_texts[-1].splitlines()[0], flush=True)
     finally:
         timers.restore()
     header = (f'profiler {name}: backend {backend}, repeat {repeat}, warmup {warmup}, cprofile {use_cprofile}, '
               f'gpu sync at part edges {synchronize}, total run wall {total:.2f} s\n'
-              'Exclusive = own wall minus timed sub-parts; cpu/wall = process CPU / inclusive wall (~1 host-bound, '
-              '> 1 threaded BLAS, ~0 waiting on the GPU; Windows CPU clock ticks ~16 ms). cProfile inflates python-heavy '
-              'parts: compare with --no-cprofile.\n')
+              'Exclusive = own wall minus timed sub-parts; cpu/wall = process CPU / inclusive wall (> 1 threaded BLAS; '
+              'a blocking device sync spins a core, so ~1 also while waiting on the GPU; Windows CPU clock ticks '
+              '~16 ms); wait s = seconds of the part\'s own exit synchronize = only the device work still queued at '
+              'its exit: ~0 on host-bound parts and also on device-bound parts that end in a host read (a solve '
+              'reading its residual waits inside, not at exit). cProfile inflates python-heavy parts: compare with '
+              '--no-cprofile.\n')
     sections = [header + (note + '\n' if note else ''), '\n'.join(run_texts), '', '===== parts =====',
                 timers.table(total)]
+    columns = run_columns_table(run_parts, run_walls)
+    (out_dir / 'runs.md').write_text(columns + '\n', encoding='utf-8')
+    (out_dir / 'runs.json').write_text(json.dumps(
+        {run: {'wall_seconds': run_walls[run], **run_memory[run],
+               'parts': {label: {'calls': calls, 'inclusive_seconds': inclusive, 'exclusive_seconds': exclusive,
+                                 'ms_per_call': 1e3 * inclusive / calls, 'device_wait_seconds': wait}
+                         for label, (calls, inclusive, exclusive, _, wait) in sorted(parts.items())}}
+         for run, parts in run_parts.items()}, indent=1), encoding='utf-8')
+    if len(run_parts) > 1:
+        sections += ['', '===== parts per run (inclusive ms per call x calls; also runs.md / runs.json) =====', columns]
     if timers.missing:
         sections += ['', '===== parts that did not resolve (fix the target) =====', '\n'.join(timers.missing)]
     if profiler is not None:
@@ -361,6 +661,13 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
     report_path.write_text('\n'.join(sections) + '\n', encoding='utf-8')
     print(f'\n===== parts =====\n{timers.table(total)}\nreport: {report_path}', flush=True)
     return report_path
+
+
+def output_name(name, backend, compare=None, compare_only=False, assignments=()):
+    """Folder name of one profile: name + the settings that change its results (backend, --compare, --set), e.g.
+    'membrane_film__gpu__back_end-pardiso__only', so runs of different solvers never overwrite each other."""
+    parts = [name, backend] + ([compare] + (['only'] if compare_only else []) if compare else []) + list(assignments)
+    return '__'.join(re.sub(r'[^A-Za-z0-9_.+-]', '-', part.replace(',', '+')) for part in parts)
 
 
 def _parameters(assignments):
@@ -390,6 +697,10 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
     parser.add_argument('--no-sync', action='store_true', help='no GPU synchronise at part edges')
     parser.add_argument('--no-arrays', action='store_true', help='api.run save_arrays=False')
     parser.add_argument('--set', action='append', default=[], metavar='NAME=EXPR', help='model parameter override')
+    parser.add_argument('--compare', metavar='NAME=v1,v2', help='run every spec once per value of solver setting NAME '
+                        '(e.g. back_end=cudss,cudss_mixed): one column per run in runs.md')
+    parser.add_argument('--compare-only', action='store_true',
+                        help='drop the runs no --compare value applies to (instead of running them as written)')
     options = parser.parse_args()
     timers = wrapped_timers(parts, synchronize=not options.no_sync)   # before the registry exists
     own_specs = specs is not None and options.case == case
@@ -401,11 +712,18 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         run_specs = case_specs(options.case, options.runs, options.variant)
     if spec_edit is not None:
         run_specs = {key: spec_edit(spec) for key, spec in run_specs.items()}
+    if options.compare:
+        run_specs = setting_variants(run_specs, options.compare, options.backend,
+                                     keep_unchanged=not options.compare_only)
+        if not run_specs:
+            print(f'--compare-only: no run of {name} takes {options.compare}; nothing profiled', flush=True)
+            return None
     small_warmup = warmup_specs() if own_specs and warmup_specs is not None and options.warmup else None
     if small_warmup is not None and spec_edit is not None:
         small_warmup = {key: spec_edit(spec) for key, spec in small_warmup.items()}
     source = f'specs of {name}' if specs is not None and options.case == case else f'case {options.case}'
-    return profile_runs(name, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
+    folder = output_name(name, options.backend, options.compare, options.compare_only, options.set)
+    return profile_runs(folder, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
                         use_cprofile=not options.no_cprofile, synchronize=not options.no_sync,
                         parameters=_parameters(options.set), save_arrays=not options.no_arrays,
                         note=f'{source}, runs {list(run_specs)}' + (f'; {note}' if note else '')

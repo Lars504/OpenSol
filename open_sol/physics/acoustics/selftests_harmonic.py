@@ -160,7 +160,7 @@ _DUCT_DESCRIPTION = (
 
 # ---- pressure_acoustics_host_direct: the 'pml' duct (complex symmetric) at two frequencies, a scipy_splu node (the
 # reference) and one node per installed host direct back end (literals: the selftest rule); the second frequency
-# refactorises on the kept analysis (fem.harmonic previous=) ----
+# refactorises on the kept analysis (fem.harmonic HostPencil, previous=) ----
 _HOST_DIRECT_BACK_ENDS = ('mumps_mixed', 'pardiso')
 _HOST_DIRECT_REFERENCE = 'scipy_splu'
 _HOST_DIRECT_RUN = 'pml'
@@ -372,7 +372,7 @@ HARMONIC_SELFTEST_CASES = (
         description=(f"The 'pml' run of pressure_acoustics_duct (triangles, cpu) at {_HOST_DIRECT_FREQUENCIES[0]:g} and "
                      f'{_HOST_DIRECT_FREQUENCIES[1]:g} Hz with a sparse_direct node pinned to scipy_splu (the '
                      'reference) and one per installed back end of mumps_mixed, pardiso: fem.harmonic factorises the '
-                     'complex symmetric A(omega) by factorize_host(symmetric=True, previous=) as a library LDL^T '
+                     'complex symmetric A(omega) from a HostPencil (factorize_pencil, previous=) as a library LDL^T '
                      '(mixed: complex64 factor + float64 GMRES refinement) and refactorises the second frequency on '
                      'the kept analysis. Per back end and frequency max |p - p_SuperLU| / max |p_SuperLU| over the '
                      f'probes within {_HOST_DIRECT_TOLERANCE:g}; the linear record must show that back end with a '

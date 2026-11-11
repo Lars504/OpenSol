@@ -4,7 +4,8 @@ Gotchas and cross-file code flow only; signatures and help texts live in the cod
 Examples live outside the package (`examples/README.md`); `experiments/` holds the user's research models in the same
 format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
 `gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
-`dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it, not shipped):
+`dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it; not in the pip
+package, but public on GitHub with the repository, so every clone has it):
 `dev_tools/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
 problems assembled by open_sol's own operator code and on whole model files; it is not `python -m open_sol profile` (the run-time estimate's profile).
 `dev_tools/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
@@ -399,8 +400,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   `host_direct.HOST_DIRECT_*`, never spelled out); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
   node and assigns it (`PhysicsSpec.solvers`; self-tests: `selftest_helpers.with_exact_cg`). The model-wide
   `solver_defaults.precision` (S9) fills the precision of every solver that offers it and sets none: resolve solver
-  values only through `schema.resolved_solvers` / `with_default_precision`, never `fill_defaults` of the node
-  settings alone. Rules: solvers sub file.
+  values only through `schema.resolved_solvers` / `with_node_precision` (a node of the Automatic type without a
+  precision takes the Automatic one) / `with_default_precision`, never `fill_defaults` of the node settings alone.
+  Rules: solvers sub file.
 - Subpixel smoothing (igor 1.5) and conformal boundaries (solver_plan S7.6) are model-wide
   (`solver_defaults.subpixel_smoothing` / `conformal_boundaries`), never physics settings: a type honours them by
   `PhysicsType.subpixel_smoothing` + `set_subpixel_smoothing(geometry)` / `PhysicsType.conformal_boundaries` +
@@ -478,12 +480,15 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   a full reduction in a hot loop uses a multi-block one (`solvers.pcg.device_vector_dot`), or reduces the shortest
   axis first (`core.kernels.axis_first_reduce`, for fused ReductionKernels of >= 2D arrays). cupy refuses cuSPARSE calls during stream capture
   (NotImplementedError), so a CUDA graph cannot contain cupyx SpMV: use the CSR RawKernels of `solvers.pcg`
-  (`CSR_ROW_SOURCE`, `_DeviceCsrProduct`; the multigrid V-cycle is captured that way). Below ~1e6 unknowns a cupyx
+  (`CSR_ROW_SOURCE`, `_DeviceCsrProduct`; the multigrid V-cycle is captured that way, and so are the CG check blocks
+  of a pcg factorized with capture_blocks: solvers sub file "pcg"). Below ~1e6 unknowns a cupyx
   SpMV costs more host time (~60 us: descriptors, workspace, output allocation) than device time.
 - A per-frequency (or per-iteration) cuDSS refactorisation of a fixed-pattern pencil goes through
   `sparse_direct.DevicePencil` / `factorize_pencil` (or `refactorize_device_values`), never a host A(omega) into
   `factorize_host`: the host canonicalising, asymmetry check and lower-triangle take cost more than the cuDSS
-  factorisation itself (E7: ~250 of ~370 ms per frequency; solvers sub file "sparse_direct"). Since H1,
+  factorisation itself (E7: ~250 of ~370 ms per frequency; solvers sub file "sparse_direct"). Ask
+  `SparseDirectSolver.pencil` (not device_pencil): on MUMPS / PARDISO it returns a HostPencil for the same
+  factorize_pencil call (no per-frequency canonical copy / asymmetry check there either). Since H1,
   factorize_host with previous= on the planned pattern refreshes on the device (values uploaded only), but it still
   pays the host assembly / canonical check that a DevicePencil saves.
 - Point location dominates reads on element meshes (renderers, checks, derived values): locate through
@@ -508,7 +513,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   the built-in mesher (PSLG, refinement, smoothing, size field), gmsh, elements / geometry order, dofs and assembly
   (coefficient forms), TriangleDomain, point location, transfers, tetrahedra (ascending-node orientation, Nedelec 2
   face dofs, gmsh -3, entity majority, TetrahedronDomain, swept prism layers, sliver count, gmsh size fields and mesh
-  caches), fixed-pattern Newton tangents (host / device), complex scalar harmonic systems / PML stretches / neutral
+  caches), fixed-pattern Newton tangents (host / device; block patterns kept per mesh), complex scalar harmonic systems / PML stretches / neutral
   resonance solve / several-shift search, squeeze film, reduced sweeps, line elements, prestress assemblers, self-tests.
 - `open_sol/core/`: backends (`core.backend`, cpu / gpu), GPU memory (budget, memory_report), accepted host syncs,
   half storage, graded meshes (`core.mesh`, PML grading), grid transfers (`core.grid_transfer`), mirror planes
@@ -546,7 +551,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   ElasticSystem (Q1 layout, supports, rigid-mode check, loads), anisotropic c_ij stiffness, eigenfrequency study (2D,
   3D), piezoelectric plane strain (coupled host operator, electrodes, short / open modes), frequency response (losses,
   admittance, BVD fit, reduced / modal sweeps), optomechanical g0, ElasticSystem3D
-  (matrix-free bricks, reduced blocks, Gram rank check, 2D rules that do not apply), tetrahedra (modal pencils and
+  (matrix-free bricks, reduced blocks, Gram rank check, geometric multigrid and its guard, 2D rules that do not
+  apply), tetrahedra (modal pencils and
   target / band searches, PML, Bloch, squeeze film), geometric nonlinearity (warm start, tangent updates, GPU tangents),
   thermal strain coupling, optics hooks, self-tests.
 - `open_sol/physics/membrane/`: layout, materials / holes / coupled tension and the plate switch, lazy system and PML

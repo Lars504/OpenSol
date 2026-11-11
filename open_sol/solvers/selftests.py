@@ -1027,7 +1027,7 @@ def _check_cudss_device_pencil(results_by_name):
             solution, _ = harmonic.solve(omega, fixed, rhs)
             expected, _ = private.solve(omega, fixed, rhs)
             errors[f'{back_end}_frequency_response_{omega:g}'] = norm_relative_error(solution, expected)
-        if not harmonic._device or runtime.work_counters()['cudss_plans'] != 1:
+        if not harmonic._pencil or runtime.work_counters()['cudss_plans'] != 1:
             failed.append(f'{back_end}_frequency_response_device_pencil')
         harmonic.factor.release()
     _ordering_reuse_checks(failed, errors, details)
@@ -1123,6 +1123,21 @@ _PRECISION_CASES = (
     ('solid_mixed_refused_by_role', 'solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu',
      ('pcg', 'double', True)),
     ('solid_3d_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
+    ('solid_3d_auto_gpu_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'gpu',
+     ('pcg', 'mixed', False)),
+    ('solid_3d_auto_cpu_double', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'cpu',
+     ('pcg', 'double', False)),
+    ('solid_3d_default_double_wins', 'solid_mechanics_3d', 'linear', 'stationary', 'double', None, 'gpu',
+     ('pcg', 'double', False)),
+    # a node of the Automatic type that sets no precision takes the Automatic one (schema.with_node_precision)
+    ('solid_3d_node_takes_automatic_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'auto',
+     ('pcg', {'tolerance': 1e-10}), 'gpu', ('pcg', 'mixed', False)),
+    ('solid_3d_node_cpu_double', 'solid_mechanics_3d', 'linear', 'stationary', 'auto',
+     ('pcg', {'tolerance': 1e-10}), 'cpu', ('pcg', 'double', False)),
+    ('solid_3d_node_default_double_wins', 'solid_mechanics_3d', 'linear', 'stationary', 'double',
+     ('pcg', {'tolerance': 1e-10}), 'gpu', ('pcg', 'double', False)),
+    ('solid_3d_node_own_double', 'solid_mechanics_3d', 'linear', 'stationary', 'auto',
+     ('pcg', {'precision': 'double'}), 'gpu', ('pcg', 'double', False)),
     ('fdtd_double', 'em_fdtd_ez', 'stepper', 'time_dependent', 'double', None, 'gpu',
      ('explicit_kernels', 'double', False)),
     ('fdtd_half_storage_refused_by_role', 'em_fdtd_ez', 'stepper', 'time_dependent', 'half_storage', None, 'gpu',
@@ -1560,6 +1575,58 @@ def _host_direct_general_checks(back_end, operators, rhs, failed, errors, detail
     details[f'{back_end}_counters'] = runtime.work_counters()
 
 
+def _host_direct_pencil_checks(back_end, spd, rhs, failed, errors, details):
+    """HostPencil + factorize_pencil on the cpu: a complex symmetric two-term pencil (+ a diagonal extra block) at two
+    shifts against spsolve, symmetric once (LDL^T), the second factor on the kept analysis with its probe deferred to
+    the solve (double back ends; mixed ones probe); an unsymmetric term gives an LU pencil."""
+    import scipy.sparse
+    import scipy.sparse.linalg
+    from .cudss_factor import csr_rows
+    from .sparse_direct import HostPencil, SparseDirectSolver
+    pattern = spd.tocsr(copy=True)
+    pattern.sum_duplicates()
+    pattern.sort_indices()
+    shape, rows = pattern.shape, csr_rows(pattern.indptr)
+    mass = np.where(pattern.indices == rows, 1.0 + rows % 3, 0.0)   # a diagonal mass term on the same pattern
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    pencil = runtime.pencil(pattern.indptr, pattern.indices, [pattern.data, mass], symmetric=True)
+    if not isinstance(pencil, HostPencil) or not pencil.symmetric:
+        failed.append(f'{back_end}_host_pencil_symmetric')
+    extra_rows = np.arange(0, shape[0], 7)
+    slots = pencil.slots(extra_rows, extra_rows)
+    factor, outcomes = None, []
+    for index, shift in enumerate((-0.5 + 0.05j, -0.7 + 0.05j)):
+        added = (index + 0.3j) * np.ones(extra_rows.size)
+        factor = runtime.factorize_pencil(pencil, [1.0, shift], previous=factor, extra=(slots, added))
+        pending = factor._check_pending
+        reference = (scipy.sparse.csr_matrix((pattern.data + shift * mass, pattern.indices, pattern.indptr), shape=shape)
+                     + scipy.sparse.csr_matrix((added, (extra_rows, extra_rows)), shape=shape))
+        errors[f'{back_end}_host_pencil_{index}'] = norm_relative_error(
+            factor.solve_host(rhs), scipy.sparse.linalg.spsolve(reference.tocsc(), rhs))
+        outcomes.append({'kind': factor.matrix_kind, 'reused': factor.last_plan_reused, 'deferred': pending,
+                         'pending_after_solve': factor._check_pending, 'probe_residual': factor.probe_residual})
+        if factor.matrix_kind != 'symmetric':
+            failed.append(f'{back_end}_host_pencil_ldlt_{index}')
+    last = outcomes[-1]
+    if not last['reused']:
+        failed.append(f'{back_end}_host_pencil_kept_analysis')
+    if last['deferred'] != (not back_end.endswith('_mixed')) or last['pending_after_solve']:
+        failed.append(f'{back_end}_host_pencil_deferred_check')
+    factor.release()
+    skewed = pattern.data * (1.0 + 0.1 * (pattern.indices > rows))   # unsymmetric values on the symmetric pattern
+    unsymmetric = runtime.pencil(pattern.indptr, pattern.indices, [skewed], symmetric=True)
+    if unsymmetric.symmetric:
+        failed.append(f'{back_end}_host_pencil_asymmetry_found')
+    factor = runtime.factorize_pencil(unsymmetric, [1.0])
+    if factor.symmetric:
+        failed.append(f'{back_end}_host_pencil_lu')
+    errors[f'{back_end}_host_pencil_lu'] = norm_relative_error(
+        factor.solve_host(rhs), scipy.sparse.linalg.spsolve(
+            scipy.sparse.csr_matrix((skewed, pattern.indices, pattern.indptr), shape=shape).tocsc(), rhs))
+    factor.release()
+    details[f'{back_end}_host_pencil'] = outcomes
+
+
 def _host_direct_inertia_checks(back_end, failed, details):
     """Real symmetric indefinite K - sigma I by factorize_host(real=True, symmetric=True): LDL^T, inertia() = the
     counting SuperLU's (None allowed: perturbed pivots, recorded); refactorize on the same pattern keeps the analysis."""
@@ -1671,6 +1738,7 @@ def _check_host_direct(results_by_name):
             continue
         _host_direct_spd_checks(back_end, spd, changed, real_rhs, failed, errors, details)
         _host_direct_general_checks(back_end, operators, complex_rhs, failed, errors, details)
+        _host_direct_pencil_checks(back_end, spd, complex_rhs, failed, errors, details)
         _host_direct_inertia_checks(back_end, failed, details)
         if back_end.endswith('_mixed'):
             _host_direct_fallback_checks(back_end, spd, real_rhs, failed, errors)
@@ -1678,6 +1746,49 @@ def _check_host_direct(results_by_name):
             _host_direct_gpu_checks(back_end, general, spd, complex_rhs, real_rhs, failed, errors)
     details['backends'] = list(_backends())
     return _outcome(errors, failed, details)
+
+
+_SCALE_ROWS = 40_000        # rows of the random CSR of solver_host_scale_numba
+_SCALE_PER_ROW = 60         # stored entries per row (2.4e6: the nonlinear profiler's reduced tangent)
+_SCALE_TOLERANCE = 1e-14    # same products, other association
+_SCALE_CALLS = (3, 10)      # timed (numpy, numba) calls
+
+
+def _check_host_scale_numba(_):
+    """numba vs numpy host_direct.scaled_values: real, real with a symmetrizer, complex with a complex one."""
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    from .host_direct import scaled_values
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _SCALE_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    rng = np.random.default_rng(_SEED)
+    indptr = (np.arange(_SCALE_ROWS + 1) * _SCALE_PER_ROW).astype(np.int32)
+    indices = np.sort(rng.integers(0, _SCALE_ROWS, (_SCALE_ROWS, _SCALE_PER_ROW)), axis=1).astype(np.int32).ravel()
+    row_scale = rng.random(_SCALE_ROWS) + 0.5
+    real_values = rng.standard_normal(indices.size)
+    complex_values = real_values + 1j * rng.standard_normal(indices.size)
+
+    def twins(symmetrizer, dtype):   # the scaled values (complex as float64 pairs) are the compared output
+        def run(numba_flag):
+            def call(values, out):
+                out[...] = scaled_values(values, indptr, indices, row_scale, symmetrizer, dtype,
+                                         numba=numba_flag).view(np.float64)
+            return call
+        return run(False), run(True)
+    variants = {'real': (None, np.float64, real_values),
+                'real symmetrizer': (rng.random(_SCALE_ROWS) + 0.5, np.float64, real_values),
+                'complex symmetrizer': (rng.standard_normal(_SCALE_ROWS) + 1j * rng.standard_normal(_SCALE_ROWS),
+                                        np.complex128, complex_values)}
+    comparisons, timings = {}, {}
+    for label, (symmetrizer, dtype, values) in variants.items():
+        out = np.zeros(values.size * (2 if np.dtype(dtype).kind == 'c' else 1))
+        comparisons[label] = (*twins(symmetrizer, dtype), (values, out))
+    timings['real'] = (*twins(None, np.float64), (real_values, np.zeros(real_values.size)), *_SCALE_CALLS)
+    result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
+    result['details']['stored_entries'] = int(indices.size)
+    return result
 
 
 def _check_arpack_host_direct(results_by_name):
@@ -1881,7 +1992,8 @@ SOLVER_SELFTEST_CASES = (
                     'default_precision_ignored on one-physics models (heat linear: auto / single / mixed Automatic, a '
                     'pcg node without, with another and with the same precision, the cpu backend Automatic '
                     'sparse_direct (double only); solid_mechanics linear single and mixed (its role refuses mixed), '
-                    'solid_mechanics_3d linear mixed (its role accepts it); '
+                    'solid_mechanics_3d linear mixed (its role accepts it), its Automatic (gpu: mixed, cpu: double; '
+                    'solver_defaults.precision double wins over the gpu Automatic mixed); '
                     'em_fdtd_ez stepper double and half_storage (its role refuses half_storage)): resolved solver type, '
                     'precision and whether the default is reported ignored; node settings are never written; '
                     'with_default_precision directly (fills without a role, a refusing role and an explicit precision '
@@ -1931,7 +2043,10 @@ SOLVER_SELFTEST_CASES = (
                     'operator of solver_sparse_direct_cpu_gpu by factorize on the cpu (LU, solve, transposed solve, '
                     'GMRES on the factor of a 1e-3-perturbed operator); D^-1 S with S complex symmetric and the '
                     'symmetrizer D (LDL^T of D A, solve and transposed solve); a real non-symmetric operator by '
-                    'factorize_host(real=True) (float64 LU, a complex rhs as two real solves); the real symmetric '
+                    'factorize_host(real=True) (float64 LU, a complex rhs as two real solves); a HostPencil of the '
+                    'SPD operator and a diagonal mass at two complex shifts with a diagonal extra block by '
+                    'factorize_pencil (LDL^T, kept analysis, double: the probe deferred to the solve) and an '
+                    'unsymmetric-valued pencil (LU); the real symmetric '
                     'indefinite Laplacian - sigma I at two shifts (LDL^T, inertia equal to the counting SuperLU unless '
                     'pivots were perturbed, the second shift on the kept analysis); mixed: low-precision solves made '
                     'useless force the probe miss and the double fallback (solve right); with a GPU the same LU '
@@ -1955,4 +2070,14 @@ SOLVER_SELFTEST_CASES = (
                     'symmetric pencil (1 + 0.01 j) K, M against superlu, a Hermitian count_below by the counting '
                     'SuperLU. Passes as skipped without python-mumps / pydiso. Written, not run.',
         specs=lambda: {}, check=_check_arpack_host_direct, max_wall_time=120.0),
+    SelfTestCase(
+        name='solver_host_scale_numba',
+        label='Host direct equilibration scaling: numba row loop vs numpy (CPU)',
+        description='host_direct.scaled_values (values x symmetrizer[row] x r[row] x r[column], every MUMPS / PARDISO '
+                    'refactorisation) with numba=True against numba=False on a random CSR of '
+                    f'{_SCALE_ROWS} rows and {_SCALE_PER_ROW} entries per row: real, real with a symmetrizer, complex '
+                    'values with a complex symmetrizer; measured = error = the worst max |numba - numpy| relative to '
+                    f'the peak, tolerance {_SCALE_TOLERANCE:g}. Details: ms per call of both. Without numba nothing '
+                    'is compared. Not yet run.',
+        specs=lambda: {}, check=_check_host_scale_numba, max_wall_time=120.0, backends=('cpu',)),
 )

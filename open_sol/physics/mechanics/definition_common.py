@@ -328,8 +328,8 @@ GEOMETRIC_NONLINEARITY_PARAMS = (   # new_modules_plan K6 (solid_mechanics_3d on
                'has no static solve: their pencils take K + K_sigma of the initial stress. Not available with '
                'piezoelectric or on a rectangular-cell mesh, and on a triangle mesh not with azimuthal_order >= 1, an '
                'elastic PML or generalized plane strain. Cost: one tangent assembly and factorisation per Newton '
-               'iteration (typically 3 to 6 per load step; setting tangent_update when_slow keeps the factor while '
-               'the residual falls fast).',
+               'iteration while the residual falls slowly (typically 3 to 6 iterations per load step; tangent_update '
+               'when_slow, the default, keeps the factor while the residual falls fast).',
           tip='On: large deflections and rotations are followed exactly, for example the stiffening of a string or a '
               'membrane under a large transverse load, or a released film that bends.\n\nThe static solve is repeated '
               'a few times (Newton iterations) and costs several times a linear solve. Triangle and tetrahedron meshes only.'),
@@ -349,12 +349,12 @@ GEOMETRIC_NONLINEARITY_PARAMS = (   # new_modules_plan K6 (solid_mechanics_3d on
           help='Geometric nonlinearity: Newton iterations per load step before it stops unconverged (a warning; the '
                'damped state is kept and the next step continues from it). Default 25.',
           tip='Most Newton iterations per load step.'),
-    Param('tangent_update', 'choice', 'every_iteration', label='Tangent update', choices=TANGENT_UPDATES,
+    Param('tangent_update', 'choice', 'when_slow', label='Tangent update', choices=TANGENT_UPDATES,
           choice_labels=(('every_iteration', 'Every iteration (full Newton)'),
                          ('when_slow', 'Only when convergence slows (modified Newton)')),
           visible_if=_NONLINEAR_VISIBLE,
-          help='Geometric nonlinearity: when the tangent K_T is reassembled and refactorised. every_iteration '
-               '(default): full Newton, one factorisation per iteration, quadratic convergence. when_slow: modified '
+          help='Geometric nonlinearity: when the tangent K_T is reassembled and refactorised. every_iteration: full '
+               'Newton, one factorisation per iteration, quadratic convergence. when_slow (default): modified '
                'Newton, the factorised tangent is kept (only the internal force is assembled, one back substitution) '
                f'while each iteration cuts the largest free residual below {SLOW_RESIDUAL_RATIO:g} x the previous one, '
                'and refactorised at the current state otherwise; the first iteration of a load step keeps the factor of '

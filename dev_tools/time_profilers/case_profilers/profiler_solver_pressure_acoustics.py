@@ -48,7 +48,6 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.fem.pml:pml_ring', 'fem pml: pml_ring'),
     ('open_sol.fem.sampling:PointLocator.locate', 'fem sampling: PointLocator.locate'),
     ('open_sol.fem.sampling:RasterSampler.sample', 'fem sampling: RasterSampler.sample'),
-    ('open_sol.solvers.sparse_direct:DevicePencil.combined', 'role: DevicePencil.combined'),
 ) + tuple((f'{REDUCED}.{method}', f'reduced: {method}') for method in (
     'train', 'evaluate', 'expand', 'add_vectors', 'reduced_coordinates', 'residuals', 'verify',
 ))

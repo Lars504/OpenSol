@@ -2303,7 +2303,7 @@ EM (E_z): one unit cell of a square lattice of dielectric rods (eps_r 8.9, r = 0
     "sweep": {
       "parameter": "k_fraction",
       "values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -2406,7 +2406,7 @@ EM (FDFD, E_z): the rod unit cell of bloch_band_diagram (eps_r 8.9, r = 0.2 a, a
     "sweep": {
       "parameter": "k_fraction",
       "values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -2944,7 +2944,7 @@ Heat + EM cross-section modes, mode_analysis with a sweep over P_heater (0, 10, 
     "sweep": {
       "parameter": "P_heater",
       "values": [0.0, 10.0, 20.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -3115,7 +3115,7 @@ EM cross-section modes, mode_analysis with a sweep over the reverse bias V_R (0,
     "sweep": {
       "parameter": "V_R",
       "values": [0.0, 2.0, 4.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -3326,7 +3326,7 @@ Electrostatics + EM cross-section modes, mode_analysis with a sweep over V_R (0,
     "sweep": {
       "parameter": "V_R",
       "values": [0.0, 2.0, 4.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -3731,7 +3731,7 @@ em_fdtd_3d: one unit cell of a square lattice of air holes (a = 0.5 um, r = 0.3 
     "sweep": {
       "parameter": "k_fraction",
       "values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -3961,7 +3961,7 @@ em_fdfd_3d: one mirror cell of a silicon nanobeam photonic crystal in D2O (igor_
     "sweep": {
       "parameter": "k_fraction",
       "values": [0.4, 0.45, 0.5],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -5194,7 +5194,7 @@ Magnetostatics, axisymmetric, stationary sweep: a Metglas needle (r = 31 um, l =
     "sweep": {
       "parameter": "gap",
       "values": [2.5e-05, 5e-05, 0.0001, 0.0002, 0.0004],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -5374,7 +5374,7 @@ Magnetostatics on a triangle mesh, planar, stationary sweep: an iron C-core (80 
     "sweep": {
       "parameter": "I_coil",
       "values": [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -5551,7 +5551,7 @@ Magnetic fields AC, planar, stationary sweep over the frequency f = 50 Hz .. 20 
     "sweep": {
       "parameter": "f",
       "values": [50.0, 500.0, 2000.0, 5000.0, 20000.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -5760,7 +5760,7 @@ Magnetic fields AC, axisymmetric, stationary sweep over the frequency f = 10 Hz 
     "sweep": {
       "parameter": "f",
       "values": [10.0, 100.0, 1000.0, 3000.0, 10000.0, 30000.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -6320,7 +6320,7 @@ Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-s
     "sweep": {
       "parameter": "k_fraction",
       "values": [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -6876,7 +6876,7 @@ Nonlinear FDFD (undepleted): a 1550 nm mode pumps a periodically poled z-cut lit
     },
     {
       "name": "C_cmt",
-      "expression": 8.746875191738601e+20,
+      "expression": 8.746875191738596e+20,
       "description": "coupled-mode prefactor of P_2w / (d33^2 P_w^2 L^2)"
     },
     {"name": "u_qpm", "expression": "(dbeta - 2*pi/Lambda)*L_pp/2", "description": "QPM detuning phase [rad]"}
@@ -7024,7 +7024,7 @@ Nonlinear FDFD (undepleted): a 1550 nm mode pumps a periodically poled z-cut lit
         6.197e-06,
         6.577000000000001e-06
       ],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -7216,7 +7216,7 @@ Nonlinear FDFD (undepleted): an H_z plane wave at 1550 nm on a GaAs disk generat
     "sweep": {
       "parameter": "theta_c",
       "values": [0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -7413,7 +7413,7 @@ Nonlinear FDFD (undepleted chi3): a guided pump mode in a silicon slab waveguide
     "sweep": {
       "parameter": "lambda_p",
       "values": [1.36e-06, 1.38e-06, 1.4e-06, 1.42e-06, 1.44e-06],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -7655,7 +7655,7 @@ Nonlinear FDFD (pump depleted, Newton-Krylov): phase-matched second-harmonic gen
     "sweep": {
       "parameter": "gamma_L",
       "values": [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -7910,7 +7910,7 @@ Nonlinear FDFD (pump depleted, Newton-Krylov): degenerate four-wave mixing in a 
     "sweep": {
       "parameter": "P_pump",
       "values": [250000.0, 500000.0, 1000000.0, 2000000.0, 4000000.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -8155,7 +8155,7 @@ Nonlinear FDFD (undepleted, surface chi2): an in-plane polarised 1550 nm plane w
     "sweep": {
       "parameter": "w_ridge",
       "values": [1e-07, 1.5e-07, 2e-07, 2.5e-07, 3e-07, 4e-07],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -8359,7 +8359,7 @@ Nonlinear FDFD (undepleted, sigma3 sheet): third harmonic of graphene on a silic
         1.675e-06,
         1.6999999999999998e-06
       ],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,
@@ -9744,7 +9744,7 @@ Electrostatics + EM FDFD (H_z) with the Pockels coupling, stationary, sweep over
     "sweep": {
       "parameter": "V_bias",
       "values": [0.0, 50.0, 100.0],
-      "keep_fields": false,
+      "keep_fields": true,
       "spacing": "list",
       "lower": null,
       "upper": null,

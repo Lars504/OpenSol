@@ -278,6 +278,9 @@ def _check_string(_):
 # at alpha a^2 / k = 0.05 seeds (warm_start_fields -> seed_warm_start, the sweep path) a new physics on the same mesh
 # solving 0.1: equal to a cold 0.1 solve within the Newton tolerance with fewer Newton iterations; a -5 u seed and a
 # non-finite seed (which must fall back to the cold ramp) still match. 0.05 -> 0.1 is strongly nonlinear (a ~ +40 %).
+# Full Newton: the iteration count measures the seed only there (when_slow, the default, trades factorisations for
+# more, linearly converging iterations: a closer seed can then take more iterations, 10 against 9 cold)
+WARM_TANGENT_UPDATE = 'every_iteration'
 WARM_RATIOS = (0.05, 0.1)           # alpha a^2 / k of the seeding solve and of the seeded one
 WARM_TOLERANCE = 1e-9               # relative to max |u| (Newton tolerance 1e-10, quadratic convergence)
 
@@ -313,7 +316,9 @@ def warm_start_errors(runs):
     errors, tolerances = {}, {}
     cold = runs['cold'][1]
     scale = float(np.max(np.abs(cold)))
-    iterations = {run: int(physics.work_counters().get('nonlinear_iterations', 0)) for run, (physics, _) in runs.items()}
+    counters = {run: physics.work_counters() for run, (physics, _) in runs.items()}
+    iterations = {run: int(counts.get('nonlinear_iterations', 0)) for run, counts in counters.items()}
+    factorizations = {run: int(counts.get('tangent_factorizations', 0)) for run, counts in counters.items()}
     texts = {run: physics._nonlinear_text() for run, (physics, _) in runs.items()}
     for run in ('seeded', 'bad seed (-5 u)', 'non-finite seed'):
         errors[f'{run} u'] = float(np.max(np.abs(runs[run][1] - cold))) / scale
@@ -324,7 +329,8 @@ def warm_start_errors(runs):
               'every run converged': all(physics.last_converged for physics, _ in runs.values())}
     for name, passed in checks.items():
         errors[name], tolerances[name] = (0.0 if passed else math.inf), 1.0
-    return errors, tolerances, {'iterations': iterations, 'texts': texts, 'max_u': scale}
+    return errors, tolerances, {'iterations': iterations, 'tangent_factorizations': factorizations, 'texts': texts,
+                                'max_u': scale}
 
 
 def _check_warm_start(_):
@@ -337,7 +343,7 @@ def _check_warm_start(_):
         physics.inject_source('body_force_y', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
         physics.step(0.0, math.inf)
 
-    runs = warm_start_runs(lambda: _held_string_physics(False), apply_load,
+    runs = warm_start_runs(lambda: _held_string_physics(False, tangent_update=WARM_TANGENT_UPDATE), apply_load,
                            lambda physics: np.array(physics.system.unknown, dtype=np.float64))
     errors, tolerances, details = warm_start_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
@@ -471,7 +477,7 @@ NONLINEAR_CASES = (
     SelfTestCase(
         name='solid_fem_nonlinear_warm_start',
         label='Solid mechanics on triangles: sweep warm start of the nonlinear Newton solve',
-        description=('The axial-free in-plane string of solid_fem_duffing_string (CPU, no model): a solve at alpha a^2 '
+        description=('The axial-free in-plane string of solid_fem_duffing_string (CPU, no model, full Newton): a solve at alpha a^2 '
                      f'/ k = {WARM_RATIOS[0]:g} hands warm_start_fields to seed_warm_start of a new physics on the same '
                      f'mesh solving {WARM_RATIOS[1]:g} (the sweep warm start path); its displacement equals a cold '
                      f'solve within {WARM_TOLERANCE:g} of max |u| with fewer Newton iterations (work_counters), the '

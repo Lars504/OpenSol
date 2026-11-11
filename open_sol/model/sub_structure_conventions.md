@@ -532,7 +532,8 @@ templates, describe. Current state, no changelog.
   parameters stay; other accessors raise RuntimeError. `study.release_session(on_session, session, emit,
   baseline_bytes)`: on_session(None), `close()`, `release_all` (gc, cuFFT cache, `free_all_blocks`); with emit, pool
   use above `pool_baseline_bytes` + 1 MiB logs a 'GPU memory leak' warning (process-wide counters: a later live
-  session gives a false leak; api checks only when no later live Results exists).
+  session gives a false leak; api checks only when no later live Results exists). The run-start release in
+  `_run_single` skips the gc.collect when neither the pool nor cuDSS holds live bytes (the last close collected).
 - GPU OOM = cupy OutOfMemoryError or a CUDA / library error naming an allocation failure (host MemoryError is
   ordinary): Issue at the failing step's node (outside any step ('model',)), memory released before BuildFailed /
   StudyFailed (`out_of_memory=True`), run_study closes the run's session, a derived value gives NaN.

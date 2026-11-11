@@ -9,7 +9,7 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   `model_cases.prepare` / `run_model` for a whole api.run). The parent never factorises and never makes a CUDA context
   (its GPU check is a device count; the device name comes from the children).
 - dev_tools imports open_sol, never the reverse; open_sol's import_contracts, structure_index and selftest cache scan
-  only `open_sol/`, and `pyproject.toml` ships only `open_sol*`, so nothing here is checked or shipped. open_sol is
+  only `open_sol/`, and `pyproject.toml` ships only `open_sol*`, so nothing here is checked or pip-installed (the repository is public: a clone has it). open_sol is
   imported inside functions (problems / runners / catalog), so the parent stays light until it enumerates.
 - Run from the repository root: the child is started with cwd = the repository root (`REPO_ROOT`) so `-m` finds both
   packages; the script form inserts the root into sys.path.
@@ -47,7 +47,10 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
 ## case_profilers
 - One `profiler_solver_<type>[_<variant>].py` per solver engine (tensor / triangles / tetrahedra), each a list of
   'module:Class.method' parts on `profiler_harness.py`; `profiler_*_parts.py` / `_common.py` are shared part lists;
-  `run_all_profilers.py` runs every script in a subprocess. Scripts import their siblings by bare name (own folder
+  `run_all_profilers.py` runs every script in a subprocess and keeps each report and its `runs.json` in
+  `out/history/<timestamp>/` (`<folder>.txt`, `<folder>.runs.json`); `profile_delta.py <folder>` prints the parts
+  that changed between the two newest kept `runs.json` (it reads `wall_seconds` and `parts[].exclusive_seconds` /
+  `calls`: a renamed key empties it). Scripts import their siblings by bare name (own folder
   on sys.path) and find the repository from `__file__`, so they run from any folder as scripts, not with `-m`.
   Output: `out/` next to the scripts (git-ignored).
 - Parts are wrapped before the registry exists (`wrapped_timers` in `main`): StudyType / FeatureType callbacks keep
@@ -55,4 +58,50 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
 - A target that does not resolve is listed in the report ("parts that did not resolve"), never raised: after a
   refactor check that section, or the part silently drops out of the table.
 - Every timed call synchronises the GPU at entry and exit: time per-phase functions, not per-step kernels
-  (or compare with `--no-sync`).
+  (or compare with `--no-sync`). The exit synchronize is timed alone as the part's device wait (record field 4,
+  `EMPTY_RECORD` layout): cpu/wall cannot tell device-bound parts (the blocking sync spins a core), the wait column
+  only partly can: it counts the work still queued at exit, so a device-bound part ending in a host read (a PCG solve
+  reading its residual) shows ~0 wait.
+- Selftest specs assign the double `exact_cg` node (`with_exact_cg`) to every pcg physics: a profiler run meant to
+  time the Automatic solver drops that node from a copy (tensor 3D profiler `_on_automatic`).
+- `SOLVER_ROLE_PARTS` includes private cuDSS / DevicePencil / host direct (`_PardisoFactor` / `_MumpsFactor`) /
+  multigrid phases by name: a new solver module or library adapter needs its phases added there. A script that also lists one of its
+  targets gets "already timed" in the unresolved section (drop it from the script). A renamed private method drops
+  out the same way, so check that section after a cuDSS refactor.
+- The harness output folder is `output_name(...)`: the profile name + backend + `--compare` (+ `only`) + `--set`, so
+  profiles of different solvers never share a report / runs.json; a new result-changing option belongs in that name.
+- `run_all_profilers.py` reads each command's points from the `runs.json` next to the report it printed, and only
+  when that file is newer than the command's start. `profile_points.json` is the only record of first / previous /
+  current: `load_points` never drops what it cannot read (it raises; the old one-solver layout maps to 'auto @gpu'),
+  `save_points` replaces the file whole, and every run first copies it to its history folder. A layout change needs
+  a mapping in `load_points`, never a fresh start. The Automatic ring reads `runs.json` `automatic` (`_automatic_choices`:
+  per role used, `SolverRole.automatic('gpu', grid)` over the type's param defaults, back_end / factorization 'auto'
+  through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores the
+  spec's nodes and a runtime cuDSS fallback. A back end name that is not a SOLVERS key (or a renamed
+  `back_end` / `factorization` / `preconditioner` param) silently drops the rings. A changed `runs.json` key (`wall_seconds`, `gpu_peak_bytes`,
+  `host_peak_bytes`) silently empties that panel. On the cpu backend summary.json `build.gpu_peak_bytes` is the
+  MemoryLedger's tracemalloc peak (host bytes), so `_run_memory` writes null there instead of reading it, and the plot skips `@cpu` variants in the GPU panel
+  (old points included). The points are keyed by '<solver> @<backend>', then the COMMANDS
+  entry: renaming an entry starts a new series and leaves the old one plotted at the end of the axis. A compare
+  solver counts only the completed runs (`status` 'completed' of summary.json, copied into runs.json) whose name holds its `NAME=value` token (the harness's variant label), so a change of
+  that label drops every compare point; and only those in which a role holding the value factorised (`runs.json`
+  `solvers[].factorizations`, from the role's `factorizations` / `eigen_factorizations` counter; None = no counter,
+  counted): a matrix-free eigen solve or a line_block run under `back_end=pardiso` measures another solver. A command
+  whose every run of the solver is such a run loses that solver's points of the command (the one case where points
+  are dropped; `profile_points_before.json` of the run keeps them). A renamed counter makes every run count again. A timed-out command counts as profiling unless its partial stdout holds the
+  harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. `--compare` checks only the
+  solver setting's `setting_choices`; a physics that refuses the back end in its own validation (the 1D membrane takes
+  only auto / scipy_splu) fails at build, and those runs are not counted. The plot is saved to a timestamped sibling
+  and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
+  `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
+  nodes (cuDSS, device line_block) fail at build and those runs are not counted.
+- `LIBRARY_CLOCKS` reads a seconds attribute the instance sets inside the wrapped call (cuDSS `factorize_seconds`).
+  It counts only a new value, so keep that attribute assigned fresh on every call.
+- `--compare` adds a solver node per (physics, role) to a deep copy of the spec, never editing the spec's nodes. Values
+  stay strings, so it suits choice settings (`back_end`, `precision`). `SETTING_ALIASES` pairs `back_end` with the
+  shift-invert `factorization`; a value outside the role's `setting_choices` is skipped, never an invalid node. A run
+  that differs from an earlier one only by a node the value replaces (a script's `*_double_factor` twin) is the same
+  model under that value and is dropped (`_run_key`: the specs' JSON without the displaced nodes).
+- Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
+  callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
+  every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).

@@ -19,10 +19,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - 2D: `_block_precondition` is a twin ('mechanics.elastic_block_jacobi'); `stiffness_stencil` / `mass_stencil`
   default xp = module of their first array, `ElasticPattern` defaults to numpy (the device assembly passes xp). Modal,
   guided and piezo solves are host.
-- 3D: every kernels3d RawKernel is a twin ('mechanics3d.<kernel>', GPU side compiled per real type of args[0]). numpy
-  twins = 2-point Gauss per axis (equal to the CUDA closed forms up to rounding), temporaries per call: a cpu CG
-  iteration is far slower (estimator books the twin temporaries as cpu build extra). numba twin of elastic_product
-  only (`_elastic_product_numba`; CPU case solid_3d_product_numba).
+- 3D: every kernels3d RawKernel is a twin ('mechanics3d.<kernel>', core.kernels.real_raw_twin: GPU side compiled per real type of args[0]; multigrid3d alike). numpy
+  twins = 2-point Gauss per axis (equal to the CUDA Walsh-basis forms up to rounding), temporaries per call: a cpu CG
+  iteration is far slower (estimator books the twin temporaries as cpu build extra). numba twins (`_NUMBA_TWINS`,
+  cache=True) of the per-iteration kernels: elastic_product and elastic_mass_product (closed-form per-node gathers),
+  block_precondition3 and the fused CG pair; CPU case solid_3d_product_numba compares each with its numpy twin. A numba
+  twin that needs another kernel calls its registered twin (`_TWINS[name]`), never its factory, so each kernel is
+  compiled / cache-loaded once per process.
 - Parity cases (`selftests_backend.py`, `solid_parity_case`: solid_mechanics_cpu, solid_mechanics_3d_cpu,
   solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
   runs within FIELD_TOLERANCE relative to the max of the gpu fields of the same kind (u / strain / stress + von_mises),
@@ -136,7 +139,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   'loaded' (resistive electrode); one factor kept across shifts (`previous=`, cuDSS plan reuse); K, M, load matrix as
   host CSR, plus the eigen runtime's `ShiftPencil` (`_pencil()`) that count_below / eigsh_shifted / eigs_shifted all
   take, so every shift and count refreshes one factor on one pattern (one cuDSS plan per pencil). Eigen factorization
-  'auto' resolves on the gpu with nvmath to cudss (triangles) / cudss_mixed (tetrahedra), else superlu; on a cuDSS
+  'auto' resolves on the gpu with nvmath to cudss (triangles and tetrahedra: ARPACK's 37-63 applications favour the
+  double factor over mixed + GMRES refinement), else superlu; on a cuDSS
   refusal the runtime falls back to SuperLU for good (that shift is redone); Hermitian (Bloch) pencils are counted by
   a counting SuperLU so band searches stay verified (solvers sub file arpack_shift_invert). From
   `DEVICE_PENCIL_MIN_ENTRIES` stored entries on cuDSS it holds a DevicePencil (pool memory ~2-3 value arrays + refresh
@@ -204,9 +208,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - In Hz (the EM frequency_domain study stays wavelength-based): `solve_frequency_response(f)` (after
   `reset_frequency_response()`) = one complex factor of (K + j L - omega^2 M) x = f (exp(+j omega t)) on the free dofs
   of the last assembly. `HarmonicSystem` reduces K, L, M once and sums per frequency by `fem.assembly.pattern_sum`
-  (value-independent pattern, so a cuDSS plan holds); on a cuDSS runtime the terms stay on the device (DevicePencil)
+  (value-independent pattern, so a cuDSS plan holds); on a cuDSS runtime the terms stay on the device (DevicePencil),
+  on MUMPS / PARDISO they are a HostPencil of its own term arrays (`runtime.pencil`; never modify them in place),
   and each frequency calls `factorize_pencil(row_scale=(|diag K| + omega^2 |diag M|)^-1/2, previous=)`; else
-  `factorize_host` (SuperLU); without a runtime a private SuperLU. 2D tensor solids: private SuperLU outside the roles
+  `factorize_host` (SuperLU); without a runtime a private SuperLU. A host direct refresh defers its probe to the
+  solve (double): a HostDirectAccuracyError can come from `solve_host`, as a cuDSS one does. 2D tensor solids: private SuperLU outside the roles
   (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra: their
   'linear' sparse_direct runtime (3D operator class 'spd' is nominal there). Loads, held values, electrode voltages and
   floating charges are phase-0 amplitudes (dead loads only: the thermal and initial-stress loads are static, never a
@@ -287,7 +293,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   C0^2), never core MU0 (its 1e-10 mismatch shows in the exact cases).
 - om_integrand (`requires_study='optomechanics'`, parity even): stored by evaluate, shown for `selected_resonance` of
   the first evaluated coupling. Kept out of `state_fields` (`state()` has no such array): a new study-only renderer
-  field must stay out too.
+  field must stay out too. Tensor meshes only: `SolidFEMRenderer` drops it from its `field_infos`, since default
+  snapshots store every listed field (`_stored_field_keys`) and a listed field the renderer cannot read fails the study.
 - Normalisation: |Q| = 1 at the reference node (peak or nearest reference_x / _y); g0 independent of it, g_om and m_eff
   not. m_eff = length x 2^(EM mirror faces) x Q^T M Q: EM mirror faces need solid rollers (validation warning); the
   em_modes mirror_factor cancels in the in-plane ratio. brillouin_gain (last column): em_modes with
@@ -349,11 +356,40 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   device arrays (graded axes need no kernel change); 3 x nodes < 2^31 (int32 indexing, prepare raises).
 - No CSR: matrix-free product of `kernels3d.BrickKernels` (lazy float / double RawKernels incl. fused load / outputs:
   no float64 window temporaries). The PCGSolver is factorized once in `prepare` with masked product + block
-  preconditioner callbacks (they read the latest assembly). `reaction` uses the CG unknown `_solution` as scratch.
+  preconditioner callbacks (they read the latest assembly). `reaction` uses the CG unknown `_solution` as scratch and
+  keeps K u there while (n_solves, assemblies) are unchanged (every PCG solve, Lanczos inner ones too, bumps
+  n_solves); anything else that writes `_solution` or `unknown` between solves must reset `_reaction_key`.
+- GPU product and mass kernels work in the per-axis sum / difference (Walsh) basis of each element's corner values
+  (kernels3d preamble: the 1D integrals are orthogonal there, ~240 flops per (node, element) visit against ~520 for the
+  pairwise blocks; one deterministic gather launch, no extra memory). `brick_block` stays for the diagonal blocks.
+  Every CG step runs as `kernels3d.FusedBrickIteration` (pcg fused_iteration: elastic_update_precondition +
+  elastic_direction_product, grid-stride with block partial sums that the next launch sums itself) and the gpu check
+  blocks as CUDA graphs (pcg capture_blocks): `assemble` calls `release_block_graphs()` after replacing lame_lambda / mu
+  / the float32 copies; anything else that replaces an array the fused operator reads must do the same.
+- pcg preconditioner 'multigrid' (opt-in, speed plan A2; design `.temp_scratchpad/solidmech3d_multigrid_design.md`):
+  `multigrid3d.BrickMultigrid` is the precondition callback (no fused iteration then; the check blocks of 2 are still
+  captured, so a V-cycle must stay sync- and allocation-free: everything it touches is allocated in its __init__ in
+  `prepare`, and `build` after each assembly, before `release_block_graphs`). Levels: `level_element_shapes` (shared
+  with the estimators), elastic_product / diagonal_blocks / reduce_invert_blocks on a BrickKernels per coarse level;
+  the cycle is float32 at every precision: level 0 is the float32 operator copy (`_single_operator`, also built for a
+  double node with multigrid; a double CG casts the residual in and `_cycle_out` back; float64 cycles were 19x slower
+  on a GPU with slow float64). Coarse
+  levels are rediscretised, not Galerkin (volume-mean Lame values, injected holds; lost holds become pseudo-inverse
+  null space). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
+  = the exact transpose (gather form), so pre / post Chebyshev + R = P^T keep the cycle symmetric for plain PCG.
+  `_guarded_solve` (static and every Lanczos inner solve) caps max_iterations at `multigrid_budget()` (the block-Jacobi
+  estimate CG_ITERATIONS_PER_AXIS_CELL x longest axis over CYCLE_COST_IN_JACOBI_ITERATIONS, within
+  [FALLBACK_MIN_ITERATIONS, FALLBACK_ITERATIONS]): a solve unconverged within it switches the system to block Jacobi
+  for good (warning, `multigrid_fallbacks`) and re-solves from there (its failed attempt is taken out of
+  n_unconverged). Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` (thin plate in void) fail on a
+  fallback, so the guard cannot hide a weak cycle. Counters via `PCGSolver.preconditioner_counters`; estimator items 'multigrid levels' / build
+  transient / coarsest host build, time recipe `_multigrid_ops` (cycle as preconditioner_ops, build as setup_ops).
 - pcg 'mixed' (`CG_ELASTIC_3D_LINEAR_ROLE`; the 2D CG_LINEAR_ROLE refuses it): float64 system + `_single_operator`
-  float32 copy per assemble (blocks inverted in float64, then cast). Kernels pick their real type from args[0]: every
-  array argument of one call must share the dtype. Eigenfrequency accepts mixed. Estimator: mixed workspace + float32
-  copy item.
+  float32 copy per assemble (blocks inverted in float64, then cast). Automatic on the gpu backend (speed plan A1: the
+  float64 product runs at the FP64 rate of consumer cards; 25 s -> 1.5 s at 2e5 nodes); cpu Automatic stays double;
+  solver_defaults.precision replaces it. Kernels pick their real type from args[0]: every array argument of one call
+  must share the dtype. Eigenfrequency accepts mixed. Estimator: mixed workspace (+ the fused second direction) +
+  float32 copy item; time recipe `iteration_ops` = the fused pair.
 - Node blocks are not diagonal: reduce them (fixed rows / columns zeroed, 1 on the diagonal) BEFORE inversion;
   inverting the full block puts free residual into held components at a roller node (silently wrong solve).
 - Rigid-mode check = rank of the 6 x 6 Gram matrix of rigid-mode rows at each region's held dofs (26-connected;
@@ -451,6 +487,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   first, and a new reader of
   `_nodal` or per-element outputs goes through it (why: the eigen study selects every mode for snapshots; ~47 s at 2.2e5
   P2 piezo elements with eager passes).
+- The point groups (mechanical, energy, electric's D) read one shared `_point_values(points[, imaginary])` = (values,
+  strains) over every solid element (READ-ONLY; copy before subtracting alpha dT), one `element_strains_3d` per
+  (solution part, point set); `_write_outputs` and `_assemble` (new `_solid`) clear it and the last pending point group
+  drops it (`_release_point_values`), so it never outlives one shown solution. A new output at element points takes
+  its strains from there (rows of a solid subset by searchsorted), never a fresh evaluation.
 - Piezoelectric (`piezo_fem3d.py` + `piezo.PiezoSystem`): unknowns [u (3 n interleaved) | phi (n)] (block layout);
   K_uphi on solid elements, K_phiphi on every window element (void dielectric); K_uu = the system's CSR
   (`system.assemble` still builds holds / active set / rigid check, its K factor is never made). Materials
@@ -551,15 +592,21 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   pencils' K_T too). Load steps ramp dead loads and prescribed displacements; S0 = sigma0 - beta dT is not ramped.
   Triangles: the K factor is refreshed after a tangent took it; plane stress = SVK with S_zz = 0; refused with m >= 1,
   PML, generalized plane strain, piezo; prescribed_displacement_domain is triangles only in 2D.
-- tangent_update 'when_slow' (`TangentPolicy`): reuse the held factor (`solve_last_tangent`) while the residual falls
+- tangent_update 'when_slow' (`TangentPolicy`, the default since round 5 of the 3D speed plan): reuse the held factor (`solve_last_tangent`) while the residual falls
   below SLOW_RESIDUAL_RATIO x the previous one. The held factor lives only inside one `_nonlinear_state` (`policy.reset()`
   there and before a warm start's cold ramp): any other factorisation on the 'linear' runtime replaces it, so never
   reuse it across solves. Time recipe keeps the full-Newton count. The factor / solve layer of both FEM systems is
   `system_fem.DirectElasticSystem` (K_ff on demand, `_tangent_held` guards `solve_last_tangent`, hooks `_check_static`
-  / `_reaction_mask`; 3D drops its device solution vector on `release_factor`).
+  / `_reaction_mask`; 3D drops its device solution vector on `release_factor`). Geometric nonlinearity (not piezo):
+  `ElasticFEMSystem3D.assemble(defer_operator=True)` builds K at the first read of `operator` (pencils, frequency
+  response, a linear solve), so a static Newton solve never assembles it; "assembled?" checks go through
+  `_operator_missing()`, never `operator is None` (that read would assemble K).
 - Device tangents (3D: gpu backend AND a cuDSS 'linear' back end): `TangentAssembler3D(device=True)`; held
   `policy.data` is device data, so code using the assembler's data goes through its methods (`full_product`,
-  `solve_tangent_device`), never `assembler.full(data) @ host_vector`. Memory `_device_tangent_items`.
+  `solve_tangent_device`), never `assembler.full(data) @ host_vector`. Memory `_device_tangent_items` (one chunk of
+  the assembler's byte-capped device size: fem sub file "Device tangents"). The K pattern of the tetrahedra
+  (`assemble_elastic_stiffness_3d`) and the tangent's are one kept block pattern per mesh (fem sub file "Block
+  patterns"): the host estimate counts it once, under the stiffness.
 - Newton start (`nonlinear_start.py`): sweep seed (`seed_warm_start`; 2D on full-mesh dof rows), else the last
   converged state of the same kind of this assembly (`forget_last` in `_assemble`), else u = 0. A failed warm start
   (incl. NaN / singular raise) reruns the cold ramp from 0 ('warm start failed: cold ramp'). `warm_start_fields` is {}

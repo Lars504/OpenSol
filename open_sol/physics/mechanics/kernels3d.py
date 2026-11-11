@@ -1,12 +1,13 @@
 """RawKernels of the matrix-free 3D elasticity (trilinear bricks on the window cells, nodal (u_x, u_y, u_z)), templated
 on float / double and built lazily on first use, each a core.kernels twin with a numpy host version (the cpu backend;
-numba twin of the stiffness product); this module imports no cupy at module level."""
+numba twins of the per-iteration kernels), and the fused two-launch CG iteration (FusedBrickIteration); this module
+imports no cupy at module level."""
 import itertools
 import math
 
 import numpy as np
 
-from ...core.kernels import raw_twin
+from ...core.kernels import real_raw_twin
 
 # Cell-centre outputs in the argument order of elastic_outputs (the 3D field class keeps this order).
 OUTPUT_ARRAYS_3D = ('u_x', 'u_y', 'u_z', 'u_abs',
@@ -15,7 +16,6 @@ OUTPUT_ARRAYS_3D = ('u_x', 'u_y', 'u_z', 'u_abs',
                     'stress_xx', 'stress_yy', 'stress_zz', 'stress_xy', 'stress_xz', 'stress_yz', 'von_mises')
 
 _BLOCK = 256
-_REAL_TYPES = {'float32': 'float', 'float64': 'double'}
 _MASK_ON, _MASK_OFF = np.int32(1), np.int32(0)
 
 # Layout: elements (ex, ey, ez) = window cells, element e = (ei ey + ej) ez + ek; nodes (ex + 1, ey + 1, ez + 1),
@@ -67,46 +67,175 @@ __device__ __forceinline__ void brick_block(
             K[a][b] = lam * I[a][b] + mu * I[b][a] + (a == b ? mu * trace : (real_t)0);
 }
 
-// brick_block's 1D factors of local node k against both local nodes l = 0, 1 per axis (once per element, not per
-// pair): sk = slope sign of k, D[d][l] = s_k s_l / w, M[d][l] = w (1 + delta_kl) / 6.
-__device__ __forceinline__ void axis_tables(
-    int kx, int ky, int kz, real_t wx, real_t wy, real_t wz, real_t sk[3], real_t D[3][2], real_t M[3][2])
+// Products in the per-axis sum / difference (Walsh) basis of an element's 8 corner values (speed plan A4): local corner
+// l = 4 lx + 2 ly + lz, mode m = 4 bx + 2 by + bz (bit set = the difference along that axis). C_m = sum_l S(m, l) u_l
+// with S = +1 on a sum bit, 2 l_d - 1 on a difference bit. The trilinear field is sum_m c_m prod_d psi_(m_d)(t_d), psi_0
+// = 1, psi_1 = t - 1/2, c_m = 2^-(zero bits) C_m; the 1D integrals are orthogonal there (int 1 = 1, int psi_1^2 = 1/12,
+// d psi_1 / dx = 1 / w), so the gradient d_d u_a over base mode m (bit d clear) is h = c_(m | bit d) / w_d and the
+// element energy V sum_m 12^-q(m) Q_m(h) is diagonal per base mode (q = set bits of m). With h~ = C / w:
+// dE / dC_(a, m | bit d) = F_q / w_d sigma~_ad, sigma~ = lambda tr~ delta_ad + mu (h~_ad + h~_da [bit a of m clear]),
+// F_q = V 4^(q - 2) 12^-q = V / 16, V / 48, V / 144. Mass: dE / dC_m = rho V 12^-q 4^(q - 3) C_m. A corner's row is the
+// inverse transform at that corner (corner_value). The same integrals as brick_block up to rounding.
+#define AXIS_BIT(d) (4 >> (d))
+
+__device__ __forceinline__ void walsh8(real_t v[8])
 {
-    const int k[3] = {kx, ky, kz};
-    const real_t w[3] = {wx, wy, wz};
-    for (int d = 0; d < 3; ++d) {
-        sk[d] = slope_sign(k[d]);
-        const real_t slope = sk[d] / w[d];
-        const real_t sixth = w[d] / (real_t)6;
-        for (int l = 0; l < 2; ++l) {
-            D[d][l] = slope_sign(l) * slope;
-            M[d][l] = sixth * (real_t)(1 + (l == k[d]));
+#pragma unroll
+    for (int bit = 4; bit > 0; bit >>= 1) {
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            if (i & bit) continue;
+            const real_t lower = v[i], upper = v[i | bit];
+            v[i] = lower + upper;
+            v[i | bit] = upper - lower;
         }
     }
 }
 
-// acc += K u_l with K = brick_block(k, l) from the axis_tables of k (K never formed).
-__device__ __forceinline__ void add_table_block(
-    int lx, int ly, int lz, const real_t sk[3], const real_t D[3][2], const real_t M[3][2], real_t lam, real_t mu,
-    real_t u0, real_t u1, real_t u2, real_t acc[3])
+// sum_m S(m, k) g_m at the corner with axis signs s_d = 2 k_d - 1
+__device__ __forceinline__ real_t corner_value(const real_t g[8], real_t sx, real_t sy, real_t sz)
 {
-    const real_t m0 = M[0][lx], m1 = M[1][ly], m2 = M[2][lz];
-    const real_t i00 = D[0][lx] * m1 * m2, i11 = m0 * D[1][ly] * m2, i22 = m0 * m1 * D[2][lz];
-    const real_t h0 = (real_t)0.25 * slope_sign(lx), h1 = (real_t)0.25 * slope_sign(ly);
-    const real_t h2 = (real_t)0.25 * slope_sign(lz);
-    // I_ab (a != b) = (s_ka / 2)(s_lb / 2) M_c, c the third axis
-    const real_t i01 = sk[0] * h1 * m2, i10 = sk[1] * h0 * m2, i02 = sk[0] * h2 * m1, i20 = sk[2] * h0 * m1;
-    const real_t i12 = sk[1] * h2 * m0, i21 = sk[2] * h1 * m0;
-    const real_t trace = mu * (i00 + i11 + i22);
-    const real_t shear = lam + mu;
-    acc[0] += (shear * i00 + trace) * u0 + (lam * i01 + mu * i10) * u1 + (lam * i02 + mu * i20) * u2;
-    acc[1] += (lam * i10 + mu * i01) * u0 + (shear * i11 + trace) * u1 + (lam * i12 + mu * i21) * u2;
-    acc[2] += (lam * i20 + mu * i02) * u0 + (lam * i21 + mu * i12) * u1 + (shear * i22 + trace) * u2;
+    const real_t v0 = g[0] + sz * g[1], v1 = g[2] + sz * g[3], v2 = g[4] + sz * g[5], v3 = g[6] + sz * g[7];
+    return (v0 + sy * v1) + sx * (v2 + sy * v3);
+}
+
+// g[a][m] = dE / dC_(a, m) of the brick from the Walsh coefficients c (lam_q / mu_q = lambda / mu x F_q)
+__device__ __forceinline__ void brick_modal_forces(const real_t c[3][8], const real_t inv_w[3], const real_t lam_q[3],
+                                                   const real_t mu_q[3], real_t g[3][8])
+{
+#pragma unroll
+    for (int a = 0; a < 3; ++a)
+#pragma unroll
+        for (int m = 0; m < 8; ++m) g[a][m] = (real_t)0;
+#pragma unroll
+    for (int m = 0; m < 7; ++m) {   // base modes; m = 7 has no gradient left
+        const int q = ((m >> 2) & 1) + ((m >> 1) & 1) + (m & 1);
+        real_t h[3][3];
+        real_t trace = (real_t)0;
+#pragma unroll
+        for (int d = 0; d < 3; ++d) {
+            if (m & AXIS_BIT(d)) continue;
+#pragma unroll
+            for (int a = 0; a < 3; ++a) h[a][d] = c[a][m | AXIS_BIT(d)] * inv_w[d];
+            trace += h[d][d];
+        }
+#pragma unroll
+        for (int d = 0; d < 3; ++d) {
+            if (m & AXIS_BIT(d)) continue;
+#pragma unroll
+            for (int a = 0; a < 3; ++a) {
+                real_t stress = h[a][d];
+                if (!(m & AXIS_BIT(a))) stress += h[d][a];
+                stress *= mu_q[q];
+                if (a == d) stress += lam_q[q] * trace;
+                g[a][m | AXIS_BIT(d)] += stress * inv_w[d];
+            }
+        }
+    }
+}
+
+// a[index], or the CG direction z + beta p formed on the fly (combine: fma, so every thread forms the same value)
+__device__ __forceinline__ real_t gathered(const real_t* __restrict__ a, const real_t* __restrict__ b, real_t beta,
+                                           int combine, idx_t index)
+{
+    return combine ? fma(beta, b[index], a[index]) : a[index];
+}
+
+// 1 / w of the two elements beside node index n along an axis (0 outside the window: those elements are skipped)
+__device__ __forceinline__ void inverse_pair(const real_t* __restrict__ w, int n, int count, real_t inverse[2])
+{
+    for (int d = 0; d < 2; ++d) {
+        const int e = n - 1 + d;
+        inverse[d] = (e >= 0 && e < count) ? (real_t)1 / w[e] : (real_t)0;
+    }
+}
+
+// Walsh coefficients c[a][m] of the corner values of element (ei, ej, ek)
+__device__ __forceinline__ void element_modes(
+    const real_t* __restrict__ a, const real_t* __restrict__ b, real_t beta, int combine, int ei, int ej, int ek,
+    int nyn, int nzn, real_t c[3][8])
+{
+#pragma unroll
+    for (int l = 0; l < 8; ++l) {
+        const idx_t nb = 3 * (((idx_t)(ei + (l >> 2)) * nyn + (ej + ((l >> 1) & 1))) * nzn + (ek + (l & 1)));
+#pragma unroll
+        for (int comp = 0; comp < 3; ++comp) c[comp][l] = gathered(a, b, beta, combine, nb + comp);
+    }
+#pragma unroll
+    for (int comp = 0; comp < 3; ++comp) walsh8(c[comp]);
+}
+
+// acc += (K v) at node (i, j, k): gather over the <= 8 adjacent solid elements (mu > 0), v = gathered(a, b, beta)
+__device__ __forceinline__ void node_stiffness_product(
+    int i, int j, int k, const real_t* __restrict__ a, const real_t* __restrict__ b, real_t beta, int combine,
+    const real_t* __restrict__ lam, const real_t* __restrict__ mu,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    int ex, int ey, int ez, real_t acc[3])
+{
+    const int nyn = ey + 1, nzn = ez + 1;
+    real_t inv_x[2], inv_y[2], inv_z[2];   // 6 divisions per node, none per element (float64 rate on consumer GPUs)
+    inverse_pair(wx, i, ex, inv_x);
+    inverse_pair(wy, j, ey, inv_y);
+    inverse_pair(wz, k, ez, inv_z);
+    for (int di = 0; di < 2; ++di) {
+        const int ei = i - 1 + di;
+        if (ei < 0 || ei >= ex) continue;
+        for (int dj = 0; dj < 2; ++dj) {
+            const int ej = j - 1 + dj;
+            if (ej < 0 || ej >= ey) continue;
+            for (int dk = 0; dk < 2; ++dk) {
+                const int ek = k - 1 + dk;
+                if (ek < 0 || ek >= ez) continue;
+                const int e = (ei * ey + ej) * ez + ek;
+                const real_t m = mu[e];
+                if (m <= (real_t)0) continue;
+                const real_t l = lam[e];
+                real_t c[3][8];
+                element_modes(a, b, beta, combine, ei, ej, ek, nyn, nzn, c);
+                const real_t volume = wx[ei] * wy[ej] * wz[ek];
+                const real_t scale[3] = {volume * ((real_t)1 / (real_t)16), volume * ((real_t)1 / (real_t)48),
+                                         volume * ((real_t)1 / (real_t)144)};
+                const real_t lam_q[3] = {l * scale[0], l * scale[1], l * scale[2]};
+                const real_t mu_q[3] = {m * scale[0], m * scale[1], m * scale[2]};
+                const real_t inv_w[3] = {inv_x[di], inv_y[dj], inv_z[dk]};
+                real_t g[3][8];
+                brick_modal_forces(c, inv_w, lam_q, mu_q, g);
+                // this node is local corner 1 - d of the element along each axis: sign 2 (1 - d) - 1
+                const real_t sx = di ? (real_t)-1 : (real_t)1, sy = dj ? (real_t)-1 : (real_t)1;
+                const real_t sz = dk ? (real_t)-1 : (real_t)1;
+                for (int comp = 0; comp < 3; ++comp) acc[comp] += corner_value(g[comp], sx, sy, sz);
+            }
+        }
+    }
+}
+
+// every thread gets the block's sum (blockDim.x == 256; fixed order: deterministic)
+__device__ __forceinline__ real_t block_sum(real_t value)
+{
+    __shared__ real_t partial[256];
+    partial[threadIdx.x] = value;
+    __syncthreads();
+    for (int stride = 128; stride > 0; stride >>= 1) {
+        if (threadIdx.x < stride) partial[threadIdx.x] += partial[threadIdx.x + stride];
+        __syncthreads();
+    }
+    const real_t total = partial[0];
+    __syncthreads();   // the next call rewrites partial
+    return total;
+}
+
+// sum of the previous launch's block partials, formed by every block (a few hundred values: no extra launch)
+__device__ __forceinline__ real_t partials_total(const real_t* __restrict__ partials, int n_partials)
+{
+    real_t sum = (real_t)0;
+    for (int index = threadIdx.x; index < n_partials; index += blockDim.x) sum += partials[index];
+    return block_sum(sum);
 }
 """
 
 _SOURCES = {
-    # y = K u per node (gather over the <= 8 adjacent solid elements); use_mask zeroes the rows of fixed dofs.
+    # y = K u per node (gather over the <= 8 adjacent solid elements, Walsh basis); use_mask zeroes the rows of fixed
+    # dofs.
     'elastic_product': r"""
 extern "C" __global__
 void elastic_product(
@@ -121,38 +250,15 @@ void elastic_product(
     int i, j, k;
     node_ijk(node, nyn, nzn, &i, &j, &k);
     real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
-    for (int di = 0; di < 2; ++di) {
-        const int ei = i - 1 + di;
-        if (ei < 0 || ei >= ex) continue;
-        for (int dj = 0; dj < 2; ++dj) {
-            const int ej = j - 1 + dj;
-            if (ej < 0 || ej >= ey) continue;
-            for (int dk = 0; dk < 2; ++dk) {
-                const int ek = k - 1 + dk;
-                if (ek < 0 || ek >= ez) continue;
-                const int e = (ei * ey + ej) * ez + ek;
-                const real_t m = mu[e];
-                if (m <= (real_t)0) continue;
-                const real_t l = lam[e];
-                real_t sk[3], D[3][2], M[3][2];   // per element: no per-pair divisions (float64 rate on consumer GPUs)
-                axis_tables(1 - di, 1 - dj, 1 - dk, wx[ei], wy[ej], wz[ek], sk, D, M);
-                for (int lx = 0; lx < 2; ++lx)
-                    for (int ly = 0; ly < 2; ++ly)
-                        for (int lz = 0; lz < 2; ++lz) {
-                            const int nb = 3 * (((ei + lx) * nyn + (ej + ly)) * nzn + (ek + lz));
-                            add_table_block(lx, ly, lz, sk, D, M, l, m, u[nb], u[nb + 1], u[nb + 2], acc);
-                        }
-            }
-        }
-    }
+    node_stiffness_product(i, j, k, u, u, (real_t)0, 0, lam, mu, wx, wy, wz, ex, ey, ez, acc);
     for (int a = 0; a < 3; ++a) {
         const int dof = 3 * node + a;
         y[dof] = (use_mask && !free_dofs[dof]) ? (real_t)0 : acc[a];
     }
 }
 """,
-    # y = M u per node of the consistent trilinear mass (rho N_k N_l per component; rho <= 0 elements skipped), 0 on
-    # the rows of fixed dofs.
+    # y = M u per node of the consistent trilinear mass (rho N_k N_l per component, diagonal in the Walsh basis; rho <= 0
+    # elements skipped), 0 on the rows of fixed dofs.
     'elastic_mass_product': r"""
 extern "C" __global__
 void elastic_mass_product(
@@ -178,17 +284,19 @@ void elastic_mass_product(
                 const int e = (ei * ey + ej) * ez + ek;
                 const real_t density = rho[e];
                 if (density <= (real_t)0) continue;
-                const real_t sixth = (real_t)1 / (real_t)6;
-                for (int lx = 0; lx < 2; ++lx)
-                    for (int ly = 0; ly < 2; ++ly)
-                        for (int lz = 0; lz < 2; ++lz) {
-                            // 1D N_k N_l = w (1 + delta) / 6; local node of this node is (1 - di, 1 - dj, 1 - dk)
-                            const real_t m = density * wx[ei] * (real_t)(1 + (lx == 1 - di)) * sixth
-                                             * wy[ej] * (real_t)(1 + (ly == 1 - dj)) * sixth
-                                             * wz[ek] * (real_t)(1 + (lz == 1 - dk)) * sixth;
-                            const int nb = 3 * (((ei + lx) * nyn + (ej + ly)) * nzn + (ek + lz));
-                            for (int a = 0; a < 3; ++a) acc[a] += m * u[nb + a];
-                        }
+                real_t c[3][8];
+                element_modes(u, u, (real_t)0, 0, ei, ej, ek, nyn, nzn, c);
+                const real_t mass = density * wx[ei] * wy[ej] * wz[ek];
+                // rho V 12^-q 4^(q - 3) per mode, q = difference bits
+                const real_t factor[4] = {mass * ((real_t)1 / (real_t)64), mass * ((real_t)1 / (real_t)192),
+                                          mass * ((real_t)1 / (real_t)576), mass * ((real_t)1 / (real_t)1728)};
+                const real_t sx = di ? (real_t)-1 : (real_t)1, sy = dj ? (real_t)-1 : (real_t)1;
+                const real_t sz = dk ? (real_t)-1 : (real_t)1;
+                for (int comp = 0; comp < 3; ++comp) {
+#pragma unroll
+                    for (int m = 0; m < 8; ++m) c[comp][m] *= factor[((m >> 2) & 1) + ((m >> 1) & 1) + (m & 1)];
+                    acc[comp] += corner_value(c[comp], sx, sy, sz);
+                }
             }
         }
     }
@@ -275,6 +383,88 @@ void block_precondition3(
     z[dof] = b[0] * r0 + b[3] * r1 + b[4] * r2;
     z[dof + 1] = b[3] * r0 + b[1] * r1 + b[5] * r2;
     z[dof + 2] = b[4] * r0 + b[5] * r1 + b[2] * r2;
+}
+""",
+    # Fused CG step, first launch (speed plan A3): alpha = rho / (p . q) from the p . q block partials of the last
+    # elastic_direction_product (update 0: no update, the start of a solve), x += alpha p, r -= alpha q, z = B^-1 r per
+    # node (reduced inverse blocks), block partials of r . z. Grid-stride over the nodes: gridDim.x partials.
+    'elastic_update_precondition': r"""
+extern "C" __global__
+void elastic_update_precondition(
+    const real_t* __restrict__ direction, const real_t* __restrict__ product, real_t* __restrict__ solution,
+    real_t* __restrict__ residual, real_t* __restrict__ preconditioned, const real_t* __restrict__ inverse,
+    const real_t* __restrict__ rho, const real_t* __restrict__ pq_partials, real_t* __restrict__ rz_partials,
+    int n_partials, int update, int n_nodes)
+{
+    real_t alpha = (real_t)0;
+    if (update) {
+        const real_t pq = partials_total(pq_partials, n_partials);
+        alpha = pq != (real_t)0 ? *rho / pq : (real_t)0;
+    }
+    real_t sum = (real_t)0;
+    for (int node = blockIdx.x * blockDim.x + threadIdx.x; node < n_nodes; node += blockDim.x * gridDim.x) {
+        const idx_t dof = 3 * (idx_t)node;
+        real_t r[3];
+        for (int a = 0; a < 3; ++a) {
+            r[a] = residual[dof + a];
+            if (update) {
+                solution[dof + a] += alpha * direction[dof + a];
+                r[a] -= alpha * product[dof + a];
+                residual[dof + a] = r[a];
+            }
+        }
+        const real_t* b = inverse + 6 * (idx_t)node;
+        const real_t z0 = b[0] * r[0] + b[3] * r[1] + b[4] * r[2];
+        const real_t z1 = b[3] * r[0] + b[1] * r[1] + b[5] * r[2];
+        const real_t z2 = b[4] * r[0] + b[5] * r[1] + b[2] * r[2];
+        preconditioned[dof] = z0;
+        preconditioned[dof + 1] = z1;
+        preconditioned[dof + 2] = z2;
+        sum += r[0] * z0 + r[1] * z1 + r[2] * z2;
+    }
+    sum = block_sum(sum);
+    if (threadIdx.x == 0) rz_partials[blockIdx.x] = sum;
+}
+""",
+    # Fused CG step, second launch: rho_next = r . z from the r . z block partials (block 0 writes it), beta = rho_next /
+    # rho (restart: 0, the start of a solve, p never read), next = z + beta p (formed on the fly at every gathered node,
+    # written at the own node), q = masked K next, block partials of next . q. Grid-stride over the nodes.
+    'elastic_direction_product': r"""
+extern "C" __global__
+void elastic_direction_product(
+    const real_t* __restrict__ preconditioned, const real_t* __restrict__ direction,
+    real_t* __restrict__ next_direction, real_t* __restrict__ product,
+    const real_t* __restrict__ lam, const real_t* __restrict__ mu,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    const bool* __restrict__ free_dofs, const real_t* __restrict__ rho, real_t* __restrict__ rho_next,
+    const real_t* __restrict__ rz_partials, real_t* __restrict__ pq_partials, int n_partials, int restart,
+    int ex, int ey, int ez)
+{
+    const real_t rz = partials_total(rz_partials, n_partials);
+    const real_t rho_old = *rho;
+    const int combine = !restart && rho_old != (real_t)0;
+    const real_t beta = combine ? rz / rho_old : (real_t)0;
+    if (blockIdx.x == 0 && threadIdx.x == 0) *rho_next = rz;
+    const int nyn = ey + 1, nzn = ez + 1;
+    const int n_nodes = (ex + 1) * nyn * nzn;
+    real_t sum = (real_t)0;
+    for (int node = blockIdx.x * blockDim.x + threadIdx.x; node < n_nodes; node += blockDim.x * gridDim.x) {
+        int i, j, k;
+        node_ijk(node, nyn, nzn, &i, &j, &k);
+        real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
+        node_stiffness_product(i, j, k, preconditioned, direction, beta, combine, lam, mu, wx, wy, wz, ex, ey, ez,
+                               acc);
+        for (int a = 0; a < 3; ++a) {
+            const idx_t dof = 3 * (idx_t)node + a;
+            const real_t value = gathered(preconditioned, direction, beta, combine, dof);
+            const real_t q = free_dofs[dof] ? acc[a] : (real_t)0;
+            next_direction[dof] = value;
+            product[dof] = q;
+            sum += value * q;
+        }
+    }
+    sum = block_sum(sum);
+    if (threadIdx.x == 0) pq_partials[blockIdx.x] = sum;
 }
 """,
     # Total nodal load [N] = applied + per adjacent solid element: thermal beta_a dT s_ka A_perp_a / 4 (lower-side
@@ -411,27 +601,7 @@ void elastic_outputs(
 """,
 }
 
-_KERNELS = {}   # (name, C type) -> cupy RawKernel, compiled on first use
-
-
-def _kernel(name, dtype):
-    real = _REAL_TYPES[np.dtype(dtype).name]
-    kernel = _KERNELS.get((name, real))
-    if kernel is None:
-        import cupy as cp
-        kernel = cp.RawKernel(f'typedef {real} real_t;\n' + _PREAMBLE + _SOURCES[name], name)
-        _KERNELS[(name, real)] = kernel
-    return kernel
-
-
-def _gpu_launcher(name):
-    """kernel(grid, block, args) of the RawKernel compiled for the real type of args[0] (every kernel's first array)."""
-    def launch(grid, block, args):
-        _kernel(name, args[0].dtype)(grid, block, args)
-    return launch
-
-
-# ---- numpy twins (core.kernels raw_twin: the kernel's args tuple, outputs written in place, the solve dtype) ----
+# ---- numpy twins (core.kernels real_raw_twin: the kernel's args tuple, outputs written in place, the solve dtype) ----
 # Element integrals by 2-point Gauss per axis (exact for the trilinear products, so equal to the CUDA closed forms up to
 # rounding), through separable differences / interpolations of the node array. A change to a CUDA source above changes
 # its twin here; the cpu self-test solid_mechanics_3d_cpu (the exact 3D cases on the twins) catches a wrong twin.
@@ -532,7 +702,7 @@ def _elastic_product_host(u, y, lame_lambda, mu, wx, wy, wz, free_dofs, use_mask
 def _elastic_product_numba(numba):
     """numba twin of elastic_product: the CUDA per-node gather with the closed-form brick blocks (brick_block written
     out per entry), parallel over the node x index; the solve dtype of u / y."""
-    @numba.njit(parallel=True, cache=False)
+    @numba.njit(parallel=True, cache=True)
     def kernel(u, y, lame_lambda, mu, wx, wy, wz, free_dofs, use_mask, ex, ey, ez):
         nyn, nzn = ey + 1, ez + 1
         for prange_i in numba.prange(ex + 1):
@@ -673,6 +843,164 @@ def _block_precondition3_host(inverse, residual, out, n_nodes):
     out[...] = z.reshape(-1)
 
 
+def _elastic_update_precondition_host(direction, product, solution, residual, preconditioned, inverse, rho,
+                                      pq_partials, rz_partials, n_partials, update, n_nodes):
+    if int(update):
+        pq = pq_partials[:int(n_partials)].sum()
+        alpha = rho / pq if pq != 0 else np.zeros((), residual.dtype)
+        solution += alpha * direction
+        residual -= alpha * product
+    _block_precondition3_host(inverse, residual, preconditioned, n_nodes)
+    rz_partials[0] = np.dot(residual, preconditioned)
+
+
+def _elastic_direction_product_host(preconditioned, direction, next_direction, product, lame_lambda, mu, wx, wy, wz,
+                                    free_dofs, rho, rho_next, rz_partials, pq_partials, n_partials, restart, ex, ey,
+                                    ez):
+    rz = rz_partials[:int(n_partials)].sum()
+    if int(restart) or rho == 0:
+        next_direction[...] = preconditioned
+    else:
+        np.multiply(direction, rz / rho, out=next_direction)
+        next_direction += preconditioned
+    rho_next[...] = rz
+    _elastic_product_host(next_direction, product, lame_lambda, mu, wx, wy, wz, free_dofs, _MASK_ON, ex, ey, ez)
+    pq_partials[0] = np.dot(next_direction, product)
+
+
+def _block_precondition3_numba(numba):
+    """numba twin of block_precondition3 (speed plan A6: the numpy twin's three stacked temporaries per call)."""
+    @numba.njit(parallel=True, cache=True)
+    def kernel(inverse, residual, out, n_nodes):
+        for prange_i in numba.prange(n_nodes):
+            node = np.int64(prange_i)
+            b, dof = 6 * node, 3 * node
+            r0, r1, r2 = residual[dof], residual[dof + 1], residual[dof + 2]
+            out[dof] = inverse[b] * r0 + inverse[b + 3] * r1 + inverse[b + 4] * r2
+            out[dof + 1] = inverse[b + 3] * r0 + inverse[b + 1] * r1 + inverse[b + 5] * r2
+            out[dof + 2] = inverse[b + 4] * r0 + inverse[b + 5] * r1 + inverse[b + 2] * r2
+
+    def block_precondition3(inverse, residual, out, n_nodes):
+        kernel(inverse.reshape(-1), residual.reshape(-1), out.reshape(-1), int(n_nodes))
+    return block_precondition3
+
+
+def _elastic_mass_product_numba(numba):
+    """numba twin of elastic_mass_product: the per-node gather of the closed-form consistent mass (1D N_k N_l = w (1 +
+    delta) / 6 per axis), parallel over the node x index."""
+    @numba.njit(parallel=True, cache=True)
+    def kernel(u, y, rho, wx, wy, wz, free_dofs, ex, ey, ez):
+        nyn, nzn = ey + 1, ez + 1
+        for prange_i in numba.prange(ex + 1):
+            i = np.int64(prange_i)
+            for j in range(nyn):
+                for k in range(nzn):
+                    acc0, acc1, acc2 = 0.0, 0.0, 0.0
+                    for di in range(2):
+                        ei = i - 1 + di
+                        if ei < 0 or ei >= ex:
+                            continue
+                        for dj in range(2):
+                            ej = j - 1 + dj
+                            if ej < 0 or ej >= ey:
+                                continue
+                            for dk in range(2):
+                                ek = k - 1 + dk
+                                if ek < 0 or ek >= ez:
+                                    continue
+                                density = rho[(ei * ey + ej) * ez + ek]
+                                if density <= 0.0:
+                                    continue
+                                for lx in range(2):
+                                    mass_x = density * wx[ei] * (2.0 if lx == 1 - di else 1.0) / 6.0
+                                    for ly in range(2):
+                                        mass_xy = mass_x * wy[ej] * (2.0 if ly == 1 - dj else 1.0) / 6.0
+                                        for lz in range(2):
+                                            weight = mass_xy * wz[ek] * (2.0 if lz == 1 - dk else 1.0) / 6.0
+                                            nb = 3 * (((ei + lx) * nyn + (ej + ly)) * nzn + (ek + lz))
+                                            acc0 += weight * u[nb]
+                                            acc1 += weight * u[nb + 1]
+                                            acc2 += weight * u[nb + 2]
+                    dof = 3 * ((i * nyn + j) * nzn + k)
+                    y[dof] = acc0 if free_dofs[dof] else 0.0
+                    y[dof + 1] = acc1 if free_dofs[dof + 1] else 0.0
+                    y[dof + 2] = acc2 if free_dofs[dof + 2] else 0.0
+
+    def elastic_mass_product(u, y, rho, wx, wy, wz, free_dofs, ex, ey, ez):
+        kernel(u.reshape(-1), y.reshape(-1), rho.reshape(-1), wx, wy, wz, free_dofs.reshape(-1), ex, ey, ez)
+    return elastic_mass_product
+
+
+def _elastic_update_precondition_numba(numba):
+    """numba twin of elastic_update_precondition: one parallel pass (update, block precondition, r . z reduction)."""
+    @numba.njit(parallel=True, cache=True)
+    def kernel(direction, product, solution, residual, preconditioned, inverse, alpha, update, n_nodes):
+        total = 0.0
+        for prange_i in numba.prange(n_nodes):
+            node = np.int64(prange_i)
+            b, dof = 6 * node, 3 * node
+            if update:
+                for a in range(3):
+                    solution[dof + a] += alpha * direction[dof + a]
+                    residual[dof + a] -= alpha * product[dof + a]
+            r0, r1, r2 = residual[dof], residual[dof + 1], residual[dof + 2]
+            z0 = inverse[b] * r0 + inverse[b + 3] * r1 + inverse[b + 4] * r2
+            z1 = inverse[b + 3] * r0 + inverse[b + 1] * r1 + inverse[b + 5] * r2
+            z2 = inverse[b + 4] * r0 + inverse[b + 5] * r1 + inverse[b + 2] * r2
+            preconditioned[dof] = z0
+            preconditioned[dof + 1] = z1
+            preconditioned[dof + 2] = z2
+            total += r0 * z0 + r1 * z1 + r2 * z2
+        return total
+
+    def elastic_update_precondition(direction, product, solution, residual, preconditioned, inverse, rho, pq_partials,
+                                    rz_partials, n_partials, update, n_nodes):
+        alpha = 0.0
+        if int(update):
+            pq = float(pq_partials[:int(n_partials)].sum())
+            alpha = float(rho) / pq if pq != 0.0 else 0.0
+        rz_partials[0] = kernel(direction.reshape(-1), product.reshape(-1), solution.reshape(-1), residual.reshape(-1),
+                                preconditioned.reshape(-1), inverse.reshape(-1), alpha, bool(int(update)),
+                                int(n_nodes))
+    return elastic_update_precondition
+
+
+def _elastic_direction_product_numba(numba):
+    """numba twin of elastic_direction_product: the direction update, the numba stiffness product and the next . q
+    reduction as three parallel passes; the product goes through the registered elastic_product twin, so its numba
+    kernel is compiled (or loaded from the cache) once per process."""
+    product_twin = _TWINS['elastic_product']
+
+    @numba.njit(parallel=True, cache=True)
+    def direction_kernel(preconditioned, direction, next_direction, beta, restart):
+        for prange_i in numba.prange(next_direction.size):
+            index = np.int64(prange_i)
+            if restart:
+                next_direction[index] = preconditioned[index]
+            else:
+                next_direction[index] = preconditioned[index] + beta * direction[index]
+
+    @numba.njit(parallel=True, cache=True)
+    def dot_kernel(a, b):
+        total = 0.0
+        for prange_i in numba.prange(a.size):
+            index = np.int64(prange_i)
+            total += a[index] * b[index]
+        return total
+
+    def elastic_direction_product(preconditioned, direction, next_direction, product, lame_lambda, mu, wx, wy, wz,
+                                  free_dofs, rho, rho_next, rz_partials, pq_partials, n_partials, restart, ex, ey, ez):
+        rz = float(rz_partials[:int(n_partials)].sum())
+        rho_old = float(rho)
+        restarted = bool(int(restart)) or rho_old == 0.0
+        beta = 0.0 if restarted else rz / rho_old
+        direction_kernel(preconditioned.reshape(-1), direction.reshape(-1), next_direction.reshape(-1), beta, restarted)
+        rho_next[...] = rz
+        product_twin((), (), (next_direction, product, lame_lambda, mu, wx, wy, wz, free_dofs, _MASK_ON, ex, ey, ez))
+        pq_partials[0] = dot_kernel(next_direction.reshape(-1), product.reshape(-1))
+    return elastic_direction_product
+
+
 def _window_values_host(full, window, dtype):
     return full[window].astype(dtype)
 
@@ -743,11 +1071,18 @@ def _elastic_outputs_host(u, lame_lambda, mu, alpha_xx, alpha_yy, alpha_zz, rise
 _HOST_TWINS = {'elastic_product': _elastic_product_host, 'elastic_mass_product': _elastic_mass_product_host,
                'elastic_diagonal_blocks': _elastic_diagonal_blocks_host,
                'reduce_invert_blocks': _reduce_invert_blocks_host, 'block_precondition3': _block_precondition3_host,
+               'elastic_update_precondition': _elastic_update_precondition_host,
+               'elastic_direction_product': _elastic_direction_product_host,
                'elastic_load': _elastic_load_host, 'elastic_outputs': _elastic_outputs_host}
-# name -> numba factory: the stiffness product only (once per CG iteration; the rest runs per assembly / solve)
-_NUMBA_TWINS = {'elastic_product': _elastic_product_numba}
-# name -> core.kernels twin: the cupy RawKernel (per real type) for cupy arguments, the numba / numpy twin for numpy ones
-_TWINS = {name: raw_twin(f'mechanics3d.{name}', _gpu_launcher(name), host, numba=_NUMBA_TWINS.get(name))
+# name -> numba factory: the kernels of every CG iteration / Lanczos step (the rest runs per assembly / solve)
+_NUMBA_TWINS = {'elastic_product': _elastic_product_numba, 'elastic_mass_product': _elastic_mass_product_numba,
+                'block_precondition3': _block_precondition3_numba,
+                'elastic_update_precondition': _elastic_update_precondition_numba,
+                'elastic_direction_product': _elastic_direction_product_numba}
+# name -> core.kernels twin: the cupy RawKernel (compiled per real type of args[0], every kernel's first array) for cupy
+# arguments, the numba / numpy twin for numpy ones
+_TWINS = {name: real_raw_twin(f'mechanics3d.{name}', _PREAMBLE + _SOURCES[name], name, host,
+                              numba=_NUMBA_TWINS.get(name))
           for name, host in _HOST_TWINS.items()}
 
 
@@ -765,7 +1100,8 @@ class BrickKernels:
         self._element_args = tuple(np.int32(n) for n in (ex, ey, ez))
         self._window_args = tuple(np.int32(n) for n in (*window_origin, self.grid_shape[1], self.grid_shape[2]))
         self._n_nodes_i32 = np.int32(self.n_nodes)
-        self._node_blocks = ((self.n_nodes + _BLOCK - 1) // _BLOCK,)
+        self.node_blocks = (self.n_nodes + _BLOCK - 1) // _BLOCK   # one thread per node
+        self._node_blocks = (self.node_blocks,)
         self._element_blocks = ((self.n_elements + _BLOCK - 1) // _BLOCK,)
 
     def _launch(self, name, blocks, args):
@@ -800,6 +1136,23 @@ class BrickKernels:
     def precondition(self, inverse_blocks, residual, out):
         self._launch('block_precondition3', self._node_blocks, (inverse_blocks, residual, out, self._n_nodes_i32))
 
+    def update_precondition(self, grid, direction, product, solution, residual, preconditioned, inverse_blocks, rho,
+                            pq_partials, rz_partials, update: bool):
+        """Fused CG launch 1 on `grid` blocks (= the partial buffers' length): x += alpha p, r -= alpha q (update), z =
+        B^-1 r, r . z block partials."""
+        self._launch('elastic_update_precondition', grid,
+                      (direction, product, solution, residual, preconditioned, inverse_blocks, rho, pq_partials,
+                       rz_partials, np.int32(pq_partials.size), _MASK_ON if update else _MASK_OFF, self._n_nodes_i32))
+
+    def direction_product(self, grid, preconditioned, direction, next_direction, product, lame_lambda, mu, widths,
+                          free_dofs, rho, rho_next, rz_partials, pq_partials, restart: bool):
+        """Fused CG launch 2 on `grid` blocks: rho_next = r . z, next = z + (rho_next / rho) p (restart: z), product =
+        masked K next, next . product block partials."""
+        self._launch('elastic_direction_product', grid,
+                     (preconditioned, direction, next_direction, product, lame_lambda, mu, *widths, free_dofs, rho,
+                      rho_next, rz_partials, pq_partials, np.int32(rz_partials.size),
+                      _MASK_ON if restart else _MASK_OFF, *self._element_args))
+
     def load(self, out, applied_load, lame_lambda, mu, alphas, temperature_rise, temperature_rise_ext, body_forces,
              applied_body_force, widths):
         """out = applied nodal load + thermal load + body forces (coupled full-grid + applied per element) [N]."""
@@ -825,3 +1178,42 @@ class BrickKernels:
         self._launch('elastic_outputs', self._element_blocks,
                      (unknown, lame_lambda, mu, *inputs, *widths, *outputs, _MASK_ON if thermal else _MASK_OFF,
                       *self._element_args, *self._window_args))
+
+
+class FusedBrickIteration:
+    """fused_iteration of solvers.pcg (FUSED_ITERATION_PROTOCOL) for one ElasticSystem3D operator: a CG step is two
+    launches (elastic_update_precondition, elastic_direction_product) instead of eight. operator() -> (lame_lambda, mu,
+    inverse_blocks, widths, free_dofs) of the latest assembly in this iteration's dtype; the partial sums (one per block,
+    gpu: at most REDUCTION_BLOCKS_PER_SM per SM, grid-stride) are owned here."""
+
+    def __init__(self, kernels, operator, dtype, xp):
+        self.kernels = kernels
+        self._operator = operator
+        if xp is np:
+            blocks = 1
+        else:
+            import cupy as cp
+            from ...solvers.pcg import REDUCTION_BLOCKS_PER_SM
+            device_blocks = REDUCTION_BLOCKS_PER_SM * int(cp.cuda.Device().attributes['MultiProcessorCount'])
+            blocks = max(1, min(device_blocks, kernels.node_blocks))
+        self._grid = (blocks,)
+        self._pq_partials = xp.zeros(blocks, dtype=dtype)   # next . q per block of the last direction_product
+        self._rz_partials = xp.zeros(blocks, dtype=dtype)   # r . z per block of the last update_precondition
+
+    def start(self, residual, preconditioned, direction, product, scratch, rho):
+        """z = B^-1 r, rho = r . z, direction = z, product = A direction (scratch: an unused device scalar)."""
+        lame_lambda, mu, inverse_blocks, widths, free_dofs = self._operator()
+        self.kernels.update_precondition(self._grid, direction, product, product, residual, preconditioned,
+                                         inverse_blocks, scratch, self._pq_partials, self._rz_partials, update=False)
+        self.kernels.direction_product(self._grid, preconditioned, preconditioned, direction, product, lame_lambda, mu,
+                                       widths, free_dofs, scratch, rho, self._rz_partials, self._pq_partials,
+                                       restart=True)
+
+    def step(self, solution, residual, preconditioned, direction, next_direction, product, rho, rho_next):
+        """One CG iteration (pcg FUSED_ITERATION_PROTOCOL step)."""
+        lame_lambda, mu, inverse_blocks, widths, free_dofs = self._operator()
+        self.kernels.update_precondition(self._grid, direction, product, solution, residual, preconditioned,
+                                         inverse_blocks, rho, self._pq_partials, self._rz_partials, update=True)
+        self.kernels.direction_product(self._grid, preconditioned, direction, next_direction, product, lame_lambda, mu,
+                                       widths, free_dofs, rho, rho_next, self._rz_partials, self._pq_partials,
+                                       restart=False)
