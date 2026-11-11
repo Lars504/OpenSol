@@ -9,8 +9,10 @@ import numpy as np
 
 from ...core.constants import ELEMENTARY_CHARGE, EPS0, K_B, N_A
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import last_value
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec, StudySpec)
+from .selftests import _held_flux
 
 ELECTROSTATICS_TYPE_NAME = 'electrostatics'   # = definition.ELECTROSTATICS_TYPE_NAME (definition imports this module)
 CURRENTS_TYPE_NAME = 'electric_currents'
@@ -79,8 +81,13 @@ def _coax_runs():
     return {name: coax_spec(size) for name, size in COAX_RUNS.items()}
 
 
-def _held(results, physics, feature, quantity):
-    return float(results.result(physics, feature)[quantity])
+def _scaled_result(relative, tolerances, **details):
+    """Self-test result: error = the largest relative error over its tolerance (NaN when any is not finite), tolerance
+    1."""
+    scaled = [value / tolerances[name] for name, value in relative.items()]
+    error = max(scaled) if all(np.isfinite(scaled)) else math.nan
+    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': 1.0,
+            'details': {'relative_errors': relative, 'tolerances': tolerances, **details}}
 
 
 def _check_coax(results_by_name):
@@ -89,8 +96,8 @@ def _check_coax(results_by_name):
     expected = 2.0 * math.pi * EPS0 * COAX_EPS / math.log(OUTER_RADIUS / INNER_RADIUS)
     errors, balance = {}, {}
     for name in COAX_RUNS:
-        inner = _held(results_by_name[name], 'electrostatics', 'inner_electrode', 'charge')
-        outer = _held(results_by_name[name], 'electrostatics', 'outer_electrode', 'charge')
+        inner = _held_flux(results_by_name[name], 'electrostatics', 'inner_electrode', 'charge')
+        outer = _held_flux(results_by_name[name], 'electrostatics', 'outer_electrode', 'charge')
         errors[name] = abs(inner / COAX_VOLTAGE / expected - 1.0)
         balance[name] = abs(inner + outer) / abs(inner)
     order = math.log2(errors['coarse'] / errors['fine']) if errors['fine'] > 0.0 else math.inf
@@ -150,21 +157,16 @@ def _check_joule(results_by_name):
     expected = {'current': SIGMA * STRIP_WIDTH * STRIP_VOLTAGE / STRIP_LENGTH,
                 'shared_rise': power_density * STRIP_LENGTH ** 2 / (8.0 * CONDUCTIVITY),
                 'two_mesh_rise': _finite_volume_centre_rise(power_density)}
-    measured = {'current': _held(results_by_name['shared'], 'currents', 'left', 'current'),
-                'current_two_mesh': _held(results_by_name['two_mesh'], 'currents', 'left', 'current')}
+    measured = {'current': _held_flux(results_by_name['shared'], 'currents', 'left', 'current'),
+                'current_two_mesh': _held_flux(results_by_name['two_mesh'], 'currents', 'left', 'current')}
     for name in ('shared', 'two_mesh'):
-        values = np.asarray(results_by_name[name].result('heat', 'centre')['values'], dtype=np.float64)
-        measured[f'{name}_rise'] = float(values[-1] - REFERENCE_T) if values.size else math.nan
+        measured[f'{name}_rise'] = last_value(results_by_name[name], 'heat', 'centre') - REFERENCE_T
     relative = {'current': abs(measured['current'] / expected['current'] - 1.0),
                 'current_two_mesh': abs(measured['current_two_mesh'] / expected['current'] - 1.0),
                 'shared_rise': abs(measured['shared_rise'] / expected['shared_rise'] - 1.0),
                 'two_mesh_rise': abs(measured['two_mesh_rise'] / expected['two_mesh_rise'] - 1.0)}
     tolerances = dict(JOULE_TOLERANCES, current_two_mesh=JOULE_TOLERANCES['current'])
-    scaled = [relative[name] / tolerances[name] for name in relative]
-    error = max(scaled) if all(np.isfinite(scaled)) else math.nan
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': 1.0,
-            'details': {'relative_errors': relative, 'tolerances': tolerances, 'measured': measured,
-                        'expected': expected}}
+    return _scaled_result(relative, tolerances, measured=measured, expected=expected)
 
 
 # ---- electrolyte slit ----
@@ -205,10 +207,9 @@ def _check_electrolyte_slit(results_by_name):
     half_width = 0.5 * SLIT_LENGTH / SLIT_DEBYE_LENGTH
     plate_continuum = EPS0 * SLIT_EPS * SLIT_VOLTAGE * math.tanh(half_width) / SLIT_DEBYE_LENGTH * SLIT_HEIGHT
     midpoint_continuum = SLIT_VOLTAGE / math.cosh(half_width)
-    charge_lo = _held(results, 'electrostatics', 'plate_lo', 'charge')
-    charge_hi = _held(results, 'electrostatics', 'plate_hi', 'charge')
-    probe = np.asarray(results.result('electrostatics', 'mid')['values'], dtype=np.float64)
-    midpoint = float(probe[-1]) if probe.size else math.nan
+    charge_lo = _held_flux(results, 'electrostatics', 'plate_lo', 'charge')
+    charge_hi = _held_flux(results, 'electrostatics', 'plate_hi', 'charge')
+    midpoint = last_value(results, 'electrostatics', 'mid')
     ionic_charge = float(derived['Q_ion'])
     rasters = {name: np.asarray(results.field(f'electrostatics.{name}').values, dtype=np.float64)
                for name in ('c_ion_1', 'c_ion_2', 'rho_ion')}

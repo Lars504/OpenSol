@@ -12,6 +12,7 @@ from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import with_exact_cg, worst_error
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
+from .selftests import _derived_value
 
 ELECTROSTATICS_TYPE_NAME = 'electrostatics'   # = definition.ELECTROSTATICS_TYPE_NAME (definition imports this module)
 _PHYSICS = 'electrostatics'
@@ -367,14 +368,10 @@ def _potential(results, n_cells=_N_CELLS):
     return potential
 
 
-def _derived(results, name):
-    return float(results.summary()['derived'][name])   # float() also reads 'nan'
-
-
 def _scalar_errors(results, debye_length, ionic_strength):
     """Relative errors of the debye_length / ionic_strength scalar outputs."""
-    return {'debye_length': abs(_derived(results, 'debye_length') / debye_length - 1.0),
-            'ionic_strength': abs(_derived(results, 'ionic_strength') / ionic_strength - 1.0)}
+    return {'debye_length': abs(_derived_value(results, 'debye_length') / debye_length - 1.0),
+            'ionic_strength': abs(_derived_value(results, 'ionic_strength') / ionic_strength - 1.0)}
 
 
 def _concentration_errors(results, species, potential, model):
@@ -401,7 +398,7 @@ def _check_slit(results_by_name):
     expected, plate_charge = _slit_solution()
     charge_lo = float(results.result(_PHYSICS, 'plate_lo')['charge'])
     charge_hi = float(results.result(_PHYSICS, 'plate_hi')['charge'])
-    ionic_charge = _derived(results, 'Q_ion')
+    ionic_charge = _derived_value(results, 'Q_ion')
     half_width = 0.5 * _LENGTH / _SLIT_DEBYE_LENGTH
     midplane = 0.5 * (potential[49] + potential[50]).mean()
     midplane_continuum = _SLIT_VOLTAGE * math.cosh(0.5 * _CELL / _SLIT_DEBYE_LENGTH) / math.cosh(half_width)
@@ -411,7 +408,7 @@ def _check_slit(results_by_name):
     errors = {'profile': float(np.max(np.abs(potential - expected[:, None]))) / _SLIT_VOLTAGE,
               'plate_lo': abs(charge_lo / plate_charge - 1.0),
               'plate_hi': abs(charge_hi / plate_charge - 1.0),
-              'plate_lo_scalar_output': abs(_derived(results, 'Q_lo') / plate_charge - 1.0),
+              'plate_lo_scalar_output': abs(_derived_value(results, 'Q_lo') / plate_charge - 1.0),
               'gauss': abs(charge_lo + charge_hi + ionic_charge) / plate_charge,
               **_scalar_errors(results, _SLIT_DEBYE_LENGTH, _SLIT_IONIC_STRENGTH),
               **_concentration_errors(results, _SLIT_SPECIES, potential, 'linear'),
@@ -431,7 +428,7 @@ def _check_wall(results_by_name, axisymmetric):
     expected, wall_charge = _wall_solution(axisymmetric)
     continuum = _wall_continuum(axisymmetric)
     wall_cell = -1 if axisymmetric else 0
-    ionic_charge = _derived(results, 'Q_ion')
+    ionic_charge = _derived_value(results, 'Q_ion')
     scale = float(np.max(np.abs(expected)))
     deviation = abs(potential[wall_cell].mean() / continuum[wall_cell] - 1.0)
     errors = {'profile': float(np.max(np.abs(potential - expected[:, None]))) / scale,
@@ -454,7 +451,7 @@ def _check_boltzmann_wall(results_by_name, species, surface_charge, ionic_streng
     expected = _pb_discrete_wall(species, surface_charge)
     wall, continuum = _gouy_chapman_continuum() if symmetric else _integrated_continuum(species, surface_charge)
     wall_charge = surface_charge * _PB_HEIGHT
-    ionic_charge = _derived(results, 'Q_ion')
+    ionic_charge = _derived_value(results, 'Q_ion')
     debye = math.sqrt(_COEFFICIENT / _screening(*species))
     wall_estimate = float(potential[0].mean()) + 0.5 * _PB_CELL * surface_charge / _COEFFICIENT
     deviations = {'profile': float(np.max(np.abs(potential.mean(axis=1) - continuum))) / abs(wall),
@@ -483,7 +480,7 @@ def _check_stern(results_by_name, model):
     expected = _pb_discrete_wall(_STERN_SPECIES, 0.0, (conductance, voltage), model)
     electrode_charge = conductance * (voltage - expected[0])   # C/m
     charge = float(results.result(_PHYSICS, 'electrode')['charge'])
-    ionic_charge = _derived(results, 'Q_ion')
+    ionic_charge = _derived_value(results, 'Q_ion')
     diffuse, surface_charge, continuum = _stern_continuum(model)
     measured_surface_charge = charge / _PB_HEIGHT
     diffuse_estimate = float(potential[0].mean()) + 0.5 * _PB_CELL * measured_surface_charge / _COEFFICIENT
@@ -493,7 +490,7 @@ def _check_stern(results_by_name, model):
                   'surface_charge': abs(measured_surface_charge / surface_charge - 1.0)}
     errors = {'profile': float(np.max(np.abs(potential - expected[:, None]))) / abs(expected[0]),
               'electrode_charge': abs(charge / electrode_charge - 1.0),
-              'electrode_scalar_output': abs(_derived(results, 'Q_electrode') / electrode_charge - 1.0),
+              'electrode_scalar_output': abs(_derived_value(results, 'Q_electrode') / electrode_charge - 1.0),
               'gauss': abs(charge + ionic_charge) / electrode_charge,
               **_scalar_errors(results, debye, _GOUY_CHAPMAN_IONIC_STRENGTH),
               **_concentration_errors(results, _STERN_SPECIES, potential, model),

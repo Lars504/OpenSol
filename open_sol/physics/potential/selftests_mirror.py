@@ -1,9 +1,7 @@
 """Mirror-plane self-test of the held fluxes of electric_currents (symmetry 2.5): half vs full domain under an EM
 mirror face of the model; specs built fresh, no physics imports."""
-import math
-
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import with_exact_cg
+from ...model.selftest_helpers import with_exact_cg, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 
@@ -77,9 +75,7 @@ def _check_mirror(results_by_name):
         expected = float(full.result(_CURRENTS, full_feature)['current'])
         errors[f'{half_feature}_vs_{full_feature}'] = abs(measured - expected) / abs(expected)
         details[f'{half_feature}_vs_{full_feature}'] = [expected, measured]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _TOLERANCE, **details)
 
 
 MIRROR_SELFTEST_CASES = (
