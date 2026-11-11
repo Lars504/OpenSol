@@ -10,10 +10,11 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import lithium_niobate_entry, worst_error
+from ...model.selftest_helpers import last_value, lithium_niobate_entry, worst_result
 from ...model.spec import (CouplingSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, StudySpec)
 from .selftests import _elastic, _lame
+from .selftests_3d import _box, _reaction
 
 _SOLID_3D_TYPE = 'solid_mechanics_3d'   # = selftests_3d.SOLID_3D_TYPE_NAME
 _THERMAL_STRAIN = 'heat_solid_thermal_strain'
@@ -23,10 +24,6 @@ UM = 1e-6
 _ELASTIC = (100e9, 0.3)
 # float32 probe samples (~6e-8 relative) and exact solves: the exact fields lie in the element space (first estimates)
 _EXACT_TOLERANCE = 1e-6
-
-
-def _box(name, x0, y0, z0, x1, y1, z1):
-    return GeometrySpec(name, 'box', {'x0': x0, 'y0': y0, 'z0': z0, 'x1': x1, 'y1': y1, 'z1': z1})
 
 
 def _point(name, x, y, z):
@@ -60,13 +57,7 @@ def _solid_spec(title, size, materials, features, geometry=(), discretization='q
 
 def _probe(results, feature):
     """Last sample of a solid_probe."""
-    values = np.asarray(results.result(_SOLID, feature)['values'], dtype=np.float64)
-    return float(values[-1]) if values.size else math.nan
-
-
-def _reaction(results, feature):
-    table = results.result(_SOLID, feature)
-    return float(table['F_x']), float(table['F_y']), float(table['F_z'])
+    return last_value(results, _SOLID, feature)
 
 
 # ---- solid_fem3d_uniaxial_block: rollers x_lo / y_lo / z_lo, pull u_x = d on x_hi (exact linear field) ----
@@ -104,9 +95,7 @@ def _check_block(results_by_name):
         pull, left, bottom, back = (_reaction(results, feature) for feature in ('pull', 'left', 'bottom', 'back'))
         errors.update({f'{run}.F_pull': abs(pull[0] - force) / force, f'{run}.F_left': abs(left[0] + force) / force,
                        f'{run}.F_bottom': abs(bottom[1]) / force, f'{run}.F_back': abs(back[2]) / force})
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _EXACT_TOLERANCE,
-            'details': {'errors': errors, 'force_N': force, 'strain_xx': strain}}
+    return worst_result(errors, _EXACT_TOLERANCE, force_N=force, strain_xx=strain)
 
 
 # ---- solid_fem3d_confined_column (P2): rollers on the sides and z_lo, top traction, gravity (quadratic u_z) ----
@@ -157,9 +146,7 @@ def _check_column(results_by_name):
     base, sides = _reaction(results, 'base'), _reaction(results, 'sides')
     errors.update({'F_base': abs(base[2] - base_force) / abs(base_force),
                    'F_sides_x': abs(sides[0]) / abs(base_force), 'F_sides_y': abs(sides[1]) / abs(base_force)})
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _EXACT_TOLERANCE,
-            'details': {'errors': errors, 'F_base': list(base), 'expected_F_base_N': base_force}}
+    return worst_result(errors, _EXACT_TOLERANCE, F_base=list(base), expected_F_base_N=base_force)
 
 
 # ---- solid_fem3d_object_support: Fixed on the interface faces of a foot box (z < h), top traction ----
@@ -197,9 +184,7 @@ def _check_foot(results_by_name):
             errors[f'{run}.{name}'] = abs(_probe(results, f'{name}_q') - value) / scale
         foot = _reaction(results, 'foot_fixed')
         errors[f'{run}.F_foot_z'] = abs(foot[2] - force) / abs(force)
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _EXACT_TOLERANCE,
-            'details': {'errors': errors, 'expected_F_foot_z_N': force}}
+    return worst_result(errors, _EXACT_TOLERANCE, expected_F_foot_z_N=force)
 
 
 # ---- heat_solid_thermal_expansion_fem3d: heat and solid on one tetrahedra mesh, uniform rise ----
@@ -266,9 +251,7 @@ def _check_thermal(results_by_name):
             scale = (displacement_scale if name.startswith('u_') else strain_scale if 'strain' in name
                      else stress_scale)
             errors[f'{run}.{name}'] = abs(_probe(results, f'{name}_p') - value) / scale
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _EXACT_TOLERANCE,
-            'details': {'errors': errors, 'beta_dT_Pa': beta}}
+    return worst_result(errors, _EXACT_TOLERANCE, beta_dT_Pa=beta)
 
 
 # ---- solid_fem3d_anisotropic_uniform_strain: rollers on the low faces, tractions T n on all six faces ----
@@ -360,9 +343,7 @@ def _check_aniso(results_by_name):
         force_scale = scale * max(width * depth, width * height, depth * height)
         for name, _ in _ANISO_ROLLERS:
             errors[f'{run}.F_{name}'] = max(abs(value) for value in _reaction(results, name)) / force_scale
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _EXACT_TOLERANCE,
-            'details': {'errors': errors, 'stress_scales_Pa': stress_scales}}
+    return worst_result(errors, _EXACT_TOLERANCE, stress_scales_Pa=stress_scales)
 
 
 # ---- solid_fem3d_roller_box_modes: P2 modes of a roller box against the continuum ----
@@ -454,10 +435,8 @@ def _check_modes(results_by_name):
             errors[run] = math.inf
             continue
         errors[run] = max(abs(value / reference - 1.0) for value, reference in zip(measured[run], references))
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _MODES_TOLERANCE,
-            'details': {'errors': errors, 'measured_Hz': measured, 'continuum_Hz': expected,
-                        'target_frequency_shifted': target}}
+    return worst_result(errors, _MODES_TOLERANCE, measured_Hz=measured, continuum_Hz=expected,
+                        target_frequency_shifted=target)
 
 
 # ---- solid_fem3d_rigid_mode_check: the Gram rank test of ElasticFEMSystem3D (no model run) ----
@@ -542,11 +521,8 @@ def _check_cudss(_):
     reference = eigenvalues['superlu']
     errors = {name: float(np.max(np.abs(values / reference - 1.0))) for name, values in eigenvalues.items()
               if name != 'superlu'}
-    details['errors'] = errors
     details['frequencies_Hz'] = (np.sqrt(reference) / (2.0 * math.pi)).tolist()
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _CUDSS_EIGEN_TOLERANCE,
-            'details': details}
+    return worst_result(errors, _CUDSS_EIGEN_TOLERANCE, **details)
 
 
 FEM_3D_CASES = (
