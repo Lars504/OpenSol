@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value
+from ...model.selftest_helpers import float32_value, scaled_worst_result, worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_piezo import (_CELL, _CELLS, _DENSITY, _EPS_DC, _LENGTH, _PIEZO_E11, _POISSON_RATIO, _WIDTH,
                               _YOUNGS_MODULUS, _chain_frequencies, _moduli, _short_frequencies)
@@ -20,13 +20,18 @@ _BVD = {'C0': 2.0e-12, 'C1': 9.0e-14, 'L1': 1.0e-4, 'R1': 15.0, 'tan_delta_0': 2
 _ROUND_TRIP_TOLERANCE = 1e-7
 
 
+def _bvd_band():
+    """(f_s, f_p, 301 frequencies from 0.97 f_s to f_p + 0.03 f_s) [Hz] of the _BVD circuit."""
+    f_s = 1.0 / (2.0 * math.pi * math.sqrt(_BVD['L1'] * _BVD['C1']))
+    f_p = f_s * math.sqrt(1.0 + _BVD['C1'] / _BVD['C0'])
+    return f_s, f_p, np.linspace(0.97 * f_s, f_p + 0.03 * f_s, 301)
+
+
 def _check_bvd(results_by_name):
     """bvd_fit of the exact BVD admittance on 301 frequencies around the resonance recovers C0, C1, L1, R1, tan_delta_0
     and f_s / f_p / k_eff2; a 4-point band reports NaN and a fit_warning."""
     from .bvd import bvd_admittance, bvd_fit
-    f_s = 1.0 / (2.0 * math.pi * math.sqrt(_BVD['L1'] * _BVD['C1']))
-    f_p = f_s * math.sqrt(1.0 + _BVD['C1'] / _BVD['C0'])
-    frequencies = np.linspace(0.97 * f_s, f_p + 0.03 * f_s, 301)
+    f_s, f_p, frequencies = _bvd_band()
     fit = bvd_fit(frequencies, bvd_admittance(frequencies, _BVD))
     errors = {name: abs(fit[name] / value - 1.0) for name, value in _BVD.items()}
     errors.update(f_s=abs(fit['f_s'] / f_s - 1.0), f_p=abs(fit['f_p'] / f_p - 1.0),
@@ -34,10 +39,8 @@ def _check_bvd(results_by_name):
                   fit_error=fit['fit_error'])
     narrow = bvd_fit(frequencies[:4], bvd_admittance(frequencies[:4], _BVD))
     errors['narrow band flagged'] = 0.0 if (math.isnan(narrow['C0']) and 'fit_warning' in narrow) else 1.0
-    worst = max(errors, key=errors.get)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _ROUND_TRIP_TOLERANCE,
-            'details': {'errors': errors, 'worst': worst, 'fit': {key: fit[key] for key in fit if key != 'fit_warning'},
-                        'f_s': f_s, 'f_p': f_p}}
+    return worst_result(errors, _ROUND_TRIP_TOLERANCE, fit={key: fit[key] for key in fit if key != 'fit_warning'},
+                        f_s=f_s, f_p=f_p)
 
 
 # ---- 2. solid_bvd_kappa_e (CPU): kappa_e = Z / L1 through admittance_result ----
@@ -49,9 +52,7 @@ def _check_kappa(results_by_name):
     omega_C0_Z = 2 pi f_s C0 Z of the fitted circuit; per m of depth (thickness None) both NaN with a kappa_e_warning."""
     from .bvd import bvd_admittance
     from .frequency_response import AdmittanceMonitor, FrequencyPoint, admittance_result
-    f_s = 1.0 / (2.0 * math.pi * math.sqrt(_BVD['L1'] * _BVD['C1']))
-    f_p = f_s * math.sqrt(1.0 + _BVD['C1'] / _BVD['C0'])
-    frequencies = np.linspace(0.97 * f_s, f_p + 0.03 * f_s, 301)
+    f_s, _, frequencies = _bvd_band()
     admittance = bvd_admittance(frequencies, _BVD)
     points = [FrequencyPoint(float(frequency), {'drive': (1.0, complex(value / (2j * math.pi * frequency)))})
               for frequency, value in zip(frequencies, admittance)]
@@ -63,10 +64,8 @@ def _check_kappa(results_by_name):
     per_depth = admittance_result(monitor, 'drive', points, None)
     errors['per-depth flagged'] = 0.0 if (math.isnan(per_depth['kappa_e']) and 'kappa_e_warning' in per_depth) \
         else 1.0
-    worst = max(errors, key=errors.get)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _ROUND_TRIP_TOLERANCE,
-            'details': {'errors': errors, 'worst': worst, 'expected': expected,
-                        'measured': {name: device[name] for name in expected}}}
+    return worst_result(errors, _ROUND_TRIP_TOLERANCE, expected=expected,
+                        measured={name: device[name] for name in expected})
 
 
 # ---- 3. solid_frequency_response_bar (model runs) ----
@@ -89,12 +88,16 @@ _BVD_FREQUENCY_TOLERANCE = 5e-3   # the single-mode BVD of a distributed resonat
 _BVD_COUPLING_TOLERANCE = 5e-2
 
 
-def _sweep_band():
-    """(start, stop) [Hz] around the lossless short (resonance) and open (antiresonance) mode 1 of the piezo bar."""
+def _lossless_mode_one():
+    """(short (resonance), open (antiresonance)) [Hz] of the lossless mode 1 of the piezo bar."""
     c11, eps, piezo_e = _moduli()
     stiffened = c11 + piezo_e ** 2 / eps
-    short = _short_frequencies(stiffened, piezo_e ** 2 / (eps * _LENGTH))[0]
-    open_ = _chain_frequencies(stiffened)[0]
+    return _short_frequencies(stiffened, piezo_e ** 2 / (eps * _LENGTH))[0], _chain_frequencies(stiffened)[0]
+
+
+def _sweep_band():
+    """(start, stop) [Hz] around the lossless short (resonance) and open (antiresonance) mode 1 of the piezo bar."""
+    short, open_ = _lossless_mode_one()
     return (1.0 - _BAND_MARGIN) * short, open_ + _BAND_MARGIN * short
 
 
@@ -170,10 +173,7 @@ def _check_bar(results_by_name):
     if frequencies.size != _N_SWEEP:
         errors['piezo frequency count'] = abs(frequencies.size - _N_SWEEP)
         tolerances['piezo frequency count'] = 0.5
-    c11, eps, piezo_e = _moduli()
-    stiffened = c11 + piezo_e ** 2 / eps
-    short = _short_frequencies(stiffened, piezo_e ** 2 / (eps * _LENGTH))[0]
-    open_ = _chain_frequencies(stiffened)[0]
+    short, open_ = _lossless_mode_one()
     errors['BVD f_s'] = abs(piezo['f_s'] / short - 1.0)
     errors['BVD f_p'] = abs(piezo['f_p'] / open_ - 1.0)
     tolerances['BVD f_s'] = tolerances['BVD f_p'] = _BVD_FREQUENCY_TOLERANCE
@@ -183,7 +183,7 @@ def _check_bar(results_by_name):
                                                               ('f_s', 'f_p', 'k_eff2', 'Q_s', 'C0', 'C1', 'L1', 'R1',
                                                                'tan_delta_0', 'fit_error', 'fit_warning')}}
     elastic = results_by_name['elastic']
-    first = _chain_frequencies(c11)[0]
+    first = _chain_frequencies(_moduli()[0])[0]
     for index, factor in enumerate(_ELASTIC_FACTORS):
         nodes, _, _ = _bar_1d(2.0 * math.pi * factor * first, False, load=_TRACTION)
         centres = 0.5 * (nodes[:-1] + nodes[1:])
@@ -192,11 +192,7 @@ def _check_bar(results_by_name):
             item = f'elastic {factor:g} f_1 {name}'
             errors[item] = float(np.max(np.abs(field - values[:, None]))) / float(np.max(np.abs(centres)))
             tolerances[item] = _FIELD_TOLERANCE
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst)
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': details}
+    return scaled_worst_result(errors, tolerances, **details)
 
 
 FREQUENCY_RESPONSE_CASES = (

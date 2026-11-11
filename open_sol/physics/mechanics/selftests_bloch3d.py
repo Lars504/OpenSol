@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result
+from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec, SweepSpec)
 from .selftests import _elastic, _lame
@@ -291,9 +291,7 @@ def _check_gmsh_periodic(_):
         errors['p2_masters'] = 0.0
     except ValueError as exc:
         errors['p2_masters'], details['p2_masters'] = math.inf, str(exc)
-    worst = float(np.max(list(errors.values())))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _GMSH_TOLERANCE,
-            'details': {**details, 'errors': errors}}
+    return worst_result(errors, _GMSH_TOLERANCE, **details)
 
 
 # ---- template 'solid_bloch_band_diagram_3d': a corrugated silicon nanobeam cell, bands over k_x ----

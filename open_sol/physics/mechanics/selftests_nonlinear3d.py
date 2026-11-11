@@ -8,12 +8,12 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, last_value, scaled_worst_result
+from ...model.selftest_helpers import float32_value, last_value, scaled_worst_result, skip_without_cudss
 from ...model.spec import FeatureSpec, MaterialSpec
 from .selftests_fem3d import _point, _probes, _solid_spec
 from .selftests_nonlinear import (TANGENT_LOAD_STEPS, TANGENT_RATIOS, WARM_RATIOS, WARM_TOLERANCE, pinned_duffing_fit,
-                                  tangent_update_errors, tangent_update_runs, warm_start_errors, warm_start_runs,
-                                  warm_string_load)
+                                  string_displacement, tangent_update_errors, tangent_update_runs, warm_start_errors,
+                                  warm_start_runs, warm_string_load)
 
 UM = 1e-6
 _SOLID = 'solid'
@@ -271,18 +271,18 @@ def _check_string(_):
 # equals a cold 0.1 solve within the Newton tolerance with fewer Newton iterations. A -5 u seed and a non-finite seed
 # (the latter must fall back to the cold ramp) still match. 0.05 -> 0.1 is a strongly nonlinear step (a ~ +40 %).
 # Helpers shared with the 2D twin: selftests_nonlinear (warm_start_runs / warm_start_errors).
-def _check_warm_start(_):
+def _apply_string_load(physics, ratio):
+    """Solve the axial-free string under the sin(pi x / L) body force aiming at alpha a^2 / k = ratio."""
     length, width, height = _STRING
-    stiffness, alpha = _string_stiffness(), _string_alpha(False)
     unit_force_density = 0.5 * width * height * length   # F of f0 = 1 (load shape ~ the mode shape)
+    shape = np.sin(math.pi * _centroids(physics.domain.mesh)[:, 0] / length)
+    load = warm_string_load(ratio, _string_stiffness(), _string_alpha(False), unit_force_density)
+    physics.inject_source('body_force_z', load * shape)
+    physics.step(0.0, math.inf)
 
-    def apply_load(physics, ratio):
-        shape = np.sin(math.pi * _centroids(physics.domain.mesh)[:, 0] / length)
-        physics.inject_source('body_force_z', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
-        physics.step(0.0, math.inf)
 
-    runs = warm_start_runs(lambda: _string_physics(False), apply_load,
-                           lambda physics: np.array(physics.system.unknown, dtype=np.float64))
+def _check_warm_start(_):
+    runs = warm_start_runs(lambda: _string_physics(False), _apply_string_load, string_displacement)
     errors, tolerances, details = warm_start_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
 
@@ -291,17 +291,8 @@ def _check_warm_start(_):
 # 0.1, tangent_update every_iteration vs when_slow (modified Newton): equal states within the Newton tolerance, fewer
 # tangent factorisations. Helpers shared with the 2D twin: selftests_nonlinear (tangent_update_runs / _errors).
 def _check_tangent_update(_):
-    length, width, height = _STRING
-    stiffness, alpha = _string_stiffness(), _string_alpha(False)
-    unit_force_density = 0.5 * width * height * length
-
-    def apply_load(physics, ratio):
-        shape = np.sin(math.pi * _centroids(physics.domain.mesh)[:, 0] / length)
-        physics.inject_source('body_force_z', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
-        physics.step(0.0, math.inf)
-
-    runs = tangent_update_runs(lambda **settings: _string_physics(False, **settings), apply_load,
-                               lambda physics: np.array(physics.system.unknown, dtype=np.float64))
+    runs = tangent_update_runs(lambda **settings: _string_physics(False, **settings), _apply_string_load,
+                               string_displacement)
     errors, tolerances, details = tangent_update_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
 
@@ -314,11 +305,10 @@ _GPU_RATIO = 0.05
 
 
 def _check_newton_gpu(_):
-    from ...solvers.cudss_factor import cudss_available
     from ...solvers.sparse_direct import SparseDirectSolver
-    if not cudss_available():
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+    skipped = skip_without_cudss()
+    if skipped:
+        return skipped
     length, width, height = _STRING
     stiffness, alpha = _string_stiffness(), _string_alpha(False)
     load = warm_string_load(_GPU_RATIO, stiffness, alpha, 0.5 * width * height * length)
@@ -327,7 +317,7 @@ def _check_newton_gpu(_):
         physics = _string_physics(False, **settings)
         physics.inject_source('body_force_z', load * np.sin(math.pi * _centroids(physics.domain.mesh)[:, 0] / length))
         physics.step(0.0, math.inf)
-        return physics, np.array(physics.system.unknown, dtype=np.float64)
+        return physics, string_displacement(physics)
 
     _, reference = solve()
     scale = float(np.max(np.abs(reference)))

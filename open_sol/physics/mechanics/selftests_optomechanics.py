@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import no_runs, with_exact_cg
+from ...model.selftest_helpers import no_runs, with_exact_cg, worst_result
 from ...model.spec import (CouplingSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 
@@ -185,8 +185,7 @@ def _check_uniform_cavity(results_by_name):
         errors[name] = max(mode_errors)
         details[name] = {'g_om_photoelastic': measured, 'expected_over_omega': expected_ratio,
                          'omega': [overlap.omega for overlap in mode_overlaps], 'errors': mode_errors}
-    error = max(errors.values())
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': _UNIFORM_TOLERANCE, 'details': details}
+    return worst_result(errors, _UNIFORM_TOLERANCE, **details)
 
 
 def _slab_layout(cell, half_width, cladding):
@@ -292,9 +291,7 @@ def _check_hellmann_feynman(results_by_name):
     errors['te slab'] = abs(rate / difference - 1.0)
     details['te slab'] = {'d_beta_d_alpha': rate, 'central_difference': difference, 'alpha': alpha,
                           'n_eff': complex(mode.n_eff).real}
-    worst = max(errors.values())
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _HF_TOLERANCE,
-            'details': dict(details, errors=errors)}
+    return worst_result(errors, _HF_TOLERANCE, **details)
 
 
 def _slab_derivative(family, half_width):
@@ -547,11 +544,8 @@ def _check_effective_mass(results_by_name):
         invariance_errors.append(abs(rows[1][g0] - rows[0][g0]) / abs(rows[0][g0]))
     errors = {'effective mass': max(mass_errors) / _MASS_TOLERANCE,
               'g0 invariance': max(invariance_errors) / _INVARIANCE_TOLERANCE}
-    worst = max(errors.values())
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0,
-            'details': {'mass_errors': mass_errors, 'invariance_errors': invariance_errors,
-                        'frequencies': [resonance.frequency for resonance in solve.resonances],
-                        'normalized_errors': errors}}
+    return worst_result(errors, 1.0, mass_errors=mass_errors, invariance_errors=invariance_errors,
+                        frequencies=[resonance.frequency for resonance in solve.resonances])
 
 
 def _check_shear_rotation(results_by_name):
@@ -602,9 +596,7 @@ def _check_shear_rotation(results_by_name):
                 key = f'{path} {variant} theta={theta:g}'
                 errors[key] = abs(photo - expected[variant]) / abs(expected[variant])
                 details[key] = {'measured': [photo.real, photo.imag], 'expected': expected[variant]}
-    worst = max(errors.values())
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _SHEAR_TOLERANCE,
-            'details': dict(details, errors=errors)}
+    return worst_result(errors, _SHEAR_TOLERANCE, **details)
 
 
 OPTOMECHANICS_CASES = (

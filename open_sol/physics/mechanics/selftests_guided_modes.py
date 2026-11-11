@@ -6,14 +6,15 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import no_runs
+from ...model.selftest_helpers import no_runs, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
+from .selftests import _lame
+from .selftests_eigenfrequency import _add_rank_items, _symbols, _table_frequencies
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
 _STUDY = 'eigenfrequency'         # = model.study_eigenfrequency.STUDY_NAME
 _TABLE = 'modes'
-_FREQUENCY_COLUMN = 1             # frequency [Hz] in the resonance_table rows
 _YOUNGS_MODULUS = 70e9            # Pa
 _POISSON_RATIO = 0.25
 _DENSITY = 2200.0                 # kg/m^3
@@ -65,21 +66,9 @@ _HOST_SPLIT_TOLERANCE = 1e-13
 _HOST_NULL_TOLERANCE = 1e-10      # rigid-mode eigenvalues / largest
 
 
-def _lame():
-    """(lambda, mu) [Pa] of the test material."""
-    mu = _YOUNGS_MODULUS / (2.0 * (1.0 + _POISSON_RATIO))
-    lame_lambda = _YOUNGS_MODULUS * _POISSON_RATIO / ((1.0 + _POISSON_RATIO) * (1.0 - 2.0 * _POISSON_RATIO))
-    return lame_lambda, mu
-
-
-def _symbols(theta, cell):
-    """(K, M, S) of the 1D linear element on `cell` at phase theta."""
-    return 2.0 / cell * (1.0 - math.cos(theta)), cell / 3.0 * (2.0 + math.cos(theta)), math.sin(theta)
-
-
 def _guided_symbol(theta_x, theta_y, wavenumber, cell):
     """(3 x 3 stiffness symbol over (u_x, u_y, w), mass symbol rho Mx My) of the separable roller-box mode."""
-    lame_lambda, mu = _lame()
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     c11, coupling = lame_lambda + 2.0 * mu, lame_lambda + mu
     stiff_x, mass_x, slope_x = _symbols(theta_x, cell)
     stiff_y, mass_y, slope_y = _symbols(theta_y, cell)
@@ -131,23 +120,6 @@ def _block_spec(title, features, axial_wavenumber, target_frequency, n_resonance
         study=StudySpec(type=_STUDY, settings={'n_resonances': n_resonances}))
 
 
-def _table_frequencies(results, count, run):
-    """The first `count` resonance_table frequencies [Hz] of a run (ValueError when fewer)."""
-    rows = results.result(_PHYSICS, _TABLE)['rows']
-    if len(rows) < count:
-        raise ValueError(f'{run}: expected {count} modes in the table, got {len(rows)}')
-    return [float(row[_FREQUENCY_COLUMN]) for row in rows[:count]]
-
-
-def _normalized_result(errors, tolerances, details):
-    """measured = error = the worst deviation in tolerance units (tolerance 1)."""
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
-
-
 # ---- roller box ----
 def _box_shifted_target():
     return _BOX_SHIFT_FACTOR * _box_modes()[_BOX_SHIFT_INDEX][0]
@@ -194,21 +166,14 @@ def _check_box(results_by_name):
                      'shifted': sorted(modes, key=lambda mode: abs(mode[0] - target))[:_BOX_SHIFTED]}
     errors, tolerances, details = {}, {}, {}
     for run, expected in expected_runs.items():
-        results = results_by_name[run]
-        measured = _table_frequencies(results, len(expected), run)
-        errors[f'{run} frequency'] = max(abs(value / reference - 1.0)
-                                         for value, (reference, _, _) in zip(measured, expected))
-        tolerances[f'{run} frequency'] = _FREQUENCY_TOLERANCE
-        labels = results.summary().get('snapshot_labels') or []
-        errors[f'{run} snapshots'] = abs(len(labels) - len(expected))
-        tolerances[f'{run} snapshots'] = 0.5
+        measured, _ = _add_rank_items(run, results_by_name[run], [frequency for frequency, _, _ in expected],
+                                      len(expected), _FREQUENCY_TOLERANCE, errors, tolerances)
         details[run] = {'orders': [list(orders) for _, orders, _ in expected],
                         'frequency_expected': [frequency for frequency, _, _ in expected],
                         'frequency_measured': measured}
     errors['lowest mode 1 field'] = _box_mode_one_error(results_by_name['lowest'], modes[0][2])
     tolerances['lowest mode 1 field'] = _FIELD_TOLERANCE
-    details['target_frequency_shifted'] = target
-    return _normalized_result(errors, tolerances, details)
+    return scaled_worst_result(errors, tolerances, **details, target_frequency_shifted=target)
 
 
 # ---- k_z = 0 split ----
@@ -222,7 +187,7 @@ def _split_specs():
 def _antiplane_frequencies():
     """Sorted antiplane (pure w) frequencies [Hz] of the clamped / rollered block: mu (Kx My + Mx Ky) = omega^2 rho Mx My
     with the quarter-wave x phases (2 m + 1) pi / (2 N_x) and the cos y phases q pi / N_y."""
-    _, mu = _lame()
+    _, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     n_x, n_y = _BOX_CELLS
     frequencies = []
     for m in range(n_x):
@@ -244,9 +209,9 @@ def _check_split(results_by_name):
     labels = results_by_name['guided'].summary().get('snapshot_labels') or []
     errors['snapshots'] = abs(len(labels) - _SPLIT_MODES)
     tolerances = {'frequency': _FREQUENCY_TOLERANCE, 'snapshots': 0.5}
-    details = {'plane': plane, 'antiplane_lowest': antiplane[:_SPLIT_MODES], 'guided': guided, 'expected': expected,
-               'n_antiplane_among_expected': sum(1 for value in expected if value not in plane)}
-    return _normalized_result(errors, tolerances, details)
+    return scaled_worst_result(errors, tolerances, plane=plane, antiplane_lowest=antiplane[:_SPLIT_MODES],
+                               guided=guided, expected=expected,
+                               n_antiplane_among_expected=sum(1 for value in expected if value not in plane))
 
 
 # ---- free square rod ----
@@ -266,7 +231,7 @@ def _square_torsion_constant(side):
 def _check_rod(results_by_name):
     """k^2-extrapolated branch coefficients of the lowest four modes (flexural pair, torsion, longitudinal) against
     E / rho (exact), sqrt(E I / (rho A)) and G J / (rho I_p); the flexural pair degenerate (square symmetry)."""
-    lame_lambda, mu = _lame()
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     k1, k2 = _ROD_WAVENUMBERS
     if abs(k2 - 2.0 * k1) > 1e-12 * k2:
         raise ValueError('the rod runs need k2 = 2 k1 for the k^2 extrapolation')
@@ -292,15 +257,15 @@ def _check_rod(results_by_name):
     tolerances = {'flexural 1': _ROD_FLEXURAL_TOLERANCE, 'flexural 2': _ROD_FLEXURAL_TOLERANCE,
                   'torsion': _ROD_TORSION_TOLERANCE, 'longitudinal': _ROD_LONGITUDINAL_TOLERANCE,
                   'flexural degeneracy': _ROD_DEGENERACY_TOLERANCE}
-    details = {'omega': omega, 'measured': measured, 'expected': expected, 'lame_lambda': lame_lambda}
-    return _normalized_result(errors, tolerances, details)
+    return scaled_worst_result(errors, tolerances, omega=omega, measured=measured, expected=expected,
+                               lame_lambda=lame_lambda)
 
 
 # ---- CPU: the host operator ----
 def _guided_pencil(cells, dx, dy, wavenumber, solid=None):
     """Host (K, M) of guided_modes.guided_operators on widths dx, dy with the test material (void where solid False)."""
     from .guided_modes import guided_operators
-    lame_lambda, mu = _lame()
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     solid = np.ones(cells, dtype=bool) if solid is None else solid
     return guided_operators(np.where(solid, lame_lambda, 0.0), np.where(solid, mu, 0.0),
                             np.where(solid, _DENSITY, 0.0), dx, dy, wavenumber)
@@ -313,8 +278,7 @@ def _check_host_operator(results_by_name):
     pair with the symbol eigenvalues."""
     import scipy.sparse
     from .system import ElasticPattern, stiffness_stencil
-    lame_lambda, mu = _lame()
-    c11 = lame_lambda + 2.0 * mu
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     n_x, n_y = _HOST_CELLS
     errors, details = {}, {}
 
@@ -382,7 +346,7 @@ def _check_host_operator(results_by_name):
     details['n_separable_modes'] = len(residuals)
     tolerances = {'symmetry': _HOST_SYMMETRY_TOLERANCE, 'k_z = 0 split': _HOST_SPLIT_TOLERANCE,
                   'rigid modes': 0.5, 'separable modes': _HOST_RESIDUAL_TOLERANCE}
-    return _normalized_result(errors, tolerances, details)
+    return scaled_worst_result(errors, tolerances, **details)
 
 
 GUIDED_MODES_CASES = (

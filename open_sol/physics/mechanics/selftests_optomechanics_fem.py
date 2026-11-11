@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import no_runs
+from ...model.selftest_helpers import no_runs, scaled_worst_result
 
 # ---- sphere (index 1.444, radius a) in a PEC shell (radius b), m = 0 modes of degree l: TE E = F(rho) dP_l/dtheta
 # e_phi, TM H_phi = F(rho) dP_l/dtheta (E_rho = -l (l + 1) F P_l / (eps rho), E_theta = -(rho F)' dP_l/dtheta / (eps
@@ -53,11 +53,9 @@ _RING_TOLERANCE = 1e-12
 
 
 def _report(errors, details):
-    """Case result of {name: (error, tolerance)}: measured / error = the worst error / tolerance, tolerance 1."""
-    normalized = {name: error / tolerance for name, (error, tolerance) in errors.items()}
-    worst = max(normalized.values())
-    details = dict(details, normalized_errors=normalized)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    """Case result of {name: (error, tolerance)}: scaled_worst_result (the worst error / tolerance, tolerance 1)."""
+    return scaled_worst_result({name: error for name, (error, _) in errors.items()},
+                               {name: tolerance for name, (_, tolerance) in errors.items()}, **details)
 
 
 # ---- sphere in a PEC shell ----

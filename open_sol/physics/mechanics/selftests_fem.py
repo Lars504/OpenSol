@@ -8,13 +8,14 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import SubChecks, checks_result, cpu_defaults, float32_value, scaled_worst_result
+from ...model.selftest_helpers import (SubChecks, checks_result, cpu_defaults, float32_value, last_value,
+                                       scaled_worst_result)
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, StudySpec)
 from .selftests import _elastic, _lame, _rectangle
 from .selftests_formulations import (_BEND_AXIAL_FORCE, _BEND_FIRST_MOMENT, _BEND_INTERFACE, _BEND_LENGTH, _BEND_WIDTH,
-                                     _GPS_AXIAL_FORCE, _GPS_INTERFACE_X, _GPS_LAYERS, _GPS_RISE, _GPS_SIZE,
-                                     _gps_closed_forms)
+                                     _GPS_AXIAL_FORCE, _GPS_INTERFACE_X, _GPS_RISE, _GPS_SIZE, _gps_closed_forms,
+                                     _gps_materials, _layer_constants)
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'                 # = selftests.SOLID_TYPE_NAME
@@ -130,8 +131,7 @@ def _axisymmetric_patch(mesh, order, geometry_order):
 
 
 def _isotropic_coefficients(n_elements, youngs_modulus, poisson_ratio):
-    mu = youngs_modulus / (2.0 * (1.0 + poisson_ratio))
-    lame_lambda = youngs_modulus * poisson_ratio / ((1.0 + poisson_ratio) * (1.0 - 2.0 * poisson_ratio))
+    lame_lambda, mu = _lame(youngs_modulus, poisson_ratio)
     values = {'c11': lame_lambda + 2.0 * mu, 'c22': lame_lambda + 2.0 * mu, 'c33': lame_lambda + 2.0 * mu,
               'c12': lame_lambda, 'c13': lame_lambda, 'c23': lame_lambda, 'c66': mu}
     return {name: np.full(n_elements, value) for name, value in values.items()}
@@ -256,8 +256,7 @@ def _check_kirsch(results_by_name):
     results = results_by_name['plate']
     derived = results.summary()['derived']
     hoop_top, hoop_side = float(derived['hoop_top']), float(derived['hoop_side'])
-    probe = results.result(_PHYSICS, 'probe_top')['values']
-    probe_value = float(probe[-1]) if len(probe) else math.nan
+    probe_value = last_value(results, _PHYSICS, 'probe_top')
     left, bottom = results.result(_PHYSICS, 'roller_left'), results.result(_PHYSICS, 'roller_bottom')
     total = _TENSION * _PLATE_SIDE
     errors = {'hoop_top': abs(hoop_top - 3.0 * _TENSION) / _TENSION,
@@ -471,10 +470,6 @@ _GPS_FIELDS = ('stress_zz', 'stress_yy', 'elastic_strain_zz', 'u_x')
 def _gps_fem_spec(run):
     """Triangle ModelSpec of run 'uniform' or 'bending'."""
     length, height = _GPS_SIZE
-    materials = [MaterialSpec(name, properties=_elastic(youngs, nu, alpha_xx=alpha_xx, alpha_yy=alpha_yy,
-                                                        alpha_zz=alpha_zz), selection=[region])
-                 for name, region, ((youngs, nu), (alpha_xx, alpha_yy, alpha_zz))
-                 in zip(('layer_a', 'layer_b'), ('left_part', 'right_part'), _GPS_LAYERS)]
     settings = {'out_of_plane': 'generalized_plane_strain'}
     if run == 'uniform':
         settings.update(axial_force=_GPS_AXIAL_FORCE, bending='none')
@@ -489,7 +484,7 @@ def _gps_fem_spec(run):
         domain=DomainSpec(size_x=length, size_y=height),
         geometry=[_rectangle('left_part', 0.0, 0.0, _GPS_INTERFACE_X, height),
                   _rectangle('right_part', _GPS_INTERFACE_X, 0.0, length, height)] + points,
-        materials=materials,
+        materials=_gps_materials(('left_part', 'right_part')),
         physics=[PhysicsSpec(_PHYSICS, _SOLID_TYPE, settings=settings, features=[
             FeatureSpec('left', 'roller', ['x_lo']), FeatureSpec('bottom', 'roller', ['y_lo']),
             FeatureSpec('top', 'roller', ['y_hi']),
@@ -501,18 +496,6 @@ def _gps_fem_spec(run):
 
 def _gps_fem_specs():
     return {'uniform': _gps_fem_spec('uniform'), 'bending': _gps_fem_spec('bending')}
-
-
-def _layer_constants():
-    """Per layer (lambda, L = lambda + 2 mu, beta_x, beta_y, beta_z, alpha_zz) of the GPS layers."""
-    constants = []
-    for (youngs, nu), (alpha_xx, alpha_yy, alpha_zz) in _GPS_LAYERS:
-        lame_lambda, mu = _lame(youngs, nu)
-        longitudinal = lame_lambda + 2.0 * mu
-        constants.append((lame_lambda, longitudinal, longitudinal * alpha_xx + lame_lambda * (alpha_yy + alpha_zz),
-                          longitudinal * alpha_yy + lame_lambda * (alpha_xx + alpha_zz),
-                          longitudinal * alpha_zz + lame_lambda * (alpha_xx + alpha_yy), alpha_zz))
-    return constants
 
 
 def _bending_continuum():

@@ -9,13 +9,14 @@ from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float32_value, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
+from .selftests import _lame
+from .selftests_eigenfrequency import _add_rank_items
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
 _STATIC_STUDY = 'stationary'
 _MODAL_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 _TABLE = 'modes'
-_FREQUENCY_COLUMN = 1             # frequency [Hz] in the resonance_table rows
 
 # ---- bar: 10 x 1 mm, uniform 0.5 mm cells (20 x 2), E 70 GPa, nu 0.25 (c11 = lambda + 2 mu = 84 GPa), rho 2200, only
 # piezo_e11 = 1.36 C/m^2 and eps_dc 10 (e^2 / (eps c11) = 0.249, K_t^2 = e^2 / (eps c_D) = 0.199). Rollers on y_lo / y_hi
@@ -49,8 +50,7 @@ _FREQUENCY_TOLERANCE = 1e-8       # relative (float64 pencil, eigsh to round-off
 
 def _moduli():
     """(c11 [Pa], eps [F/m], e [C/m^2]) of the bar material."""
-    mu = _YOUNGS_MODULUS / (2.0 * (1.0 + _POISSON_RATIO))
-    lame_lambda = _YOUNGS_MODULUS * _POISSON_RATIO / ((1.0 + _POISSON_RATIO) * (1.0 - 2.0 * _POISSON_RATIO))
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     return lame_lambda + 2.0 * mu, EPS0 * _EPS_DC, _PIEZO_E11
 
 
@@ -213,16 +213,8 @@ def _check_modal(results_by_name):
                      'short': _short_frequencies(stiffened, piezo_e ** 2 / (eps * _LENGTH))}
     errors, tolerances, details = {}, {}, {}
     for run, expected in expected_runs.items():
-        results = results_by_name[run]
-        rows = results.result(_PHYSICS, _TABLE)['rows']
-        if len(rows) < len(expected):
-            raise ValueError(f'{run}: expected {len(expected)} modes in the table, got {len(rows)}')
-        measured = [float(row[_FREQUENCY_COLUMN]) for row in rows[:len(expected)]]
-        errors[f'{run} frequency'] = max(abs(value / reference - 1.0) for value, reference in zip(measured, expected))
-        tolerances[f'{run} frequency'] = _FREQUENCY_TOLERANCE
-        labels = results.summary().get('snapshot_labels') or []
-        errors[f'{run} snapshots'] = abs(len(labels) - _N_MODES)
-        tolerances[f'{run} snapshots'] = 0.5
+        measured, _ = _add_rank_items(run, results_by_name[run], expected, _N_MODES, _FREQUENCY_TOLERANCE, errors,
+                                      tolerances)
         details[run] = {'frequency_expected': expected, 'frequency_measured': measured}
     open_run = results_by_name['open']
     potential = _field(open_run, 'electric_potential')

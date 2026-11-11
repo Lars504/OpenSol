@@ -6,8 +6,9 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import float32_value, with_exact_cg
+from ...model.selftest_helpers import float32_value, scaled_worst_result, with_exact_cg
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
+from .selftests import _lame
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
@@ -42,6 +43,31 @@ _FREQUENCY_TOLERANCE = 1e-8       # relative (float64 K and M, eigsh to round-of
 _FIELD_TOLERANCE = 1e-5           # mode 1 cell-centre u (peak node |u| = 1 m, float32 outputs)
 
 
+def _symbols(theta, cell=_CELL):
+    """(K, M, S) of the 1D linear element on `cell` at phase theta."""
+    return 2.0 / cell * (1.0 - math.cos(theta)), cell / 3.0 * (2.0 + math.cos(theta)), math.sin(theta)
+
+
+def _table_frequencies(results, count, run):
+    """The first `count` resonance_table frequencies [Hz] of a run (ValueError when fewer)."""
+    rows = results.result(_PHYSICS, _TABLE)['rows']
+    if len(rows) < count:
+        raise ValueError(f'{run}: expected {count} modes in the table, got {len(rows)}')
+    return [float(row[_FREQUENCY_COLUMN]) for row in rows[:count]]
+
+
+def _add_rank_items(run, results, references, n_snapshots, tolerance, errors, tolerances):
+    """Add '<run> frequency' (worst relative deviation of the first table frequencies from `references` [Hz], rank
+    order) and '<run> snapshots' (stored snapshots against n_snapshots, tolerance 0.5); (measured [Hz], labels)."""
+    measured = _table_frequencies(results, len(references), run)
+    errors[f'{run} frequency'] = max(abs(value / reference - 1.0) for value, reference in zip(measured, references))
+    tolerances[f'{run} frequency'] = tolerance
+    labels = results.summary().get('snapshot_labels') or []
+    errors[f'{run} snapshots'] = abs(len(labels) - n_snapshots)
+    tolerances[f'{run} snapshots'] = 0.5
+    return measured, labels
+
+
 def _discrete_modes(cells=_CELLS, stiffness=None):
     """Sorted [(frequency [Hz], (p, q, branch))] of every discrete mode of the roller box of `cells` (_CELL cells) and
     c_ij `stiffness` (None: the orthotropic box)."""
@@ -51,12 +77,11 @@ def _discrete_modes(cells=_CELLS, stiffness=None):
     modes = []
     for p in range(n_x + 1):
         for q in range(n_y + 1):
-            theta_x, theta_y = p * math.pi / n_x, q * math.pi / n_y
-            stiff_x, stiff_y = 2.0 / _CELL * (1.0 - math.cos(theta_x)), 2.0 / _CELL * (1.0 - math.cos(theta_y))
-            mass_x, mass_y = _CELL / 3.0 * (2.0 + math.cos(theta_x)), _CELL / 3.0 * (2.0 + math.cos(theta_y))
+            stiff_x, mass_x, slope_x = _symbols(p * math.pi / n_x)
+            stiff_y, mass_y, slope_y = _symbols(q * math.pi / n_y)
             row_x = c11 * stiff_x * mass_y + c66 * mass_x * stiff_y
             row_y = c22 * mass_x * stiff_y + c66 * stiff_x * mass_y
-            coupling = (c12 + c66) * math.sin(theta_x) * math.sin(theta_y)
+            coupling = (c12 + c66) * slope_x * slope_y
             mass = _ORTHOTROPIC_DENSITY * mass_x * mass_y
             has_x, has_y = 0 < p < n_x, 0 < q < n_y
             if has_x and has_y:
@@ -121,27 +146,14 @@ def _check_box(results_by_name):
                      'shifted': sorted(modes, key=lambda mode: abs(mode[0] - target))[:_N_SHIFTED]}
     errors, tolerances, details = {}, {}, {}
     for run, expected in expected_runs.items():
-        results = results_by_name[run]
-        rows = results.result(_PHYSICS, _TABLE)['rows']
-        if len(rows) < len(expected):
-            raise ValueError(f'{run}: expected {len(expected)} modes in the table, got {len(rows)}')
-        measured = [float(row[_FREQUENCY_COLUMN]) for row in rows[:len(expected)]]
-        errors[f'{run} frequency'] = max(abs(value / reference - 1.0)
-                                         for value, (reference, _) in zip(measured, expected))
-        tolerances[f'{run} frequency'] = _FREQUENCY_TOLERANCE
-        labels = results.summary().get('snapshot_labels') or []
-        errors[f'{run} snapshots'] = abs(len(labels) - len(expected))
-        tolerances[f'{run} snapshots'] = 0.5
+        measured, labels = _add_rank_items(run, results_by_name[run], [frequency for frequency, _ in expected],
+                                           len(expected), _FREQUENCY_TOLERANCE, errors, tolerances)
         details[run] = {'orders': [list(orders) for _, orders in expected],
                         'frequency_expected': [frequency for frequency, _ in expected],
                         'frequency_measured': measured, 'snapshot_labels': list(labels)}
     errors['lowest mode 1 field'] = _mode_one_error(results_by_name['lowest'])
     tolerances['lowest mode 1 field'] = _FIELD_TOLERANCE
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item, target_frequency_shifted=target)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return scaled_worst_result(errors, tolerances, **details, target_frequency_shifted=target)
 
 
 # ---- 3D roller box: 4.5 x 2.5 x 2 mm, uniform 0.5 mm cells (9 x 5 x 4: pairwise coprime cell counts, so no two axes
@@ -158,16 +170,9 @@ _SOLID_3D_TYPE = 'solid_mechanics_3d'   # = selftests_3d.SOLID_3D_TYPE_NAME
 _N_LOWEST_3D = 6
 
 
-def _symbols(theta):
-    """(K, M, S) of the 1D linear element on _CELL at phase theta."""
-    return (2.0 / _CELL * (1.0 - math.cos(theta)), _CELL / 3.0 * (2.0 + math.cos(theta)), math.sin(theta))
-
-
 def _discrete_modes_3d():
     """Sorted [(frequency [Hz], (p, q, r, branch))] of every discrete mode of the 3D roller box."""
-    youngs, nu = _YOUNGS_MODULUS, _POISSON_RATIO
-    mu = youngs / (2.0 * (1.0 + nu))
-    lame_lambda = youngs * nu / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    lame_lambda, mu = _lame(_YOUNGS_MODULUS, _POISSON_RATIO)
     c11, c12, c66 = lame_lambda + 2.0 * mu, lame_lambda, mu
     modes = []
     for orders in np.ndindex(*(n + 1 for n in _CELLS_3D)):
@@ -234,13 +239,9 @@ def _check_box_3d(results_by_name):
     errors = {'frequency': max(abs(value / reference - 1.0) for value, (reference, _) in zip(measured, expected)),
               'snapshots': abs(len(labels) - len(expected)), 'mode 1 field': _mode_one_error_3d(results)}
     tolerances = {'frequency': _FREQUENCY_TOLERANCE, 'snapshots': 0.5, 'mode 1 field': _FIELD_TOLERANCE}
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details = {'orders': [[int(value) for value in orders] for _, orders in expected],
-               'frequency_expected': [frequency for frequency, _ in expected], 'frequency_measured': measured,
-               'snapshot_labels': list(labels), 'errors': errors, 'worst_item': worst_item}
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return scaled_worst_result(errors, tolerances, orders=[[int(value) for value in orders] for _, orders in expected],
+                               frequency_expected=[frequency for frequency, _ in expected], frequency_measured=measured,
+                               snapshot_labels=list(labels))
 
 
 EIGENFREQUENCY_3D_CASES = (
