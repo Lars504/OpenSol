@@ -15,7 +15,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   a local copy: `cudss_factor.csr_rows` / `canonical_csr` (numpy only, module level in sparse_direct, arpack,
   multigrid), `sparse_direct.cudss_precision`, `require_backend_operator`, `ExactSolveRecord` (the PCGSolver-protocol
   record of BandedSolver and DiffusionDirectSolver), `cudss_factor.gmres_refine` (the GMRES-IR loop of cuDSS mixed
-  factors and of host_direct, array module xp), `sparse_direct.recycled_gmres` (GMRES on an earlier factor's solve).
+  factors and of host_direct, array module xp), `sparse_direct.recycled_gmres` (GMRES on an earlier factor's solve),
+  `cudss_factor.ProbedFactor` (base of CudssFactorization and HostDirectFactorization: symmetric / mixed_factor /
+  factor_precision / can_refactorize, the probe vector and gate; host_direct also takes its `_FactorRejected`).
 - `host_direct.py` (MUMPS via python-mumps, MKL PARDISO via pydiso) imports numpy and the cudss_factor helpers at module
   level (sparse_direct, arpack_shift_invert, definition_helpers and solvers.definition import it there), the wrappers
   (`mumps`, `pydiso.mkl_solver`), scipy, core and `sparse_direct.recycled_gmres` inside functions only (import
