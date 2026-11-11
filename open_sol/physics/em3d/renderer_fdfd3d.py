@@ -9,7 +9,7 @@ from ...core.constants import DTYPE, EPS0
 from ...core.renderer import FieldInfo
 from ..em.renderer import _MODULUS_FIELD_INFOS
 from ..em.yee_grid import lower_face, lower_face_partner
-from .mode_ports3d import AXIS_PERMITTIVITY
+from .mode_ports3d import axis_permittivity
 from .renderer3d import CENTRE_AXES, RAW_LABELS, YeeRenderer3D, raw_parity
 
 FDFD_3D_COMPONENTS = ('ex', 'ey', 'ez', 'hx', 'hy', 'hz')
@@ -58,10 +58,8 @@ class FDFDRenderer3D(YeeRenderer3D):
             values = sum(xp.abs(self._centre(name, cut)) ** 2 for name in names)
             return (values if component == 'e_intensity' else xp.sqrt(values)).astype(DTYPE)
         if component == 'w_e':
-            allocated = self.domain.materials.property_names()
             window = self._window(cut)
-            values = sum(getattr(self.domain.materials, AXIS_PERMITTIVITY[axis] if AXIS_PERMITTIVITY[axis] in allocated
-                                 else 'eps_r')[window] * xp.abs(self._centre(name, cut)) ** 2
+            values = sum(axis_permittivity(self.domain.materials, axis)[window] * xp.abs(self._centre(name, cut)) ** 2
                          for axis, name in enumerate(('ex', 'ey', 'ez')))
             return (0.25 * EPS0 * values).astype(DTYPE)
         name, _, part = component.rpartition('_')

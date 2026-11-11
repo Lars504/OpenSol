@@ -8,6 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec, SweepSpec)
 
@@ -146,9 +147,7 @@ def _check_array(results_by_name):
                and plus['flux_y'] > _ARRAY_MIN_TRANSVERSE * plus['flux_z']
                and minus['flux_x'] < -_ARRAY_MIN_TRANSVERSE * minus['flux_z'])
     errors['direction'] = 0.0 if along_k else math.inf
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _TOLERANCE, **details)
 
 
 # em3d_bloch_port_modes (CPU, no run): port plane normal to z of a column x periodic (4 cells of 50 nm) at Bloch k_x,
@@ -208,11 +207,9 @@ def _check_port_modes(_results_by_name):
             for component, values in components.items():
                 errors[f'mode{number}_{field}{component}_step'] = (
                     float(np.max(np.abs(values[1:] - step * values[:-1]))) / scale if scale > 0.0 else math.inf)
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _PORT_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors,
-                        'n_eff_k0': [[mode.n_eff.real, mode.n_eff.imag] for mode in straight.modes],
-                        'n_eff_bloch': [[mode.n_eff.real, mode.n_eff.imag] for mode in bloch.modes]}}
+    return worst_result(errors, _PORT_TOLERANCE,
+                        n_eff_k0=[[mode.n_eff.real, mode.n_eff.imag] for mode in straight.modes],
+                        n_eff_bloch=[[mode.n_eff.real, mode.n_eff.imag] for mode in bloch.modes])
 
 
 # 'photonic_crystal_slab_bands_3d' template: square lattice (a = 0.5 um) of air holes (r = 0.3 a) in an eps 12 slab

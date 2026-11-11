@@ -148,13 +148,14 @@ _FAR_FIELD_TEXT = ('Near-to-far-field transform of the tangential E and H on the
 
 
 # ---- apply ----
-def _box_corners(ctx, selection, feature_spec):
+def box_corners(ctx, selection, feature_spec):
+    """(lo, hi) corners [m] of the selected box object (definition.py flux boxes too)."""
     shape = ctx.resolved_geometry[single_object(selection, feature_spec, 'box')].values
     return (shape['x0'], shape['y0'], shape['z0']), (shape['x1'], shape['y1'], shape['z1'])
 
 
 def _apply_plane_wave(ctx, solver, feature_spec, values, selection):
-    lo, hi = _box_corners(ctx, selection, feature_spec)
+    lo, hi = box_corners(ctx, selection, feature_spec)
     return solver.add_plane_wave(lo, hi, direction=values['direction'], polarization=values['polarization'],
                                  amplitude=values['amplitude'], **source_time_kwargs(values))
 
@@ -171,7 +172,7 @@ def _apply_mode_monitor(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_far_field(ctx, solver, feature_spec, values, selection):
-    lo, hi = _box_corners(ctx, selection, feature_spec)
+    lo, hi = box_corners(ctx, selection, feature_spec)
     return solver.add_near_to_far(lo, hi, wavelengths=_monitor_wavelengths(values))
 
 

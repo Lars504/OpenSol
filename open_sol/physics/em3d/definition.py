@@ -26,8 +26,9 @@ from ..em.definition_harmonic_fdtd import HARMONIC_FDTD_TEXT, make_validate_harm
 from ..em.definition_resonance import RESONANCE_SUMMARY, em_resonance_probe
 from ..em.memory_estimates import _harmonic_wavelength_count, _point_trace_items
 from .boundaries3d import AXES, FACE_TYPES_3D, BoundaryConfig3D, cpml_psi_bytes
-from .definition_sources3d import (SOURCE_FEATURES, box_edge_issues, box_face_spectra_memory, domain_sizes,
-                                   face_types, nearest_window_edge, plane_cells, plane_edge_message, window_axes)
+from .definition_sources3d import (SOURCE_FEATURES, box_corners, box_edge_issues, box_face_spectra_memory,
+                                   domain_sizes, face_types, nearest_window_edge, plane_cells, plane_edge_message,
+                                   window_axes)
 from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES   # the chunk the estimate books
 from .monitors3d import DFT_PLANE_QUANTITY, dft_plane_result, flux_result
 from .physics3d import EMPhysics3D, PERMITTIVITY_SLOTS
@@ -146,15 +147,18 @@ def _bloch_active(settings_values):
                  and settings_values[f'bc_{axis}_hi'] == 'periodic' and _bloch_k(settings_values, axis) != 0.0)
 
 
+def _ignored_bloch_issues(settings_values, path):
+    """Warning per Bloch k set on a non-periodic axis (ignored there; em_fdtd_3d and em_fdfd_3d)."""
+    return [Issue('warning', path, f'bloch_k{axis} = {_bloch_k(settings_values, axis):.4g} rad/m is ignored: '
+                                   f'bc_{axis}_lo / bc_{axis}_hi are not periodic')
+            for axis in AXES
+            if _bloch_k(settings_values, axis) != 0.0 and settings_values[f'bc_{axis}_lo'] != 'periodic']
+
+
 def _bloch_issues(vctx, physics_spec, settings_values, path):
     """Bloch k on a non-periodic axis (warning, ignored); with k != 0: absorbed power and TFSF plane waves (errors),
     Bloch port modes and real-set sources (info)."""
-    issues = []
-    for axis in AXES:
-        k = _bloch_k(settings_values, axis)
-        if k != 0.0 and settings_values[f'bc_{axis}_lo'] != 'periodic':
-            issues.append(Issue('warning', path, f'bloch_k{axis} = {k:.4g} rad/m is ignored: bc_{axis}_lo / '
-                                                 f'bc_{axis}_hi are not periodic'))
+    issues = _ignored_bloch_issues(settings_values, path)
     if not _bloch_active(settings_values):
         return issues
     if settings_values['track_absorption'] or _q_accum_referenced(vctx.spec, physics_spec.name, vctx.registry):
@@ -342,9 +346,7 @@ def _apply_flux_plane(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_flux_box(ctx, solver, feature_spec, values, selection):
-    shape = ctx.resolved_geometry[single_object(selection, feature_spec, 'box')].values
-    return solver.add_flux_box((shape['x0'], shape['y0'], shape['z0']), (shape['x1'], shape['y1'], shape['z1']),
-                               wavelengths=_monitor_wavelengths(values))
+    return solver.add_flux_box(*box_corners(ctx, selection, feature_spec), wavelengths=_monitor_wavelengths(values))
 
 
 def _apply_dft_plane(ctx, solver, feature_spec, values, selection):
