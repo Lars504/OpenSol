@@ -143,8 +143,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `DEVICE_PENCIL_MIN_ENTRIES` stored entries on cuDSS it holds a DevicePencil (pool memory ~2-3 value arrays + refresh
   transients; E5 200 nm: ~1 GiB pool high-water; estimators: section "Memory estimates"). ModalPencil vouches its terms are
   symmetric (`symmetric_known`, no check; a complex Bloch prolongation keeps the check): a new term that breaks
-  symmetry must drop the vouch. solve_modes / solve_damped_modes / solve_loaded_modes = `ModalPencil(...).solve_at` +
-  `release()`: a caller holding a pencil must release it (cuDSS factor lives outside the cupy pool).
+  symmetry must drop the vouch. `solve_modes` = `ModalPencil(...).solve_at` + `release()`: a caller holding a pencil must release it (cuDSS factor lives outside the cupy pool).
 - Multi-shift: `solve_modes_at_shifts(pencil, omega_targets, n_per_shift)` (union of 'nearest' solves),
   `solve_band_modes(pencil, f_lo, f_hi, n_per_slice, max_modes)` (inertia-counted for 'symmetric', 50 % overlap +
   warning otherwise); both release and return frequency order with info target_frequency NaN, 'targets' / 'band',
@@ -386,11 +385,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   works through em_solid_optical_force's mesh_transfer.
 - Elastic PML ring (`pml2d.py`, pml_<face> / pml_cells / pml_reflection; ring from `pml3d.PMLPadding`, outer side
   clamped): eigenfrequency only; static / prestress solves see the ring unstretched and clamped; pencil from
-  `system.stiffness(stretched=True)` via `solve_damped_modes` with the ring filter. No PML on the axis. Ring strains /
+  `system.stiffness(stretched=True)` in a damped ModalPencil with the ring filter. No PML on the axis. Ring strains /
   energies are not physical.
 - Azimuthal order m >= 1 (triangles, eigenfrequency, isotropic only): `components` = 3 (U_phi shown in u_z, rings
-  weighted pi); the m = 1 axis tie u_phi = -u_r is `system.prolongation` (pass it to solve_modes /
-  solve_damped_modes); rigid motions 2 at m = 1, none at m >= 2; static, frequency response, c_ij refused;
+  weighted pi); the m = 1 axis tie u_phi = -u_r is `system.prolongation` (pass it to the
+  ModalPencil); rigid motions 2 at m = 1, none at m >= 2; static, frequency response, c_ij refused;
   stress_stiffening at m >= 1 takes the initial stress only.
 - Energy fields (`fields.ENERGY_DENSITY_FIELDS`) are display / probe fields, not in `state()`; tensor meshes render
   0 (energy probes there: validation error).
@@ -462,12 +461,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   and next to an equipotential electrode_domain; stress -= e^T E. Tensor renderer returns zeros for them, they stay out
   of state_fields, electric probes on the tensor mesh are refused. A cuDSS 'linear' back end skips the SuperLU size rule
   and host factor item.
-- Piezo modes: PiezoSystem + `coupled_mass_3d` to `PiezoSystem.solve_modes` on 'eigen' (2D pencil rules: voltage = short,
+- Piezo modes: PiezoSystem + `coupled_mass_3d` to `PiezoSystem.modal_pencil` on 'eigen' (2D pencil rules: voltage = short,
   floating = open; their values ignored). `select_resonance` splits u / `_potential` and stores per-mode electrode V / Q.
   k_eff^2 needs two runs.
 - Resistive electrode load (connection 'resistive_load', 3D only; load_resistance): tied like floating (no charge
   term: `_charge_terms` reads floating ones only), adds j s^2 / (omega R) to the master diagonal (`PiezoSystem.loads`).
-  Eigen: `modal.solve_loaded_modes` freezes 1 / omega at the target (target_frequency > 0 required), eigs_shifted, then
+  Eigen: the 'loaded' ModalPencil freezes 1 / omega at the target (target_frequency > 0 required), eigs_shifted, then
   Newton per mode on x^T T(omega) x = 0 (transpose, not conjugate); info load_residual (large = mode far from target).
   Modes complex (`_write_complex_outputs`, no electrode values), DAMPED_TABLE_COLUMNS. Frequency response:
   `HarmonicSystem(loads=)` adds (j / omega) B via pattern_sum (master diagonal is in K's pattern). Static solves raise;
@@ -489,10 +488,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   solves.
 - Elastic PML (`pml3d.py`): `_domain_requirements` returns a `pml3d.PMLPadding` (meshing grows the shell, materials by
   the clamped-centroid rule); shell carries stiffness (`_elastic_elements`), outer faces held at 0, s = 1 - j beta (d /
-  w)^2 frequency independent (pencil stays linear in omega^2). `modal.solve_pml_modes` keeps Re sqrt(lambda) > 0, drops
-  modes with > half |u|^2 on shell-only dofs. Eigenfrequency only, no piezo, no periodic axis, target > 0, no supports /
-  loads / electrodes on a PML face (its window side is interior); `_support_issues` skips its rules. Not built: PML with
-  piezo (G / scaling are real) and in frequency response.
+  w)^2 frequency independent (pencil stays linear in omega^2). a damped ModalPencil (`shell_dofs`) keeps Re
+  sqrt(lambda) > 0, drops modes with > half |u|^2 on shell-only dofs. Eigenfrequency only, no piezo, no periodic
+  axis, target > 0, no supports / loads / electrodes on a PML face (its window side is interior); `_support_issues`
+  skips its rules. Not built: PML with piezo (G / scaling are real) and in frequency response.
 - electrode_edge_size: `PhysicsType.mesh_edge_sizes` names electrode entities -> `TetrahedronSizing.edge_sizes` (gmsh
   only; info when unused).
 - Mirror check (`_mirror_issues`): warns per Roller whose selected materials' c_IJ / piezo_e* / eps_dc_* flip sign under
@@ -538,7 +537,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_external_load`). Studies call it via `study._solve_static_states` after their background stage. The hook ends
   with `system.release_factor()`: a kept static factor took the device memory the shift-invert factor then needs
   (CudssMemoryError, then a ~4.6 min SuperLU retry).
-- Eigen loss: mechanical_loss_factor -> K + K_sigma + j eta K_el (K_sigma lossless) via `solve_damped_modes`;
+- Eigen loss: mechanical_loss_factor -> K + K_sigma + j eta K_el (K_sigma lossless) in a damped ModalPencil;
   info['damped'] adds DAMPED_TABLE_COLUMNS; a damped 2D mode is shown like a response. Piezo modes ignore the loss.
 - Complex records: frequency_probe (`definition_common.frequency_probe_feature`) -> HarmonicProbeRecord filled by
   `_record_harmonic`; supports `register_support` and record complex A x - f (2D x thickness); while a response is shown

@@ -771,9 +771,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     # --- eigenfrequency study hooks -------------------------------------------
 
     def solve_eigenfrequencies(self, n_resonances):
-        """Up to n_resonances vibration modes nearest target_frequency: modal.solve_modes on K (+ K_sigma with
+        """Up to n_resonances vibration modes nearest target_frequency: the ModalPencil of K (+ K_sigma with
         stress_stiffening) and the consistent mass of the solid elements (supports held at 0; a mechanical_loss_factor:
-        the damped modes of K_el (1 + j eta), solve_damped_modes; an elastic PML: the stretched complex pencil, PML modes
+        the damped modes of K_el (1 + j eta); an elastic PML: the stretched complex pencil, PML modes
         filtered, radiation Q; a free body: its rigid motions asked on top and dropped; azimuthal order 1: on the axis
         tie prolongation) -> ModalSolve, kept as eigen_solve. solve_eigenfrequencies_targets / _band
         (modal.MultiShiftModes) share the _modal_pencil."""
