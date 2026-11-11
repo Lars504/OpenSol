@@ -8,9 +8,10 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
+from ...model.selftest_helpers import float_list, solver_role
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
+from .selftests import tolerance_units_result
 from .selftests_fdfd import cpu_specs
 
 _PHYSICS = 'em'
@@ -181,18 +182,9 @@ def _cavity_errors(results_by_run, omega_tolerance, q_tolerance, cell=_CAVITY_CE
     return errors, tolerances, details
 
 
-def _normalized_outcome(errors, tolerances, details):
-    """measured = error = the worst errors[item] / tolerances[item] (NaN ranks worst), tolerance 1."""
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
-
-
 def _check_cavity(results_by_name):
     """_cavity_errors of the Automatic runs; measured = error = the worst deviation in tolerance units."""
-    return _normalized_outcome(*_cavity_errors(results_by_name, _OMEGA_TOLERANCE, _Q_TOLERANCE))
+    return tolerance_units_result(*_cavity_errors(results_by_name, _OMEGA_TOLERANCE, _Q_TOLERANCE))
 
 
 def _line_block_cavity_specs():
@@ -222,15 +214,14 @@ def _check_line_block_cavity(results_by_name):
         tolerances.update({f'{precision} {item}': value for item, value in part_tolerances.items()})
         details[precision] = part_details
         for run, results in runs.items():
-            roles = ((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}
-            linear = roles.get('linear') or {}
+            linear = solver_role(results, _PHYSICS)
             counters = linear.get('counters') or {}
             used = (linear.get('type') == 'line_block' and float(counters.get('factor_solves', 0)) > 0
                     and float(counters.get('rejected_factor_solves', math.inf)) == 0.0)
             errors[f'{precision} {run} line_block record'] = 0.0 if used else math.inf
             tolerances[f'{precision} {run} line_block record'] = 1.0
             details[f'{precision} {run} counters'] = dict(counters)
-    return _normalized_outcome(errors, tolerances, details)
+    return tolerance_units_result(errors, tolerances, details)
 
 
 EIGENFREQUENCY_SELFTEST_CASES = (

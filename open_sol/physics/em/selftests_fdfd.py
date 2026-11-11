@@ -8,12 +8,13 @@ from ...core.constants import C0, EPS0, ETA0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import (PERIODIC_Y, available_host_direct, cell_centre, float_list, glass_half_space,
                                        probe_phasor, single_value, skip_result, skip_without_host_direct,
-                                       with_direct_node)
+                                       solver_role, with_direct_node, worst_item)
 from ...model.spec import (OUTER_FACES, CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec,
                            MaterialSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec,
                            StudySpec)
 from .selftests import (_PROBE_FEATURE, _WALL_AMPLITUDE, _WALL_RUNS, _WALL_WAVELENGTH, WALL_REFLECTION_TEXT,
-                        _hankel0_modulus, wall_reflection_result, wall_reflection_spec, wall_run_name)
+                        _hankel0_modulus, normalized_result, wall_reflection_result, wall_reflection_spec,
+                        wall_run_name)
 from .selftests_bloch import _TFSF_FLUX_LINES, _oblique_tfsf_spec
 from .selftests_hz import (_DRUDE_CELL, _DRUDE_EPS_INF, _DRUDE_GAMMA, _DRUDE_INNER_PREFIX, _DRUDE_OMEGA_P,
                            _DRUDE_OUTER_PREFIX, _DRUDE_RADIUS, GRADED_FRESNEL_TEXT, _cylinder, _cylinder_efficiencies,
@@ -527,8 +528,7 @@ def _host_direct_specs():
 def _role_record(results, role):
     """(type, settings, counters) of the summary 'solvers' record of role `role` of physics 'em' (('', {}, {}) when
     missing)."""
-    roles = ((results.summary().get('solvers') or {}).get(_PHYSICS_NAME) or {}).get('roles') or {}
-    record = roles.get(role) or {}
+    record = solver_role(results, _PHYSICS_NAME, role)
     return record.get('type', ''), record.get('settings') or {}, record.get('counters') or {}
 
 
@@ -587,11 +587,8 @@ def _check_host_direct(results_by_name):
                 and counters.get('eigen_double_fallbacks') == 0)
         errors[f'{back_end} eigen record'], tolerances[f'{back_end} eigen record'] = (0.0 if used else math.inf), 1.0
         details[f'cavity_{back_end}'] = {**part_details, 'counters': dict(counters)}
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(back_ends=list(back_ends), normalized_errors=normalized, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    details['back_ends'] = list(back_ends)
+    return normalized_result({item: error / tolerances[item] for item, error in errors.items()}, details)
 
 
 def fd_joule_heating_spec():
@@ -667,11 +664,7 @@ def _check_hankel(results_by_name):
                         f'{polarization}_phase_by_probe': phases,
                         f'{polarization}_relative_errors': float_list(relative_errors),
                         f'{polarization}_phase_errors': float_list(phase_errors)})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_far_field_power(results_by_name):
@@ -705,11 +698,7 @@ def _check_far_field_power(results_by_name):
                         f'{polarization}_flux_box_power': flux_total,
                         f'{polarization}_analytic_power': analytic[polarization],
                         f'{polarization}_err_power': err_power, f'{polarization}_err_shape': err_shape})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_hankel_far_field(results_by_name):
@@ -718,9 +707,7 @@ def _check_hankel_far_field(results_by_name):
     checks = {'hankel': _check_hankel(results_by_name),
               'far_field': _check_far_field_power({'ez': results_by_name['ez'],
                                                    'hz': results_by_name[_HANKEL_DIPOLE_RUN]})}
-    worst_check = max(checks, key=lambda name: math.inf if math.isnan(checks[name]['error'])
-                      else checks[name]['error'])
-    worst = checks[worst_check]['error']
+    worst_check, worst = worst_item({name: check['error'] for name, check in checks.items()})
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0,
             'details': {'worst_check': worst_check, **{name: check['details'] for name, check in checks.items()}}}
 
@@ -745,15 +732,14 @@ def _check_fresnel(results_by_name):
             normalized_errors[f'{polarization} {medium} power'] = (abs(powers[medium] / expected - 1.0)
                                                                    / _FRESNEL_POWER_TOLERANCE)
         details.update({f'{polarization}_{medium}_power': power for medium, power in powers.items()})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
+    worst_name, worst_error = worst_item(normalized_errors)
     worst_polarization = max(_POLARIZATIONS, key=lambda polarization: math.inf
                              if math.isnan(transmittance[polarization])
                              else abs(transmittance[polarization] - _FRESNEL_TRANSMISSION))
     details.update(transmittance=transmittance, worst_polarization=worst_polarization,
-                   normalized_errors=normalized_errors, worst_item=worst_item)
+                   normalized_errors=normalized_errors, worst_item=worst_name)
     return {'measured': transmittance[worst_polarization], 'expected': _FRESNEL_TRANSMISSION,
-            'error': normalized_errors[worst_item], 'tolerance': 1.0, 'details': details}
+            'error': worst_error, 'tolerance': 1.0, 'details': details}
 
 
 def _check_slab_wavelengths(wavelengths, what):
@@ -789,11 +775,7 @@ def _check_mode_port_slab(results_by_name):
                         f'{polarization}_upstream_fraction_negative': float_list(upstream_backward),
                         f'{polarization}_err_forward': err_forward, f'{polarization}_err_leak': err_leak,
                         f'{polarization}_err_index': err_index})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_wall_reflection(results_by_name, runs=_WALL_RUNS):
@@ -837,11 +819,7 @@ def _check_drude_cylinder(results_by_name):
                         f'{polarization}_Q_abs': float_list(q_abs),
                         f'{polarization}_absorbed_line_power': loss_powers,
                         f'{polarization}_balance_errors': balance_errors})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_tfsf_leakage(results_by_name):
@@ -864,18 +842,7 @@ def _check_tfsf_leakage(results_by_name):
         ratio = max(abs(powers['upstream']), abs(powers['downstream'])) / abs(powers['inside'])
         normalized_errors[f'oblique {polarization} flux'] = ratio / _LEAK_FLUX_TOLERANCE
         details[f'oblique_{polarization}_powers'] = powers
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
-
-
-def _line_block_record(results):
-    """(type, counters) of the summary 'solvers' linear role record of physics 'em' (('', {}) when missing)."""
-    roles = ((results.summary().get('solvers') or {}).get(_PHYSICS_NAME) or {}).get('roles') or {}
-    linear = roles.get('linear') or {}
-    return linear.get('type', ''), linear.get('counters') or {}
+    return normalized_result(normalized_errors, details)
 
 
 def _run_values(results, model):
@@ -898,18 +865,14 @@ def _check_line_block(results_by_name):
             values = _run_values(results, model)
             deviation = (float(np.max(np.abs(values - reference))) / scale if values.shape == reference.shape
                          else math.inf)   # NaN propagates
-            solver_type, counters = _line_block_record(results)
+            solver_type, _, counters = _role_record(results, 'linear')
             rejected = (float(counters.get('rejected_factor_solves', math.inf)) if solver_type == 'line_block'
                         else math.inf)
             normalized_errors[f'{model} {precision}'] = deviation / _LINE_BLOCK_TOLERANCES[precision]
             normalized_errors[f'{model} {precision} rejected'] = 0.0 if rejected == 0.0 else math.inf
             details[f'{model}_{precision}'] = {'deviation': deviation, 'solver_type': solver_type,
                                                'counters': dict(counters)}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _wavelength_values(results, model):
@@ -939,7 +902,7 @@ def _check_line_block_wavelengths(results_by_name):
             values = _wavelength_values(results, model)
             deviation = (float(np.max(np.abs(values - reference))) / scale if values.shape == reference.shape
                          else math.inf)   # NaN propagates
-            solver_type, counters = _line_block_record(results)
+            solver_type, _, counters = _role_record(results, 'linear')
             line_block = solver_type == 'line_block'
             batched = float(counters.get('batched_operators', -1)) if line_block else -1.0
             rejected = float(counters.get('rejected_factor_solves', math.inf)) if line_block else math.inf
@@ -948,11 +911,7 @@ def _check_line_block_wavelengths(results_by_name):
             normalized_errors[f'{model} {precision} rejected'] = 0.0 if rejected == 0.0 else math.inf
             details[f'{model}_{precision}'] = {'deviation': deviation, 'solver_type': solver_type,
                                                'counters': dict(counters)}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_cudss(results_by_name):
@@ -972,7 +931,7 @@ def _check_cudss(results_by_name):
             values = _wavelength_values(results, model)
             deviation = (float(np.max(np.abs(values - reference))) / scale if values.shape == reference.shape
                          else math.inf)   # NaN propagates
-            solver_type, counters = _line_block_record(results)
+            solver_type, _, counters = _role_record(results, 'linear')
             record = {name: counters.get(name) for name in ('back_end', 'factorizations', 'cudss_plans',
                                                             'cudss_symmetric_factors')}
             expected_record = {'back_end': back_end, 'factorizations': n_wavelengths, 'cudss_plans': 1,
@@ -982,11 +941,7 @@ def _check_cudss(results_by_name):
                 0.0 if solver_type == 'sparse_direct' and record == expected_record else math.inf)
             details[f'{model}_{back_end}'] = {'deviation': deviation, 'solver_type': solver_type,
                                               'counters': dict(counters)}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 FDFD_SELFTEST_CASES = (

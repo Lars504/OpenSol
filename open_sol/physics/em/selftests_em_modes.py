@@ -5,10 +5,11 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
+from ...model.selftest_helpers import float_list, solver_role
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec,
                            SweepSpec)
+from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'
@@ -101,11 +102,7 @@ def _check_pec_waveguide(results_by_name):
         errors['dispersion n_eff'] = float(np.max(np.abs(dispersion_n_eff / np.asarray(dispersion_expected) - 1.0)))
         details.update(dispersion_n_eff=float_list(dispersion_n_eff), dispersion_n_eff_discrete=dispersion_expected,
                        dispersion_overlap=float_list(dispersion['series']['overlap']))
-    normalized = {item: error / _PEC_TOLERANCE for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return normalized_result({item: error / _PEC_TOLERANCE for item, error in errors.items()}, details, errors=errors)
 
 
 # ---- Bloch parallel plate (symmetry 2.2): vacuum, x periodic with bloch_kx over L = 100 cells of 20 nm, pec y walls
@@ -156,11 +153,9 @@ def _check_bloch_plate(results_by_name):
               for number, (value, reference) in enumerate(zip(measured, expected), start=1)}
     scalar = float(results.summary()['derived']['scalar_n_eff_1'])
     errors['scalar n_eff_1'] = abs(scalar - float(rows[0][1]))
-    normalized = {item: error / _BLOCH_TOLERANCE for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': {'n_eff_squared': [[value.real, value.imag] for value in measured],
-                        'n_eff_squared_expected': expected, 'errors': errors, 'worst_item': worst_item}}
+    return normalized_result({item: error / _BLOCH_TOLERANCE for item, error in errors.items()},
+                             {'n_eff_squared': [[value.real, value.imag] for value in measured],
+                              'n_eff_squared_expected': expected}, errors=errors)
 
 
 # ---- em_modes_line_block (solver_plan Part II stage 3): the PEC waveguide runs (mode_analysis with the group index:
@@ -194,8 +189,7 @@ def _line_block_specs():
 
 def _shifted_record(results):
     """(type, counters) of the summary 'solvers' shifted role record of the em_modes physics."""
-    roles = ((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}
-    shifted = roles.get('shifted') or {}
+    shifted = solver_role(results, _PHYSICS, 'shifted')
     return shifted.get('type', ''), shifted.get('counters') or {}
 
 
@@ -220,10 +214,7 @@ def _check_line_block(results_by_name):
         normalized[f'{name} record'] = 0.0 if good else math.inf
         details[f'{name} record'] = {'type': solver_type, 'counters': dict(counters),
                                      'expected_batched_operators': expected}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(normalized_errors=normalized, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return normalized_result(normalized, details)
 
 
 EM_MODES_SELFTEST_CASES = (

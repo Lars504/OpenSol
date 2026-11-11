@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, float_list
+from ...model.selftest_helpers import PERIODIC_Y, checks_result, float_list
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverDefaultsSpec, StudySpec)
 
@@ -87,10 +87,8 @@ def _check_pole_weights(results_by_name):
               'staircase_far': (staircase_change, 0.0)}
     entries = {name: {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
                for name, (value, tolerance) in checks.items()}
-    failed = [name for name, entry in entries.items() if not entry['passed']]
-    return {'measured': float(len(failed)), 'expected': 0.0, 'error': float(len(failed)), 'tolerance': 0.0,
-            'details': {'failed': failed, 'checks': entries, 'staircase_area_ratio': float(region.sum()) / area,
-                        'cut_cells': ez.summary(), 'cut_faces': hz.summary()}}
+    return checks_result(entries, staircase_area_ratio=float(region.sum()) / area, cut_cells=ez.summary(),
+                         cut_faces=hz.summary())
 
 
 # ---- film ----

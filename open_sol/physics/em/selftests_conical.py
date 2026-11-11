@@ -7,9 +7,10 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, probe_phasor, single_value, vertical_line
+from ...model.selftest_helpers import float_list, probe_phasor, single_value, solver_role, vertical_line
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec)
+from .selftests import normalized_result
 from .selftests_cross_section import _isotropic
 
 _TYPE = 'em_fdfd_conical'
@@ -374,17 +375,14 @@ def _check_cudss(results_by_name):
         results = results_by_name[f'sheet_{back_end}']
         values = _cudss_compared_values(results)
         deviation = float(np.max(np.abs(values - reference))) / scale if values.shape == reference.shape else math.inf
-        roles = ((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}
-        counters = (roles.get('linear') or {}).get('counters') or {}
+        counters = solver_role(results, _PHYSICS).get('counters') or {}
         expected = {'back_end': back_end, 'factorizations': n_wavelengths, 'cudss_symmetric_factors': n_wavelengths,
                     'cudss_plans': 1 + int(counters.get('cudss_double_fallbacks') or 0)}
         record = {name: counters.get(name) for name in expected}
         errors[back_end] = deviation / _CUDSS_TOLERANCE
         errors[f'{back_end} record'] = 0.0 if record == expected else math.inf
         details[back_end] = {'deviation': deviation, 'counters': dict(counters)}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    details.update(normalised_errors=errors, worst_item=worst)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': 1.0, 'details': details}
+    return normalized_result(errors, details, normalised_errors=errors)
 
 
 CONICAL_MODEL_SELFTESTS = (

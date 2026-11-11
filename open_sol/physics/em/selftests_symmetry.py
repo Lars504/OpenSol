@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, max_relative_error, worst_result
+from ...model.selftest_helpers import float_list, max_relative_error, worst_item, worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 from .selftests_fdfd import cpu_specs
@@ -213,9 +213,7 @@ def _check_mirror(results_by_name):
             full_value, half_value = float(full_derived[value_name]), float(half_derived[value_name])
             errors[f'{run}_{value_name}'] = max_relative_error(half_value, full_value)
             details[f'{run}_{value_name}'] = [full_value, half_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 # ---- parity sectors (symmetry 2.6) ----
@@ -252,9 +250,7 @@ def _check_parity(results_by_name):
             full_value = float(full.summary()['derived'][value_name])
             errors[f'{polarization}_{value_name}'] = max_relative_error(combined_value, full_value)
             details[f'{polarization}_{value_name}'] = [full_value, combined_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 # ---- parity sectors inside one study (symmetry 2.6, study setting parity_sectors) ----
@@ -312,9 +308,7 @@ def _check_parity_study(results_by_name):
             full_value = float(full.summary()['derived'][value_name])
             errors[f'{polarization}_{value_name}'] = max_relative_error(combined_value, full_value)
             details[f'{polarization}_{value_name}'] = [full_value, combined_value]
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 def _eigen_sector_spec():
@@ -384,9 +378,7 @@ def _check_parity_eigen(results_by_name):
         details[sector] = {'orders': [list(orders) for _, orders in expected],
                            'wavelength_expected': [2.0 * math.pi * C0 / reference for reference, _ in expected],
                            'wavelength_measured': float_list([2.0 * math.pi * C0 / value.real for value in measured])}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': 1.0,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, 1.0, **details)
 
 
 # ---- parity sectors with a parameter sweep ----
@@ -646,8 +638,8 @@ def _check_reciprocity(results_by_name):
             absorbed = 1.0 - np.sum(np.abs(matrices) ** 2, axis=1)   # per incidence column: 1 - |S_.j|^2
             details[f'{run}_absorbed'] = float_list(absorbed.ravel())
             errors[f'{run}_absorption'] = 0.0 if float(np.min(absorbed)) > _RECIPROCITY_MIN_LOSS else math.inf
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst] / _RECIPROCITY_TOLERANCE,
+    worst, error = worst_item(errors)
+    return {'measured': error, 'expected': 0.0, 'error': error / _RECIPROCITY_TOLERANCE,
             'tolerance': 1.0, 'details': {'worst_item': worst, 'errors': errors, **details}}
 
 

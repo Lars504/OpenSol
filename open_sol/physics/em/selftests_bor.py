@@ -243,20 +243,33 @@ def _cavity_check(orders, eps_transverse, eps_axial, on_resonance_order=None):
             'details': details}
 
 
+def _open_grid(cells, pml):
+    """(BoundaryConfig, cell widths, window, full shape) of a _DIPOLE_CELL grid of `cells` window cells (r, z): pmc
+    axis, `pml` cpml cells on r_hi and both z faces."""
+    from .boundaries import BoundaryConfig
+    config = BoundaryConfig(x_lo='pmc', x_hi='cpml', y_lo='cpml', y_hi='cpml')
+    config.cpml_npml = pml
+    shape = (cells[0] + pml, cells[1] + 2 * pml)
+    widths = tuple(np.full(count, _DIPOLE_CELL) for count in shape)
+    return config, widths, (slice(0, cells[0]), slice(pml, pml + cells[1])), shape
+
+
+def _open_vacuum_grid():
+    """(BoundaryConfig, cell widths, window, vacuum BORMaterials, omega) of the em_bor_radiation grid: cpml on r_hi and
+    both z faces, at its wavelength."""
+    from .body_of_revolution import BORMaterials
+    config, widths, window, shape = _open_grid(_DIPOLE_WINDOW, _DIPOLE_PML)
+    materials = BORMaterials(eps=np.ones(shape, dtype=np.complex128), mu=np.ones(shape, dtype=np.complex128),
+                             pec=np.zeros(shape, dtype=bool))
+    return config, widths, window, materials, 2.0 * math.pi * C0 / _DIPOLE_WAVELENGTH
+
+
 def _open_vacuum_solve(order, source_cell, component):
     """(system, source row, solution, rhs) of a _DIPOLE_CURRENT element `component` in r cell source_cell of the
     window's middle row: vacuum, cpml on r_hi and both z faces, azimuthal order `order`."""
-    from .body_of_revolution import BORMaterials, assemble_bor, point_current_rhs
-    from .boundaries import BoundaryConfig
+    from .body_of_revolution import assemble_bor, point_current_rhs
     from ...solvers.sparse_direct import factorize_host
-    config = BoundaryConfig(x_lo='pmc', x_hi='cpml', y_lo='cpml', y_hi='cpml')
-    config.cpml_npml = _DIPOLE_PML
-    shape = (_DIPOLE_WINDOW[0] + _DIPOLE_PML, _DIPOLE_WINDOW[1] + 2 * _DIPOLE_PML)
-    widths = tuple(np.full(count, _DIPOLE_CELL) for count in shape)
-    window = (slice(0, _DIPOLE_WINDOW[0]), slice(_DIPOLE_PML, _DIPOLE_PML + _DIPOLE_WINDOW[1]))
-    materials = BORMaterials(eps=np.ones(shape, dtype=np.complex128), mu=np.ones(shape, dtype=np.complex128),
-                             pec=np.zeros(shape, dtype=bool))
-    omega = 2.0 * math.pi * C0 / _DIPOLE_WAVELENGTH
+    config, widths, window, materials, omega = _open_vacuum_grid()
     system = assemble_bor(widths, config, _DIPOLE_CELL, materials, omega, order, window=window)
     source_row = _DIPOLE_PML + _DIPOLE_WINDOW[1] // 2
     rhs = point_current_rhs(system, source_cell, source_row, component, _DIPOLE_CURRENT)
@@ -351,12 +364,7 @@ def _open_dielectric_assembly(eps_block):
     """BORAssembly of the small identity grid (_IDENTITY_WINDOW, _IDENTITY_PML) with an anisotropic block (eps_rr =
     eps_block, eps_phiphi = eps_block + 0.5, eps_zz = eps_block + 1) in _RECYCLE_BLOCK."""
     from .body_of_revolution import BORAssembly, BORMaterials
-    from .boundaries import BoundaryConfig
-    config = BoundaryConfig(x_lo='pmc', x_hi='cpml', y_lo='cpml', y_hi='cpml')
-    config.cpml_npml = _IDENTITY_PML
-    shape = (_IDENTITY_WINDOW[0] + _IDENTITY_PML, _IDENTITY_WINDOW[1] + 2 * _IDENTITY_PML)
-    widths = tuple(np.full(count, _DIPOLE_CELL) for count in shape)
-    window = (slice(0, _IDENTITY_WINDOW[0]), slice(_IDENTITY_PML, _IDENTITY_PML + _IDENTITY_WINDOW[1]))
+    config, widths, window, shape = _open_grid(_IDENTITY_WINDOW, _IDENTITY_PML)
     components = []
     for offset in (0.0, 0.5, 1.0):
         values = np.ones(shape, dtype=np.complex128)

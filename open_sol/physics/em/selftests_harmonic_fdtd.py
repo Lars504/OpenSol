@@ -10,6 +10,7 @@ from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float_list
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec)
+from .selftests import normalized_result
 
 # em_harmonic_fdtd_vs_fdfd: y-periodic strip 4 x 0.5 um, CPML along x, uniform 20 nm mesh (50 cells per vacuum
 # wavelength, 25 in the cylinder), window cell k spanning [20 k, 20 (k + 1)] nm. A vertical line source at the
@@ -137,14 +138,10 @@ def _check_harmonic_vs_fdfd(results_by_name):
     err_abs = float(np.max(np.abs(np.abs(fdtd) - np.abs(fdfd)))) / scale if scale > 0.0 else math.nan
     err_complex = float(np.max(np.abs(fdtd - fdfd))) / scale if scale > 0.0 else math.nan
     normalized_errors = {'abs': err_abs / _ABS_TOLERANCE, 'complex': err_complex / _COMPLEX_TOLERANCE}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
     mean_phase = float(np.angle(np.sum(fdtd * np.conj(fdfd))))   # ~0 when the source signs agree, ~pi if flipped
-    details = {'err_abs': err_abs, 'err_complex': err_complex, 'fdfd_max_abs': scale,
-               'fdtd_max_abs': float(np.max(np.abs(fdtd))), 'mean_phase_difference_rad': mean_phase,
-               'normalized_errors': normalized_errors, 'worst_item': worst_item}
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, {'err_abs': err_abs, 'err_complex': err_complex, 'fdfd_max_abs': scale,
+                                                 'fdtd_max_abs': float(np.max(np.abs(fdtd))),
+                                                 'mean_phase_difference_rad': mean_phase})
 
 
 def _slab_spec(run):

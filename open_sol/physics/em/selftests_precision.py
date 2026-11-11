@@ -6,7 +6,7 @@ import numpy as np
 
 from ...core.constants import DTYPE, EPS0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import cell_centre
+from ...model.selftest_helpers import cell_centre, solver_role
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            SolverSpec, StudySpec)
 
@@ -99,16 +99,10 @@ def _phase_drift(results):
                    'peak_field': float(np.max(np.abs(values[last])))}
 
 
-def _stepper_precision(results):
-    """Stepper precision summary 'solvers' records for the em physics (None when absent)."""
-    roles = ((results.summary().get('solvers') or {}).get(_PHYSICS_NAME) or {}).get('roles') or {}
-    return (roles.get('stepper') or {}).get('precision')
-
-
 def _check_cavity_phase(results_by_name):
     """TM11 phase drift of the double run (error, rad) against the tolerance. Raises unless summary 'solvers' records
     the double stepper precision."""
-    precision = _stepper_precision(results_by_name['double'])
+    precision = solver_role(results_by_name['double'], _PHYSICS_NAME, 'stepper').get('precision')
     if precision != 'double':
         raise ValueError(f"expected the stepper to run double, summary 'solvers' records {precision!r}")
     drift, details = _phase_drift(results_by_name['double'])

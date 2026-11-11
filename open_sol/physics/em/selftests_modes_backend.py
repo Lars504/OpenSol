@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import with_exact_cg
+from ...model.selftest_helpers import solver_role, with_exact_cg
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
 
@@ -63,11 +63,6 @@ def _backend_runs():
     return {run: _heated_strip_spec(backend) for backend, run in _HEATED_RUNS.items()}
 
 
-def _eigen_role(results):
-    """The summary 'solvers' eigen role record of the modes physics ({} when missing)."""
-    return (((results.summary().get('solvers') or {}).get(_PHYSICS) or {}).get('roles') or {}).get('eigen') or {}
-
-
 def _field(results, name):
     return np.asarray(results.field(name).values, dtype=np.float64)
 
@@ -75,7 +70,7 @@ def _field(results, name):
 def _check_backends(results_by_name):
     """Heated strip: relative n_eff of every mode, max-normalised e_intensity and the T rise cpu vs gpu; raises unless
     the cpu run recorded the eigen role on the cpu."""
-    role = _eigen_role(results_by_name[_HEATED_RUNS['cpu']])
+    role = solver_role(results_by_name[_HEATED_RUNS['cpu']], _PHYSICS, 'eigen')
     if role.get('backend') != 'cpu':
         raise ValueError(f"run '{_HEATED_RUNS['cpu']}': expected the eigen role on the cpu backend, summary 'solvers' "
                          f'records {role!r}')

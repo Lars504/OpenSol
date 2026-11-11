@@ -6,9 +6,10 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import analytic_slab_index, float_list, single_value
+from ...model.selftest_helpers import analytic_slab_index, float_list, single_value, worst_item
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
+from .selftests import normalized_result
 
 _PHYSICS_NAME = 'em'
 _WAVELENGTH = 1.55e-6              # m
@@ -120,11 +121,7 @@ def _check_slab(_results_by_name):
         normalized_errors[f'{label} fine'] = abs(fine - expected) / _FINE_TOLERANCE
         normalized_errors[f'{label} auto'] = abs(auto - expected) / _AUTO_TOLERANCE
         details[label] = {'expected': expected, 'fine_cell': fine, 'auto_cell': auto}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': normalized_errors[worst_item], 'expected': 0.0, 'error': normalized_errors[worst_item],
-            'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 def _check_rib(results_by_name):
@@ -149,12 +146,11 @@ def _check_rib(results_by_name):
     normalized_errors = {'eps map': eps_error / _EPS_TOLERANCE,
                          'lateral n_eff': abs(n_lateral / n_expected - 1.0) / _LATERAL_INDEX_TOLERANCE,
                          'forward fraction': abs(forward - 1.0) / _FORWARD_TOLERANCE}
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    return {'measured': n_lateral, 'expected': n_expected, 'error': normalized_errors[worst_item], 'tolerance': 1.0,
+    worst, worst_error = worst_item(normalized_errors)
+    return {'measured': n_lateral, 'expected': n_expected, 'error': worst_error, 'tolerance': 1.0,
             'details': {'n_eff_rib_stack': n_rib, 'n_eff_slab_stack': n_slab, 'eps_relative_error': eps_error,
                         'fraction_positive': forward, 'normalized_errors': normalized_errors,
-                        'worst_item': worst_item, 'eps_rows': float_list(eps_map[eps_map.shape[0] // 2])}}
+                        'worst_item': worst, 'eps_rows': float_list(eps_map[eps_map.shape[0] // 2])}}
 
 
 def _stack_args(film):

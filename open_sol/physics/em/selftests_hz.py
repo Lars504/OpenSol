@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, float_list, glass_half_space
+from ...model.selftest_helpers import PERIODIC_Y, float_list, glass_half_space, worst_item
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, RefinementSpec, StudySpec)
 
@@ -453,7 +453,7 @@ def _check_plane_wave(results_by_name):
         errors[run_name] = abs(peak - _PLANE_WAVE_AMPLITUDE) / _PLANE_WAVE_AMPLITUDE
         details.update({f'{run_name}_peak': peak, f'{run_name}_window_start': window_start,
                         f'{run_name}_window_samples': window_samples})
-    worst = max(errors, key=lambda run_name: math.inf if math.isnan(errors[run_name]) else errors[run_name])
+    worst, _ = worst_item(errors)
     details['worst_run'] = worst
     return {'measured': peaks[worst], 'expected': _PLANE_WAVE_AMPLITUDE, 'error': errors[worst],
             'tolerance': _PLANE_WAVE_TOLERANCE, 'details': details}

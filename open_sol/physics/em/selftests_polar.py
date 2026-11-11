@@ -12,6 +12,7 @@ import numpy as np
 from ...core.constants import C0, EPS0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float_list, max_relative_error
+from .selftests import tolerance_units_result
 
 # ---- PEC disk cavity: full disk from the origin, 2 pi periodic, pec outer wall (ez: E_z = 0 in the outermost cells,
 # so the wall is the centre of the last cell; hz: no flux through the inner face of the last cell, so the wall is
@@ -183,11 +184,7 @@ def _check_whispering_gallery(_results):
                                  'omega_measured': [omega.real, omega.imag], 'q_expected': q_expected,
                                  'q_measured': q_factor, 'order_nu': nu,
                                  'wavelength_expected': 2.0 * math.pi * C0 / omega_expected.real}
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst)
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': details}
+    return tolerance_units_result(errors, tolerances, details)
 
 
 def _ring_run(polarization):
@@ -282,11 +279,7 @@ def _check_ring_source(_results):
                            f'{polarization} power': _RING_FLUX_TOLERANCE})
     errors['refusals'] = _polar_refusals()
     tolerances['refusals'] = 0.5
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst)
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': details}
+    return tolerance_units_result(errors, tolerances, details)
 
 
 POLAR_SELFTEST_CASES = (
