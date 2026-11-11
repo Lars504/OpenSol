@@ -2,39 +2,15 @@
 eigenfrequency (nearest, shifted, band, targets) and frequency response (piezo admittance sweep, elastic sweep), selftest
 specs with refined meshes (~8-10 s gpu total). Run from any folder:
 python profiler_solver_solid_mechanics_tensor.py [--repeat N] [--no-cprofile]"""
-import copy
 import sys
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
+from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main, refined  # noqa: E402
 
 N_ELASTIC_FREQUENCIES = 60   # the elastic bar run swept over this many frequencies (selftest: 3)
-
-
-def _scaled(value, factor):
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return value / factor
-    return f'({value}) / {factor}'
-
-
-def refined(spec, factor):
-    """Copy of spec with every mesh size (dx, h_min, refinement / band dx) divided by factor."""
-    spec = copy.deepcopy(spec)
-    for mesh in spec.meshes:
-        mesh.dx = _scaled(mesh.dx, factor)
-        mesh.h_min = _scaled(mesh.h_min, factor)
-        for refinement in mesh.refinements:
-            for name in ('dx', 'dx_x', 'dx_y', 'dx_z'):
-                setattr(refinement, name, _scaled(getattr(refinement, name), factor))
-        for axis in mesh.axes:
-            for band in axis.bands:
-                band.dx = _scaled(band.dx, factor)
-    return spec
 
 
 def _elastic_sweep(spec):

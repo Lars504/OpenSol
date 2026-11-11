@@ -3,35 +3,11 @@ stress), eigenfrequency with stress stiffening (lossless and damped), frequency 
 adaptive sweeps with probe / reaction records, a shown-fields sweep) and a geometrically nonlinear Newton solve, selftest
 specs with refined meshes (~9-11 s gpu total; the selftests themselves run on the cpu backend). Run from any
 folder: python profiler_solver_solid_mechanics_triangles.py [--repeat N] [--no-cprofile]"""
-import copy
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
-
-
-def _scaled(value, factor):
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return value / factor
-    return f'({value}) / {factor}'
-
-
-def refined(spec, factor):
-    """Copy of spec with every mesh size (dx, h_min, refinement / band dx) divided by factor."""
-    spec = copy.deepcopy(spec)
-    for mesh in spec.meshes:
-        mesh.dx = _scaled(mesh.dx, factor)
-        mesh.h_min = _scaled(mesh.h_min, factor)
-        for refinement in mesh.refinements:
-            for name in ('dx', 'dx_x', 'dx_y', 'dx_z'):
-                setattr(refinement, name, _scaled(getattr(refinement, name), factor))
-        for axis in mesh.axes:
-            for band in axis.bands:
-                band.dx = _scaled(band.dx, factor)
-    return spec
+from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main, refined  # noqa: E402
 
 
 def _specs():

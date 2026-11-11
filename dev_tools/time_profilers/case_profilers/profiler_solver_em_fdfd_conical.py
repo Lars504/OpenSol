@@ -18,11 +18,11 @@ LATTICE_SCALE = 4            # cells per axis x this of the 8 x 6 Bloch cell (ho
 
 _CONICAL = 'open_sol.physics.em.solvers.fdfd_conical'
 PARTS = COMMON_PARTS + EIGEN_PARTS + methods(f'{_CONICAL}:ConicalPhysics', 'conical physics', (
-    'finalize', 'solve_harmonic', 'solve_eigenfrequencies', 'select_resonance', '_refresh_system', '_factorize',
+    'finalize', 'solve_harmonic', 'solve_eigenfrequencies', 'select_resonance', '_refresh_system', '_factorize_operator',
     '_solve_linear', '_solve', '_show', '_conical_materials',
 )) + methods(_CONICAL, 'conical monitors', (
-    'ConicalProbe.record', 'ConicalFluxMonitor.record', 'conical_probe_result', 'conical_flux_result',
-)) + methods('open_sol.physics.em.conical', 'conical ops', (
+    'ConicalFluxMonitor.record', 'conical_probe_result', 'conical_flux_result',
+)) + methods('open_sol.physics.em.fdfd_monitors', 'conical monitors', ('CentrePhasorProbe.record',)) + methods('open_sol.physics.em.conical', 'conical ops', (
     'assemble_conical', '_symmetrizer', 'conical_fields', 'centre_phasors', 'driven_rhs', 'solve_conical_driven',
     'line_flux', 'source_power', 'solve_conical_resonances',
 )) + (

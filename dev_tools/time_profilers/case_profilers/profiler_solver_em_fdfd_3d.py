@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import REPOSITORY, SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 EXAMPLE = REPOSITORY / 'examples' / 'em3d' / 'fdfd_mie_sphere_resonance_3d.json'
@@ -19,10 +20,6 @@ def _specs():
     return runs
 
 
-def _methods(owner, label, names):
-    return tuple((f'{owner}.{name}', f'{label}: {name}') for name in names)
-
-
 EM3D = 'open_sol.physics.em3d'
 EIGEN = 'open_sol.physics.em.eigenfrequency'
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
@@ -32,7 +29,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.model.study:_feature_results', 'study: _feature_results'),
     ('open_sol.model.study_eigenfrequency:_search_solve', 'study: eigenfrequency _search_solve'),
     ('open_sol.model.subpixel_geometry:build_interface_geometry_3d', 'build: subpixel build_interface_geometry_3d'),
-) + _methods(f'{EM3D}.fdfd3d:FDFDPhysics3D', 'physics', (
+) + methods(f'{EM3D}.fdfd3d:FDFDPhysics3D', 'physics', (
     'finalize', 'set_subpixel_smoothing', 'solve_eigenfrequencies', 'select_resonance', '_refresh_system',
     '_assemble', '_materials_at', '_pec_cells', 'state')
 ) + (
@@ -50,7 +47,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     (f'{EIGEN}:squared_cayley_roots', 'eigen: squared_cayley_roots'),
     (f'{EIGEN}:_resonance', 'eigen: _resonance'),
     (f'{EIGEN}:_PencilMass.device_times', 'eigen: _PencilMass.device_times'),
-) + _methods(f'{EM3D}.renderer_fdfd3d:FDFDRenderer3D', 'renderer', ('device_field', 'device_plane', '_field',
+) + methods(f'{EM3D}.renderer_fdfd3d:FDFDRenderer3D', 'renderer', ('device_field', 'device_plane', '_field',
                                                                     '_centre'))
 
 if __name__ == '__main__':
