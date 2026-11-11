@@ -102,9 +102,9 @@ TENSOR_DIFFUSION_PARTS = methods(DIFFUSION_SYSTEM, (
 ), 'DiffusionSystem') + methods('open_sol.core.fv_diffusion:DiffusionPhysicsBase', (
     '_extend_into_pml', 'error_indicator',
 ), 'DiffusionPhysicsBase') + functions('open_sol.core.fv_diffusion', (
-    'build_anisotropic_laplacian', '_build_pattern', 'cross_quads',
+    'build_anisotropic_laplacian', 'cross_quads',
 ), 'fv_diffusion') + functions('open_sol.core.fv_diffusion_3d', (
-    'build_laplacian_3d', 'anchor_link_graph_3d', 'flux_at_centres_3d', 'face_flows_3d',
+    'build_laplacian', 'anchor_link_graph', 'flux_at_centres', 'face_flows_3d',
 ), 'fv_diffusion_3d')
 
 # ---- FEM diffusion (fem.diffusion triangles, fem.diffusion3d tetrahedra) + assembly ----

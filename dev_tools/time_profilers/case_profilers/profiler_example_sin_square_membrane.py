@@ -40,7 +40,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + _methods(PHYSICS, 'physics', (
     '_solid_density', '_stiffness_loss', 'solve_eigenfrequencies', '_modal_pencil', '_evaluated_films',
     'select_resonance', '_write_outputs', '_ensure_outputs', 'lagrange_field', 'state', '_record_probes',
 )) + _methods(SYSTEM, 'system', (
-    'assemble', '_check_rigid_modes', '_factorize', 'solve', 'solve_homogeneous', 'mass', 'release_factor',
+    'assemble', '_check_rigid_modes', '_solve_free', 'solve', 'solve_homogeneous', 'mass', 'release_factor',
     'reaction',
 )) + _methods(PENCIL, 'modal pencil', (
     '__init__', '_reduced', '_pencil', 'solve_at', '_shift_solve', '_candidates', '_resonance', 'release', '_info',

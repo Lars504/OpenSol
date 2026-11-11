@@ -30,7 +30,7 @@ COMMON_PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.model.study:_numbered_snapshots', 'study: _numbered_snapshots (resonance / mode loop)'),
     ('open_sol.model.study_eigenfrequency:_solve_resonance_snapshots', 'study: _solve_resonance_snapshots'),
     ('open_sol.model.study:_SnapshotRecorder.record', 'output: _SnapshotRecorder.record'),
-    ('open_sol.model.study:_SnapshotRecorder._plane_fields', 'output: _SnapshotRecorder._plane_fields'),
+    ('open_sol.model.study:_SnapshotRecorder._field_data', 'output: _SnapshotRecorder._field_data'),
     ('open_sol.model.study:_feature_results', 'output: _feature_results (feature result callbacks)'),
     ('open_sol.model.study:_solver_records', 'output: _solver_records'),
     ('open_sol.model.study:_LiveFeed.update', 'output: _LiveFeed.update'),
@@ -86,9 +86,11 @@ BOR_TENSOR_PARTS = methods(f'{_BOR}:BORPhysics', 'bor physics', (
     '_refresh_system', '_factorize_host', '_batch_factorization', '_solve_line_block', '_solve_linear', '_solve',
     '_solve_order_sum', '_show', '_show_phasors', '_bor_materials', 'yee',
 )) + methods(_BOR, 'bor monitors', (
-    'BORProbe.record', 'BORProbe.record_order', 'BORFluxMonitor.record', 'BORFluxMonitor.record_order',
+    'BORFluxMonitor.record', 'BORFluxMonitor.record_order',
     'BORNearToFar.record', 'BORNearToFar.record_order', '_OrderFactor.solve_host',
     'bor_probe_result', 'bor_flux_result', 'bor_far_field_result', 'bor_resonance_table_result',
+)) + methods('open_sol.physics.em.fdfd_monitors', 'bor monitors', (
+    'CentrePhasorProbe.record', 'CentrePhasorProbe.record_order',
 )) + methods(_BOR_OPS, 'bor eigen', (
     'solve_bor_resonances', 'order_eigen_solve', 'merge_order_solves',
 )) + methods('open_sol.physics.em.bor_line_block', 'bor line block', (

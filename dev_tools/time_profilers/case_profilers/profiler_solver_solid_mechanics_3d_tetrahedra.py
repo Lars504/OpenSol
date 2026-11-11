@@ -53,7 +53,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     '_write_energy_outputs', '_write_electric_outputs', '_point_outputs', '_write_element_field', 'lagrange_field',
     'state', '_record_probes',
 )) + tuple((f'{SYSTEM}.{method}', f'system: {method}') for method in (
-    'assemble', '_check_rigid_modes', '_factorize', 'solve', 'mass', 'shell_only_dofs', 'reaction', 'release_factor',
+    'assemble', '_check_rigid_modes', '_solve_free', 'solve', 'mass', 'shell_only_dofs', 'reaction', 'release_factor',
 )) + tuple((f'{PENCIL}.{method}', f'modal pencil: {method}') for method in (
     '__init__', '_reduced', '_pencil', 'solve_at', '_shift_solve', '_candidates', '_resonance', 'release', '_info',
 )) + tuple((f'{HARMONIC}.{method}', f'harmonic system: {method}') for method in (
