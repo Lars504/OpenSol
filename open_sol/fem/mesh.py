@@ -225,8 +225,7 @@ def edge_indices(edges, n_points, pairs) -> np.ndarray:
     """Int32 indices into edges (sorted keys, as from connectivity) of node pairs; ValueError for a pair not in it."""
     keys = edge_keys(edges, n_points)
     wanted = edge_keys(pairs, n_points)
-    found = np.searchsorted(keys, wanted)
-    found = np.minimum(found, max(len(keys) - 1, 0))
+    found = np.minimum(np.searchsorted(keys, wanted), max(len(keys) - 1, 0))
     if len(wanted) and (not len(keys) or not np.array_equal(keys[found], wanted)):
         raise ValueError('triangle mesh: a constraint segment is not an edge of the mesh')
     return found.astype(np.int32)
@@ -261,12 +260,8 @@ def build_triangle_mesh(points, triangles, *, curves=(), curved_pairs=None, curv
     for name, pairs in (tagged_pairs or {}).items():
         indices = edge_indices(edges, n_points, pairs)
         tags[name] = np.union1d(tags.get(name, np.zeros(0, dtype=np.int32)), indices).astype(np.int32)
-    outer = edge_elements[:, 1] < 0
     for name, member in (outline_masks or {}).items():
-        member = np.asarray(member, dtype=bool)
-        first = member[edge_elements[:, 0]]
-        second = np.where(outer, False, member[np.maximum(edge_elements[:, 1], 0)])
-        changes = np.flatnonzero(first != second)
+        changes = np.flatnonzero(one_sided(edge_elements, member))
         tags[name] = np.union1d(tags.get(name, np.zeros(0, dtype=np.int32)), changes).astype(np.int32)
     n_elements = len(triangles)
     region = np.full(n_elements, -1, dtype=np.int32) if region is None else np.asarray(region, dtype=np.int32)

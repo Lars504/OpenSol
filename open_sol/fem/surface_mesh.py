@@ -36,10 +36,6 @@ class SurfaceMesh:
     faces: np.ndarray           # int64 (n_elements,) tet face of each surface element
     solid_elements: np.ndarray  # int64 (n_elements,) tet element beside each face on the solid side
 
-    @property
-    def in_plane_axes(self) -> tuple:
-        return IN_PLANE_AXES[self.axis]
-
     def tet_dofs(self, order) -> np.ndarray:
         """Int64 tet full-numbering scalar dof of each surface full-numbering Lagrange dof (P1: nodes; P2: + edges)."""
         if order == 1:

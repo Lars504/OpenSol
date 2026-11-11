@@ -696,21 +696,28 @@ def _periodic_rows(axis, low, high) -> list:
             'EndFor']
 
 
+def _offset_text(axis, value) -> str:
+    """MathEval text of the normalised coordinate along axis minus value."""
+    return f'({"xyz"[axis]} - ({geo_number(value)}))'
+
+
+def _positive_squared(text) -> str:
+    """MathEval text of max(text, 0)^2, written (u * u + u * Sqrt(u * u)) / 2."""
+    return f'(({text}) * ({text}) + ({text}) * Sqrt(({text}) * ({text}))) / 2'
+
+
 def _edge_distance_texts(solid, unit, scale) -> list:
     """MathEval expressions (normalised x, y, z; only arithmetic and Sqrt: gmsh >= 4.8) of the distance to each edge
     of a box (12) or cylinder rim (2); max(a, 0) written (a + Sqrt(a * a)) / 2."""
-    def offset(axis, value):
-        return f'({"xyz"[axis]} - ({geo_number(value)}))'
-
     def squared(text):
         return f'{text} * {text}'
 
     if solid.kind == 'cylinder':
         cx, cy, z0, radius, height = solid.values
         centre = unit((cx, cy, z0))
-        radial = (f'(Sqrt({squared(offset(0, centre[0]))} + {squared(offset(1, centre[1]))}) - '
+        radial = (f'(Sqrt({squared(_offset_text(0, centre[0]))} + {squared(_offset_text(1, centre[1]))}) - '
                   f'{geo_number(radius / scale)})')
-        return [f'Sqrt({squared(radial)} + {squared(offset(2, rim))})'
+        return [f'Sqrt({squared(radial)} + {squared(_offset_text(2, rim))})'
                 for rim in (centre[2], centre[2] + height / scale)]
     if solid.kind != 'box':
         return []
@@ -722,8 +729,8 @@ def _edge_distance_texts(solid, unit, scale) -> list:
         outside = f'(({below} + Sqrt({squared(below)})) / 2 + ({above} + Sqrt({squared(above)})) / 2)'
         for first_value in (low[first], high[first]):
             for second_value in (low[second], high[second]):
-                texts.append(f'Sqrt({squared(outside)} + {squared(offset(first, first_value))} + '
-                             f'{squared(offset(second, second_value))})')
+                texts.append(f'Sqrt({squared(outside)} + {squared(_offset_text(first, first_value))} + '
+                             f'{squared(_offset_text(second, second_value))})')
     return texts
 
 
@@ -778,9 +785,6 @@ def _short_number(value) -> str:
 def _outside_distance_text(solid, unit, scale) -> str:
     """MathEval expression (normalised x, y, z; arithmetic and Sqrt only) of the exact distance outside a solid, 0
     inside (the twin _outside_distance); max(u, 0)^2 written (u * u + u * Sqrt(u * u)) / 2."""
-    def positive_squared(text):
-        return f'(({text}) * ({text}) + ({text}) * Sqrt(({text}) * ({text}))) / 2'
-
     def offset(axis, value):
         return f'({"xyz"[axis]} - {_short_number(value)})'
 
@@ -793,33 +797,30 @@ def _outside_distance_text(solid, unit, scale) -> str:
         cx, cy, z0, radius, height = solid.values
         base = unit((cx, cy, z0))
         radial = ' + '.join(f'{offset(k, base[k])} * {offset(k, base[k])}' for k in range(2))
-        terms = [positive_squared(f'Sqrt({radial}) - {_short_number(radius / scale)}'),
-                 positive_squared(f'{_short_number(base[2])} - z'),
-                 positive_squared(f'z - {_short_number(base[2] + height / scale)}')]
+        terms = [_positive_squared(f'Sqrt({radial}) - {_short_number(radius / scale)}'),
+                 _positive_squared(f'{_short_number(base[2])} - z'),
+                 _positive_squared(f'z - {_short_number(base[2] + height / scale)}')]
     else:
         low, high = unit(solid.values[:3]), unit(solid.values[3:])
         terms = [term for k, name in enumerate('xyz')
-                 for term in (positive_squared(f'{_short_number(low[k])} - {name}'),
-                              positive_squared(f'{name} - {_short_number(high[k])}'))]
+                 for term in (_positive_squared(f'{_short_number(low[k])} - {name}'),
+                              _positive_squared(f'{name} - {_short_number(high[k])}'))]
     return f"Sqrt({' + '.join(terms)})"
 
 
 def _depth_texts(solid, unit, scale) -> list:
     """MathEval expressions (normalised x, y, z; arithmetic and Sqrt only) of the depth below each face of a solid in
     Solid.faces order, negative outside; Solid.depth is their minimum."""
-    def offset(axis, value):
-        return f'({"xyz"[axis]} - ({geo_number(value)}))'
-
     texts = []
     for face in solid.faces():
         if face is not None:
             axis, side, coordinate = face
             value = unit(tuple(coordinate if k == axis else 0.0 for k in range(3)))[axis]
-            texts.append(offset(axis, value) if side == 0 else f'(({geo_number(value)}) - {"xyz"[axis]})')
+            texts.append(_offset_text(axis, value) if side == 0 else f'(({geo_number(value)}) - {"xyz"[axis]})')
             continue
         centre = unit(solid.values[:3]) if solid.kind == 'sphere' else unit((solid.values[0], solid.values[1], 0.0))
         axes = range(3) if solid.kind == 'sphere' else range(2)
-        radial = ' + '.join(f'{offset(axis, centre[axis])} * {offset(axis, centre[axis])}' for axis in axes)
+        radial = ' + '.join(f'{_offset_text(axis, centre[axis])} * {_offset_text(axis, centre[axis])}' for axis in axes)
         texts.append(f'({geo_number(solid.values[3] / scale)} - Sqrt({radial}))')
     return texts
 
@@ -840,15 +841,12 @@ def face_size_texts(face, origin, scale, slope) -> tuple:
     def normalised(axis, value):
         return f'({geo_number((float(value) - float(origin[axis])) / scale)})'
 
-    def positive_squared(text):
-        return f'(({text}) * ({text}) + ({text}) * Sqrt(({text}) * ({text}))) / 2'
-
     names = 'xyz'
     across = f'({names[face.axis]} - {normalised(face.axis, face.coordinate)})'
     terms = [f'{across} * {across}']
     for axis, low, high in zip((k for k in range(3) if k != face.axis), face.low, face.high):
-        terms += [positive_squared(normalised(axis, low) + ' - ' + names[axis]),
-                  positive_squared(names[axis] + ' - ' + normalised(axis, high))]
+        terms += [_positive_squared(normalised(axis, low) + ' - ' + names[axis]),
+                  _positive_squared(names[axis] + ' - ' + normalised(axis, high))]
     distance = f"Sqrt({' + '.join(terms)})"
     size = geo_number(face.size / scale)
     return size, f'{size} + {geo_number(slope)} * ({distance} - ({geo_number(face.distance / scale)}))'

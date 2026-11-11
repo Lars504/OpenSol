@@ -67,8 +67,7 @@ class DofMap:
         return self._dofs_of(np.asarray(nodes, dtype=np.int64))
 
     def _dofs_of(self, ids) -> np.ndarray:
-        found = np.searchsorted(self.global_ids, ids)
-        found = np.minimum(found, max(self.n_dofs - 1, 0))
+        found = np.minimum(np.searchsorted(self.global_ids, ids), max(self.n_dofs - 1, 0))
         hit = self.global_ids[found] == ids if self.n_dofs else np.zeros(len(ids), dtype=bool)
         return np.unique(found[hit])
 

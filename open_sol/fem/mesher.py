@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from .mesh import FACE_BITS, FULL_TURN, PSLG
+from .mesh import FACE_BITS, FULL_TURN, PSLG, signed_areas
 
 MIN_ANGLE = 28.0             # deg: triangles below it are refined (circumcentre insertion)
 SMALL_INPUT_ANGLE = 60.0     # deg: input angles below it are accepted and flagged (concentric-shell splitting)
@@ -758,8 +758,7 @@ class _RefineState:
         local_edges = edges.local[(np.arange(3)[:, None] * n_triangles + np.arange(first, n_triangles)).T]
         lengths = np.linalg.norm(self.points[edges.high[local_edges]] - self.points[edges.low[local_edges]], axis=2)
         size_bad = (lengths / sizes[local_edges]).max(axis=1) > 1.0
-        corners = self.points[triangles]
-        area = 0.5 * _cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+        area = signed_areas(self.points, triangles)
         skinny = 2.0 * area < self.sin_min_angle * _median_of_three(lengths) * lengths.max(axis=1)
         shortest = np.argmin(lengths, axis=1)
         rows = np.arange(len(triangles))
@@ -905,8 +904,7 @@ def _delaunay(points, cover_hull=True) -> np.ndarray:
     triangles = _framed_simplices(points, cover_hull) if _QHULL_FRAME else None
     if triangles is None:
         triangles = _qhull_simplices(points)
-    corners = points[triangles]
-    area = 0.5 * _cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    area = signed_areas(points, triangles)
     flat = np.abs(area) <= 1e-12 * np.abs(area).max()
     triangles = triangles[~flat]
     clockwise = area[~flat] < 0.0
@@ -940,8 +938,7 @@ def _framed_simplices(points, cover_hull=True):
     simplices = simplices[(simplices < len(points)).all(axis=1)]
     if not cover_hull:
         return simplices
-    corners = points[simplices]
-    covered = 0.5 * np.abs(_cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])).sum()
+    covered = np.abs(signed_areas(points, simplices)).sum()
     return simplices if abs(covered - hull_area) <= 1e-9 * hull_area else None
 
 
@@ -1010,14 +1007,10 @@ def _tiles_cavity(cavity, replacement, points, extent) -> bool:
                 on_side |= (np.abs(starts[:, axis] - value) <= 1e-12) & (np.abs(ends[:, axis] - value) <= 1e-12)
         return np.sort(keys[~on_side])
 
-    def areas(triangles):
-        corners = points[triangles]
-        return 0.5 * _cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
-
     forward, _ = directed(replacement)
     if len(np.unique(forward)) != len(forward) or not np.array_equal(boundary(replacement), boundary(cavity)):
         return False
-    replacement_areas, cavity_area = areas(replacement), areas(cavity).sum()
+    replacement_areas, cavity_area = signed_areas(points, replacement), signed_areas(points, cavity).sum()
     return bool((replacement_areas > 0.0).all() and abs(replacement_areas.sum() - cavity_area) <= 1e-9 * cavity_area)
 
 

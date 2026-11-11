@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from .mesh import signed_areas
+
 QUALITY_ANGLE = 25.0                                   # deg: the self-tested minimum angle away from small inputs
 ASPECT_BIN_EDGES = (1.0, 1.1, 1.25, 1.5, 2.0, 3.0, 5.0, 10.0, math.inf)
 
@@ -47,9 +49,7 @@ def aspect_ratios(points, triangles) -> np.ndarray:
     corners = points[triangles]
     lengths = np.stack([np.linalg.norm(corners[:, (k + 2) % 3] - corners[:, (k + 1) % 3], axis=1)
                         for k in range(3)], axis=1)
-    corner_a, corner_b, corner_c = corners[:, 0], corners[:, 1], corners[:, 2]
-    area = 0.5 * np.abs((corner_b[:, 0] - corner_a[:, 0]) * (corner_c[:, 1] - corner_a[:, 1])
-                        - (corner_b[:, 1] - corner_a[:, 1]) * (corner_c[:, 0] - corner_a[:, 0]))
+    area = np.abs(signed_areas(points, triangles))
     product = lengths.prod(axis=1)
     perimeter = lengths.sum(axis=1)
     with np.errstate(divide='ignore', invalid='ignore'):
