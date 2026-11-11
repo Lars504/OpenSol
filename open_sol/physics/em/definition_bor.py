@@ -6,29 +6,28 @@ from ...core import time_estimate as te
 from ...core.constants import FACE_LABELS
 from ...core.domain import containing_cell
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINEAR_ROLE, GEOMETRY_SETTING,
-                                         axisymmetric_issues, eigen_factorization, eigen_role, linear_solver_cudss,
-                                         validate_points_inside)
+                                         axisymmetric_issues, eigen_factorization, eigen_role, linear_solver_cudss)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS, size_issue_for
 from .fem_bor import FEM_BOR_ARNOLDI_BASIS_PER_WANTED, FEM_BOR_SIZE_REMEDY
-from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, estimated_unknowns
+from .fem_modes import DISCRETIZATION_ORDERS
 from .bor_ports import bor_mode_monitor_result, bor_mode_source_result
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY,
                                 FREQUENCY_DOMAIN_STUDY, HOST_DIRECT_NAMES, N_ANGLES_PARAM, OPTOMECHANICS_STUDY,
                                 POINT_SOURCE_SIGN,
                                 SPAN_CELLS, _window_axes, all_solved_wavelengths, apply_component_point_source,
-                                apply_far_field, apply_field_probe, apply_flux_monitor, apply_pec,
-                                boundary_settings_params, eigen_backend_kwargs, eigen_only_feature_issues, eigen_solved,
-                                em_material_params, fem_size_issues, first_solved_wavelength,
+                                apply_far_field, apply_field_probe, apply_flux_monitor, apply_pec, apply_resonance_table,
+                                boundary_settings_params, eigen_only_feature_issues, eigen_solved, em_material_params,
+                                fem_resonance_time_estimate, fem_size_issues, first_solved_wavelength,
                                 host_matrix_back_end_issues, kept_line_block_factors, make_far_field_result_callback,
                                 make_validate_physics, mesh_kind, missing_source_issues, mode_line, object_result,
                                 other_em_physics_labels, physics_counter, quasi_static_domain_requirements,
                                 raw_settings, resonance_eigenpairs, resonance_table_study_issues, role_counter,
                                 scaled_ops, scipy_issues, shortest_solved_wavelength, source_slot_docs,
-                                unused_wavelength_issues, write_dispersive_materials)
+                                unused_wavelength_issues, validate_driven_point, write_dispersive_materials)
 from .definition_feature_validation import _box_issues, _line_cells, _selected_shapes, validate_line_feature
-from .eigenfrequency import ResonanceTable, resonance_filter_time_item
+from .eigenfrequency import resonance_filter_time_item
 from ...solvers.line_block import factor_solve_ops
 from .materials import EM_MATERIAL_SCHEMAS
 from .memory_estimates import bor_memory_estimate, pec_memory_estimate
@@ -65,8 +64,23 @@ _BC_TIP = ('What happens to waves at this edge of the half plane.\n\n'
            'keeps the modes whose electric field in the disk plane is symmetric.')
 _WALL_CHOICE_LABELS = (('cpml', 'Absorbing layer'), ('pec', 'Perfect metal wall'), ('pmc', 'Perfect magnetic wall'))
 _PML_VISIBLE = tuple((f'bc_{face}', ('cpml',)) for face in _WALL_FACES)
-_PML_PARAMS = tuple(replace(param, visible_if=_PML_VISIBLE) for param in boundary_settings_params(_BC_HELP)
-                    if param.name.startswith('pml_'))
+
+
+def axis_wall_settings(bc_help):
+    """Face settings of the (r, z) half plane (em_fdfd_bor, em_fdtd_bor), each with the help bc_help: bc_x_lo (the
+    symmetry axis, no other choice), the cpml / pec / pmc walls of the other faces and the pml_* settings shown with a
+    cpml wall."""
+    return (
+        Param('bc_x_lo', 'choice', _AXIS, label=FACE_LABELS['x_lo'], choices=(_AXIS,),
+              choice_labels=((_AXIS, 'Symmetry axis (r = 0)'),), help=bc_help,
+              tip='The left edge is the rotation axis: no boundary condition can be set there.'),
+        *(Param(f'bc_{face}', 'choice', 'cpml', label=FACE_LABELS[face], choices=_WALL_CHOICES, help=bc_help,
+                tip=_BC_TIP, choice_labels=_WALL_CHOICE_LABELS) for face in _WALL_FACES),
+        *(replace(param, visible_if=_PML_VISIBLE) for param in boundary_settings_params(bc_help)
+          if param.name.startswith('pml_')),
+    )
+
+
 _SETTINGS = (
     Param(GEOMETRY_SETTING, 'choice', AXISYMMETRIC, label='Geometry', choices=(AXISYMMETRIC,),
           choice_labels=((AXISYMMETRIC, 'Axisymmetric (r, z)'),),
@@ -75,12 +89,7 @@ _SETTINGS = (
                'electric_currents, electrostatics) recognise a consistent axisymmetric partner (no planar-partner '
                'warning).',
           tip='The drawing is half of a cut through a round object, rotated about the left edge of the domain.'),
-    Param('bc_x_lo', 'choice', _AXIS, label=FACE_LABELS['x_lo'], choices=(_AXIS,),
-          choice_labels=((_AXIS, 'Symmetry axis (r = 0)'),), help=_BC_HELP,
-          tip='The left edge is the rotation axis: no boundary condition can be set there.'),
-    *(Param(f'bc_{face}', 'choice', 'cpml', label=FACE_LABELS[face], choices=_WALL_CHOICES, help=_BC_HELP,
-            tip=_BC_TIP, choice_labels=_WALL_CHOICE_LABELS) for face in _WALL_FACES),
-    *_PML_PARAMS,
+    *axis_wall_settings(_BC_HELP),
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
           help='Vacuum wavelength lambda0 of the solve in a stationary study (omega = 2 pi C0 / lambda0); an '
                'eigenfrequency study searches the resonances nearest it (the target); a frequency_domain study solves '
@@ -175,8 +184,16 @@ COMPONENT_TIPS = {
                "replaces 'Relative permittivity' for that direction: for a crystal with its optic axis along the "
                'rotation axis enter the square of its extraordinary index.'),
 }
-_MATERIAL_PROPERTIES = tuple(replace(param, label=_COMPONENT_LABELS.get(param.name, param.label))
-                             for param in em_material_params('modes', {
+
+
+def cylindrical_material_params(helps):
+    """Material Params of the (r, z) types (em_fdfd_bor, em_fdtd_bor): the 'modes' table with the cylindrical labels
+    and tips of the components; helps: name -> help text."""
+    return tuple(replace(param, label=_COMPONENT_LABELS.get(param.name, param.label))
+                 for param in em_material_params('modes', helps, tips=COMPONENT_TIPS))
+
+
+_MATERIAL_PROPERTIES = cylindrical_material_params({
     'eps_r': 'Isotropic relative permittivity (>= 1) of all three components (eps_rr, eps_phiphi, eps_zz); n^2 of a '
              'lossless dielectric (silicon ~12.1, silica ~2.1 at 1.55 um); may depend on r (x), z (y) and physics '
              f'fields; a component property wins over it. {_COMPONENT_NAMES} {_POINT_VALUE} {_COMPLEX_EPS}',
@@ -193,7 +210,7 @@ _MATERIAL_PROPERTIES = tuple(replace(param, label=_COMPONENT_LABELS.get(param.na
     'mu_r': ('Real relative permeability (>= 1), 1 for optical materials; H_r, H_phi and H_z take the mean of the cells '
              'around their points. The solve uses mu_r - j sigma_m / (omega mu0).'),
     'sigma_m': 'Magnetic loss in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).',
-}, tips=COMPONENT_TIPS))
+})
 
 # ---- features ----
 _POINT_SOURCE_PARAMS = (
@@ -236,16 +253,6 @@ _RESONANCE_TABLE_DESCRIPTION = (
     'azimuthal_orders (the solved list). Accurate only near the target (see the '
     "eigenfrequency study). For Q versus a parameter add a derived value with source '<physics>.<this feature>', "
     'expression q_factor, operation at and at = 0.')
-
-
-def _apply_resonance_table(ctx, solver, feature_spec, values, selection):
-    return ResonanceTable()
-
-
-def _validate_driven_feature(vctx, physics_spec, feature_spec, values):
-    """Point inside the domain; warning where the study eigen-solves the physics (sources and probes play no part)."""
-    return (validate_points_inside(vctx, physics_spec, feature_spec, values)
-            + eigen_only_feature_issues(vctx, physics_spec, feature_spec))
 
 
 def _validate_resonance_table(vctx, physics_spec, feature_spec, values):
@@ -434,7 +441,7 @@ _FEATURES = (
                             f'exp(-j m phi) dependence of the azimuthal order; see component. {POINT_SOURCE_SIGN}',
                 summary='A small current at a point of the half plane, a ring around the axis in 3D; on the axis an '
                         'antenna.',
-                apply=apply_component_point_source, validate=_validate_driven_feature),
+                apply=apply_component_point_source, validate=validate_driven_point),
     FeatureType('field_probe', 'Field probe', 'probe', 'point', params=_PROBE_PARAMS, object_kinds=('point',),
                 max_entities=1, result_kind='xy',
                 description="Phasor of one field component in the cell containing the point at every driven solve "
@@ -442,7 +449,7 @@ _FEATURES = (
                             'series abs (unit of the component) and phase (rad); extras frequency, wavelength, '
                             'component, unit.',
                 summary='Records the field at one point for every solved wavelength.',
-                apply=apply_field_probe, result=object_result(bor_probe_result), validate=_validate_driven_feature),
+                apply=apply_field_probe, result=object_result(bor_probe_result), validate=validate_driven_point),
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
                 description='Perfect electric conductor (rings in 3D): E_phi = 0 at the centre of every cell whose '
                             'centre lies in the selected domains and E_r / E_z = 0 on the edges between two such '
@@ -489,7 +496,7 @@ _FEATURES = (
                 description=_RESONANCE_TABLE_DESCRIPTION,
                 summary="Lists the resonances found by an 'Eigenfrequency' study: wavelength, frequency, quality "
                         'factor and how much of each lies in the absorbing layers.',
-                apply=_apply_resonance_table, result=object_result(bor_resonance_table_result, with_solver=True),
+                apply=apply_resonance_table, result=object_result(bor_resonance_table_result, with_solver=True),
                 validate=_validate_resonance_table, grids=BOTH_GRIDS),
 )
 
@@ -803,25 +810,13 @@ FEM_BOR_ASSEMBLY_CALLS = 600
 
 
 def _triangle_time_estimate(settings_values, mesh, context):
-    """em_fdfd_bor on a triangles mesh (eigenfrequency only): one FEM assembly, per listed order a factorisation and a
-    squared-Cayley eigen-solve of the estimated unknowns (two solves per application; host SuperLU priced at
-    FEM_LU_FILL_FACTOR x the 2D curve, uncalibrated; cuDSS on the profile's 2D cudss curves at the same scale)."""
-    order = DISCRETIZATION_ORDERS[settings_values['discretization']]
-    unknowns = float(estimated_unknowns(int(mesh.n_elements), int(mesh.n_edges), int(mesh.n_nodes), order))
-    nnz = FEM_ENTRIES_PER_ROW[order] * unknowns
-    n_orders = float(max(len(settings_values.get('azimuthal_orders') or ()), 1))
-    # an optomechanics study counts its optical resonances apart from the solid's eigenpairs
+    """em_fdfd_bor on a triangles mesh (eigenfrequency only): fem_resonance_time_estimate per listed order (an
+    optomechanics study counts its optical resonances apart from the solid's eigenpairs)."""
     eigenpairs = resonance_eigenpairs(context)
-    assembly = te.TimeEstimate((te.TimeItem('FEM BOR assembly', 'assembly', 1.0, 'exact',
-                                            (te.HostStream(FEM_BOR_ASSEMBLY_BYTES_PER_ENTRY * nnz),
-                                             te.PythonCalls(FEM_BOR_ASSEMBLY_CALLS))),
-                                resonance_filter_time_item(context.backend, unknowns, 3.0 * nnz,
-                                                           eigenpairs * n_orders)))   # A, M, W; a search per order
-    host = eigen_backend_kwargs(context)
-    return te.combine((assembly, context.solver_work(
-        'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, factorizations=n_orders, rhs=2,
-        eigenpairs=eigenpairs, default_basis=FEM_BOR_ARNOLDI_BASIS_PER_WANTED * eigenpairs,
-        factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR, **host)))
+    return fem_resonance_time_estimate(settings_values, mesh, context, 'FEM BOR assembly',
+                                       FEM_BOR_ASSEMBLY_BYTES_PER_ENTRY, FEM_BOR_ASSEMBLY_CALLS, eigenpairs,
+                                       n_orders=float(max(len(settings_values.get('azimuthal_orders') or ()), 1)),
+                                       default_basis=FEM_BOR_ARNOLDI_BASIS_PER_WANTED * eigenpairs)
 
 
 EM_FDFD_BOR = PhysicsType(

@@ -39,13 +39,18 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - Run-time recipes: definition_fdfd / definition_fdtd have their own (fdtd_time_step_estimate 2D only; on the cpu only
   memory items named in `_numba_stepped` are priced as numba twins: a renamed fields / coefficients item falls back to
   the numpy price); definition_common holds the host-solved types' helpers (physics_counter, role_counter,
-  scaled_ops, kept_line_block_factors, resonance_eigenpairs, eigen_backend_kwargs; validation: mesh_kind, BOTH_GRIDS,
-  EIGENFREQUENCY_STUDY / OPTOMECHANICS_STUDY, raw_settings, eigen_only_feature_issues, resonance_table_study_issues,
+  scaled_ops, kept_line_block_factors, resonance_eigenpairs, eigen_backend_kwargs, fem_resonance_time_estimate (the
+  BOR / conical triangles estimate); validation: mesh_kind, BOTH_GRIDS,
+  EIGENFREQUENCY_STUDY / OPTOMECHANICS_STUDY, raw_settings, eigen_only_feature_issues, validate_driven_point,
+  resonance_table_study_issues,
   scipy_issues, host_matrix_back_end_issues, missing_source_issues, fem_size_issues, other_em_physics_labels,
-  auto_mesh_issues, resolved_solved_wavelengths (definition_bor: azimuthal_order_list_issues); apply callbacks:
-  apply_field_probe / _flux_monitor / _far_field and apply_component_point_source of BOR, conical and fdtd_bor: never a
-  local copy); definition_fdtd_bor shares
-  memory_estimates `_fdtd_bor_members`. em_modes, em_fdfd_bor and em_fdfd_conical solve on host SuperLU on either
+  auto_mesh_issues, resolved_solved_wavelengths (definition_bor: azimuthal_order_list_issues, axis_wall_settings,
+  cylindrical_material_params); apply callbacks:
+  apply_field_probe / _flux_monitor / _far_field, apply_resonance_table and apply_component_point_source of BOR,
+  conical and fdtd_bor: never a local copy); definition_fdtd_bor shares
+  memory_estimates `_fdtd_bor_members`; memory_estimates `host_factorization` is the factorization rule of the
+  host-matrix types (FDFD on triangles, conical, BOR) and `_fem_resonance_memory_estimate` the BOR / conical triangles
+  estimate. em_modes, em_fdfd_bor and em_fdfd_conical solve on host SuperLU on either
   backend: recipes pass `backend='cpu'` to solver_work (cuDSS 'linear' items ignore it); line_block 'shifted' factors
   stay on the run backend.
 - Self-test helpers: shared helpers live in selftests, selftests_hz, selftests_mode_ports (`slab_waveguide_spec`),

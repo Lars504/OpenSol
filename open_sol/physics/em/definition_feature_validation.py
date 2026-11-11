@@ -861,8 +861,7 @@ def _mode_line_messages(mesh, line, size, settings, polarization, role, face_sid
     periodic = settings.get(f'bc_{normal_axis}_hi') == 'periodic'   # faces wrap; periodic axes pin nothing
     where = f'at {normal_axis} = {position:.4g} m'
     if not periodic and not 0 <= face <= n_cells - 2:   # face -1 does not exist, the last face is never updated
-        keep = (f'keep {normal_axis} >= {edges[line_cell + 1]:.4g} m' if face_side == 'lo'
-                else f'keep {normal_axis} < {edges[line_cell]:.4g} m')
+        _, keep = _wall_text(settings, normal_axis, face_side, edges, line_cell + 1, line_cell)
         messages.append(('error', f'{where} puts its {face_name} face ({partner}, the {face_side} face of the line '
                                   f'cell) on the outer grid wall, which is never updated; {keep}'))
     elif not periodic:
@@ -880,8 +879,7 @@ def _mode_line_messages(mesh, line, size, settings, polarization, role, face_sid
         stretched_side = next((side for side, inside in (('lo', face < first), ('hi', face >= last))
                                if inside and settings.get(f'bc_{normal_axis}_{side}', 'cpml') == 'cpml'), None)
         if stretched_side is not None:
-            keep = (f'keep {normal_axis} >= {edges[line_cell + 1]:.4g} m' if stretched_side == 'lo'
-                    else f'keep {normal_axis} < {edges[line_cell]:.4g} m')
+            _, keep = _wall_text(settings, normal_axis, stretched_side, edges, line_cell + 1, line_cell)
             messages.append(('warning', f'{where} lies in the outermost window cell, so its {face_name} face '
                                         f'({partner}) is inside the bc_{normal_axis}_{stretched_side} = cpml layer, '
                                         f'whose stretch {_MODE_STRETCHED_CONSEQUENCES[role]}; {keep}'))

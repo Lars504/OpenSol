@@ -130,6 +130,15 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
     return host_items, transient_items
 
 
+def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0):
+    """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
+    unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's."""
+    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
+    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
+    return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
+                                  filter_entries=filter_entries)
+
+
 def cudss_factor_items(label, n_unknowns, entries, dimensions=2, mixed=False, general=False, value_bytes=16):
     """(external items, external extra) of one cuDSS factor (cudss_factor.factor_device_bytes on the full pattern;
     general: an LU, cudss_factor.CUDSS_LU_OVER_LDLT x the symmetric fit)."""
@@ -168,6 +177,14 @@ def eigen_mixed(factorization, unknowns) -> bool:
     """Whether an eigen runtime's own cuDSS factor of `unknowns` rows is mixed (ArpackShiftInvertSolver.factorization_for:
     a cudss_mixed request below MIXED_EIGEN_MIN_UNKNOWNS factors in double)."""
     return factorization == 'cudss_mixed' and int(unknowns) >= MIXED_EIGEN_MIN_UNKNOWNS
+
+
+def host_factorization(solvers, eigen) -> str:
+    """Factorization of a host-matrix FD physics (FDFD on triangles, conical, BOR): the eigen one when eigen-solved,
+    else the cuDSS / MUMPS / PARDISO linear back end, else 'superlu'."""
+    return (eigen_factorization(solvers) if eigen
+            else resolved_back_end(solvers) if linear_solver_cudss(solvers) or host_direct_back_end(solvers)
+            else 'superlu')
 
 
 def host_factor_items(name, superlu_label, superlu_bytes, unknowns, entries, symmetric=True, eigen=False) -> list:
@@ -430,9 +447,7 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
     unknowns = scalar_unknowns(int(mesh.n_nodes), int(mesh.n_edges), order)
     entries = FEM_FDFD_ENTRIES_PER_ROW[order] * unknowns
     eigen = eigen_solved(context.spec, context.physics_spec.name)
-    factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers)
-                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
+    factorization = host_factorization(context.solvers, eigen)
     on_device = factorization in CUDSS_FACTORIZATIONS
     vector_bytes = COMPLEX128_BYTES * unknowns
     # MUMPS / PARDISO: the LDL^T of the complex symmetric pencil (driven: kept and refactorised in place, one factor)
@@ -445,11 +460,8 @@ def _fdfd_fem_memory_estimate(settings_values, mesh, context):
     transient_items = []
     if eigen:   # eigenfrequency.solve_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-        n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers))
-        search_host, transient_items = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted,
-                                                              n_basis, own_cudss=on_device,
-                                                              filter_entries=3 * entries)   # A, B, W
+        search_host, transient_items = _resonance_search(context, n_resonances, unknowns, on_device,
+                                                         3 * entries)   # A, B, W
         host_items += [*search_host,
                        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * vector_bytes),
                        ('shifted operator copy (sparse complex128)', entries * COMPLEX128_CSR_ENTRY_BYTES)]
@@ -489,8 +501,6 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
     pool copies), the operator copy, the Arnoldi work (resonance_search_items), the resonance fields and vectors."""
     values = _study_values(context)
     n_resonances = int(values.get('n_resonances', values.get('n_optical_resonances')) or 1)
-    n_wanted = max(min(2 * n_resonances + 10, n_cells - 2), 1)
-    n_basis = arnoldi_basis_size(n_wanted, n_cells, eigen_subspace_size(context.solvers))
     vector_bytes = COMPLEX128_BYTES * n_cells
     factorization = eigen_factorization(context.solvers)
     own_cudss = superlu and factorization in CUDSS_FACTORIZATIONS   # a symmetrized LDL^T of D A, freed after the solve
@@ -498,8 +508,7 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
     factor = (host_factor_items(factorization, 'eigen SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
                                 n_cells, 5 * n_cells, symmetric=True, eigen=True)
               if superlu and not own_cudss else [])
-    search_host, transient_items = resonance_search_items(solver_backend(context.spec), n_cells, n_wanted, n_basis,
-                                                          own_cudss=own_cudss, filter_entries=5 * n_cells)
+    search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells)
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
@@ -677,9 +686,7 @@ def conical_memory_estimate(settings_values, mesh, context):
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
     eigen = eigen_solved(context.spec, context.physics_spec.name)
-    factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers)
-                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
+    factorization = host_factorization(context.solvers, eigen)
     on_device = factorization in CUDSS_FACTORIZATIONS
     # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase) at the SuperLU heuristic x superlu_bytes_scale
     host_items = ([] if on_device else
@@ -697,11 +704,7 @@ def conical_memory_estimate(settings_values, mesh, context):
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
     if eigen:   # conical.solve_conical_resonances
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-        n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers))
-        search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted,
-                                                               n_basis, own_cudss=on_device,
-                                                               filter_entries=13 * unknowns)
+        search_host, search_transient = _resonance_search(context, n_resonances, unknowns, on_device, 13 * unknowns)
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_resonances} x 6 components complex128)',
@@ -724,38 +727,50 @@ def conical_memory_estimate(settings_values, mesh, context):
 
 
 def _conical_fem_memory_estimate(settings_values, mesh, context):
-    """em_fdfd_conical on a triangles mesh (solvers/fdfd_conical_fem, fem_conical; eigenfrequency): 2 float32 state
-    fields per element; host SuperLU (or a cuDSS LDL^T: external), blocks, Arnoldi work, vectors, display fields."""
+    """em_fdfd_conical on a triangles mesh (solvers/fdfd_conical_fem, fem_conical; eigenfrequency):
+    _fem_resonance_memory_estimate of one search (the resonance search's own cuDSS factor) with the quadrature-point
+    bases."""
+    return _fem_resonance_memory_estimate(settings_values, mesh, context,
+                                          int(_study_values(context).get('n_resonances') or 1), None,
+                                          'assembled blocks K / M / W and the restricted operator (sparse, rough)',
+                                          'the conical FEM operator', sample_bases=True)
+
+
+def _fem_resonance_memory_estimate(settings_values, mesh, context, n_resonances, n_orders, blocks_label,
+                                   operator_label, basis_per_wanted=0, sample_bases=False):
+    """Eigen-solved FEM type on a triangles mesh (fem_modes unknowns; em_fdfd_conical, em_fdfd_bor): 2 float32 state
+    fields per element; host SuperLU (or a cuDSS LDL^T: external), blocks, Arnoldi work, resonance vectors (n_orders
+    x n_resonances; None: one search, unlabelled), the quadrature-point bases (sample_bases), display fields; one
+    order's search and its own factor at a time."""
     from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, cudss_operator_bytes, estimated_unknowns,
                             fem_lu_bytes, operator_bytes, sample_basis_bytes)
     order = DISCRETIZATION_ORDERS[settings_values.get('discretization', 'quadratic')]
     n_elements = int(mesh.n_elements)
     unknowns = estimated_unknowns(n_elements, int(mesh.n_edges), int(mesh.n_nodes), order)
-    n_resonances = int(_study_values(context).get('n_resonances') or 1)
-    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers))
     factorization = eigen_factorization(context.solvers)
     on_device = factorization in CUDSS_FACTORIZATIONS
-    search_host, search_transient = resonance_search_items(   # the filter's A, B and W: one operator's entries each
-        solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=on_device,
-        filter_entries=3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES)
+    search_host, search_transient = _resonance_search(   # the filter's A, B and W: one operator's entries each
+        context, n_resonances, unknowns, on_device, 3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES,
+        basis_per_wanted)
+    vectors_label, n_vectors = (f'{n_resonances}', n_resonances) if n_orders is None else (
+        f'{n_orders} x {n_resonances}', n_orders * n_resonances)
     host_items = ([] if on_device else host_factor_items(
         factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
         FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)) + [
-        ('assembled blocks K / M / W and the restricted operator (sparse, rough)', 2 * operator_bytes(unknowns, order)),
+        (blocks_label, 2 * operator_bytes(unknowns, order)),
         *search_host,
-        (f'resonance vectors ({n_resonances} x complex128)', n_resonances * COMPLEX128_BYTES * unknowns),
-        ('quadrature-point bases', sample_basis_bytes(n_elements, order)),
+        (f'resonance vectors ({vectors_label} x complex128)', n_vectors * COMPLEX128_BYTES * unknowns),
+        *([('quadrature-point bases', sample_basis_bytes(n_elements, order))] if sample_bases else []),
         ('nodal display fields (6 complex128 + 16 float64)',
          28 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)))]
     transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
                                      'complex128 per element)', 3 * COMPLEX128_BYTES * n_elements), *search_transient]
     external_items, external_extra = [], 0
-    if on_device:   # the resonance search's own factor
+    if on_device:
         mixed = eigen_mixed(factorization, unknowns)
         transient_items.append((EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
                                 cudss_operator_bytes(unknowns, order, mixed)))
-        external_items, external_extra = cudss_factor_items('the conical FEM operator', unknowns,
+        external_items, external_extra = cudss_factor_items(operator_label, unknowns,
                                                             FEM_ENTRIES_PER_ROW[order] * unknowns, mixed=mixed)
     return MemoryEstimate.from_items((('resonance state fields (2 x float32 per element)',
                                        2 * FLOAT32_BYTES * n_elements),), host_items=host_items,
@@ -775,9 +790,7 @@ def bor_memory_estimate(settings_values, mesh, context):
     eigen = study_type == _EIGENFREQUENCY_STUDY
     shifted = (context.solvers or {}).get('shifted')
     line_block = shifted is not None and shifted.solver_type.name == 'line_block'
-    factorization = (eigen_factorization(context.solvers) if eigen
-                     else resolved_back_end(context.solvers)
-                     if linear_solver_cudss(context.solvers) or host_direct_back_end(context.solvers) else 'superlu')
+    factorization = host_factorization(context.solvers, eigen)
     on_device = not line_block and factorization in CUDSS_FACTORIZATIONS
     orders = [abs(int(order)) for order in settings_values.get('azimuthal_orders') or ()] or [
         abs(int(settings_values.get('azimuthal_order') or 0))]
@@ -804,11 +817,8 @@ def bor_memory_estimate(settings_values, mesh, context):
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
     if eigen:   # body_of_revolution.solve_bor_resonances, one per order of azimuthal_orders
         n_resonances = int(_study_values(context).get('n_resonances') or 1)
-        n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-        n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers))
-        search_host, search_transient = resonance_search_items(   # one order's search at a time
-            solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=on_device,
-            filter_entries=entries)
+        search_host, search_transient = _resonance_search(   # one order's search at a time
+            context, n_resonances, unknowns, on_device, entries)
         transient_items += search_transient
         host_items += [*search_host,
                        (f'resonance fields ({n_orders} x {n_resonances} x complex128)',
@@ -847,48 +857,15 @@ def bor_memory_estimate(settings_values, mesh, context):
 
 
 def _bor_fem_memory_estimate(settings_values, mesh, context):
-    """em_fdfd_bor on a triangles mesh (solvers/fdfd_bor_fem, fem_bor; eigenfrequency): 2 float32 state fields per
-    element; host SuperLU (or a cuDSS LDL^T per order: external), blocks, Arnoldi work, resonance vectors, display."""
+    """em_fdfd_bor on a triangles mesh (solvers/fdfd_bor_fem, fem_bor; eigenfrequency): _fem_resonance_memory_estimate
+    per listed order (one order's resonance search and its own cuDSS factor at a time)."""
     from .fem_bor import FEM_BOR_ARNOLDI_BASIS_PER_WANTED
-    from .fem_modes import (DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, cudss_operator_bytes, estimated_unknowns,
-                            fem_lu_bytes, operator_bytes)
-    order = DISCRETIZATION_ORDERS[settings_values.get('discretization', 'quadratic')]
-    n_elements = int(mesh.n_elements)
-    unknowns = estimated_unknowns(n_elements, int(mesh.n_edges), int(mesh.n_nodes), order)
-    n_orders = max(len(settings_values.get('azimuthal_orders') or ()), 1)
     values = _study_values(context)   # eigenfrequency n_resonances, optomechanics n_optical_resonances
-    n_resonances = int(values.get('n_resonances') or values.get('n_optical_resonances') or 1)
-    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers),
-                                 FEM_BOR_ARNOLDI_BASIS_PER_WANTED * n_wanted)
-    factorization = eigen_factorization(context.solvers)
-    on_device = factorization in CUDSS_FACTORIZATIONS
-    search_host, search_transient = resonance_search_items(   # the filter's A, B and W: one operator's entries each
-        solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=on_device,
-        filter_entries=3 * operator_bytes(unknowns, order) // COMPLEX128_CSR_ENTRY_BYTES)
-    host_items = ([] if on_device else host_factor_items(
-        factorization, 'SuperLU L + U factors (FEM fill, heuristic)', fem_lu_bytes(unknowns), unknowns,
-        FEM_ENTRIES_PER_ROW[order] * unknowns, symmetric=True, eigen=True)) + [
-        ('assembled blocks K0 / K1 / K2 / M / W and the restricted operator (sparse, rough)',
-         2 * operator_bytes(unknowns, order)),
-        *search_host,
-        (f'resonance vectors ({n_orders} x {n_resonances} x complex128)',
-         n_orders * n_resonances * COMPLEX128_BYTES * unknowns),
-        ('nodal display fields (6 complex128 + 16 float64)',
-         28 * FLOAT64_BYTES * (int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)))]
-    transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
-                                     'complex128 per element)', 3 * COMPLEX128_BYTES * n_elements), *search_transient]
-    external_items, external_extra = [], 0
-    if on_device:   # one order's resonance search and its own factor at a time
-        mixed = eigen_mixed(factorization, unknowns)
-        transient_items.append((EIGEN_PHASE, 'cuDSS operator copies and solve vectors',
-                                cudss_operator_bytes(unknowns, order, mixed)))
-        external_items, external_extra = cudss_factor_items('the BOR FEM operator', unknowns,
-                                                            FEM_ENTRIES_PER_ROW[order] * unknowns, mixed=mixed)
-    return MemoryEstimate.from_items((('resonance state fields (2 x float32 per element)',
-                                       2 * FLOAT32_BYTES * n_elements),), host_items=host_items,
-                                     transient_items=transient_items, external_items=external_items,
-                                     external_extra=external_extra)
+    return _fem_resonance_memory_estimate(
+        settings_values, mesh, context, int(values.get('n_resonances') or values.get('n_optical_resonances') or 1),
+        max(len(settings_values.get('azimuthal_orders') or ()), 1),
+        'assembled blocks K0 / K1 / K2 / M / W and the restricted operator (sparse, rough)', 'the BOR FEM operator',
+        basis_per_wanted=FEM_BOR_ARNOLDI_BASIS_PER_WANTED)
 
 
 def _fdtd_bor_members(settings_values, physics_spec):
