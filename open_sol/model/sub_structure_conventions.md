@@ -1014,7 +1014,10 @@ templates, describe. Current state, no changelog.
 ## Registry, templates, describe
 - CouplingType source_type / target_type are None, a name or a tuple: test only with `schema.coupling_type_accepts` /
   `coupling_role_text`, never ==.
-- Templates: read only through `templates.template_entries(registry)` (built-ins first; duplicate key raises); every
+- A loop over `spec.physics` that skips unregistered types (validate reports them) takes
+  `schema.known_physics(spec, registry)` -> (PhysicsSpec, PhysicsType).
+- Templates: read only through `templates.template_entries(registry)` (built-ins first; duplicate key raises; a fresh
+  ModelSpec by `template_model(entry)` / `make_template(key)`, both refusing a factory that returns no ModelSpec); every
   template must validate cleanly (selftest templates_validate), likewise every examples/**/*.json (examples_validate,
   api.EXAMPLES_DIR; mirrors the GUI catalog's file rule). `app.main` starts with dielectric_cylinder.
 - `describe()` is deterministic (sorted sets, declared order, floats '%.6g', ASCII, no addresses / timestamps) and

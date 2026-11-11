@@ -18,7 +18,7 @@ from ..solvers.roles import SolverRole, resolved_precision
 from .expressions import TIME_NAMES, Expression, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (bounding_box, domain_size_z, expand_entities, perimeter_weights, point_z,
                        preview_pixel_centers)
-from .schema import Issue, Param, feature_path, state_field_names
+from .schema import Issue, Param, feature_path, known_physics, state_field_names
 
 
 def evaluates_to(value, parameters, predicate):
@@ -1209,12 +1209,8 @@ def azimuthal_order_issues(vctx, physics_spec, path, settings_values):
     if vctx.domain_map is not None and vctx.domain_map.mapped:
         issues.append(Issue('error', path, f'azimuthal_order {order} needs a Cartesian (r, z) domain, not the '
                                            f'{vctx.domain_map.grid_text} grid: set it to 0'))
-    for other in vctx.spec.physics:
+    for other, other_type in known_physics(vctx.spec, vctx.registry):
         if other.name == physics_spec.name:
-            continue
-        try:
-            other_type = vctx.registry.physics_type(other.type)
-        except KeyError:
             continue
         if not any(param is AZIMUTHAL_ORDER_PARAM for param in other_type.settings):
             continue
@@ -1268,12 +1264,8 @@ def axisymmetric_issues(vctx, physics_spec, path, type_text, cross_prefix=None, 
     only the partner warning (mapped_domain_issues has the axis faces and cross terms)."""
     issues = []
     mapped = vctx.domain_map is not None and vctx.domain_map.mapped
-    for feature in physics_spec.features if not mapped else ():
-        try:
-            on_axis = feature.enabled and 'x_lo' in expand_entities(vctx.spec, feature.selection)
-        except (ValueError, KeyError, TypeError):   # bad selection: reported by the selection checks
-            on_axis = False
-        if on_axis:
+    for feature, entities in enabled_feature_entities(vctx, physics_spec) if not mapped else ():
+        if 'x_lo' in entities:
             issues.append(Issue(axis_severity, feature_path(physics_spec, feature),
                                 f'x_lo is the symmetry axis (r = 0) in axisymmetric geometry: {axis_consequence}'))
     if cross_prefix is not None and not mapped:
@@ -1311,18 +1303,12 @@ def mapped_domain_issues(vctx, physics_spec, perimeter_flux_types, cross_prefix)
     issues = []
     zero_area_faces = window_map.zero_area_faces()
     wrapped_faces = window_map.wrapped_faces()
-    for feature in physics_spec.features:
-        if not feature.enabled:
-            continue
+    for feature, selected in enabled_feature_entities(vctx, physics_spec):   # a bad selection: reported elsewhere
         if ((window_map.line or vctx.spec.is_3d) and feature.type in perimeter_flux_types
                 and vctx.objects(feature.selection)):
             issues.append(Issue('error', feature_path(physics_spec, feature),
                                 f'object-perimeter fluxes are not available on the {grid_text} yet: select outer '
                                 'faces only (a Temperature / Voltage on an object or a domain feature still works)'))
-        try:
-            selected = expand_entities(vctx.spec, feature.selection)
-        except (ValueError, KeyError, TypeError):   # bad selection: reported by the selection checks
-            selected = []
         on_wrap = [face for face in wrapped_faces if face in selected]
         if on_wrap:
             issues.append(Issue('error', feature_path(physics_spec, feature),

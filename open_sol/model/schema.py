@@ -435,15 +435,22 @@ def param_in_space(param, space):
     return param if unit is None or unit == param.unit else replace(param, unit=unit)
 
 
-def model_spaces(spec, registry) -> tuple:
-    """SPACES every physics of spec runs in (SPACES order; the domain's size_z does not restrict them, its polar /
-    spherical coordinates do: COORDINATE_SPACES); () when they share none. Unknown types are skipped."""
-    spaces = set(COORDINATE_SPACES.get(spec.domain.coordinates, SPACES))
+def known_physics(spec, registry):
+    """Yield (PhysicsSpec, PhysicsType) of the physics of spec in order, skipping unregistered types (validate reports
+    them)."""
     for physics_spec in spec.physics:
         try:
             physics_type = registry.physics_type(physics_spec.type)
         except KeyError:
             continue
+        yield physics_spec, physics_type
+
+
+def model_spaces(spec, registry) -> tuple:
+    """SPACES every physics of spec runs in (SPACES order; the domain's size_z does not restrict them, its polar /
+    spherical coordinates do: COORDINATE_SPACES); () when they share none. Unknown types are skipped."""
+    spaces = set(COORDINATE_SPACES.get(spec.domain.coordinates, SPACES))
+    for physics_spec, physics_type in known_physics(spec, registry):
         settings_values = {param.name: param.default for param in physics_type.settings} | physics_spec.settings
         spaces &= set(instance_spaces(physics_type, settings_values))
     return tuple(space for space in SPACES if space in spaces)
@@ -1014,11 +1021,7 @@ def scalar_output_names(spec, registry, parameters=None):
     if parameters is None:
         parameters = evaluate_parameters(spec.parameters, errors={})
     names = {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if physics_type.scalar_outputs is None:
             continue
         try:
@@ -1089,11 +1092,7 @@ def default_precision_ignored(spec, registry, study) -> list:
     nodes = {node.name: node for node in spec.solvers}
     backend = solver_backend(spec)
     ignored = []
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:   # reported by validate
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         assigned = physics_spec.solvers if isinstance(physics_spec.solvers, dict) else {}
         grid = solver_grid(spec, physics_spec)
         for role, solver_role in physics_type.solver_roles.items():
@@ -1136,11 +1135,7 @@ def _honouring_physics(spec, registry, enabled, flag, extra_reason) -> tuple:
     if enabled is not True:
         return (), {}
     honouring, ignoring = [], {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:   # reported by validate
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if not getattr(physics_type, flag):
             reason = 'its type does not implement it'
         elif _on_element_mesh(spec, physics_spec):
@@ -1264,11 +1259,7 @@ def feature_precision_misfit(feature_type, resolved) -> str:
 def _field_names(spec, registry, include_outputs):
     """Shared body of state_field_names / output_field_names; physics of unknown type are skipped."""
     qualified, providers = {}, {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         infos = physics_type.state_fields + (physics_type.output_fields if include_outputs else ())
         for info in infos:
             qualified[f'{physics_spec.name}_{info.name}'] = (physics_spec.name, info.name)

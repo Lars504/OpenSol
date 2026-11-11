@@ -21,7 +21,7 @@ from .schema import (DERIVED_OPERATIONS, FIELD_DERIVED_OPERATIONS, INTERFACE_OPE
                      RESULT_KIND_DOCS, RESULT_KINDS, SELECTION_KINDS, SOLVER_ROLES, get_registry, node_label,
                      restricted_feature_precisions)
 from .spec import _NESTED_FIELDS, OUTER_FACES, RESERVED_ENTITY_NAMES, SPEC_VERSION, MeshSpec, ModelSpec
-from .templates import template_entries
+from .templates import template_entries, template_model
 
 REGENERATE_COMMAND = 'python -m open_sol describe --update-reference'   # also in api's selftest messages
 REFERENCE_FILE = 'api_reference.md'   # reference_files() keys = the files --update-reference writes beside the package
@@ -2047,17 +2047,9 @@ def _templates_section(registry):
                  'modifying the closest one is the most reliable way to write a valid model. api.template(key) '
                  'returns one as a ModelSpec, python -m open_sol template KEY FILE writes its model file.',
         'entries': {entry.key: {'key': entry.key, 'label': entry.label, 'description': entry.description,
-                                'model': _plain(_template_model(entry).to_dict())}
+                                'model': _plain(template_model(entry).to_dict())}
                     for entry in template_entries(registry)},
     }
-
-
-def _template_model(entry):
-    """ModelSpec of a TemplateEntry's factory (make_template's check, without its per-key entry lookup)."""
-    spec = entry.factory()
-    if not isinstance(spec, ModelSpec):
-        raise TypeError(f"template '{entry.key}': factory returned {type(spec).__name__}, not a ModelSpec")
-    return spec
 
 
 def _results_section(registry, physics_types, with_selftests=True):
@@ -2573,12 +2565,8 @@ def _param_lines(group, shared):
         facts.append('choices ' + ' | '.join(_choice_text(choice) for choice in entry['choices']))
     if entry['optional']:
         facts.append('optional (null allowed)')
-    if entry['field_dependent']:
-        facts.append('may use x, y')
-    if entry['state_dependent']:
-        facts.append('may use physics fields')
-    if entry['time_dependent']:
-        facts.append('may use t')
+    facts += [text for key, text in (('field_dependent', 'may use x, y'), ('state_dependent', 'may use physics fields'),
+                                     ('time_dependent', 'may use t')) if entry[key]]
     if entry['visible_if']:
         facts.append(f"visible when {_visible_text(entry['visible_if'])}")
     if entry['expands_to']:
