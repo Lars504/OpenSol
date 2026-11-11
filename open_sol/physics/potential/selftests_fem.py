@@ -9,6 +9,7 @@ import numpy as np
 
 from ...core.constants import ELEMENTARY_CHARGE, EPS0, K_B, N_A
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import last_value
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec, StudySpec)
 
@@ -153,8 +154,7 @@ def _check_joule(results_by_name):
     measured = {'current': _held(results_by_name['shared'], 'currents', 'left', 'current'),
                 'current_two_mesh': _held(results_by_name['two_mesh'], 'currents', 'left', 'current')}
     for name in ('shared', 'two_mesh'):
-        values = np.asarray(results_by_name[name].result('heat', 'centre')['values'], dtype=np.float64)
-        measured[f'{name}_rise'] = float(values[-1] - REFERENCE_T) if values.size else math.nan
+        measured[f'{name}_rise'] = last_value(results_by_name[name], 'heat', 'centre') - REFERENCE_T
     relative = {'current': abs(measured['current'] / expected['current'] - 1.0),
                 'current_two_mesh': abs(measured['current_two_mesh'] / expected['current'] - 1.0),
                 'shared_rise': abs(measured['shared_rise'] / expected['shared_rise'] - 1.0),
@@ -207,8 +207,7 @@ def _check_electrolyte_slit(results_by_name):
     midpoint_continuum = SLIT_VOLTAGE / math.cosh(half_width)
     charge_lo = _held(results, 'electrostatics', 'plate_lo', 'charge')
     charge_hi = _held(results, 'electrostatics', 'plate_hi', 'charge')
-    probe = np.asarray(results.result('electrostatics', 'mid')['values'], dtype=np.float64)
-    midpoint = float(probe[-1]) if probe.size else math.nan
+    midpoint = last_value(results, 'electrostatics', 'mid')
     ionic_charge = float(derived['Q_ion'])
     rasters = {name: np.asarray(results.field(f'electrostatics.{name}').values, dtype=np.float64)
                for name in ('c_ion_1', 'c_ion_2', 'rho_ion')}

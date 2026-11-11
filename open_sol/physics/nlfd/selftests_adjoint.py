@@ -4,7 +4,7 @@ and free carriers), a short SHG optimization run and the shg_metasurface_optimiz
 import math
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, cell_centre, single_value, vertical_line
+from ...model.selftest_helpers import PERIODIC_Y, cell_centre, normalized_result, single_value, vertical_line
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 
@@ -128,10 +128,7 @@ def _check_gradient(results_by_name):
         objective, parts = _objective(gradient_results)
         details.update({f'{case}_J': objective, f'{case}_objectives': parts, f'{case}_adjoint': adjoint,
                         f'{case}_finite_difference': finite_difference, f'{case}_relative_error': error})
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    worst = normalized[worst_item]
-    details.update(normalized_errors=normalized, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized, details)
 
 
 def _optimization_specs():
@@ -235,10 +232,7 @@ def _check_weighted_gradients(results_by_name, weights_by_case):
         details.update({f'{case}_J': objective, f'{case}_objectives': parts, f'{case}_adjoint': adjoint,
                         f'{case}_finite_difference': finite_difference, f'{case}_relative_error': error,
                         f'{case}_forward_converged': solves})
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    worst = normalized[worst_item]
-    details.update(normalized_errors=normalized, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized, details)
 
 
 # Sheet and free-carrier transposes on the same strip, block, objective line and central difference: sheet_shg = a D3h

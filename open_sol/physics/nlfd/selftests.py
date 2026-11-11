@@ -10,7 +10,8 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, analytic_slab_index, probe_phasor, relative_error
+from ...model.selftest_helpers import (PERIODIC_Y, analytic_slab_index, normalized_result, probe_phasor, relative_error,
+                                       worst_result)
 from ...model.spec import (AnalyticCurveSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 
@@ -815,10 +816,7 @@ def _strip_errors(results, signs, eps_pump, eps_sh, start_product, label, backwa
 def _normalized_result(errors, tolerances, details):
     """Self-test dict: measured = error = the worst error / tolerance (NaN counts as the worst), tolerance 1."""
     normalized = {item: error / tolerances.get(item, _SH_TOLERANCE) for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(relative_errors=errors, normalized_errors=normalized, worst_item=worst_item)
-    worst = normalized[worst_item]
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized, details, relative_errors=errors, normalized_errors=normalized)
 
 
 def _check_shg_uniform(results_by_name):
@@ -937,9 +935,7 @@ def _check_mirror_parity(results_by_name):
         full_value, half_value = probe_phasor(full, _PHYSICS, name), probe_phasor(half, _PHYSICS, name)
         errors[name] = relative_error(half_value, full_value)
         details[name] = {'full': _pair(full_value), 'half': _pair(half_value)}
-    worst = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _MIRROR_TOLERANCE,
-            'details': {'worst_item': worst, 'errors': errors, **details}}
+    return worst_result(errors, _MIRROR_TOLERANCE, **details)
 
 
 # ---- GPU model cases 6, 8 (stages 2 and 3): depleted SHG, SPM on the same strip ----
