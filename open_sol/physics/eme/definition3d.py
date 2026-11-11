@@ -200,6 +200,11 @@ _SHARED_VALIDATE = make_validate_physics(EME_PERMITTIVITY_SLOTS, time_domain=Fal
                                          solved_wavelengths=all_solved_wavelengths)
 
 
+def _window_slices(mesh):
+    """z slices of the window (the z cells without padding)."""
+    return int(mesh.nz) - mesh.npml_sides.get('z_lo', 0) - mesh.npml_sides.get('z_hi', 0)
+
+
 def _size_issues(vctx, physics_spec, settings_values, path):
     """scipy missing: error; the host SuperLU cross-section size rule (2 nx ny unknowns; none for a cudss eigen
     factorization: checked on the device at run time); info on the z slices."""
@@ -215,8 +220,7 @@ def _size_issues(vctx, physics_spec, settings_values, path):
     issue = None if on_device else size_issue_for(nx, ny)
     if issue is not None:
         issues.append(Issue(issue[0], path, f'cross-section: {issue[1]}'))
-    sides = mesh.npml_sides
-    slices = int(mesh.nz) - sides.get('z_lo', 0) - sides.get('z_hi', 0)
+    slices = _window_slices(mesh)
     issues.append(Issue('info', path, f'{slices} z slices (at most that many sections, one cross-section solve of '
                                       f'{2 * nx * ny:,} unknowns per distinct section)'))
     n_wanted = 2 * settings_values['n_modes'] + 10
@@ -289,8 +293,7 @@ def _memory_estimate(settings_values, mesh, context):
     """3 complex64 E fields + float32 q_abs on the device, the adjoint cache (run item), per-mode-solve and field-block
     transients, one cuDSS factor at a time outside the pool (cudss eigen node); host items mostly (comments)."""
     nx, ny = int(mesh.nx), int(mesh.ny)
-    sides = mesh.npml_sides
-    slices = int(mesh.nz) - sides.get('z_lo', 0) - sides.get('z_hi', 0)
+    slices = _window_slices(mesh)
     points = nx * ny
     n_cells = int(mesh.n_cells)
     unknowns = 2 * points
@@ -368,8 +371,7 @@ def _time_estimate(settings_values, mesh, context):
     assembly and mode set plus one 'eigen' shift-invert (2 n_modes + 10 eigenpairs, a factorisation each); per solve
     one row download per z slice and the field reconstruction (3 Gauss rows per layer when a material is lossy)."""
     nx, ny = int(mesh.nx), int(mesh.ny)
-    sides = mesh.npml_sides
-    slices = int(mesh.nz) - sides.get('z_lo', 0) - sides.get('z_hi', 0)
+    slices = _window_slices(mesh)
     points = float(nx * ny)
     unknowns = 2.0 * points
     nnz = _CROSS_SECTION_ENTRIES * unknowns
