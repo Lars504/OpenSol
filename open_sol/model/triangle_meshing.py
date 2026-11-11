@@ -10,7 +10,7 @@ from ..fem.mesh import Curve, build_triangle_mesh
 from ..fem.mesher import MERGE_TOLERANCE, SizeField, add_layer_ring, build_pslg, mesh_pslg, reflect_mesh
 from ..fem.quality import mesh_quality
 from .geometry import (GEOMETRY_KINDS, UNION_KINDS, bounding_box, domain_entities, domain_size, is_plain,
-                       primitive_names, rasterize, resolve_geometry, rounded_corners)
+                       material_selections, primitive_names, rasterize, resolve_geometry, rounded_corners)
 from .schema import get_registry
 
 _OUTLINE_SPACING = 0.25   # sampled outline sources of a sized object: spacing / its size
@@ -225,15 +225,9 @@ def mirror_mismatch(spec, shapes, sizes, axis):
     None when they are."""
     import itertools
 
-    from .geometry import expand_entities
     from .symmetry_check import SAMPLES_PER_SIDE_2D, object_masks, paint, sample_centres
 
-    selections = []
-    for material in spec.materials:
-        try:
-            selections.append(expand_entities(spec, material.selection))
-        except (ValueError, TypeError):   # reported by the selection checks
-            selections.append([])
+    selections = material_selections(spec, failed=())
     names = sorted({entity for entities in selections for entity in entities
                     if entity in shapes and GEOMETRY_KINDS[shapes[entity].kind].entity_kind == 'domain'})
     if not names:

@@ -714,9 +714,7 @@ def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_p
             ctx.log('warning', f"physics '{name}': {message}")
         for note in getattr(sim.runner.physics[name], 'finalize_notes', ()):   # optional: e.g. assembly timings
             ctx.log('info', f"physics '{name}': {note}")
-    for update in updates:
-        sim.add_coupling(update)
-    for update in ctx.time_updates:   # feature values of t: re-set before the steps of their physics
+    for update in updates + ctx.time_updates:   # time updates: feature values of t, re-set before their physics' steps
         sim.add_coupling(update)
 
     for coupling_spec in spec.couplings:
