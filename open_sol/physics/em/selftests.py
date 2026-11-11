@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, worst_item
+from ...model.selftest_helpers import PERIODIC_Y, vertical_line, worst_item
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_hz import (cw_duration, fresnel_case, fresnel_device_spec, mie_drude_cylinder_case, plane_wave_case,
                            steady_peak)
@@ -115,7 +115,7 @@ def wall_reflection_spec(physics_type, polarization, wall, source_values, extra_
     source_x = (column + 0.5) * _WALL_CELL
     probe_x, probe_y = _WALL_PROBE_XY
     settings = {**PERIODIC_Y, **extra_settings}
-    geometry = [GeometrySpec('source_line', 'line', {'x0': source_x, 'y0': 0.0, 'x1': source_x, 'y1': size_y}),
+    geometry = [vertical_line('source_line', source_x, 0.0, size_y),
                 GeometrySpec('probe_point', 'point', {'x': probe_x, 'y': probe_y})]
     features = [FeatureSpec('source', 'line_source', ['source_line'], dict(source_values)),
                 FeatureSpec(_PROBE_FEATURE, 'field_probe', ['probe_point'],

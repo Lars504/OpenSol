@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
+from ...model.selftest_helpers import float_list, vertical_line
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
                            PhysicsSpec, StudySpec)
 from .selftests import normalized_result
@@ -83,7 +83,7 @@ def _harmonic_spec(run):
     return ModelSpec(
         title=f'Self-test: {physics_type} cylinder row, frequency domain at 1 um',
         domain=DomainSpec(size_x=size_x, size_y=size_y),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': _SOURCE_X, 'y0': 0.0, 'x1': _SOURCE_X, 'y1': size_y}),
+        geometry=[vertical_line('source_line', _SOURCE_X, 0.0, size_y),
                   GeometrySpec('cylinder', 'circle', dict(_CYLINDER))],
         materials=[MaterialSpec('dielectric', properties={'eps_r': _CYLINDER_EPS_R}, selection=['cylinder'])],
         physics=[PhysicsSpec(_PHYSICS_NAME, physics_type, settings={'bc_y_lo': 'periodic', 'bc_y_hi': 'periodic'},
@@ -148,8 +148,7 @@ def _slab_spec(run):
     """The hz strip with ('device') or without ('reference') the slab, one frequency_domain study of _SLAB_WAVELENGTHS
     storing hz_re / hz_im per wavelength."""
     size_x, size_y = _SLAB_SIZE
-    geometry = [GeometrySpec('source_line', 'line', {'x0': _SLAB_SOURCE_X, 'y0': 0.0, 'x1': _SLAB_SOURCE_X,
-                                                     'y1': size_y})]
+    geometry = [vertical_line('source_line', _SLAB_SOURCE_X, 0.0, size_y)]
     materials = []
     if run == 'device':
         geometry.append(GeometrySpec('slab', 'rectangle', {'x0': _SLAB_X[0], 'y0': 0.0, 'x1': _SLAB_X[1],

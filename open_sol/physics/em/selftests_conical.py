@@ -7,7 +7,8 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, probe_phasor, single_value, solver_role, vertical_line
+from ...model.selftest_helpers import (float_list, probe_phasor, single_value, skip_result, solver_role,
+                                       vertical_line)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec)
 from .selftests import normalized_result
@@ -365,8 +366,7 @@ def _check_cudss(results_by_name):
     """Per back end: max |value - SuperLU| / max |SuperLU| over fluxes and probes in tolerance units, and the linear
     record: that back end, one LDL^T per wavelength on one plan (+ one per cudss_mixed double fallback)."""
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     reference = _cudss_compared_values(results_by_name['sheet_sparse_direct'])
     scale = float(np.max(np.abs(reference)))
     n_wavelengths = len(_CUDSS_WAVELENGTHS)

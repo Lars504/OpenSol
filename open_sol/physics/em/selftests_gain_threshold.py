@@ -7,6 +7,7 @@ import math
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import vertical_line
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
 
@@ -63,7 +64,7 @@ def _cavity_spec(with_gain):
     return ModelSpec(
         title=f"Self-test: gain threshold ({'half inverted' if with_gain else 'cold'} cavity)",
         domain=DomainSpec(size_x=size_x, size_y=size_y),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': _SOURCE_X, 'y0': 0.0, 'x1': _SOURCE_X, 'y1': size_y}),
+        geometry=[vertical_line('source_line', _SOURCE_X, 0.0, size_y),
                   GeometrySpec('probe_point', 'point', {'x': _PROBE[0], 'y': _PROBE[1]})],
         materials=[MaterialSpec('lossy', properties={'eps_r': 1.0, 'sigma_e': _SIGMA}, selection=['all'])],
         physics=[PhysicsSpec(_EM, 'em_fdtd_ez', settings={'bc_x_lo': 'pec', 'bc_x_hi': 'pec', 'bc_y_lo': 'periodic',

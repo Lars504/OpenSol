@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import analytic_slab_index, float_list, single_value, worst_item
+from ...model.selftest_helpers import analytic_slab_index, float_list, single_value, vertical_line, worst_item
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
 from .selftests import normalized_result
@@ -64,7 +64,7 @@ def rib_waveguide_spec():
                 FeatureSpec('rib_stack', 'effective_index', ['rib'], _stack_values(_RIB_FILM))]
     for feature_name, x in _RIB_LINES:
         line_name = f'{feature_name}_line'
-        geometry.append(GeometrySpec(line_name, 'line', {'x0': x, 'y0': 0.0, 'x1': x, 'y1': size_y}))
+        geometry.append(vertical_line(line_name, x, 0.0, size_y))
         features.append(FeatureSpec(feature_name, 'mode_source', [line_name],
                                     {'mode_number': 1, 'direction': 'positive', 'power': 1.0, 'phase': 0.0})
                         if feature_name == 'source' else

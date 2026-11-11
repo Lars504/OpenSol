@@ -8,7 +8,7 @@ from ...core.constants import C0, EPS0, ETA0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import (PERIODIC_Y, available_host_direct, cell_centre, float_list, glass_half_space,
                                        probe_phasor, single_value, skip_result, skip_without_host_direct,
-                                       solver_role, with_direct_node, worst_item)
+                                       solver_role, vertical_line, with_direct_node, worst_item)
 from ...model.spec import (OUTER_FACES, CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec,
                            MaterialSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec,
                            StudySpec)
@@ -307,8 +307,8 @@ def _fresnel_spec(polarization, medium, length=_FRESNEL_SIZE[0], source_x=_FRESN
     """y-periodic strip of `length` with the line source and the flux line; medium 'glass' adds the eps_r = 4
     half-space from `interface`, 'medium' fills every cell with it."""
     size_x, size_y = length, _FRESNEL_SIZE[1]
-    geometry = [GeometrySpec('source_line', 'line', {'x0': source_x, 'y0': 0.0, 'x1': source_x, 'y1': size_y}),
-                GeometrySpec('flux_line', 'line', {'x0': flux_x, 'y0': 0.0, 'x1': flux_x, 'y1': size_y})]
+    geometry = [vertical_line('source_line', source_x, 0.0, size_y),
+                vertical_line('flux_line', flux_x, 0.0, size_y)]
     materials = []
     if medium == 'glass':
         half_space, glass = glass_half_space(interface, size_x, size_y, _GLASS_EPS_R)
@@ -602,8 +602,7 @@ def fd_joule_heating_spec():
                     ParameterSpec('r_wire', '30*nm', 'nanowire radius')],
         domain=DomainSpec(size_x=_JOULE_SIZE, size_y=_JOULE_SIZE),
         geometry=[GeometrySpec('wire', 'circle', {'cx': center, 'cy': center, 'r': 'r_wire'}),
-                  GeometrySpec('beam_line', 'line', {'x0': _JOULE_BEAM_X, 'y0': 0.0, 'x1': _JOULE_BEAM_X,
-                                                     'y1': _JOULE_SIZE}),
+                  vertical_line('beam_line', _JOULE_BEAM_X, 0.0, _JOULE_SIZE),
                   GeometrySpec('wire_center', 'point', {'x': center, 'y': center})],
         materials=[MaterialSpec('water', library='water',
                                 properties={'eps_r': _WATER_EPS_R_530NM, 'sigma_e': 0.0}, selection=['all']),
@@ -918,8 +917,7 @@ def _check_cudss(results_by_name):
     """Per model and cuDSS back end: max |cuDSS - SuperLU| / max |SuperLU| over every wavelength in tolerance units; the
     linear record must show that back end with one factorisation per wavelength on one plan, each an LDL^T."""
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     n_wavelengths = int(_BATCH_STUDY['n_wavelengths'])
     normalized_errors, details = {}, {}
     for model in _BATCH_MODELS:

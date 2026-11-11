@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, max_relative_error, worst_item, worst_result
+from ...model.selftest_helpers import float_list, max_relative_error, vertical_line, worst_item, worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 from .selftests_fdfd import cpu_specs
@@ -514,8 +514,7 @@ def _tfsf_mirror_spec(run, half):
     block_x0, block_x1, block_half = _TFSF_BLOCK
     geometry = [_rectangle('tfsf_box', box_x0, 0.0 if half else plane - box_half, box_x1, plane + box_half),
                 _rectangle('block', block_x0, 0.0 if half else plane - block_half, block_x1, plane + block_half),
-                GeometrySpec('forward_line', 'line', {'x0': _TFSF_LINE_X, 'y0': 0.0, 'x1': _TFSF_LINE_X,
-                                                      'y1': size_y})]
+                vertical_line('forward_line', _TFSF_LINE_X, 0.0, size_y)]
     time_domain = physics_type.startswith('em_fdtd')
     plane_wave = {'amplitude': 1.0, **(_FDTD_PULSE if time_domain else {'phase': 0.0})}
     features = [FeatureSpec('plane_wave', 'plane_wave_tfsf', ['tfsf_box'], plane_wave),
@@ -563,7 +562,7 @@ def _check_tfsf_mirror(results_by_name):
 def _reciprocity_spec(polarization, lossy):
     """The two-physics parallel-plate model: 'forward' and 'backward' mode sources, mode monitors at ports A and B."""
     size_x, size_y = _RECIPROCITY_SIZE
-    geometry = [GeometrySpec(f'{name}_line', 'line', {'x0': x, 'y0': 0.0, 'x1': x, 'y1': size_y})
+    geometry = [vertical_line(f'{name}_line', x, 0.0, size_y)
                 for name, x in _RECIPROCITY_LINES]
     geometry += [_rectangle('block_1', 2.2e-6, 0.0, 2.7e-6, 0.3e-6), _rectangle('block_2', 2.7e-6, 0.3e-6, 2.9e-6,
                                                                               0.55e-6)]

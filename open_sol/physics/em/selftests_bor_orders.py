@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, norm_relative_error, solver_role
+from ...model.selftest_helpers import float_list, norm_relative_error, skip_result, solver_role
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverSpec,
                            StudySpec)
 from .selftests import normalized_result
@@ -517,8 +517,7 @@ def _check_cudss_driven(results_by_name):
     """Per model and back end: max |P - P_SuperLU| / max |P_SuperLU| in tolerance units, and the linear record: that
     back end, _CUDSS_EXPECTED factorisations (all LDL^T) on its plans (+ one per cudss_mixed double fallback)."""
     if not results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     errors, details = {}, {}
     for model, (factors, plans) in _CUDSS_EXPECTED.items():
         reference = _cudss_compared_powers(results_by_name[f'{model}_sparse_direct'], model)

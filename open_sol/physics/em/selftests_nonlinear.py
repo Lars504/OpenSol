@@ -10,7 +10,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, HBAR
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, relative_error
+from ...model.selftest_helpers import PERIODIC_Y, relative_error, vertical_line
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 
@@ -123,7 +123,7 @@ def _strip_spec(polarization, title, case, with_medium, early=False):
     size_x, size_y = _SIZE
     index = _BACKGROUND_INDEX[case]
     amplitude = _GAIN_AMPLITUDE if case == 'gain' else _AMPLITUDE / math.sqrt(index)
-    geometry = [GeometrySpec('source_line', 'line', {'x0': _SOURCE_X, 'y0': 0.0, 'x1': _SOURCE_X, 'y1': size_y}),
+    geometry = [vertical_line('source_line', _SOURCE_X, 0.0, size_y),
                 GeometrySpec('probe_point', 'point', {'x': _PROBE_POINT[0], 'y': _PROBE_POINT[1]})]
     features = [FeatureSpec('source', 'line_source', ['source_line'],
                             {'waveform': 'cw', 'wavelength': _WAVELENGTH, 'amplitude': amplitude}),
