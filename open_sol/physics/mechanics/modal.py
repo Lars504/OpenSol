@@ -825,9 +825,7 @@ def solve_lowest_modes_matrix_free(inverse_stiffness, mass, free_dofs, n_dofs, n
     """ModalSolve of the n_resonances lowest modes from host callables on the free dofs (host int indices free_dofs):
     inverse_stiffness(b) ~ K_ff^-1 b (one inner PCG solve), mass(v) = M_ff v; eigen_solver.eigsh_inverse at sigma = 0."""
     started = time.perf_counter()
-    if isinstance(n_resonances, bool) or int(n_resonances) != n_resonances or n_resonances < 1:
-        raise ValueError(f'n_resonances must be an integer >= 1, got {n_resonances!r}')
-    n_resonances = int(n_resonances)
+    n_resonances = _checked_count(n_resonances)
     free_dofs = np.asarray(free_dofs, dtype=np.int64)
     n_free = int(free_dofs.size)
     if n_free < 3:

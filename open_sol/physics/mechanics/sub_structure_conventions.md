@@ -30,8 +30,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   the parity reads needs a closed-form item in the case's check; every cpu run must record the solid 'linear' role on
   'cpu'. solid_3d_rigid_mode_check runs on both backends itself.
 - Definitions: `definition_common.py` (build's linear solver, MATERIAL_PROPERTIES = one Param per name for both
-  types, support / material / state helpers), `definition.py` (2D type + every solid coupling, registers
-  definition3d), `definition3d.py` (solver imported in create, SupportRegion / probe_result inside callbacks). A solid
+  types, support / material / state helpers, the apply / result callbacks both types share: body force, temperature
+  change, support and electrode tables), `definition.py` (2D type + every solid coupling, registers definition3d),
+  `definition3d.py` (solver imported in create, SupportRegion / probe_result inside callbacks). A solid
   that StudySpec.solved_physics leaves out is a stationary background: validate / estimators rebind their context by
   `definition_common.background_context`, create reads `solid_study`; a new study check goes through them, never
   spec.study.type. No CG settings on the physics; estimator dtype names map to PCGSolver names by
@@ -499,7 +500,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Solve: K_ff lazily via DiffusionDirectSolver on the 'linear' runtime (grid_defaults tetrahedra -> sparse_direct; pcg
   does not declare 'tetrahedra'). Eigen on 'eigen' eigsh_shifted (superlu / cudss / cudss_mixed refined to 1e-12; the
   SuperLU size limit is skipped for cuDSS); the tensor mesh ignores the factorization (info).
-- Free bodies: create passes `free_body` = `_free_body_allowed(study)` (eigenfrequency at target > 0, or
+- Free bodies: create passes `free_body` = `definition_common.free_body_allowed(study)` (eigenfrequency at target > 0, or
   frequency_response), prepare sets `system.rigid_motions_allowed`: rigid motions counted in `n_rigid_motions` (6 per
   unsupported region); static solves raise while > 0 (`_refuse_free_body`), the frequency response does not, an eigen
   solve at target 0 raises. Mode solvers take `rigid_motions` on top of n + EXTRA_EIGENVALUES (a low target finds the

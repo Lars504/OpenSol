@@ -551,13 +551,6 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         rows = (beta_x, beta_y, beta_z, beta_xy) if self._axisymmetric else (beta_x, beta_y, beta_xy)
         return np.where(self._solid[:, None], np.stack([_host(row) * temperature_change for row in rows], axis=1), 0.0)
 
-    def state(self) -> dict:
-        """Per-element arrays (n_elements,): the outputs at the element centroids, the inputs and E / nu."""
-        self._ensure_outputs()
-        state = {name: getattr(self.fields, name) for name in self.output_arrays + self.input_arrays}
-        state.update({name: getattr(self.domain.materials, name) for name in MATERIAL_STATE_ARRAYS})
-        return state
-
     def inject_source(self, name: str, array) -> None:
         """Write a coupled slot: one value per element (a triangle target of a mesh transfer, or this mesh's own)."""
         if name not in self.source_slots:

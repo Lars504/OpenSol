@@ -3,6 +3,7 @@ mesh and its vibration modes: features, validation, memory / time estimates) plu
 definition.register calls register here (the heat_solid_thermal_strain coupling lives there). No cupy-importing sibling
 module at module level: the solvers are imported in create."""
 from dataclasses import replace
+from functools import partial
 
 import numpy as np
 
@@ -16,11 +17,10 @@ from ...fem.elasticity3d import TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRA
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATION_PARAM, SQUEEZE_FILM_GAS_PARAMS,
                                          cg_solver_issues, cudss_external, eigen_factorization, eigen_role,
-                                         eigen_search_counts, eigen_subspace_size, host_direct_back_end,
+                                         eigen_search_counts, host_direct_back_end,
                                          element_order, linear_solver_mixed, linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
-from ...model.geometry import expand_entities
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
@@ -28,15 +28,15 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_lab
 from ...solvers.pcg import workspace_bytes
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SPLU_3D_WARN_UNKNOWNS
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
-                                INITIAL_STRESS_PROPERTIES_3D, LOSS_PROPERTIES, MATERIAL_PROPERTIES,
+                                INITIAL_STRESS_PROPERTIES_3D, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PIEZO_MATERIAL_PROPERTIES_3D, STIFFNESS_TENSOR_PROPERTIES_3D,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, background_context, displacement_param,
-                                eigen_search_issues, follow_held_values, follow_load, following,
-                                frequency_probe_feature, harmonic_support_result, material_issues,
-                                materials_setting, modal_kept_count, modal_resonance_count, modal_study_issues, plain_value,
-                                prestress_issues,
+                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, apply_body_force, apply_temperature_change,
+                                background_context, displacement_param, eigen_search_issues, electrode_result,
+                                follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
+                                material_issues, materials_setting, modal_kept_count, modal_study_issues,
+                                nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
-                                stiffness_follows_state, union_masks)
+                                stiffness_follows_state, support_holders, support_result, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
@@ -106,7 +106,6 @@ _ELECTRODE_CONNECTIONS = ('voltage', 'floating', 'resistive_load')
 _ELECTRODE_FEATURES = ('electrode', 'electrode_domain')
 _BAND_TEMPLATE = 'solid_bloch_band_diagram_3d'
 _SQUEEZE_FILM = 'squeeze_film_damping'
-_MODAL_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # studies running solve_eigenfrequencies
 # squeeze film estimates (uncalibrated): P2 footprint dofs ~ 4 x n_nodes^(2/3) (one face of a compact mesh: nodes +
 # edges), stored entries per P2 triangle row, host SuperLU seconds of the P2 pressure operator over the 5-point curve
 _FILM_DOFS_PER_FACE_NODE = 4.0
@@ -314,24 +313,6 @@ def _apply_boundary_load(ctx, solver, feature_spec, values, selection):
     return None
 
 
-def _apply_body_force(ctx, solver, feature_spec, values, selection):
-    """f_x / f_y / f_z (scalars or (nx, ny, 1) x, y dependent layers) on the selected cells; uniform values follow a
-    reused sweep build (tetrahedra: on a host copy of the element mask)."""
-    from ...core.backend import to_host   # lazy: definitions never load the backend at import
-    mask = ctx.domain_mask(selection.entities)
-    solver.add_body_force(mask, *(ctx.eval_field(values[name], mask=mask) for name in _BODY_FORCES))
-    kept_mask = to_host(mask) if ctx.domain.grid_kind == _TETRAHEDRA else mask
-    follow_load(ctx, solver, feature_spec, values, _BODY_FORCES,
-                lambda *changes: solver.add_body_force(kept_mask, *changes))
-    return None
-
-
-def _apply_temperature_change(ctx, solver, feature_spec, values, selection):
-    mask = ctx.domain_mask(selection.entities)
-    solver.add_temperature_change(mask, ctx.eval_field(values['delta_T'], mask=mask))
-    return None
-
-
 def _apply_probe(ctx, solver, feature_spec, values, selection):
     if ctx.domain.grid_kind == _TETRAHEDRA:   # the nodal display field evaluated at the point
         if len(selection.objects) != 1:
@@ -359,12 +340,7 @@ def _apply_frequency_probe(ctx, solver, feature_spec, values, selection):
 
 
 def _support_result(session, solver, region, feature_spec, options):
-    table = harmonic_support_result(solver, region)
-    if table is not None:
-        return table
-    force_x, force_y, force_z = solver.reaction(region)
-    return {'kind': 'table', 'columns': ['feature', 'F_x', 'F_y', 'F_z'], 'units': ['', 'N', 'N', 'N'],
-            'rows': [[region.name, force_x, force_y, force_z]], 'F_x': force_x, 'F_y': force_y, 'F_z': force_z}
+    return support_result(solver, region, _AXES, 'N')
 
 
 def _apply_electrode(ctx, solver, feature_spec, values, selection):
@@ -386,14 +362,6 @@ def _apply_electrode_domain(ctx, solver, feature_spec, values, selection):
         return None
     return solver.add_cell_electrode(feature_spec.name, ctx.domain_mask(selection.entities), values['connection'],
                                      values['voltage'], values['charge'], values['load_resistance'])
-
-
-def _electrode_result(session, solver, electrode, feature_spec, options):
-    if electrode is None:
-        raise ValueError(f"electrode '{feature_spec.name}': piezoelectric is off, so it is not part of the solve")
-    voltage, charge = solver.electrode_values(electrode)
-    return {'kind': 'table', 'columns': ['feature', 'V', 'Q'], 'units': ['', 'V', 'C'],
-            'rows': [[feature_spec.name, voltage, charge]], 'V': voltage, 'Q': charge}
 
 
 def _apply_squeeze_film(ctx, solver, feature_spec, values, selection):
@@ -441,14 +409,6 @@ def _validate_displacement(vctx, physics_spec, feature_spec, values):
     return []
 
 
-def _outer_faces(vctx, feature):
-    """Outer faces (FACES_3D, z faces included) of a feature's selection; [] when it does not resolve."""
-    try:
-        return [entity for entity in expand_entities(vctx.spec, feature.selection) if entity in FACES_3D]
-    except (ValueError, TypeError):
-        return []
-
-
 def _selected_objects(vctx, feature):
     """Domain objects of a feature's selection; [] when it does not resolve."""
     try:
@@ -466,7 +426,7 @@ def _held_components(vctx, feature):
     if feature.type == 'prescribed_displacement_domain':
         values = vctx.values(SOLID_MECHANICS_3D.feature_type(feature.type).params, feature.params)
         return [] if values is None else [('domain', axis) for axis in _AXES if values[f'u_{axis}'] is not None]
-    faces = _outer_faces(vctx, feature)
+    faces = outer_faces(vctx, feature, FACES_3D)
     if feature.type == 'roller':
         return [(face, face[0]) for face in faces]
     faces += _selected_objects(vctx, feature)
@@ -478,37 +438,20 @@ def _held_components(vctx, feature):
     return [(face, axis) for face in faces for axis in _AXES if values[f'u_{axis}'] is not None]
 
 
-def _support_holders(vctx, physics_spec):
-    """{(face or object, axis): [feature names]} of the enabled support features (_held_components)."""
-    holders = {}
-    for feature in physics_spec.features:
-        if feature.enabled and feature.type in SUPPORT_FEATURES:
-            for key in _held_components(vctx, feature):
-                holders.setdefault(key, []).append(feature.name)
-    return holders
-
-
-def _free_body_allowed(study_type, settings_values) -> bool:
-    """A free body may be solved (tetrahedra): the eigenfrequency / optomechanics study at target_frequency > 0 (its 0
-    Hz modes dropped) or the frequency_response study (K - omega^2 M is regular at f > 0)."""
-    return bool((study_type in _MODAL_STUDIES and settings_values.get('target_frequency'))
-                or study_type == FREQUENCY_RESPONSE_STUDY)
-
-
 def _free_body_modes(vctx, settings_values, tetrahedra) -> bool:
-    """A free body is allowed: a tetrahedron mesh and _free_body_allowed (the rigid check counts the free motions)."""
-    return bool(tetrahedra and _free_body_allowed(vctx.study_type, settings_values))
+    """A free body is allowed: a tetrahedron mesh and free_body_allowed (the rigid check counts the free motions)."""
+    return bool(tetrahedra and free_body_allowed(vctx.study_type, settings_values))
 
 
 def _support_issues(vctx, physics_spec, path, bloch_cell, free_body=False):
     """Error when no support holds u_x, u_y or u_z anywhere (rigid translation; bloch_cell: a Bloch cell, where
     _bloch_issues decides, or an elastic PML, whose clamped shell holds the solid; free_body (_free_body_modes): an
     info instead); warning per face component held by several features and per boundary load on a fully held face."""
-    holders = _support_holders(vctx, physics_spec)
+    holders = support_holders(vctx, physics_spec, _held_components)
     held_directions = {axis for _, axis in holders}
     sliding = [axis for axis in _AXES if axis not in held_directions]
     issues = []
-    remedy = ('' if vctx.study_type not in _MODAL_STUDIES else
+    remedy = ('' if vctx.study_type not in MODAL_STUDIES else
               '; for the vibration modes of a free body (free-free) set target_frequency > 0 on a tetrahedron mesh')
     if bloch_cell:
         pass
@@ -541,7 +484,7 @@ def _support_issues(vctx, physics_spec, path, bloch_cell, free_body=False):
     for feature in physics_spec.features:
         if not feature.enabled or feature.type != 'boundary_load':
             continue
-        for face in _outer_faces(vctx, feature):
+        for face in outer_faces(vctx, feature, FACES_3D):
             if all((face, axis) in holders for axis in _AXES):
                 issues.append(Issue('warning', path,
                                     f"boundary load '{feature.name}' acts on face {face}, whose u_x, u_y and u_z are "
@@ -559,7 +502,6 @@ def _piezo_issues(vctx, physics_spec, settings_values, path, tetrahedra):
     study and without a voltage
     electrode (unless a periodic axis has bloch_k != 0: no constant potential then); warnings for no material with
     piezo_e* and per piezo material without youngs_modulus / c11."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
     electrodes = [feature for feature in physics_spec.features
                   if feature.enabled and feature.type in _ELECTRODE_FEATURES]
     if not settings_values.get('piezoelectric'):
@@ -586,28 +528,10 @@ def _piezo_issues(vctx, physics_spec, settings_values, path, tetrahedra):
                                            'connection voltage (0 V = ground): otherwise the potential has no '
                                            'reference and the coupled system is singular (a Bloch cell with some '
                                            'bloch_k != 0 needs none)'))
-    piezo_materials = []
-    for material in vctx.spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):   # reported at the material
-            piezo_materials.append(material.name)
-            continue
-        if not (material.selection and any(properties.get(name) is not None for name in PIEZO_TENSOR_ARRAYS_3D)):
-            continue
-        piezo_materials.append(material.name)
-        stiff = any(properties.get(name) is not None and (plain_value(properties.get(name), vctx.parameters) is None
-                                                          or plain_value(properties.get(name), vctx.parameters) > 0.0)
-                    for name in ('youngs_modulus', 'c11'))   # a non-plain expression counts as stiff
-        if not stiff:
-            issues.append(Issue('warning', ('material', material.name),
-                                f"material '{material.name}' sets piezo_e* but no youngs_modulus or c11 > 0: "
-                                f'{physics_spec.name} treats it as void (no stiffness, no coupling, only its '
-                                "permittivity): set youngs_modulus / poisson_ratio, the c_IJ or a {'model': 'crystal', "
-                                "'plane': 'full'} entry"))
-    if not piezo_materials:
-        issues.append(Issue('warning', path, 'piezoelectric is on but no selected material sets a piezo_e* entry: the '
-                                             'potential only adds a dielectric, nothing couples'))
+    issues.extend(piezo_material_issues(vctx, physics_spec, path, PIEZO_TENSOR_ARRAYS_3D,
+                                        "(no stiffness, no coupling, only its permittivity): set youngs_modulus / "
+                                        "poisson_ratio, the c_IJ or a {'model': 'crystal', 'plane': 'full'} entry",
+                                        (ValueError, TypeError)))
     return issues
 
 
@@ -728,7 +652,7 @@ def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     unknowns = _tetrahedra_unknowns(settings_values, mesh, vctx.spec)
     piezoelectric = bool(settings_values.get('piezoelectric'))
     what = 'displacement + potential unknowns' if piezoelectric else 'displacement unknowns'
-    if vctx.study_type in _MODAL_STUDIES:
+    if vctx.study_type in MODAL_STUDIES:
         if eigen_factorization(vctx.solvers(physics_spec)) in CUDSS_FACTORIZATIONS:
             return []
         library = factor_label(host_direct_back_end(vctx.solvers(physics_spec), role='eigen'))
@@ -743,7 +667,7 @@ def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
         else:
             where = 'the coupled operator (linear)' if piezoelectric else 'K (linear)'
     if unknowns > SPLU_3D_LIMIT_UNKNOWNS:
-        remedy = ("eigen factorization 'cudss' on a GPU, " if vctx.study_type in _MODAL_STUDIES
+        remedy = ("eigen factorization 'cudss' on a GPU, " if vctx.study_type in MODAL_STUDIES
                   else "linear solver back_end 'cudss' on a GPU, ")
         return [Issue('error', path, f'~{unknowns:,} {what} exceed the {SPLU_3D_LIMIT_UNKNOWNS:,} limit of the host '
                                      f'{library} factor of {where} (uncalibrated for 3D elasticity): use {remedy}a '
@@ -804,14 +728,14 @@ def _bloch_issues(vctx, physics_spec, settings_values, path, tetrahedra):
     for feature in physics_spec.features:
         if not (feature.enabled and (feature.type in SUPPORT_FEATURES or feature.type in _ELECTRODE_FEATURES)):
             continue
-        faces = [face for face in _outer_faces(vctx, feature) if face[0] in periodic]
+        faces = [face for face in outer_faces(vctx, feature, FACES_3D) if face[0] in periodic]
         if faces:
             issues.append(Issue('error', feature_path(physics_spec, feature),
                                 f"{feature.type} on the periodic face(s) {', '.join(faces)}: a hold or electrode there "
                                 'would contradict its periodic image; select non-periodic faces (or objects inside '
                                 'the cell)'))
     if _trivial_bloch_phase(settings_values) and not settings_values.get('target_frequency'):
-        held = {axis for _, axis in _support_holders(vctx, physics_spec)}
+        held = {axis for _, axis in support_holders(vctx, physics_spec, _held_components)}
         sliding = [axis for axis in _AXES if axis not in held]
         if sliding:
             issues.append(Issue('error', path, f"with every periodic bloch_k 0 the cell can slide along "
@@ -846,7 +770,7 @@ def _pml_issues(vctx, physics_spec, settings_values, path, tetrahedra):
         if not (feature.enabled and (feature.type in SUPPORT_FEATURES or feature.type in _ELECTRODE_FEATURES
                                      or feature.type == 'boundary_load')):
             continue
-        held = [face for face in _outer_faces(vctx, feature) if face in faces]
+        held = [face for face in outer_faces(vctx, feature, FACES_3D) if face in faces]
         if held:
             issues.append(Issue('error', feature_path(physics_spec, feature),
                                 f"{feature.type} on the PML face(s) {', '.join(held)}: that face is the inner side of "
@@ -897,13 +821,7 @@ def _nonlinear_issues(vctx, physics_spec, settings_values, path, static_refused)
     if settings_values.get('piezoelectric'):
         issues.append(Issue('error', path, 'geometric_nonlinearity is not available with piezoelectric on (the coupled '
                                            'operator has no total-Lagrangian form): turn one of them off'))
-    if static_refused:
-        issues.append(Issue('info', path, f'geometric_nonlinearity: {static_refused} has no static solve, so the '
-                                          'pencil takes K + K_sigma of the initial stress (the tangent at u = 0)'))
-    elif vctx.study_type == FREQUENCY_RESPONSE_STUDY:
-        issues.append(Issue('info', path, 'geometric_nonlinearity: the frequency response stays linear (small '
-                                          'vibrations) about the nonlinear static state of the initial stress and '
-                                          'thermal strain alone; the loads are its harmonic drive'))
+    issues.extend(nonlinear_state_infos(vctx, path, static_refused))
     return issues
 
 
@@ -928,13 +846,13 @@ def _squeeze_film_issues(vctx, physics_spec, settings_values, tetrahedra):
         if not (feature.enabled and feature.type == _SQUEEZE_FILM):
             continue
         path = feature_path(physics_spec, feature)
-        if vctx.study_type not in _MODAL_STUDIES:
+        if vctx.study_type not in MODAL_STUDIES:
             issues.append(Issue('warning', path, f'squeeze_film_damping is evaluated per resonance by the '
-                                                 f"{' / '.join(_MODAL_STUDIES)} studies only; this {vctx.study_type} "
+                                                 f"{' / '.join(MODAL_STUDIES)} studies only; this {vctx.study_type} "
                                                  'study ignores it'))
         if not tetrahedra:
             continue   # the feature's grids refuse the tensor mesh
-        faces, objects = _outer_faces(vctx, feature), _selected_objects(vctx, feature)
+        faces, objects = outer_faces(vctx, feature, FACES_3D), _selected_objects(vctx, feature)
         values = vctx.values(SQUEEZE_FILM_FEATURE.params, feature.params)
         side = None if values is None else values['gap_side']
         if len(faces) > 1:
@@ -988,7 +906,7 @@ def _validate_solid_3d(vctx, physics_spec, settings_values):
         static_refused = 'a Bloch cell'
     elif _pml_faces(settings_values):
         static_refused = 'an elastic PML'
-    elif _free_body_modes(vctx, settings_values, tetrahedra) and not _support_holders(vctx, physics_spec):
+    elif _free_body_modes(vctx, settings_values, tetrahedra) and not support_holders(vctx, physics_spec, _held_components):
         static_refused = 'a free body'
     issues.extend(prestress_issues(vctx, physics_spec, settings_values, path, tetrahedra,
                                    static_refused=static_refused))
@@ -1020,7 +938,7 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
         issues.extend(_tensor_issues(vctx, physics_spec, settings_values, path))
         element_name = 'trilinear'
     issues.extend(material_issues(vctx, physics_spec, path, SOLID_3D_TYPE_NAME, element_name, tensor=tetrahedra))
-    issues.extend(modal_study_issues(vctx, physics_spec, path, _MODAL_STUDIES, THERMAL_STRAIN_COUPLING,
+    issues.extend(modal_study_issues(vctx, physics_spec, path, MODAL_STUDIES, THERMAL_STRAIN_COUPLING,
                                      tensor=tetrahedra,
                                      stress_stiffening=bool(settings_values.get('stress_stiffening')
                                                             or (tetrahedra
@@ -1049,7 +967,7 @@ def _create_solid_3d(ctx, physics_spec, values):
                                           bloch_k=tuple(values[f'bloch_k{axis}'] for axis in _AXES),
                                           pml_faces=_pml_faces(values), pml_reflection=values['pml_reflection'],
                                           stress_stiffening=values['stress_stiffening'],
-                                          free_body=_free_body_allowed(solid_study(ctx.spec, physics_spec.name),
+                                          free_body=free_body_allowed(solid_study(ctx.spec, physics_spec.name),
                                                                        values),
                                           geometric_nonlinearity=values['geometric_nonlinearity'],
                                           load_steps=values['load_steps'],
@@ -1247,13 +1165,13 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     complex_scales = dict(scales, factor_scale=_COMPLEX_LU_FLOPS * scales['factor_scale'],
                           solve_scale=_COMPLEX_SOLVE_BYTES * scales['solve_scale'])
     nonlinear = bool(settings_values.get('geometric_nonlinearity'))
-    if nonlinear and context.study.type in (*_MODAL_STUDIES, FREQUENCY_RESPONSE_STUDY):
+    if nonlinear and context.study.type in (*MODAL_STUDIES, FREQUENCY_RESPONSE_STUDY):
         # the nonlinear static state of the pencils (once, in place of the linear one), then the study's linear recipe
         linear = _tetrahedra_time_estimate(dict(settings_values, geometric_nonlinearity=False,
                                                 stress_stiffening=False), mesh, context)
         return te.combine((linear, _newton_time(settings_values, mesh, context, unknowns, scales, 1.0, 'exact',
                                                 False)))
-    if context.study.type in _MODAL_STUDIES:
+    if context.study.type in MODAL_STUDIES:
         eigenpairs = (int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
                       + _estimated_rigid_motions(settings_values, context))
         loaded = _resistive_load(settings_values, context.physics_spec)
@@ -1405,7 +1323,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     added = sum(1 for name in PIEZO_DEFAULTS_3D if not context.material_sets(name)) if piezoelectric else 0
     if added:
         device_items.append((f'piezoelectric material arrays ({added} x float32)', added * FLOAT32_BYTES * elements))
-    eigenfrequency = context.spec.study.type in _MODAL_STUDIES
+    eigenfrequency = context.spec.study.type in MODAL_STUDIES
     factored = _tetrahedra_unknowns(settings_values, mesh, spec)
     run_items = [('output copies', 2 * FLOAT32_BYTES * elements)]
     frequency_response = context.spec.study.type == FREQUENCY_RESPONSE_STUDY
@@ -1600,9 +1518,8 @@ def _eigen_host_items(context, dofs, rigid_motions=0, pml=False, basis_on_device
     (eigsh ncv; basis_on_device: the device Krylov-Schur holds the basis, the eigenvectors stay), ARPACK work vectors,
     the free-dof index copy and the kept mode shapes (float64 over every dof); rigid_motions asked on top (pml: the
     shell doubles the asked eigenvalues, ModalPencil._n_wanted)."""
-    n_resonances = modal_resonance_count(context)
-    n_wanted = max(min(n_resonances * (2 if pml else 1) + EXTRA_EIGENVALUES + int(rigid_motions), dofs - 1), 1)
-    n_basis = arnoldi_basis_size(n_wanted, dofs, eigen_subspace_size(context.solvers))
+    from .definition import eigen_basis_counts   # definition imports us
+    n_wanted, n_basis = eigen_basis_counts(context, dofs, rigid_motions, pml)
     n_resonances = modal_kept_count(context)   # several targets / a band keep more mode shapes
     basis = ((f'eigenvectors ({n_wanted} vectors; the basis is on the device)', n_wanted * FLOAT64_BYTES * dofs)
              if basis_on_device else
@@ -1832,7 +1749,7 @@ _FEATURES = (
                             'eight corners of each selected cell (a tetrahedron mesh: int f N dV with f per element at '
                             'its centroid); void cells (youngs_modulus 0) drop it. Several body forces add; the coupled '
                             'slots body_force_x / _y / _z are separate.',
-                apply=_apply_body_force, grids=_GRIDS),
+                apply=partial(apply_body_force, names=_BODY_FORCES), grids=_GRIDS),
     FeatureType('temperature_change', 'Temperature change', 'domain_condition', 'domain',
                 params=(Param('delta_T', 'float', 10.0, label='Temperature change', unit='K', field_dependent=True,
                               help='Temperature above the stress-free state on the selected cells (added to '
@@ -1843,7 +1760,7 @@ _FEATURES = (
                 description='Applied temperature change [K] for thermal strain, without a heat physics: added to '
                             'temperature_rise_ext, which adds to the coupled temperature_rise of '
                             f'{THERMAL_STRAIN_COUPLING}.',
-                apply=_apply_temperature_change, grids=_GRIDS),
+                apply=apply_temperature_change, grids=_GRIDS),
     FeatureType('solid_probe', 'Solid probe', 'probe', 'point',
                 params=(Param('component', 'choice', 'u_abs', label='Quantity',
                               choices=_PROBE_FIELDS,
@@ -1869,7 +1786,7 @@ _FEATURES = (
                 description='Electrode on outer faces and on domain objects (their interface faces, outer boundary '
                             'faces of the object included): every node of the faces, edges and corners included, one '
                             f'equipotential. {_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
-                apply=_apply_electrode, result=_electrode_result, grids=(_TETRAHEDRA,)),
+                apply=_apply_electrode, result=partial(electrode_result, charge_unit='C'), grids=(_TETRAHEDRA,)),
     FeatureType('electrode_domain', 'Electrode (domain)', 'domain_condition', 'domain', params=_ELECTRODE_PARAMS,
                 result_kind='table',
                 summary='Makes the selected domains (for example a drawn metal film) one electrode of a piezoelectric '
@@ -1877,7 +1794,7 @@ _FEATURES = (
                 description='Electrode on every node of the selected elements (a meshed metal electrode: give it its '
                             'own stiffness and density for mass loading, or none). '
                             f'{_ELECTRODE_TEXT} {_ELECTRODE_RESULT_TEXT}',
-                apply=_apply_electrode_domain, result=_electrode_result, grids=(_TETRAHEDRA,)),
+                apply=_apply_electrode_domain, result=partial(electrode_result, charge_unit='C'), grids=(_TETRAHEDRA,)),
     replace(ADMITTANCE_FEATURE, grids=(_TETRAHEDRA,)),
     replace(OPTOMECHANICAL_COUPLING_FEATURE, grids=(_TETRAHEDRA,)),   # em_fdfd_bor optics (optomechanics_fem)
 )
@@ -2015,7 +1932,7 @@ SOLID_MECHANICS_3D = PhysicsType(
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
     # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy)
     solver_roles={'linear': CG_ELASTIC_3D_LINEAR_ROLE,
-                  'eigen': eigen_role(_MODAL_STUDIES, mixed_factorization=True,
+                  'eigen': eigen_role(MODAL_STUDIES, mixed_factorization=True,
                                       auto_factorizations={'tetrahedra': 'cudss_mixed'})},
     frequency_sweep_methods=('direct', 'adaptive', 'modal'),   # tetrahedra: frequency_response.HarmonicSystem
     backends=('gpu', 'cpu'),   # cpu: numpy twins of the kernels3d RawKernels (Gauss points), numba product
