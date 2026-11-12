@@ -2,9 +2,9 @@
 choice open_sol offers on the cpu (and with --backends, the gpu) backend, on representative problems assembled by
 open_sol's own code and, with --models, on whole model files run by api.run; one child process per case; JSON records
 + markdown tables. Run from the repository root:
-python -m dev_tools.time_profilers.solver_profiler [--quick] [--problems ...] [--backends cpu gpu] [--models FILE ...]."""
+python -m tools_profilers.time_profilers.solver_profiler [--quick] [--problems ...] [--backends cpu gpu] [--models FILE ...]."""
 # The parent enumerates (solver_catalog: registry + solver_misfit per backend), never factorises and never makes a
-# CUDA context; each case runs in a fresh `python -m dev_tools.time_profilers.case_runner` (clean peak RSS, a hard
+# CUDA context; each case runs in a fresh `python -m tools_profilers.time_profilers.case_runner` (clean peak RSS, a hard
 # per-case timeout, a crash or the OOM killer costs one case), with OMP_NUM_THREADS / MKL_NUM_THREADS /
 # OPENBLAS_NUM_THREADS set from --threads before the child starts (thread pools read them at library load). The
 # baseline (host SuperLU on the cpu backend, else the cpu Automatic) of every problem always runs: the speed-ups and
@@ -21,15 +21,15 @@ import sys
 import time
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if REPO_ROOT not in sys.path:   # run as a script (python dev_tools/time_profilers/solver_profiler.py)
+if REPO_ROOT not in sys.path:   # run as a script (python tools_profilers/time_profilers/solver_profiler.py)
     sys.path.insert(0, REPO_ROOT)
 
-from dev_tools.time_profilers import report   # noqa: E402
-from dev_tools.time_profilers.case_runner import PARTIAL_MARKER, RESULT_MARKER, THREAD_VARIABLES   # noqa: E402
-from dev_tools.time_profilers.problems import PROBLEMS   # noqa: E402
-from dev_tools.time_profilers.solver_catalog import BACKENDS, solver_candidates   # noqa: E402
+from tools_profilers.time_profilers import report   # noqa: E402
+from tools_profilers.time_profilers.case_runner import PARTIAL_MARKER, RESULT_MARKER, THREAD_VARIABLES   # noqa: E402
+from tools_profilers.time_profilers.problems import PROBLEMS   # noqa: E402
+from tools_profilers.time_profilers.solver_catalog import BACKENDS, solver_candidates   # noqa: E402
 
-CHILD_MODULE = 'dev_tools.time_profilers.case_runner'
+CHILD_MODULE = 'tools_profilers.time_profilers.case_runner'
 DEFAULT_REPEAT = 3
 DEFAULT_TIMEOUT = 600.0        # seconds per case (all its repeats)
 QUICK_TIMEOUT = 120.0
@@ -39,7 +39,7 @@ STDERR_TAIL_CHARS = 2000
 
 def _parse_args(argv):
     parser = argparse.ArgumentParser(
-        prog='python -m dev_tools.time_profilers.solver_profiler',
+        prog='python -m tools_profilers.time_profilers.solver_profiler',
         description='Compare every solver open_sol offers (sparse direct SuperLU / MUMPS / PARDISO / cuDSS incl. mixed '
                     'precision, pcg, banded, line_block, shift-invert eigen factorizations) on problems assembled by '
                     'open_sol and on whole model files: wall time per phase, peak RSS, accuracy; one child process per '
@@ -126,7 +126,7 @@ def _assignments(items, parser, option) -> dict:
 
 def _model_targets(args, parser) -> dict:
     """{name: ModelTarget} of --models (every physics / role, or those named by --physics / --roles)."""
-    from dev_tools.time_profilers.model_cases import model_targets
+    from tools_profilers.time_profilers.model_cases import model_targets
     scan = None
     if args.scan:
         (name, text), = _assignments([args.scan], parser, '--scan').items()
@@ -329,7 +329,7 @@ def main(argv=None) -> int:
     os.makedirs(out_dir, exist_ok=True)
     json_path = os.path.join(out_dir, f'solver_profile_{stamp}.json')
     markdown_path = os.path.join(out_dir, f'solver_profile_{stamp}.md')
-    document = {'tool': 'dev_tools.time_profilers.solver_profiler', 'created': datetime.datetime.now().isoformat(),
+    document = {'tool': 'tools_profilers.time_profilers.solver_profiler', 'created': datetime.datetime.now().isoformat(),
                 'machine': machine,
                 'settings': {'problems': names, 'models': args.models, 'physics': args.physics, 'roles': args.roles,
                              'scan': args.scan, 'set': args.set, 'backends': args.backends, 'sizes': sizes,

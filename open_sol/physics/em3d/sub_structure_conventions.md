@@ -97,7 +97,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   float32 (cpu refuses half_storage). Numba twins for update_h / update_e / cpml_h / cpml_e / ohmic_loss (CPU case
   em3d_kernels_numba): the no-smoothing face id placeholder is (1, 1, 1) (numba types fid[i, j, k] even with use_face
   0); they compile with `cache=True` (an uncached first cpu run compiles inside its study: 17x step-time miss; a
-  "Cannot cache" NumbaWarning = a closure value stopped pickling). The numpy twins cache per-step coefficients in
+  "Cannot cache" NumbaWarning = a closure value stopped pickling). The face helper and the cpml_e cb helper are the
+  module globals `_numba_face_scalar` / `_numba_cpml_component_cb`, never closure cells: as cells, their
+  per-process dispatcher uuids missed the cache in every process. The numpy twins cache per-step coefficients in
   `kernels3d._host_cached`, keyed by input array identity (weak refs; ~32 B/cell host, not estimated): valid only
   because material_id / tables / face_id change solely in `rebuild_materials`, which writes new table arrays, so a new
   writer must also replace the tables. A new kernel gets its numpy twin in the same edit; a new allocation takes
@@ -188,7 +190,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   host, no ND ordering (`elimination_order` None for every `LDLT_FACTORIZATIONS` entry: the libraries order
   themselves), but SuperLU's `vector_3d_size_issue` still applies (uncalibrated for them) plus the library's own
   memory check; a mixed one takes the polished path of `solve_resonances` (host solves with MIXED_EIGS_REFINEMENTS)
-  and the time estimate's MIXED_APPLICATIONS_PER_BASIS (measured on cudss_mixed only). Host factor items:
+  and the time estimate's MIXED_APPLICATIONS_PER_BASIS (measured on cudss_mixed only); with cpml a double LDL^T
+  (cudss / mumps / pardiso) is polished too (ARPACK 1e-6 instead of ARPACK_TOLERANCE_FLOOR, no refinement steps) and
+  takes the same estimate branch. Host factor items:
   `memory_estimates.host_factor_items` on the SuperLU heuristic (tensor and tetrahedra, counted fill included).
 - Subpixel: every assembly adds `fdfd3d.smoothing_deltas` (background eps only; none at PEC) to the face eps; FDFD
   reads MaterialGrid values, FDTD its index tables: they agree unless the FDTD re-quantises. The subpixel memory
@@ -324,8 +328,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   the aux line takes the box cells' widths plus uniform margins (`_aux_line_terms(..., index)`).
 - Mode ports (`ModeSource3D`, `ModeMonitor3D`): port frame (u, v, d) cyclic = (x, y, z), `_plane` transposes for d = 1.
   One cell layer's materials from the tables (PEC = table_eps_z < 0; PEC cells keep MaterialGrid values for the face
-  means), `_PortBoundary`, solved at the numerical frequency (beta_d = (2/D) arcsin(K D/2)). Source corrections via
-  em/mode_ports `_port_correction` with live cb / db planes; amplitude sqrt(P / (cos(omega dt/2) cos(beta_d D/2))) so a
+  means), `_PortBoundary`, solved at the numerical frequency (beta_d = (2/D) arcsin(K D/2)). Source corrections: one
+  `mode_port_pair_3d` launch per kind (both components share a layer), args cached per field set and dropped at every
+  calibrate, so the coefficient / incident planes stay contiguous (u, v) arrays and fields are rewritten in place; amplitude sqrt(P / (cos(omega dt/2) cos(beta_d D/2))) so a
   flux plane reads P at f0. Modes solved until the first step only; within one `_refresh_materials` round ports on
   layers with equal materials (digest of the CrossSectionMaterials arrays), the same normal axis, omega (12 digits) and
   mode count share one solve (`physics.port_mode_solves`): the solve objects are shared, never mutate them. Monitor = `PlaneFlux3D` + per-frequency

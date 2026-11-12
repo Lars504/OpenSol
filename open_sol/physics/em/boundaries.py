@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 from ...core.backend import array_module_of, array_module_or_default, cp
-from ...core.kernels import twin
+from ...core.kernels import real_raw_twin, twin
 from dataclasses import dataclass
 from enum import Enum
 
@@ -87,6 +87,87 @@ def _set_outer_rows(field, config, bc_types, sign, xp):
                 field[outer] = field[inner]
             else:
                 xp.negative(field[inner], out=field[outer])
+
+
+# ---- fused outer-face rows (one launch per call, no temporaries: capturable in the FDTD step graphs) ------------
+# Centre rows: the outermost centre row of every pinned face = sign x its inner neighbour (sign 0 writes 0). A corner
+# of two pinned faces = s_x s_y x the inner corner cell, which the sequential row copies of _set_outer_rows give in
+# every order; the x-face threads own the corners, so every thread reads only cells no thread writes (needs >= 3
+# cells along each pinned axis: BoundaryManager.fused_walls). Thread k < ny: x faces at column k; k - ny < nx: y faces
+# at row k - ny. Plane rows: zero the inner face of the outermost cell (rows 0 / n-2) of the x-face array on pinned x
+# faces and of the y-face array on pinned y faces.
+_WALL_THREADS = 256
+
+_CENTRE_ROWS_SOURCE = r'''
+__device__ __forceinline__ real_t pinned_value(real_t factor, real_t inner) {
+    return factor == (real_t)0 ? (real_t)0 : factor * inner;
+}
+
+extern "C" __global__ void wall_centre_rows(real_t* field, const int nx, const int ny,
+        const real_t s_xlo, const real_t s_xhi, const real_t s_ylo, const real_t s_yhi,
+        const int pin_xlo, const int pin_xhi, const int pin_ylo, const int pin_yhi) {
+    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < ny) {
+        int j = k, inner_j = k;
+        real_t y_factor = (real_t)1;
+        if (j == 0 && pin_ylo) { inner_j = 1; y_factor = s_ylo; }
+        else if (j == ny - 1 && pin_yhi) { inner_j = ny - 2; y_factor = s_yhi; }
+        if (pin_xlo) field[j] = pinned_value(s_xlo * y_factor, field[ny + inner_j]);
+        if (pin_xhi) field[(long long)(nx - 1) * ny + j] =
+            pinned_value(s_xhi * y_factor, field[(long long)(nx - 2) * ny + inner_j]);
+    } else if (k < ny + nx) {
+        const int i = k - ny;
+        if ((i == 0 && pin_xlo) || (i == nx - 1 && pin_xhi)) return;   // corners: the x-face threads
+        const long long row = (long long)i * ny;
+        if (pin_ylo) field[row] = pinned_value(s_ylo, field[row + 1]);
+        if (pin_yhi) field[row + ny - 1] = pinned_value(s_yhi, field[row + ny - 2]);
+    }
+}
+'''
+
+_PLANE_ROWS_SOURCE = r'''
+extern "C" __global__ void wall_plane_rows(real_t* x_face_field, real_t* y_face_field, const int nx, const int ny,
+        const int zero_xlo, const int zero_xhi, const int zero_ylo, const int zero_yhi) {
+    const int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k < ny) {
+        if (zero_xlo) x_face_field[k] = (real_t)0;
+        if (zero_xhi) x_face_field[(long long)(nx - 2) * ny + k] = (real_t)0;
+    } else if (k < ny + nx) {
+        const long long row = (long long)(k - ny) * ny;
+        if (zero_ylo) y_face_field[row] = (real_t)0;
+        if (zero_yhi) y_face_field[row + ny - 2] = (real_t)0;
+    }
+}
+'''
+
+
+def _centre_rows_host(field, nx, ny, s_xlo, s_xhi, s_ylo, s_yhi, pin_xlo, pin_xhi, pin_ylo, pin_yhi):
+    """numpy twin of wall_centre_rows: x faces first, then y faces (the corner rule of the kernel)."""
+    for pinned, outer, inner, sign in ((pin_xlo, np.s_[0, :], np.s_[1, :], s_xlo),
+                                       (pin_xhi, np.s_[-1, :], np.s_[-2, :], s_xhi),
+                                       (pin_ylo, np.s_[:, 0], np.s_[:, 1], s_ylo),
+                                       (pin_yhi, np.s_[:, -1], np.s_[:, -2], s_yhi)):
+        if pinned:
+            if sign == 0:
+                field[outer] = 0
+            else:
+                np.multiply(field[inner], sign, out=field[outer])
+
+
+def _plane_rows_host(x_face_field, y_face_field, nx, ny, zero_xlo, zero_xhi, zero_ylo, zero_yhi):
+    """numpy twin of wall_plane_rows."""
+    if zero_xlo:
+        x_face_field[0, :] = 0
+    if zero_xhi:
+        x_face_field[-2, :] = 0
+    if zero_ylo:
+        y_face_field[:, 0] = 0
+    if zero_yhi:
+        y_face_field[:, -2] = 0
+
+
+_wall_centre_rows = real_raw_twin('em2d.wall_centre_rows', _CENTRE_ROWS_SOURCE, 'wall_centre_rows', _centre_rows_host)
+_wall_plane_rows = real_raw_twin('em2d.wall_plane_rows', _PLANE_ROWS_SOURCE, 'wall_plane_rows', _plane_rows_host)
 
 
 def _face_property(face):
@@ -309,6 +390,38 @@ class BoundaryManager:
         if config.needs_cpml:
             self._cpml = CPMLSided(nx, ny, config, dx, dt, dx_arr=dx_arr, dy_arr=dy_arr, polarization=polarization,
                                    xp=self.xp, dtype=self.dtype)
+        self._build_wall_plan(nx, ny)
+
+    def _build_wall_plan(self, nx, ny):
+        """Launch scalars of the fused outer-face rows (the face types are read once: fixed for the manager's life):
+        centre rows = WALL_SIGNS of the polarisation, plane rows = ez pmc / hz pec and antisymmetric faces."""
+        real, int32 = self.dtype.type, np.int32
+        face_types = [getattr(self.config, face) for face in FACES]
+        centre_signs = WALL_SIGNS[self.polarization]
+        plane_types = {BCType.PMC} if self.polarization == 'ez' else _HZ_PEC_PLANE_TYPES
+        centre_pins = [face_type in centre_signs for face_type in face_types]
+        plane_pins = [face_type in plane_types for face_type in face_types]
+        # the kernels read the inner neighbour of a pinned row: >= 3 cells along every pinned axis, else the row copies
+        self.fused_walls = all(n_cells >= 3 for n_cells, pins in ((nx, centre_pins[:2] + plane_pins[:2]),
+                                                                  (ny, centre_pins[2:] + plane_pins[2:])) if any(pins))
+        self._has_centre_rows, self._has_plane_rows = any(centre_pins), any(plane_pins)
+        self._wall_launch = ((-(-(nx + ny) // _WALL_THREADS),), (_WALL_THREADS,))
+        self._centre_scalars = (int32(nx), int32(ny),
+                                *(real(centre_signs.get(face_type, 0.0)) for face_type in face_types),
+                                *(int32(pinned) for pinned in centre_pins))
+        self._plane_scalars = (int32(nx), int32(ny), *(int32(pinned) for pinned in plane_pins))
+
+    def _centre_rows(self, field):
+        """Outer-face centre rows of `field` in one launch (nothing when no face pins them)."""
+        if self._has_centre_rows:
+            grid, block = self._wall_launch
+            _wall_centre_rows(grid, block, (field, *self._centre_scalars))
+
+    def _plane_rows(self, x_face_field, y_face_field):
+        """Zero the plane rows (x faces of x_face_field, y faces of y_face_field) in one launch (nothing when none)."""
+        if self._has_plane_rows:
+            grid, block = self._wall_launch
+            _wall_plane_rows(grid, block, (x_face_field, y_face_field, *self._plane_scalars))
 
     @property
     def cpml(self):
@@ -325,7 +438,8 @@ class BoundaryManager:
     # Engine order per step: H kernel, apply_h_post, E kernel, apply_e_post; each post runs the fused CPML psi update
     # + correction first (from the other field, untouched by the kernel), then the outer-face rows (apply_h_walls /
     # apply_ez_walls), which the engine applies again after injecting its sources. The FDTD engines call the two
-    # halves apart (CPML inside their step graphs, the rows eager: fdtd_2d_base STEP_GRAPHS).
+    # halves apart (CPML and the fused rows inside their step graphs, the re-pins eager: fdtd_2d_base STEP_GRAPHS).
+    # Every apply_*_walls is one fused launch (wall_centre_rows / wall_plane_rows) when fused_walls, else row copies.
     # Mirrors (inner face of the outermost cell = the window edge, the outermost cell being the padded ghost; E parity
     # as in the H_z block below): symmetric ez[0] = ez[1] (the pmc copy, so the Yee update of the tangential H on the
     # plane vanishes), antisymmetric ez[0] = -ez[1] (E = 0 on the plane; the H face there keeps its Yee update, which
@@ -341,6 +455,9 @@ class BoundaryManager:
     def apply_h_walls(self, hx, hy):
         """Tangential H = 0 on the pmc planes (H_y on x faces, H_x on y faces): the inner face of the outermost cell
         (face 0 / n-2, as apply_exy_walls), where apply_ez_walls copies the E_z row."""
+        if self.fused_walls:
+            self._plane_rows(hy, hx)
+            return
         for face in FACES:
             if getattr(self.config, face) == BCType.PMC:
                 (hy if face[0] == 'x' else hx)[_PLANE_FACE_ROWS[face]] = 0
@@ -356,7 +473,10 @@ class BoundaryManager:
         """Outer-face E_z rows: pec (E_z = 0), pmc and symmetric (E_z even: the neighbour's row copied), antisymmetric
         (E_z odd: copied negated); the H face on each plane keeps its Yee update, which vanishes for an even row."""
         # A corner cell takes both of its faces' copies; each overwrites the whole row / column from the already pinned
-        # neighbour, so the order does not matter.
+        # neighbour, so the order does not matter (the fused kernel writes that result directly).
+        if self.fused_walls:
+            self._centre_rows(ez)
+            return
         _set_outer_rows(ez, self.config, (BCType.PEC,), 0, self.xp)
         _set_outer_rows(ez, self.config, _EZ_EVEN_PLANE_TYPES, 1, self.xp)
         _set_outer_rows(ez, self.config, (BCType.ANTISYMMETRIC,), -1, self.xp)
@@ -382,6 +502,9 @@ class BoundaryManager:
 
     def apply_hz_walls(self, hz):
         """Outer-face H_z rows: pec / antisymmetric (H_z even), pmc (H_z = 0) and symmetric (H_z odd) faces."""
+        if self.fused_walls:
+            self._centre_rows(hz)
+            return
         _set_outer_rows(hz, self.config, _HZ_PEC_PLANE_TYPES, 1, self.xp)
         _set_outer_rows(hz, self.config, (BCType.PMC,), 0, self.xp)
         _set_outer_rows(hz, self.config, (BCType.SYMMETRIC,), -1, self.xp)
@@ -395,6 +518,9 @@ class BoundaryManager:
 
     def apply_exy_walls(self, ex, ey):
         """Tangential E = 0 on the pec / antisymmetric faces (E_y on x faces, E_x on y faces)."""
+        if self.fused_walls:
+            self._plane_rows(ey, ex)
+            return
         for face in FACES:
             if getattr(self.config, face) in _HZ_PEC_PLANE_TYPES:
                 (ey if face[0] == 'x' else ex)[_PLANE_FACE_ROWS[face]] = 0

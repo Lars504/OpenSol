@@ -7,8 +7,8 @@ import platform
 import statistics
 import sys
 
-from dev_tools.time_profilers.case_runner import RSS_BOUND, RSS_PROCESS, RSS_RAISED, RSS_RESET
-from dev_tools.time_profilers.runners import ACCURACY_MARGIN
+from tools_profilers.time_profilers.case_runner import RSS_BOUND, RSS_PROCESS, RSS_RAISED, RSS_RESET
+from tools_profilers.time_profilers.runners import ACCURACY_MARGIN
 
 # optional packages whose versions go into the machine record (besides time_profile.library_versions)
 OPTIONAL_DISTRIBUTIONS = ('python-mumps', 'pydiso', 'mkl', 'threadpoolctl', 'numba', 'cupy', 'cupy-cuda12x',

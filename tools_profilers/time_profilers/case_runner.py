@@ -1,7 +1,7 @@
 """Child process of the solver profiler: reads one case (problem, size, solver type and values, backend, repeats; or
 a whole model, model_cases) as JSON on stdin, assembles the problem, runs a cold repeat and the warm repeats
 (runners / model_cases) and prints one partial line per step (PARTIAL_MARKER) and one result line (RESULT_MARKER +
-JSON) on stdout. Run by solver_profiler as `python -m dev_tools.time_profilers.case_runner` from the repository root."""
+JSON) on stdout. Run by solver_profiler as `python -m tools_profilers.time_profilers.case_runner` from the repository root."""
 # Peak RSS of the solver phase: on Linux the kernel's high-water mark VmHWM is reset after the assembly (writing 5 to
 # /proc/self/clear_refs), so peak - baseline is exact. Elsewhere the peak cannot be reset (Windows: working set /
 # peak working set of psapi GetProcessMemoryInfo): when the solver phase raised the process peak above the assembly's,
@@ -186,7 +186,7 @@ def _timed_repeat(repeat_function, cold) -> dict:
 
 def _prepare_problem(case):
     """(assembly fields, repeat()) of a synthetic case: the problem assembled on the host and moved to the backend."""
-    from dev_tools.time_profilers import problems, runners
+    from tools_profilers.time_profilers import problems, runners
     started = time.perf_counter()
     problem = problems.build(case['problem'], case['size'])
     assembled = time.perf_counter()
@@ -201,7 +201,7 @@ def run_case(case) -> dict:
     """Result record of one case dict {'problem', 'size', 'solver_type', 'values', 'backend', 'repeat', 'warmup'}
     (kind 'model': model_cases.prepare's keys): a cold repeat first (warmup), then at least `repeat` warm ones, more
     while their summed wall time is below MIN_WARM_SECONDS."""
-    from dev_tools.time_profilers import model_cases
+    from tools_profilers.time_profilers import model_cases
     result = {'threads_env': {name: os.environ.get(name) for name in THREAD_VARIABLES}, 'cpu_count': os.cpu_count(),
               'backend': case.get('backend', 'cpu'), 'repeats': []}
     try:

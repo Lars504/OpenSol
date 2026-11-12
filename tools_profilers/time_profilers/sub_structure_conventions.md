@@ -1,14 +1,14 @@
-# dev_tools/time_profilers — conventions & gotchas
+# tools_profilers/time_profilers — conventions & gotchas
 
 Usage and what is measured: `README.md` here. Root rules: structure_conventions.md.
 
 ## Layout and imports
 - `solver_profiler.py` (CLI, parent; cpu and gpu backends, synthetic problems and whole models) -> `solver_catalog.py` (enumeration per
   backend), `report.py` (machine record, summaries, markdown), `model_cases.py` (model targets); each case runs
-  `python -m dev_tools.time_profilers.case_runner` (child: `problems.py` assembly + `runners.py` per SolverType, or
+  `python -m tools_profilers.time_profilers.case_runner` (child: `problems.py` assembly + `runners.py` per SolverType, or
   `model_cases.prepare` / `run_model` for a whole api.run). The parent never factorises and never makes a CUDA context
   (its GPU check is a device count; the device name comes from the children).
-- dev_tools imports open_sol, never the reverse; open_sol's import_contracts, structure_index and selftest cache scan
+- tools_profilers imports open_sol, never the reverse; open_sol's import_contracts, structure_index and selftest cache scan
   only `open_sol/`, and `pyproject.toml` ships only `open_sol*`, so nothing here is checked or pip-installed (the repository is public: a clone has it). open_sol is
   imported inside functions (problems / runners / catalog), so the parent stays light until it enumerates.
 - Run from the repository root: the child is started with cwd = the repository root (`REPO_ROOT`) so `-m` finds both
@@ -82,7 +82,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   spec's nodes and a runtime cuDSS fallback. A back end name that is not a SOLVERS key (or a renamed
   `back_end` / `factorization` / `preconditioner` param) silently drops the rings. A changed `runs.json` key (`wall_seconds`, `gpu_peak_bytes`,
   `host_peak_bytes`) silently empties that panel; the log line of an auto command names the solvers its runs used
-  (`used_solvers`: `solvers[]` back_end, else preconditioner, else type), and falls back to 'auto' without them. On the cpu backend summary.json `build.gpu_peak_bytes` is the
+  (`used_solvers`: `solvers[]` back_end, else preconditioner, else type), and falls back to 'auto' without them; its
+  bracketed time is the `command_seconds` of the variant's current point before the run replaces it (the whole command,
+  not the plotted `run_seconds`). On the cpu backend summary.json `build.gpu_peak_bytes` is the
   MemoryLedger's tracemalloc peak (host bytes), so `_run_memory` writes null there instead of reading it, and the plot skips `@cpu` variants in the GPU panel
   (old points included). The points are keyed by '<solver> @<backend>', then the COMMANDS
   entry: renaming an entry starts a new series and leaves the old one plotted at the end of the axis. A command's
@@ -98,10 +100,20 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
   `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
   nodes (cuDSS, device line_block) fail at build and those runs are not counted.
+- Time limit: `run_all_profilers` passes `--timeout` to the harness as `--time-limit` (seconds since the harness's
+  `PROCESS_START`) and kills only `REPORT_GRACE` s later. `profile_runs` arms a `_TimeLimit` timer
+  (`_thread.interrupt_main`) and catches the KeyboardInterrupt (also Ctrl+C) per run, so the timed parts unwind
+  through `_call`'s finally and count up to the interrupt; it then writes the report with a first line starting with
+  `PARTIAL_REPORT_MARKER`, which run_all reads (`PARTIAL_REPORT`: keep the two texts the same) to log the command as
+  timed out with its report kept. The limit is armed in profile_runs only: spec loading and `--compare` validation
+  before it are covered by the kill alone. api.run turns the interrupt into a 'cancelled' summary; the harness
+  overwrites the status as 'timed_out' when the limit fired.
 - `LIBRARY_CLOCKS` reads a seconds attribute the instance sets inside the wrapped call (cuDSS `factorize_seconds`).
   It counts only a new value, so keep that attribute assigned fresh on every call.
 - `--compare` adds a solver node per (physics, role) to a deep copy of the spec, never editing the spec's nodes. Values
-  stay strings, so it suits choice settings (`back_end`, `precision`). `SETTING_ALIASES` pairs `back_end` with the
+  stay strings, so it suits choice settings (`back_end`, `precision`). A node whose type lacks the setting (an
+  example's exact pcg node under `back_end`) is replaced by the role's Automatic type and settings on that backend /
+  grid / study when that type has it (2D tensor diffusion on the cpu: sparse_direct); else the role is skipped. `SETTING_ALIASES` pairs `back_end` with the
   shift-invert `factorization`; a value outside the role's `setting_choices` is skipped, never an invalid node, and so
   is an opt-in value (cuDSS, MUMPS / PARDISO: `SolverType.opt_in_settings`) the role does not list (em_modes / em_fdfd_bor
   'shifted' does real work only as line_block); a compared node an error of the variant's validation names (a physics

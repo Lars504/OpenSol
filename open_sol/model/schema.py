@@ -1087,11 +1087,14 @@ def with_default_precision(spec, solver_type, settings, solver_role=None) -> dic
 
 def with_node_precision(spec, solver_type, settings, solver_role, backend, grid, study=None) -> dict:
     """with_default_precision of a node's settings; when that sets no precision and the node's type is the role's
-    Automatic type on backend / grid (in the study), the Automatic precision (solid_mechanics_3d gpu tensor: mixed)."""
+    Automatic type on backend / grid (in the study; a study default of another type: without it), the Automatic
+    precision (solid_mechanics_3d gpu tensor: mixed; a 2D solid's pcg node in a stationary study too)."""
     filled = with_default_precision(spec, solver_type, settings, solver_role)
     if 'precision' in filled:
         return filled
     automatic_type, automatic_settings = solver_role.automatic(backend, grid, study)
+    if automatic_type != solver_type.name and study is not None:
+        automatic_type, automatic_settings = solver_role.automatic(backend, grid)
     if automatic_type != solver_type.name or 'precision' not in automatic_settings:
         return filled
     return {**filled, 'precision': automatic_settings['precision']}

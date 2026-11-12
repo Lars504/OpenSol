@@ -355,7 +355,9 @@ templates, describe. Current state, no changelog.
   meshes) around a sweep and parity sectors; `run_estimation` around its evaluations. Off elsewhere (single api / CLI
   runs, between selftest cases: a mesh made by another case would hide the mesher from the selftest cache's tracer).
   `run_study` likewise wraps every study in `cudss_factor.cudss_orderings_kept()`, the worker sets
-  `remember_cudss_orderings` for its lifetime (solvers sub file "Ordering reuse"). `time_estimate.mesh_build_items`
+  `remember_cudss_orderings` for its lifetime (solvers sub file "Ordering reuse"), and in
+  `host_direct.host_analyses_kept()` (MUMPS / PARDISO factors of released sessions parked for the study only, never
+  for the worker's lifetime: solvers sub file "Kept analyses"). `time_estimate.mesh_build_items`
   follows the same key (`kept_element_mesh_keys()`). `mesh_transfer.make_transfer` with a triangle mesh on either side
   returns a `TriangleTransfer` (per source space: per-element / full-mesh P1 / P2 by array length, or `apply(...,
   dofs=)`; triangle targets per element; 2D Cartesian tensor partner only); `meshing._TRIANGLE_TRANSFER_ENTRIES` (6
@@ -569,7 +571,13 @@ templates, describe. Current state, no changelog.
   stored n^2: the 2D sets store the hz component's); run boundaries sample cell-centre columns at Z_SAMPLES heights per
   half cell (E_z faces z-normal; faces kept with fill 0 / 1 when every sample shows one material, since a dropped face
   takes the arithmetic two-cell mean; per location the highest `_SCORES` candidate wins). Walls are vertical within a
-  run: tapers / spheres smoothed per layer, staircased along z (documented limit). The build is backend-neutral (2D:
+  run: tapers / spheres smoothed per layer, staircased along z (documented limit). All runs go through one
+  `build_section_geometries` call: per raster and kind, the mixed locations of every section (run) and strip share
+  gather batches (`_Batch`: windows copied from the strip image, coarse 4 x 4 neighbourhood, run index carried; a
+  multi-section batch is capped by `_batch_locations` so its windows + chunk temporaries stay within one strip's
+  painting bytes, a single section keeps LOCATION_CHUNK); per-location arithmetic is the old one, the merge keys on
+  section x plane + location. Run-boundary z sampling paints only the box of columns whose two runs differ (the faces
+  read nothing else). The build is backend-neutral (2D:
   `array_module_of` the coarse index; 3D: `domain.xp`; host index work by `to_host`): a new array op there must exist
   in numpy and cupy alike (no `cp.` names, no cupy-only kernels).
 - Static materials: later materials win whole cells, but a selection containing 'all' only fills uncovered cells

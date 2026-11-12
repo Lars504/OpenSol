@@ -3,8 +3,11 @@ the gpu, the others per --backend; a failing one is logged, the rest continue) -
 kept in out/history/<timestamp>/ (with the points file as it was before the run). Each finished command updates its
 point in out/profile_points.json and the plot out/profile_points.png (run wall, GPU peak and RAM peak per command; one
 line per solver and backend for the first complete profile, the previous and the current one; a ring on the solver
-Automatic picks on the gpu, worked out by the harness from each case's roles whichever solver was run).
-A command is killed after --timeout s (default 60); one that was profiling is plotted at the '>timeout' tick.
+Automatic picks on the gpu, worked out by the harness from each case's roles whichever solver was run). A log line
+gives the command wall and, in brackets, that of the command's previous recorded point: '15.2 s (14.9 s)'.
+A command stops after --timeout s (default 60; the harness's --time-limit: the report of what was timed until then is
+kept, its log line says 'partial'; killed REPORT_GRACE s later if a library call holds it); one that was profiling is
+plotted at the '>timeout' tick.
 Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...]
 [--backend gpu cpu] [--timeout S] [--new-first] [--plot-only]"""
 import argparse
@@ -24,8 +27,10 @@ POINTS_PATH = OUT / 'profile_points.json'
 PLOT_PATH = OUT / 'profile_points.png'
 SERIES = ('first', 'previous', 'current')   # first: the first complete profile (all commands, no --only)
 BACKENDS = ('gpu', 'cpu')
-DEFAULT_TIMEOUT = 60.0   # seconds per command (subprocess killed); the harness's api.run has no limit of its own
+DEFAULT_TIMEOUT = 60.0   # seconds per command: the harness's --time-limit (it stops and writes a partial report)
+REPORT_GRACE = 30.0      # seconds after the timeout before the command is killed (a long library call, the report)
 NOTHING_PROFILED = 'nothing profiled'   # the harness's --compare-only line when no run takes the solver
+PARTIAL_REPORT = 'partial report'       # the harness's PARTIAL_REPORT_MARKER line: stopped at its time limit
 NEVER_FACTORISED = 'never factorised'   # log mark of a run whose compared solver did no factorisation (not counted)
 TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
 
@@ -140,6 +145,14 @@ def timed_out_point(command_seconds, timeout):
     """Point of a command killed at the timeout: no run wall or memory, drawn at the timeout tick."""
     return {'run_seconds': None, 'timed_out': True, 'timeout_seconds': timeout, 'command_seconds': command_seconds,
             'gpu_peak_bytes': None, 'host_peak_bytes': None, 'runs': None, 'when': time.strftime('%Y-%m-%d %H:%M:%S')}
+
+
+def previous_wall_text(point, prefix='') -> str:
+    """' (14.9 s)': the command wall of the previous recorded point of a command (' (timed out)' for a stopped one),
+    '' without one."""
+    if point is None or point.get('command_seconds') is None:
+        return ''
+    return f' ({prefix}timed out)' if point.get('timed_out') else f" ({prefix}{point['command_seconds']:.1f} s)"
 
 
 def _text(output) -> str:
@@ -324,8 +337,9 @@ def main(description=None):
                         help='backends of auto / multigrid / jacobi (default gpu); the host libraries always run on '
                              'the cpu, cuDSS on the gpu')
     parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
-                        help=f'seconds per command before it is killed (default {DEFAULT_TIMEOUT:g}; 0: no limit); a '
-                             'killed command that was profiling is plotted at the timeout tick')
+                        help=f'seconds per command before it stops with a partial report (default '
+                             f'{DEFAULT_TIMEOUT:g}; 0: no limit; killed {REPORT_GRACE:g} s later); a stopped command '
+                             'that was profiling is plotted at the timeout tick')
     parser.add_argument('--new-first', action='store_true',
                         help='this complete profile replaces the first one (commands that fail keep theirs)')
     parser.add_argument('--plot-only', action='store_true', help='redraw the plot from profile_points.json, run nothing')
@@ -350,23 +364,27 @@ def main(description=None):
         for solver, backend in variants:
             label = variant_label(solver, backend)
             for entry in commands:
-                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments']]
+                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments'],
+                           *(('--time-limit', f'{options.timeout:g}') if options.timeout else ())]
                 print(f'>>> {entry} [{label}]', flush=True)
                 started = time.time()
                 start = time.perf_counter()
                 try:
                     completed = subprocess.run(command, cwd=REPOSITORY, capture_output=True, text=True,
-                                               timeout=options.timeout or None)
+                                               timeout=options.timeout + REPORT_GRACE if options.timeout else None)
                     return_code, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
                 except subprocess.TimeoutExpired as expired:   # run() has killed the command
                     return_code, stdout, stderr = None, _text(expired.stdout), _text(expired.stderr)
                 wall = time.perf_counter() - start
                 report = [line for line in stdout.splitlines() if line.startswith('report: ')]
+                partial = return_code is not None and any(line.startswith(PARTIAL_REPORT)
+                                                          for line in stdout.splitlines())
                 point, not_completed, shown = None, [], label   # shown: auto replaced by the solvers it used
-                if return_code is None:
-                    if NOTHING_PROFILED not in stdout:   # it was profiling this solver when killed
+                earlier_point = points.get(label, {}).get('current', {}).get(entry)   # read before it is replaced
+                if return_code is None or partial:
+                    if NOTHING_PROFILED not in stdout:   # it was profiling this solver when stopped
                         point = timed_out_point(wall, options.timeout)
-                elif report:
+                if return_code is not None and report:
                     report_path = Path(report[-1][len('report: '):].strip())
                     if report_path.is_file():   # the folder name holds the backend and --compare settings
                         shutil.copyfile(report_path, history_folder / f'{report_path.parent.name}.txt')
@@ -376,7 +394,7 @@ def main(description=None):
                     used = used_solvers(runs_path, started) if solver == 'auto' else None
                     if used:
                         shown = variant_label(used, backend)
-                    if return_code == 0:
+                    if return_code == 0 and not partial:
                         point, not_completed = command_point(report_path.parent / 'runs.json', wall, started,
                                                              SOLVERS[solver]['token'])
                 if point is not None:   # saved at once: a later command that hangs or crashes loses nothing
@@ -388,15 +406,18 @@ def main(description=None):
                     if [series for series in SERIES if points.get(label, {}).get(series, {}).pop(entry, None)]:
                         save_points(points)
                 tail ='' if return_code in (0, None) else '\n    ' + '\n    '.join(stderr.splitlines()[-8:])
-                if return_code is None:
+                if return_code is None or partial:
                     reported = (f'timed out after {options.timeout:g} s'
-                                + (' (plotted at the timeout tick)' if point is not None else ''))
+                                + previous_wall_text(earlier_point, prefix='previous ')
+                                + (' (plotted at the timeout tick)' if point is not None else '')
+                                + (f', partial {report[-1]}' if partial and report else
+                                   ', killed: no report' if return_code is None else ''))
                 else:   # pass: the script exited 0 and every run of the solver completed
                     run_failed = any(NEVER_FACTORISED not in text for text in not_completed)
                     verdict = (f'FAIL (exit {return_code})' if return_code else
                                'FAIL (a run did not complete: not recorded, the plot keeps the earlier point)'
                                if run_failed else 'pass')
-                    reported = (f'{verdict}, {wall:.1f} s, '
+                    reported = (f'{verdict}, {wall:.1f} s{previous_wall_text(earlier_point)}, '
                                 + (report[-1] if report else 'no report (no run takes this solver, or it failed)'))
                 failed_runs = f', not counted: {", ".join(not_completed)}' if not_completed else ''
                 line = f'{entry} [{shown}]: {reported}{failed_runs}{tail}'

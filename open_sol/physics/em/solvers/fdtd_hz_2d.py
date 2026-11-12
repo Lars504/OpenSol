@@ -191,14 +191,16 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
 
     def update_h(self):
         """Yee H_z update + CPML / BC post of every field set (each reads only E, so the order of the sets is free):
-        Yee, conformal cells and CPML as one step graph on the gpu, then the outer-face rows."""
+        Yee, conformal cells, CPML and the fused outer-face rows as one step graph on the gpu (row copies after it)."""
         conformal = self._conformal_cells
         self._fixed_block(('h', id(conformal)), (conformal,), self._h_block)
         for field_set in self._field_sets:
-            field_set.boundary_mgr.apply_hz_walls(field_set.fields.hz)
+            if not field_set.boundary_mgr.fused_walls:
+                field_set.boundary_mgr.apply_hz_walls(field_set.fields.hz)
 
     def _h_block(self):
-        """H_z Yee (+ the conformal cells) and the H_z CPML of every field set: fixed arguments only (_fixed_block)."""
+        """H_z Yee (+ the conformal cells), the H_z CPML and the fused H_z rows of every field set: fixed arguments
+        only (_fixed_block)."""
         for field_set in self._field_sets:
             fields, partner = field_set.fields, field_set.partner_fields
             _kernels.update_hz_kernel(
@@ -213,6 +215,8 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
                 conformal_hz(grid, block, (fields.hz, fields.ex, fields.ey, self.db, self._inv_dx_e_1d,
                                            self._inv_dy_e_1d, cell, cell_extra, count, self._ny_i32))
             self._cpml_post(field_set, 'hz', fields.ex, fields.ey, fields.hz, self.db)
+            if field_set.boundary_mgr.fused_walls:   # one launch, no temporary: capturable
+                field_set.boundary_mgr.apply_hz_walls(fields.hz)
 
     def _update_e_set(self, field_set):
         """update_e of one field set (the E kernel reads only H_z, so the sets may follow each other)."""
@@ -255,7 +259,9 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
         for gain in self.gain_media:   # four-level gain: a Lorentz pole driven by N1 - N2 per face set (fdtd_gain)
             gain.update_polarization()
 
-        def e_block():   # Yee E_x / E_y + their CPML: fixed arguments only (_fixed_block)
+        boundary_mgr = field_set.boundary_mgr
+
+        def e_block():   # Yee E_x / E_y + their CPML (+ the fused E rows): fixed arguments only (_fixed_block)
             _kernels.update_exy_kernel(
                 self._k_grid, self._k_block,
                 (ex, ey, hz, self.ca_x, self.cb_x, self.ca_y, self.cb_y,
@@ -263,9 +269,12 @@ class FDTDEngine2D_Hz(_YeeEngine2DBase):
                  self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
                  partner.hz, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y, field_set.wrap_sin_y))
             self._cpml_post(field_set, 'exy', hz, ex, ey, self.cb_x, self.cb_y)
+            if boundary_mgr.fused_walls:
+                boundary_mgr.apply_exy_walls(ex, ey)
 
         self._fixed_block(('e', k), (), e_block)
-        field_set.boundary_mgr.apply_exy_walls(ex, ey)   # apply_exy_post's outer-face rows
+        if not boundary_mgr.fused_walls:
+            boundary_mgr.apply_exy_walls(ex, ey)   # apply_exy_post's outer-face rows (eager without fused walls)
 
         # Drude E correction E^{n+1} = E_pred - cb J^{n+1/2} on each face box (cb carries the semi-implicit conduction
         # factor of the Yee update, so sigma_e and a Drude pole on one face stay consistent).

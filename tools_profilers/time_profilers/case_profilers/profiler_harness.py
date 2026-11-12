@@ -1,6 +1,7 @@
 """Shared harness of the profiler_solver_*.py scripts: runs selftest case specs with GPU-synchronised part timers and
 cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites) and runs.md
 (one column per run, e.g. per --compare value)."""
+import _thread
 import argparse
 import cProfile
 import copy
@@ -13,11 +14,13 @@ import os
 import pstats
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
+PROCESS_START = time.time()   # --time-limit counts from here (the run_all timeout counts the whole command)
 HERE = Path(__file__).resolve().parent
-REPOSITORY = HERE.parents[2]   # case_profilers -> time_profilers -> dev_tools -> repository
+REPOSITORY = HERE.parents[2]   # case_profilers -> time_profilers -> tools_profilers -> repository
 if str(REPOSITORY) not in sys.path:
     sys.path.insert(0, str(REPOSITORY))
 OUT_ROOT = HERE / 'out'
@@ -32,6 +35,35 @@ N_CALLER_TARGETS = 15
 CALLER_MIN_SECONDS = 0.001   # callers of an outside function below this (own and cumulative) fold into one line
 # one record per part: [calls, inclusive s, exclusive s, inclusive process-CPU s, device wait s (own exit synchronize)]
 EMPTY_RECORD = (0, 0.0, 0.0, 0.0, 0.0)
+# stdout line of a profile cut short (--time-limit or Ctrl+C): its report holds the parts timed until then
+# (run_all_profilers reads it: keep the text the same there)
+PARTIAL_REPORT_MARKER = 'partial report'
+
+
+class _TimeLimit:
+    """Interrupts the main thread (KeyboardInterrupt) when `limit` s since PROCESS_START have passed; None: never."""
+
+    def __init__(self, limit):
+        self.fired = False
+        self._lock = threading.Lock()
+        self._armed = limit is not None
+        self._timer = None
+        if self._armed:
+            self._timer = threading.Timer(max(float(limit) - (time.time() - PROCESS_START), 0.0), self._fire)
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _fire(self):
+        with self._lock:
+            if self._armed:
+                self.fired = True
+                _thread.interrupt_main()   # raised at the main thread's next bytecode (after a running C call)
+
+    def disarm(self):
+        with self._lock:
+            self._armed = False
+        if self._timer is not None:
+            self._timer.cancel()
 
 # parts every profiler times: (target 'module:qualname', label)
 STUDY_PARTS = (
@@ -356,23 +388,29 @@ def _compared_variant(spec, setting, value, backend, registry, excluded=()):
     """(spec copy, [(physics, role), ...] changed): every solver role the study uses (but `excluded`) whose solver type
     has `setting` (or its alias) and whose setting_choices accept `value` (an opt-in value, e.g. MUMPS / PARDISO, only
     where they list it: roles.solver_misfit) gets a new node with it (over its node's settings, or its Automatic type
-    and settings on `backend`)."""
+    and settings on `backend`; a node whose type lacks the setting, e.g. an example's exact pcg node under back_end,
+    takes the Automatic type and settings when that one has it)."""
     from open_sol.model.schema import solver_grid
     from open_sol.model.spec import SolverSpec
     variant = copy.deepcopy(spec)
     nodes = {node.name: node for node in variant.solvers}
     changed = []
+
+    def setting_key(type_name):
+        names = {param.name for param in registry.solver_type(type_name).params}
+        return next((name for name in SETTING_ALIASES.get(setting, (setting,)) if name in names), None)
     for physics_spec in variant.physics:
         physics_type = registry.physics_type(physics_spec.type)
         for role, solver_role in physics_type.solver_roles.items():
             if not solver_role.used_in(variant.study.type) or (physics_spec.name, role) in excluded:
                 continue
             node = nodes.get((physics_spec.solvers or {}).get(role) or '')
-            type_name, settings = ((node.type, node.settings) if node is not None else
-                                   solver_role.automatic(backend, solver_grid(variant, physics_spec)))
+            automatic = solver_role.automatic(backend, solver_grid(variant, physics_spec), variant.study.type)
+            type_name, settings = (node.type, node.settings) if node is not None else automatic
+            if setting_key(type_name) is None:
+                type_name, settings = automatic
             solver_type = registry.solver_type(type_name)
-            names = {param.name for param in solver_type.params}
-            key = next((name for name in SETTING_ALIASES.get(setting, (setting,)) if name in names), None)
+            key = setting_key(type_name)
             if key is None or value not in solver_role.setting_choices.get(key, (value,)):
                 continue
             if value in solver_type.opt_in_settings.get(key, ()) and key not in solver_role.setting_choices:
@@ -492,7 +530,7 @@ def _run_one(spec, run_dir, backend, parameters, save_arrays):
 def _run_memory(summary, backend):
     """{gpu_peak_bytes: the larger of the build peak and the run's pool high-water + cuDSS factors outside the pool
     (None on the cpu backend: not measured), host_peak_bytes: this process's peak working set / RSS so far} of one run."""
-    from dev_tools.time_profilers.case_runner import current_and_peak_rss
+    from tools_profilers.time_profilers.case_runner import current_and_peak_rss
     host_peak = current_and_peak_rss()[1]
     if backend == 'cpu':   # build.gpu_peak_bytes there is the tracemalloc peak of host numpy, not device memory
         return {'gpu_peak_bytes': None, 'host_peak_bytes': host_peak}
@@ -637,46 +675,86 @@ def wrapped_timers(parts, synchronize=True):
     return timers
 
 
+def _interrupted_summary(run_dir, status):
+    """summary.json api.run wrote after the interrupt (its minimal report), status replaced; {} without one."""
+    summary_path = run_dir / 'summary.json'
+    try:
+        summary = json.loads(summary_path.read_text(encoding='utf-8')) if summary_path.is_file() else {}
+    except ValueError:
+        summary = {}
+    summary['status'] = status
+    return summary
+
+
 def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, use_cprofile=True, synchronize=True,
-                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None):
+                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None, time_limit=None):
     """Run every spec (repeat times, after an optional untimed warm-up) under the part timers and cProfile; writes
     out/<name>/report.txt + profile.prof and returns the report path. timers: from wrapped_timers (else parts are
     wrapped here, too late for registry-held callbacks when the registry exists already). warmup_specs: {run: spec} the
-    warm-up runs instead of specs (small runs compiling the same kernels)."""
+    warm-up runs instead of specs (small runs compiling the same kernels). time_limit (s since PROCESS_START) or Ctrl+C:
+    the run going on is stopped (status 'timed_out' / 'cancelled') and the report holds what was timed until then."""
     out_dir = OUT_ROOT / name
     out_dir.mkdir(parents=True, exist_ok=True)
     if timers is None:
         timers = wrapped_timers(parts, synchronize)
-    if warmup:
-        for run_name, spec in (specs if warmup_specs is None else warmup_specs).items():
-            _run_one(spec, out_dir / f'warmup_{run_name}', backend, parameters, save_arrays)
-        timers.records.clear()
     profiler = cProfile.Profile() if use_cprofile else None
     run_texts, total = [], 0.0
     run_parts, run_walls, run_memory = {}, {}, {}   # per run: its parts (records difference), wall and memory peaks
+    limit = _TimeLimit(time_limit)
+    stopped = None   # text of where an interrupt stopped the profile
     try:
-        for index in range(repeat):
-            for run_name, spec in specs.items():
-                label = run_name if repeat == 1 else f'{run_name}_{index + 1}'
-                before = timers.snapshot()
-                start = time.perf_counter()
-                if profiler is not None:
-                    profiler.enable()
-                try:
-                    summary = _run_one(spec, out_dir / label, backend, parameters, save_arrays)
-                finally:
+        try:
+            if warmup:
+                stopped = 'during the warm-up (nothing timed)'
+                for run_name, spec in (specs if warmup_specs is None else warmup_specs).items():
+                    _run_one(spec, out_dir / f'warmup_{run_name}', backend, parameters, save_arrays)
+                timers.records.clear()
+                stopped = None
+            for index in range(repeat):
+                for run_name, spec in specs.items():
+                    label = run_name if repeat == 1 else f'{run_name}_{index + 1}'
+                    before = timers.snapshot()
+                    start = time.perf_counter()
                     if profiler is not None:
-                        profiler.disable()
-                wall = time.perf_counter() - start
-                total += wall
-                run_parts[label], run_walls[label] = _records_since(timers.records, before), wall
-                run_memory[label] = {'status': summary.get('status'), **_run_memory(summary, backend),
-                                     'solvers': _run_choices(spec, summary, backend),
-                                     'automatic': _automatic_choices(spec)}
-                run_texts.append(_run_text(label, wall, summary))
-                print(run_texts[-1].splitlines()[0], flush=True)
+                        profiler.enable()
+                    try:
+                        summary = _run_one(spec, out_dir / label, backend, parameters, save_arrays)
+                    except KeyboardInterrupt:   # the timed parts unwound through their finally: recorded so far
+                        stopped = f'during run {label}'
+                        summary = _interrupted_summary(out_dir / label, 'timed_out' if limit.fired else 'cancelled')
+                    finally:
+                        if profiler is not None:
+                            profiler.disable()
+                    wall = time.perf_counter() - start
+                    total += wall
+                    run_parts[label], run_walls[label] = _records_since(timers.records, before), wall
+                    run_memory[label] = {'status': summary.get('status'), **_run_memory(summary, backend),
+                                         'solvers': _run_choices(spec, summary, backend),
+                                         'automatic': _automatic_choices(spec)}
+                    run_texts.append(_run_text(label, wall, summary))
+                    print(run_texts[-1].splitlines()[0], flush=True)
+                    if stopped is not None:
+                        break
+                if stopped is not None:
+                    break
+        finally:
+            limit.disarm()
+    except KeyboardInterrupt:   # between runs (bookkeeping) or in the warm-up
+        stopped = stopped or 'between runs'
+        if not run_walls:   # the warm-up's parts are not part of the profile
+            timers.records.clear()
     finally:
+        if profiler is not None:
+            profiler.disable()
         timers.restore()
+    if stopped is not None:
+        cause = f'time limit {time_limit:g} s reached' if limit.fired else 'interrupted (Ctrl+C)'
+        skipped = [run_name if repeat == 1 else f'{run_name}_{index + 1}' for index in range(repeat)
+                   for run_name in specs if (run_name if repeat == 1 else f'{run_name}_{index + 1}') not in run_walls]
+        note = (f'{PARTIAL_REPORT_MARKER}: {cause} {stopped}; the parts below are those timed until then (a part '
+                f"running at the interrupt counts up to it); not run: {', '.join(skipped) or 'none'}"
+                + (f'\n{note}' if note else ''))
+        print(note.splitlines()[0], flush=True)
     header = (f'profiler {name}: backend {backend}, repeat {repeat}, warmup {warmup}, cprofile {use_cprofile}, '
               f'gpu sync at part edges {synchronize}, total run wall {total:.2f} s\n'
               'Exclusive = own wall minus timed sub-parts; cpu/wall = process CPU / inclusive wall (> 1 threaded BLAS; '
@@ -746,6 +824,9 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                         '(e.g. back_end=cudss,cudss_mixed): one column per run in runs.md')
     parser.add_argument('--compare-only', action='store_true',
                         help='drop the runs no --compare value applies to (instead of running them as written)')
+    parser.add_argument('--time-limit', type=float, default=None, metavar='S',
+                        help='stop the run going on S s after the start of the process and write the report of what '
+                             'was timed until then (a long library call ends first; Ctrl+C does the same)')
     options = parser.parse_args()
     timers = wrapped_timers(parts, synchronize=not options.no_sync)   # before the registry exists
     own_specs = specs is not None and options.case == case
@@ -773,4 +854,4 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                         parameters=_parameters(options.set), save_arrays=not options.no_arrays,
                         note=f'{source}, runs {list(run_specs)}' + (f'; {note}' if note else '')
                         + (f'; warm-up runs {list(small_warmup)}' if small_warmup is not None else ''),
-                        timers=timers, warmup_specs=small_warmup)
+                        timers=timers, warmup_specs=small_warmup, time_limit=options.time_limit or None)

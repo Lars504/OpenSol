@@ -26,8 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
-from ...fem.assembly import pattern_sum
-from ...fem.assembly3d import assemble_nedelec_3d
+from ...fem.assembly3d import element_blocks_csr, nedelec_blocks_3d
 from ...fem.dofs3d import bloch_masters, nedelec_dofs_3d
 from ...fem.mesh3d import OUTER_FACES_3D
 from ...fem.sampling3d import PointLocator3D, evaluate_nedelec_3d
@@ -246,7 +245,11 @@ class FEMPhysics3D:
         eps, inverse_mu, pec = self._element_materials()
         in_pml = ~mesh.window_elements() if self.pml.active else np.zeros(mesh.n_elements, dtype=bool)
         degree = 2 * self.element_order
-        curl, mass = assemble_nedelec_3d(dofs, inverse_mu, eps, elements=~pec & ~in_pml, degree=degree)
+        energy_eps = np.abs(eps.real)
+        # K, M and W blocks in one element order (window elements, then the PML shell's): one COO -> CSR slot map and
+        # one free restriction for all three (element_blocks_csr; the pattern is value-free, explicit zeros kept)
+        elements, curl, mass = nedelec_blocks_3d(dofs, inverse_mu, eps, elements=~pec & ~in_pml, degree=degree)
+        _, _, energy = nedelec_blocks_3d(dofs, None, energy_eps, elements=elements, degree=degree)
         if in_pml.any():
             def stretched_nu(points, elements):
                 return inverse_mu[elements][:, None, None] / self.pml.tensor(points, omega)
@@ -254,16 +257,20 @@ class FEMPhysics3D:
             def stretched_eps(points, elements):
                 return eps[elements][:, None, :] * self.pml.tensor(points, omega)
 
-            curl_pml, mass_pml = assemble_nedelec_3d(dofs, stretched_nu, stretched_eps, elements=~pec & in_pml,
-                                                     degree=degree + 2)
-            curl, mass = pattern_sum((curl, curl_pml)), pattern_sum((mass, mass_pml))   # value-free pattern
-        _, energy = assemble_nedelec_3d(dofs, None, np.abs(eps.real), elements=~pec, degree=degree)
+            pml_elements, curl_pml, mass_pml = nedelec_blocks_3d(dofs, stretched_nu, stretched_eps,
+                                                                 elements=~pec & in_pml, degree=degree + 2)
+            _, _, energy_pml = nedelec_blocks_3d(dofs, None, energy_eps, elements=pml_elements, degree=degree)
+            elements = np.concatenate([elements, pml_elements])
+            curl, mass, energy = (np.concatenate(pair) for pair in ((curl, curl_pml), (mass, mass_pml),
+                                                                     (energy, energy_pml)))
+        element_dofs = dofs.element_dofs[elements]
         pinned = self._pinned(pec)
         prolongation = None
         if self.bloch is None:
             free = np.setdiff1d(np.arange(dofs.n_dofs), pinned)
-            curl, mass, energy = (matrix[free][:, free].tocsr() for matrix in (curl, mass, energy))
+            curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy), free=free)
         else:
+            curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy))
             free, prolongation = self._bloch_prolongation(pinned)
             adjoint = prolongation.conj().T.tocsr()
             curl, mass, energy = ((adjoint @ matrix @ prolongation).tocsr() for matrix in (curl, mass, energy))

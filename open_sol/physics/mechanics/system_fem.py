@@ -55,6 +55,19 @@ class DirectElasticSystem:
         """Free the linear solver's factor (K_ff or a tangent; cuDSS device memory) before another large factorisation;
         the next solve factorises again (2D keeps the solution vector, so solve_summary still names the factor)."""
         self.linear_solver.release_factor()
+        self._factor_released()
+
+    def hand_over_factor(self):
+        """The linear solver's K_ff factor (None unless it holds one), detached for a pencil of the same free pattern to
+        refactorise as previous= (the caller owns it: releases it when unused); the next solve factorises again."""
+        factor = self.linear_solver.detach_factor() if self._factor_holds_operator else None
+        if factor is None:
+            self.release_factor()   # a tangent or nothing: freed as before
+            return None
+        self._factor_released()
+        return factor
+
+    def _factor_released(self) -> None:
         if self._release_solution:
             self._solution = None
         self._factor_holds_operator = False
@@ -63,11 +76,21 @@ class DirectElasticSystem:
     def _solve_free(self, rhs) -> np.ndarray:
         """Host float64 K_ff^-1 rhs (free-dof vector), factorising K_ff on the run backend first when needed (the
         'linear' runtime counts it; also after a Newton tangent took the factor)."""
+        from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_DIRECT_BACK_ENDS
         xp = array_module(self.backend)
         if self._solution is None or not self._factor_holds_operator:
             free = np.flatnonzero(self.free)
             reduced = self.operator[free][:, free].tocsr()
-            self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(reduced))
+            if self.runtime.back_end in CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS:
+                # K_ff is symmetric by construction: planned from the host CSR, only its equilibrated lower triangle
+                # goes to the device (no device CSR, index maps or symmetry check: ~60 B per entry of pool); a later
+                # K_ff or tangent on this pattern refreshes the plan on the device. MUMPS / PARDISO: the same canonical
+                # CSR by its values, no asymmetry check (3D P2: ~0.85 s of a single-threaded scan)
+                if not reduced.has_canonical_format:
+                    reduced.sum_duplicates()
+                self.linear_solver.factorize_host_operator(reduced, symmetric_known=True)
+            else:
+                self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(reduced))
             self._factor_holds_operator = True
             self._tangent_held = False
             if self._solution is None:

@@ -59,9 +59,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid, study)` (register_physics
   checks those types too): CG_DIFFUSION_LINEAR_ROLE on the cpu = sparse_direct (host SuperLU via `DiffusionDirectSolver`;
   cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. `SolverRole.study_defaults` {(study, grid): (type,
-  settings)} is read first on every backend: CG_DIFFUSION_LINEAR_ROLE ('time_dependent', 'tensor') -> sparse_direct
-  (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu through auto_back_ends['tensor']), a fallback-table
-  rule autopick will replace. Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
+  settings)} is read first, on every backend unless `study_default_backends` names some: CG_DIFFUSION_LINEAR_ROLE
+  ('time_dependent', 'tensor') -> sparse_direct (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu
+  through auto_back_ends['tensor']); the 2D SOLID_LINEAR_ROLE stationary / time_dependent on 'tensor', gpu only ->
+  sparse_direct; a fallback-table rule autopick will replace. `schema.with_node_precision` reads the plain Automatic
+  when the study default is another type (a 2D solid's pcg node keeps the gpu 'mixed'). Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
   registry, meshes, memory_budget, estimate=None, by_mesh=None)` -> (estimate, plain_roles); when the gpu estimate
   exceeds the budget, `schema.study_default_roles` (Automatic roles from study_defaults on a cuDSS back end; a node
   never) resolve with study None if that estimate is lower. `plain_roles` {(physics, role)} goes to
@@ -379,7 +381,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   positive_definite request plans float32 LDL^T (float32 Cholesky hung > 175 s), its double fallback is the double
   Cholesky.
 - DiffusionDirectSolver on cuDSS: `factorize_device_csr(operator, real=True, positive_definite=True, previous=)`
-  (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation.
+  (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation, or
+  `detach_factor()` (the caller owns the factor: released or passed as previous= to a factorisation of the same kind;
+  `positive_definite = False` first makes factorize_host_operator ask cuDSS / MUMPS / PARDISO for the LDL^T of a
+  shifted pencil instead of the SPD kind, which can_refactorize would refuse: mechanics stress stiffening).
   `factorize_host_operator(host_csr, symmetric_known=, defer_check=)` (FEM Newton tangents): symmetric_known = a
   canonical symmetric CSR (values copied only, index arrays shared and never modified, asymmetry check skipped; MUMPS /
   PARDISO then refresh by `host_direct_values_factorization`, pattern matched by identity); never pass it for an
@@ -391,7 +396,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `host_direct_values_factorization`, else SuperLU of the CSR; no host canonicalising or asymmetry check per call.
   `factorize_device_values(values, indptr, indices)` (cupy
   values on the HOST canonical pattern) -> `refactorize_device_values` / `from_device_values`: equilibration, lower take
-  and refresh or plan on the device by index maps built once per plan (`_device_maps`), no host value copy. Either
+  and refresh or plan on the device by index maps (`_DeviceIndexMaps`, one per plan: each array uploaded at its first
+  read, so `refactorize_device_lower` holds the lower triangle's rows / indices alone, ~4 B per pattern entry against
+  ~18 B on the full-values route; read a new array through `maps[key]`, never assume it exists; its host passes over
+  the pattern are freed by `_finish_refactorize`), no host value copy. Either
   symmetry vouched (pencils, device tangents) or `check_symmetry=True` (device transpose map), which also serves
   `refactorize` of a host operator on the planned pattern without symmetrizer (values uploaded only) and
   `SparseDirectSolver.factorize_device_csr` (non-canonical cupyx CSR canonicalised in a copy). A symmetrizer factor
@@ -401,16 +409,20 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `row_scale=` replaces R = |diag|^-1/2.
 - Device pencils (sweeps): `SparseDirectSolver.device_pencil(indptr, indices, term_values, symmetric,
   symmetric_known=False)` -> `DevicePencil` (None off cuDSS / on the cpu: the caller keeps factorize_host); terms
-  uploaded once, symmetry checked once unless vouched (max |X - X^T| <= SYMMETRY_TOLERANCE max |X| per term). A
+  uploaded once, symmetry checked once unless vouched (max |X - X^T| <= SYMMETRY_TOLERANCE max |X| per term; a vouched
+  pencil of host values takes each lower triangle on the host, so the full terms never reach the device). A
   symmetric pencil stores lower triangles only (`lower_stored`; `full_term(k)` returns a new array per call, its take
-  built once; `combined(c)` in the stored layout). `factorize_pencil(pencil, coefficients, row_scale=, previous=,
+  built once at ~48 B per pattern entry of int64 transients: the SuperLU fallback and self-tests only, never a
+  product; `combined(c)` in the stored layout). `factorize_pencil(pencil, coefficients, row_scale=, previous=,
   extra=)` combines on the device and refreshes `previous` (refactorize_device_lower / refactorize_device_values with
   defer_check); the pattern is matched by identity of the pencil's indptr / indices first: callers never modify those
   arrays in place. `extra=(pencil.slots(rows, columns), values)` adds a small per-frequency block (port DtN) at
   stored-layout slots (lower entries only for a lower-stored pencil, symmetry vouched by the caller; a None slot =
   outside the pattern: keep factorize_host). `device_pencil_bytes(entries, term_value_bytes, symmetric)`; users
   (fem.harmonic, mechanics frequency_response.HarmonicSystem) book it + factor maps + transients as a run item. The
-  operator norm of a device refresh is lazy.
+  operator norm of a device refresh is lazy and summed by one atomic-add kernel (`_magnitude_sums_kernel`: no |E|
+  copy; cupyx.scatter_add of cp.abs(E) and its masked copy held 17 B per stored entry at the probe, which is after
+  the plan returned the pool's cached blocks, so it set the run's pool mark).
 - Host pencils: consumers ask `SparseDirectSolver.pencil(...)` (same arguments): a `HostPencil` on a host direct back
   end (either backend), else device_pencil's answer. HostPencil keeps the terms on the host on the full pattern
   (`lower_stored` False: an extra block gives both triangles; consumers test `pencil.symmetric`, never lower_stored, before
@@ -478,6 +490,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   tolerance = max(node, floor) (0 = machine precision); subspace_size 0 = the caller's default_basis
   (`arnoldi_basis_size` for estimators). Time recipe: `SolverWork.rhs` = triangular solves per application,
   `applications_per_basis` (0: APPLICATIONS_PER_BASIS_GUESS 2.5).
+- `eigs_host(...)` = `eigs_device`'s 5-tuple on the host (`_HostKrylovSchur`, a subclass sharing run / Schur ordering /
+  restart test; numpy rows, CGS2 by gemv on the C-contiguous rows, never a conjugated basis copy): solve_resonances
+  around a host-only factor, so a widening resumes (`resume`, `reserve_basis`); below DEVICE_ARNOLDI_MIN_RATIO host
+  ARPACK, state None. Runs inside quiet_openblas like the scipy calls.
 - One uninterruptible host call (a GUI stop waits): eigs / eigsh_shifted / eigsh_inverse cap restarts at MAX_RESTARTS
   (300; scipy's 10 n let a shift on a resonance restart for minutes) and return the converged part with converged False
   (callers warn); bor_ports / slab_modes' direct scipy calls take the same cap.
@@ -575,8 +591,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - cudss_mixed only for roles whose `setting_choices['factorization']` accept it (`eigen_role(mixed_factorization=True)`:
   em_fdfd_3d, em_fdfd_ez / _hz), because only `eigenfrequency.solve_resonances` asks for loose solves: with an own mixed
   LDL^T of D A it uses MIXED_EIGS_REFINEMENTS (1), floors ARPACK at MIXED_ARPACK_TOLERANCE (1e-6) and replaces every k^2
-  by the float64 Rayleigh quotient (stationary for the complex symmetric pencil; `info['rayleigh_change']`); without a
-  symmetric D A (Bloch) it refines every solve to 1e-12. Measured on the Mie eighth sphere: factorise 12x faster, half
+  by the float64 Rayleigh quotient (stationary for the complex symmetric pencil; `info['rayleigh_change']`); a double
+  own LDL^T (cuDSS / MUMPS / PARDISO) of a complex A whose caller floored ARPACK (cpml / PML / lossy) takes the same
+  floor and polish, without the refinement steps; without a symmetric D A (Bloch) it refines every solve to 1e-12. Measured on the Mie eighth sphere: factorise 12x faster, half
   the memory, lambda / Q identical to double.
 - Probe gates: a probe after factorize must reach ACCEPT_RESIDUAL (1e-10) or cuDSS refinement (REFINEMENT_STEPS) is
   switched on; still missing = RuntimeError (cuDSS pivots only within supernodes). Every gate and the mixed stop also
@@ -603,9 +620,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Several shifts: eigsh_shifted / eigs_shifted / factorize_host take `previous=` (cuDSS refactorised in place,
   `last_plan_reused`; SuperLU ignores it). Only because the shifted operator is built by `pattern_combination((K, M), (1,
   -sigma))` (root "Solver contract"): any new caller combining a pencil for a reused factor goes through it.
-- `ShiftPencil` (`shift_pencil`): terms on one pattern once; SuperLU one-pass host combination per shift; cuDSS a
-  DevicePencil + `factorize_pencil` on a private SparseDirectSolver (eigen_cudss_plans / eigen_double_fallbacks folded
-  in). count_below / eigsh_shifted / eigs_shifted take `pencil=` to keep it across shifts.
+- `ShiftPencil` (`shift_pencil`): terms on one pattern once (M and the diagonals placed by `merge_positions`, a
+  row-parallel numba merge, host twin 'solvers.pattern_merge', self-test solver_pattern_merge_numba; a global key
+  searchsorted took 1.7 s on a 3D P2 pencil); host route M products for ARPACK by `mass_product` (numba prange CSR
+  product, host twin 'solvers.csr_product', from MASS_PRODUCT_MIN_ENTRIES; scipy's is single-threaded) through
+  `mass_operator`; SuperLU one-pass host combination per shift; cuDSS a
+  DevicePencil + `factorize_pencil` on a private SparseDirectSolver (eigen_cudss_plans / eigen_double_fallbacks /
+  eigen_cudss_reused_orderings / eigen_cudss_plan_seconds folded in; `eigen_reused_orderings` is SuperLU's order count,
+  not cuDSS's). count_below / eigsh_shifted / eigs_shifted take `pencil=` to keep it across shifts. `device_mass()` uploads
+  the host M on its own pattern (a vector FEM mass: a third of the pencil pattern), not the pencil's mirrored M term.
 - Inertia (Sylvester; real symmetric / Hermitian with M positive definite, or semi-definite with a fixed massless block
   such as piezo phi: then only count differences are meaningful): `eigsh_shifted(..., inertia=True)` appends
   `ShiftInertia(sigma, n_below, exact)` at the offset sigma; `count_below(K, M, sigma, previous)` at sigma itself
@@ -626,7 +649,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `back_end` = the library ('mumps' / 'pardiso'), `precision` the request, `factor_precision` what is factored;
   `description` starts with the library label ('MUMPS LDL^T', 'PARDISO LU float32 + float64 GMRES refinement').
   The scaling itself is `scaled_values` (a new array; a core.kernels.host_twin: numba prange over rows from
-  HOST_SCALE_MIN_ENTRIES entries, else the numpy form `_scale_host`; next-gains N6, self-test solver_host_scale_numba).
+  HOST_SCALE_MIN_ENTRIES entries when numba is already in sys.modules, else the numpy form `_scale_host`: it never
+  imports numba, ~1 s per process against ~30 ms of gathers at 3e6 entries; next-gains N6, self-test
+  solver_host_scale_numba).
 - Solves: A x = b as x = R E^-1 R (D) b; A^T x = b as R E^-T R b (no symmetrizer) or D R E^-T R b (symmetrizer;
   E^-T = E^-1 for a symmetric kind); a real factor takes a complex rhs as two real solves; solve() of a cupy rhs moves it
   to the host and the solution back (host_arrays / numpy rhs: numpy). `_lu_solve(rhs, trans)` serves
@@ -652,6 +677,17 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   pydiso's refactor checks only the nnz count, so the pattern is compared here first. The per-entry rows and diagonal
   positions are kept per pattern and ||E|| (`operator_norm`) is lazy: a double probe whose relative residual passes
   ACCEPT_RESIDUAL leaves probe_backward_error None (cuDSS R4).
+- Kept analyses (`host_analyses_kept()`, entered by run_study beside `cudss_orderings_kept`; off for scripts and
+  selftest checks): release() parks the library factor (analysis and factor memory) and a new analysis of another
+  factor object adopts a parked one of the same library, kind, real, factor dtype and canonical pattern (compared
+  entry by entry; pydiso checks only the nnz), so a sweep value or rebuilt session with a known pattern runs the
+  numeric factorisation only (`last_analysis_kept`, counted in host_direct_reused_analyses; no memory guard, the bytes
+  were already held). A miss releases every parked factor before it analyses (a changed mesh never holds a stale
+  factor beside the new one; a pattern released mid-build loses its entry to the next other pattern), at most
+  KEPT_ANALYSES (4) stay parked, a failed factorisation never parks, the block's end releases the rest. The parked
+  bytes are no estimate item: the adopting build's own factor item is that memory; until then
+  `core.host_memory.available_bytes()` (the host budget, the guard) sees them as used (`kept_analysis_bytes()`). MUMPS
+  takes the same path (`_MumpsFactor.refactor` reuses its Context's analysis).
 - `refactorize_values(values, indptr, indices, row_scale, symmetric_known, defer_check)` (HostPencil route; no
   symmetrizer): the pattern matched by identity with the last refactorize_values arrays (a plain refactorize clears
   that), so its caller never modifies them in place. defer_check: a double factor on the kept analysis whose last
@@ -674,7 +710,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (single precision); PardisoError carries only a message (mapped back by `_err_messages`); release = dropping the
   handle (dealloc phase -1). Every library call sits in `_MumpsFactor` / `_PardisoFactor` at the end of the module.
 - PARDISO ordering: the analysis asks for the OpenMP nested dissection (iparm[1] = 3, `_PARDISO_ORDERING`; an older
-  pydiso without the keyword gets the library default METIS): the same fill as METIS at half the analysis time on
+  pydiso without the keyword, 0.2.0 in the conda env, runs `_ordered_pardiso_class`, which sets iparm[1] on the
+  handle before the analysis its constructor runs: without it the analysis was serial METIS, 2.4 s of a 6 s heat
+  profile): the same fill as METIS at half the analysis time on
   2 - 4 threads (with METIS the analysis is 50 - 85 % of a cold PARDISO factorisation up to ~600 000 unknowns), equal
   on one thread, every matrix type and both precisions. Measured and not adopted: minimum degree (iparm[1] = 0: the
   fastest cold factor on 2D grids, 2 - 6 x slower solves and 1.7 x the fill in 3D), the two-level factorisation
@@ -691,7 +729,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   ("'<name>' needs ...": back_end and factorization settings alike), `install_hint`, `factor_label` (texts).
 - Threads: library defaults (MUMPS OpenMP / BLAS: OMP_NUM_THREADS, recorded; PARDISO MKL_NUM_THREADS,
   get_mkl_pardiso_max_threads recorded); no open_sol setting, oversubscription with numba / scipy BLAS threads is the
-  user's to set. Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+  user's to set. Exception: a PARDISO solve (phase 33) of a factor below `_PARDISO_SERIAL_SOLVE_LU_ENTRIES` (1e6)
+  runs on one MKL thread, and the count is restored after (fluid heat transient, 57 000 entries: 0.88 ms per solve on
+  16 threads, mostly barriers). Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+  `_PardisoFactor.solve` sums MKL's own refinement steps (iparm[6]; iparm[7] = 0 still refines twice per solve when the
+  factor has perturbed pivots, iparm[13]) into `solve_text` (solve_resonances' factor text via `library_solve_text`);
+  `OPEN_SOL_PARDISO_SOLVE_PARALLEL` (temporary measurement override) writes iparm[24] before a handle's first solve.
 - PARDISO beside OpenBLAS (pip wheels and conda-forge defaults: numpy / scipy on OpenBLAS, pydiso on MKL): both pools
   spin after a call, so an MKL call right after a threaded BLAS call (a norm, a Gram-Schmidt product, ARPACK's own
   BLAS) shares the cores with spinning OpenBLAS workers (4 cores: a solve 15 -> 70 ms, a mixed solve 75 -> 450 ms, an
@@ -708,7 +751,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   library: 4.5 ms per Newton factorisation). A new lazily loaded BLAS user of scipy joins that list.
 - Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
   a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
-  checks of mixed factors, pydiso >= 0.3 in the conda env (0.2.0 has no fill_reducing_ordering: METIS analysis), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
+  checks of mixed factors, pydiso >= 0.3 in the conda env (needs Python >= 3.12, the env is 3.11; 0.2.0 reaches the
+  same parallel ordering through `_ordered_pardiso_class`: analysis cpu/wall ~5 on 16 threads, measured), PARDISO
+  Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
   calibrated memory / time
   constants and profile curves.
 

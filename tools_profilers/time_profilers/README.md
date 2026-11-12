@@ -7,18 +7,18 @@ Not part of the package (never imported by `open_sol`, not shipped by `pyproject
 
 ## Usage
 
-Run from the repository root (the child processes import `dev_tools` and `open_sol` from there):
+Run from the repository root (the child processes import `tools_profilers` and `open_sol` from there):
 
 ```
-python -m dev_tools.time_profilers.solver_profiler --list             # problems, solver choices, availability
-python -m dev_tools.time_profilers.solver_profiler --quick            # small sizes, 1 repeat, 120 s per case
-python -m dev_tools.time_profilers.solver_profiler --quick --backends cpu gpu   # + cuDSS, gpu pcg / line_block / banded
-python -m dev_tools.time_profilers.solver_profiler --problems heat_3d fdfd_driven --sizes heat_3d=16,24,32 \
+python -m tools_profilers.time_profilers.solver_profiler --list             # problems, solver choices, availability
+python -m tools_profilers.time_profilers.solver_profiler --quick            # small sizes, 1 repeat, 120 s per case
+python -m tools_profilers.time_profilers.solver_profiler --quick --backends cpu gpu   # + cuDSS, gpu pcg / line_block / banded
+python -m tools_profilers.time_profilers.solver_profiler --problems heat_3d fdfd_driven --sizes heat_3d=16,24,32 \
     --solvers 'sparse_direct:*' 'pcg:double/*' --repeat 3 --threads 8 --timeout 900 --out profiles
-python -m dev_tools.time_profilers.solver_profiler --models examples/em/nanobeam_cavity_fdfd.json --backends cpu gpu \
+python -m tools_profilers.time_profilers.solver_profiler --models examples/em/nanobeam_cavity_fdfd.json --backends cpu gpu \
     --roles linear --repeat 1 --timeout 1800                          # whole runs, every linear solver choice
-python -m dev_tools.time_profilers.solver_profiler --models MODEL.json --physics heat --scan mesh_n=20,40,80
-python dev_tools/time_profilers/solver_profiler.py --quick            # the same as a script
+python -m tools_profilers.time_profilers.solver_profiler --models MODEL.json --physics heat --scan mesh_n=20,40,80
+python tools_profilers/time_profilers/solver_profiler.py --quick            # the same as a script
 ```
 
 Options: `--problems` (default all; none with `--models` unless named), `--sizes` (`64,128` for every selected problem
@@ -135,8 +135,8 @@ tetrahedra FEM engines, the membrane plate), plus the example-based em_fdfd_3d a
 performance set is `example_profilers/` below. Run from any folder:
 
 ```
-python dev_tools/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
-python dev_tools/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...] [--backend gpu cpu]
+python tools_profilers/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
+python tools_profilers/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...] [--backend gpu cpu]
     [--timeout S] [--new-first] [--plot-only]
 ```
 
@@ -175,7 +175,9 @@ time of open_sol functions, callers of the largest outside functions and of ever
 
 `run_all_profilers.py` logs to `out/run_all.log` and keeps each report and its `runs.json` in
 `out/history/<timestamp>/`, together with `profile_points_before.json` (the points file as it was when that run
-started). After a change, `python profile_delta.py <report folder name>` (e.g. `solid_mechanics_3d_nonlinear__gpu`)
+started). A log line gives the command wall and, in brackets, the wall of the same command and solver the last time
+it was recorded (`pass, 15.2 s (14.9 s)`; `(timed out)` when that one stopped at the timeout; nothing on the first
+run). After a change, `python profile_delta.py <report folder name>` (e.g. `solid_mechanics_3d_nonlinear__gpu`)
 lists per run the parts whose exclusive time moved by more than `--min-ms` (20) and `--min-percent` (30) between the
 two newest kept profiles of that folder (`--before` / `--after`: any two `runs.json`).
 
@@ -200,9 +202,15 @@ Each solver has its backend:
 `auto @gpu` is the gpu model with the solver Automatic picks. Some of those runs factorise on the host with SuperLU
 (e.g. the em_fdfd example group's dbr cavity, whose solver node asks for it).
 
-**Timeout.** Each command is killed after `--timeout` seconds (default 60; `0`: no limit; the harness itself has
-none). A killed command that was profiling becomes a point at the `>60` tick of the run wall panel, above a thin
-line at the timeout, and has no memory point. A command killed before it found a run for the solver gives none.
+**Timeout.** Each command stops after `--timeout` seconds (default 60; `0`: no limit), counted from its process
+start. The harness gets it as `--time-limit`: it interrupts the run going on (status `timed_out` in `runs.json`), skips
+the rest and writes a partial report: the first lines say where it stopped and which runs did not run, and the parts
+are those timed until then (a part running at the interrupt counts up to it). The report is kept in the history
+folder and the log line says `partial`. The interrupt waits for a running library call (a PARDISO factorisation)
+to return: a command still running 30 s (`REPORT_GRACE`) after the timeout is killed and has no report. Ctrl+C on a
+single profiler script also writes a partial report. A stopped command that was profiling becomes a point at the `>60`
+tick of the run wall panel, above a thin line at the timeout, and has no memory point. A command stopped before it
+found a run for the solver gives none.
 
 **The plot.** Each command that finishes is a point in `out/profile_points.json`, plotted in
 `out/profile_points.png`. There is one panel each for run wall (the counted runs only, log scale), GPU peak and RAM
@@ -237,9 +245,9 @@ solve. `python example_profiler.py --list` prints the groups with each example's
 all). Run from any folder:
 
 ```
-python dev_tools/time_profilers/example_profilers/example_profiler.py GROUP [--runs STEM ...] [--warmup] [--compare back_end=cudss,cudss_mixed]
-python dev_tools/time_profilers/example_profilers/run_all_examples.py [--only SUBSTRING ...] [--cudss --pardiso ...] [--backend gpu cpu]
-python dev_tools/time_profilers/case_profilers/profile_delta.py em_fdtd__gpu --history dev_tools/time_profilers/example_profilers/out/history
+python tools_profilers/time_profilers/example_profilers/example_profiler.py GROUP [--runs STEM ...] [--warmup] [--compare back_end=cudss,cudss_mixed]
+python tools_profilers/time_profilers/example_profilers/run_all_examples.py [--only SUBSTRING ...] [--cudss --pardiso ...] [--backend gpu cpu]
+python tools_profilers/time_profilers/case_profilers/profile_delta.py em_fdtd__gpu --history tools_profilers/time_profilers/example_profilers/out/history
 ```
 
 The harness options, reports, `runs.json`, solver flags, timeout, history and plot are those of the case profilers
