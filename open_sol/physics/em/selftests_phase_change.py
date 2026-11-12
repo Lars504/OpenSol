@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, ELEMENTARY_CHARGE, EPS0, K_B
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y
+from ...model.selftest_helpers import PERIODIC_Y, vertical_line
 from ...model.spec import (CouplingSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 
@@ -209,7 +209,7 @@ def phase_change_gst_switch_spec():
     film = (2.0e-6, 2.1e-6)
     return ModelSpec(
         title=GST_SWITCH_LABEL, description=GST_SWITCH_DESCRIPTION, domain=DomainSpec(size_x=size_x, size_y=size_y),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': 1.0e-6, 'y0': 0.0, 'x1': 1.0e-6, 'y1': size_y}),
+        geometry=[vertical_line('source_line', 1.0e-6, 0.0, size_y),
                   GeometrySpec('film', 'rectangle', {'x0': film[0], 'y0': 0.0, 'x1': film[1], 'y1': size_y}),
                   GeometrySpec('substrate', 'rectangle', {'x0': film[1], 'y0': 0.0, 'x1': size_x, 'y1': size_y}),
                   GeometrySpec('film_point', 'point', {'x': 0.5 * (film[0] + film[1]), 'y': 0.5 * size_y})],

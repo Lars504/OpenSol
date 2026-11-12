@@ -6,10 +6,10 @@ from dataclasses import replace
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, float32_value, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import (_AREAL_DENSITY, _FILM, _GUIDE_FORCE, _GUIDE_WIDTH, _MEMBRANE_TYPE, _PHYSICS, _TENSION,
-                        _plate_frequency, _probe_phasors, _solver_defaults, _triangles)
+                        _plate_frequency, _probe_phasors, _triangles)
 
 # ---- membrane_plate_guide_pml: a strip guide of width W, y walls simply supported (w = 0, M_nn = 0: sin(n pi y / W)
 # separates), D = T (W / pi)^2 (bending = tension at the first cut-off), window 4 W, PML ring of 24 h on x_hi (0.75 W,
@@ -59,7 +59,7 @@ def _plate_guide_specs():
                                                                  'pml_cells': _PLATE_GUIDE_PML_CELLS},
                              features=features)],
         meshes=[replace(_triangles(_PLATE_GUIDE_H), pml_layers=_PLATE_GUIDE_PML_CELLS)],
-        solver_defaults=_solver_defaults('cpu'),
+        solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings={'frequencies': [_plate_guide_frequency()]}))}
 
 

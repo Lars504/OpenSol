@@ -46,13 +46,14 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
 
 ## case_profilers
 - One `profiler_solver_<type>[_<variant>].py` per solver engine (tensor / triangles / tetrahedra), each a list of
-  'module:Class.method' parts on `profiler_harness.py`; `profiler_*_parts.py` / `_common.py` are shared part lists;
-  `run_all_profilers.py` runs every script in a subprocess and keeps each report and its `runs.json` in
-  `out/history/<timestamp>/` (`<folder>.txt`, `<folder>.runs.json`); `profile_delta.py <folder>` prints the parts
+  'module:Class.method' parts on `profiler_harness.py`; `profiler_*_parts.py` / `_common.py` are shared part lists
+  (their `methods` / `functions` part builders and the harness's `case_specs` / `refined` are imported, never copied
+  into a script); `run_all_profilers.py` runs every script in a subprocess and keeps each report and its `runs.json`
+  in `out/history/<timestamp>/` (`<folder>.txt`, `<folder>.runs.json`); `profile_delta.py <folder>` prints the parts
   that changed between the two newest kept `runs.json` (it reads `wall_seconds` and `parts[].exclusive_seconds` /
-  `calls`: a renamed key empties it). Scripts import their siblings by bare name (own folder
-  on sys.path) and find the repository from `__file__`, so they run from any folder as scripts, not with `-m`.
-  Output: `out/` next to the scripts (git-ignored).
+  `calls`: a renamed key empties it). Scripts import their siblings by bare name (own folder on sys.path) and find the
+  repository from `__file__`, so they run from any folder as scripts, not with `-m`. Output: `out/` next to the
+  scripts (git-ignored).
 - Parts are wrapped before the registry exists (`wrapped_timers` in `main`): StudyType / FeatureType callbacks keep
   the function objects of registration time, so time what they call instead of the callback itself.
 - A target that does not resolve is listed in the report ("parts that did not resolve"), never raised: after a

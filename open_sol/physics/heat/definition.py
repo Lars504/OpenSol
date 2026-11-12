@@ -14,14 +14,13 @@ from ...fem.diffusion import (cudss_back_end, cudss_diffusion_estimate, fem_diff
 from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (
     AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM,
-    antiperiodic_wrap,
-    axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of, cg_solver_issues, conducting_fraction, conducts, cross_term_materials, evaluates_to, face_conflicts,
-    element_order, geometry_param, held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric,
-    linear_solver_direct,
-    linear_solver_mixed, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe, mapped_domain_issues,
-    material_follows_state, time_following_values,
-    mirror_face_issues, on_tetrahedra, on_triangles, optional_material_param, outline_full_grid, outline_pieces_of,
-    perimeter_flux_weights, point_cells, reports_model_checks, uses_time, validate_points_inside,
+    antiperiodic_wrap, axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of, cg_solver_issues,
+    conducting_fraction, conducts, cross_term_materials, element_order, evaluates_to, face_conflicts,
+    geometry_param, held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric, linear_solver_direct,
+    linear_solver_mixed, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe,
+    mapped_domain_issues, material_follows_state, mirror_face_issues, on_tetrahedra, on_triangles,
+    optional_material_param, outline_full_grid, outline_pieces_of, perimeter_flux_weights, point_cells,
+    reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
@@ -704,15 +703,10 @@ def _selections_overlap(first, second):
 
 def _validate_thermorefractive_noise(vctx, physics_spec, feature_spec, values):
     """Study, planar 2D, the em_modes mode pair (type, mode numbers, no bend) and heat capacity under the selection."""
-    from ...materials import effective_material_data   # lazy, as in _material_issues
     path = feature_path(physics_spec, feature_spec)
     issues = _noise_setup_issues(vctx, physics_spec, feature_spec, path, values)
-    for material in vctx.spec.materials:
-        if not material.selection or not _selections_overlap(material.selection, feature_spec.selection):
-            continue
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
+    for material, properties, _ in selected_material_data(vctx.spec):   # unresolved ones: reported at the material
+        if not _selections_overlap(material.selection, feature_spec.selection):
             continue
         missing = [name for name in ('rho', 'cp')
                    if not evaluates_to(properties.get(name), vctx.parameters, lambda value: value > 0.0)]

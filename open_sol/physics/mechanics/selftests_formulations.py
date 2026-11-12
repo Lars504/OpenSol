@@ -7,10 +7,11 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import EXACT_CG_TOLERANCE, max_relative_error, with_exact_cg, worst_error
+from ...model.selftest_helpers import EXACT_CG_TOLERANCE, max_relative_error, with_exact_cg, worst_error, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, StudySpec)
-from .selftests import SOLID_TYPE_NAME, _elastic, _lame, _reaction, _rectangle, _window_fields
+from .selftests import (_BILAYER_INTERFACE_Y, _BILAYER_LAYERS, _BILAYER_PULL, _BILAYER_SIZE, SOLID_TYPE_NAME,
+                        _bilayer_parts, _elastic, _lame, _reaction, _rectangle, _window_fields)
 
 _SOLID = 'solid'                                   # = selftests._SOLID (the helpers read this instance)
 _RUN = 'run'
@@ -47,10 +48,6 @@ _PLATE_ALPHA = (1e-5, 2e-5, 0.5e-5)
 _PLATE_RISE = 100.0                                # K
 _PLATE_TRACTION = 1e8                              # Pa on x_hi
 _PLATE_THICKNESS = 2e-6                            # m: the plate reactions are in N for this thickness
-_BILAYER_SIZE = (100e-6, 20e-6)
-_BILAYER_INTERFACE_Y = 8e-6
-_BILAYER_LAYERS = ((100e9, 0.3), (50e9, 0.2))
-_BILAYER_PULL = 1e-7                               # m
 
 
 def _plane_stress_specs():
@@ -62,14 +59,8 @@ def _plane_stress_specs():
                    [FeatureSpec('left', 'roller', ['x_lo']), FeatureSpec('bottom', 'roller', ['y_lo']),
                     FeatureSpec('pull', 'boundary_load', ['x_hi'], {'t_x': _PLATE_TRACTION, 't_y': 0.0}),
                     FeatureSpec('heating', 'temperature_change', ['all'], {'delta_T': _PLATE_RISE})])
-    length, height = _BILAYER_SIZE
-    (youngs_a, nu_a), (youngs_b, nu_b) = _BILAYER_LAYERS
     bilayer = _model('Self-test: plane-stress bilayer under tension (solid mechanics)', _BILAYER_SIZE,
-                     [_rectangle('lower', 0.0, 0.0, length, _BILAYER_INTERFACE_Y),
-                      _rectangle('upper', 0.0, _BILAYER_INTERFACE_Y, length, height)],
-                     [MaterialSpec('layer_a', properties=_elastic(youngs_a, nu_a), selection=['lower']),
-                      MaterialSpec('layer_b', properties=_elastic(youngs_b, nu_b), selection=['upper'])],
-                     _PLANE_STRESS,
+                     *_bilayer_parts(), _PLANE_STRESS,
                      [FeatureSpec('left', 'roller', ['x_lo']), FeatureSpec('bottom', 'roller', ['y_lo']),
                       FeatureSpec('pull', 'displacement', ['x_hi'], {'u_x': _BILAYER_PULL})])
     return {'plate': plate, 'bilayer': bilayer}
@@ -138,18 +129,34 @@ _GPS_RISE = 100.0                                  # K
 _GPS_AXIAL_FORCE = 2e-2                            # N on the drawn 8e-10 m^2 cross-section (~2.5e7 Pa)
 
 
+def _gps_materials(regions):
+    """MaterialSpecs layer_a / layer_b of the _GPS_LAYERS on the two region names."""
+    return [MaterialSpec(name, properties=_elastic(youngs, nu, alpha_xx=alpha_xx, alpha_yy=alpha_yy,
+                                                   alpha_zz=alpha_zz), selection=[region])
+            for name, region, ((youngs, nu), (alpha_xx, alpha_yy, alpha_zz))
+            in zip(('layer_a', 'layer_b'), regions, _GPS_LAYERS)]
+
+
+def _layer_constants():
+    """Per layer (lambda, L = lambda + 2 mu, beta_x, beta_y, beta_z, alpha_zz) of the GPS layers."""
+    constants = []
+    for (youngs, nu), (alpha_xx, alpha_yy, alpha_zz) in _GPS_LAYERS:
+        lame_lambda, mu = _lame(youngs, nu)
+        longitudinal = lame_lambda + 2.0 * mu
+        constants.append((lame_lambda, longitudinal, longitudinal * alpha_xx + lame_lambda * (alpha_yy + alpha_zz),
+                          longitudinal * alpha_yy + lame_lambda * (alpha_xx + alpha_zz),
+                          longitudinal * alpha_zz + lame_lambda * (alpha_xx + alpha_yy), alpha_zz))
+    return constants
+
+
 def _gps_specs():
     length, height = _GPS_SIZE
-    materials = []
-    for name, region, ((youngs, nu), (alpha_xx, alpha_yy, alpha_zz)) in zip(('layer_a', 'layer_b'),
-                                                                             ('left_part', 'right_part'), _GPS_LAYERS):
-        materials.append(MaterialSpec(name, properties=_elastic(youngs, nu, alpha_xx=alpha_xx, alpha_yy=alpha_yy,
-                                                                alpha_zz=alpha_zz), selection=[region]))
     return {_RUN: _model('Self-test: generalized plane strain of two heated layers (solid mechanics)', _GPS_SIZE,
                          [_rectangle('left_part', 0.0, 0.0, _GPS_INTERFACE_X, height),
                           _rectangle('right_part', _GPS_INTERFACE_X, 0.0, length, height)],
-                         materials, {'out_of_plane': 'generalized_plane_strain', 'axial_force': _GPS_AXIAL_FORCE,
-                                     'bending': 'none'},
+                         _gps_materials(('left_part', 'right_part')),
+                         {'out_of_plane': 'generalized_plane_strain', 'axial_force': _GPS_AXIAL_FORCE,
+                          'bending': 'none'},
                          [FeatureSpec('left', 'roller', ['x_lo']), FeatureSpec('bottom', 'roller', ['y_lo']),
                           FeatureSpec('top', 'roller', ['y_hi']),
                           FeatureSpec('heating', 'temperature_change', ['all'], {'delta_T': _GPS_RISE})])}
@@ -160,20 +167,12 @@ def _gps_closed_forms():
     length, height = _GPS_SIZE
     widths = (_GPS_INTERFACE_X, length - _GPS_INTERFACE_X)
     numerator, denominator, layers = _GPS_AXIAL_FORCE / height, 0.0, []
-    for width, ((youngs, nu), (alpha_xx, alpha_yy, alpha_zz)) in zip(widths, _GPS_LAYERS):
-        lame_lambda, mu = _lame(youngs, nu)
-        longitudinal = lame_lambda + 2.0 * mu
-        beta_x = longitudinal * alpha_xx + lame_lambda * (alpha_yy + alpha_zz)
-        beta_z = longitudinal * alpha_zz + lame_lambda * (alpha_xx + alpha_yy)
+    constants = _layer_constants()
+    for width, (lame_lambda, longitudinal, beta_x, _, beta_z, _) in zip(widths, constants):
         numerator += width * _GPS_RISE * (beta_z - lame_lambda * beta_x / longitudinal)
         denominator += width * (longitudinal - lame_lambda * lame_lambda / longitudinal)
     axial_strain = numerator / denominator
-    for (youngs, nu), (alpha_xx, alpha_yy, alpha_zz) in _GPS_LAYERS:
-        lame_lambda, mu = _lame(youngs, nu)
-        longitudinal = lame_lambda + 2.0 * mu
-        beta_x = longitudinal * alpha_xx + lame_lambda * (alpha_yy + alpha_zz)
-        beta_y = longitudinal * alpha_yy + lame_lambda * (alpha_xx + alpha_zz)
-        beta_z = longitudinal * alpha_zz + lame_lambda * (alpha_xx + alpha_yy)
+    for lame_lambda, longitudinal, beta_x, beta_y, beta_z, alpha_zz in constants:
         strain_xx = (beta_x * _GPS_RISE - lame_lambda * axial_strain) / longitudinal
         layers.append((strain_xx, lame_lambda * (strain_xx + axial_strain) - beta_y * _GPS_RISE,
                        lame_lambda * strain_xx + longitudinal * axial_strain - beta_z * _GPS_RISE, alpha_zz))
@@ -241,12 +240,8 @@ def _bending_spec(along):
         supports = [FeatureSpec('bottom', 'roller', ['y_lo']), FeatureSpec('left', 'roller', ['x_lo']),
                     FeatureSpec('right', 'roller', ['x_hi'])]
         moments = {'bending_moment_x': _BEND_FIRST_MOMENT, 'bending_moment_y': -0.5 * width * _BEND_AXIAL_FORCE}
-    materials = [MaterialSpec(name, properties=_elastic(youngs, nu, alpha_xx=alpha_xx, alpha_yy=alpha_yy,
-                                                        alpha_zz=alpha_zz), selection=[region])
-                 for name, region, ((youngs, nu), (alpha_xx, alpha_yy, alpha_zz))
-                 in zip(('layer_a', 'layer_b'), ('part_a', 'part_b'), _GPS_LAYERS)]
     return _model(f"Self-test: generalized plane strain with bending, layers along {'xy'[along]} (solid mechanics)",
-                  size, parts, materials,
+                  size, parts, _gps_materials(('part_a', 'part_b')),
                   {'out_of_plane': 'generalized_plane_strain', 'axial_force': _BEND_AXIAL_FORCE, 'bending': 'xy',
                    **moments},
                   supports + [FeatureSpec('heating', 'temperature_change', ['all'], {'delta_T': _GPS_RISE})])
@@ -257,15 +252,8 @@ def _bending_closed_form(edges, along):
     eps_zz and alpha_zz, the centre displacement u_s and (e0, e1) of eps_zz = e0 + e1 s."""
     widths, centres = np.diff(edges), _centres(edges)
     lower = centres < _BEND_INTERFACE
-    columns = []   # per layer (lambda, L, beta_s, beta_t, beta_z, alpha_zz)
-    for (youngs, nu), (alpha_xx, alpha_yy, alpha_zz) in _GPS_LAYERS:
-        lame_lambda, mu = _lame(youngs, nu)
-        longitudinal = lame_lambda + 2.0 * mu
-        beta_x = longitudinal * alpha_xx + lame_lambda * (alpha_yy + alpha_zz)
-        beta_y = longitudinal * alpha_yy + lame_lambda * (alpha_xx + alpha_zz)
-        beta_z = longitudinal * alpha_zz + lame_lambda * (alpha_xx + alpha_yy)
-        beta_s, beta_t = (beta_x, beta_y) if along == 0 else (beta_y, beta_x)
-        columns.append((lame_lambda, longitudinal, beta_s, beta_t, beta_z, alpha_zz))
+    columns = [(lame_lambda, longitudinal, *((beta_x, beta_y) if along == 0 else (beta_y, beta_x)), beta_z, alpha_zz)
+               for lame_lambda, longitudinal, beta_x, beta_y, beta_z, alpha_zz in _layer_constants()]   # beta_s, beta_t
     lame_lambda, longitudinal, beta_s, beta_t, beta_z, alpha_zz = (np.where(lower, a, b) for a, b in zip(*columns))
     reduced = longitudinal - lame_lambda ** 2 / longitudinal
     offset = (beta_z - lame_lambda * beta_s / longitudinal) * _GPS_RISE
@@ -317,9 +305,7 @@ def _check_bending(results_by_name):
         errors.update({f'{run}.F_{held_face}': abs(held - transverse_force) / force_scale,
                        f'{run}.F_{opposite_face}': abs(opposite + transverse_force) / force_scale,
                        f'{run}.F_{end_face}': abs(end) / (stress_scale * _BEND_WIDTH)})
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _TOLERANCE,
-            'details': {'errors': errors, 'e0_e1_expected': {run: list(values) for run, values in terms.items()}}}
+    return worst_result(errors, _TOLERANCE, e0_e1_expected={run: list(values) for run, values in terms.items()})
 
 
 # ---- solid_axisymmetric_operator (CPU): identities of the Gauss (r, z) stiffness and the ring mass ----
@@ -400,9 +386,7 @@ def _operator_check(_results_by_name):
     moment = float(np.sum(density * 2.0 * math.pi * dy[None, :] * (r_nodes[1:] ** 4 - r_nodes[:-1] ** 4)[:, None] / 4.0))
     errors['mass r^2 moment'] = abs(float(radial.ravel() @ (mass @ radial.ravel())) - moment) / moment
     errors['mass symmetry'] = float(np.max(np.abs((mass - mass.T).data), initial=0.0)) / float(np.max(mass.data))
-    worst = worst_error(errors)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _OPERATOR_TOLERANCE,
-            'details': {'errors': errors, 'n_cells': [n_x, n_y]}}
+    return worst_result(errors, _OPERATOR_TOLERANCE, n_cells=[n_x, n_y])
 
 
 # ---- solid_axisymmetric_cylinder: pressurised, heated solid cylinder between z rollers ('graded') ----

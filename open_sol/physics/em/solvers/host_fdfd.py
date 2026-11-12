@@ -5,11 +5,13 @@ after a material change, cuDSS factors kept for their plan)."""
 import math
 
 from ....core.constants import C0, DTYPE
+from ....core.gpu_memory import format_bytes
 from ....core.wavelengths import wavelength_label
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
 from ....solvers.host_direct import is_host_direct_factor
 from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, SparseDirectSolver,
                                        scipy_available)
+from ..fdfd_monitors import CentrePhasorProbe
 from ..harmonic import write_float32
 from ..materials import DrudePole, LorentzPole
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
@@ -32,8 +34,9 @@ def direct_text(factorization):
 
 
 class HostFDFDBase:
-    """Mixin of the host-solved harmonic contract; the class sets type_label / permittivity_slots / state_names and
-    gives _solve(), _mark_assembly_dirty(omega_only=False) and _grid_size_issue()."""
+    """Mixin of the host-solved harmonic contract; the class sets type_label / permittivity_slots / state_names /
+    field_components / component_units and gives _solve(), _mark_assembly_dirty(omega_only=False), _grid_size_issue()
+    and _add_monitor(monitor)."""
     # Driven factor: _factorization (of system's operator itself while _factorization_current, else of an earlier one at
     # the same omega and active set: a GMRES preconditioner, sparse_direct RECYCLE_*); a replaced cuDSS factor is kept
     # as _cudss_previous and refactorised in place by the next factorisation (one plan while the pattern holds). MUMPS /
@@ -43,6 +46,8 @@ class HostFDFDBase:
     permittivity_arrays = ('eps_r', 'eps_xx', 'eps_yy')
     permittivity_slots = {}      # source slot -> permittivity array
     state_names = ()             # float32 full-grid display fields (fields)
+    field_components = ()        # centre phasor components of add_field_probe
+    component_units = {}         # field component -> unit
     _line_block = None           # a LineBlockSolver 'shifted' role (BORPhysics), else None
 
     def _init_host_fdfd(self, domain, wavelength, linear_solver, eigen_solver):
@@ -188,6 +193,29 @@ class HostFDFDBase:
             counters.update(solver.work_counters())
         return counters
 
+    def _cudss_summary(self, text):
+        """solve_summary of a cuDSS 'linear' solver: `text`, then the last factorisation time and the factorisations /
+        plans so far."""
+        linear = self.linear_solver
+        factor = '' if self.last_factor_seconds is None else f'factorisation {self.last_factor_seconds:.3g} s; '
+        return f'{text} ({factor}{linear.n_factorizations} cuDSS factorisations on {linear.n_cudss_plans} plan(s))'
+
+    def _host_factor_summary(self, host_direct):
+        """solve_summary tail of a host factor: the GMRES-recycled solves, then the last factorisation time and host
+        bytes (host_direct: the MUMPS / PARDISO library's own factor, else SuperLU's L + U); '' without either."""
+        linear = self.linear_solver
+        text = ''
+        if linear.n_recycled_solves:
+            last = (f'{self.last_recycled_iterations} GMRES iterations' if self.last_recycled_iterations is not None
+                    else 'factorised')
+            text += (f'; {linear.n_factorizations} factorisations, {linear.n_recycled_solves} solves '
+                     f'GMRES-preconditioned by an earlier factor; last solve {last}')
+        if self.last_factor_seconds is not None:
+            factors = 'factor' if host_direct else 'L + U factors'
+            text += (f' (factorisation {self.last_factor_seconds:.3g} s, {factors} '
+                     f'{format_bytes(self.host_factor_bytes or 0)} of host memory)')
+        return text
+
     # --- driven factor ---
 
     @property
@@ -269,7 +297,21 @@ class HostFDFDBase:
         self.centre_phasors = phasors
         self.solved_omega = omega
 
-    # --- material helpers ---
+    # --- sources, probes and material helpers ---
+
+    def _add_source(self, source):
+        """Append a driven source; the next step() solves again."""
+        self.sources.append(source)
+        self._solution_dirty = True
+        return source
+
+    def add_field_probe(self, x, y, field_component='ez'):
+        """Complex centre phasor of one component (field_components) in the cell containing (x, y) per driven solve."""
+        if field_component not in self.field_components:
+            raise ValueError(f'field probe component must be one of {self.field_components}, got {field_component!r}')
+        self.domain.validate_physical_pos(x, y, 'Field probe')
+        ix, iy = self.domain.pos_to_cell(x, y)
+        return self._add_monitor(CentrePhasorProbe(ix, iy, field_component, self.component_units[field_component]))
 
     def add_dispersive(self, pole, mask):
         """Record a Drude / Lorentz pole on a run-backend bool cell mask (None = everywhere): its chi(omega) joins every

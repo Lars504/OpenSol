@@ -79,7 +79,7 @@ templates, describe. Current state, no changelog.
   keeps only values whose references are in the series too, `session.earlier_derived_names`); validate errors for a
   later name or one shadowed by a parameter / field / scalar / reserved name; `ModelSpec.rename_derived_value` renames
   the references (later expressions, adaptation target, 'sweep' analytic-curve series). Operation 'expression'
-  (`schema.GLOBAL_DERIVED_OPERATION`, source None; in `SOURCE_FREE_DERIVED_OPERATIONS`) = COMSOL's global evaluation:
+  (`schema.GLOBAL_DERIVED_OPERATION`, source None; in `SOURCE_FREE_DERIVED_OPERATIONS`) = a standard global evaluation:
   one float64 `evaluate_scalar` over `Session._plain_namespace` (parameters, scalar outputs, t, earlier values; no
   mesh, selection or point), branched in `Session.derived_value` before `evaluate`, so every consumer (summaries,
   sweeps, series, references, parity-sector recomputes) takes it unchanged; validate `_check_global_expression`
@@ -126,6 +126,9 @@ templates, describe. Current state, no changelog.
   points_per_wavelength); refinement dx sweeps are not detected.
 - Reused (cached) selftest records come back through read_json: non-finite numbers are the strings 'nan' / 'inf', so
   report code reading them must `float()` first.
+- Case records come from `selftest_helpers`, not hand-built dicts: `SubChecks.result` / `failed_count_result` ({name:
+  (value, tolerance)}) count failed sub-checks; `worst_result` (one tolerance), `scaled_worst_result` /
+  `tolerance_units_result` / `normalized_result` (worst error in tolerance units, tolerance 1) rank NaN as the worst.
 - `selftest_cache.py` (no api import; root file "Selftest reuse"): `UNTRACKED_PATHS` files add no units and no
   followed names, and their units are dropped from every set. Dependencies are code units: per package file each
   top-level function, each undecorated class with methods, and MODULE_UNIT (the rest: imports, constants, kernel
@@ -258,8 +261,8 @@ templates, describe. Current state, no changelog.
   (heat P is per the 1D total: W/m^2, W/m or W; its help says W/m).
 - Spec: pass the registry to renames (typed 'ref' / 'names' params, field names). Geometry objects and selections
   share one namespace minus `RESERVED_ENTITY_NAMES` (FACES + 'all'). Material `dispersion` None inherits the library
-  poles, [] none. Composite geometry consumes its inputs (COMSOL's default): an object feeds one composite only and is
-  no longer selectable on its own; a second use needs a duplicate.
+  poles, [] none. Composite geometry consumes its inputs (the industry-standard default): an object feeds one composite
+  only and is no longer selectable on its own; a second use needs a duplicate.
 - Arrays (kind 'array': base, nx / ny / nz, pitch_x / _y / _z; nz / pitch_z in `Z_PARAM_NAMES`): `resolve_geometry`
   adds every copy as a resolved shape ('<array>[i,j]', '[i,j,k]' when nz > 1; a composite base is copied whole, its
   inputs '<input>@<copy>'; `geometry.is_array_copy`) right after the array, values = base + i pitch (exact float
@@ -694,7 +697,8 @@ templates, describe. Current state, no changelog.
   non-OOM failure of a single run keeps its session. The sweep table lists failed values in `failed` [{index, value,
   message}] (study status stays 'completed'; api reports status 'partial', CLI exit 1). A feature result a value cannot
   produce (`_feature_results`: an FDFD probe in an eigenfrequency sweep) is left out with one warning per key, never
-  fails the value. The summary carries `parameters` (of the session its values come from) and `sweep_index`.
+  fails the value. The summary carries `parameters` (of the session its values come from) and `sweep_index`. Loops
+  that stop on a cancel between items test `control.checkpoint_cancelled(service)` (RunControl.checkpoint as a flag).
 - `solve_stationary` returns `fixed_point` {converged, iterations, relative_change, tolerance} (None without a loop);
   stationary / frequency_domain summaries carry it and the sweep table a `converged` per value. Non-convergence keeps
   status 'completed'; `api._final_status` only notes it in the message.
@@ -1015,7 +1019,10 @@ templates, describe. Current state, no changelog.
 ## Registry, templates, describe
 - CouplingType source_type / target_type are None, a name or a tuple: test only with `schema.coupling_type_accepts` /
   `coupling_role_text`, never ==.
-- Templates: read only through `templates.template_entries(registry)` (built-ins first; duplicate key raises); every
+- A loop over `spec.physics` that skips unregistered types (validate reports them) takes
+  `schema.known_physics(spec, registry)` -> (PhysicsSpec, PhysicsType).
+- Templates: read only through `templates.template_entries(registry)` (built-ins first; duplicate key raises; a fresh
+  ModelSpec by `template_model(entry)` / `make_template(key)`, both refusing a factory that returns no ModelSpec); every
   template must validate cleanly (selftest templates_validate), likewise every examples/**/*.json (examples_validate,
   api.EXAMPLES_DIR; mirrors the GUI catalog's file rule). `app.main` starts with dielectric_cylinder.
 - `describe()` is deterministic (sorted sets, declared order, floats '%.6g', ASCII, no addresses / timestamps) and

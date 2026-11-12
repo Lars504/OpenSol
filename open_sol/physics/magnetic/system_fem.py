@@ -11,7 +11,7 @@ from ...core.damped_iteration import DampingSettings
 from ...fem.assembly import assemble_load, nodal_average
 from ...fem.diffusion import floating_region_count, ring_dof_locations, window_face_edges
 from ...fem.dofs import lagrange_dofs
-from ...fem.elasticity import local_dof_points
+from ...fem.elasticity import CENTROID, local_dof_points
 from ...fem.elements import lagrange_basis
 from ...fem.fixed_pattern import FixedPatternCsr
 from ...fem.magnetostatics import (assemble_curl_tangent, curl_quadrature, curl_tangent_blocks, curl_vector,
@@ -24,7 +24,6 @@ FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 ARMIJO_FRACTION = 1e-4                      # sufficient decrease of W per unit of the predicted R . delta
 MIN_STEP = DampingSettings.min_relaxation   # smallest line-search step before the loop gives up
 ENERGY_ROUNDING = 1e-12                     # relative slack of the energy test (round-off of W near the minimum)
-CENTROID = np.array([[1.0 / 3.0, 1.0 / 3.0]])
 
 
 class MagneticFEMSystem:

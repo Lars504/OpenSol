@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 # (case, selftest wall s): CPML + dipole + flux box + far field; mode source / monitors (host cross-section solves);
@@ -18,21 +19,17 @@ def _specs():
     return {f'{case}__{run}': spec for case, _ in CASES for run, spec in case_specs(case).items()}
 
 
-def _methods(owner, label, names):
-    return tuple((f'{owner}.{name}', f'{label}: {name}') for name in names)
-
-
 EM3D = 'open_sol.physics.em3d'
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.model.study:_SnapshotRecorder.record', 'study: _SnapshotRecorder.record'),
     ('open_sol.model.study:_feature_results', 'study: _feature_results'),
     ('open_sol.model.study:_LiveFeed.update', 'study: _LiveFeed.update'),
-) + _methods('open_sol.coupling.runner:MultiphysicsRunner', 'runner', ('prepare', 'advance', 'flush')
-) + _methods('open_sol.coupling.coupling_term:CouplingTerm', 'coupling', ('apply', 'apply_now', 'flush')
-) + _methods('open_sol.physics.heat.solver:HeatPhysics', 'heat', ('finalize', 'step')
-) + _methods(f'{EM3D}.physics3d:EMPhysics3D', 'physics', (
+) + methods('open_sol.coupling.runner:MultiphysicsRunner', 'runner', ('prepare', 'advance', 'flush')
+) + methods('open_sol.coupling.coupling_term:CouplingTerm', 'coupling', ('apply', 'apply_now', 'flush')
+) + methods('open_sol.physics.heat.solver:HeatPhysics', 'heat', ('finalize', 'step')
+) + methods(f'{EM3D}.physics3d:EMPhysics3D', 'physics', (
     'finalize', 'step', '_refresh_materials', 'state', 'take_absorbed_power', 'inject_source')
-) + _methods(f'{EM3D}.engine3d:FDTDEngine3D', 'engine', (
+) + methods(f'{EM3D}.engine3d:FDTDEngine3D', 'engine', (
     'advance', 'rebuild_materials', '_refresh_pole_cb', '_refresh_ohmic_box', 'stability_issue', 'deposit_pole_work',
     'reset_q_accum', 'take_absorbed_power')
 ) + (
@@ -55,7 +52,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     (f'{EM3D}.monitors3d:DFTPlane3D.spectrum', 'monitor: DFTPlane3D.spectrum'),
     (f'{EM3D}.near_to_far3d:NearToFar3D.radiation_vectors', 'far field: NearToFar3D.radiation_vectors'),
     (f'{EM3D}.near_to_far3d:NearToFar3D.far_field_amplitude', 'far field: NearToFar3D.far_field_amplitude'),
-) + _methods(f'{EM3D}.renderer3d:EMRenderer3D', 'renderer', ('device_field', 'device_plane', '_field', '_centre'))
+) + methods(f'{EM3D}.renderer3d:EMRenderer3D', 'renderer', ('device_field', 'device_plane', '_field', '_centre'))
 
 if __name__ == '__main__':
     main('em_fdtd_3d', PARTS, __doc__, specs=_specs,

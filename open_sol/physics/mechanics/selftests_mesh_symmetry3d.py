@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import lithium_niobate_entry
+from ...model.selftest_helpers import lithium_niobate_entry, worst_result
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec
 
 UM = 1e-6
@@ -67,9 +67,7 @@ def _check_edge_sizes(_):
                        largest_edge_over_size=largest)
         errors['edge_ratio'] = max(largest / _EDGE_RATIO - 1.0, 0.0)
         errors['refines'] = float(not mesh.n_elements > plain.n_elements)
-    worst = float(max(errors.values()))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _DISTANCE_TOLERANCE,
-            'details': {**details, 'errors': errors}}
+    return worst_result(errors, _DISTANCE_TOLERANCE, **details)
 
 
 # ---- solid_fem3d_electrode_edge_size: the setting through meshing (CPU, no run) ----
@@ -109,9 +107,7 @@ def _check_edge_setting(_):
     builtin = _edge_spec(_EDGE_SIZE, mesher='builtin')
     errors['builtin_info'] = float(not any(issue.level == 'info' and 'electrode_edge_size' in issue.message
                                            for issue in validate(builtin, registry)))
-    worst = float(max(errors.values()))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 0.5,
-            'details': {**details, 'errors': errors}}
+    return worst_result(errors, 0.5, **details)
 
 
 # ---- solid_fem3d_mirror_parity_check: crystal_tensors.mirror_violation and the Roller warning (CPU) ----
@@ -148,9 +144,7 @@ def _check_mirror(_):
               if issue.level == 'warning' and 'mirror plane' in issue.message}
     details['warned_features'] = sorted(warned)
     errors['warnings'] = float(warned != {'roll_y', 'roll_z'})
-    worst = float(max(errors.values()))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 0.5,
-            'details': {**details, 'errors': errors}}
+    return worst_result(errors, 0.5, **details)
 
 
 MESH_SYMMETRY_3D_CASES = (

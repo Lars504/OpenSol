@@ -7,15 +7,15 @@ directly; em_fdfd_3d on a 'tetrahedra' mesh wraps it (fem_solver3d.FEMResonanceP
 # coordinate stretches s = kappa + sigma / (alpha + j omega_t eps0) (em3d CPML grading over the shell width beyond each
 # cpml window face, sigma_max = cpml_sigma_max at width / cpml_npml); Lambda = 1 in the window. K = int curl W . nu'
 # curl W, M = int W . eps' W; A = -K + k_t^2 M on the free dofs (eigenfrequency.py sign, B = -M sparse). Walls:
-# pec / antisymmetric faces and the outer side of a PML shell (COMSOL's default exterior) fix the tangential dofs;
-# pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every dof they touch.
-# Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same node order (the
-# builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands for its lo-side
-# master times e^{-j k L} per crossed period (fem.dofs3d.bloch_masters: F(x + L) = F(x) e^{-j k L}, L = the node
-# extent), u = P u_free, and the test space is the conjugate one, so A_free = P^H A P (likewise K, M, W): Hermitian
-# without loss / PML, not complex symmetric once a phase is complex (LU, no LDL^T or Rayleigh polish); k = 0 keeps P
-# real and the system symmetric. A master is pinned with any dof it stands for. Elements hold the material of their
-# region (fem.mesh3d: the last solid at the centroid clamped into the window, so the shell
+# pec / antisymmetric faces and the outer side of a PML shell (the industry-standard default exterior) fix the
+# tangential dofs; pmc / symmetric faces are natural (mirror planes = window faces); PEC elements drop out with every
+# dof they touch. Periodic faces (Bloch, igor3d_plan T6): the mesh's two sides must match node for node with the same
+# node order (the builtin Kuhn split does; fem.dofs3d.periodic_dof_partners raises otherwise); each hi-side dof stands
+# for its lo-side master times e^{-j k L} per crossed period (fem.dofs3d.bloch_masters: F(x + L) = F(x) e^{-j k L}, L =
+# the node extent), u = P u_free, and the test space is the conjugate one, so A_free = P^H A P (likewise K, M, W):
+# Hermitian without loss / PML, not complex symmetric once a phase is complex (LU, no LDL^T or Rayleigh polish); k = 0
+# keeps P real and the system symmetric. A master is pinned with any dof it stands for. Elements hold the material of
+# their region (fem.mesh3d: the last solid at the centroid clamped into the window, so the shell
 # extrudes the window-edge materials). PML share: the per-row energy of W = int W . |Re eps| W (no stretch), window
 # rows = dofs whose entity centre lies in the closed window. Equilibration of a cuDSS / MUMPS / PARDISO factor:
 # (|diag K| + k_t^2 |diag M|)^-1/2 (cudss_factor header). Rule degree 2 x degree, + 2 in PML elements (varying Lambda).
@@ -169,8 +169,8 @@ class FEMPhysics3D:
     untagged elements) or a callable omega -> ((m, 3) complex eps, (m,) complex 1 / mu, (m,) bool pec) per element
     (the model path, em3d fem_solver3d), a BoundaryConfig3D (cpml faces need the mesh's PML shell, periodic faces
     matching mesh sides; bloch_k as em_fdfd_3d), element_order
-    1 / 2, the target wavelength [m]; solve_eigenfrequencies / select_resonance as em_fdfd_3d, fields_at / plane_cut
-    sample the selected resonance; invalidate() after a material change."""
+    1 / 2, the target wavelength [m]; solve_eigenfrequencies / select_resonance as em_fdfd_3d, fields_at
+    samples the selected resonance; invalidate() after a material change."""
 
     def __init__(self, mesh, boundary_config, materials=None, background=None, element_order=2, wavelength=1.55e-6,
                  eigen_solver=None):
@@ -367,22 +367,6 @@ class FEMPhysics3D:
             self._field_cache[key] = (elements, reference, fields)   # holds the arrays: their ids stay unique
             self._field_cache_points += len(elements)
         return fields
-
-    def plane_cut(self, axis, position, counts=(64, 64)) -> dict:
-        """Fields of the selected resonance on a counts grid over the window cut normal to axis (0 / 1 / 2) at
-        position [m]: {'u', 'v' (1D coordinates), 'e', 'h' ((n_u, n_v, 3)), 'e_abs' ((n_u, n_v))}."""
-        window = self.mesh.window
-        others = [k for k in range(3) if k != axis]
-        u = np.linspace(window[others[0]], window[3 + others[0]], int(counts[0]))
-        v = np.linspace(window[others[1]], window[3 + others[1]], int(counts[1]))
-        grid_u, grid_v = np.meshgrid(u, v, indexing='ij')
-        points = np.empty(grid_u.shape + (3,))
-        points[..., axis] = float(position)
-        points[..., others[0]], points[..., others[1]] = grid_u, grid_v
-        fields = self.fields_at(points.reshape(-1, 3))
-        shape = grid_u.shape + (3,)
-        e_field, h_field = fields['e'].reshape(shape), fields['h'].reshape(shape)
-        return {'u': u, 'v': v, 'e': e_field, 'h': h_field, 'e_abs': np.sqrt((np.abs(e_field) ** 2).sum(axis=-1))}
 
     def work_counters(self) -> dict:
         """Assemblies and their host seconds (+ the eigen solver's counters when it is private)."""

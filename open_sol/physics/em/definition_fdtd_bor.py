@@ -3,23 +3,22 @@ time stepped) on definition_common / definition_bor, with its self-tests; defini
 import math
 from dataclasses import replace
 
-from ...core.constants import FACE_LABELS
 from ...core.time_estimate import explicit_step_estimate
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, GEOMETRY_SETTING,
                                          axisymmetric_issues, validate_points_inside, wavelength_range_issues)
 from ...model.definition_resonance import resonance_monitor_feature as shared_resonance_feature
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from .body_of_revolution import BOR_FIELD_COMPONENTS, BOR_SOURCE_COMPONENTS
-from .definition_bor import (COMPONENT_TIPS, _BC_TIP, _COMPONENT_LABELS, _COMPONENT_NAMES, _MODE_MONITOR_PARAMS,
-                             _PORT_POWER_PARAMS, _WALL_CHOICE_LABELS, _port_line, _validate_far_field,
-                             _validate_line_monitor, azimuthal_order_list_issues)
+from .definition_bor import (_COMPONENT_NAMES, _MODE_MONITOR_PARAMS, _PORT_POWER_PARAMS, _port_line, _validate_far_field,
+                             _validate_line_monitor, axis_wall_settings, azimuthal_order_list_issues,
+                             cylindrical_material_params)
 from .definition_common import (BOX_CELLS, EM_FAMILY, FLUX_PARAMS, FREQUENCY_DOMAIN_STUDY, PER_CW_TEXT,
                                 POINT_SOURCE_SIGN, SPAN_CELLS, _monitor_wavelength_kwargs, _window_axes,
                                 apply_component_point_source, apply_far_field, apply_field_probe, apply_flux_monitor,
-                                apply_pec, boundary_settings_params, domain_requirements, em_material_params,
-                                far_field_params, make_far_field_result_callback, make_source_shortest_wavelength,
-                                make_validate_physics, object_result, other_em_physics_labels, probe_result_callback,
-                                source_slot_docs, steps_in_time, waveform_params, write_dispersive_materials)
+                                apply_pec, domain_requirements, far_field_params, make_far_field_result_callback,
+                                make_source_shortest_wavelength, make_validate_physics, object_result,
+                                other_em_physics_labels, probe_result_callback, source_slot_docs, steps_in_time,
+                                waveform_params, write_dispersive_materials)
 from .definition_feature_validation import _line_cells, _selected_shapes
 from .definition_harmonic_fdtd import HARMONIC_FDTD_TEXT, make_validate_harmonic_fdtd
 from .definition_resonance import RESONANCE_SUMMARY, em_resonance_probe
@@ -33,8 +32,6 @@ from .solvers.fdtd_bor import (H_COMPONENTS, BORFDTDPhysics, fdtd_bor_far_field_
                                fdtd_bor_mode_result)
 
 _TYPE_NAME = 'em_fdtd_bor'
-_AXIS = 'axis'
-_WALL_FACES = ('x_hi', 'y_lo', 'y_hi')
 _FIELDS_NOTE = ('The fields are the real time-domain amplitudes of one azimuthal order m: the standing wave whose E_r, '
                 'E_z, H_phi vary as cos(m phi) and E_phi, H_r, H_z as sin(m phi) (m = 0: the TM fields E_r, E_z, H_phi '
                 'and the TE fields E_phi, H_r, H_z themselves). Its DFT phasors divided by the source spectrum are the '
@@ -53,9 +50,6 @@ _BC_HELP = (
     'well close to the axis and at large azimuthal order as far out (pml_alpha_max acts on the z faces only). A pec / '
     'pmc z_lo face is the antisymmetric / symmetric mirror plane of a structure symmetric about z = 0 (pmc keeps E_r, '
     'E_phi even about it, pec E_z). No periodic or mirror faces.')
-_PML_VISIBLE = tuple((f'bc_{face}', ('cpml',)) for face in _WALL_FACES)
-_PML_PARAMS = tuple(replace(param, visible_if=_PML_VISIBLE) for param in boundary_settings_params(_BC_HELP)
-                    if param.name.startswith('pml_'))
 _SETTINGS = (
     Param(GEOMETRY_SETTING, 'choice', AXISYMMETRIC, label='Geometry', choices=(AXISYMMETRIC,),
           choice_labels=((AXISYMMETRIC, 'Axisymmetric (r, z)'),),
@@ -63,12 +57,7 @@ _SETTINGS = (
                'edge (x = r >= 0, y = z). The setting exists so that coupled physics with a geometry setting (heat, '
                'electric_currents, electrostatics) recognise a consistent axisymmetric partner.',
           tip='The drawing is half of a cut through a round object, rotated about the left edge of the domain.'),
-    Param('bc_x_lo', 'choice', _AXIS, label=FACE_LABELS['x_lo'], choices=(_AXIS,),
-          choice_labels=((_AXIS, 'Symmetry axis (r = 0)'),), help=_BC_HELP,
-          tip='The left edge is the rotation axis: no boundary condition can be set there.'),
-    *(Param(f'bc_{face}', 'choice', 'cpml', label=FACE_LABELS[face], choices=('cpml', 'pec', 'pmc'), help=_BC_HELP,
-            tip=_BC_TIP, choice_labels=_WALL_CHOICE_LABELS) for face in _WALL_FACES),
-    *_PML_PARAMS,
+    *axis_wall_settings(_BC_HELP),
     Param('azimuthal_order', 'int', 0, label='Azimuthal order', min=0, max=10000,
           help='Azimuthal order m >= 0 of the fields (one (r, z) run per order; +m and -m are degenerate). m = 0: '
                'on-axis dipoles and the radial modes of disks and pillars (TE and TM decouple); m = 1: the fields of an '
@@ -116,8 +105,7 @@ _REAL_ONLY = ('Real values only; a value below 1 at a field point stops the buil
               'three components (velocity form as the 2D FDTD; an E_r / E_z point sees the pole times the share of its '
               'cells that carry it), this value or the first Drude eps_inf being the background; see courant_factor '
               'for the pole time-step bound.')
-_MATERIAL_PROPERTIES = tuple(replace(param, label=_COMPONENT_LABELS.get(param.name, param.label))
-                             for param in em_material_params('modes', {
+_MATERIAL_PROPERTIES = cylindrical_material_params({
     'eps_r': ('Isotropic relative permittivity (>= 1) of all three components (eps_rr, eps_phiphi, eps_zz); n^2 of a '
               'lossless dielectric (silicon ~12.1, silica ~2.1 at 1.55 um); may depend on r (x), z (y) and physics '
               f'fields (rewritten coefficients at each change); a component property wins over it. {_COMPONENT_NAMES} '
@@ -132,7 +120,7 @@ _MATERIAL_PROPERTIES = tuple(replace(param, label=_COMPONENT_LABELS.get(param.na
     'mu_r': ('Real relative permeability (>= 1), 1 for optical materials; H_r, H_phi and H_z take the mean of the cells '
              'around their points.'),
     'sigma_m': 'Magnetic loss in Ohm/m on H (semi-implicit), default 0 (artificial absorbers only).',
-}, tips=COMPONENT_TIPS))
+})
 
 # ---- features ----
 _POINT_SOURCE_PARAMS = waveform_params() + (
@@ -213,10 +201,10 @@ _MODE_SOURCE_DESCRIPTION = (
     'Port source launching one guided mode of a waveguide along the axis (fibre, pillar, metal pipe, coaxial guide) '
     'from a horizontal line in one direction: a one-sided total-field / scattered-field interface between the line row '
     'and the row upstream in time, the mode at the carrier frequency on the two rows (Re and Im of its profile driven '
-    'by the waveform and its quadrature; as COMSOL\'s transient ports, the mode of one frequency). At the carrier the '
-    'launch is exact and one-sided; at other frequencies of a pulse the carrier profile launches a somewhat different '
-    'power and leaks a little backward (both grow with the change of n_eff over the band, strongest near a cutoff), so '
-    'for spectra divide by the forward power of a mode_monitor between the source and the device. '
+    'by the waveform and its quadrature; as industry-standard transient ports, the mode of one frequency). At the '
+    'carrier the launch is exact and one-sided; at other frequencies of a pulse the carrier profile launches a '
+    'somewhat different power and leaks a little backward (both grow with the change of n_eff over the band, strongest '
+    'near a cutoff), so for spectra divide by the forward power of a mode_monitor between the source and the device. '
     f'{_PORT_TEXT} Result \'table\' of the carrier solve, one row '
     'per mode found (up to max(mode_number + 2, 4)): mode_number, n_eff, n_eff_imag, loss_db_per_cm, n_group, '
     'edge_field, selected; extras wavelength (the carrier, m), power (W), direction, mode_number and phase (deg).')

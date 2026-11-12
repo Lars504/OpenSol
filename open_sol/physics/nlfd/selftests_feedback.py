@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, with_exact_cg
+from ...model.selftest_helpers import float_list, normalized_result, with_exact_cg
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
 
@@ -183,10 +183,7 @@ def _check_feedback(results_by_name):
     method_bulk, method_sheet = _region_deviation(q_by_run['newton'], q_by_run['picard'], True)
     errors['picard Q = newton Q bulk'] = method_bulk / _METHOD_TOLERANCE
     errors['picard Q = newton Q sheet line'] = method_sheet / _METHOD_TOLERANCE
-    worst_item = max(errors, key=lambda item: math.inf if math.isnan(errors[item]) else errors[item])
-    details.update(normalized_errors=errors, worst_item=worst_item)
-    worst = errors[worst_item]
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(errors, details)
 
 
 def _check_feedback_memory(_results):

@@ -739,9 +739,9 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
         self.mutate('physics', assign, label=f'Set {physics_name} {role} solver')
 
     def add_mesh(self, kind='tensor', physics=None) -> str:
-        """Add a mesh of MeshSpec kind `kind` in automatic mode (COMSOL's physics-controlled default; tetrahedra:
-        mesher gmsh when it is installed) and select it; with `physics` it is named '<physics>_mesh' and that physics
-        moves onto it in the same edit ('New mesh for this physics')."""
+        """Add a mesh of MeshSpec kind `kind` in automatic mode (the industry-standard physics-controlled default;
+        tetrahedra: mesher gmsh when it is installed) and select it; with `physics` it is named '<physics>_mesh' and
+        that physics moves onto it in the same edit ('New mesh for this physics')."""
         from ..fem.gmsh_io import find_gmsh
 
         if kind not in MESH_KINDS:

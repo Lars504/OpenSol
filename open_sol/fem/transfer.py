@@ -7,7 +7,7 @@ import math
 
 import numpy as np
 
-from .assembly import CsrAccumulator, element_areas
+from .assembly import CsrAccumulator, _weights, element_areas
 from .elements import element_geometry, lagrange_values
 from .mesher import MERGE_TOLERANCE
 from .quadrature import subdivided_rule
@@ -159,10 +159,7 @@ def _samples(dofs, positions, degree, subdivisions, axisymmetric):
     for start in range(0, len(positions), chunk):
         part = positions[start:start + chunk]
         geometry = element_geometry(dofs.mesh, dofs.elements[part], rule.points, dofs.geometry_order)
-        weights = rule.weights[None, :] * geometry.determinant
-        if axisymmetric:
-            weights = weights * geometry.points[..., 0]
-        yield part, geometry.points, weights, rule.points
+        yield part, geometry.points, _weights(geometry, rule, axisymmetric), rule.points
 
 
 def _basis_rows(dofs, points):

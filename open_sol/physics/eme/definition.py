@@ -7,7 +7,7 @@ from dataclasses import replace
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate
 from ...model.definition_helpers import optimization_evaluations
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, known_physics
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, arnoldi_basis_size
 from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
                                     PERIODIC_BC_HELP, all_solved_wavelengths, apply_pec, boundary_settings_params,
@@ -155,8 +155,7 @@ def validate_ports(vctx, physics_spec, feature_spec, values):
     """input_mode above a non-zero n_modes: error; a second enabled eme_ports: error."""
     path = feature_path(physics_spec, feature_spec)
     issues = []
-    settings = physics_spec.settings if isinstance(physics_spec.settings, dict) else {}
-    n_modes = settings.get('n_modes', 20)
+    n_modes = _settings_value(physics_spec, 'n_modes', 20)
     if isinstance(n_modes, int) and 0 < n_modes < values['input_mode']:
         issues.append(Issue('error', path, f"input_mode {values['input_mode']} exceeds n_modes {n_modes}"))
     ports = [feature.name for feature in physics_spec.features if feature.enabled and feature.type == PORTS_FEATURE]
@@ -200,9 +199,7 @@ def apply_length_sweep(ctx, solver, feature_spec, values, selection):
 def validate_length_sweep(vctx, physics_spec, feature_spec, values):
     """stop <= start or an empty factor list: error."""
     path = feature_path(physics_spec, feature_spec)
-    issues = []
-    if not values['stop'] > values['start']:
-        issues.append(Issue('error', path, f"stop ({values['stop']:.6g} m) must exceed start ({values['start']:.6g} m)"))
+    issues = _range_issues(values, path)
     if not values['stretch_factors']:
         issues.append(Issue('error', path, 'stretch_factors is empty'))
     return issues
@@ -470,14 +467,9 @@ _SHARED_VALIDATE = make_validate_physics(EME_PERMITTIVITY_SLOTS, time_domain=Fal
 
 def other_em_issues(vctx, path, type_name=TYPE_NAME):
     """Error when another family-'em' type shares the model with type_name (one EM formulation per model)."""
-    others = []
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:
-            continue
-        if physics_type.family == EM_FAMILY and physics_type.name != type_name:
-            others.append(f"'{physics.name}' ({physics_type.name})")
+    others = [f"'{physics.name}' ({physics_type.name})"
+              for physics, physics_type in known_physics(vctx.spec, vctx.registry)
+              if physics_type.family == EM_FAMILY and physics_type.name != type_name]
     if not others:
         return []
     return [Issue('error', path, f"{type_name} solves the model by eigenmode expansion and cannot share it with "

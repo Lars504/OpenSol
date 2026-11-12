@@ -10,7 +10,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, HBAR
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, relative_error
+from ...model.selftest_helpers import PERIODIC_Y, relative_error, vertical_line
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
 
@@ -123,7 +123,7 @@ def _strip_spec(polarization, title, case, with_medium, early=False):
     size_x, size_y = _SIZE
     index = _BACKGROUND_INDEX[case]
     amplitude = _GAIN_AMPLITUDE if case == 'gain' else _AMPLITUDE / math.sqrt(index)
-    geometry = [GeometrySpec('source_line', 'line', {'x0': _SOURCE_X, 'y0': 0.0, 'x1': _SOURCE_X, 'y1': size_y}),
+    geometry = [vertical_line('source_line', _SOURCE_X, 0.0, size_y),
                 GeometrySpec('probe_point', 'point', {'x': _PROBE_POINT[0], 'y': _PROBE_POINT[1]})]
     features = [FeatureSpec('source', 'line_source', ['source_line'],
                             {'waveform': 'cw', 'wavelength': _WAVELENGTH, 'amplitude': amplitude}),
@@ -368,9 +368,9 @@ def nonlinear_silicon_slab_spec():
     size_x, size_y = 8e-6, 0.1e-6
     return ModelSpec(
         title=TEMPLATE_LABEL, domain=DomainSpec(size_x=size_x, size_y=size_y),
-        geometry=[GeometrySpec('source_line', 'line', {'x0': 1.5e-6, 'y0': 0.0, 'x1': 1.5e-6, 'y1': size_y}),
+        geometry=[vertical_line('source_line', 1.5e-6, 0.0, size_y),
                   GeometrySpec('slab', 'rectangle', {'x0': 3e-6, 'y0': 0.0, 'x1': 5e-6, 'y1': size_y}),
-                  GeometrySpec('flux_line', 'line', {'x0': 6.5e-6, 'y0': 0.0, 'x1': 6.5e-6, 'y1': size_y}),
+                  vertical_line('flux_line', 6.5e-6, 0.0, size_y),
                   GeometrySpec('probe_point', 'point', {'x': 6.01e-6, 'y': 0.05e-6})],
         materials=[MaterialSpec('silicon', properties={'eps_r': 12.1}, selection=['slab'])],
         physics=[PhysicsSpec(_PHYSICS_NAME, 'em_fdtd_ez', settings=dict(PERIODIC_Y), features=[

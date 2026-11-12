@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import REPOSITORY, SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 from profiler_solver_em_fdfd_3d import double_factor  # noqa: E402
 
@@ -33,10 +34,6 @@ def _on_gpu(spec):
     return spec
 
 
-def _methods(owner, label, names):
-    return tuple((f'{owner}.{name}', f'{label}: {name}') for name in names)
-
-
 EM3D = 'open_sol.physics.em3d'
 EIGEN = 'open_sol.physics.em.eigenfrequency'
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
@@ -50,9 +47,9 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.fem.gmsh3d:mesh_solids_with_gmsh', 'mesh: mesh_solids_with_gmsh'),
     ('open_sol.fem.gmsh3d:_run_gmsh', 'mesh: gmsh process'),
     ('open_sol.fem.dofs3d:nedelec_dofs_3d', 'fem: nedelec_dofs_3d'),
-) + _methods(f'{EM3D}.fem_solver3d:FEMResonancePhysics3D', 'physics', (
+) + methods(f'{EM3D}.fem_solver3d:FEMResonancePhysics3D', 'physics', (
     'finalize', 'solve_eigenfrequencies', 'select_resonance', '_element_materials', 'state')
-) + _methods(f'{EM3D}.fem3d:FEMPhysics3D', 'fem physics', (
+) + methods(f'{EM3D}.fem3d:FEMPhysics3D', 'fem physics', (
     '_assemble', '_pinned', '_bloch_prolongation', 'select_resonance', 'fields_located')
 ) + (
     (f'{EM3D}.fem3d:pml_shell_3d', 'fem: pml_shell_3d'),
@@ -67,7 +64,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     (f'{EIGEN}:squared_cayley_roots', 'eigen: squared_cayley_roots'),
     (f'{EIGEN}:_resonance', 'eigen: _resonance'),
     (f'{EIGEN}:_PencilMass.device_times', 'eigen: _PencilMass.device_times'),
-) + _methods(f'{EM3D}.renderer_fem3d:FEMRenderer3D', 'renderer', ('sample', 'device_field'))
+) + methods(f'{EM3D}.renderer_fem3d:FEMRenderer3D', 'renderer', ('sample', 'device_field'))
 
 if __name__ == '__main__':
     main('em_fdfd_3d_tetrahedra', PARTS, __doc__, specs=_specs, spec_edit=_on_gpu,

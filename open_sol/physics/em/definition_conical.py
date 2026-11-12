@@ -3,28 +3,29 @@ fixed out-of-plane wave number k_z) on definition_common, with its self-tests; d
 from dataclasses import replace
 
 from ...core import time_estimate as te
-from ...model.definition_helpers import (CUDSS_LINEAR_ROLE, eigen_factorization, eigen_role, host_direct_back_end,
-                                         linear_solver_cudss, resolved_back_end, validate_points_inside)
+from ...model.definition_helpers import CUDSS_LINEAR_ROLE, eigen_role, linear_solver_cudss
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
 from ...solvers.sparse_direct import MIXED_BACK_ENDS
 from .conical import COMPONENTS, FIELD_COMPONENTS, size_issue_for
 from .fem_conical import FEM_CONICAL_SIZE_REMEDY
-from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
+from .fem_modes import DISCRETIZATION_ORDERS, PERIODIC_TEXT
 from .definition_bloch import bloch_active_axes, bloch_params, fdfd_bloch_issues, fdfd_domain_requirements
 from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY,
                                 FREQUENCY_DOMAIN_STUDY, PERIODIC_BC_HELP, POINT_SOURCE_SIGN, SPAN_CELLS, _window_axes,
                                 all_solved_wavelengths, apply_component_point_source, apply_field_probe,
-                                apply_flux_monitor, apply_pec, boundary_settings_params, eigen_backend_kwargs,
-                                eigen_only_feature_issues, em_material_params, fem_size_issues, first_solved_wavelength,
+                                apply_flux_monitor, apply_pec, apply_resonance_table, boundary_settings_params,
+                                eigen_backend_kwargs, eigen_only_feature_issues, em_material_params,
+                                fem_resonance_time_estimate, fem_size_issues, first_solved_wavelength,
                                 host_matrix_back_end_issues, make_validate_physics, mesh_kind, missing_source_issues,
                                 mode_line, object_result, physics_counter, raw_settings, resonance_eigenpairs,
                                 resonance_table_study_issues, scipy_issues, shortest_solved_wavelength,
-                                source_slot_docs, unused_wavelength_issues, write_dispersive_materials)
+                                source_slot_docs, unused_wavelength_issues, validate_driven_point,
+                                write_dispersive_materials)
 from .definition_feature_validation import _line_cells, _selected_shapes, validate_line_feature
-from .eigenfrequency import ResonanceTable, resonance_filter_time_item, resonance_table_result
+from .eigenfrequency import resonance_filter_time_item, resonance_table_result
 from .materials import EM_MATERIAL_SCHEMAS
-from .memory_estimates import conical_memory_estimate, pec_memory_estimate
+from .memory_estimates import conical_memory_estimate, host_factorization, pec_memory_estimate
 from .renderer_conical import ConicalRenderer
 from .solvers.fdfd_conical import (CONICAL_MATERIAL_SCHEMA_KEY, CONICAL_PERMITTIVITY_ARRAYS,
                                    CONICAL_PERMITTIVITY_SLOTS, ConicalPhysics, conical_flux_result,
@@ -48,16 +49,16 @@ _BC_HELP = ' '.join((
 ))
 _KZ_HELP = (
     'Out-of-plane wave number k_z in rad/m of every solve: the fields vary as exp(j (omega t - k_z z)) along the '
-    'z-invariant structure (COMSOL out-of-plane wave number), so all six components couple. k_z = 0 gives the '
-    'decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell apart '
-    'from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n sin(theta) '
-    'of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a periodic axis), '
-    'a waveguide cross-section driven at a given propagation constant beta = k_z (a source excites the guided modes '
-    'resonantly where omega meets the mode dispersion), and in an eigenfrequency study the dispersion omega(k_z): the '
-    'resonances at fixed k_z are the guided modes with beta = k_z (same discrete problem as em_modes, read the other way; '
-    'sweep k_z for the band / dispersion diagram). k_z stays fixed over the wavelengths of a frequency_domain study '
-    '(the incidence angle then changes with wavelength). |k_z| above k0 n in a material makes the field evanescent in '
-    'it. A real number (no leaky / complex k_z through the model).')
+    'z-invariant structure (the industry-standard out-of-plane wave number), so all six components couple. k_z = 0 '
+    'gives the decoupled em_fdfd_ez (E_z, H_x, H_y) and em_fdfd_hz (H_z, E_x, E_y) problems at once (walls half a cell '
+    'apart from theirs). Uses: conical / oblique incidence on gratings and other z-invariant structures (k_z = k0 n '
+    'sin(theta) of the z share of the incident wave vector, the in-plane share from bloch_kx / bloch_ky along a '
+    'periodic axis), a waveguide cross-section driven at a given propagation constant beta = k_z (a source excites the '
+    'guided modes resonantly where omega meets the mode dispersion), and in an eigenfrequency study the dispersion '
+    'omega(k_z): the resonances at fixed k_z are the guided modes with beta = k_z (same discrete problem as em_modes, '
+    'read the other way; sweep k_z for the band / dispersion diagram). k_z stays fixed over the wavelengths of a '
+    'frequency_domain study (the incidence angle then changes with wavelength). |k_z| above k0 n in a material makes '
+    'the field evanescent in it. A real number (no leaky / complex k_z through the model).')
 _KZ_TIP = ('Wave number along the direction perpendicular to the drawing, in radians per metre: the fields vary as a '
            'wave of that wave number along that direction.\n\n'
            '0 gives the ordinary 2D problem. For light arriving with a component along that direction use 2 pi n '
@@ -204,16 +205,6 @@ def _apply_line_source(ctx, solver, feature_spec, values, selection):
                                   amplitude=values['amplitude'], phase=values['phase'])
 
 
-def _apply_resonance_table(ctx, solver, feature_spec, values, selection):
-    return ResonanceTable()
-
-
-def _validate_point_feature(vctx, physics_spec, feature_spec, values):
-    """Point inside the domain; the eigenfrequency warning."""
-    return (validate_points_inside(vctx, physics_spec, feature_spec, values)
-            + eigen_only_feature_issues(vctx, physics_spec, feature_spec))
-
-
 def _validate_line_source(vctx, physics_spec, feature_spec, values):
     """Axis-aligned line inside the domain; the eigenfrequency warning."""
     return (validate_line_feature(vctx, physics_spec, feature_spec, values)
@@ -252,7 +243,7 @@ _FEATURES = (
                             f'k_z z) along the invariant direction; see component and current. {POINT_SOURCE_SIGN}',
                 summary='A small current at one point, along x, y or perpendicular to the drawing, varying along the '
                         'invariant direction with the out-of-plane wave number.',
-                apply=apply_component_point_source, validate=_validate_point_feature),
+                apply=apply_component_point_source, validate=validate_driven_point),
     FeatureType('line_source', 'Line source', 'source', 'line', params=_LINE_SOURCE_PARAMS, object_kinds=('line',),
                 max_entities=1,
                 description='Uniform current sheet of any direction on the cells of an axis-aligned line (see '
@@ -268,7 +259,7 @@ _FEATURES = (
                             'extras frequency, wavelength, component, unit.',
                 summary='Records the field at one point for every solved wavelength.',
                 apply=apply_field_probe, result=object_result(conical_probe_result),
-                validate=_validate_point_feature),
+                validate=validate_driven_point),
     FeatureType('flux_monitor', 'Flux monitor', 'monitor', 'line', object_kinds=('line',), max_entities=1,
                 result_kind='flux_spectrum', description=_FLUX_DESCRIPTION,
                 summary='Measures the power per metre of depth crossing a horizontal (upward positive) or vertical '
@@ -285,14 +276,14 @@ _FEATURES = (
                 description=_RESONANCE_TABLE_DESCRIPTION,
                 summary="Lists the resonances found by an 'Eigenfrequency' study at the out-of-plane wave number: "
                         'wavelength, frequency, quality factor and how much of each lies in the absorbing layers.',
-                apply=_apply_resonance_table, result=object_result(resonance_table_result, with_solver=True),
+                apply=apply_resonance_table, result=object_result(resonance_table_result, with_solver=True),
                 validate=_validate_resonance_table, grids=BOTH_GRIDS),
 )
 
 # ---- type ----
 _DESCRIPTION = (
     'Conical (out-of-plane wave number) finite-difference frequency-domain solver of a z-invariant structure: the '
-    'drawing is its xy cross-section, the fields vary as exp(j (omega t - k_z z)) with the k_z setting (COMSOL 2D '
+    'drawing is its xy cross-section, the fields vary as exp(j (omega t - k_z z)) with the k_z setting (2D '
     'frequency domain with an out-of-plane wave number), so E_x, E_y, E_z and H_x, H_y, H_z all couple. Projected 3D '
     'Yee cell (the em_modes layout and wall rules): E_z at the cell centres, E_x and H_y on the +x faces, E_y and H_x '
     'on the +y faces, H_z at the +x+y corner; unknowns E (3 per cell, PML included), curl-curl operator (k0^2 eps - '
@@ -366,9 +357,7 @@ def _solver_issues(vctx, physics_spec, settings_values, path):
     issues = (scipy_issues('em_fdfd_conical', 'host sparse direct and eigen solvers', path)
               + host_matrix_back_end_issues(solvers, 'em_fdfd_conical', path))
     eigen = vctx.study_type == EIGENFREQUENCY_STUDY
-    factorization = (eigen_factorization(solvers) if eigen
-                     else resolved_back_end(solvers) if linear_solver_cudss(solvers) or host_direct_back_end(solvers)
-                     else 'superlu')
+    factorization = host_factorization(solvers, eigen)
     # MUMPS / PARDISO keep the SuperLU size rule; triangles: _triangle_issues
     if mesh_kind(vctx) == 'tensor' and factorization not in CUDSS_FACTORIZATIONS:
         issue = size_issue_for(int(vctx.mesh.nx), int(vctx.mesh.ny))
@@ -460,22 +449,10 @@ FEM_CONICAL_ASSEMBLY_CALLS = 400
 
 
 def _triangle_time_estimate(settings_values, mesh, context):
-    """em_fdfd_conical on a triangles mesh (eigenfrequency only): one FEM assembly, a factorisation and a squared-Cayley
-    eigen-solve of the estimated unknowns (two solves per application; host SuperLU priced at FEM_LU_FILL_FACTOR x the
-    2D curve, uncalibrated; cuDSS on the profile's 2D cudss curves at the same scale)."""
-    order = DISCRETIZATION_ORDERS[settings_values['discretization']]
-    unknowns = float(estimated_unknowns(int(mesh.n_elements), int(mesh.n_edges), int(mesh.n_nodes), order))
-    nnz = FEM_ENTRIES_PER_ROW[order] * unknowns
-    eigenpairs = resonance_eigenpairs(context, optical=False)
-    assembly = te.TimeEstimate((te.TimeItem('FEM conical assembly', 'assembly', 1.0, 'exact',
-                                            (te.HostStream(FEM_CONICAL_ASSEMBLY_BYTES_PER_ENTRY * nnz),
-                                             te.PythonCalls(FEM_CONICAL_ASSEMBLY_CALLS))),
-                                resonance_filter_time_item(context.backend, unknowns, 3.0 * nnz, eigenpairs)))
-    host = eigen_backend_kwargs(context)
-    return te.combine((assembly, context.solver_work(
-        'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0, factorizations=1.0, rhs=2,
-        eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR,
-        solve_scale=FEM_LU_FILL_FACTOR, **host)))
+    """em_fdfd_conical on a triangles mesh (eigenfrequency only): fem_resonance_time_estimate of one solve."""
+    return fem_resonance_time_estimate(settings_values, mesh, context, 'FEM conical assembly',
+                                       FEM_CONICAL_ASSEMBLY_BYTES_PER_ENTRY, FEM_CONICAL_ASSEMBLY_CALLS,
+                                       resonance_eigenpairs(context, optical=False))
 
 
 EM_FDFD_CONICAL = PhysicsType(

@@ -292,13 +292,13 @@ GEOMETRY_KINDS = {kind.name: kind for kind in (
                   + _TIP_ONLY_3D)),
         composite=True,
         summary='Repeats one object on a rectangular grid of copies (holes of a photonic crystal, pillar arrays).',
-        description='Rectangular array (COMSOL Array) of nx x ny (x nz in 3D) copies of the base object: copy (i, j, '
-                    'k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, 0) is the base itself; a '
-                    'cell centre inside any copy is inside (a union of the copies). The array is one domain object: '
-                    'materials, features, selections and mesh refinements naming it act on every copy; meshes follow '
-                    "every copy's outline (triangles: curved edges on circles, ellipses and rounded-rectangle "
-                    'arcs; tetrahedra (gmsh): the solids of each copy). Composite bases are copied whole (a hole '
-                    'with a ring cut out, nested arrays). At most ' + f'{ARRAY_MAX_COPIES}' + ' copies. '
+        description='Rectangular array (the industry-standard array operation) of nx x ny (x nz in 3D) copies of the '
+                    'base object: copy (i, j, k) is the base moved by (i pitch_x, j pitch_y, k pitch_z), copy (0, 0, '
+                    '0) is the base itself; a cell centre inside any copy is inside (a union of the copies). The array '
+                    'is one domain object: materials, features, selections and mesh refinements naming it act on every '
+                    "copy; meshes follow every copy's outline (triangles: curved edges on circles, ellipses and "
+                    'rounded-rectangle arcs; tetrahedra (gmsh): the solids of each copy). Composite bases are copied '
+                    'whole (a hole with a ring cut out, nested arrays). At most ' + f'{ARRAY_MAX_COPIES}' + ' copies. '
                     + _CONSUMES_INPUTS + ' ' + _ORIGIN),
     GeometryKind('box', 'Box', 'domain', (
         _length('x0', 1.5e-6, 'Corner 1, x', f'x of one corner, {_FROM_ORIGIN}; corners in any order.',
@@ -464,6 +464,18 @@ def expand_entities(spec, entities) -> list:
     for name in entities:
         visit(name, [])
     return expanded
+
+
+def material_selections(spec, failed=None) -> list:
+    """expand_entities of each spec material's selection, in order; `failed` for one that fails to expand (validate
+    reports it)."""
+    selections = []
+    for material in spec.materials:
+        try:
+            selections.append(expand_entities(spec, material.selection))
+        except (ValueError, TypeError):
+            selections.append(failed)
+    return selections
 
 
 def line_orientation(values, size_x, size_y):
@@ -1057,6 +1069,14 @@ def _shape(name, resolved) -> ResolvedShape:
     return shape
 
 
+def _domain_shape(name, resolved) -> ResolvedShape:
+    """_shape of a domain object to rasterize; ValueError for a point / line object."""
+    shape = _shape(name, resolved)
+    if GEOMETRY_KINDS[shape.kind].entity_kind != 'domain':
+        raise ValueError(f'rasterize: {name!r} is a {shape.kind} object; only domain objects rasterize')
+    return shape
+
+
 def _polygon_mask(points, X, Y, xp):
     """Even-odd point-in-polygon test of the coordinates (X, Y); the polygon is implicitly closed."""
     inside = xp.zeros(X.shape, dtype=bool)
@@ -1098,11 +1118,9 @@ def rasterize(name, resolved, X, Y, xp):
     """Bool mask (shape of X) of cell centres (X, Y) inside domain object name (3D: its xy footprint); composites
     recurse. Rectangles (and polygons) are half-open [x0, x1) x [y0, y1) like Domain.rect_mask; circles/ellipses
     closed."""
-    shape = _shape(name, resolved)
+    shape = _domain_shape(name, resolved)
     values = shape.values
     kind = shape.kind
-    if GEOMETRY_KINDS[kind].entity_kind != 'domain':
-        raise ValueError(f'rasterize: {name!r} is a {kind} object; only domain objects rasterize')
     if not is_plain(shape):
         footprint = _footprint(shape)
         return rasterize(footprint.name, {footprint.name: footprint}, X, Y, xp)
@@ -1293,11 +1311,9 @@ def rasterize_window(name, resolved, x_centres, y_centres, xp, z=None) -> tuple:
     non-decreasing 1D numpy centres; each primitive is tested only on its bounding-box sub-window (as rasterize).
     z (3D: a float32 cell-centre height) gives the cross-section at that height (None: the xy footprint); empty
     window when it misses."""
-    shape = _shape(name, resolved)
+    shape = _domain_shape(name, resolved)
     values = shape.values
     kind = shape.kind
-    if GEOMETRY_KINDS[kind].entity_kind != 'domain':
-        raise ValueError(f'rasterize: {name!r} is a {kind} object; only domain objects rasterize')
     if not GEOMETRY_KINDS[kind].composite:
         parts = _section(shape, z)[1] if z is not None else [shape if is_plain(shape) else _footprint(shape)]
         if not (len(parts) == 1 and parts[0] is shape):   # sphere slab circle, taper offset, x / y extrusion boxes
@@ -1391,10 +1407,7 @@ def _mapped_section_mask(name, resolved, x_mapped, y_mapped, xp, z=None):
     height z (_section parts, composites recursive), None = the xy footprint (rasterize)."""
     if z is None:
         return rasterize(name, resolved, x_mapped, y_mapped, xp)
-    shape = _shape(name, resolved)
-    kind = GEOMETRY_KINDS[shape.kind]
-    if kind.entity_kind != 'domain':
-        raise ValueError(f'rasterize: {name!r} is a {shape.kind} object; only domain objects rasterize')
+    shape = _domain_shape(name, resolved)
     if shape.kind in UNION_KINDS + ('intersection',):
         masks = [_mapped_section_mask(item, resolved, x_mapped, y_mapped, xp, z)
                  for item in shape.values['inputs']]
@@ -1915,23 +1928,24 @@ def _check_cut(cut) -> tuple:
     return axis, position
 
 
+def _along_across(axis, point_x, point_y) -> tuple:
+    """(u, across) of a drawing-plane point on the vertical cut along axis (u as in _check_cut)."""
+    return (point_x, point_y) if axis == 'y' else (point_y, point_x)
+
+
 def _line_intervals(shape, axis, position) -> list:
     """[(u_lo, u_hi)] where the cut line crosses the xy shape of a box / prism / cylinder_z (u as in _check_cut;
     rectangles half-open across the line, circles / ellipses closed, polygons even-odd)."""
     values = shape.values
     kind = shape.kind
     along_x = axis == 'y'
-
-    def along_across(point_x, point_y):
-        return (point_x, point_y) if along_x else (point_y, point_x)
-
     if kind in ('rectangle', 'box'):
-        u0, across_0 = along_across(values['x0'], values['y0'])
-        u1, across_1 = along_across(values['x1'], values['y1'])
+        u0, across_0 = _along_across(axis, values['x0'], values['y0'])
+        u1, across_1 = _along_across(axis, values['x1'], values['y1'])
         return [(u0, u1)] if across_0 <= position < across_1 else []
     if kind == 'rounded_rectangle':   # the corner arcs pull the ends in by r - sqrt(r^2 - depth^2)
-        u0, across_0 = along_across(values['x0'], values['y0'])
-        u1, across_1 = along_across(values['x1'], values['y1'])
+        u0, across_0 = _along_across(axis, values['x0'], values['y0'])
+        u1, across_1 = _along_across(axis, values['x1'], values['y1'])
         if not across_0 <= position < across_1:
             return []
         radius = values['r']
@@ -1939,14 +1953,14 @@ def _line_intervals(shape, axis, position) -> list:
         inset = radius - math.sqrt(max(radius * radius - depth * depth, 0.0))
         return [(u0 + inset, u1 - inset)]
     if kind in ('circle', 'cylinder_z'):
-        centre_u, centre_across = along_across(values['cx'], values['cy'])
+        centre_u, centre_across = _along_across(axis, values['cx'], values['cy'])
         offset = position - centre_across
         if offset * offset > values['r'] ** 2:
             return []
         half_chord = math.sqrt(values['r'] ** 2 - offset * offset)
         return [(centre_u - half_chord, centre_u + half_chord)]
     if kind == 'ellipse':   # swapping x and y turns the semi-axis a from angle to 90 deg - angle
-        centre_u, centre_across = along_across(values['cx'], values['cy'])
+        centre_u, centre_across = _along_across(axis, values['cx'], values['cy'])
         angle = math.radians(values['angle'] if along_x else 90.0 - values['angle'])
         cos_angle, sin_angle = math.cos(angle), math.sin(angle)
         inverse_a2, inverse_b2 = values['a'] ** -2, values['b'] ** -2
@@ -1960,7 +1974,7 @@ def _line_intervals(shape, axis, position) -> list:
         root = math.sqrt(discriminant)
         return [(centre_u + (-linear - root) / (2.0 * quadratic), centre_u + (-linear + root) / (2.0 * quadratic))]
     if kind == 'polygon':
-        points = [along_across(point_x, point_y) for point_x, point_y in values['points']]
+        points = [_along_across(axis, point_x, point_y) for point_x, point_y in values['points']]
         crossings = []
         for index, (u_a, across_a) in enumerate(points):
             u_b, across_b = points[(index + 1) % len(points)]
@@ -1980,23 +1994,22 @@ def vertical_section(name, resolved, cut, size_z, tolerance=0.0, n_segments=128)
     shape = _shape(name, resolved)
     values = shape.values
     kind = shape.kind
-    along_x = axis == 'y'
     if GEOMETRY_KINDS[kind].composite:
         return []
     if kind == 'point':
-        u, across = (values['x'], values['y']) if along_x else (values['y'], values['x'])
+        u, across = _along_across(axis, values['x'], values['y'])
         return [np.array([[u, point_z(values, size_z)]])] if abs(across - position) <= tolerance else []
     if kind == 'line':
         height = point_z(values, size_z)
-        u0, across_0 = (values['x0'], values['y0']) if along_x else (values['y0'], values['x0'])
-        u1, across_1 = (values['x1'], values['y1']) if along_x else (values['y1'], values['x1'])
+        u0, across_0 = _along_across(axis, values['x0'], values['y0'])
+        u1, across_1 = _along_across(axis, values['x1'], values['y1'])
         if abs(across_0 - position) <= tolerance and abs(across_1 - position) <= tolerance:
             return [np.array([[u0, height], [u1, height]])]
         if across_0 != across_1 and min(across_0, across_1) <= position <= max(across_0, across_1):
             return [np.array([[u0 + (position - across_0) * ((u1 - u0) / (across_1 - across_0)), height]])]
         return []
     if kind == 'sphere':
-        centre_u, centre_across = (values['cx'], values['cy']) if along_x else (values['cy'], values['cx'])
+        centre_u, centre_across = _along_across(axis, values['cx'], values['cy'])
         offset = position - centre_across
         if offset * offset > values['r'] ** 2:
             return []
@@ -2101,7 +2114,7 @@ def _prism_faces(shape, size, n_segments) -> tuple:
         return [], []
     plane_kind = {'box': 'rectangle', 'cylinder_z': 'circle'}.get(shape.kind, shape.kind)
     plane = ResolvedShape(shape.name, plane_kind, values)
-    tan_angle = math.tan(math.radians(values.get('sidewall_angle') or 0.0))
+    tan_angle = _taper_tan(values)
     if plane_kind == 'rectangle' and not tan_angle:   # clamped to the domain: closed caps where it leaves the box
         bounds = dict(x0=max(values['x0'], 0.0), y0=max(values['y0'], 0.0), x1=min(values['x1'], size[first]),
                       y1=min(values['y1'], size[second]))
@@ -2389,12 +2402,7 @@ def material_preview(spec, parameters, max_cells=400, shapes=None, z=None, cut=N
         raise ValueError('max_cells must be >= 1')
     if shapes is None:
         shapes = resolve_geometry(spec, parameters, errors={})
-    expanded_selections = []
-    for material in spec.materials:
-        try:
-            expanded_selections.append(expand_entities(spec, material.selection))
-        except (ValueError, TypeError):
-            expanded_selections.append(None)
+    expanded_selections = material_selections(spec)
     names = [material.name for material in spec.materials]
     if cut is not None:
         if z is not None:
@@ -2406,8 +2414,7 @@ def material_preview(spec, parameters, max_cells=400, shapes=None, z=None, cut=N
         # a cylindrical sector: u over the sector's drawing-plane box, 0 where the cut line leaves the sector
         box = window_map.extent()
         axis, position = _check_cut(cut)
-        extent = (box[0], box[1]) if axis == 'y' else (box[2], box[3])
-        extent = extent + tuple(_section_extent(spec, parameters, cut, size_x, size_y)[2:])
+        extent = ((box[0], box[1]) if axis == 'y' else (box[2], box[3])) + extent[2:]
         index_image = _section_preview(shapes, expanded_selections, cut, extent, max_cells)
         u_centres, _ = preview_pixel_centers(extent, index_image.shape)
         x_line, y_line = _cut_line_centres(axis, position, u_centres)

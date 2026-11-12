@@ -25,7 +25,7 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, resolve_values
+from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
 from .session import Snapshot, earlier_derived_names, live_snapshot_index
 from .solver_hooks import (HarmonicFrequencyPlanner, HarmonicSolver, ModeSolver, PrestressSolver, PulsedHarmonicSolver,
                            WarmStartSolver, hook_names)
@@ -238,6 +238,14 @@ class RunControl:
             if not paused:
                 return
             time.sleep(_PAUSE_POLL_SECONDS)
+
+    def checkpoint_cancelled(self, service=None) -> bool:
+        """checkpoint(service) as a flag: True when it raised Cancelled (the caller ends its loop)."""
+        try:
+            self.checkpoint(service)
+        except Cancelled:
+            return True
+        return False
 
 
 # ---- study driver ----
@@ -460,12 +468,9 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
     warm_state = None          # host state of the last computed value (warm_start only), seeds the next build
     reused_session = None      # reuse_build: the kept session that takes the next value (None: build it)
     for index, value in enumerate(sweep_values):
-        if index > 0:
-            try:
-                control.checkpoint(service)
-            except Cancelled:
-                status = 'cancelled'
-                break
+        if index > 0 and control.checkpoint_cancelled(service):
+            status = 'cancelled'
+            break
         emit(SweepStep(index, len(sweep_values), parameter, value))
         value_spec = sweep_value_spec(spec, parameter, value)
         built_now = reused_session is None
@@ -539,13 +544,7 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
         previous_session, session = session, None
         table['values'].append(value)
         table['converged'].append(converged)
-        for name in derived_names:
-            table['derived'][name].append(float(derived.get(name, math.nan)))
-        references, errors, _ = derived_references(spec.derived_values,
-                                                   evaluate_parameters(value_spec.parameters, errors={}), derived)
-        for name in reference_names:   # failing references were logged by the value's run
-            table['reference'][name].append(float(references[name]))
-            table['error'][name].append(float(errors[name]))
+        _append_derived_row(table, derived_names, reference_names, spec, value_spec, derived)
         table['results'].append(results)
         table['derived_series'].append(derived_series)
         if kept_fields is not None:
@@ -573,6 +572,18 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
     last_summary['status'] = status
     last_summary['sweep'], last_summary['sweep_index'] = table, last_index
     return last_summary
+
+
+def _append_derived_row(table, derived_names, reference_names, spec, value_spec, derived):
+    """Append one sweep value's derived values (NaN when missing) and their references / errors (over value_spec's
+    parameters) to the sweep table columns."""
+    for name in derived_names:
+        table['derived'][name].append(float(derived.get(name, math.nan)))
+    references, errors, _ = derived_references(spec.derived_values,
+                                               evaluate_parameters(value_spec.parameters, errors={}), derived)
+    for name in reference_names:   # failing references were logged by the value's run
+        table['reference'][name].append(float(references[name]))
+        table['error'][name].append(float(errors[name]))
 
 
 def summed_runs(labelled_summaries):
@@ -1122,9 +1133,7 @@ def _run_coupled_wavelengths(session, harmonic, background, pulsed, readers, wav
     names, n_wavelengths, status, records = list(runner.physics), len(wavelengths), 'completed', []
     wall_start = time.perf_counter()
     for index, wavelength in enumerate(wavelengths):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             status = 'cancelled'
             break
         label = wavelength_label(wavelength)
@@ -1369,9 +1378,7 @@ def _solve_wavelength_list(session, harmonic, wavelengths, recorder, live, emit,
     n_wavelengths = len(wavelengths)
     wall_start = time.perf_counter()
     for index, wavelength in enumerate(wavelengths):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             return index, 'cancelled'
         label = wavelength_label(wavelength)
         # Before the solve too: one factorisation can take minutes, and cancel acts only between wavelengths.
@@ -1530,9 +1537,7 @@ def _numbered_snapshots(session, names, solve, select, reselect, noun, tick_unit
     parity_text = f' [{parity}]' if parity else ''
     texts = {}
     for index, (name, solver) in enumerate(solvers.items()):
-        try:
-            control.checkpoint(service)
-        except Cancelled:
+        if control.checkpoint_cancelled(service):
             return 'cancelled', 0
         emit(_count_progress(runner, index / len(solvers), index, wall_start,
                              f'Solving the {noun}s of {_physics_text(session, name)}; stopping waits for this solve',
@@ -1712,6 +1717,16 @@ def _scipy_issues(study_name, what_for) -> list:
         return []
     return [Issue('error', ('study',), f'the {study_name} study needs scipy ({what_for}), which is not installed: pip '
                                        'install scipy')]
+
+
+def _study_solved_types(vctx, study_name):
+    """Yield (PhysicsSpec, PhysicsType) of the registered physics whose type supports study_name and, with
+    StudySpec.solved_physics a non-empty list, that it lists (the physics a study validator checks)."""
+    selection = vctx.spec.study.solved_physics
+    listed = selection if isinstance(selection, list) and selection else None
+    for physics, physics_type in known_physics(vctx.spec, vctx.registry):
+        if study_name in physics_type.supported_studies and (listed is None or physics.name in listed):
+            yield physics, physics_type
 
 
 def _frequency_list(values, ascending=False) -> list:
@@ -2013,18 +2028,11 @@ def register(registry):
         params=_MODE_ANALYSIS_PARAMS, background_study='stationary', run=_run_mode_analysis,
         validate=_with_parity_sectors(), supports_adaptation=True, time_counts=_fixed_point_counts,
         solver_protocols=(ModeSolver,)))
-    from .study_eigenfrequency import register as register_eigenfrequency   # it imports this module's helpers
-    register_eigenfrequency(registry)
-    from .study_optimization import register as register_optimization   # likewise
-    register_optimization(registry)
-    from .study_thermal_noise import register as register_thermal_noise   # likewise
-    register_thermal_noise(registry)
-    from .study_nonlinear import register as register_nonlinear   # likewise
-    register_nonlinear(registry)
-    from .study_optomechanics import register as register_optomechanics   # likewise
-    register_optomechanics(registry)
-    from .study_frequency_response import register as register_frequency_response   # likewise
-    register_frequency_response(registry)
+    from . import (study_eigenfrequency, study_frequency_response, study_nonlinear, study_optimization,
+                   study_optomechanics, study_thermal_noise)   # they import this module's helpers
+    for module in (study_eigenfrequency, study_optimization, study_thermal_noise, study_nonlinear, study_optomechanics,
+                   study_frequency_response):   # in this order: the registry's study type order
+        module.register(registry)
     registry.register_selftests(_selftest_cases)
 
 
@@ -2561,9 +2569,10 @@ def _restored_value(flat, shape, dtype, module):
 
 
 def _stored_field_keys(session):
-    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or ([], COMSOL's 'all') every available
-    output field: first each physics' primary (frequency_domain: a renderer's harmonic_primary) and its '<base>_im'
-    partner, then the StudyType's default_stored_fields (e.g. optimization: design_density), then the rest."""
+    """'physics.component' keys stored in snapshots: StudySpec.stored_fields, or ([], the industry-standard 'all') every
+    available output field: first each physics' primary (frequency_domain: a renderer's harmonic_primary) and its
+    '<base>_im' partner, then the StudyType's default_stored_fields (e.g. optimization: design_density), then the
+    rest."""
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested

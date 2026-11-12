@@ -1,12 +1,11 @@
 """Self-tests of the anisotropic c_ij stiffness of solid_mechanics (piezoelectric plan stage 5): the host Q1 operator
 with c16 / c26 and the stiffness reductions (CPU) and uniform-strain block runs (plane strain, plane stress, thermal, a
 YZ lithium niobate crystal entry; exact in Q1); physics imports inside the checks."""
-import math
-
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import cell_centre, with_exact_cg
+from ...model.selftest_helpers import (cell_centre, max_relative_error, scaled_worst_result, with_exact_cg,
+                                       worst_result)
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 
 _PHYSICS = 'solid'
@@ -75,12 +74,11 @@ def _check_operator(results_by_name):
     alpha = np.array([2e-5, 1e-5, 3e-5])
     betas = [float(value[0, 0]) for value in thermal_coefficients(stiffness, *alpha)]
     expected_betas = _matrix(_MONOCLINIC)[:, :3] @ alpha
-    errors['thermal coefficients'] = float(np.max(np.abs(np.array(betas) - expected_betas))) / float(
-        np.max(np.abs(expected_betas)))
+    errors['thermal coefficients'] = max_relative_error(betas, expected_betas)
     strain_4 = np.array([1e-3, -2e-4, 3e-4, 5e-4])
     stress = [float(value[0, 0]) for value in elastic_stress(stiffness, *strain_4)]
     expected_stress = _matrix(_MONOCLINIC) @ strain_4
-    errors['stress'] = float(np.max(np.abs(np.array(stress) - expected_stress))) / float(np.max(np.abs(expected_stress)))
+    errors['stress'] = max_relative_error(stress, expected_stress)
     # fallbacks: c11 set, the rest NaN or unallocated -> the isotropic Lame values; void cells (no stiffness) 0
     lame_lambda, mu = np.array([[50e9, 0.0]]), np.array([[30e9, 0.0]])
     tensor = {'c11': np.array([[250e9, np.nan]]), 'c12': np.array([[np.nan, np.nan]]), 'c16': np.array([[0.0, 0.0]])}
@@ -89,9 +87,7 @@ def _check_operator(results_by_name):
     errors['fallbacks'] = max(abs(float(mixed[name][0, 0]) - value) for name, value in expected_values.items()) / 250e9
     if not (bool(mixed.solid[0, 0]) and not bool(mixed.solid[0, 1]) and mixed.anisotropic and not mixed.monoclinic):
         errors['fallback flags'] = 1.0
-    worst = max(errors, key=errors.get)
-    return {'measured': errors[worst], 'expected': 0.0, 'error': errors[worst], 'tolerance': _OPERATOR_TOLERANCE,
-            'details': {'errors': errors, 'worst': worst}}
+    return worst_result(errors, _OPERATOR_TOLERANCE)
 
 
 # ---- 2. solid_anisotropic_uniform_strain (model runs, exact in Q1) ----
@@ -201,11 +197,7 @@ def _check_block(results_by_name):
     reaction = results_by_name['plane_strain'].result(_PHYSICS, 'anchor_x')['F_x']
     errors['plane_strain anchor_x F_x'] = abs(reaction / (-stress[0] * _BLOCK[1]) - 1.0)
     tolerances['plane_strain anchor_x F_x'] = _REACTION_TOLERANCE
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst, crystal_coefficients=_crystal_coefficients())
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': details}
+    return scaled_worst_result(errors, tolerances, **details, crystal_coefficients=_crystal_coefficients())
 
 
 # The orthotropic roller-box modes (c_ij-only cells, c22 != c11) are pinned by solid_eigenfrequency_roller_box

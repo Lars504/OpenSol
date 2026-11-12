@@ -9,10 +9,10 @@ assembled host pencil about the target (the 'eigen' role: SuperLU, or cuDSS LDL^
 # definite, so sigma = 0 (the lowest modes, no offset) is never singular; a free body (tetrahedra, target > 0: the rigid
 # check counts its free motions instead) keeps its rigid modes at omega^2 ~ 0, asked for on top (rigid_motions) and
 # dropped below RIGID_EIGENVALUE_FRACTION x the shift. The same driver serves the 2.5D guided modes
-# (physics/mechanics/guided_modes.py). A resistive electrode load (solve_loaded_modes) adds j B / omega on its master
+# (physics/mechanics/guided_modes.py). A resistive electrode load (pencil kind 'loaded') adds j B / omega on its master
 # potential: T(omega) is frozen at the target (complex symmetric, eigs_shifted) and each mode's omega refined by Newton on
 # x^T T(omega) x = 0 (x fixed). An elastic PML shell (pml3d) and a loss factor K_el (1 + j eta) (new_modules_plan K3)
-# make K (and M) complex but keep the pencil linear in omega^2 (solve_damped_modes: eigs_shifted, no refinement); PML
+# make K (and M) complex but keep the pencil linear in omega^2 (pencil kind 'damped': eigs_shifted, no refinement); PML
 # modes mostly in the shell are dropped. A prestressed pencil (K2) only adds the real K_sigma to K. Bloch cells
 # (bloch3d): a prolongation P replaces the free selection, the pencil
 # P^H K P, P^H M P is complex Hermitian (scipy eigs inside eigsh on a complex factor) and the modes complex (peak
@@ -20,7 +20,7 @@ assembled host pencil about the target (the 'eigen' role: SuperLU, or cuDSS LDL^
 # RIGID_EIGENVALUE_FRACTION x the shift are dropped.
 # Several shifts (B1): ModalPencil reduces K, M to the free dofs once (kinds 'symmetric' / 'damped' / 'loaded') and keeps
 # one factor across shifts (the shifted operator's pattern does not depend on sigma: a cuDSS plan is reused). The single-
-# target functions above are ModalPencil.solve_at + release. solve_modes_at_shifts = the union of 'nearest' solves at
+# target solve_modes is ModalPencil.solve_at + release. solve_modes_at_shifts = the union of 'nearest' solves at
 # several targets. solve_band_modes = every mode with f_lo <= Re f < f_hi: shifts march upward, a solve's trusted radius
 # r (its farthest eigenvalue from sigma) covers [sigma - r, sigma + r]; uncovered gaps get a shift at their middle; for a
 # 'symmetric' pencil Sylvester inertia counts at the band edges and at every shift give the mode count per interval, and
@@ -313,7 +313,7 @@ class ModalPencil:
         elif self.kind == 'damped':
             if not (math.isfinite(omega) and omega >= 0.0) or (self.in_shell is not None and omega <= 0.0):
                 what = ('an elastic PML needs an eigenfrequency target > 0' if self.in_shell is not None else
-                        'solve_damped_modes needs a finite target angular frequency >= 0')
+                        'a damped modal solve needs a finite target angular frequency >= 0')
                 raise ValueError(f'{what}, got omega = {omega_target!r} rad/s')
         elif not (math.isfinite(omega) and omega >= 0.0):
             raise ValueError(f'solve_modes needs a finite target angular frequency >= 0 [rad/s], got {omega_target!r}')
@@ -762,46 +762,6 @@ def _check_size(n_free, eigen_solver, warnings):
     return on_device
 
 
-def solve_loaded_modes(stiffness, mass, free, omega_target, n_resonances, components_per_node, eigen_solver, loads,
-                       displacement_dofs=None, rigid_motions=0):
-    """ModalSolve of the damped modes T(omega) x = (K + j B / omega - omega^2 M) x = 0 nearest omega_target [rad/s, >
-    0]: B = diagonal loads [(name, dof, b, resistance [Ohm])] (a resistive electrode load on its master potential, b =
-    s^2 / R); T frozen at omega_target (eigs_shifted), then per mode Newton on x^T T(omega) x = 0 with x fixed (exact for
-    a mode on the target, second order in the frozen-pencil error otherwise); complex modes, frequency_imag > 0 decays.
-    Arguments otherwise as solve_modes (no prolongation; rigid-body eigenvalues dropped as there)."""
-    pencil = ModalPencil(stiffness, mass, free, components_per_node, eigen_solver, displacement_dofs=displacement_dofs,
-                         rigid_motions=rigid_motions, loads=loads)
-    try:
-        return pencil.solve_at(omega_target, n_resonances)
-    finally:
-        pencil.release()
-
-
-def solve_pml_modes(stiffness, mass, free, omega_target, n_resonances, components_per_node, eigen_solver, shell_dofs,
-                    pml_text='', energy_share=0.5):
-    """solve_damped_modes of an elastic PML shell (shell_dofs: the PML modes' filter; omega_target > 0)."""
-    return solve_damped_modes(stiffness, mass, free, omega_target, n_resonances, components_per_node, eigen_solver,
-                              shell_dofs=shell_dofs, pml_text=pml_text or 'on', energy_share=energy_share)
-
-
-def solve_damped_modes(stiffness, mass, free, omega_target, n_resonances, components_per_node, eigen_solver,
-                       shell_dofs=None, pml_text='', energy_share=0.5, prolongation=None, bloch_text='',
-                       rigid_motions=0, loss_text=''):
-    """ModalSolve of the damped modes K x = omega^2 M x of a complex pencil linear in omega^2 (no frozen term): an
-    elastic PML shell (complex symmetric K(s), M(s)) and / or a loss K_el (1 + j eta) (K complex), nearest omega_target
-    [rad/s; > 0 with a PML] by eigs_shifted on the free dofs or on x = P x_r of a host CSR prolongation (Bloch: P^H K P,
-    not Hermitian with a loss); omega = sqrt(lambda) with Re > 0, frequency_imag > 0 decays (Q); with shell_dofs (host
-    bool over every dof) modes holding more than energy_share of their |u|^2 there are PML modes, dropped; rigid_motions
-    asked on top, |lambda| <= RIGID_EIGENVALUE_FRACTION omega_t^2 dropped. Arguments otherwise as solve_modes."""
-    pencil = ModalPencil(stiffness, mass, free, components_per_node, eigen_solver, prolongation=prolongation,
-                         rigid_motions=rigid_motions, damped=True, shell_dofs=shell_dofs, energy_share=energy_share,
-                         bloch_text=bloch_text, pml_text=pml_text, loss_text=loss_text)
-    try:
-        return pencil.solve_at(omega_target, n_resonances)
-    finally:
-        pencil.release()
-
-
 def _rayleigh_frequency(stiffness, mass, load_positions, load_values, vector, omega):
     """(omega, relative residual |T(omega) x| / |K x|): the root near the start omega of the Rayleigh functional x^T (K +
     j B / omega - omega^2 M) x = 0 (transpose, not conjugate: T is complex symmetric) for the fixed vector x, by Newton."""
@@ -825,9 +785,7 @@ def solve_lowest_modes_matrix_free(inverse_stiffness, mass, free_dofs, n_dofs, n
     """ModalSolve of the n_resonances lowest modes from host callables on the free dofs (host int indices free_dofs):
     inverse_stiffness(b) ~ K_ff^-1 b (one inner PCG solve), mass(v) = M_ff v; eigen_solver.eigsh_inverse at sigma = 0."""
     started = time.perf_counter()
-    if isinstance(n_resonances, bool) or int(n_resonances) != n_resonances or n_resonances < 1:
-        raise ValueError(f'n_resonances must be an integer >= 1, got {n_resonances!r}')
-    n_resonances = int(n_resonances)
+    n_resonances = _checked_count(n_resonances)
     free_dofs = np.asarray(free_dofs, dtype=np.int64)
     n_free = int(free_dofs.size)
     if n_free < 3:

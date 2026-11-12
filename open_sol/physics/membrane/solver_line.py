@@ -168,10 +168,6 @@ class LineHarmonicSystem(HarmonicSystemBase):
         mask = np.asarray(element_mask, dtype=bool) & self.active_elements()
         return active_dofs(self.dofs, mask)[self.global_ids]
 
-    def values_at(self, positions) -> np.ndarray:
-        """Complex128 u at positions [m] (NaN off the line)."""
-        return evaluate_line(self.dofs, self.values, positions)
-
 
 class MembraneLinePhysics(MembraneBase):
     """Membrane in a 1D model (a padding-free tensor Domain one cell across): line elements on the window cells (Hermite

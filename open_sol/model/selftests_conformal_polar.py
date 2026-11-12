@@ -7,8 +7,7 @@ import math
 import numpy as np
 
 from .schema import SelfTestCase
-from .selftest_helpers import with_exact_cg
-from .selftests_conformal import _failed_count_result
+from .selftest_helpers import failed_count_result, with_exact_cg
 from .selftests_conformal_cuts import _FAR_CELLS, _RING_TOLERANCE_CELLS, _WALL_RING_CELLS, profile_band_errors
 from .spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                    SolverDefaultsSpec, StudySpec)
@@ -79,7 +78,7 @@ def _check_polar_outline_geometry(results_by_name):
                                 y_face_scales=metric.y_face_volume_ratios(np.full(_N_ANGLE, dphi)),
                                 y_width_scales=metric.y_length.along_x)
     staircase_length = float(np.sum(np.asarray(weights, dtype=np.float64) * metric.volume.full()))
-    return _failed_count_result({
+    return failed_count_result({
         'arc_length': (abs(float(arc_pieces.length.sum()) / (_ARC_RADIUS * _ANGLE_SPAN) - 1.0), _ARC_TOLERANCE),
         'arc_normals': (max(float(np.max(np.abs(arc_pieces.normal_x - 1.0))),
                             float(np.max(np.abs(arc_pieces.normal_y)))), _ARC_TOLERANCE),
@@ -173,8 +172,8 @@ def _check_polar_heat(results_by_name):
             checks[f'{kind}_far'] = (conformal['far'], _FLUX_TOLERANCE)
             checks[f'{kind}_wall_ring'] = (conformal['wall_ring'], ring_tolerance)
         details[kind] = {'conformal': conformal}
-    return _failed_count_result(checks, {**details, 'ring_tolerance': ring_tolerance,
-                                         'radii_cells': [_INNER_RADIUS / _CELL, _OUTER_RADIUS / _CELL]})
+    return failed_count_result(checks, {**details, 'ring_tolerance': ring_tolerance,
+                                        'radii_cells': [_INNER_RADIUS / _CELL, _OUTER_RADIUS / _CELL]})
 
 
 # ---- electric_currents on the spherical window ----

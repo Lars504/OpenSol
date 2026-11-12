@@ -9,6 +9,7 @@ from ...model.schema import SelfTestCase
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec,
                            ModelSpec, PhysicsSpec, StudySpec)
 from ...model.selftest_helpers import single_value, vertical_line
+from .selftests import normalized_result
 from .selftests_fdfd import cpu_specs
 from .selftests_mode_ports import _SILICA_EPS_R, _SILICON_EPS_R, _SLAB_SIZE
 
@@ -107,11 +108,7 @@ def _check_adjoint_gradient(results_by_name):
                             f'{polarization}_{objective}_adjoint': adjoint,
                             f'{polarization}_{objective}_finite_difference': finite_difference,
                             f'{polarization}_{objective}_relative_error': error})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 # em_fdfd_hz_eps_xy_adjoint_gradient: the em_fdfd_adjoint_gradient layout in em_fdfd_hz, with the last 0.4 um of the
@@ -185,11 +182,7 @@ def _check_xy_adjoint_gradient(results_by_name):
             details.update({f'{component}_{objective}_adjoint': adjoint,
                             f'{component}_{objective}_finite_difference': finite_difference,
                             f'{component}_{objective}_relative_error': error})
-    worst_item = max(normalized_errors, key=lambda item: math.inf if math.isnan(normalized_errors[item])
-                     else normalized_errors[item])
-    worst = normalized_errors[worst_item]
-    details.update(normalized_errors=normalized_errors, worst_item=worst_item)
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
+    return normalized_result(normalized_errors, details)
 
 
 ADJOINT_SELFTEST_CASES = (

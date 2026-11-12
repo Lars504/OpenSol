@@ -5,10 +5,11 @@ from dataclasses import replace
 
 import numpy as np
 
+from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import eigen_factorization, study_duration
+from ...model.definition_helpers import eigen_factorization, study_duration, validate_points_inside
 from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
@@ -16,10 +17,11 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.schema import (PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param, array_owner,
-                             coupling_writes, feature_path, output_field_names, permittivity_arrays, resolve_values,
-                             state_field_names)
+                             coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
+                             resolve_values, state_field_names)
 from . import EMPhysics
 from .boundaries import BoundaryConfig
+from .eigenfrequency import ResonanceTable, resonance_filter_time_item
 from .material_fit import MAX_LORENTZ_POLES, NK_FIT_DEFAULTS, NK_FIT_MODEL
 from .materials import DrudePole, LorentzPole
 from .results import (dft_result, far_field_result, flux_result, mode_monitor_result, mode_source_result,
@@ -551,11 +553,11 @@ def far_field_params(n_wavelengths_help, n_wavelengths_tip):
 FLUX_PARAMS = spectral_params(100, '50-200 give a smooth spectrum; the work per time step grows with the count.',
                               '50 to 200 gives a smooth spectrum; more wavelengths slow down every time step.')
 
-MODE_NUMBER_HELP = ('1-based index of the mode in descending order of Re(n_eff) among the propagating modes (COMSOL / '
-                    'Lumerical numbering; the ranking key is Re(k^2) of the transverse eigenvalue, so evanescent '
-                    'modes, Re(k^2) < 0, come after every propagating one whatever their Re(n_eff)): 1 = the '
-                    'fundamental, most strongly guided mode, 2 the next, ...; both parities count, so in a symmetric '
-                    'slab mode 1 is even and mode 2 odd; modes localised in the PML of a line that continues '
+MODE_NUMBER_HELP = ('1-based index of the mode in descending order of Re(n_eff) among the propagating modes (the '
+                    'industry-standard numbering; the ranking key is Re(k^2) of the transverse eigenvalue, so '
+                    'evanescent modes, Re(k^2) < 0, come after every propagating one whatever their Re(n_eff)): 1 = '
+                    'the fundamental, most strongly guided mode, 2 the next, ...; both parities count, so in a '
+                    'symmetric slab mode 1 is even and mode 2 odd; modes localised in the PML of a line that continues '
                     'through it are discarded and not counted. The build fails when the line has fewer modes and '
                     'warns when the selected one is not guided (Re(n_eff) not above the index of a span-end cell at a '
                     'cpml or metal end: a cladding or radiation mode) or carries no forward power (an evanescent or '
@@ -611,9 +613,9 @@ MODE_SOURCE_PARAMS = (
                'Hilbert partner) then biases fraction_* / phase_* toward the lower band edge and adds a DC part.'),
     Param('power', 'float', 1.0, label='Mode power', unit='W/m', min=0.0, min_exclusive=True, tip=MODE_POWER_TIP,
           help='Power per unit z length carried by the launched mode, 1/2 Re of the integral of (E x H*).n over the '
-               'line (the 2D port input power of COMSOL): cw = the time-averaged power once the ramp has settled, '
-               'gaussian = the cycle-averaged power at the envelope peak. Fields scale with sqrt(power) and are '
-               'linear, so 1 W/m is the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).'),
+               'line (the industry-standard 2D port input power): cw = the time-averaged power once the ramp has '
+               'settled, gaussian = the cycle-averaged power at the envelope peak. Fields scale with sqrt(power) and '
+               'are linear, so 1 W/m is the usual choice (a peak |E| of order 1e4 V/m in a 0.3 um silicon slab).'),
 )
 MODE_MONITOR_PARAMS = (
     mode_number_param('It picks the mode at the middle monitor wavelength; at the other wavelengths the same mode is '
@@ -664,7 +666,8 @@ def mode_end_text(polarization, solver):
     """Span-end conditions of a mode_source / mode_monitor line of em_<solver>_<polarization> (mode_ports.PortLine,
     alike for FDTD and FDFD); hz adds the face-permittivity note."""
     walls, metal = _MODE_END_CONDITIONS[polarization]
-    text = ('Span ends, like COMSOL port boundaries: an end on a cpml domain edge continues the solve through the PML '
+    text = ('Span ends, as at an industry-standard port boundary: an end on a cpml domain edge continues the solve '
+            'through the PML '
             f'cells (open: radiation is absorbed); {walls}, as those walls do; an end inside the domain, or a partial '
             f'span of a periodic axis, is metal ({metal}), so extend the line well into the cladding (the build warns '
             'when the mode still exceeds 1% of its peak at a metal end); a span over a whole periodic axis is '
@@ -843,6 +846,17 @@ def eigen_only_feature_issues(vctx, physics_spec, feature_spec):
                   'part (its result stays empty)')]
 
 
+def validate_driven_point(vctx, physics_spec, feature_spec, values):
+    """Point inside the domain; warning where the study eigen-solves the physics (sources and probes play no part)."""
+    return (validate_points_inside(vctx, physics_spec, feature_spec, values)
+            + eigen_only_feature_issues(vctx, physics_spec, feature_spec))
+
+
+def apply_resonance_table(ctx, solver, feature_spec, values, selection):
+    """ResonanceTable marker of a resonance_table without a region (em_fdfd_bor, em_fdfd_conical)."""
+    return ResonanceTable()
+
+
 def resonance_table_study_issues(vctx, physics_spec, feature_spec, optomechanics=True):
     """Warning on a resonance_table where the study does not eigen-solve the physics (optomechanics: the type may be
     the optical physics of an optomechanics study)."""
@@ -903,15 +917,9 @@ def fem_size_issues(vctx, physics_spec, settings_values, path, remedy=None) -> l
 
 def other_em_physics_labels(vctx, own_type, allowed=()) -> list:
     """"'name' (type)" of every other family-'em' physics of the model whose type is neither own_type nor in allowed."""
-    labels = []
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:
-            continue
-        if physics_type.family == EM_FAMILY and physics_type.name != own_type and physics_type.name not in allowed:
-            labels.append(f"'{physics.name}' ({physics_type.name})")
-    return labels
+    return [f"'{physics.name}' ({physics_type.name})"
+            for physics, physics_type in known_physics(vctx.spec, vctx.registry)
+            if physics_type.family == EM_FAMILY and physics_type.name != own_type and physics_type.name not in allowed]
 
 
 # ---- run-time estimates of the host-solved types (em_modes, em_fdfd_bor, em_fdfd_conical) ----
@@ -949,6 +957,27 @@ def kept_line_block_factors(context, unknowns, nnz, factors, block_size):
 def scaled_ops(ops, factor):
     """Ops tuple (entries an op or (multiplicity, op)) with every multiplicity times `factor`."""
     return tuple((factor * entry[0], entry[1]) if isinstance(entry, tuple) else (factor, entry) for entry in ops)
+
+
+def fem_resonance_time_estimate(settings_values, mesh, context, label, bytes_per_entry, calls, eigenpairs, n_orders=1.0,
+                                **eigen_work):
+    """Eigen-solved FEM type on a triangles mesh (fem_modes unknowns; em_fdfd_bor, em_fdfd_conical): one FEM assembly
+    (`label`, bytes_per_entry per stored entry, `calls` Python calls), the resonance filter (A, M, W; a search per
+    order) and per order a factorisation and a squared-Cayley eigen-solve of 'eigen' (two solves per application; host
+    SuperLU priced at FEM_LU_FILL_FACTOR x the 2D curve, uncalibrated; cuDSS on the profile's 2D cudss curves at the
+    same scale); eigen_work: further solver_work kwargs."""
+    from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, estimated_unknowns
+    order = DISCRETIZATION_ORDERS[settings_values['discretization']]
+    unknowns = float(estimated_unknowns(int(mesh.n_elements), int(mesh.n_edges), int(mesh.n_nodes), order))
+    nnz = FEM_ENTRIES_PER_ROW[order] * unknowns
+    assembly = te.TimeEstimate((te.TimeItem(label, 'assembly', 1.0, 'exact',
+                                            (te.HostStream(bytes_per_entry * nnz), te.PythonCalls(calls))),
+                                resonance_filter_time_item(context.backend, unknowns, 3.0 * nnz,
+                                                           eigenpairs * n_orders)))
+    return te.combine((assembly, context.solver_work(
+        'eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=n_orders, factorizations=n_orders, rhs=2,
+        eigenpairs=eigenpairs, factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR, **eigen_work,
+        **eigen_backend_kwargs(context))))
 
 
 def create_em_physics(ctx, physics_spec, settings_values, polarization, background_targets):
@@ -1337,11 +1366,7 @@ def _boundary_issues(settings_values, path):
 def _em_physics_types(vctx):
     """(name of the first EM physics, distinct EM PhysicsTypes in spec order); physics of unknown type skipped."""
     first_name, physics_types = None, {}
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:
-            continue
+    for physics, physics_type in known_physics(vctx.spec, vctx.registry):
         if physics_type.family == EM_FAMILY:
             first_name = physics.name if first_name is None else first_name
             physics_types.setdefault(physics_type.name, physics_type)

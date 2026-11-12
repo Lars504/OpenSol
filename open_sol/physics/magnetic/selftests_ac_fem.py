@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.constants import MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import scaled_worst_result
+from ...model.selftest_helpers import last_value, scaled_worst_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, StudySpec)
 from .selftests import _BAND, _LENGTH, _MAGNETIC, _RUN, _WIDTH, _band_rectangle, _derived_value, _mirror_y
@@ -138,11 +138,7 @@ def _annulus_solution(positions):
 
 # ---- checks ----
 def _probe_values(results, count):
-    values = []
-    for index in range(count):
-        samples = np.asarray(results.result(_MAGNETIC, f'probe{index}')['values'], dtype=np.float64)
-        values.append(float(samples[-1]) if samples.size else math.nan)
-    return np.array(values)
+    return np.array([last_value(results, _MAGNETIC, f'probe{index}') for index in range(count)])
 
 
 def _make_field_check(kind, solution):

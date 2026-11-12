@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .assembly import CHUNK_ELEMENTS, DirichletSystem, _to_csr, eliminate_dirichlet, pattern_sum, restrict
+from .assembly import (CHUNK_ELEMENTS, DirichletSystem, _to_csr, append_blocks, eliminate_dirichlet, pattern_sum,
+                       restrict)
 from .fixed_pattern import scatter_add
 from .quadrature import gauss_line
 
@@ -171,7 +172,6 @@ def assemble_line_matrix(dofs, coefficient=1.0, test_derivative=0, trial_derivat
     t, weights = gauss_line(_rule_degree(dofs, (test_derivative, trial_derivative), coefficient, degree))
     test_table = _reference_table(dofs, t, test_derivative)[None]     # (1, q, n)
     trial_table = _reference_table(dofs, t, trial_derivative)[None]
-    n_local = dofs.n_local
     rows, cols, values = [], [], []
     for start in range(0, selected.size, CHUNK_ELEMENTS):
         chunk = selected[start:start + CHUNK_ELEMENTS]
@@ -180,11 +180,7 @@ def assemble_line_matrix(dofs, coefficient=1.0, test_derivative=0, trial_derivat
         weighted = _coefficient_at(coefficient, x, chunk, dofs.n_elements) * (weights[None, :] * widths[:, None])
         test = _physical_basis(dofs, test_table, widths[:, None], test_derivative)       # (m, q, n)
         trial = _physical_basis(dofs, trial_table, widths[:, None], trial_derivative)
-        blocks = np.einsum('mq,mqa,mqb->mab', weighted, test, trial)
-        local = dofs.element_dofs[chunk]
-        rows.append(np.repeat(local, n_local, axis=1).ravel())
-        cols.append(np.tile(local, (1, n_local)).ravel())
-        values.append(blocks)
+        append_blocks(rows, cols, values, dofs.element_dofs[chunk], np.einsum('mq,mqa,mqb->mab', weighted, test, trial))
     return _to_csr(rows, cols, values, (dofs.n_dofs, dofs.n_dofs))
 
 
@@ -257,11 +253,10 @@ def assemble_point_matrix(dofs, positions, values, test_derivative=0, trial_deri
     elements, test = _point_basis(dofs, positions, test_derivative)
     _elements, trial = _point_basis(dofs, positions, trial_derivative)
     values = np.broadcast_to(np.asarray(values), elements.shape)
-    blocks = values[:, None, None] * test[:, :, None] * trial[:, None, :]
-    local = dofs.element_dofs[elements]
-    n_local = dofs.n_local
-    return _to_csr([np.repeat(local, n_local, axis=1).ravel()], [np.tile(local, (1, n_local)).ravel()], [blocks],
-                   (dofs.n_dofs, dofs.n_dofs))
+    rows, cols, blocks = [], [], []
+    append_blocks(rows, cols, blocks, dofs.element_dofs[elements],
+                  values[:, None, None] * test[:, :, None] * trial[:, None, :])
+    return _to_csr(rows, cols, blocks, (dofs.n_dofs, dofs.n_dofs))
 
 
 # ---- sampling ----

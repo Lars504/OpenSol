@@ -9,10 +9,10 @@ import numpy as np
 from ...core.backend import to_host
 from ...core.constants import EPS0
 from ...core.renderer import PhysicsRenderer
+from .mode_ports3d import AXIS_PERMITTIVITY
 from .renderer_fdfd3d import FDFDRenderer3D
 
 _COMPONENT_INDEX = {'x': 0, 'y': 1, 'z': 2}
-_PERMITTIVITY_OF = ('eps_xx', 'eps_yy', 'eps_r')   # array of the x / y / z component (eps_r when unallocated)
 
 
 class FEMRenderer3D(PhysicsRenderer):
@@ -47,7 +47,7 @@ class FEMRenderer3D(PhysicsRenderer):
             return intensity if component == 'e_intensity' else np.sqrt(intensity)
         if component == 'w_e':
             allocated = self.domain.materials.property_names()
-            eps = np.stack([self._host(name if name in allocated else 'eps_r')[element] for name in _PERMITTIVITY_OF],
+            eps = np.stack([self._host(name if name in allocated else 'eps_r')[element] for name in AXIS_PERMITTIVITY],
                            axis=1)
             return np.where(inside, 0.25 * EPS0 * np.sum(eps * np.abs(fields['e']) ** 2, axis=1), np.nan)
         name, _, part = component.rpartition('_')

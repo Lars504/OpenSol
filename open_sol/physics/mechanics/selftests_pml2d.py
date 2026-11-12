@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import cpu_defaults, scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, scaled_worst_result, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
 from .selftests_fem import _BOX, _BOX_DENSITY, _BOX_H, _BOX_ORTHOTROPIC
@@ -93,9 +93,7 @@ def _check_operator(_):
     beta = 3.0 * math.log(1.0 / DEFAULT_PML_REFLECTION) * wave_speed / (2.0 * omega * _RING)
     errors['profile'] = max(abs(ends[0, 0] - 1.0), abs(ends[1, 0] - (1.0 - 1j * beta)) / beta,
                             float(np.max(np.abs(ends[:, 1] - 1.0))))
-    worst = float(max(errors.values()))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _OPERATOR_TOLERANCE,
-            'details': {**details, 'errors': errors, 'beta_expected': beta}}
+    return worst_result(errors, _OPERATOR_TOLERANCE, **details, beta_expected=beta)
 
 
 # ---- solid_fem_pml_bar_radiation: the leaky Fabry-Perot bar of selftests_pml3d in plane strain ----

@@ -11,9 +11,10 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
+from ...model.selftest_helpers import failed_count_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec, SweepSpec)
-from .selftests_conformal3d import _failed_count_result, _leapfrog_frequency
+from .selftests_conformal3d import _leapfrog_frequency
 
 _PHYSICS_NAME = 'em'
 _PHYSICS_TYPE = 'em_fdfd_3d'          # literal (selftests never import the definition)
@@ -144,7 +145,7 @@ def _check_identities(_results):
                                        _IDENTITY_TOLERANCE)
     details['cpml_asymmetry_without_stretches'] = relative_asymmetry(scipy.sparse.diags(volumes) @ operator)
     details['cpml_unknowns'] = cpml_live.n_unknowns
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 def _dense_spectrum(cells, faces, window):
@@ -193,7 +194,7 @@ def _check_pec_box_discrete(_results):
     checks['sector_static_count'] = (abs(union_static - full_static), 0)
     details['sectors'] = {'full_modes': int(full_values.size), 'union_modes': int(union.size),
                           'full_static': full_static, 'union_static': union_static, 'per_sector': sectors}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- stage 1: model runs ----
@@ -241,6 +242,15 @@ def _table_omegas(table):
             for row in table['rows']]
 
 
+def _add_band_checks(checks, run, found, expected, count):
+    """checks[run]: Re of the found omegas vs the real `expected` ones (inf unless `count` were found);
+    checks[run_inverse_q]: their largest 1/Q = 2 |Im| / Re (lossless: ~0)."""
+    checks[run] = (_pairwise_error([omega.real for omega in found], expected) if len(found) == count else math.inf,
+                   _RUN_TOLERANCE)
+    checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
+                                  _RUN_TOLERANCE)
+
+
 def _box_omegas(cells, frozen_eps):
     """Complex omega of every box mode in a medium of frozen complex eps."""
     return [C0 * math.sqrt(value) / cmath.sqrt(frozen_eps) for value in _box_wavenumbers(cells, float(np.float32(_CELL)))]
@@ -259,15 +269,12 @@ def _check_box(results_by_name):
     for run, results in results_by_name.items():
         found = _table_omegas(results.result(_PHYSICS_NAME, _TABLE))
         expected = _nearest(expected_all, omega_target, len(found))
-        checks[run] = (_pairwise_error([omega.real for omega in found], [omega.real for omega in expected])
-                       if len(found) == _RUN_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, [omega.real for omega in expected], _RUN_RESONANCES)
         details[run] = {'found_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in found],
                         'expected_wavelengths': [2.0 * math.pi * C0 / omega.real for omega in expected]}
     if not results_by_name:
         checks['runs'] = (math.inf, 0.0)
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 def _lossy_target():
@@ -331,12 +338,9 @@ def _check_lattice(results_by_name):
         found = _table_omegas(results_by_name[run].result(_PHYSICS_NAME, _TABLE))
         omega_target = 2.0 * math.pi * C0 / _lattice_target(k_fraction)
         expected = _nearest(_lattice_omegas(k_fraction, float(np.float32(_CELL))), omega_target, len(found))
-        checks[run] = (_pairwise_error([omega.real for omega in found], [omega.real for omega in expected])
-                       if len(found) == _LATTICE_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, [omega.real for omega in expected], _LATTICE_RESONANCES)
         details[run] = {'found': [omega.real for omega in found], 'expected': [omega.real for omega in expected]}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 _SECTOR_RESONANCES = 4                # per sector; the full box's 4 nearest must be among them
@@ -369,7 +373,7 @@ def _check_sectors(results_by_name):
     checks['union'] = (_pairwise_error(_nearest(union, omega_target, _SECTOR_RESONANCES), nearest_expected),
                        _RUN_TOLERANCE)
     details['expected_nearest_wavelengths'] = [2.0 * math.pi * C0 / value for value in nearest_expected]
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- FDTD ring-down vs the FDFD eigenvalues on one grid (heavy) ----
@@ -552,10 +556,7 @@ def _check_bragg(results_by_name):
         found = _swept_omegas(derived, value_index)
         expected = _nearest(_bragg_omegas(k_fraction, _discrete_trace), omega_target, _BRAGG_RESONANCES)
         continuum = _bragg_omegas(k_fraction, _continuum_trace)
-        checks[run] = (_pairwise_error([omega.real for omega in found], expected)
-                       if len(found) == _BRAGG_RESONANCES else math.inf, _RUN_TOLERANCE)
-        checks[f'{run}_inverse_q'] = (max((2.0 * abs(omega.imag) / omega.real for omega in found), default=math.inf),
-                                      _RUN_TOLERANCE)
+        _add_band_checks(checks, run, found, expected, _BRAGG_RESONANCES)
         checks[f'{run}_continuum'] = (max((min(abs(value / reference - 1.0) for reference in continuum)
                                            for value in expected), default=math.inf) if continuum else math.inf,
                                       _BRAGG_CONTINUUM_TOLERANCE)
@@ -563,7 +564,7 @@ def _check_bragg(results_by_name):
                         'discrete_wavelengths': [2.0 * math.pi * C0 / omega for omega in expected],
                         'continuum_wavelengths': [2.0 * math.pi * C0 / omega
                                                   for omega in _nearest(continuum, omega_target, _BRAGG_RESONANCES)]}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- host factor ordering: minimum degree vs nested dissection (heavy, cpu) ----
@@ -615,7 +616,7 @@ def _check_ordering(_results):
     minimum_degree, nested = details['minimum_degree'], details['nested_dissection']
     details['speedup'] = minimum_degree['factor_seconds'] / max(nested['factor_seconds'], 1e-9)
     checks['fill_ratio'] = (nested['lu_bytes'] / minimum_degree['lu_bytes'], _ORDERING_FILL_RATIO)
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- template ----

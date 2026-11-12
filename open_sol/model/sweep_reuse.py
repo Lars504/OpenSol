@@ -4,6 +4,7 @@ import dataclasses
 
 from .expressions import COORDINATE_NAMES, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import GEOMETRY_KINDS
+from .schema import known_physics
 from .solver_hooks import RerunSolver
 
 REUSE_REFUSED_STUDIES = ('time_dependent', 'optimization')   # their run state is no rerun of a kept build
@@ -101,11 +102,7 @@ def _value_uses(spec, registry):
         for key, raw in dataclasses.asdict(mesh_spec).items():
             if key not in _TEXT_KEYS:
                 yield ('mesh', mesh_spec.name), f'mesh {mesh_spec.name!r} {key}', value_names(raw), False
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:   # validation reports it
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         for name, names in _param_uses(physics_type.settings, physics_spec.settings):
             yield ('physics', physics_spec.name), f'physics {physics_spec.name!r} setting {name}', names, False
         for feature_spec in physics_spec.features:

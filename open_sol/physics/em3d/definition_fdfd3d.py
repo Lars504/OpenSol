@@ -29,8 +29,8 @@ from ..em.memory_estimates import (EIGEN_PHASE, _study_values, cudss_factor_item
                                    host_factor_items, resonance_search_items)
 from .boundaries3d import AXES, FACE_TYPES_3D, MIRROR_TYPES_3D
 from .definition import (_BC_CHOICE_LABELS, _BC_TIP, _MATERIAL_PROPERTIES, _MATERIAL_SCHEMA,
-                         _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _bloch_k,
-                         _boundary_config, _pec_memory, _validate_pec, _validate_z_faces,
+                         _OPTIONAL_MATERIAL_SCHEMA, _PML_VISIBLE_3D, _SLOT_ARRAYS, _apply_pec, _boundary_config,
+                         _ignored_bloch_issues, _pec_memory, _validate_pec, _validate_z_faces,
                          write_dispersive_regions_3d)
 from .definition_sources3d import domain_sizes
 from .fdfd3d import ARNOLDI_BASIS_PER_WANTED, FDFDPhysics3D
@@ -208,14 +208,6 @@ _FEATURES = (
 _VALIDATE_EM = make_validate_physics(_SLOT_ARRAYS, time_domain=False, solved_wavelengths=all_solved_wavelengths)
 
 
-def _bloch_issues(settings_values, path):
-    """Warning per Bloch k set on a non-periodic axis (ignored there)."""
-    return [Issue('warning', path, f'bloch_k{axis} = {_bloch_k(settings_values, axis):.4g} rad/m is ignored: '
-                                   f'bc_{axis}_lo / bc_{axis}_hi are not periodic')
-            for axis in AXES
-            if _bloch_k(settings_values, axis) != 0.0 and settings_values[f'bc_{axis}_lo'] != 'periodic']
-
-
 def nedelec_unknowns(mesh, settings_values) -> int:
     """Nedelec unknowns of a TetrahedronMeshEstimate before the walls drop theirs (an upper figure): the edges
     (linear), 2 x (edges + faces) (quadratic)."""
@@ -290,7 +282,7 @@ def _cutoff_issues(vctx, physics_spec, settings_values, path):
 def _validate(vctx, physics_spec, settings_values):
     path = ('physics', physics_spec.name)
     return (_validate_z_faces(settings_values, path)
-            + list(_VALIDATE_EM(vctx, physics_spec, settings_values)) + _bloch_issues(settings_values, path)
+            + list(_VALIDATE_EM(vctx, physics_spec, settings_values)) + _ignored_bloch_issues(settings_values, path)
             + _size_issues(vctx, physics_spec, settings_values, path)
             + _tetrahedra_issues(vctx, physics_spec, settings_values, path)
             + _cutoff_issues(vctx, physics_spec, settings_values, path))
@@ -304,10 +296,7 @@ def _memory_estimate(settings_values, mesh, context):
         return _tetrahedra_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
     unknowns = 3 * n_cells
-    n_resonances = int(_study_values(context).get('n_resonances') or 1)
-    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers),
-                                 ARNOLDI_BASIS_PER_WANTED * n_wanted)
+    n_resonances, n_wanted, n_basis = _arnoldi_sizes(context, unknowns)
     vector_bytes = COMPLEX128_BYTES * unknowns
     row_bytes = INT32_BYTES * unknowns   # CSR indptr per row
     factorization = eigen_factorization(context.solvers)
@@ -341,6 +330,15 @@ def _memory_estimate(settings_values, mesh, context):
                                                        COMPLEX64_BYTES * n_cells),) + cudss_items
                                      + tuple(search_transient),
                                      external_items=external_items, external_extra=external_extra)
+
+
+def _arnoldi_sizes(context, unknowns):
+    """(n_resonances, wanted eigenpairs 2 n + 10, Arnoldi basis) of the study (fdfd3d ARNOLDI_BASIS_PER_WANTED)."""
+    n_resonances = int(_study_values(context).get('n_resonances') or 1)
+    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
+    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers),
+                                 ARNOLDI_BASIS_PER_WANTED * n_wanted)
+    return n_resonances, n_wanted, n_basis
 
 
 def _cudss_eigen_items(factorization, unknowns, entries, general, label, fill=3):
@@ -380,10 +378,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     row_entries = _NEDELEC_ROW_ENTRIES[order]
     n_local = 6 if order == 1 else 20
     n_elements = int(mesh.n_elements)
-    n_resonances = int(_study_values(context).get('n_resonances') or 1)
-    n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
-    n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers),
-                                 ARNOLDI_BASIS_PER_WANTED * n_wanted)
+    n_resonances, n_wanted, n_basis = _arnoldi_sizes(context, unknowns)
     vector_bytes = COMPLEX128_BYTES * unknowns
     matrix_bytes = row_entries * COMPLEX128_CSR_ENTRY_BYTES * unknowns + INT32_BYTES * unknowns
     factorization = eigen_factorization(context.solvers)
@@ -406,8 +401,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         fill = FactorFill(counted)
     # a Bloch phase makes A nonsymmetric: the LU keeps the whole matrix, not the LDL^T lower triangle
     cudss_items, external_items, external_extra = _cudss_eigen_items(
-        factorization, unknowns, row_entries * unknowns, _boundary_config(settings_values).has_bloch_phase,
-        'the Nedelec curl-curl operator', fill)
+        factorization, unknowns, row_entries * unknowns, not symmetric, 'the Nedelec curl-curl operator', fill)
     # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's A, M, W copies
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,

@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
 
 _RTOL = 1e-10              # exact identities in float64 (first estimates)
 _FAMILIES = (('lagrange', 1), ('lagrange', 2), ('hermite', 3))
@@ -38,20 +38,20 @@ def _graded_edges(start, end, count):
     return start + (end - start) * (s + 0.3 * s * (1.0 - s))
 
 
-def _adder(checks):
+def _adder():
+    """(SubChecks, add(name, value, tolerance=_RTOL, at_least=False)): its add_bound."""
+    checks = SubChecks()
+
     def add(name, value, tolerance=_RTOL, at_least=False):
-        value = float(value)
-        passed = value >= tolerance if at_least else value <= tolerance
-        checks[name] = {'value': value, 'tolerance': tolerance, 'passed': bool(passed)}
-    return add
+        checks.add_bound(name, value, tolerance, at_least)
+    return checks, add
 
 
 def _check_identities(_):
     from .line_fem import (assemble_line_bending, assemble_line_load, assemble_line_mass, assemble_line_matrix,
                            assemble_line_stiffness, assemble_point_load, assemble_point_matrix, element_means,
                            end_dofs, evaluate_line, interpolate_line, line_dofs, nodes_at, solve_line_system)
-    checks = {}
-    add = _adder(checks)
+    checks, add = _adder()
     rng = np.random.default_rng(7)
     start, end = _LINE_START, _LINE_END
     length = end - start
@@ -150,7 +150,7 @@ def _check_identities(_):
             rotated = solve_line_system(beam, moment, clamp)   # tip moment M: w = M s^2 / (2 EI)
             add('cantilever_moment_hermite', np.abs(evaluate_line(dofs, rotated, samples)
                                                     - force * length * local ** 2 / (2.0 * rigidity)).max() / tip)
-    return checks_result(checks, elements=len(edges) - 1)
+    return checks.result(elements=len(edges) - 1)
 
 
 def _manufactured_error(family, order, count):
@@ -185,8 +185,7 @@ def _manufactured_error(family, order, count):
 
 
 def _check_manufactured(_):
-    checks = {}
-    add = _adder(checks)
+    checks, add = _adder()
     errors = {}
     for family, order in _FAMILIES:
         tag = 'p1' if order == 1 else ('p2' if order == 2 else 'hermite')
@@ -196,7 +195,7 @@ def _check_manufactured(_):
         errors[tag] = (coarse, fine)
         rate = math.log(coarse / fine) / math.log(fine_count / coarse_count)
         add(f'l2_rate_{tag}', rate, tolerance=order + 1 - _RATE_MARGIN, at_least=True)
-    return checks_result(checks, l2_errors={tag: list(pair) for tag, pair in errors.items()})
+    return checks.result(l2_errors={tag: list(pair) for tag, pair in errors.items()})
 
 
 def _clamped_free_dofs(dofs, slope):
@@ -209,8 +208,7 @@ def _clamped_free_dofs(dofs, slope):
 
 def _check_string_modes(_):
     from .line_fem import assemble_line_mass, assemble_line_stiffness, line_dofs, line_eigenpairs
-    checks = {}
-    add = _adder(checks)
+    checks, add = _adder()
     length, tension, density = _BEAM_LENGTH, _STRING_TENSION, _STRING_DENSITY
     numbers = np.arange(1, _MODE_COUNT + 1)
     speed = math.sqrt(tension / density)
@@ -241,7 +239,7 @@ def _check_string_modes(_):
             lossy = lossy[np.argsort(lossy.real)]
             add('complex_tension_scaling_p2', np.abs(lossy / np.sort(eigenvalues.real)[:3]
                                                      - (1.0 + 1j * _STRING_LOSS_FACTOR)).max(), 1e-9)
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 def _beam_root_hz(number, rigidity, tension, line_density, length):
@@ -266,8 +264,7 @@ def _beam_root_hz(number, rigidity, tension, line_density, length):
 
 def _check_tensioned_beam(_):
     from .line_fem import assemble_line_bending, assemble_line_mass, assemble_line_stiffness, line_dofs, line_eigenpairs
-    checks = {}
-    add = _adder(checks)
+    checks, add = _adder()
     area = _BEAM_WIDTH * _BEAM_THICKNESS
     rigidity = _BEAM_YOUNG * _BEAM_WIDTH * _BEAM_THICKNESS ** 3 / 12.0
     tension = _BEAM_STRESS * area
@@ -283,7 +280,7 @@ def _check_tensioned_beam(_):
     frequencies = np.sqrt(np.sort(eigenvalues.real)) / (2.0 * math.pi)
     add('hermite_clamped_frequencies', np.abs(frequencies / exact - 1.0).max(), _MODE_RTOL)
     boundary_layer = math.sqrt(rigidity / tension)
-    return checks_result(checks, exact_hz=exact.tolist(), hermite_hz=frequencies.tolist(),
+    return checks.result(exact_hz=exact.tolist(), hermite_hz=frequencies.tolist(),
                          boundary_layer_m=boundary_layer, element_m=_BEAM_LENGTH / _BEAM_ELEMENTS)
 
 

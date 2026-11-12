@@ -33,8 +33,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   the parity reads needs a closed-form item in the case's check; every cpu run must record the solid 'linear' role on
   'cpu'. solid_3d_rigid_mode_check runs on both backends itself.
 - Definitions: `definition_common.py` (build's linear solver, MATERIAL_PROPERTIES = one Param per name for both
-  types, support / material / state helpers), `definition.py` (2D type + every solid coupling, registers
-  definition3d), `definition3d.py` (solver imported in create, SupportRegion / probe_result inside callbacks). A solid
+  types, support / material / state helpers, the apply / result callbacks both types share: body force, temperature
+  change, support and electrode tables), `definition.py` (2D type + every solid coupling, registers definition3d),
+  `definition3d.py` (solver imported in create, SupportRegion / probe_result inside callbacks). A solid
   that StudySpec.solved_physics leaves out is a stationary background: validate / estimators rebind their context by
   `definition_common.background_context`, create reads `solid_study`; a new study check goes through them, never
   spec.study.type. No CG settings on the physics; estimator dtype names map to PCGSolver names by
@@ -54,8 +55,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   = C : alpha. Rules are written for plane strain unless they say otherwise.
 - out_of_plane (planar only): plane_strain eps_zz = 0; plane_stress = static condensation of sigma_zz = 0
   (`stiffness.operator_coefficients(plane_stress=True)`, c33 = 1 in void cells; eps_zz output per cell, stress_zz 0);
-  generalized_plane_strain eps_zz = e0 + e1 x + e2 y (COMSOL's form, setting bending picks the free terms) by
-  superposition (`generalized_plane_strain.py`, `_solve_generalized`): the e = 0 solve + one
+  generalized_plane_strain eps_zz = e0 + e1 x + e2 y (the industry-standard form, setting bending picks the free terms)
+  by superposition (`generalized_plane_strain.py`, `_solve_generalized`): the e = 0 solve + one
   `ElasticSystem.solve_homogeneous` per free term (f_k = -int B^T (c13, c23, c36) h_k dA, h about the window centre,
   kept in `_unit_axial_solve` until the next `_assemble`); the 3 x 3 Schur matrix S_mk = int c33 h_k h_m - u_k . f_m is
   exact for bilinear u. Moments about the drawing origin (M_x = int y sigma_zz, M_y = -int x sigma_zz). `load_full`
@@ -109,7 +110,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_stiffness_follows_state`).
 
 ## Anisotropic stiffness (`stiffness.py`, c_ij entries; piezoelectric plan stage 5)
-- COMSOL's plane-strain choice: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
+- Industry-standard plane strain: the full law in Voigt model axes (1 xx, 2 yy, 3 zz, 6 xy, engineering shear) with
   out-of-plane strains held (anti-plane u_z clamped, no c_4J / c_5J). Arrays c11, c12, c13, c22, c23, c33, c16, c26,
   c36, c66 (`materials.OPTIONAL_STIFFNESS_SCHEMA`): any entry allocates the eight besides c16 / c26; those only by
   themselves (an allocated pair switches elastic_waves' monoclinic kernel on in a shared model). c11 / c12 / c22 /
@@ -151,8 +152,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `DEVICE_PENCIL_MIN_ENTRIES` stored entries on cuDSS it holds a DevicePencil (pool memory ~2-3 value arrays + refresh
   transients; E5 200 nm: ~1 GiB pool high-water; estimators: section "Memory estimates"). ModalPencil vouches its terms are
   symmetric (`symmetric_known`, no check; a complex Bloch prolongation keeps the check): a new term that breaks
-  symmetry must drop the vouch. solve_modes / solve_damped_modes / solve_loaded_modes = `ModalPencil(...).solve_at` +
-  `release()`: a caller holding a pencil must release it (cuDSS factor lives outside the cupy pool).
+  symmetry must drop the vouch. `solve_modes` = `ModalPencil(...).solve_at` + `release()`: a caller holding a pencil must release it (cuDSS factor lives outside the cupy pool).
 - Multi-shift: `solve_modes_at_shifts(pencil, omega_targets, n_per_shift)` (union of 'nearest' solves),
   `solve_band_modes(pencil, f_lo, f_hi, n_per_slice, max_modes)` (inertia-counted for 'symmetric', 50 % overlap +
   warning otherwise); both release and return frequency order with info target_frequency NaN, 'targets' / 'band',
@@ -428,11 +428,11 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   works through em_solid_optical_force's mesh_transfer.
 - Elastic PML ring (`pml2d.py`, pml_<face> / pml_cells / pml_reflection; ring from `pml3d.PMLPadding`, outer side
   clamped): eigenfrequency only; static / prestress solves see the ring unstretched and clamped; pencil from
-  `system.stiffness(stretched=True)` via `solve_damped_modes` with the ring filter. No PML on the axis. Ring strains /
+  `system.stiffness(stretched=True)` in a damped ModalPencil with the ring filter. No PML on the axis. Ring strains /
   energies are not physical.
 - Azimuthal order m >= 1 (triangles, eigenfrequency, isotropic only): `components` = 3 (U_phi shown in u_z, rings
-  weighted pi); the m = 1 axis tie u_phi = -u_r is `system.prolongation` (pass it to solve_modes /
-  solve_damped_modes); rigid motions 2 at m = 1, none at m >= 2; static, frequency response, c_ij refused;
+  weighted pi); the m = 1 axis tie u_phi = -u_r is `system.prolongation` (pass it to the
+  ModalPencil); rigid motions 2 at m = 1, none at m >= 2; static, frequency response, c_ij refused;
   stress_stiffening at m >= 1 takes the initial stress only.
 - Energy fields (`fields.ENERGY_DENSITY_FIELDS`) are display / probe fields, not in `state()`; tensor meshes render
   0 (energy probes there: validation error).
@@ -509,12 +509,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   and next to an equipotential electrode_domain; stress -= e^T E. Tensor renderer returns zeros for them, they stay out
   of state_fields, electric probes on the tensor mesh are refused. A cuDSS 'linear' back end skips the SuperLU size rule
   and host factor item.
-- Piezo modes: PiezoSystem + `coupled_mass_3d` to `PiezoSystem.solve_modes` on 'eigen' (2D pencil rules: voltage = short,
+- Piezo modes: PiezoSystem + `coupled_mass_3d` to `PiezoSystem.modal_pencil` on 'eigen' (2D pencil rules: voltage = short,
   floating = open; their values ignored). `select_resonance` splits u / `_potential` and stores per-mode electrode V / Q.
   k_eff^2 needs two runs.
 - Resistive electrode load (connection 'resistive_load', 3D only; load_resistance): tied like floating (no charge
   term: `_charge_terms` reads floating ones only), adds j s^2 / (omega R) to the master diagonal (`PiezoSystem.loads`).
-  Eigen: `modal.solve_loaded_modes` freezes 1 / omega at the target (target_frequency > 0 required), eigs_shifted, then
+  Eigen: the 'loaded' ModalPencil freezes 1 / omega at the target (target_frequency > 0 required), eigs_shifted, then
   Newton per mode on x^T T(omega) x = 0 (transpose, not conjugate); info load_residual (large = mode far from target).
   Modes complex (`_write_complex_outputs`, no electrode values), DAMPED_TABLE_COLUMNS. Frequency response:
   `HarmonicSystem(loads=)` adds (j / omega) B via pattern_sum (master diagonal is in K's pattern). Static solves raise;
@@ -536,10 +536,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   solves.
 - Elastic PML (`pml3d.py`): `_domain_requirements` returns a `pml3d.PMLPadding` (meshing grows the shell, materials by
   the clamped-centroid rule); shell carries stiffness (`_elastic_elements`), outer faces held at 0, s = 1 - j beta (d /
-  w)^2 frequency independent (pencil stays linear in omega^2). `modal.solve_pml_modes` keeps Re sqrt(lambda) > 0, drops
-  modes with > half |u|^2 on shell-only dofs. Eigenfrequency only, no piezo, no periodic axis, target > 0, no supports /
-  loads / electrodes on a PML face (its window side is interior); `_support_issues` skips its rules. Not built: PML with
-  piezo (G / scaling are real) and in frequency response.
+  w)^2 frequency independent (pencil stays linear in omega^2). a damped ModalPencil (`shell_dofs`) keeps Re
+  sqrt(lambda) > 0, drops modes with > half |u|^2 on shell-only dofs. Eigenfrequency only, no piezo, no periodic
+  axis, target > 0, no supports / loads / electrodes on a PML face (its window side is interior); `_support_issues`
+  skips its rules. Not built: PML with piezo (G / scaling are real) and in frequency response.
 - electrode_edge_size: `PhysicsType.mesh_edge_sizes` names electrode entities -> `TetrahedronSizing.edge_sizes` (gmsh
   only; info when unused).
 - Mirror check (`_mirror_issues`): warns per Roller whose selected materials' c_IJ / piezo_e* / eps_dc_* flip sign under
@@ -547,7 +547,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Solve: K_ff lazily via DiffusionDirectSolver on the 'linear' runtime (grid_defaults tetrahedra -> sparse_direct; pcg
   does not declare 'tetrahedra'). Eigen on 'eigen' eigsh_shifted (superlu / cudss / cudss_mixed refined to 1e-12; the
   SuperLU size limit is skipped for cuDSS); the tensor mesh ignores the factorization (info).
-- Free bodies: create passes `free_body` = `_free_body_allowed(study)` (eigenfrequency at target > 0, or
+- Free bodies: create passes `free_body` = `definition_common.free_body_allowed(study)` (eigenfrequency at target > 0, or
   frequency_response), prepare sets `system.rigid_motions_allowed`: rigid motions counted in `n_rigid_motions` (6 per
   unsupported region); static solves raise while > 0 (`_refuse_free_body`), the frequency response does not, an eigen
   solve at target 0 raises. Mode solvers take `rigid_motions` on top of n + EXTRA_EIGENVALUES (a low target finds the
@@ -585,7 +585,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (`_external_load`). Studies call it via `study._solve_static_states` after their background stage. The hook ends
   with `system.release_factor()`: a kept static factor took the device memory the shift-invert factor then needs
   (CudssMemoryError, then a ~4.6 min SuperLU retry).
-- Eigen loss: mechanical_loss_factor -> K + K_sigma + j eta K_el (K_sigma lossless) via `solve_damped_modes`;
+- Eigen loss: mechanical_loss_factor -> K + K_sigma + j eta K_el (K_sigma lossless) in a damped ModalPencil;
   info['damped'] adds DAMPED_TABLE_COLUMNS; a damped 2D mode is shown like a response. Piezo modes ignore the loss.
 - Complex records: frequency_probe (`definition_common.frequency_probe_feature`) -> HarmonicProbeRecord filled by
   `_record_harmonic`; supports `register_support` and record complex A x - f (2D x thickness); while a response is shown
@@ -708,6 +708,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   frequency-response HarmonicSystem, solid DevicePencils, device Newton tangents.
 
 ## Self-tests (`selftests.py`)
+- Shared case helpers (reuse, never a local copy): `selftests.py` (`_lame`, `_elastic`, `_rectangle`, `_reaction`,
+  `_window_fields`, the bilayer strip), `selftests_3d.py` (`_box`, 3D `_reaction`), `selftests_fem3d.py` (`_solid_spec`,
+  `_probe`, `_probes`, `_point`), `selftests_eigenfrequency.py` (`_symbols`, `_table_frequencies`, `_add_rank_items`:
+  rank-order table frequencies and snapshot counts), `selftests_formulations.py` (GPS layers: `_gps_materials`,
+  `_layer_constants`), `selftests_nonlinear.py` (string warm start / tangent update twins). Template modules
+  (`selftests.py`, `selftests_3d.py`, `selftests_bloch3d.py`, `selftests_optomechanics.py`) import no non-template
+  sibling at module level (get_registry loads them).
 - Nonlinear: `selftests_nonlinear3d.py` (definition3d loader; solid_fem3d_newton_gpu needs cuDSS), `selftests_nonlinear.py`
   (2D; its helpers serve the 3D twins), sweep_nonlinear_string_warm_start (model/selftests_sweep).
 - Exact-in-Q1 cases (1e-6, float64 CG to 1e-12): solid_bilayer_tension_graded (variants 'mixed' / 'mixed_cpu': pcg

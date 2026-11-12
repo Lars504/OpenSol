@@ -1,15 +1,15 @@
 """The 'frequency_response' StudyType (piezoelectric plan stage 5): background physics to a stationary fixed point, then
 the driven time-harmonic response of every solver with solve_frequency_response (solid_mechanics, membrane, pressure_acoustics) at each
 frequency of a list in Hz, one labelled snapshot per frequency (setting snapshots: all, last or none)."""
-# COMSOL's Frequency Domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays
+# A frequency-domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays
 # wavelength-based. Each frequency is one complex factorisation per solved physics (a cuDSS factor reuses its plan).
 import time
 
 from .schema import Issue, Param, StudyType
 from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
-from .study import (_PARITY_SECTORS_PARAM, Cancelled, LogEvent, _background_fixed_point_params, _background_stage,
+from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
                     _count_progress, _frequency_list, _frequency_range_issues, _scipy_issues, _selected_physics,
-                    _solve_static_states, _solver_roles, _with_parity_sectors)
+                    _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
 STUDY_NAME = 'frequency_response'
 _FREQUENCY_STAGE = 'Frequency solves'
@@ -48,9 +48,7 @@ def _run_frequency_response(session, values, emit, control, service):
         frequency_sweep = _plan_reduced_sweeps(solvers, frequencies, values, emit, emit_stage, runner)
         wall_start = time.perf_counter()
         for index, frequency in enumerate(frequencies):
-            try:
-                control.checkpoint(service)
-            except Cancelled:
+            if control.checkpoint_cancelled(service):
                 status = 'cancelled'
                 break
             label = frequency_label(frequency)
@@ -125,16 +123,8 @@ def _sweep_method_issues(vctx, method):
     """Errors for a sweep_method a solved physics' type does not list in frequency_sweep_methods."""
     if method == 'direct':
         return []
-    selection = vctx.spec.study.solved_physics
-    listed = selection if isinstance(selection, list) and selection else None
     issues = []
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:   # reported at the physics
-            continue
-        if STUDY_NAME not in physics_type.supported_studies or (listed is not None and physics.name not in listed):
-            continue
+    for physics, physics_type in _study_solved_types(vctx, STUDY_NAME):
         if method not in physics_type.frequency_sweep_methods:
             issues.append(Issue('error', ('study',), f"sweep_method '{method}': physics '{physics.name}' "
                                                      f"({physics_type.label}) supports "
@@ -168,10 +158,10 @@ _PARAMS = (
           tip='Frequencies in hertz, solved in this order; when filled, it replaces the range above.'),
     Param('snapshots', 'choice', 'all', label='Stored snapshots', choices=SNAPSHOT_CHOICES,
           choice_labels=(('all', 'Every frequency'), ('last', 'Last frequency only'), ('none', 'None')),
-          help="Which frequencies keep a snapshot of the stored fields (COMSOL's store fields in output): 'all' "
-               "(default) one per frequency, 'last' only the last solved one (also after a cancel), 'none' no "
-               'snapshot. Each snapshot holds the stored fields on up to 250,000 cells (~1 MB per field for a '
-               'large window), so a sweep over hundreds of frequencies may keep only the last. Feature records per '
+          help="Which frequencies keep a snapshot of the stored fields (the industry-standard store-fields-in-output "
+               "choice): 'all' (default) one per frequency, 'last' only the last solved one (also after a cancel), "
+               "'none' no snapshot. Each snapshot holds the stored fields on up to 250,000 cells (~1 MB per field for "
+               'a large window), so a sweep over hundreds of frequencies may keep only the last. Feature records per '
                'frequency (probes, port / support / mode_projection records, admittance) and the live last-frequency '
                "state are the same for every choice. With 'last' / 'none' the fields are formed for the last solved "
                'frequency only (every sweep_method; the live field view is not refreshed during the sweep).',
@@ -185,7 +175,7 @@ _PARAMS = (
           choice_labels=(('direct', 'Direct (one solve per frequency)'), ('adaptive', 'Adaptive reduced model'),
                          ('modal', 'Modal superposition')),
           help="How the frequencies are solved. 'direct' (default): one complex sparse factorisation per frequency. "
-               "'adaptive' (COMSOL's asymptotic waveform evaluation / an adaptive fast sweep): a reduced model trained "
+               "'adaptive' (asymptotic waveform evaluation / an adaptive fast sweep): a reduced model trained "
                'on the frequency list: factorisations at the ends and the middle, each adding the solution and '
                'rom_moments frequency derivatives (back-solves on the same factor) to a Galerkin basis, then one more '
                'at the frequency of the largest estimated relative residual until it is <= rom_tolerance or '
@@ -235,8 +225,8 @@ _PARAMS = (
     _PARITY_SECTORS_PARAM,
 )
 _DESCRIPTION = (
-    'Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies in Hz, the COMSOL '
-    'Frequency Domain study of the mechanics (the EM frequency_domain study takes wavelengths). Solved physics: every '
+    'Driven time-harmonic response (exp(+j omega t), omega = 2 pi f) at a list of frequencies in Hz, the '
+    'frequency-domain study of the mechanics (the EM frequency_domain study takes wavelengths). Solved physics: every '
     f'type listing frequency_response among its supported studies ({_SOLVED_TYPES_TEXT}; solid_mechanics, 2D: planar '
     'plane strain / plane '
     'stress or axisymmetric; not generalized plane strain or guided modes; solid_mechanics_3d on a tetrahedron mesh; '

@@ -9,10 +9,11 @@ import numpy as np
 
 from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result
+from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result, worst_result
 from ...model.spec import FeatureSpec, MaterialSpec, StudySpec
 from .selftests import _elastic
 from .selftests_fem3d import UM, _box, _point, _probe, _probes, _reaction, _solid_spec
+from .selftests_piezo import _relative
 
 _SOLID = 'solid'
 _PIEZO = {'piezoelectric': True}
@@ -22,10 +23,6 @@ _FIELD_TOLERANCE = 1e-6    # relative to each probe's scale (float32 probe sampl
 
 def _electrode(name, face, connection='voltage', voltage=0.0, charge=0.0):
     return FeatureSpec(name, 'electrode', [face], {'connection': connection, 'voltage': voltage, 'charge': charge})
-
-
-def _relative(measured, expected, scale):
-    return abs(float(measured) - float(expected)) / abs(float(scale))
 
 
 # ---- solid_fem3d_piezo_operator: identities of the block operator for linear fields (CPU, no model) ----
@@ -86,9 +83,7 @@ def _check_operator(_):
         for name, vector in (('rigid_u', rigid_u), ('constant_phi', constant_phi)):
             errors[f'P{order}.{name}'] = (float(np.max(np.abs(operator @ vector)))
                                           / (peak * float(np.max(np.abs(vector)))))
-    worst = float(np.max(list(errors.values())))
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _OPERATOR_TOLERANCE,
-            'details': {'errors': errors, 'expected': expected}}
+    return worst_result(errors, _OPERATOR_TOLERANCE, expected=expected)
 
 
 # ---- solid_fem3d_piezo_bar_static: z-rotated LN bar, rollers on the four sides (uniaxial strain along z) ----

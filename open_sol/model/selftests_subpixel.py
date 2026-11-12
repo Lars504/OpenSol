@@ -8,7 +8,7 @@ import numpy as np
 
 from ..core.constants import C0, EPS0
 from .schema import SelfTestCase
-from .selftest_helpers import SubChecks, float_list
+from .selftest_helpers import SubChecks, float_list, tolerance_units_result
 from .spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                    SolverDefaultsSpec, StudySpec)
 
@@ -547,11 +547,7 @@ def _check_disk(results_by_name):
         tolerances[f'{polarization} spread'] = _SPREAD_TOLERANCE[polarization]
         errors[f'{polarization} closed form'] = summary['closed_form_error']
         tolerances[f'{polarization} closed form'] = _CLOSED_FORM_TOLERANCE
-    normalized = {item: error / tolerances[item] for item, error in errors.items()}
-    worst_item = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, worst_item=worst_item)
-    return {'measured': normalized[worst_item], 'expected': 0.0, 'error': normalized[worst_item], 'tolerance': 1.0,
-            'details': details}
+    return tolerance_units_result(errors, tolerances, details)
 
 
 SUBPIXEL_SELFTEST_CASES = (

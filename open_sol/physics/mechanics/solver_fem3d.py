@@ -59,7 +59,6 @@ from .stiffness3d import check_positive_definite_3d, element_stiffness_3d, stres
 from .system_fem3d import ElasticFEMSystem3D
 from .tangent_update import TangentPolicy, newton_proposer
 
-DISCRETIZATIONS_3D = {'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order
 _EXPANSION_NAMES = ('alpha_xx', 'alpha_yy', 'alpha_zz')
 # MaterialGrid arrays the kept static state (prestress) depends on; another changed array (optics) keeps it
 _PRESTRESS_INPUTS = STIFFNESS_ARRAYS | EXPANSION_ARRAYS | PRESTRESS_NAMES
@@ -548,14 +547,6 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             if name in names:
                 stress[:, row] = np.where(self._solid, _host(getattr(materials, name)), 0.0)
         return stress if stress.any() else None
-
-    def state(self) -> dict:
-        """Per-element arrays (n_elements,): the outputs at the element centroids (every pending group computed), the
-        inputs and E / nu."""
-        self._ensure_outputs()
-        state = {name: getattr(self.fields, name) for name in self.output_arrays + self.input_arrays}
-        state.update({name: getattr(self.domain.materials, name) for name in MATERIAL_STATE_ARRAYS})
-        return state
 
     def inject_source(self, name: str, array) -> None:
         """Write a coupled slot: one value per element (this mesh's own: same-mesh couplings)."""

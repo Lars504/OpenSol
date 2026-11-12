@@ -7,8 +7,8 @@ import numpy as np
 
 from ...core.constants import C0, ELEMENTARY_CHARGE, HBAR, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
-from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
+from ...model.selftest_helpers import float_list, vertical_line
+from ...model.spec import DomainSpec, FeatureSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_fdfd import cpu_specs
 
 _PHYSICS_NAME = 'em'
@@ -66,14 +66,13 @@ def _sheet_spec(polarization, run_name):
     cell = wavelength / _CELLS_PER_WAVELENGTH
     size_x, size_y = _LENGTH_CELLS * cell, _PERIOD_CELLS * cell
 
-    def vertical_line(name):
-        x = (_LINE_CELLS[name] + 0.5) * cell
-        return GeometrySpec(f'{name}_line', 'line', {'x0': x, 'y0': 0.0, 'x1': x, 'y1': size_y})
-    geometry = [vertical_line('source'), vertical_line('flux')]
+    def line(name):
+        return vertical_line(f'{name}_line', (_LINE_CELLS[name] + 0.5) * cell, 0.0, size_y)
+    geometry = [line('source'), line('flux')]
     features = [FeatureSpec('source', 'line_source', ['source_line'], {'amplitude': 1.0, 'phase': 0.0}),
                 FeatureSpec(_FLUX, 'flux_monitor', ['flux_line'])]
     if run_name == 'device':
-        geometry.append(vertical_line('sheet'))
+        geometry.append(line('sheet'))
         features.append(FeatureSpec('sheet', 'conducting_sheet', ['sheet_line'], dict(sheet_values)))
     return ModelSpec(
         title=f'Self-test: conducting sheet transmission ({polarization}, {run_name})',

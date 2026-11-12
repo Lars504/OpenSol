@@ -7,7 +7,7 @@ import numpy as np
 
 from ...core.constants import FACES
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import max_relative_error
+from ...model.selftest_helpers import max_relative_error, worst_result
 
 CONDUCTIVITY = 2.0                 # W/(m*K)
 POWER_DENSITY = 1e10               # W/m^3 (exact in float32)
@@ -98,6 +98,17 @@ def _radial_chain(widths, faces, area_power, inner_value):
     return inner_value - flow * np.cumsum(resistances)[:-1], flow
 
 
+def _missed_refusals(makers):
+    """Number of the callables in makers that did not raise ValueError, as a float (an error entry, 0 expected)."""
+    refused = 0
+    for make in makers:
+        try:
+            make()
+        except ValueError:
+            refused += 1
+    return float(len(makers) - refused)
+
+
 # ---- metric_coordinate_geometry (CPU) ----
 
 def _check_geometry(_results):
@@ -151,19 +162,12 @@ def _check_geometry(_results):
     errors['spherical_axis_faces'] = float(np.max(np.abs(full_meridian.y_face_area.full()[:, [0, -1]])))
     errors['spherical_full_band'] = relative(full_meridian.volume.along_y.sum(), 2.0)
 
-    refused = 0
-    for make in (lambda: Coordinates('polar', radius_min=-1e-6), lambda: Coordinates('cartesian', radius_min=1e-6),
-                 lambda: Coordinates('cylindrical'),
-                 lambda: window_metric(dr, np.full(8, math.pi / 6.0), Coordinates('polar'), axisymmetric=True),
-                 lambda: window_metric(dr, np.full(8, math.pi), Coordinates('polar'))):
-        try:
-            make()
-        except ValueError:
-            refused += 1
-    errors['refusals'] = float(5 - refused)
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': GEOMETRY_TOLERANCE,
-            'details': {'errors': errors}}
+    errors['refusals'] = _missed_refusals((
+        lambda: Coordinates('polar', radius_min=-1e-6), lambda: Coordinates('cartesian', radius_min=1e-6),
+        lambda: Coordinates('cylindrical'),
+        lambda: window_metric(dr, np.full(8, math.pi / 6.0), Coordinates('polar'), axisymmetric=True),
+        lambda: window_metric(dr, np.full(8, math.pi), Coordinates('polar'))))
+    return worst_result(errors, GEOMETRY_TOLERANCE)
 
 
 # ---- heat_polar_metric (GPU) ----
@@ -221,9 +225,7 @@ def _check_polar(_results):
         Coordinates('polar', radius_min=ANNULUS_INNER), False, 6, 1.0,
         lambda domain: float(np.sum(domain.cell_widths()[1])))
     errors['angular_parabola'] = _polar_angular()
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': EXACT_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, EXACT_TOLERANCE)
 
 
 # ---- heat_spherical_metric (GPU) ----
@@ -277,9 +279,7 @@ def _check_spherical(_results):
     errors['shell_rise'], errors['shell_inflow'] = _annulus(
         Coordinates('polar', radius_min=SHELL_INNER), True, 8, 2.0, _sphere_band_measure)
     errors['theta_eigenmode'] = _theta_eigenmode()
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': EXACT_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, EXACT_TOLERANCE)
 
 
 # ---- heat_polar_wrap (GPU) ----
@@ -390,27 +390,18 @@ def _wrap_refusals():
         _set_dirichlet(heat, {'x_hi': 0.0})
         _solved_rise(heat)
 
-    makers = (unanchored_periodic, wrapped_face_condition, two_angle_cells,
-              lambda: Coordinates('cartesian', angle_wrap='periodic'),
-              lambda: Coordinates('polar', angle_wrap='bloch'),
-              lambda: window_metric(np.full(4, 1e-5), np.full(6, math.pi / 6.0),
-                                    Coordinates('polar', angle_wrap='periodic'), axisymmetric=True))
-    refused = 0
-    for make in makers:
-        try:
-            make()
-        except ValueError:
-            refused += 1
-    return float(len(makers) - refused)
+    return _missed_refusals((unanchored_periodic, wrapped_face_condition, two_angle_cells,
+                             lambda: Coordinates('cartesian', angle_wrap='periodic'),
+                             lambda: Coordinates('polar', angle_wrap='bloch'),
+                             lambda: window_metric(np.full(4, 1e-5), np.full(6, math.pi / 6.0),
+                                                   Coordinates('polar', angle_wrap='periodic'), axisymmetric=True)))
 
 
 def _check_wrap(_results):
     errors = _periodic_ring()
     errors.update(_antiperiodic_sector())
     errors['refusals'] = _wrap_refusals()
-    error = float(np.max(list(errors.values())))
-    return {'measured': error, 'expected': 0.0, 'error': error, 'tolerance': EXACT_TOLERANCE,
-            'details': {'errors': errors}}
+    return worst_result(errors, EXACT_TOLERANCE)
 
 
 COORDINATE_SELFTEST_CASES = (

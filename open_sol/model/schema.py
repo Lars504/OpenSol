@@ -39,7 +39,7 @@ FIELD_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'mode_volume', 'at
 SOURCE_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'last', 'at', 'argmax', 'fwhm', 'polyfit', 'exp_fit',
                              'lorentz_fit', 'two_exp_fit', 'two_wave_fit', 'richardson', 'multi_lorentz_fit',
                              'pole_fit')   # a DerivedValueSpec.source (1D result or derived curve)
-# source None, no fields: one number from parameters, scalar outputs, t and earlier derived values (COMSOL's global
+# source None, no fields: one number from parameters, scalar outputs, t and earlier derived values (a global
 # evaluation of other results, e.g. sqrt(N_int / rho_int))
 GLOBAL_DERIVED_OPERATION = 'expression'
 SOURCE_FREE_DERIVED_OPERATIONS = FIELD_DERIVED_OPERATIONS + (GLOBAL_DERIVED_OPERATION,)   # source None
@@ -60,8 +60,8 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
 MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
-# MeshSpec values whose null means a default of the mesh kind (COMSOL Free Triangular / Tetrahedral 'Normal' growth
-# 1.3; five quadratic elements per wavelength)
+# MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: the industry-standard
+# growth 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
                       'triangles': {'max_ratio': 1.3, 'points_per_wavelength': 5.0},
                       'tetrahedra': {'max_ratio': 1.3, 'points_per_wavelength': 5.0}}
@@ -435,15 +435,22 @@ def param_in_space(param, space):
     return param if unit is None or unit == param.unit else replace(param, unit=unit)
 
 
-def model_spaces(spec, registry) -> tuple:
-    """SPACES every physics of spec runs in (SPACES order; the domain's size_z does not restrict them, its polar /
-    spherical coordinates do: COORDINATE_SPACES); () when they share none. Unknown types are skipped."""
-    spaces = set(COORDINATE_SPACES.get(spec.domain.coordinates, SPACES))
+def known_physics(spec, registry):
+    """Yield (PhysicsSpec, PhysicsType) of the physics of spec in order, skipping unregistered types (validate reports
+    them)."""
     for physics_spec in spec.physics:
         try:
             physics_type = registry.physics_type(physics_spec.type)
         except KeyError:
             continue
+        yield physics_spec, physics_type
+
+
+def model_spaces(spec, registry) -> tuple:
+    """SPACES every physics of spec runs in (SPACES order; the domain's size_z does not restrict them, its polar /
+    spherical coordinates do: COORDINATE_SPACES); () when they share none. Unknown types are skipped."""
+    spaces = set(COORDINATE_SPACES.get(spec.domain.coordinates, SPACES))
+    for physics_spec, physics_type in known_physics(spec, registry):
         settings_values = {param.name: param.default for param in physics_type.settings} | physics_spec.settings
         spaces &= set(instance_spaces(physics_type, settings_values))
     return tuple(space for space in SPACES if space in spaces)
@@ -1014,11 +1021,7 @@ def scalar_output_names(spec, registry, parameters=None):
     if parameters is None:
         parameters = evaluate_parameters(spec.parameters, errors={})
     names = {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if physics_type.scalar_outputs is None:
             continue
         try:
@@ -1101,11 +1104,7 @@ def default_precision_ignored(spec, registry, study) -> list:
     nodes = {node.name: node for node in spec.solvers}
     backend = solver_backend(spec)
     ignored = []
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:   # reported by validate
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         assigned = physics_spec.solvers if isinstance(physics_spec.solvers, dict) else {}
         grid = solver_grid(spec, physics_spec)
         for role, solver_role in physics_type.solver_roles.items():
@@ -1148,11 +1147,7 @@ def _honouring_physics(spec, registry, enabled, flag, extra_reason) -> tuple:
     if enabled is not True:
         return (), {}
     honouring, ignoring = [], {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:   # reported by validate
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if not getattr(physics_type, flag):
             reason = 'its type does not implement it'
         elif _on_element_mesh(spec, physics_spec):
@@ -1283,11 +1278,7 @@ def feature_precision_misfit(feature_type, resolved) -> str:
 def _field_names(spec, registry, include_outputs):
     """Shared body of state_field_names / output_field_names; physics of unknown type are skipped."""
     qualified, providers = {}, {}
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         infos = physics_type.state_fields + (physics_type.output_fields if include_outputs else ())
         for info in infos:
             qualified[f'{physics_spec.name}_{info.name}'] = (physics_spec.name, info.name)
@@ -1489,8 +1480,8 @@ MESH_PARAMS = (
               'cells. Empty: 1.15 for rectangular cells, 1.3 for triangles.',
           help='Largest size ratio of neighbouring cells on a graded mesh, or the maximum element growth rate of a '
                'triangle mesh (> 1); typically 1.1-1.3. Smaller ratios grade more smoothly (less numerical '
-               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, COMSOL '
-               "'Normal')."),
+               'reflection) but need more cells. null = the kind default: 1.15 (tensor), 1.3 (triangles, the '
+               'industry-standard default).'),
     Param('wavelength_min', 'float', None, label='Shortest wavelength', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Shortest vacuum wavelength the automatic mesh must resolve, in metres: 1.55e-6 for 1550 nm. Used in '
@@ -1513,8 +1504,8 @@ MESH_PARAMS = (
               "size' is set: it fixes the smallest cells instead.",
           help='Cells (triangles: elements) per wavelength inside each material in auto mode; typically 15-30 on '
                'tensor meshes. Too few cells give numerical dispersion (phase errors that grow with the propagation '
-               "distance). null = the kind default: 20 (tensor), 5 (triangles: COMSOL's five quadratic elements "
-               'per wavelength). Unused while dx is set (the finest cells take dx).'),
+               "distance). null = the kind default: 20 (tensor), 5 (triangles: the industry-standard five quadratic "
+               'elements per wavelength). Unused while dx is set (the finest cells take dx).'),
     Param('outer_dx', 'float', None, label='Outer cell size', unit='m', min=0.0, min_exclusive=True,
           visible_if=(('mode', ('nonuniform', 'auto')),), optional=True,
           tip='Largest cell size far from the structure. Leave empty to keep the main cell size everywhere.\n\n'
@@ -1544,7 +1535,8 @@ MESH_PARAMS = (
           tip='Element edges along a curved boundary are at most this fraction of its radius of curvature: '
               'smaller values follow circles, ellipses, spheres and cylinders more closely.',
           help="Triangles / tetrahedra: element size along circle / ellipse / sphere / cylinder boundaries <= "
-               "curvature_factor x the local radius of curvature (COMSOL's curvature factor; 0.3 = 'Normal')."),
+               "curvature_factor x the local radius of curvature (0.3 = the "
+               "industry-standard default)."),
     Param('mesher', 'choice', 'builtin', label='Mesher', choices=('builtin', 'gmsh'),
           choice_labels=(('builtin', 'Built-in'), ('gmsh', 'Gmsh (external program)')),
           visible_if=(('kind', FREE_MESH_KINDS),),

@@ -8,6 +8,7 @@ import numpy as np
 from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, checks_result
 from ..model.spec import DomainSpec, GeometrySpec, MeshSpec, ModelSpec, RefinementSpec
+from .selftests_mesh_sizes3d import _field_tree, _field_value, _refusal_text, _ring_point, _ring_spec, _tet_stats
 
 _UM = 1e-6
 _H_MAX = 0.1 * _UM
@@ -16,7 +17,7 @@ _SIZE = 0.02 * _UM               # refinement size of the pad / ring
 _TWIN_RTOL = 1e-12               # analytic distances vs closed forms
 _GEO_RTOL = 1e-9                 # MathEval texts (12 significant digits) vs the numpy twin
 _WINDOW = (0.0, 0.0, 0.0, 1.2 * _UM, 1.2 * _UM, 0.4 * _UM)
-_CENTRE = (0.6 * _UM, 0.6 * _UM)
+_CENTRE = (0.6 * _UM, 0.6 * _UM)   # = selftests_mesh_sizes3d._RING_CENTRE (its _ring_point)
 _OUTER, _HOLE = 0.5 * _UM, 0.3 * _UM
 _RING_SIZE = 0.05 * _UM
 _NEAR_FACTOR = 1.5               # gmsh: mean edge of elements touching the hole surface <= this x the ring size
@@ -39,10 +40,6 @@ def _annulus(size=_RING_SIZE):
 
     return SizedRegion('difference', size, children=(SizedRegion('solid', size, solid=_cylinder('outer', _OUTER)),
                                                      SizedRegion('solid', size, solid=_cylinder('hole', _HOLE))))
-
-
-def _ring_point(radius, angle=0.3, z=0.2 * _UM):
-    return np.array([_CENTRE[0] + radius * math.cos(angle), _CENTRE[1] + radius * math.sin(angle), z])
 
 
 def _surface_twin_checks(add):
@@ -74,18 +71,6 @@ def _surface_twin_checks(add):
         {'sizes': sizes.tolist(), 'expected': expected.tolist()})
 
 
-def _field_tree(geo):
-    """(formulas, kinds, lists, background field number) parsed from a .geo text."""
-    import re
-
-    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
-    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
-    lists = {int(number): [int(k) for k in members.split(',')]
-             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
-    background = re.search(r'Background Field = (\d+);', geo)
-    return formulas, kinds, lists, int(background.group(1)) if background else None
-
-
 def _surface_geo_checks(add):
     """geo_text of the annulus and a box as sized surfaces: one root each in the Min list, only MathEval / Min / Max
     fields below it (no Box / Ball / Cylinder step), no field references, strings within GEO_STRING_MAX; the tree
@@ -101,7 +86,8 @@ def _surface_geo_checks(add):
                                                                   0.37 * um, 0.31 * um)))
     regions = (_annulus(), box)
     geo = geo_text(window, window, [], _H_MAX, _H_MAX / 100.0, 2.0 * _H_MAX, _GROWTH, sized_surfaces=regions)
-    formulas, kinds, lists, background = _field_tree(geo)
+    tree = _field_tree(geo)
+    formulas, kinds, lists, background = tree
     roots = lists.get(background, []) if background is not None else []
 
     def below(number):
@@ -113,18 +99,11 @@ def _surface_geo_checks(add):
         {'roots': roots, 'kinds': sorted(str(kind) for kind in used_kinds)})
     longest = max((len(text) for text in re.findall(r'"([^"]*)"', geo)), default=0)
     add('surface_geo_strings_fit', 0 < longest <= GEO_STRING_MAX, longest)
-
-    def evaluate(number, point):
-        if kinds[number] == 'MathEval':
-            names = {'x': point[0] / scale, 'y': point[1] / scale, 'z': point[2] / scale}
-            return eval(formulas[number], {'__builtins__': {}, 'Sqrt': math.sqrt}, names)   # noqa: S307 (own .geo)
-        return (min if kinds[number] == 'Min' else max)(evaluate(k, point) for k in lists[number])
-
     if len(roots) == 2:
         points = np.random.default_rng(13).uniform(window[:3], window[3:], size=(64, 3))
         errors = []
         for root, region in zip(roots, regions):
-            values = np.minimum(np.array([evaluate(root, point) for point in points]) * scale, _H_MAX)
+            values = np.minimum(np.array([_field_value(tree, root, point, scale) for point in points]) * scale, _H_MAX)
             twin = region.surface_sizes(points, _GROWTH, _H_MAX)
             errors.append(float(np.max(np.abs(values - twin) / twin)))
         add('surface_matheval_equals_twin', max(errors) <= _GEO_RTOL, errors)
@@ -221,16 +200,10 @@ def _refusal_checks(add):
     from ..model.validate import validate
 
     registry = get_registry()
-    refused = {}
     builtin = _pad_spec('edges', mesher='builtin')
     tensor = _pad_spec('surface', mesher='builtin', kind='tensor')
-    for label, call in (('builtin', lambda: tetrahedron_sizing(builtin, builtin.meshes[0], {}, registry)),
-                        ('tensor', lambda: estimate_mesh(tensor, {}, registry, 'tets'))):
-        try:
-            call()
-            refused[label] = ''
-        except ValueError as exc:
-            refused[label] = str(exc)
+    refused = {'builtin': _refusal_text(lambda: tetrahedron_sizing(builtin, builtin.meshes[0], {}, registry)),
+               'tensor': _refusal_text(lambda: estimate_mesh(tensor, {}, registry, 'tets'))}
     add('sizing_refuses', all("where '" in text for text in refused.values()), refused)
 
     def where_issues(spec, level):
@@ -259,36 +232,14 @@ def _gmsh_checks(add):
         return
     um = _UM
     registry = get_registry()
-
-    def ring_spec(where):
-        window = _WINDOW
-        spec = ModelSpec(title='Self-test: surface refinement',
-                         domain=DomainSpec(size_x=window[3], size_y=window[4], size_z=window[5]))
-        cylinder = {'cx': _CENTRE[0], 'cy': _CENTRE[1], 'z0': 0.0, 'z1': window[5]}
-        spec.geometry = [GeometrySpec('outer', 'cylinder_z', dict(cylinder, r=_OUTER)),
-                         GeometrySpec('hole', 'cylinder_z', dict(cylinder, r=_HOLE)),
-                         GeometrySpec('ring', 'difference', {'base': 'outer', 'subtract': ['hole']})]
-        refinements = [] if where is None else [RefinementSpec('ring', _RING_SIZE, where=where)]
-        spec.meshes = [MeshSpec(name='tets', kind='tetrahedra', mode='nonuniform', dx=_H_MAX, max_ratio=_GROWTH,
-                                mesher='gmsh', refinements=refinements)]
-        return spec
-
-    def stats(built):
-        corners = built.points[built.tets]
-        centroids = corners.mean(axis=1)
-        radial = np.hypot(centroids[:, 0] - _CENTRE[0], centroids[:, 1] - _CENTRE[1])
-        volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
-        edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
-        node_radial = np.hypot(built.points[:, 0] - _CENTRE[0], built.points[:, 1] - _CENTRE[1])
-        touching = (np.abs(node_radial - _HOLE) <= 1e-3 * _HOLE)[built.tets].sum(axis=1) >= 3
-        return radial, volumes, edges, touching
-
-    spec = ring_spec('surface')
+    title = 'Self-test: surface refinement'
+    spec = _ring_spec(True, 'surface', title)   # the annulus of _WINDOW / _CENTRE / _OUTER / _HOLE (equal values)
     mesh = tetrahedralize(spec, {}, registry, 'tets')
-    plain = tetrahedralize(ring_spec(None), {}, registry, 'tets')
-    radial, volumes, edges, touching = stats(mesh)
-    plain_radial, plain_volumes, _, _ = stats(plain)
+    plain = tetrahedralize(_ring_spec(False, title=title), {}, registry, 'tets')
+    _, radial, volumes, edges = _tet_stats(mesh)
+    node_radial = np.hypot(mesh.points[:, 0] - _CENTRE[0], mesh.points[:, 1] - _CENTRE[1])
+    touching = (np.abs(node_radial - _HOLE) <= 1e-3 * _HOLE)[mesh.tets].sum(axis=1) >= 3
+    _, plain_radial, plain_volumes, _ = _tet_stats(plain)
     core, plain_core = radial < 0.05 * um, plain_radial < 0.05 * um
     near_edge = float(edges[touching].mean()) if touching.any() else None
     core_ratio = (float(volumes[core].mean() / plain_volumes[plain_core].mean())
@@ -304,11 +255,7 @@ def _gmsh_checks(add):
     cx, cy, z0, radius, height = _CYLINDER
     window = (0.0, 0.0, 0.0, 1.0 * um, 1.0 * um, 1.0 * um)
     rod = Solid('rod', 'cylinder', _CYLINDER, size=_CYLINDER_SIZE)
-    built = mesh_solids_with_gmsh(window, [rod], _H_MAX, growth=_GROWTH)
-    corners = built.points[built.tets]
-    centroids = corners.mean(axis=1)
-    rod_edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
+    centroids, _, _, rod_edges = _tet_stats(mesh_solids_with_gmsh(window, [rod], _H_MAX, growth=_GROWTH))
     axial = np.hypot(centroids[:, 0] - cx, centroids[:, 1] - cy) < 0.5 * radius
     top = z0 + height
     above = axial & (centroids[:, 2] > top + 0.05 * um) & (centroids[:, 2] < top + 0.1 * um)

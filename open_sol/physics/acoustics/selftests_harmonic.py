@@ -9,7 +9,8 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase, SelfTestVariant
-from ...model.selftest_helpers import available_host_direct, skip_without_host_direct, solver_role, with_direct_node
+from ...model.selftest_helpers import (available_host_direct, normalized_result, skip_without_host_direct, solver_role,
+                                       with_direct_node)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, SolverDefaultsSpec, StudySpec)
 
@@ -58,12 +59,9 @@ def _probe_values(results, count, component='p', frequency_index=0):
 
 
 def _graded(errors, tolerances, details):
-    """measured / error = the worst error in tolerance units (tolerance 1)."""
-    normalized = {item: errors[item] / tolerances[item] for item in errors}
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    details.update(errors=errors, tolerances=tolerances, worst_item=worst)
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': details}
+    """measured / error = the worst error in tolerance units (tolerance 1), recording errors and tolerances."""
+    return normalized_result({item: errors[item] / tolerances[item] for item in errors}, details, errors=errors,
+                             tolerances=tolerances)
 
 
 # ---- 1. / 2. plane-wave duct (triangles, tetrahedra) ----

@@ -79,7 +79,8 @@ ones that shape everyday code:
   Chains inside physics/em: em sub file "Imports".
 - `selftests*.py`: at module level only core.constants, model.spec / schema / selftest_helpers and sibling selftests
   modules (reuse `model.selftest_helpers`, never a local copy: SubChecks for pass / fail sub-checks, worst_result /
-  scaled_worst_result, relative errors, solver_role, probe_phasor; repeat type names as literals); physics modules and
+  scaled_worst_result / normalized_result / tolerance_units_result / failed_count_result, relative errors,
+  solver_role, probe_phasor, skip_result; repeat type names as literals); physics modules and
   scipy inside their checks. Nothing else imports a selftests module at module level or in `register` (contract
   selftests_lazy): a definition imports its cases inside its selftest loader, so `get_registry()` (GUI, check,
   describe) loads only the selftests modules that hold templates (`TEMPLATE_SOURCES` in import_contracts).
@@ -313,7 +314,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   '' non-numeric; units with spaces ('W/(m K)'), never '*'. A unit that depends on the space (planar W/m, axisymmetric
   / 3D W) goes in `Param.space_units` (`schema.param_in_space`). A gotcha a user can hit belongs in a help text or
   validation message, not only here.
-- Shared names (COMSOL's where it has one): magnitudes `<name>_abs` (u_abs, e_abs, heat_flux_abs); resonance tables
+- Shared names (industry-standard if any): magnitudes `<name>_abs` (u_abs, e_abs, heat_flux_abs); resonance tables
   resonance_number / frequency / frequency_imag [Hz, > 0 decays] / q_factor (FDFD / BOR eigenfrequency and every
   resonance_monitor; + region_energy_fraction last with a region selection); mode results n_eff (real part) / n_eff_imag; 1-based mode choices `mode_number`; a body force
   feature `body_force` (params f_x / f_y, slots and coupled fields body_force_x / _y); probe choice `component`.

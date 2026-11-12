@@ -153,9 +153,7 @@ def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, st
     with a PML stretch (_stretched: complex symmetric, d/dx_i -> d/dx_i / s_i, dV -> s_x s_y s_z dV)."""
     _require_vector(dofs, 'assemble_elastic_stiffness_3d')
     mesh = dofs.mesh
-    material = np.asarray(material, dtype=np.float64)
-    if material.shape != (mesh.n_elements, STRAIN_ROWS, STRAIN_ROWS):
-        raise ValueError(f'material has shape {material.shape}, expected ({mesh.n_elements}, 6, 6)')
+    material = _material_3d(material, mesh.n_elements)
     elements = _element_list(mesh, elements)
     n_vector = COMPONENTS * dofs.n_dofs
     if not len(elements):
@@ -726,9 +724,7 @@ class TangentAssembler3D:
 
     def _displacement(self, displacement):
         """(n_dofs, 3) float64 displacement on the assembler's module (device: one upload)."""
-        if self.device:
-            return self.xp.asarray(displacement, dtype=np.float64).reshape(self.dofs.n_dofs, COMPONENTS)
-        return np.asarray(displacement, dtype=np.float64).reshape(self.dofs.n_dofs, COMPONENTS)
+        return self.xp.asarray(displacement, dtype=np.float64).reshape(self.dofs.n_dofs, COMPONENTS)
 
     def _add_force(self, force, index, local) -> None:
         """force += element forces local (m, 3 n) of chunk index (host bincount / device scatter_add)."""

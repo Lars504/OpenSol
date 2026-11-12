@@ -12,8 +12,9 @@ all but drift_diffusion.
 ## Layout and imports
 - Module contents: `structure_index.md`. Beyond it:
   - `selftests.py` (FEM_SELFTEST_CASES) is registered by model.study.register; new fem case lists append there.
-  - Private helpers used across modules (changing them touches the users): elasticity / magnetostatics use assembly's
-    `_element_groups` / `_to_csr`, harmonic `_coefficient_values`, elasticity3d assembly3d's `_element_list` /
+  - Private helpers used across modules (changing them touches the users): elasticity / magnetostatics / diffusion use
+    assembly's `_element_groups` (never yields an empty chunk) / `_to_csr` (diffusion `_lagrange_at`; diffusion,
+    magnetostatics and transfer `_weights`), harmonic `_coefficient_values`, elasticity3d assembly3d's `_element_list` /
     `_rule_degree` / `_volume_weights` and elasticity's `_fixed_field`, indicators / surface_mesh elements'
     `_inverse_2x2`.
   - Shared helpers: `assembly.nodal_average` (nodal recovery: strain / stress, B / H); `diffusion.py`'s
@@ -353,7 +354,7 @@ all but drift_diffusion.
 ## Tetrahedra (igor3d_plan section 7; host numpy, scipy inside functions)
 - The 2D modules stay 2D: no dimension switches inside them; dimension-free helpers are imported (assembly3d re-exports
   `eliminate_dirichlet` / `restrict` / `DirichletSystem`; diffusion3d uses diffusion's EdgeCondition as FaceCondition,
-  `floating_region_count`, `element_means`).
+  FEMDiffusionSystemCommon (its anchor check: `floating_region_count`), `element_means`).
 - Lagrange on tets (`lagrange_dofs_3d(mesh, 0 | 1 | 2)`, P0 = the field_dofs map of per-element state): coefficients
   number / (n,) / (n, 3) diagonal / (n, 3, 3) / callable -> (m, q[, 3[, 3]]); face coefficients number / (n_faces,) /
   f(points (k, q, 3), faces). `elements` = None / indices / bool mask; matrices keep the full numbering (callers
@@ -441,8 +442,10 @@ all but drift_diffusion.
   `Solid.edge_distance` is the estimate's numpy twin.
 
 ## Scalar diffusion on tetrahedra (`diffusion3d.py`)
-- FEMDiffusionSystem3D mirrors FEMDiffusionSystem (same owner protocol), differences: full-mesh numbering throughout
-  (free = dofs of active elements minus fixed), tensor (n_elements, 3, 3), outer faces on `window_faces`,
+- FEMDiffusionSystem3D mirrors FEMDiffusionSystem (same owner protocol; the shared part, from the solver binding,
+  sequences, factor-reuse flags, held regions and losses to the anchor check, factorisation and reduced solve, is
+  `diffusion.FEMDiffusionSystemCommon`, `_full_ids` mapping system dofs into `values`), differences: full-mesh
+  numbering throughout (free = dofs of active elements minus fixed), tensor (n_elements, 3, 3), outer faces on `window_faces`,
   `add_surface_condition(faces, condition)` (a face with an active element on either side; a Neumann value on a
   two-sided face is a sheet source feeding both sides), `add_point_source(element, reference, power)` (exact delta;
   dropped in inactive elements), `add_fixed_dofs` / `set_fixed_dofs` (a set takes a new sequence and so wins shared
@@ -585,6 +588,9 @@ all but drift_diffusion.
   selftests_periodic_mesh, selftests_builtin_tetrahedra, selftests_swept_prisms, selftests_rounded_rectangle,
   selftests_prestress, selftests_reduced_harmonic, selftests_elasticity3d, selftests_tetrahedra,
   selftests_diffusion3d, selftests_diffusion, selftests_mesher, selftests_elements, selftests_display.
+- Shared tetrahedron-mesh check helpers live in selftests_mesh_sizes3d (`_field_tree` / `_field_value`: parse and
+  evaluate a .geo field tree; `_refusal_text`, `_ring_spec`, `_ring_point`, `_tet_stats`); selftests_harmonic's
+  `_checker` (SubChecks + add_bound) also serves reduced_harmonic, resonance_search and mechanics squeeze_film.
 - `fem_array_triangle_mesh` (model/selftests_geometry_array): an array of circles meshes to the same digest as the
   circles written out; keep it when build_pslg's merging or ordering changes.
 - `fem_diffusion3d_identities`: the loss step uses a, c / dt ~1e12 (a weaker mass term leaves the uniform mode

@@ -8,6 +8,7 @@ import hashlib
 import heapq
 import math
 from dataclasses import dataclass, field, replace
+from functools import partial
 
 import numpy as np
 
@@ -22,8 +23,8 @@ from ..materials import effective_material_data
 from ..physics.em.dispersion import complex_permittivity
 from .expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import (GEOMETRY_KINDS, axis_parallel_faces, bounding_box, contains_points_3d, domain_map, domain_size,
-                       domain_size_z, expand_entities, is_plain, line_orientation, paint_material_index, point_z,
-                       rasterize, rasterize_window, resolve_geometry, z_extent)
+                       domain_size_z, expand_entities, is_plain, line_orientation, material_selections,
+                       paint_material_index, point_z, rasterize_window, resolve_geometry, z_extent)
 from .schema import (MESH_KIND_DEFAULTS, MESH_PARAMS, DomainRequirements, array_owner, get_registry,
                      permittivity_arrays, resolve_values, resolved_solvers, solver_backend, state_field_names)
 from .spec import REFINEMENT_PLACES
@@ -119,8 +120,8 @@ class MeshEstimate:
 
 @dataclass
 class TriangleSizing:
-    """Resolved size parameters of a 'triangles' mesh (COMSOL Free Triangular): the one size rule of the element-count
-    estimate and the mesher (model.triangle_meshing, S7.5 2.2)."""
+    """Resolved size parameters of a 'triangles' mesh (industry-standard free triangular sizing): the one size rule of
+    the element-count estimate and the mesher (model.triangle_meshing, S7.5 2.2)."""
     h_max: float                  # maximum element size [m]
     h_min: float                  # minimum element size [m]
     growth: float                 # maximum element growth rate (> 1)
@@ -219,9 +220,9 @@ class TriangleMeshEstimate:
 
 
 class TetrahedronSizing(TriangleSizing):
-    """Resolved sizes of a 'tetrahedra' mesh (COMSOL Free Tetrahedral; igor3d_plan T4b): the TriangleSizing fields,
-    pml_widths over the six 3D faces (the shell thickness), size_points [x, y, z, h], pml_layers and mirror_axes
-    unused."""
+    """Resolved sizes of a 'tetrahedra' mesh (industry-standard free tetrahedral sizing; igor3d_plan T4b): the
+    TriangleSizing fields, pml_widths over the six 3D faces (the shell thickness), size_points [x, y, z, h], pml_layers
+    and mirror_axes unused."""
 
 
 @dataclass
@@ -538,14 +539,10 @@ def element_mesh(spec, parameters, registry=None, mesh=None, *, shapes=None, log
     shapes = resolve_geometry(spec, parameters) if shapes is None else shapes
     kind = mesh_values(mesh_spec, parameters)['kind']
     if kind == 'tetrahedra':
-        from functools import partial
-
         from .tetrahedral_meshing import tetrahedralize
         mesher = partial(tetrahedralize, log=log)
         sizing = tetrahedron_sizing(spec, mesh_spec, parameters, registry, shapes)
     else:
-        from functools import partial
-
         from .triangle_meshing import triangulate
         mesher = partial(triangulate, log=log)   # logs its stage times (time_estimate mesh items)
         sizing = triangle_sizing(spec, mesh_spec, parameters, registry, shapes)
@@ -726,23 +723,7 @@ def _plan(spec, parameters, registry, shapes, mesh_spec):
         _check_cell_count(*_uniform_cell_counts(plan), reason=plan.note)
         return plan
 
-    mesh_config = MeshConfig(size_x, size_y, base_dx, max_ratio=mesh['max_ratio'], size_z=plan.size_z,
-                             axis_max_ratios={axis: axis_plan.max_ratio for axis, axis_plan in axis_plans.items()
-                                              if axis_plan.max_ratio is not None},
-                             outer_dx=mesh['outer_dx'], outer_ratio=mesh['outer_ratio'])
-    intervals = {axis: [] for axis in lengths}
-    for refinement in refinements:
-        for axis, axis_intervals in _add_refinement(mesh_config, refinement, shapes, size_x, size_y,
-                                                    base_dx).items():
-            intervals[axis] += axis_intervals
-        if plan.size_z is not None and refinement.refines('z', base_dx):
-            intervals['z'] += _add_z_refinement(mesh_config, refinement, shapes, plan.size_z)
-    for axis, axis_plan in axis_plans.items():
-        for lo, hi, dx in axis_plan.bands:   # band ends snap: else the whole-axis rescale moves the band
-            mesh_config.add_refinement_band(axis, lo, hi, dx, (lo, hi))
-            intervals[axis].append((lo, hi, dx))
-        if axis_plan.edges is not None:
-            mesh_config.set_axis_edges(axis, axis_plan.edges)
+    mesh_config, intervals = _graded_config(lengths, base_dx, mesh['max_ratio'], mesh, axis_plans, refinements, shapes)
     plan.mesh_config = mesh_config
     bounds = []
     for axis, length in lengths.items():   # core.mesh caps each snap segment's target at its length
@@ -753,6 +734,30 @@ def _plan(spec, parameters, registry, shapes, mesh_spec):
         bounds.append(_snapped_axis_cell_bound(mesh_config, axis, length, base_dx, intervals[axis], mesh) + pml_cells)
     _check_cell_count(*bounds)
     return plan
+
+
+def _graded_config(lengths, base_dx, max_ratio, mesh, axis_plans, refinements, shapes):
+    """(MeshConfig at base_dx over lengths {'x', 'y'(, 'z')} [m], {axis: [(lo, hi, dx)] refinement intervals}) with the
+    object refinements and the MeshAxisSpec plans (bands, custom edges) added: the graded tensor planner shared by
+    tensor meshes and builtin tetrahedra."""
+    mesh_config = MeshConfig(lengths['x'], lengths['y'], base_dx, max_ratio=max_ratio, size_z=lengths.get('z'),
+                             axis_max_ratios={axis: axis_plan.max_ratio for axis, axis_plan in axis_plans.items()
+                                              if axis_plan.max_ratio is not None},
+                             outer_dx=mesh['outer_dx'], outer_ratio=mesh['outer_ratio'])
+    intervals = {axis: [] for axis in lengths}
+    for refinement in refinements:
+        for axis, axis_intervals in _add_refinement(mesh_config, refinement, shapes, lengths['x'], lengths['y'],
+                                                    base_dx).items():
+            intervals[axis] += axis_intervals
+        if 'z' in lengths and refinement.refines('z', base_dx):
+            intervals['z'] += _add_z_refinement(mesh_config, refinement, shapes, lengths['z'])
+    for axis, axis_plan in axis_plans.items():
+        for lo, hi, dx in axis_plan.bands:   # band ends snap: else the whole-axis rescale moves the band
+            mesh_config.add_refinement_band(axis, lo, hi, dx, (lo, hi))
+            intervals[axis].append((lo, hi, dx))
+        if axis_plan.edges is not None:
+            mesh_config.set_axis_edges(axis, axis_plan.edges)
+    return mesh_config, intervals
 
 
 def _snapped_axis_cell_bound(mesh_config, axis, length, base_dx, intervals, mesh):
@@ -1771,18 +1776,21 @@ def _triangle_estimate(spec, mesh_spec, parameters, registry, shapes):
 def _material_elements_2d(spec, shapes, centres, elements) -> dict:
     """{material name: window triangles of the raster pixels it paints}: geometry.paint_material_index (the builder's
     order) of rasterize_window masks on the pixel centres; elements per pixel (the absorbing ring left out)."""
-    selections = []
-    for material in spec.materials:
-        try:
-            selections.append(expand_entities(spec, material.selection))
-        except (ValueError, TypeError):   # reported by validate
-            selections.append([])
+    return _painted_elements(spec, shapes, elements,
+                             lambda name: rasterize_window(name, shapes, centres[0], centres[1], np))
+
+
+def _painted_elements(spec, shapes, elements, window_mask) -> dict:
+    """{material name: sum of `elements` over the raster cells it wins}: geometry.paint_material_index (the builder's
+    order) of window_mask(name) -> (window, cropped bool mask) or None; names missing from shapes (outer faces, failed
+    objects) and masks that fail paint nothing (validate reports them)."""
+    selections = material_selections(spec, failed=())
 
     def object_mask(name):
-        if name not in shapes:   # outer faces, failed objects (validate reports them)
+        if name not in shapes:
             return None
         try:
-            return rasterize_window(name, shapes, centres[0], centres[1], np)
+            return window_mask(name)
         except (ValueError, KeyError, TypeError):
             return None
 
@@ -1800,18 +1808,12 @@ def _thin_sources(sizing, shapes, pixel_sides) -> dict:
         shape = shapes.get(name)
         if shape is None:
             continue
-        values = shape.values
-        if shape.kind == 'point':
-            box = (values['x'], values['y'], values['x'], values['y'])
-        elif shape.kind == 'line':
-            box = (min(values['x0'], values['x1']), min(values['y0'], values['y1']),
-                   max(values['x0'], values['x1']), max(values['y0'], values['y1']))
+        box = bounding_box(name, shapes)
+        if shape.kind == 'line':
             if box[2] > box[0] and box[3] > box[1]:   # a slanted line keeps its exact segment distance
                 continue
-        else:
-            box = bounding_box(name, shapes)
-            if box[2] - box[0] >= pixel_sides[0] and box[3] - box[1] >= pixel_sides[1]:
-                continue
+        elif shape.kind != 'point' and box[2] - box[0] >= pixel_sides[0] and box[3] - box[1] >= pixel_sides[1]:
+            continue
         thin[name] = (tuple(float(value) for value in box),
                       min(max(float(object_size), sizing.h_min), sizing.h_max))
     return thin
@@ -1987,23 +1989,8 @@ def graded_window_edges(spec, mesh_spec, parameters, shapes, sizing, axes='xyz',
                                                                      for axis_plan in axis_plans.values())):
         _check_cell_count(*(max(1, math.ceil(lengths[axis] / h_max - 1e-9)) for axis in axes))
         return {axis: _equal_window_edges(lengths[axis], h_max) for axis in axes}
-    mesh_config = MeshConfig(lengths['x'], lengths['y'], h_max, max_ratio=float(sizing.growth), size_z=lengths['z'],
-                             axis_max_ratios={axis: axis_plan.max_ratio for axis, axis_plan in axis_plans.items()
-                                              if axis_plan.max_ratio is not None},
-                             outer_dx=mesh['outer_dx'], outer_ratio=mesh['outer_ratio'])
-    intervals = {axis: [] for axis in lengths}
-    for refinement in refinements:
-        for axis, axis_intervals in _add_refinement(mesh_config, refinement, shapes, lengths['x'], lengths['y'],
-                                                    h_max).items():
-            intervals[axis] += axis_intervals
-        if refinement.refines('z', h_max):
-            intervals['z'] += _add_z_refinement(mesh_config, refinement, shapes, lengths['z'])
-    for axis, axis_plan in axis_plans.items():
-        for lo, hi, dx in axis_plan.bands:   # band ends snap, as on tensor meshes
-            mesh_config.add_refinement_band(axis, lo, hi, dx, (lo, hi))
-            intervals[axis].append((lo, hi, dx))
-        if axis_plan.edges is not None:
-            mesh_config.set_axis_edges(axis, axis_plan.edges)
+    mesh_config, intervals = _graded_config(lengths, h_max, float(sizing.growth), mesh, axis_plans, refinements,
+                                            shapes)
     for face in sizing.face_sizes:   # the band [c - distance, c + distance] across the face plane, the plane snapped
         axis = 'xyz'[face.axis]
         lo, hi = face.coordinate - face.distance, face.coordinate + face.distance
@@ -2159,25 +2146,11 @@ def _material_elements(spec, shapes, centres, elements, window_low, window_high)
     """{material name: elements of the raster voxels it paints}: geometry.paint_material_index (the builder's order)
     on the voxel centres clamped into the window (the inset element centroids of the build); elements per voxel."""
     clamped = [np.clip(axis_centres, low, high) for axis_centres, low, high in zip(centres, window_low, window_high)]
-    selections = []
-    for material in spec.materials:
-        try:
-            selections.append(expand_entities(spec, material.selection))
-        except (ValueError, TypeError):   # reported by validate
-            selections.append([])
 
-    def object_mask(name):
-        if name not in shapes:   # outer faces, failed objects (validate reports them)
-            return None
-        try:
-            block = _object_block(name, shapes, clamped)
-            return None if block is None else (block, _block_mask(name, shapes, clamped, block))
-        except (ValueError, KeyError, TypeError):
-            return None
-
-    index = paint_material_index(selections, object_mask, elements.shape, np)
-    return {material.name: float(elements[index == number + 1].sum())
-            for number, material in enumerate(spec.materials)}
+    def window_mask(name):
+        block = _object_block(name, shapes, clamped)
+        return None if block is None else (block, _block_mask(name, shapes, clamped, block))
+    return _painted_elements(spec, shapes, elements, window_mask)
 
 
 def _tetrahedron_estimate(spec, mesh_spec, parameters, registry, shapes):

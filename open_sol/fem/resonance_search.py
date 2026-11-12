@@ -183,9 +183,6 @@ def _combined_info(solves, started, warnings) -> dict:
         info[key] = sum(solve.info.get(key, 0) for solve in solves)
     for key in ('factor_host_bytes', 'factor_device_bytes'):
         info[key] = max((int(solve.info.get(key, 0)) for solve in solves), default=0)
-    combined = []
-    for text in [text for solve in solves for text in solve.info['warnings']] + list(warnings):
-        if text not in combined:
-            combined.append(text)
+    combined = list(dict.fromkeys([text for solve in solves for text in solve.info['warnings']] + list(warnings)))
     info.update(target_frequency=math.nan, seconds=time.perf_counter() - started, warnings=combined)
     return info

@@ -41,7 +41,7 @@ INSTANCE_NAME = 'pressure_acoustics'
 FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
 _TETRAHEDRA = 'tetrahedra'
 _BOUNDARY_FEATURES = ('sound_hard', 'sound_soft', 'prescribed_pressure', 'impedance', 'vibrating_boundary')
-_MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, COMSOL's rule of thumb)
+_MIN_ELEMENTS_PER_WAVELENGTH = {1: 10.0, 2: 5.0}   # resolution warning (P1 / P2, the industry rule of thumb)
 _DIRECTIONS = ('+x', '-x', '+y', '-y', '+z', '-z', 'custom')
 _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j omega)^power x amplitude = acceleration
 # 'linear' role: sparse_direct, the cuDSS back ends (gpu backend: fem.harmonic keeps the reduced K, C, M on the device
@@ -567,11 +567,6 @@ def _validate(vctx, physics_spec, settings_values):
     return issues
 
 
-def _physics_settings(vctx, physics_spec):
-    """Resolved settings of the feature's physics (None when they do not resolve)."""
-    return vctx.values(_SETTINGS, physics_spec.settings)
-
-
 def _validate_background(vctx, physics_spec, feature_spec, values):
     """Direction rules: z directions need 3D, axisymmetric needs +y / -y, standing waves need an axis direction, a
     custom direction needs length (and no z component in 2D)."""
@@ -591,8 +586,7 @@ def _validate_background(vctx, physics_spec, feature_spec, values):
             issues.append(Issue('error', path, 'the custom direction has no length'))
         if not three_d and values['direction_z']:
             issues.append(Issue('error', path, 'direction_z must be 0 in a 2D model'))
-    settings_values = _physics_settings(vctx, physics_spec)
-    if is_axisymmetric(settings_values) and not three_d and direction not in ('+y', '-y'):
+    if is_axisymmetric(vctx.values(_SETTINGS, physics_spec.settings)) and not three_d and direction not in ('+y', '-y'):
         issues.append(Issue('error', path, 'geometry axisymmetric: the background wave must travel along the axis '
                                            '(direction +y or -y); an oblique wave is not rotationally symmetric'))
     return issues
@@ -885,7 +879,7 @@ PRESSURE_ACOUSTICS = PhysicsType(
     space_settings=AXISYMMETRIC_SPACE_SETTINGS,
     summary='Sound in air or water at given frequencies: the steady sound pressure around obstacles, with absorbing '
             'boundaries, incoming waves and pressure probes. Planar, rotationally symmetric or 3D.',
-    description='Frequency-domain pressure acoustics (COMSOL Pressure Acoustics, Frequency Domain) for the frequency_'
+    description='Frequency-domain pressure acoustics (the industry-standard formulation) for the frequency_'
                 'response study: -div(grad p / rho) - omega^2 p / (rho c^2) = j omega q (exp(+j omega t), peak '
                 'amplitudes), p the complex pressure, rho / c the material density and sound_speed (every fluid '
                 'element needs both > 0; elastic_waves shares the Params; no losses but impedance and PML), on a '

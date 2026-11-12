@@ -100,10 +100,6 @@ class TetrahedronMesh:
         slack = PLANE_TOLERANCE * float((high - low).max()) if tolerance is None else float(tolerance)
         return ((points >= low - slack) & (points <= high + slack)).all(axis=-1)
 
-    def clamped_into_window(self, points) -> np.ndarray:
-        """(n, 3) points clamped into the window (the PML rule: materials extruded into the shell)."""
-        return np.clip(np.asarray(points, dtype=np.float64), self.window[:3], self.window[3:])
-
     def inset_centroids(self) -> np.ndarray:
         """(n_elements, 3) centroids clamped just inside the window (PLANE_TOLERANCE x the longest side): the point of
         every element membership test (builder masks, object_faces, TetrahedronDomain.host_centroids); cached,

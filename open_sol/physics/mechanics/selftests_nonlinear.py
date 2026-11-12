@@ -333,18 +333,24 @@ def warm_start_errors(runs):
                                 'max_u': scale}
 
 
-def _check_warm_start(_):
+def string_displacement(physics):
+    """float64 copy of the solved displacement of a string physics (the warm-start / tangent-update readers)."""
+    return np.array(physics.system.unknown, dtype=np.float64)
+
+
+def _apply_string_load(physics, ratio):
+    """Solve the axial-free string under the sin(pi x / L) body force aiming at alpha a^2 / k = ratio."""
     length, height = _STRING
-    stiffness, alpha = _string_stiffness(), _string_alpha(False)
     unit_force_density = 0.5 * length * height   # F of f0 = 1 (load shape ~ the mode shape), per m of depth
+    shape = np.sin(math.pi * physics.domain.mesh.centroids()[:, 0] / length)
+    load = warm_string_load(ratio, _string_stiffness(), _string_alpha(False), unit_force_density)
+    physics.inject_source('body_force_y', load * shape)
+    physics.step(0.0, math.inf)
 
-    def apply_load(physics, ratio):
-        shape = np.sin(math.pi * physics.domain.mesh.centroids()[:, 0] / length)
-        physics.inject_source('body_force_y', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
-        physics.step(0.0, math.inf)
 
-    runs = warm_start_runs(lambda: _held_string_physics(False, tangent_update=WARM_TANGENT_UPDATE), apply_load,
-                           lambda physics: np.array(physics.system.unknown, dtype=np.float64))
+def _check_warm_start(_):
+    runs = warm_start_runs(lambda: _held_string_physics(False, tangent_update=WARM_TANGENT_UPDATE), _apply_string_load,
+                           string_displacement)
     errors, tolerances, details = warm_start_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
 
@@ -392,17 +398,8 @@ def tangent_update_errors(runs):
 
 
 def _check_tangent_update(_):
-    length, height = _STRING
-    stiffness, alpha = _string_stiffness(), _string_alpha(False)
-    unit_force_density = 0.5 * length * height
-
-    def apply_load(physics, ratio):
-        shape = np.sin(math.pi * physics.domain.mesh.centroids()[:, 0] / length)
-        physics.inject_source('body_force_y', warm_string_load(ratio, stiffness, alpha, unit_force_density) * shape)
-        physics.step(0.0, math.inf)
-
-    runs = tangent_update_runs(lambda **settings: _held_string_physics(False, **settings), apply_load,
-                               lambda physics: np.array(physics.system.unknown, dtype=np.float64))
+    runs = tangent_update_runs(lambda **settings: _held_string_physics(False, **settings), _apply_string_load,
+                               string_displacement)
     errors, tolerances, details = tangent_update_errors(runs)
     return scaled_worst_result(errors, tolerances, **details)
 

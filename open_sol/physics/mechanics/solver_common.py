@@ -172,6 +172,14 @@ class FEMSolidCommon(HostInputCache):
     def dt_limit(self) -> float:
         return math.inf
 
+    def state(self) -> dict:
+        """Per-element arrays (n_elements,): the outputs at the element centroids (every pending group computed), the
+        inputs and E / nu."""
+        self._ensure_outputs()
+        state = {name: getattr(self.fields, name) for name in self.output_arrays + self.input_arrays}
+        state.update({name: getattr(self.domain.materials, name) for name in MATERIAL_STATE_ARRAYS})
+        return state
+
     @property
     def _loads_dirty(self) -> bool:
         """A load input changed since the last static solve (setting True also drops the kept frequency-response load)."""

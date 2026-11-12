@@ -163,7 +163,7 @@ WAVELENGTH_UNIT = (1e-9, 'nm')   # (scale [m], unit) of every wavelength axis an
 
 def _field_label(info):
     """Colour-bar label of a FieldInfo: 'label (unit)', unit dropped when dimensionless."""
-    return f'{info.label} ({info.unit})' if info.unit and info.unit != '1' else info.label
+    return _with_unit(info.label, info.unit)
 
 
 def _field_title(renderer, info):
@@ -364,7 +364,6 @@ def _far_field_pattern(monitor, freq_index, n_angles):
 
 def _probe_spectrum(result):
     """(wavelength [m], |FFT|²) of a probe result (probe_spectrum); None if not possible."""
-    from ..core.constants import C0
     spectrum = probe_spectrum(result['t'], result['values'])
     if spectrum is None:
         return None

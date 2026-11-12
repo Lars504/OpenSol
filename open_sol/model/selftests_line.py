@@ -7,7 +7,7 @@ import numpy as np
 
 from ..core.constants import EPS0
 from .schema import SelfTestCase, SelfTestVariant
-from .selftest_helpers import cell_edges
+from .selftest_helpers import cell_edges, solver_role, worst_error
 from .spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                    PhysicsSpec, StudySpec)
 
@@ -125,7 +125,7 @@ def _capacitor_closed_form(kind, radius_min):
 
 def _solver_errors(results, physics_name):
     """{'<physics>_banded': 0 / 1}: the Automatic linear solver of a 1D model is banded and factorised."""
-    record = results.summary().get('solvers', {}).get(physics_name, {}).get('roles', {}).get('linear', {})
+    record = solver_role(results, physics_name)
     ok = record.get('type') == 'banded' and (record.get('counters') or {}).get('factorizations', 0) >= 1
     return {f'{physics_name}_banded': 0.0 if ok else 1.0}
 
@@ -181,7 +181,7 @@ def _check(results_by_name, kind):
     details.update(charge=inner_charge, charge_discrete=charge, charge_closed_form=analytic,
                    charge_closed_form_deviation=analytic_deviation, charge_unit=inner['units'][2],
                    capacitor_cells=int(potential.size))
-    error = float(np.max(np.asarray(list(errors.values()), dtype=np.float64)))   # NaN propagates
+    error = worst_error(errors)   # NaN propagates
     return {'measured': inner_charge, 'expected': charge, 'error': error, 'tolerance': _TOLERANCE,
             'details': dict(details, errors=errors)}
 

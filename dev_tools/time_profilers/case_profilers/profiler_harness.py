@@ -3,6 +3,7 @@ cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots
 (one column per run, e.g. per --compare value)."""
 import argparse
 import cProfile
+import copy
 import functools
 import importlib
 import inspect
@@ -355,7 +356,6 @@ def _compared_variant(spec, setting, value, backend, registry):
     """(spec copy, ['physics.role', ...] changed): every solver role the study uses whose solver type has `setting` (or
     its alias) and whose setting_choices accept `value` gets a new node with it (over its node's settings, or its
     Automatic type and settings on `backend`)."""
-    import copy
     from open_sol.model.schema import solver_grid
     from open_sol.model.spec import SolverSpec
     variant = copy.deepcopy(spec)
@@ -383,7 +383,6 @@ def _compared_variant(spec, setting, value, backend, registry):
 def _run_key(variant, spec) -> str:
     """JSON text of a compared variant without the solver nodes the comparison displaced (named by a physics of spec,
     by none of the variant): equal for two runs that solve the same model under the compared value."""
-    import copy
 
     def named(model):
         return {name for physics_spec in model.physics for name in (physics_spec.solvers or {}).values()}
@@ -428,6 +427,29 @@ def setting_variants(specs, assignment, backend, keep_unchanged=True):
             print(f'--compare: run {run_name!r}: no solver role takes {setting} {skipped}; those values skipped',
                   flush=True)
     return variants
+
+
+def _scaled(value, factor):
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value / factor
+    return f'({value}) / {factor}'
+
+
+def refined(spec, factor):
+    """Copy of spec with every mesh size (dx, h_min, refinement / band dx) divided by factor."""
+    spec = copy.deepcopy(spec)
+    for mesh in spec.meshes:
+        mesh.dx = _scaled(mesh.dx, factor)
+        mesh.h_min = _scaled(mesh.h_min, factor)
+        for refinement in mesh.refinements:
+            for name in ('dx', 'dx_x', 'dx_y', 'dx_z'):
+                setattr(refinement, name, _scaled(getattr(refinement, name), factor))
+        for axis in mesh.axes:
+            for band in axis.bands:
+                band.dx = _scaled(band.dx, factor)
+    return spec
 
 
 def _run_one(spec, run_dir, backend, parameters, save_arrays):

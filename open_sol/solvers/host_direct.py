@@ -51,7 +51,6 @@ import contextlib
 import functools
 import importlib.metadata
 import importlib.util
-import math
 import os
 import platform
 import sys
@@ -60,8 +59,8 @@ import time
 import numpy as np
 
 from .cudss_factor import (ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, GMRES_RESTART, MIXED_SOLVE_BACKWARD_ERROR,
-                           MIXED_SOLVE_TOLERANCE, SYMMETRY_TOLERANCE, canonical_csr, csr_rows, gmres_refine,
-                           relative_asymmetry)
+                           MIXED_SOLVE_TOLERANCE, SYMMETRY_TOLERANCE, ProbedFactor, _FactorRejected, _figure,
+                           canonical_csr, csr_rows, gmres_refine, relative_asymmetry)
 
 HOST_DIRECT_BACK_ENDS = ('mumps', 'mumps_mixed', 'pardiso', 'pardiso_mixed')   # the one list (sparse_direct back_end)
 HOST_DIRECT_FACTORIZATIONS = HOST_DIRECT_BACK_ENDS                           # arpack_shift_invert factorization values
@@ -77,7 +76,6 @@ LU_FILL_OVER_SUPERLU = 1.0    # nested dissection (METIS) usually fills less tha
 LDLT_FILL_OVER_SUPERLU = 0.5  # one triangle
 WORKSPACE_OVER_FACTOR = 1.25  # MUMPS ICNTL(14) relaxation / PARDISO work arrays (guess)
 MEGABYTE = 2 ** 20            # MUMPS reports memory in MB (read as MiB: at most 5 % high, the guard's safe side)
-_PROBE_SEED = 11
 _KIND_TEXTS = {'general': 'LU', 'symmetric': 'LDL^T', 'spd': 'Cholesky'}
 _PARDISO_MACHINES = ('x86_64', 'amd64')
 _SUPERLU_NAMES = (None, 'auto', 'superlu', 'scipy_splu')
@@ -173,9 +171,7 @@ def _distribution_installed(names) -> bool:
         try:
             importlib.metadata.distribution(name)
             return True
-        except importlib.metadata.PackageNotFoundError:
-            continue
-        except Exception:   # unreadable metadata: not counted as installed
+        except Exception:   # not installed (PackageNotFoundError) or unreadable metadata: not counted as installed
             continue
     return False
 
@@ -349,19 +345,7 @@ def _gib(n_bytes) -> str:
     return f'{float(n_bytes) / 2 ** 30:.2f} GiB'
 
 
-def _figure(value) -> str:
-    return 'not computed' if value is None else f'{value:.3g}'
-
-
-class _FactorRejected(Exception):
-    """A factorisation or probe that failed (wraps the error raised when no fallback is left)."""
-
-    def __init__(self, error):
-        super().__init__(str(error))
-        self.error = error
-
-
-class HostDirectFactorization:
+class HostDirectFactorization(ProbedFactor):
     """Host MUMPS / PARDISO LU / LDL^T / Cholesky of the equilibrated operator (module header; precision mixed: float32
     / complex64 factor + float64 GMRES refinement) of a square host scipy operator: solve (cupy or numpy in, the same
     out; host_arrays: numpy), solve_host (numpy), transposed solves, solve_preconditioned* (GMRES on this factor of an
@@ -419,7 +403,6 @@ class HostDirectFactorization:
         self.n_factorizations = 0
         self.last_analyses = 0            # analyses of the last refactorize (fallback re-analyses included)
         self.analysis_seconds = 0.0       # last analysis (0 when the last refactorize reused it)
-        self.total_analysis_seconds = 0.0
         self.factor_seconds = 0.0         # last refactorize: equilibration, (analysis,) factorisation and probe
         self.total_factor_seconds = 0.0
         self.last_plan_reused = False     # the last refactorize kept the analysis (name as CudssFactorization)
@@ -442,11 +425,6 @@ class HostDirectFactorization:
         return self._library is not None
 
     @property
-    def symmetric(self) -> bool:
-        """True for an LDL^T or Cholesky factor."""
-        return self.matrix_kind in ('symmetric', 'spd')
-
-    @property
     def operator_norm(self):
         """sqrt(||E||_1 ||E||_inf) of the factorised E (backward errors), built on first use per factorisation."""
         if self._operator_norm is None and self._operator is not None:
@@ -457,36 +435,12 @@ class HostDirectFactorization:
                 * np.bincount(self._operator.indices, magnitudes, minlength=n_rows).max(initial=0.0)))
         return self._operator_norm
 
-    @property
-    def mixed_factor(self) -> bool:
-        """True while the factor is low precision (precision 'mixed' and no double fallback yet)."""
-        return self._factor_dtype != self.value_dtype
-
-    @property
-    def factor_precision(self) -> str:
-        """'mixed' or 'double': what is factored (precision is what was requested)."""
-        return 'mixed' if self.mixed_factor else 'double'
-
-    def _wanted_factor_dtype(self):
-        """Factor dtype of the next factorisation: value_dtype in double or after a rejected mixed factor, else float32
-        / complex64."""
-        if self.precision == 'double' or self._mixed_rejected:
-            return self.value_dtype
-        return np.float32 if self.real else np.complex64
-
     def _requested_kind(self) -> str:
         """Kind of an operator found symmetric under a symmetry request: a Cholesky only on PARDISO, real, double and
         not rejected before (as cuDSS: no low-precision Cholesky), else LDL^T."""
         cholesky = (self.positive_definite and self.back_end == 'pardiso' and not self._cholesky_rejected
                     and self._wanted_factor_dtype() == self.value_dtype)
         return 'spd' if cholesky else 'symmetric'
-
-    def can_refactorize(self, real, precision, symmetric=False, positive_definite=False, symmetrizer=None) -> bool:
-        """Whether refactorize serves a request with these options (same rule as CudssFactorization.can_refactorize)."""
-        return (self.valid and bool(real) == self.real and precision == self.precision
-                and bool(positive_definite) == self.positive_definite
-                and (bool(symmetric) or positive_definite or symmetrizer is not None) == self.symmetric_requested
-                and (symmetrizer is not None) == self.has_symmetrizer)
 
     # --- factorisation -------------------------------------------------------------------------------------------
     def refactorize(self, host_operator, row_scale=None, symmetrizer=None, symmetric_known=False) -> bool:
@@ -664,7 +618,6 @@ class HostDirectFactorization:
                 self._library = _ADAPTERS[self.back_end](matrix, kind, self.real)
                 self.matrix_kind = kind
                 self.analysis_seconds = time.perf_counter() - started
-                self.total_analysis_seconds += self.analysis_seconds
                 self.n_analyses += 1
                 self.peak_bytes = self._library.estimated_bytes()
                 self._check_memory(self.peak_bytes)
@@ -742,22 +695,7 @@ class HostDirectFactorization:
         else:
             self.description = f'{self.label} {kind_text}'
 
-    # --- probe ---------------------------------------------------------------------------------------------------
-    def _probe_vector(self) -> np.ndarray:
-        """Probe rhs of E (seeded normal, complex unless real), drawn once per size."""
-        if self._probe is None or self._probe.size != self.n_unknowns:
-            rng = np.random.default_rng(_PROBE_SEED)
-            probe = rng.standard_normal(self.n_unknowns)
-            if not self.real:
-                probe = probe + 1j * rng.standard_normal(self.n_unknowns)
-            self._probe = probe.astype(self.value_dtype)
-        return self._probe
-
-    def _probe_accepted(self, residual_tolerance) -> bool:
-        """The last probe met residual_tolerance or BACKWARD_ERROR_TOLERANCE (False on NaN)."""
-        return bool(self.probe_residual <= residual_tolerance
-                    or self.probe_backward_error <= BACKWARD_ERROR_TOLERANCE)
-
+    # --- probe (ProbedFactor: _probe_vector, _probe_accepted) -------------------------------------------------------
     def _probe_errors(self, rhs, refinement_steps=None):
         """(relative residual ||c - E y|| / ||c||, normwise backward error ||c - E y|| / (||E|| ||y|| + ||c||)) of a
         solve E y = c (probe solve: the stall test on)."""

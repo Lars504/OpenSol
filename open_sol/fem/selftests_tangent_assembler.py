@@ -5,7 +5,8 @@ GPU twin (plan G5): the device assembler and the device-value cuDSS refactorisat
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import checks_result
+from ..model.selftest_helpers import SubChecks
+from .selftests_elasticity3d import graded_box_mesh
 
 _LENGTH = 1e-6                      # box / rectangle side scale [m]
 _RTOL = 1e-13                       # same formulas, other summation order (first estimate)
@@ -69,24 +70,15 @@ def _check_tangent_assembler(_):
     from .dofs3d import lagrange_dofs_3d
     from .elasticity import StressField, TangentAssembler, internal_force_and_tangent, vector_dofs
     from .elasticity3d import TangentAssembler3D, internal_force_and_tangent_3d, vector_dofs_3d
-    from .mesh3d import structured_box_mesh
     from .selftests_harmonic import _rectangle_mesh
     from .tangent_kernel3d import ELEMENT_TANGENT_3D
-    checks, details = {}, {}
+    checks, details = SubChecks(), {}
 
     def add(name, value, tolerance=_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     rng = np.random.default_rng(11)
-    mesh3 = structured_box_mesh(_LENGTH * np.array([0.0, 0.3, 0.75, 1.2]), _LENGTH * np.array([0.0, 0.45, 0.8]),
-                                _LENGTH * np.array([0.0, 0.25, 0.7]))
-    factor = rng.standard_normal((6, 6))
-    material = np.broadcast_to(1e10 * (factor @ factor.T + 6.0 * np.eye(6)), (mesh3.n_elements, 6, 6)).copy()
-    material[: mesh3.n_elements // 3] *= 0.5   # two materials
-    solid = np.ones(mesh3.n_elements, dtype=bool)
-    solid[-3:] = False                         # a few void elements: their dofs carry no block
-    stress3 = StressField(prescribed=_INITIAL_STRESS * rng.standard_normal((mesh3.n_elements, 6)),
-                          thermal=_INITIAL_STRESS * rng.standard_normal((mesh3.n_elements, 6)))
+    mesh3, material, solid, stress3 = _box_problem(rng)
     for order in (1, 2):
         dofs = lagrange_dofs_3d(mesh3, order)
         displacement = _DISPLACEMENT * rng.standard_normal((dofs.n_dofs, 3))
@@ -138,7 +130,7 @@ def _check_tangent_assembler(_):
         zeros = _compare(add, name, assembler, reference, displacement, stress2, free, group_dofs,
                          np.zeros_like(displacement))
         details[name] = {'nnz': assembler.pattern.nnz, 'free': int(free.sum()), 'zero entries at u = 0': zeros}
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 # ---- fem3d_tangent_assembler_gpu (plan G5): the device TangentAssembler3D against the host one on the same box, and
@@ -149,16 +141,15 @@ _MIXED_SOLVE_RTOL = 1e-8
 
 
 def _box_problem(rng):
-    """(mesh, material (n, 6, 6), solid mask, StressField S0) of the fem3d_tangent_assembler box."""
+    """(mesh, material (n, 6, 6), solid mask, StressField S0) of the fem3d_tangent_assembler box (the graded box of
+    selftests_elasticity3d)."""
     from .elasticity import StressField
-    from .mesh3d import structured_box_mesh
-    mesh = structured_box_mesh(_LENGTH * np.array([0.0, 0.3, 0.75, 1.2]), _LENGTH * np.array([0.0, 0.45, 0.8]),
-                               _LENGTH * np.array([0.0, 0.25, 0.7]))
+    mesh = graded_box_mesh()
     factor = rng.standard_normal((6, 6))
     material = np.broadcast_to(1e10 * (factor @ factor.T + 6.0 * np.eye(6)), (mesh.n_elements, 6, 6)).copy()
-    material[: mesh.n_elements // 3] *= 0.5
+    material[: mesh.n_elements // 3] *= 0.5   # two materials
     solid = np.ones(mesh.n_elements, dtype=bool)
-    solid[-3:] = False
+    solid[-3:] = False                        # a few void elements: their dofs carry no block
     stress = StressField(prescribed=_INITIAL_STRESS * rng.standard_normal((mesh.n_elements, 6)),
                          thermal=_INITIAL_STRESS * rng.standard_normal((mesh.n_elements, 6)))
     return mesh, material, solid, stress
@@ -170,10 +161,10 @@ def _check_device_assembler(_):
     from ..solvers.cudss_factor import CudssFactorization, cudss_available
     from .dofs3d import lagrange_dofs_3d
     from .elasticity3d import TangentAssembler3D, element_strains_3d
-    checks, details = {}, {}
+    checks, details = SubChecks(), {}
 
     def add(name, value, tolerance=_DEVICE_RTOL):
-        checks[name] = {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
+        checks.add_bound(name, value, tolerance)
 
     rng = np.random.default_rng(13)
     mesh, material, solid, stress = _box_problem(rng)
@@ -260,7 +251,7 @@ def _check_device_assembler(_):
             factor.release()
         reference.release()
         details['free_dofs'] = int(pattern.n_free)
-    return checks_result(checks, **details)
+    return checks.result(**details)
 
 
 # ---- fem3d_tangent_kernel_numba: numba vs numpy twin of fem.element_tangent_3d (tangent_kernel3d) on random inputs

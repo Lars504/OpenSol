@@ -1,13 +1,13 @@
-"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, COMSOL's
-quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane strain / plane stress
-/ generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij (stiffness.ElementStiffness,
-per element: D12), thermal strain, initial stress, supports, tractions on outer faces / lines, body forces; one factor
-of K per assembly (system_fem.ElasticFEMSystem); vibration modes (modal.solve_modes; a loss factor: damped modes; stress
-stiffening: K + K_sigma of the static state; a free body about a target > 0; an elastic PML ring: radiation Q; an
-azimuthal order m >= 1 of the axisymmetric solid) and the elastic frequency response with complex probes / reactions per
-frequency; strain / kinetic energy densities. Geometric nonlinearity (new_modules_plan K6, planar plane strain / plane
-stress and axisymmetric): total-Lagrangian Newton with load steps, reactions from the internal force, pencils on its
-tangent."""
+"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, the
+industry-standard quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane
+strain / plane stress / generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij
+(stiffness.ElementStiffness, per element: D12), thermal strain, initial stress, supports, tractions on outer faces /
+lines, body forces; one factor of K per assembly (system_fem.ElasticFEMSystem); vibration modes (modal.solve_modes; a
+loss factor: damped modes; stress stiffening: K + K_sigma of the static state; a free body about a target > 0; an
+elastic PML ring: radiation Q; an azimuthal order m >= 1 of the axisymmetric solid) and the elastic frequency response
+with complex probes / reactions per frequency; strain / kinetic energy densities. Geometric nonlinearity
+(new_modules_plan K6, planar plane strain / plane stress and axisymmetric): total-Lagrangian Newton with load steps,
+reactions from the internal force, pencils on its tangent."""
 import math
 from types import SimpleNamespace
 
@@ -551,13 +551,6 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         rows = (beta_x, beta_y, beta_z, beta_xy) if self._axisymmetric else (beta_x, beta_y, beta_xy)
         return np.where(self._solid[:, None], np.stack([_host(row) * temperature_change for row in rows], axis=1), 0.0)
 
-    def state(self) -> dict:
-        """Per-element arrays (n_elements,): the outputs at the element centroids, the inputs and E / nu."""
-        self._ensure_outputs()
-        state = {name: getattr(self.fields, name) for name in self.output_arrays + self.input_arrays}
-        state.update({name: getattr(self.domain.materials, name) for name in MATERIAL_STATE_ARRAYS})
-        return state
-
     def inject_source(self, name: str, array) -> None:
         """Write a coupled slot: one value per element (a triangle target of a mesh transfer, or this mesh's own)."""
         if name not in self.source_slots:
@@ -778,9 +771,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     # --- eigenfrequency study hooks -------------------------------------------
 
     def solve_eigenfrequencies(self, n_resonances):
-        """Up to n_resonances vibration modes nearest target_frequency: modal.solve_modes on K (+ K_sigma with
+        """Up to n_resonances vibration modes nearest target_frequency: the ModalPencil of K (+ K_sigma with
         stress_stiffening) and the consistent mass of the solid elements (supports held at 0; a mechanical_loss_factor:
-        the damped modes of K_el (1 + j eta), solve_damped_modes; an elastic PML: the stretched complex pencil, PML modes
+        the damped modes of K_el (1 + j eta); an elastic PML: the stretched complex pencil, PML modes
         filtered, radiation Q; a free body: its rigid motions asked on top and dropped; azimuthal order 1: on the axis
         tie prolongation) -> ModalSolve, kept as eigen_solve. solve_eigenfrequencies_targets / _band
         (modal.MultiShiftModes) share the _modal_pencil."""

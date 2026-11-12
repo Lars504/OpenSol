@@ -167,25 +167,29 @@ def _slab_axes():
     return runs
 
 
-def _slab_spec(slab_axis, drive_axis, slab_properties=None, potential=_HELD_POTENTIAL, settings=None,
-               kind='permeable'):
-    """Slab normal to slab_axis across the box (mu 1e5 unless slab_properties are given); the first cell layer along
-    drive_axis is ideal iron at `potential` [A], the drive axis' hi face a symmetry face (u = 0), the other faces
-    insulated."""
+def _slab_parts(slab_axis, drive_axis, slab_properties=None, potential=_HELD_POTENTIAL):
+    """(features, materials, geometry) of the layered slab (also selftests_fem3d's): slab normal to slab_axis across
+    the box (mu 1e5 unless slab_properties are given); the first cell layer along drive_axis is ideal iron at
+    `potential` [A], the drive axis' hi face a symmetry face (u = 0), the other faces insulated."""
     low, high = [0.0] * 3, list(_SLAB_BOX)
     low[slab_axis], high[slab_axis] = (fraction * _SLAB_BOX[slab_axis] for fraction in _SLAB_RANGE)
     layer_high = list(_SLAB_BOX)
     layer_high[drive_axis] = _SLAB_CELL
-    drive = _AXES[drive_axis]
     properties = {'mu_dc': _SLAB_PERMEABILITY} if slab_properties is None else dict(slab_properties)
-    return _magnetic_spec(
-        f'3D {kind} slab normal to {_AXES[slab_axis]}, driven along {drive}', _SLAB_BOX,
-        [FeatureSpec('iron', 'ideal_iron', ['iron_layer'], {'potential': potential}),
-         FeatureSpec('mirror', 'symmetry', [f'{drive}_hi'])],
-        materials=[MaterialSpec('air', properties={'mu_dc': 1.0}, selection=['all']),
-                   MaterialSpec('iron', properties=properties, selection=['slab'])],
-        geometry=[_box('slab', low, high), _box('iron_layer', (0.0, 0.0, 0.0), layer_high)],
-        mesh=MeshSpec(mode='uniform', dx=_SLAB_CELL), settings=settings)
+    return ([FeatureSpec('iron', 'ideal_iron', ['iron_layer'], {'potential': potential}),
+             FeatureSpec('mirror', 'symmetry', [f'{_AXES[drive_axis]}_hi'])],
+            [MaterialSpec('air', properties={'mu_dc': 1.0}, selection=['all']),
+             MaterialSpec('iron', properties=properties, selection=['slab'])],
+            [_box('slab', low, high), _box('iron_layer', (0.0, 0.0, 0.0), layer_high)])
+
+
+def _slab_spec(slab_axis, drive_axis, slab_properties=None, potential=_HELD_POTENTIAL, settings=None,
+               kind='permeable'):
+    """The _slab_parts model on uniform cubic cells."""
+    features, materials, geometry = _slab_parts(slab_axis, drive_axis, slab_properties, potential)
+    return _magnetic_spec(f'3D {kind} slab normal to {_AXES[slab_axis]}, driven along {_AXES[drive_axis]}', _SLAB_BOX,
+                          features, materials=materials, geometry=geometry,
+                          mesh=MeshSpec(mode='uniform', dx=_SLAB_CELL), settings=settings)
 
 
 def _slab_runs():
@@ -214,15 +218,16 @@ def _slab_expected(slab_axis, drive_axis):
     return tuple(np.moveaxis(array, 0, drive_axis) for array in (flux_density, field_strength, potential / MU0))
 
 
-def _slab_errors(results, drive_axis, expected, held_potential=_HELD_POTENTIAL):
-    """B and H per component against the exact (B_d, H_d, phi_m) arrays `expected` (relative to max B_d / max H_d),
-    phi_m relative to Omega_0 = held_potential."""
-    expected_flux, expected_field, expected_potential = expected
+def _slab_errors(results, drive_axis, expected, held_potential=_HELD_POTENTIAL, shape=_SLAB_CELLS):
+    """B and H per component against the (B_d, H_d, phi_m, ...) arrays `expected` (relative to max B_d / max H_d),
+    phi_m relative to Omega_0 = held_potential; the window shape is checked unless shape is None (selftests_fem3d:
+    the tetrahedra sample lattice)."""
+    expected_flux, expected_field, expected_potential = expected[:3]
     errors = {}
     for index, axis in enumerate(_AXES):
         flux_density, _ = _volume(results, f'B_{axis}')
-        if flux_density.shape != _SLAB_CELLS:
-            raise ValueError(f'expected the window shape {_SLAB_CELLS}, got {flux_density.shape}')
+        if shape is not None and flux_density.shape != shape:
+            raise ValueError(f'expected the window shape {shape}, got {flux_density.shape}')
         field_strength, _ = _volume(results, f'H_{axis}')
         driven = index == drive_axis
         errors[f'B_{axis}'] = (float(np.max(np.abs(flux_density - (expected_flux if driven else 0.0))))

@@ -247,6 +247,7 @@ class _YeeEngine2DBase(PhysicsSolver):
     def finalize(self) -> None:
         self._rebuild_e_coefficients()
         self._rebuild_h_coefficients()
+        self._sigma_e_changed()
 
     def materials_changed(self, names) -> None:
         """Rebuild the E and/or H update coefficients after in-place writes of the arrays they depend on."""
@@ -254,6 +255,12 @@ class _YeeEngine2DBase(PhysicsSolver):
             self._rebuild_e_coefficients()
         if not self._H_COEFFICIENT_MATERIALS.isdisjoint(names):
             self._rebuild_h_coefficients()
+        if 'sigma_e' in names:
+            self._sigma_e_changed()
+
+    def _sigma_e_changed(self) -> None:
+        """Hook after finalize and a sigma_e write: refresh what depends on the sigma_e > 0 cells (loss boxes)."""
+        return
 
     def _rebuild_e_coefficients(self):
         raise NotImplementedError
@@ -427,6 +434,10 @@ class _YeeEngine2DBase(PhysicsSolver):
         return graph
 
     # --- masks ----------------------------------------------------------------
+
+    def _set_buffers(self, shape):
+        """One zeroed pole buffer of `shape` in the field dtype per field set."""
+        return [self.xp.zeros(shape, dtype=self.dtype) for _ in self._field_sets]
 
     def _check_cell_mask(self, mask, what):
         """TypeError unless `mask` is a run-backend bool (nx, ny) cell mask."""

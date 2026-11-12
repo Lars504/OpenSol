@@ -1,5 +1,8 @@
 """Model definitions of the 2D FDTD physics types 'em_fdtd_ez' (E_z, H_x, H_y) and 'em_fdtd_hz' (H_z, E_x, E_y), built
 by one factory: settings, material vocabulary, features; shared callbacks: definition_common / _feature_validation."""
+from functools import partial
+
+from ...core.constants import FACES
 from ...core.renderer import FieldInfo
 from ...core.time_estimate import explicit_step_estimate
 from ...model.definition_helpers import STEPPER_ROLE, validate_points_inside
@@ -440,14 +443,6 @@ _POLARIZATIONS = {
 }
 
 
-def _make_create(polarization, background_targets):
-    """create callback: EMPhysics with dispersive poles (background permittivity written into background_targets) and
-    absorption tracking."""
-    def create(ctx, physics_spec, settings_values):
-        return create_em_physics(ctx, physics_spec, settings_values, polarization, background_targets)
-    return create
-
-
 def _fdtd_physics_type(polarization):
     """PhysicsType 'em_fdtd_<polarization>' ('ez' | 'hz')."""
     (renderer_class, slot_arrays, state_field_names, extra_state_fields, point_source_params, apply_point_source,
@@ -534,13 +529,14 @@ def _fdtd_physics_type(polarization):
         supported_studies=('time_dependent', FREQUENCY_DOMAIN_STUDY),
         default_study={'type': 'time_dependent', 'settings': {'duration': 200e-15}},
         uses_dispersion=True,
-        create=_make_create(polarization, tuple(slot_arrays.values())),
+        # EMPhysics with dispersive poles (background permittivity written into the slot arrays), absorption tracking
+        create=partial(create_em_physics, polarization=polarization, background_targets=tuple(slot_arrays.values())),
         domain_requirements=fdtd_domain_requirements,
         steps_in_time=steps_in_time,
         shortest_wavelength=make_source_shortest_wavelength({feature.name: feature for feature in features}),
         validate=with_bloch_validation(make_validate_harmonic_fdtd(make_validate_physics(slot_arrays))),
         memory_estimate=fdtd_memory_estimate(polarization),
-        time_estimate=fdtd_time_estimate(polarization),
+        time_estimate=partial(fdtd_time_step_estimate, polarization),
         solver_roles={'stepper': STEPPER_ROLE},
         backends=('gpu', 'cpu'),   # core.kernels twins: numpy (numba when installed) on the cpu backend
         subpixel_smoothing=True,
@@ -551,7 +547,6 @@ def _fdtd_physics_type(polarization):
 # a 2D field / CPML launch costs ~3 profile launches of host overhead (as em3d _FIELD_LAUNCH_WEIGHT: the CPML side
 # launch also slices ~5 views per call); the flat 8 + 2 per feature priced 0.087 ms vs 0.33-0.41 ms per gpu step
 _FIELD_LAUNCH_WEIGHT = 3
-_CPML_FACES_2D = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 # boundaries.BoundaryManager outer-face rows, each one launch, applied twice per step (in the post and again after
 # the sources): ez H rows on pmc faces, E_z rows on pec / pmc / mirror faces; hz H_z rows on pec / pmc / mirror
 # faces, E rows on pec / antisymmetric faces
@@ -561,21 +556,14 @@ _PEC_KEEP_LAUNCHES = {'ez': 1, 'hz': 2}   # per field set: ez[pec_box] *= keep /
 _POLE_LAUNCHES = {'ez': 2, 'hz': 4}       # per field set and pole: J / P update + E correction (hz: x and y faces)
 
 
-def fdtd_time_estimate(polarization):
-    """PhysicsType.time_estimate of em_fdtd_<polarization> (fdtd_time_step_estimate)."""
-    def estimate(settings_values, mesh, context):
-        return fdtd_time_step_estimate(polarization, settings_values, mesh, context)
-    return estimate
-
-
 def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
-    """Explicit 2D Yee engine (ez / hz): per Courant step (mesh dt) its arrays and its features' (DFT monitors, poles,
-    CPML) streamed once; per field set (Bloch k != 0: two) the H / E kernels plus an H and an E launch per CPML side
-    (x their host overhead weight; gpu: replayed as 1 + n_sets step graphs), the outer-face rows, the PEC keep,
-    conformal faces and pole kernels; two per enabled feature (sources, probes, monitors); cpu: numba Yee twins, numpy
-    for the rest."""
+    """PhysicsType.time_estimate of em_fdtd_<polarization> (polarization bound by partial). Explicit 2D Yee engine (ez
+    / hz): per Courant step (mesh dt) its arrays and its features' (DFT monitors, poles, CPML) streamed once; per field
+    set (Bloch k != 0: two) the H / E kernels plus an H and an E launch per CPML side (x their host overhead weight;
+    gpu: replayed as 1 + n_sets step graphs), the outer-face rows, the PEC keep, conformal faces and pole kernels; two
+    per enabled feature (sources, probes, monitors); cpu: numba Yee twins, numpy for the rest."""
     features = [feature for feature in context.physics_spec.features if feature.enabled]
-    faces = [settings_values.get(f'bc_{face}') for face in _CPML_FACES_2D]
+    faces = [settings_values.get(f'bc_{face}') for face in FACES]
     cpml_sides = faces.count('cpml')
     n_sets = 2 if bloch_active_axes(settings_values) else 1
     h_rows, e_rows = _WALL_ROW_FACES[polarization]

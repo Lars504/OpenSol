@@ -92,11 +92,8 @@ def _weights(geometry, rule, axisymmetric):
 
 
 def _groups(dofs, axisymmetric, planar_degree):
-    """Non-empty element groups of fem.assembly with the elasticity rule degree."""
-    degree = AXISYMMETRIC_DEGREE if axisymmetric else planar_degree
-    for positions, rule in _element_groups(dofs, degree):
-        if len(positions):
-            yield positions, rule
+    """Element groups of fem.assembly (non-empty chunks) with the elasticity rule degree."""
+    return _element_groups(dofs, AXISYMMETRIC_DEGREE if axisymmetric else planar_degree)
 
 
 def _stretched(geometry, gradients, weights, elements, stretch, radial_ratio, axisymmetric):
@@ -325,8 +322,6 @@ def _prestress_degree(axisymmetric, default, degree) -> int:
 def _rule_values(dofs, degree, axisymmetric):
     """Yield (positions, geometry, basis (q, n), physical gradients (m, q, n, 2), weights (m, q)) per element group."""
     for positions, rule in _element_groups(dofs, degree):
-        if not len(positions):
-            continue
         geometry = element_geometry(dofs.mesh, dofs.elements[positions], rule.points, dofs.geometry_order)
         basis, reference_gradients = lagrange_basis(dofs.order, rule.points)
         yield (positions, geometry, basis, physical_gradients(reference_gradients, geometry.inverse),
@@ -767,8 +762,6 @@ def assemble_azimuthal_geometric_stiffness(dofs, stress, order, *, degree=None, 
     n_vector = AZIMUTHAL_COMPONENTS * dofs.n_dofs
     rows, cols, values = [], [], []
     for positions, rule in _element_groups(dofs, rule_degree):
-        if not len(positions):
-            continue
         geometry, basis, gradients, weights, radius = _azimuthal_terms(dofs, positions, rule, stretch, radial_ratio)
         stress_values = fixed_stress_at(field, geometry.points, dofs.elements[positions], dofs.mesh.n_elements,
                                         strain_rows(True))

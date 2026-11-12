@@ -630,7 +630,58 @@ class _FactorRejected(Exception):
         self.error = error
 
 
-class CudssFactorization:
+class ProbedFactor:
+    """Request / precision state and probe gate shared by CudssFactorization and host_direct.HostDirectFactorization
+    (their __init__ sets real, precision, value_dtype, positive_definite, symmetric_requested, has_symmetrizer,
+    matrix_kind, n_unknowns, _factor_dtype, _mixed_rejected, _probe and the probe errors; each defines `valid`)."""
+
+    @property
+    def symmetric(self) -> bool:
+        """True for an LDL^T or Cholesky factor (cuDSS: also what makes the transposed solve available)."""
+        return self.matrix_kind in ('symmetric', 'spd')
+
+    @property
+    def mixed_factor(self) -> bool:
+        """True while the planned factor is low precision (precision 'mixed' and no double fallback yet)."""
+        return self._factor_dtype != self.value_dtype
+
+    @property
+    def factor_precision(self) -> str:
+        """'mixed' or 'double': what the planned factor is (precision is what was requested)."""
+        return 'mixed' if self.mixed_factor else 'double'
+
+    def _wanted_factor_dtype(self):
+        """Factor dtype of the next plan: value_dtype in double or after a rejected mixed factor, else float32 /
+        complex64."""
+        if self.precision == 'double' or self._mixed_rejected:
+            return self.value_dtype
+        return np.float32 if self.real else np.complex64
+
+    def can_refactorize(self, real, precision, symmetric=False, positive_definite=False, symmetrizer=None) -> bool:
+        """Whether refactorize serves a request with these options (same dtype, precision and symmetry request)."""
+        return (self.valid and bool(real) == self.real and precision == self.precision
+                and bool(positive_definite) == self.positive_definite
+                and (bool(symmetric) or positive_definite or symmetrizer is not None) == self.symmetric_requested
+                and (symmetrizer is not None) == self.has_symmetrizer)
+
+    def _probe_vector(self) -> np.ndarray:
+        """Host probe rhs (seeded normal, complex unless real: value_dtype), drawn once per size (a sweep refactorises
+        per frequency)."""
+        if self._probe is None or self._probe.size != self.n_unknowns:
+            rng = np.random.default_rng(_PROBE_SEED)
+            probe = rng.standard_normal(self.n_unknowns)
+            if not self.real:
+                probe = probe + 1j * rng.standard_normal(self.n_unknowns)
+            self._probe = probe
+        return self._probe
+
+    def _probe_accepted(self, residual_tolerance) -> bool:
+        """The last probe met residual_tolerance or BACKWARD_ERROR_TOLERANCE (False on NaN)."""
+        return bool(self.probe_residual <= residual_tolerance
+                    or self.probe_backward_error <= BACKWARD_ERROR_TOLERANCE)
+
+
+class CudssFactorization(ProbedFactor):
     """Device LU / LDL^T / Cholesky (precision mixed: low-precision factor of the equilibrated operator + float64
     refinement) of a square host scipy operator by cuDSS (module header); solve cupy in / out, solve_host numpy in / out
     (transpose: only with a symmetric factor), refactorize(new operator) reuses the plan of an unchanged pattern;
@@ -735,28 +786,6 @@ class CudssFactorization:
         """False after release()."""
         return self._solver is not None
 
-    @property
-    def symmetric(self) -> bool:
-        """True for an LDL^T or Cholesky factor (also what makes the transposed solve available)."""
-        return self.matrix_kind in ('symmetric', 'spd')
-
-    @property
-    def mixed_factor(self) -> bool:
-        """True while the planned factor is low precision (precision 'mixed' and no double fallback yet)."""
-        return self._factor_dtype != self.value_dtype
-
-    @property
-    def factor_precision(self) -> str:
-        """'mixed' or 'double': what the planned factor is (precision is what was requested)."""
-        return 'mixed' if self.mixed_factor else 'double'
-
-    def _wanted_factor_dtype(self):
-        """Factor dtype of the next plan: value_dtype in double or after a rejected mixed factor, else float32 /
-        complex64."""
-        if self.precision == 'double' or self._mixed_rejected:
-            return self.value_dtype
-        return np.float32 if self.real else np.complex64
-
     def inertia(self):
         """(n_positive, n_negative) pivots of a real LDL^T / Cholesky factor = the inertia of A (E = R A R is a
         congruence); None for a general LU, a complex or a symmetrizer (D A) factor; mixed: the float32 pivots."""
@@ -766,13 +795,6 @@ class CudssFactorization:
             return self.n_unknowns, 0
         counts = self._solver.factorization_info.inertia
         return int(counts[0]), int(counts[1])
-
-    def can_refactorize(self, real, precision, symmetric=False, positive_definite=False, symmetrizer=None) -> bool:
-        """Whether refactorize serves a request with these options (same dtype, precision and symmetry request)."""
-        return (self.valid and bool(real) == self.real and precision == self.precision
-                and bool(positive_definite) == self.positive_definite
-                and (bool(symmetric) or positive_definite or symmetrizer is not None) == self.symmetric_requested
-                and (symmetrizer is not None) == self.has_symmetrizer)
 
     def refactorize(self, host_operator, row_scale=None, symmetrizer=None, symmetric_known=False) -> bool:
         """Factorise a new host operator of the same size (new row_scale / symmetrizer values allowed); True when the
@@ -800,15 +822,10 @@ class CudssFactorization:
         else:
             self.asymmetry = 0.0 if symmetric_known else relative_asymmetry(host_csr)
         symmetric = self.symmetric_requested and self.asymmetry <= SYMMETRY_TOLERANCE
-        kind = self._requested_kind() if symmetric else 'general'
         factor_host = _lower_triangle(host_csr) if symmetric else host_csr
-        reuse = (self._solver is not None and kind == self.matrix_kind
-                 and self._factor_dtype == self._wanted_factor_dtype()
-                 and np.array_equal(self._pattern[0], host_csr.indptr)
-                 and np.array_equal(self._pattern[1], host_csr.indices))
-        self.last_double_fallback = False
-        if not reuse and self._remembered_mixed_rejection(host_csr.indptr, host_csr.indices, kind):   # double (H4)
-            kind = self._requested_kind() if symmetric else 'general'
+        same_pattern = (self._solver is not None and np.array_equal(self._pattern[0], host_csr.indptr)
+                        and np.array_equal(self._pattern[1], host_csr.indices))
+        kind, reuse = self._kind_and_reuse(symmetric, same_pattern, host_csr.indptr, host_csr.indices)
         self._row_scale = cp.asarray(row_scale)
         self._symmetrizer = None if symmetrizer is None else cp.asarray(symmetrizer)
         attempt_kind, retried = kind, False
@@ -826,14 +843,18 @@ class CudssFactorization:
                     self.release()
                     raise rejected.error from None
                 retried = True
-        self.last_plan_reused = reuse and not retried
-        if self.last_plan_reused:
+        return self._finish_refactorize(reuse and not retried, started, mark)
+
+    def _finish_refactorize(self, reused, started, mark) -> bool:
+        """refactorize's bookkeeping once a factor was accepted (reused: on the kept plan); returns reused."""
+        self.last_plan_reused = reused
+        if reused:
             self.plan_seconds = 0.0
         self.last_plans, self.last_reused_orderings, self.last_plans_seconds = self._plans_since(mark)
         self.n_factorizations += 1
         self.factor_seconds = time.perf_counter() - started   # equilibration, (plan,) factorize and probe
         self.total_factor_seconds += self.factor_seconds
-        return self.last_plan_reused
+        return reused
 
     def _plan_mark(self):
         """(plans, reused orderings, plan seconds) so far, for _plans_since."""
@@ -867,6 +888,18 @@ class CudssFactorization:
         if kept is None or kept[0] is not self._pattern:
             kept = self._planned_digest = (self._pattern, _pattern_key(*self._pattern))
         return kept[1]
+
+    def _kind_and_reuse(self, symmetric, same_pattern, indptr, indices):
+        """(kind, reuse) of the next factor: the requested kind of a symmetric operator, else 'general'; reuse = the
+        planned solver on the same pattern, kind and factor dtype; not reused, a pattern whose mixed factor was rejected
+        before plans double at once (H4). Clears last_double_fallback."""
+        kind = self._requested_kind() if symmetric else 'general'
+        reuse = (self._solver is not None and same_pattern and kind == self.matrix_kind
+                 and self._factor_dtype == self._wanted_factor_dtype())
+        self.last_double_fallback = False
+        if not reuse and self._remembered_mixed_rejection(indptr, indices, kind):
+            kind = self._requested_kind() if symmetric else 'general'
+        return kind, reuse
 
     def _remember_mixed_rejection(self, kind, text) -> None:
         """Keep a mixed rejection of the planned pattern while remember_cudss_orderings is on (oldest dropped)."""
@@ -946,12 +979,7 @@ class CudssFactorization:
         else:   # of E, as the host route's relative_asymmetry
             self.asymmetry = self._device_asymmetry(scaled, maps) if check_symmetry else 0.0
         symmetric = self.symmetric_requested and self.asymmetry <= SYMMETRY_TOLERANCE
-        kind = self._requested_kind() if symmetric else 'general'
-        reuse = (self._solver is not None and same_pattern and kind == self.matrix_kind
-                 and self._factor_dtype == self._wanted_factor_dtype())
-        self.last_double_fallback = False
-        if not reuse and self._remembered_mixed_rejection(*self._pattern, kind):   # double at once (H4)
-            kind = self._requested_kind() if symmetric else 'general'
+        kind, reuse = self._kind_and_reuse(symmetric, same_pattern, *self._pattern)
         if symmetric:   # the storage of a symmetric kind: lower triangle + diagonal
             stored = scaled[maps['lower']]
             diagonal = cp.where(maps['has_diagonal'], scaled[maps['diagonal_slots']], 0.0)
@@ -992,12 +1020,7 @@ class CudssFactorization:
                              f"triangle of {maps['lower'].size} entries")
         row_scale = self._checked_row_scale(lower_values[maps['lower_diagonal_slots']], row_scale, maps)
         self.asymmetry = 0.0
-        kind = self._requested_kind()
-        reuse = (self._solver is not None and same_pattern and kind == self.matrix_kind
-                 and self._factor_dtype == self._wanted_factor_dtype())
-        self.last_double_fallback = False
-        if not reuse and self._remembered_mixed_rejection(*self._pattern, kind):   # double at once (H4)
-            kind = self._requested_kind()
+        kind, reuse = self._kind_and_reuse(True, same_pattern, *self._pattern)
         self._row_scale, self._symmetrizer, self.operator_norm = row_scale, None, None   # norm: lazy
         rows, columns = maps['lower_rows'], maps['lower_indices']
         if reuse:
@@ -1030,14 +1053,7 @@ class CudssFactorization:
                     raise rejected.error from None
                 self._replan_in_place(attempt_kind)   # same storage: only the kind or the factor dtype changes
                 retried = True
-        self.last_plan_reused = reuse and not retried
-        if self.last_plan_reused:
-            self.plan_seconds = 0.0
-        self.last_plans, self.last_reused_orderings, self.last_plans_seconds = self._plans_since(mark)
-        self.n_factorizations += 1
-        self.factor_seconds = time.perf_counter() - started
-        self.total_factor_seconds += self.factor_seconds
-        return self.last_plan_reused
+        return self._finish_refactorize(reuse and not retried, started, mark)
 
     def _set_pattern(self, indptr, indices) -> None:
         """A new planned pattern (int32 host copies; the caller's arrays remembered for the identity test)."""
@@ -1470,21 +1486,6 @@ class CudssFactorization:
         if self.fallback_listener is not None:
             plans, reused_orderings, plan_seconds = self._plans_since(mark)
             self.fallback_listener(plans, plan_seconds, reused_orderings)
-
-    def _probe_vector(self) -> np.ndarray:
-        """Host probe rhs (seeded normal, complex unless real), drawn once per size (a sweep refactorises per frequency)."""
-        if self._probe is None or self._probe.size != self.n_unknowns:
-            rng = np.random.default_rng(_PROBE_SEED)
-            probe = rng.standard_normal(self.n_unknowns)
-            if not self.real:
-                probe = probe + 1j * rng.standard_normal(self.n_unknowns)
-            self._probe = probe
-        return self._probe
-
-    def _probe_accepted(self, residual_tolerance) -> bool:
-        """The last probe met residual_tolerance or BACKWARD_ERROR_TOLERANCE (False on NaN)."""
-        return bool(self.probe_residual <= residual_tolerance
-                    or self.probe_backward_error <= BACKWARD_ERROR_TOLERANCE)
 
     def _probe_errors(self, host_rhs, refinement_steps=None):
         """(relative residual ||c - E y|| / ||c||, normwise backward error ||c - E y|| / (||E|| ||y|| + ||c||)) of a

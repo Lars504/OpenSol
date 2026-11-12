@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 SHIFTER_DX = 80e-9   # template: 50 nm (80 x 60 x 400 cells, 4800-cell cross-sections); 80 nm ~ 50 x 38 x 250
@@ -23,21 +24,17 @@ def _specs():
     return runs
 
 
-def _methods(owner, label, names):
-    return tuple((f'{owner}.{name}', f'{label}: {name}') for name in names)
-
-
 EME = 'open_sol.physics.eme'
 MODES = 'open_sol.physics.em.cross_section_modes'
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.model.study:solve_stationary', 'study: solve_stationary'),
     ('open_sol.model.study:_SnapshotRecorder.record', 'study: _SnapshotRecorder.record'),
     ('open_sol.model.study:_feature_results', 'study: _feature_results'),
-) + _methods('open_sol.coupling.coupling_term:CouplingTerm', 'coupling', ('apply', 'apply_now', 'flush')
-) + _methods('open_sol.physics.heat.solver:HeatPhysics', 'heat', ('finalize', 'step')
-) + _methods(f'{EME}.solver:EMEBase', 'eme', (
+) + methods('open_sol.coupling.coupling_term:CouplingTerm', 'coupling', ('apply', 'apply_now', 'flush')
+) + methods('open_sol.physics.heat.solver:HeatPhysics', 'heat', ('finalize', 'step')
+) + methods(f'{EME}.solver:EMEBase', 'eme', (
     'step', 'solve_harmonic', '_solve', '_section_modes', 'eps_sensitivity', '_port_scalars', 'port_fractions')
-) + _methods(f'{EME}.solver3d:EMEPhysics3D', 'eme 3d', (
+) + methods(f'{EME}.solver3d:EMEPhysics3D', 'eme 3d', (
     '_find_sections', '_layer_rows', '_layer_materials', '_layer_loss', '_layer_pec', '_stretched_areas',
     '_solve_section', '_reconstruct', '_cascade_sensitivity', 'state')
 ) + (
@@ -56,7 +53,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     (f'{EME}.cascade:CascadeBuilder.finish', 'cascade: CascadeBuilder.finish'),
     (f'{EME}.cascade:Cascade.section_amplitudes', 'cascade: Cascade.section_amplitudes'),
     (f'{EME}.adjoint:cross_section_gradient', 'adjoint: cross_section_gradient'),
-) + _methods(f'{EME}.renderer3d:EMERenderer3D', 'renderer', ('device_field', 'device_plane', '_field'))
+) + methods(f'{EME}.renderer3d:EMERenderer3D', 'renderer', ('device_field', 'device_plane', '_field'))
 
 if __name__ == '__main__':
     main('em_eme_3d', PARTS, __doc__, specs=_specs,

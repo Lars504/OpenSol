@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .geometry import (GEOMETRY_KINDS, UNION_KINDS, composite_inputs, consumed_objects, domain_size, domain_size_z,
-                       expand_entities, is_array_copy, material_paint_order, point_z, resolve_geometry, surface_faces)
+                       expand_entities, is_array_copy, material_paint_order, material_selections, point_z,
+                       resolve_geometry, surface_faces)
 from .spec import outer_faces
 
 _FACE_BUDGET = 6000          # automatic n_segments keeps about this many faces over all round objects
@@ -92,12 +93,7 @@ def build_scene(spec, parameters, registry=None, highlight=(), n_segments=None) 
 
 def _material_owners(spec) -> tuple:
     """({object name: index of the material that wins it (last in material_paint_order)}, [background indices])."""
-    expanded = []
-    for material in spec.materials:
-        try:
-            expanded.append(expand_entities(spec, material.selection))
-        except (ValueError, TypeError):
-            expanded.append(None)
+    expanded = material_selections(spec)
     owners, background = {}, []
     for index in material_paint_order(expanded):
         if 'all' in expanded[index]:

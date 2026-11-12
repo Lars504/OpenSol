@@ -5,7 +5,7 @@ import math
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import probe_phasor
+from ...model.selftest_helpers import checks_result, probe_phasor
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec,
                            StudySpec)
 
@@ -105,10 +105,7 @@ def _check_disk(results_by_name):
         details[f'{mode}_staircase_coarse'] = errors[f'{polarization}_coarse_off']
     entries = {name: {'value': float(value), 'tolerance': tolerance, 'passed': bool(value <= tolerance)}
                for name, (value, tolerance) in checks.items()}
-    failed = [name for name, entry in entries.items() if not entry['passed']]
-    details.update(failed=failed, checks=entries)
-    return {'measured': float(len(failed)), 'expected': 0.0, 'error': float(len(failed)), 'tolerance': 0.0,
-            'details': details}
+    return checks_result(entries, **details)
 
 
 def _pair_spec(polarization, conformal):

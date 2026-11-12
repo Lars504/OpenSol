@@ -59,21 +59,29 @@ def _bilayer_closed_forms(strain_xx=_BILAYER_PULL / _BILAYER_SIZE[0]):
     return strain_xx, strain_yy, stress_xx, force
 
 
+def _bilayer_parts():
+    """([rectangles 'lower', 'upper'], [MaterialSpecs layer_a, layer_b on them]) of the bilayer strip."""
+    length, height = _BILAYER_SIZE
+    (youngs_a, nu_a), (youngs_b, nu_b) = _BILAYER_LAYERS
+    return ([_rectangle('lower', 0.0, 0.0, length, _BILAYER_INTERFACE_Y),
+             _rectangle('upper', 0.0, _BILAYER_INTERFACE_Y, length, height)],
+            [MaterialSpec('layer_a', properties=_elastic(youngs_a, nu_a), selection=['lower']),
+             MaterialSpec('layer_b', properties=_elastic(youngs_b, nu_b), selection=['upper'])])
+
+
 def _bilayer_specs():
     """'run': roller left / bottom, displacement 'pull' on x_hi, refinement line at x = L / 2."""
     length, height = _BILAYER_SIZE
-    geometry = [_rectangle('lower', 0.0, 0.0, length, _BILAYER_INTERFACE_Y),
-                _rectangle('upper', 0.0, _BILAYER_INTERFACE_Y, length, height),
-                GeometrySpec('refine_line', 'line', {'x0': 0.5 * length, 'y0': 0.0, 'x1': 0.5 * length, 'y1': height})]
+    geometry, materials = _bilayer_parts()
+    geometry.append(GeometrySpec('refine_line', 'line', {'x0': 0.5 * length, 'y0': 0.0, 'x1': 0.5 * length,
+                                                         'y1': height}))
     mesh = MeshSpec(mode='nonuniform', dx=_CELL,
                     refinements=[RefinementSpec('refine_line', _BILAYER_GRADED_CELL, _BILAYER_GRADED_REACH)])
-    (youngs_a, nu_a), (youngs_b, nu_b) = _BILAYER_LAYERS
     return {_RUN: with_exact_cg(ModelSpec(
         title='Self-test: bilayer under tension (solid mechanics), graded mesh',
         domain=DomainSpec(size_x=length, size_y=height),
         geometry=geometry,
-        materials=[MaterialSpec('layer_a', properties=_elastic(youngs_a, nu_a), selection=['lower']),
-                   MaterialSpec('layer_b', properties=_elastic(youngs_b, nu_b), selection=['upper'])],
+        materials=materials,
         physics=[PhysicsSpec(_SOLID, SOLID_TYPE_NAME, features=[
             FeatureSpec('left', 'roller', ['x_lo']),
             FeatureSpec('bottom', 'roller', ['y_lo']),

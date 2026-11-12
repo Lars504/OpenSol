@@ -68,7 +68,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         # origin, M_x = integral y sigma_zz dA, M_y = -integral x sigma_zz dA
         self.bending_terms = BENDING_TERMS[bending]
         self.bending_moments = (float(bending_moment_x), float(bending_moment_y))
-        # [m] out-of-plane thickness of a planar solid (COMSOL's d): reactions in N; None = per m of depth (N/m)
+        # [m] out-of-plane thickness of a planar solid (the industry-standard d): reactions in N; None = per m of
+        # depth (N/m)
         if thickness is not None and not (math.isfinite(float(thickness)) and float(thickness) > 0.0):
             raise ValueError(f'thickness must be None or a finite value > 0 [m], got {thickness!r}')
         self.thickness = None if thickness is None or self._axisymmetric else float(thickness)

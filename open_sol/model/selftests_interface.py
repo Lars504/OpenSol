@@ -61,14 +61,30 @@ def _linear_field(side, x, y, coefficients=_LINEAR_FIELDS):
     return a + b * x + c * y
 
 
+def _add_stencil_errors(spec, resolved, frame, name, values, min_usable, errors, tolerances, details):
+    """Per side of object `name`: the one-sided interface_stencil values of the linear field `values` against the exact
+    side field ('exact', / 10) and the usable share below min_usable ('usable'), into errors / tolerances / details."""
+    from .interface_sampling import interface_stencil
+    for side in ('inside', 'outside'):
+        stencil = interface_stencil(spec, spec.selection(f'{name}_{side}'), resolved, frame)
+        one_sided = stencil.one_sided(values[stencil.cells_x, stencil.cells_y])
+        usable = stencil.usable
+        expected = _linear_field(side, stencil.points[usable, 0], stencil.points[usable, 1])
+        errors[f'{name} {side} exact'] = float(np.max(np.abs(one_sided[usable] - expected))) / 10.0
+        tolerances[f'{name} {side} exact'] = _EXACT_TOLERANCE
+        errors[f'{name} {side} usable'] = max(0.0, min_usable - float(np.mean(usable)))
+        tolerances[f'{name} {side} usable'] = 1e-12
+        details[f'{name} {side}'] = {'samples': int(usable.size), 'usable': int(np.count_nonzero(usable))}
+
+
 def _check_sampling(_results_by_name):
     """Outline lengths / normals and one-sided values of side-wise linear fields (exact) on the disk and the holey
     slab, an interface line profile along the slab top, normal / tangential projections of a side-wise linear vector
     field along the slab top and left side, and partner_component names; measured = error = the worst item in
     tolerance units."""
     from .geometry import rasterize_window, resolve_geometry
-    from .interface_sampling import (SAMPLE_SPACING, interface_line_profile, interface_stencil, object_outline,
-                                     partner_component, window_frame)
+    from .interface_sampling import (SAMPLE_SPACING, interface_line_profile, object_outline, partner_component,
+                                     window_frame)
     spec = _sampling_spec()
     resolved = resolve_geometry(spec, {})
     centres = (np.arange(_GRID_CELLS) + 0.5) * _GRID_CELL
@@ -81,16 +97,7 @@ def _check_sampling(_results_by_name):
         inside = np.zeros((_GRID_CELLS, _GRID_CELLS), dtype=bool)
         inside[window] = cropped
         values = np.where(inside, _linear_field('inside', x_cells, y_cells), _linear_field('outside', x_cells, y_cells))
-        for side in ('inside', 'outside'):
-            stencil = interface_stencil(spec, spec.selection(f'{name}_{side}'), resolved, frame)
-            one_sided = stencil.one_sided(values[stencil.cells_x, stencil.cells_y])
-            usable = stencil.usable
-            expected = _linear_field(side, stencil.points[usable, 0], stencil.points[usable, 1])
-            errors[f'{name} {side} exact'] = float(np.max(np.abs(one_sided[usable] - expected))) / 10.0
-            tolerances[f'{name} {side} exact'] = _EXACT_TOLERANCE
-            errors[f'{name} {side} usable'] = max(0.0, _MIN_USABLE_FRACTION - float(np.mean(usable)))
-            tolerances[f'{name} {side} usable'] = 1e-12
-            details[f'{name} {side}'] = {'samples': int(usable.size), 'usable': int(np.count_nonzero(usable))}
+        _add_stencil_errors(spec, resolved, frame, name, values, _MIN_USABLE_FRACTION, errors, tolerances, details)
     spacing = SAMPLE_SPACING * _GRID_CELL
     perimeters = {'disk': 2.0 * math.pi * _DISK['r'],
                   'holey': 2.0 * ((_SLAB['x1'] - _SLAB['x0']) + (_SLAB['y1'] - _SLAB['y0'])) + 2.0 * math.pi * _HOLE['r']}
@@ -152,7 +159,7 @@ def _check_polar(_results_by_name):
     of a vector field in grid-frame components along the block top (native FieldData); worst item in tolerance
     units."""
     from .geometry import domain_map, rasterize, resolve_geometry
-    from .interface_sampling import interface_line_profile, interface_stencil, window_frame
+    from .interface_sampling import interface_line_profile, window_frame
     spec = _polar_spec()
     resolved = resolve_geometry(spec, {})
     window_map = domain_map(spec, {})
@@ -168,16 +175,8 @@ def _check_polar(_results_by_name):
                                            np), dtype=bool)
         values = np.where(masks[name], _linear_field('inside', mapped_x, mapped_y),
                           _linear_field('outside', mapped_x, mapped_y))
-        for side in ('inside', 'outside'):
-            stencil = interface_stencil(spec, spec.selection(f'{name}_{side}'), resolved, frame)
-            one_sided = stencil.one_sided(values[stencil.cells_x, stencil.cells_y])
-            usable = stencil.usable
-            expected = _linear_field(side, stencil.points[usable, 0], stencil.points[usable, 1])
-            errors[f'{name} {side} exact'] = float(np.max(np.abs(one_sided[usable] - expected))) / 10.0
-            tolerances[f'{name} {side} exact'] = _EXACT_TOLERANCE
-            errors[f'{name} {side} usable'] = max(0.0, _POLAR_MIN_USABLE_FRACTION - float(np.mean(usable)))
-            tolerances[f'{name} {side} usable'] = 1e-12
-            details[f'{name} {side}'] = {'samples': int(usable.size), 'usable': int(np.count_nonzero(usable))}
+        _add_stencil_errors(spec, resolved, frame, name, values, _POLAR_MIN_USABLE_FRACTION, errors, tolerances,
+                            details)
     angle = np.arctan2(mapped_y, mapped_x)   # planar polar grid frame: radial (cos, sin), angular (-sin, cos)
     vector_x = _linear_field('inside', mapped_x, mapped_y)
     vector_y = _linear_field('inside', mapped_x, mapped_y, _LINEAR_FIELDS_Y)

@@ -292,9 +292,9 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   / target change rebuilds the coupling form; likewise a feature's text 'channel' param becomes a choice of
   `document.harmonic_channel_names(physics)` (`_feature_params`; `add_feature` defaults it to the first channel). An
   optional 'choice' Param lists None as '(default)' first (`make_param_editor`). Text a user may want to copy (hints,
-  errors, issues, estimates, banners, notes) is a `forms.hint_label` / `error_label` or a QLabel wrapped in
-  `forms.selectable` (it takes click focus, so a click on it commits a pending edit like any other click); form row
-  labels and the status bar stay plain.
+  errors, issues, estimates, banners, notes) is a `forms.hint_label` / `error_label` / `wrapped_label` or a QLabel
+  wrapped in `forms.selectable` (it takes click focus, so a click on it commits a pending edit like any other click);
+  form row labels and the status bar stay plain.
 - Polar / spherical domains (an 'all' edit): the canvas keeps the drawing plane; `_EvaluatedModel.domain_map` (None on
   Cartesian) drives `plane_extent` / `face_segments` (rays joined by `angle_wrap` dropped: not drawn, labelled, picked
   or highlighted) / `inside_domain`, outline and mesh view (`_draw_mapped_mesh`); `model.cells` is None there (no cell

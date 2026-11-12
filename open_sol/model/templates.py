@@ -171,7 +171,12 @@ def make_template(key, registry=None) -> ModelSpec:
     entry = entries.get(key)
     if entry is None:
         raise KeyError(f"unknown template {key!r}; available: {', '.join(entries)}")
+    return template_model(entry)
+
+
+def template_model(entry) -> ModelSpec:
+    """Fresh ModelSpec of a TemplateEntry's factory; TypeError when it returns anything else."""
     spec = entry.factory()
     if not isinstance(spec, ModelSpec):
-        raise TypeError(f"template '{key}': factory returned {type(spec).__name__}, not a ModelSpec")
+        raise TypeError(f"template '{entry.key}': factory returned {type(spec).__name__}, not a ModelSpec")
     return spec

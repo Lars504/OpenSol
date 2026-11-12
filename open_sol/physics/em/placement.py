@@ -157,25 +157,34 @@ def near_to_far_box_cells(domain, x0, y0, x1, y1):
     return ix0, ix1, iy0, iy1
 
 
+def _validate_on_line(domain, axis, position, coord, label):
+    """validate_physical_pos of the point at `coord` along a line (axis 'x' = line along x at y = position)."""
+    if axis == 'x':
+        domain.validate_physical_pos(coord, position, label)
+    else:
+        domain.validate_physical_pos(position, coord, label)
+
+
+def _line_cell(domain, axis, position, label):
+    """(cell across the line, pos_to_cell of the along axis) of a line (axis 'x' = along x at y = position); ValueError
+    for another axis or a position outside the physical window."""
+    if axis not in ('x', 'y'):
+        raise ValueError(f"{label} axis must be 'x' or 'y', got {axis!r}")
+    _validate_on_line(domain, axis, position, 0.0, f"{label} ({'y' if axis == 'x' else 'x'})")
+    if axis == 'x':
+        return domain.pos_to_cell_y(position), domain.pos_to_cell_x
+    return domain.pos_to_cell_x(position), domain.pos_to_cell_y
+
+
 def port_cells(domain, axis, position, span, label):
     """(line cell across the line, span cells [cell(start), cell(end)+1) along it, warning label) of a port line."""
     if span is None or len(span) != 2:
         raise ValueError(f"{label} needs span = (start, end) along the line [m], got {span!r}")
     start, end = sorted((float(span[0]), float(span[1])))
-    if axis == 'x':
-        domain.validate_physical_pos(0.0, position, f"{label} (y)")
-        for coord in (start, end):
-            domain.validate_physical_pos(coord, position, f"{label} span")
-        line_cell = domain.pos_to_cell_y(position)
-        span_cells = (domain.pos_to_cell_x(start), domain.pos_to_cell_x(end) + 1)
-    elif axis == 'y':
-        domain.validate_physical_pos(position, 0.0, f"{label} (x)")
-        for coord in (start, end):
-            domain.validate_physical_pos(position, coord, f"{label} span")
-        line_cell = domain.pos_to_cell_x(position)
-        span_cells = (domain.pos_to_cell_y(start), domain.pos_to_cell_y(end) + 1)
-    else:
-        raise ValueError(f"{label} axis must be 'x' or 'y', got {axis!r}")
+    line_cell, along_cell = _line_cell(domain, axis, position, label)
+    for coord in (start, end):
+        _validate_on_line(domain, axis, position, coord, f"{label} span")
+    span_cells = (along_cell(start), along_cell(end) + 1)
     orientation, across = ('horizontal', 'y') if axis == 'x' else ('vertical', 'x')
     warning_label = f"{label.lower()} on the {orientation} line at {across} = {float(position):.4g} m"
     return line_cell, span_cells, warning_label
@@ -198,20 +207,10 @@ def sheet_line(domain, boundary_config, polarization, axis, position, span, labe
     span end on a cpml window edge continues through the PML."""
     if polarization not in ('ez', 'hz'):
         raise ValueError(f"{label} polarization must be 'ez' or 'hz', got {polarization!r}")
-    x_centers, y_centers = domain.cell_centers()
-    dx_cells, dy_cells = domain.cell_widths()
-    if axis == 'x':
-        domain.validate_physical_pos(0.0, position, f"{label} (y)")
-        line_cell = domain.pos_to_cell_y(position)
-        normal_width = float(dy_cells[line_cell])
-        along_centers, along_cell = x_centers, domain.pos_to_cell_x
-    elif axis == 'y':
-        domain.validate_physical_pos(position, 0.0, f"{label} (x)")
-        line_cell = domain.pos_to_cell_x(position)
-        normal_width = float(dx_cells[line_cell])
-        along_centers, along_cell = y_centers, domain.pos_to_cell_y
-    else:
-        raise ValueError(f"{label} axis must be 'x' or 'y', got {axis!r}")
+    line_cell, along_cell = _line_cell(domain, axis, position, label)
+    along_axis = 0 if axis == 'x' else 1
+    along_centers = domain.cell_centers()[along_axis]
+    normal_width = float(domain.cell_widths()[1 - along_axis][line_cell])
     if polarization == 'hz':
         normal_width = _sheet_face_spacing(domain, boundary_config, axis, line_cell, label)
 
@@ -221,14 +220,11 @@ def sheet_line(domain, boundary_config, polarization, axis, position, span, labe
     else:
         start, end = sorted((float(span[0]), float(span[1])))
         for coord in (start, end):
-            if axis == 'x':
-                domain.validate_physical_pos(coord, position, f"{label} span")
-            else:
-                domain.validate_physical_pos(position, coord, f"{label} span")
+            _validate_on_line(domain, axis, position, coord, f"{label} span")
         span_lo, span_hi = along_cell(start), along_cell(end) + 1
         # As PortLine: an end on a cpml window edge continues through the PML (a uniform profile is untouched by the
         # stretch), so a window-wide line does not diffract like a slit.
-        window = domain.physical_window()[0 if axis == 'x' else 1]
+        window = domain.physical_window()[along_axis]
         if span_lo == window.start and getattr(boundary_config, f'{axis}_lo').value == 'cpml':
             span_lo = 0
         if span_hi == window.stop and getattr(boundary_config, f'{axis}_hi').value == 'cpml':

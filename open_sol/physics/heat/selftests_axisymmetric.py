@@ -8,10 +8,10 @@ from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import with_exact_cg
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, StudySpec)
+from .selftests import _field_arrays   # reads heat.T
 
 HEAT_TYPE_NAME = 'heat'            # = definition.PHYSICS_TYPE_NAME (definition imports this module)
 PHYSICS_NAME = 'heat'
-TEMPERATURE_FIELD = f'{PHYSICS_NAME}.T'
 RUN_NAME = 'run'
 
 CYLINDER_RADIUS = 2e-4             # m, x extent (x = r, the axis on x_lo)
@@ -126,13 +126,6 @@ def _check_order_2(results_by_name):
                         'edge_cell_rise_K': float(values[-1, 0] - ORDER_2_T0),
                         'T_integral': measured_integral, 'T_integral_expected': expected_integral,
                         'n_cells': list(values.shape)}}
-
-
-def _field_arrays(results):
-    """(float64 T values, x centres, y centres) of one run's temperature field."""
-    field_data = results.field(TEMPERATURE_FIELD)
-    return (np.asarray(field_data.values, dtype=np.float64), np.asarray(field_data.x_centers, dtype=np.float64),
-            np.asarray(field_data.y_centers, dtype=np.float64))
 
 
 AXISYMMETRIC_SELFTEST_CASES = (

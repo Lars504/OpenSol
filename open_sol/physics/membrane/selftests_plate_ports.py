@@ -7,10 +7,10 @@ from dataclasses import replace
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float32_value, scaled_worst_result
+from ...model.selftest_helpers import cpu_defaults, float32_value, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import (_AREAL_DENSITY, _FILM, _GUIDE_WIDTH, _MEMBRANE_TYPE, _PHYSICS, _TENSION, _TUNNEL_CASES,
-                        _plate_strip_frequency, _solver_defaults, _triangles, _tunnel_spec)
+                        _plate_strip_frequency, _triangles, _tunnel_spec)
 from .selftests_plate_pml import _PLATE_GUIDE_RIGIDITY, _plate_guide_beta, _plate_guide_frequency
 
 _PORT_AMPLITUDE = 1e-9            # m
@@ -60,7 +60,7 @@ def _supported_port_specs():
         domain=DomainSpec(size_x=_SUPPORTED_PORT_LENGTH, size_y=_GUIDE_WIDTH),
         materials=[MaterialSpec('plate', properties=_plate_material(_PLATE_GUIDE_RIGIDITY), selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, features=features)],
-        meshes=[_triangles(_SUPPORTED_PORT_H)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[_triangles(_SUPPORTED_PORT_H)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings={'frequencies': [_plate_guide_frequency()]}))}
 
 
@@ -123,7 +123,7 @@ def _step_spec(name):
         domain=DomainSpec(size_x=narrow_length + wide_length, size_y=width), geometry=geometry,
         materials=[MaterialSpec('plate', properties=_plate_material(_STEP_RIGIDITY), selection=['guide'])],
         physics=[PhysicsSpec(_PHYSICS, _MEMBRANE_TYPE, settings=settings, features=features)],
-        meshes=[replace(_triangles(_STEP_H), pml_layers=_STEP_PML_CELLS)], solver_defaults=_solver_defaults('cpu'),
+        meshes=[replace(_triangles(_STEP_H), pml_layers=_STEP_PML_CELLS)], solver_defaults=cpu_defaults(),
         study=StudySpec(type='frequency_response', settings={'frequencies': [_step_frequency()]}))
 
 

@@ -262,11 +262,19 @@ def selectable(label):
     return label
 
 
-def hint_label(text):
-    """Grey, word-wrapped plain-text label whose text can be selected and copied."""
+def wrapped_label(text='', text_format=None):
+    """Word-wrapped label whose text can be selected and copied; text_format: a QtCore.Qt.TextFormat (None: Qt's
+    automatic detection)."""
     label = selectable(QtWidgets.QLabel(text))
     label.setWordWrap(True)
-    label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+    if text_format is not None:
+        label.setTextFormat(text_format)
+    return label
+
+
+def hint_label(text):
+    """Grey, word-wrapped plain-text label whose text can be selected and copied."""
+    label = wrapped_label(text, QtCore.Qt.TextFormat.PlainText)
     label.setStyleSheet(f'QLabel {{ color: {HINT_COLOR}; }}')
     return label
 
@@ -1114,7 +1122,6 @@ class ParamForm(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self._rows = []
-        self._shown = {}            # param name -> value shown read only instead of the form's value
         self._disabled = set()      # param names whose rows are greyed out (not used in the current state)
         for param in self._params:
             label = QtWidgets.QLabel(param_label(param))
@@ -1129,17 +1136,9 @@ class ParamForm(QtWidgets.QWidget):
         self._values = dict(values) if isinstance(values, dict) else {}
         filled = fill_defaults(self._params, self._values)
         for param, _label, editor in self._rows:
-            editor.set_value(self._shown[param.name] if param.name in self._shown else filled.get(param.name))
+            editor.set_value(filled.get(param.name))
             editor.refresh_check()
         self._apply_visibility(filled)
-
-    def set_shown_value(self, name, value):
-        """Show `value` read only in the editor of param `name` instead of the form's value (a value the model derives,
-        e.g. an automatic size); None = the form's value again, editable. Takes effect at the next refresh."""
-        if value is None:
-            self._shown.pop(name, None)
-        else:
-            self._shown[name] = value
 
     def set_row_enabled(self, name, enabled):
         """Grey out (False) or enable the row of param `name`; takes effect at the next refresh."""
@@ -1171,7 +1170,7 @@ class ParamForm(QtWidgets.QWidget):
             visible = param_visible(param, filled_values)
             label.setVisible(visible)
             editor.setVisible(visible)
-            enabled = param.name not in self._shown and param.name not in self._disabled
+            enabled = param.name not in self._disabled
             label.setEnabled(enabled)
             editor.setEnabled(enabled)
 

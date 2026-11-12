@@ -224,7 +224,9 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   `HeatPhysics` on a polar `Domain3D.from_widths(...)` solves (r, phi, z) with k_xx / k_yy / k_zz = radial / angular /
   axial, phi wrap included; models: DomainSpec polar + size_z (3D rules: boundary features on outer faces only; the
   estimator adds the wrap's 9-slot build array). `selftests_cylindrical_3d.py` (cpu): metric_cylindrical_geometry_3d,
-  heat_cylindrical_sector_3d, model_cylindrical_sector_paths, heat_cylindrical_sector_3d_model.
+  heat_cylindrical_sector_3d, model_cylindrical_sector_paths, heat_cylindrical_sector_3d_model; it reuses the widths /
+  axis / Dirichlet / radial-chain / refusal helpers of `selftests_coordinates.py` (same CONDUCTIVITY), as
+  `selftests_fem3d.py` the probe and decay-rate helpers of `selftests_fem.py`.
 - Unbounded quasi-static heat (symmetry 2.15): outer grading (`MeshSpec.outer_dx` / `outer_ratio`) puts a held far face
   ~1e3 x the structure away on a few dozen cells (heat_unbounded_disc_heater, `selftests_unbounded.py`). Arithmetic-
   metric FV needs bounded neighbour ratios, so there is no rational infinite-element layer.

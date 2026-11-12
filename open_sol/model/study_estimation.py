@@ -1,4 +1,4 @@
-"""Parameter estimation of one study (StudySpec.estimation, COMSOL Parameter Estimation): the study is built and run
+"""Parameter estimation of one study (StudySpec.estimation): the study is built and run
 per evaluation, scipy least_squares (TRF) or bounded Nelder-Mead searches the estimated parameters, and a run at the
 best point stays live (summary 'estimation')."""
 import math

@@ -223,6 +223,11 @@ def _apply_chi3_medium(ctx, solver, feature_spec, values, selection):
     return None
 
 
+def _complex_text(value):
+    """'a + bj' / 'a - bj' of a complex value (4 significant digits each)."""
+    return f'{value.real:.4g} {"-" if value.imag < 0 else "+"} {abs(value.imag):.4g}j'
+
+
 def _validate_chi3_medium(vctx, physics_spec, feature_spec, values):
     """Warning for chi3 = 0; info with chi_xxxx and its n2 / beta (or the per-cell n0 rule) at the reference, the
     per-process / Miller factors and the free carriers (warnings: no lifetime, no TPA)."""
@@ -238,16 +243,15 @@ def _validate_chi3_medium(vctx, physics_spec, feature_spec, values):
         return [Issue('warning', path, 'chi3 is 0 (n2 = tpa_beta = 0, or chi3_real = chi3_imag = 0): the medium '
                                        'couples nothing')]
     if values['strength'] == 'chi3':
-        text = f'chi_xxxx = {chi_xxxx.real:.4g} {"-" if chi_xxxx.imag < 0 else "+"} {abs(chi_xxxx.imag):.4g}j m^2/V^2'
+        text = f'chi_xxxx = {_complex_text(chi_xxxx)} m^2/V^2'
         if n0 is not None:
             n2, beta = n2_beta_from_chi3(chi_xxxx, n0, omega)
             text += f' (n2 = {n2:.4g} m^2/W, tpa_beta = {beta:.4g} m/W at n0 = {n0:g}, {wavelength_nm:.4g} nm)'
     elif n0 is None:
-        text = (f'chi_xxxx = n0^2 x {chi_xxxx.real:.4g} {"-" if chi_xxxx.imag < 0 else "+"} {abs(chi_xxxx.imag):.4g}j '
-                f'm^2/V^2 with n0 = Re sqrt(eps_r) of each cell at {wavelength_nm:.4g} nm (evaluated at build)')
+        text = (f'chi_xxxx = n0^2 x {_complex_text(chi_xxxx)} m^2/V^2 with n0 = Re sqrt(eps_r) of each cell at '
+                f'{wavelength_nm:.4g} nm (evaluated at build)')
     else:
-        text = (f'chi_xxxx = {chi_xxxx.real:.4g} {"-" if chi_xxxx.imag < 0 else "+"} {abs(chi_xxxx.imag):.4g}j '
-                f'm^2/V^2 (n0 = {n0:g}, {wavelength_nm:.4g} nm)')
+        text = f'chi_xxxx = {_complex_text(chi_xxxx)} m^2/V^2 (n0 = {n0:g}, {wavelength_nm:.4g} nm)'
     scales = {'THG / TFG': values['thg_scale'], 'FWM': values['fwm_scale']}
     scaled = {process: scale for process, scale in scales.items() if scale != 1.0}
     process_text = ('one chi3 for every process (THG, SPM, FWM)' if not scaled else
@@ -559,8 +563,8 @@ def _validate_conducting_sheet(vctx, physics_spec, feature_spec, values):
     for channel in channels:
         sigma = conductivity(channel.omega)
         transmission = 1.0 / abs(1.0 + float(ETA0) * sigma / 2.0) ** 2
-        parts.append(f'channel {channel.name}: sigma_s = {sigma.real:.4g} {"-" if sigma.imag < 0 else "+"} '
-                     f'{abs(sigma.imag):.4g}j S (vacuum normal-incidence transmission {transmission:.4g})')
+        parts.append(f'channel {channel.name}: sigma_s = {_complex_text(sigma)} S (vacuum normal-incidence '
+                     f'transmission {transmission:.4g})')
     return issues + ([Issue('info', path, '; '.join(parts))] if parts else [])
 
 

@@ -39,6 +39,37 @@ def _sizing(with_sources=True):
         face_sizes=(_face(),) if with_sources else ())
 
 
+def _field_tree(geo):
+    """(formulas, kinds, lists, background field number or None) parsed from a .geo text."""
+    import re
+
+    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
+    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
+    lists = {int(number): [int(k) for k in members.split(',')]
+             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
+    background = re.search(r'Background Field = (\d+);', geo)
+    return formulas, kinds, lists, int(background.group(1)) if background else None
+
+
+def _field_value(tree, number, point, scale):
+    """Normalised value of field `number` of a _field_tree at point [m] (origin 0, coordinates / scale): MathEval
+    texts evaluated in Python (arithmetic and Sqrt), Min / Max fields over their lists."""
+    formulas, kinds, lists, _ = tree
+    if kinds[number] == 'MathEval':
+        names = {'x': point[0] / scale, 'y': point[1] / scale, 'z': point[2] / scale}
+        return eval(formulas[number], {'__builtins__': {}, 'Sqrt': math.sqrt}, names)   # noqa: S307 (own .geo)
+    return (min if kinds[number] == 'Min' else max)(_field_value(tree, k, point, scale) for k in lists[number])
+
+
+def _refusal_text(function) -> str:
+    """str of the ValueError function() raises, '' when it raises none (other exceptions propagate)."""
+    try:
+        function()
+    except ValueError as exc:
+        return str(exc)
+    return ''
+
+
 def _distance_checks(add):
     """SizedFace.face_distance at points above, beside and diagonal to the rectangle."""
     from .gmsh3d import SizedFace
@@ -64,10 +95,7 @@ def _geo_twin_checks(add):
     geo = geo_text(bounds, bounds, [], _H_MAX, _H_MAX / 100.0, 2.0 * _H_MAX, _GROWTH, sized_faces=(_face(),),
                    size_points=np.array([_POINT]))
     rows = geo.split('\n')
-    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
-    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
-    lists = {int(number): [int(k) for k in members.split(',')]
-             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
+    formulas, kinds, lists, _ = _field_tree(geo)
     in_min = next((lists.get(number, []) for number, kind in kinds.items() if kind == 'Min'), [])
     maxima = [number for number in in_min if kinds.get(number) == 'Max']
     parts = lists.get(maxima[0], []) if len(maxima) == 1 else []
@@ -185,10 +213,7 @@ def _gmsh_checks(density, voxel, add):
     window = (0.0, 0.0, 0.0, _SIDE, _SIDE, _SIDE)
     mesh = mesh_solids_with_gmsh(window, [], _H_MAX, growth=_GROWTH, sized_faces=(_face(),),
                                  size_points=np.array([_POINT]))
-    corners = mesh.points[mesh.tets]
-    pairs = [(a, b) for a in range(4) for b in range(a + 1, 4)]
-    edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1) for a, b in pairs], axis=0)
-    centroids = corners.mean(axis=1)
+    centroids, _, _, edges = _tet_stats(mesh)
     to_face = _SIDE - centroids[:, 2]
     to_point = np.linalg.norm(centroids - np.array(_POINT[:3]), axis=1)
     near = to_face <= 2.0 * _BAND / 3.0
@@ -312,12 +337,9 @@ def _region_geo_checks(add):
     region = SizedRegion('difference', _RING_SIZE, children=(_leaf(base), *(_leaf(solid) for solid in subtracted)))
     window = _RING_WINDOW
     geo = geo_text(window, window, [], _H_MAX, _H_MAX / 100.0, 2.0 * _H_MAX, _GROWTH, sized_regions=(region,))
-    formulas = {int(number): text for number, text in re.findall(r'Field\[(\d+)\]\.F = "([^"]*)";', geo)}
-    kinds = {int(number): kind for number, kind in re.findall(r'Field\[(\d+)\] = (\w+);', geo)}
-    lists = {int(number): [int(k) for k in members.split(',')]
-             for number, members in re.findall(r'Field\[(\d+)\]\.FieldsList = \{([^}]*)\};', geo)}
-    background = re.search(r'Background Field = (\d+);', geo)
-    in_min = lists.get(int(background.group(1)), []) if background else []
+    tree = _field_tree(geo)
+    formulas, kinds, lists, background = tree
+    in_min = lists.get(background, []) if background is not None else []
     root = in_min[0] if len(in_min) == 1 else None
     children = lists.get(root, []) if root is not None and kinds.get(root) == 'Max' else []
 
@@ -333,36 +355,41 @@ def _region_geo_checks(add):
     longest = max((len(text) for text in re.findall(r'"([^"]*)"', geo)), default=0)
     add('region_geo_strings_fit', 0 < longest <= GEO_STRING_MAX, longest)
     scale = max(window[3] - window[0], window[4] - window[1], window[5] - window[2])   # origin: the window corner 0
-
-    def evaluate(number, point):
-        if kinds[number] == 'MathEval':
-            names = {'x': point[0] / scale, 'y': point[1] / scale, 'z': point[2] / scale}
-            return eval(formulas[number], {'__builtins__': {}, 'Sqrt': math.sqrt}, names)   # noqa: S307 (own .geo)
-        return (min if kinds[number] == 'Min' else max)(evaluate(k, point) for k in lists[number])
-
     if len(children) == 4:
         points = np.random.default_rng(11).uniform(window[:3], window[3:], size=(64, 3))
         errors = []
         for number, solid in zip(children[1:], subtracted):
-            values = np.array([evaluate(number, point) for point in points]) * scale
+            values = np.array([_field_value(tree, number, point, scale) for point in points]) * scale
             twin = _RING_SIZE + (_GROWTH - 1.0) * np.maximum(solid.depth(points, base.bounds()), 0.0)
             errors.append(float(np.max(np.abs(values - twin) / twin)))
         add('region_matheval_equals_twin', max(errors) <= _TWIN_RTOL, errors)
 
 
-def _ring_spec(refined):
+def _ring_spec(refined, where='inside', title='Self-test: composite refinement'):
     """ModelSpec of the annulus 'ring' = 'outer' minus 'hole' (z cylinders through the window), gmsh tetrahedra, the
-    ring refined to _RING_SIZE or not."""
+    ring refined to _RING_SIZE (RefinementSpec.where `where`) or not."""
     window = _RING_WINDOW
-    spec = ModelSpec(title='Self-test: composite refinement',
+    spec = ModelSpec(title=title,
                      domain=DomainSpec(size_x=window[3], size_y=window[4], size_z=window[5]))
     cylinder = {'cx': _RING_CENTRE[0], 'cy': _RING_CENTRE[1], 'z0': 0.0, 'z1': window[5]}
     spec.geometry = [GeometrySpec('outer', 'cylinder_z', dict(cylinder, r=_RING_OUTER)),
                      GeometrySpec('hole', 'cylinder_z', dict(cylinder, r=_RING_HOLE)),
                      GeometrySpec('ring', 'difference', {'base': 'outer', 'subtract': ['hole']})]
+    refinements = [RefinementSpec('ring', _RING_SIZE, where=where)] if refined else []
     spec.meshes = [MeshSpec(name='tets', kind='tetrahedra', mode='nonuniform', dx=_H_MAX, max_ratio=_GROWTH,
-                            mesher='gmsh', refinements=[RefinementSpec('ring', _RING_SIZE)] if refined else [])]
+                            mesher='gmsh', refinements=refinements)]
     return spec
+
+
+def _tet_stats(built):
+    """(centroids (m, 3), their distance from the ring axis, volumes, mean edge lengths) per element of a mesh."""
+    corners = built.points[built.tets]
+    centroids = corners.mean(axis=1)
+    radial = np.hypot(centroids[:, 0] - _RING_CENTRE[0], centroids[:, 1] - _RING_CENTRE[1])
+    volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
+    edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
+                     for a in range(4) for b in range(a + 1, 4)], axis=0)
+    return centroids, radial, volumes, edges
 
 
 def _region_gmsh_checks(add):
@@ -384,18 +411,9 @@ def _region_gmsh_checks(add):
     mesh = tetrahedralize(spec, {}, registry, 'tets', log=lambda level, text: lines.append((level, text)))
     estimate = estimate_mesh(spec, {}, registry, 'tets').n_elements
     unrefined = tetrahedralize(_ring_spec(False), {}, registry, 'tets')
-
-    def element_stats(built):
-        corners = built.points[built.tets]
-        centroids = corners.mean(axis=1)
-        radial = np.hypot(centroids[:, 0] - _RING_CENTRE[0], centroids[:, 1] - _RING_CENTRE[1])
-        volumes = np.abs(np.linalg.det(corners[:, 1:] - corners[:, :1])) / 6.0
-        edges = np.mean([np.linalg.norm(corners[:, a] - corners[:, b], axis=1)
-                         for a in range(4) for b in range(a + 1, 4)], axis=0)
-        return radial, centroids[:, 2], volumes, edges
-
-    radial, z, volumes, edges = element_stats(mesh)
-    plain_radial, _, plain_volumes, _ = element_stats(unrefined)
+    centroids, radial, volumes, edges = _tet_stats(mesh)
+    z = centroids[:, 2]
+    _, plain_radial, plain_volumes, _ = _tet_stats(unrefined)
     core, plain_core = radial < 0.15 * um, plain_radial < 0.15 * um
     ring = ((radial > _RING_HOLE + 0.03 * um) & (radial < _RING_OUTER - 0.03 * um) & (z > 0.05 * um)
             & (z < _RING_WINDOW[5] - 0.05 * um))
@@ -482,11 +500,9 @@ def _disk_cache_checks(add):
 def _sub_checks(*groups):
     """Run the check groups (each add(name, passed, value)); error = number of failed sub-checks, tolerance 0."""
     checks = SubChecks()
-    add = checks.add
-
     for group in groups:
-        group(add)
-    return checks_result(checks)
+        group(checks.add)
+    return checks.result()
 
 
 def _check_composite_sizes(results_by_name):

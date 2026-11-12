@@ -2,8 +2,8 @@
 against its fit range (CPU; the fits are cached in materials.fitted_library_poles)."""
 import math
 
-from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue
-from .definition_common import EM_FAMILY, FREQUENCY_DOMAIN_STUDY, _study_wavelengths
+from ...model.schema import PERMITTIVITY_PROPERTY_NAMES, Issue, known_physics
+from .definition_common import EM_FAMILY, FREQUENCY_DOMAIN_STUDY, _enabled_features, _study_wavelengths, raw_settings
 from .material_fit import ERROR_WARNING_LEVEL, LOSS_WARNING_LEVEL, NK_FIT_MODEL, nk_fit_settings
 
 _RICKER_SIGNIFICANT = (0.40, 1.77)   # f / f_peak where the Ricker amplitude spectrum falls to 1/e of its peak
@@ -63,23 +63,13 @@ def model_band(vctx):
             wavelengths += _study_wavelengths(vctx.spec, vctx.parameters, vctx.registry)
         except ValueError:   # reported at ('study',)
             pass
-    for physics in vctx.spec.physics:
-        try:
-            physics_type = vctx.registry.physics_type(physics.type)
-        except KeyError:
-            continue
+    for physics, physics_type in known_physics(vctx.spec, vctx.registry):
         if physics_type.family != EM_FAMILY:
             continue
-        settings = vctx.values(physics_type.settings, physics.settings if isinstance(physics.settings, dict) else {})
+        settings = vctx.values(physics_type.settings, raw_settings(physics))
         if settings and not frequency_domain and _positive(settings.get('wavelength')):
             wavelengths.append(settings['wavelength'])
-        for feature in physics.features:
-            if not feature.enabled or not isinstance(feature.params, dict):
-                continue
-            try:
-                feature_type = physics_type.feature_type(feature.type)
-            except KeyError:
-                continue
+        for feature, feature_type in _enabled_features(physics, physics_type):
             if feature_type.category not in ('source', 'monitor'):
                 continue   # e.g. a gain line, phase-change reference or effective_index wavelength: no band
             values = vctx.values(feature_type.params, feature.params)

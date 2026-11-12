@@ -9,7 +9,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import PERIODIC_Y, probe_phasor, relative_error
+from ...model.selftest_helpers import PERIODIC_Y, probe_phasor, relative_error, vertical_line
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec, SweepSpec)
 from .selftests import (_BACKWARD_CELL, _FORWARD_GAP, _PHYSICS, _PUMP_AMPLITUDE, _PUMP_OMEGA, _PUMP_WAVELENGTH,
@@ -469,9 +469,7 @@ def _sheet_strip_spec(title, sheets, channels, sources, probes):
     source_x = _strip_centre(_SOURCE_CELL)
     cells = sorted({cell for _, _, _, cell in probes})
     geometry = [GeometrySpec('source_line', 'line', {'x0': source_x, 'y0': 0.0, 'x1': source_x, 'y1': size_y}),
-                *(GeometrySpec(f'{name}_line', 'line', {'x0': _strip_centre(cell), 'y0': 0.0,
-                                                        'x1': _strip_centre(cell), 'y1': size_y})
-                  for name, cell, _ in sheets),
+                *(vertical_line(f'{name}_line', _strip_centre(cell), 0.0, size_y) for name, cell, _ in sheets),
                 *(_strip_point(f'point_{cell}', cell) for cell in cells)]
     features = [FeatureSpec(name, 'harmonic_channel', [], {'polarization': polarization, **definition})
                 for name, polarization, definition in channels]

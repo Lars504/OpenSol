@@ -29,10 +29,6 @@ class BlochCell3D:
     trivial: bool
 
     @property
-    def complex_phase(self) -> bool:
-        return bool(np.iscomplexobj(self.phase))
-
-    @property
     def on_periodic_faces(self) -> np.ndarray:
         """Bool per scalar dof standing for another or stood for (a dof on a periodic face)."""
         n_dofs = self.master.size

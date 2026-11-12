@@ -12,7 +12,7 @@ from ...model.selftest_helpers import float_list
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
 from .selftests import (_LOSSY_LAYER, _LOSSY_SIGMA, _OMEGA, _PHYSICS, _WAVELENGTH, _mode_set, _slab_line,
-                        stack_reference)
+                        lossy_film_details)
 
 _TYPE_3D = 'em_eme_3d'   # = definition3d.EM_EME_3D.name (definition3d imports this module through definition)
 _LOSSY_3D_TOLERANCE = 1e-6
@@ -279,34 +279,14 @@ def _film_model_spec():
 
 
 def _check_lossy_film_3d(results_by_name):
-    """Port entries of mode 1, section lengths and scalars T1 / R vs the complex-index transfer matrix (_MODEL_TOLERANCE),
-    the absorbed_power integral over the lossy layer vs 1 - R - T of the 1 W input (_LOSSY_3D_TOLERANCE)."""
-    results = results_by_name['run']
-    ports = results.result(_PHYSICS, 'ports')
-    matrix = np.asarray(ports['s_matrix_real']) + 1j * np.asarray(ports['s_matrix_imag'])
-    n_lo = int(ports['s_matrix_modes']['lo'])
+    """selftests.lossy_film_details of the run (ez stack reference; _MODEL_TOLERANCE, the absorbed power of the 1 W
+    input _LOSSY_3D_TOLERANCE); error in tolerance units."""
     indices = list(_FILM_INDICES)
     indices[_LOSSY_LAYER] = cmath.sqrt(indices[_LOSSY_LAYER] ** 2 - 1j * _LOSSY_SIGMA / (_OMEGA * EPS0))
-    s11, s21 = stack_reference(indices, _FILM_LENGTHS, 'ez')
-    s22, s12 = stack_reference(indices[::-1], _FILM_LENGTHS[::-1], 'ez')
-    errors = {'s11': abs(matrix[0, 0] - s11), 's21': abs(matrix[n_lo, 0] - s21), 's12': abs(matrix[0, n_lo] - s12),
-              's22': abs(matrix[n_lo, n_lo] - s22)}
-    lengths = [float(row[2]) for row in results.result(_PHYSICS, 'sections')['rows']]
-    errors['sections'] = (max(abs(a - b) / b for a, b in zip(lengths, _FILM_LENGTHS))
-                          if len(lengths) == len(_FILM_LENGTHS) else 1.0)   # 1 = wrong section count
-    derived = results.summary()['derived']
-    errors['T1'] = abs(float(derived['T1']) - abs(s21) ** 2)   # lossless port media: no loss term
-    errors['R'] = abs(float(derived['R']) - abs(s11) ** 2)
-    absorbed = 1.0 - abs(s11) ** 2 - abs(s21) ** 2
-    measured = float(derived['P_abs'])
-    errors['P_abs'] = abs(measured - absorbed)
-    scaled = {name: float(value) / (_LOSSY_3D_TOLERANCE if name == 'P_abs' else _MODEL_TOLERANCE)
-              for name, value in errors.items()}
-    worst = max(scaled.values())
-    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0,
-            'details': {'errors': {name: float(value) for name, value in errors.items()},
-                        'errors_in_tolerance_units': scaled, 'section_lengths': float_list(lengths),
-                        'P_abs': measured, 'P_abs_reference': absorbed}}
+    details = lossy_film_details(results_by_name['run'], indices, _FILM_LENGTHS, 'ez', _MODEL_TOLERANCE,
+                                 _LOSSY_3D_TOLERANCE)
+    worst = max(details['errors_in_tolerance_units'].values())
+    return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': 1.0, 'details': details}
 
 
 # ---- 5. model run: pec_domain cells in em_eme_3d (spec and check of eme_cpu_gpu / eme_3d_cudss_pec_model) ----

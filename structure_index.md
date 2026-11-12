@@ -15,20 +15,20 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/model/: lines 229-297
 - open_sol/physics/: lines 299-301
 - open_sol/physics/acoustics/: lines 303-321
-- open_sol/physics/em/: lines 323-436
-- open_sol/physics/em/solvers/: lines 438-460
-- open_sol/physics/em3d/: lines 462-498
-- open_sol/physics/eme/: lines 500-517
-- open_sol/physics/fluid/: lines 519-530
-- open_sol/physics/heat/: lines 532-557
-- open_sol/physics/magnetic/: lines 559-589
-- open_sol/physics/mechanics/: lines 591-670
-- open_sol/physics/membrane/: lines 672-690
-- open_sol/physics/nlfd/: lines 692-711
-- open_sol/physics/potential/: lines 713-730
-- open_sol/physics/semiconductor/: lines 732-745
-- open_sol/solvers/: lines 747-761
-- open_sol/viz/: lines 763-770
+- open_sol/physics/em/: lines 323-435
+- open_sol/physics/em/solvers/: lines 437-459
+- open_sol/physics/em3d/: lines 461-497
+- open_sol/physics/eme/: lines 499-516
+- open_sol/physics/fluid/: lines 518-529
+- open_sol/physics/heat/: lines 531-556
+- open_sol/physics/magnetic/: lines 558-588
+- open_sol/physics/mechanics/: lines 590-669
+- open_sol/physics/membrane/: lines 671-689
+- open_sol/physics/nlfd/: lines 691-710
+- open_sol/physics/potential/: lines 712-729
+- open_sol/physics/semiconductor/: lines 731-744
+- open_sol/solvers/: lines 746-760
+- open_sol/viz/: lines 762-769
 
 ## open_sol/
 
@@ -278,7 +278,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `study.py`: Built-in study types and the study driver: build the spec (once per sweep value), run its StudyType and report through plain CPU-only events (they cross to the GUI thread); sessions are closed explicitly.
 - `study_adaptation.py`: Mesh refinement levels of one study (S7.7, StudySpec.adaptation): build and run the study per level, error indicator, stop rule, the next level's meshes ('adaptive' tensor bands / triangle size points, or the 'uniform' sequence) and the ...
 - `study_eigenfrequency.py`: The 'eigenfrequency' StudyType (A6): background physics to a stationary fixed point, then the source-free resonances of every solver with solve_eigenfrequencies (em_fdfd_ez / _hz / _bor, solid_mechanics(_3d), membrane), one labelled ...
-- `study_estimation.py`: Parameter estimation of one study (StudySpec.estimation, COMSOL Parameter Estimation): the study is built and run per evaluation, scipy least_squares (TRF) or bounded Nelder-Mead searches the estimated parameters, and a run at the best ...
+- `study_estimation.py`: Parameter estimation of one study (StudySpec.estimation): the study is built and run per evaluation, scipy least_squares (TRF) or bounded Nelder-Mead searches the estimated parameters, and a run at the best point stays live (summary ...
 - `study_frequency_response.py`: The 'frequency_response' StudyType (piezoelectric plan stage 5): background physics to a stationary fixed point, then the driven time-harmonic response of every solver with solve_frequency_response (solid_mechanics, membrane, ...
 - `study_nonlinear.py`: The 'nonlinear_frequency_domain' StudyType (NLFD-chi): background physics to a stationary fixed point, then the cascaded chi(n) solve of every solver with solve_nonlinear (em_fdfd_nonlinear), one labelled snapshot per channel.
 - `study_optimization.py`: The 'optimization' StudyType (C7): density topology optimisation of the design_region features of the em_fdfd_* / em_eme physics, maximising J = the sum of their adjoint_objective terms by scipy L-BFGS-B on the adjoint gradient.
@@ -382,7 +382,6 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `renderer_bor.py`: Renderer of the body-of-revolution FDFD (solvers/fdfd_bor.BORPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|), absorbed power and materials.
 - `renderer_conical.py`: Renderer of the conical FDFD (solvers/fdfd_conical.ConicalPhysics): window-shaped float32 centre fields of the shown driven solve or resonance (Re and modulus per component, |E|, |E|^2, |H|, S_z), absorbed power and materials.
 - `renderer_fdtd_bor.py`: Renderer of the body-of-revolution FDTD (solvers/fdtd_bor.BORFDTDPhysics): window-shaped float32 instantaneous centre fields of the standing wave, their moduli, materials, and the frequency_domain phasors (Re / modulus per component, |E|) ...
-- `renderer_modes_fem.py`: Renderer of em_modes on a triangle mesh (solvers/modes_fem FEMModePhysics): the shared fem.renderer FEMFieldRenderer (fem_field coefficients; Session rasterises them) with ModeRenderer's field names and FieldInfos.
 - `results.py`: Result dicts of EM monitors (numpy arrays, builtin floats / ints / str) for plots, export and the GUI.
 - `selftests.py`: Analytic E_z-polarisation EM self-test cases (line-current Hankel field and far-field isotropy; the plane-wave, Fresnel and Drude Mie cylinder cases come from selftests_hz's polarisation-generic factories), the wall-plane case of both FDTD ...
 - `selftests_adjoint.py`: Finite-difference validation of the FDFD adjoint sensitivity (adjoint_objective features, output fields eps_sensitivity / eps_xy_sensitivity) in em_fdfd_ez and em_fdfd_hz (also with eps_xy); no physics imports.
@@ -602,7 +601,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `fields.py`: MechanicsFields2D: full-grid displacement, strain, stress and electric output arrays plus the coupled temperature-rise and body-force slots of solid_mechanics.
 - `fields3d.py`: Full-grid float32 fields of the 3D solid (outputs in kernels3d order, coupled / applied inputs) on the domain's array module; no cupy import, so definition3d can import the names.
 - `frequency_response.py`: Driven time-harmonic response of the solid (frequency_response study, piezoelectric plan stage 5, piezo_3d_plan stage 4): the reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor per frequency (HarmonicSystem: ...
-- `generalized_plane_strain.py`: Generalized plane strain of the planar 2D solid (symmetry plan 2.4, COMSOL's form eps_zz = e0 + e1 x + e2 y): the axial force and the two bending moments fix the free terms by superposition of unit-term homogeneous solves; every load and ...
+- `generalized_plane_strain.py`: Generalized plane strain of the planar 2D solid (symmetry plan 2.4, the industry-standard form eps_zz = e0 + e1 x + e2 y): the axial force and the two bending moments fix the free terms by superposition of unit-term homogeneous solves; ...
 - `guided_modes.py`: 2.5D guided vibration modes of a cross-section (x, y) of a structure long along z, u ~ exp(i (k_z z - omega t)): the three-component Q1 stiffness / mass of the eigenfrequency study (host numpy / scipy) and the k_z = 0 antiplane support ...
 - `kernels3d.py`: RawKernels of the matrix-free 3D elasticity (trilinear bricks on the window cells, nodal (u_x, u_y, u_z)), templated on float / double and built lazily on first use, each a core.kernels twin with a numpy host version (the cpu backend; ...
 - `material_params.py`: Material property Params shared verbatim by solid_mechanics and elastic_waves (one help text per name: the library youngs_modulus / poisson_ratio / photoelastic data serve both); definition-layer module (imports model.schema).
@@ -657,7 +656,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `solver.py`: Static 2D solid mechanics: planar per unit z length (plane strain, plane stress or generalized plane strain) or axisymmetric (r, z) whole rings; small strain, isotropic or anisotropic (c_ij, stiffness.py) linear elastic cells, thermal ...
 - `solver3d.py`: Static 3D solid mechanics on a Domain3D: small strain, isotropic linear elastic cells, thermal strain from the temperature-rise slot, supports, tractions and body forces; one ElasticSystem3D solve per change; the lowest vibration modes for ...
 - `solver_common.py`: Dimension-free part of the static solid mechanics physics (2D plane strain and 3D): the PhysicsSolver contract with the re-solve logic, coupled source slots, convergence record, reactions, warm start and the element Lame coefficients; ...
-- `solver_fem.py`: Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, COMSOL's quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane strain / plane stress / ...
+- `solver_fem.py`: Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, the industry-standard quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane strain / plane ...
 - `solver_fem3d.py`: Static 3D solid mechanics on a tetrahedron mesh (the solid_mechanics_3d create branch on 'tetrahedra'): vector Lagrange P2 (default) or P1 on the solid window elements (affine), isotropic E / nu or the 21 c_IJ (stiffness3d), thermal ...
 - `squeeze_film.py`: Runtime of the solid_mechanics_3d feature squeeze_film_damping (new_modules_plan S6w, tetrahedra): SqueezeFilmDamping finds the flat footprint faces on the gap side, builds a fem.surface_mesh footprint with its fem.squeeze_film.SqueezeFilm ...
 - `stiffness.py`: Element stiffness of the 2D solid (piezoelectric plan stage 5): the isotropic Lame pair or the anisotropic c_ij material arrays (per component, NaN = the isotropic value), reduced to the operator coefficients of each out-of-plane ...

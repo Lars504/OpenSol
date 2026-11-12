@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import with_exact_cg
+from ...model.selftest_helpers import cell_edges, with_exact_cg
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            StudySpec)
 
@@ -50,15 +50,6 @@ def _sector_specs():
                         DerivedValueSpec('P_joule', 'q_joule', [], 'integral')]), tolerance=_CG_TOLERANCE)}
 
 
-def _edges_from_centres(centres, first_edge):
-    """float64 cell edges rebuilt from the native centres, starting at first_edge (radius_min / angle_min)."""
-    edges = np.empty(centres.size + 1)
-    edges[0] = first_edge
-    for index, centre in enumerate(centres):
-        edges[index + 1] = 2.0 * centre - edges[index]
-    return edges
-
-
 def _discrete_chain(radius_edges, angle_edges):
     """(flux F per V, V at the centres per V, radial current density at the centres per V) of the series face
     conductances on the actual cells."""
@@ -83,8 +74,8 @@ def _check_sector(results_by_name):
     density = np.asarray(density_field.values, dtype=np.float64)
     radius_centres = np.asarray(potential_field.x_centers, dtype=np.float64)
     angle_centres = np.asarray(potential_field.y_centers, dtype=np.float64)
-    radius_edges = _edges_from_centres(radius_centres, _INNER_RADIUS)
-    angle_edges = _edges_from_centres(angle_centres, _SECTOR_START)
+    radius_edges = cell_edges(radius_centres, _INNER_RADIUS)
+    angle_edges = cell_edges(angle_centres, _SECTOR_START)
     flux, expected_potential, expected_density = (value * _VOLTAGE for value in _discrete_chain(
         radius_edges, angle_edges))
     inner = results.result(_CURRENTS, 'inner')
@@ -170,8 +161,8 @@ def _check_wrap(results_by_name):
     potential = np.asarray(potential_field.values, dtype=np.float64)
     radial = np.asarray(results.field(f'{_CURRENTS}.J_x', native=True).values, dtype=np.float64)
     angular = np.asarray(results.field(f'{_CURRENTS}.J_y', native=True).values, dtype=np.float64)
-    radius_edges = _edges_from_centres(np.asarray(potential_field.x_centers, dtype=np.float64), _WRAP_INNER)
-    angle_edges = _edges_from_centres(np.asarray(potential_field.y_centers, dtype=np.float64), _WRAP_START)
+    radius_edges = cell_edges(np.asarray(potential_field.x_centers, dtype=np.float64), _WRAP_INNER)
+    angle_edges = cell_edges(np.asarray(potential_field.y_centers, dtype=np.float64), _WRAP_START)
     angle_centres = 0.5 * (angle_edges[:-1] + angle_edges[1:])
     n_angle = angle_centres.size
     d_angle = float(angle_edges[-1] - angle_edges[0]) / n_angle

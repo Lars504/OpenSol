@@ -37,8 +37,8 @@ from .forms import (DERIVED_OPERATION_LABELS, ERROR_COLOR, HINT_COLOR, SELECTION
                     CommitTextEdit, CurveInputsEdit, ExpressionEdit, FormContext, IntSpinBox, NameEdit, NumberEdit,
                     ParamForm, SelectionPicker, StoredCutsEdit, TableEdit, ValueComboBox, display_number, error_label,
                     face_cell_counts_text, format_number, format_quantity, growing_form, hint_label, make_param_editor,
-                    mark_invalid, param_row_label, parse_number_or_text, rich_tooltip, selectable, selection_entries,
-                    set_param_help, tip_label, value_text)
+                    mark_invalid, param_row_label, parse_number_or_text, rich_tooltip, selection_entries,
+                    set_param_help, tip_label, value_text, wrapped_label)
 from .canvas import DRAGGABLE_KINDS
 from .document import ESTIMATION_NODE, MESHES_NODE, harmonic_channel_names, issue_node_path, solver_fits, solver_users
 from .estimation_form import EstimationFormMixin
@@ -267,8 +267,8 @@ _STORED_CUTS = Param('stored_cuts', 'float', None, label='Extra cut planes', uni
                          'number or an expression of parameters in metres; the plane runs through the mesh cells at '
                          'that position.\n\n'
                          'Pick one under Results with Cut plane to replay its snapshots.')
-# Study 'Mesh refinement' group (StudySpec.adaptation, S7.7; COMSOL 'Adaptation and error estimates'): AdaptationSpec
-# attribute -> (row label, tooltip)
+# Study 'Mesh refinement' group (StudySpec.adaptation, S7.7; industry-standard adaptation and error estimates):
+# AdaptationSpec attribute -> (row label, tooltip)
 _ADAPTATION_METHOD_LABELS = {'adaptive': 'Adaptive: refine where the estimated error is largest',
                              'uniform': 'Uniform: refine everywhere (a mesh-convergence check)'}
 _ADAPTATION_ROWS = {
@@ -697,6 +697,23 @@ def _form_layout(parent_layout):
     form = growing_form()
     parent_layout.addLayout(form)
     return form
+
+
+def _remove_button(callback):
+    """'Remove' tool button calling callback()."""
+    button = QtWidgets.QToolButton()
+    button.setText('Remove')
+    _on_click(button, callback)
+    return button
+
+
+def _button_row(*widgets):
+    """Row layout of widgets packed to the left."""
+    row = QtWidgets.QHBoxLayout()
+    for widget in widgets:
+        row.addWidget(widget)
+    row.addStretch(1)
+    return row
 
 
 def _group(title, *widgets):
@@ -1149,9 +1166,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._expanded_details = set()           # type keys whose 'Technical details' group was opened
         self._mesh_store = None                  # mesh_preview.ElementMeshStore (element mesh forms: Build mesh)
 
-        self._header = selectable(QtWidgets.QLabel())
-        self._header.setWordWrap(True)
-        self._header.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._header = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         header_font = self._header.font()
         header_font.setBold(True)
         self._header.setFont(header_font)
@@ -1196,9 +1211,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             layout.addWidget(hint_label('Select a node in the model tree.'))
         else:
             fills_height = bool(self._build_node(path, layout))
-            self._issues_label = selectable(QtWidgets.QLabel())
-            self._issues_label.setWordWrap(True)
-            self._issues_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            self._issues_label = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
             layout.addWidget(self._issues_label)
             self._update_issues()
         if not fills_height:
@@ -1340,6 +1353,16 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._refreshers.append(lambda: checkbox.setChecked(enabled_of() is True))
         return checkbox
 
+    def _expression_edit(self, param, value, ctx, on_commit, placeholder=''):
+        """ExpressionEdit committing to on_commit(value), its check re-run on every refresh; placeholder: its grey text
+        while empty (else the Param's own)."""
+        editor = ExpressionEdit(param, value, ctx)
+        if placeholder:
+            editor.setPlaceholderText(placeholder)
+        editor.value_committed.connect(on_commit)
+        self._refreshers.append(editor.refresh_check)
+        return editor
+
     def _add_unknown_keys(self, layout, params, values, what, section, mapping_of):
         """Group of stored keys that `params` does not declare, each with a Remove button; mapping_of(spec) looks
         the owning dict up by name inside the mutate."""
@@ -1355,14 +1378,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             row = QtWidgets.QWidget()
             row_layout = QtWidgets.QHBoxLayout(row)
             row_layout.setContentsMargins(0, 0, 0, 0)
-            value_label = selectable(QtWidgets.QLabel(value_text(values[key])))
-            value_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-            value_label.setWordWrap(True)
-            remove_button = QtWidgets.QToolButton()
-            remove_button.setText('Remove')
-            _on_click(remove_button, partial(self._remove_stored_key, section, mapping_of, key, what))
+            value_label = wrapped_label(value_text(values[key]), QtCore.Qt.TextFormat.PlainText)
             row_layout.addWidget(value_label, 1)
-            row_layout.addWidget(remove_button)
+            row_layout.addWidget(_remove_button(partial(self._remove_stored_key, section, mapping_of, key, what)))
             box_form.addRow(str(key), row)
         layout.addWidget(box)
 
@@ -1384,6 +1402,25 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             self._refreshers.append(lambda: param_form.refresh(mapping_of(self._document.spec)))
         if what is not None:
             self._add_unknown_keys(layout, params, values, what, section, mapping_of)
+
+    def _type_adder_row(self, title_text, type_info, operation):
+        """Row of a coupling / solver type to add: the title, an Add button running the document operation (Undo text
+        'Add <type label>') and the type's summary (else description) below."""
+        row = QtWidgets.QWidget()
+        row_layout = QtWidgets.QGridLayout(row)
+        row_layout.setContentsMargins(0, 6, 0, 0)
+        title = QtWidgets.QLabel(title_text)
+        title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        title.setWordWrap(True)
+        add_button = QtWidgets.QPushButton('Add')
+        _on_click(add_button, partial(self._document_op, operation, f'Add {type_info.label}'))
+        row_layout.addWidget(title, 0, 0)
+        row_layout.addWidget(add_button, 0, 1, QtCore.Qt.AlignmentFlag.AlignTop)
+        summary = type_info.summary or type_info.description
+        if summary:
+            row_layout.addWidget(hint_label(summary), 1, 0, 1, 2)
+        row_layout.setColumnStretch(0, 1)
+        return row
 
     def _add_summary(self, layout, type_info):
         """Grey GUI summary of a physics / feature / coupling / study type (its description when it has none)."""
@@ -1480,15 +1517,11 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._refreshers.append(partial(self._update_parameter_values, table))
         layout.addWidget(table, 1)
 
-        buttons = QtWidgets.QHBoxLayout()
         add_button = QtWidgets.QPushButton('Add parameter')
         _on_click(add_button, lambda: self._document_op(self._document.add_parameter, 'Add parameter'))
         remove_button = QtWidgets.QPushButton('Remove selected')
         _on_click(remove_button, partial(self._remove_parameters, table))
-        buttons.addWidget(add_button)
-        buttons.addWidget(remove_button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
+        layout.addLayout(_button_row(add_button, remove_button))
         expression_hint = hint_label(
             'Double-click a cell to edit it.\n\n'
             'A value can be a number or an expression of other parameters, units such as nm or fs, physical '
@@ -1549,13 +1582,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         layout.addWidget(hint_label('A selection is a named group of areas, edges, points or lines. Sources, '
                                     'materials and results can all use the same selection, so a change in one place '
                                     'updates them all.'))
-        buttons = QtWidgets.QHBoxLayout()
+        buttons = []
         for kind in SELECTION_KINDS:
             button = QtWidgets.QPushButton(f'Add {kind} selection')
             _on_click(button, partial(self._add_selection, kind))
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
+            buttons.append(button)
+        layout.addLayout(_button_row(*buttons))
 
     def _build_selection(self, path, layout):
         name = path[1]
@@ -1597,12 +1629,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                                           QtCore.Qt.ItemDataRole.ToolTipRole)
         library_button = QtWidgets.QPushButton('Add from library')
         _on_click(library_button, lambda: self._add_material(library_combo.currentText()))
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(blank_button)
-        row.addWidget(library_combo)
-        row.addWidget(library_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        layout.addLayout(_button_row(blank_button, library_combo, library_button))
 
     def _build_material(self, path, layout):
         name = path[1]
@@ -1748,13 +1775,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                 box_layout.addWidget(self._pole_editor(material_name, index, pole_count, pole, ctx))
             if not pole_count:
                 box_layout.addWidget(hint_label(_NO_POLES_TEXT))
-            buttons = QtWidgets.QHBoxLayout()
+            buttons = []
             for model, model_label in _POLE_MODEL_ENTRIES:
                 button = QtWidgets.QPushButton(f'Add {model_label} pole')
                 _on_click(button, partial(self._add_pole, material_name, model))
-                buttons.addWidget(button)
-            buttons.addStretch(1)
-            box_layout.addLayout(buttons)
+                buttons.append(button)
+            box_layout.addLayout(_button_row(*buttons))
         layout.addWidget(box)
 
     def _add_crystal(self, layout, material_name, material):
@@ -1770,10 +1796,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             add_button = QtWidgets.QPushButton('Use crystal data')
             add_button.setToolTip(rich_tooltip(_CRYSTAL_TIP))
             _on_click(add_button, partial(self._add_crystal_entry, material_name))
-            row = QtWidgets.QHBoxLayout()
-            row.addWidget(add_button)
-            row.addStretch(1)
-            box_layout.addLayout(row)
+            box_layout.addLayout(_button_row(add_button))
             return
         form = _form_layout(box_layout)
         crystal_combo = ValueComboBox([(name, _CRYSTAL_LABELS.get(name, name)) for name in CRYSTALS],
@@ -1801,10 +1824,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         box_layout.addWidget(summary_label)
         remove_button = QtWidgets.QPushButton('Remove crystal data')
         _on_click(remove_button, partial(self._remove_crystal_entry, material_name))
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(remove_button)
-        row.addStretch(1)
-        box_layout.addLayout(row)
+        box_layout.addLayout(_button_row(remove_button))
 
         def refresh_crystal():   # KeyError (entry gone) makes refresh() rebuild
             current = _crystal_entry_at(self._document.spec, material_name)
@@ -1835,10 +1855,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             model_combo.value_committed.connect(_slot(self._set_pole_model, material_name, index, model))
             form.addRow(tip_label('Model', _POLE_MODEL_TIP), model_combo)
             for field_param in fields:
-                editor = ExpressionEdit(field_param, pole.get(field_param.name), ctx)
-                editor.value_committed.connect(
+                editor = self._expression_edit(
+                    field_param, pole.get(field_param.name), ctx,
                     _slot(self._set_pole_field, material_name, index, model, field_param.name))
-                self._refreshers.append(editor.refresh_check)
                 form.addRow(param_row_label(field_param), editor)
         remove_button = QtWidgets.QPushButton('Remove pole')
         _on_click(remove_button, partial(self._remove_pole, material_name, index))
@@ -2039,23 +2058,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         candidates = coupling_candidates(spec, self._registry)
         for coupling_type, pairs in candidates:
             for source, target in pairs:
-                row = QtWidgets.QWidget()
-                row_layout = QtWidgets.QGridLayout(row)
-                row_layout.setContentsMargins(0, 6, 0, 0)
-                title = QtWidgets.QLabel(f'{coupling_type.label}  ({source} → {target})')
-                title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-                title.setWordWrap(True)
-                add_button = QtWidgets.QPushButton('Add')
-                _on_click(add_button, partial(self._document_op,
-                                              partial(self._document.add_coupling, coupling_type.name, source, target),
-                                              f'Add {coupling_type.label}'))
-                row_layout.addWidget(title, 0, 0)
-                row_layout.addWidget(add_button, 0, 1, QtCore.Qt.AlignmentFlag.AlignTop)
-                summary = coupling_type.summary or coupling_type.description
-                if summary:
-                    row_layout.addWidget(hint_label(summary), 1, 0, 1, 2)
-                row_layout.setColumnStretch(0, 1)
-                layout.addWidget(row)
+                layout.addWidget(self._type_adder_row(
+                    f'{coupling_type.label}  ({source} → {target})', coupling_type,
+                    partial(self._document.add_coupling, coupling_type.name, source, target)))
         if candidates:
             return
         if not spec.physics:
@@ -2089,9 +2094,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                                     combo.set_value(getattr(self._document.spec.coupling(name), role)))
             form.addRow(tip_label(row_label, _COUPLING_ROLE_TIPS[role]), combo)
         if several_meshes(spec):
-            meshes_label = selectable(QtWidgets.QLabel())
-            meshes_label.setWordWrap(True)
-            meshes_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            meshes_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
 
             def refresh_meshes():
                 current = self._document.spec
@@ -2169,11 +2172,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         """Intro, one line per mesh (swatch, kind, size, the physics on it), Add mesh buttons and the model's memory
         estimate (each mesh node shows its own part, the over-budget issue and its override)."""
         layout.addWidget(hint_label(_MESHES_INTRO))
-        overview = selectable(QtWidgets.QLabel())
-        overview.setWordWrap(True)
-        overview.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        overview = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
         layout.addWidget(_group('Meshes', overview))
-        buttons = QtWidgets.QHBoxLayout()
+        buttons = []
         spec = self._document.spec
         for kind in MESH_KINDS:
             if not mesh_kind_shown(spec, kind):
@@ -2184,12 +2185,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             if problem:
                 button.setToolTip(problem)
             _on_click(button, partial(self._document_op, partial(self._document.add_mesh, kind), 'Add mesh'))
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
-        memory_label = selectable(QtWidgets.QLabel())
-        memory_label.setWordWrap(True)
-        memory_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            buttons.append(button)
+        layout.addLayout(_button_row(*buttons))
+        memory_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         layout.addWidget(_group('Estimate (whole model)', memory_label))
 
         def refresh():
@@ -2217,9 +2215,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
     def _build_mesh(self, path, layout):
         spec = self._document.spec
         mesh_spec = spec.mesh_by_name(path[1])
-        badge = selectable(QtWidgets.QLabel())
-        badge.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        badge.setWordWrap(True)
+        badge = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
         layout.addWidget(badge)
         form = _form_layout(layout)
         self._add_name_row(form, path)
@@ -2255,8 +2251,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         self._refreshers.append(refresh_mesh_form)
         if mesh_spec.mode == 'auto':   # a mode edit rebuilds the form
             layout.addWidget(self._automatic_sizes_group())
-        size_points_label = selectable(QtWidgets.QLabel())   # MeshSpec.size_points, read only (adaptive refinement writes them)
-        size_points_label.setWordWrap(True)
+        size_points_label = wrapped_label()   # MeshSpec.size_points, read only (adaptive refinement writes them)
         size_points_label.setToolTip(rich_tooltip(
             'Element sizes the adaptive mesh refinement placed at the nodes of the elements it refined (kept with '
             'the mesh, e.g. by Keep adapted mesh). Each one makes the triangles near that point at most that size.'))
@@ -2276,9 +2271,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             self._refreshers.append(partial(
                 lambda box: box.setEnabled(self._form_mesh(self._document.spec).mode in _REFINED_MESH_MODES),
                 graded_box))
-        methods_label = selectable(QtWidgets.QLabel())
-        methods_label.setWordWrap(True)
-        methods_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        methods_label = wrapped_label(text_format=QtCore.Qt.TextFormat.RichText)
         methods_group = _group('Methods on this mesh', methods_label)
         layout.addWidget(methods_group)
 
@@ -2292,9 +2285,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         # override, right above the node's issues
         if mesh_spec.kind in FREE_MESH_KINDS and self._mesh_store is not None:
             layout.addWidget(self._element_build_group(mesh_spec.kind))
-        estimate_label = selectable(QtWidgets.QLabel())
-        estimate_label.setWordWrap(True)
-        estimate_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        estimate_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         override_form = ParamForm((_MEMORY_OVERRIDE,), self._memory_override_values(), self._context(),
                                   self._set_memory_override)
         layout.addWidget(_group('Estimate', estimate_label, override_form))
@@ -2389,18 +2380,13 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
     def _automatic_sizes_group(self):
         """'Automatic sizes' of an auto-mode mesh form: the base and object sizes its rule chose (read only) and Edit
         these sizes (Graded, or Uniform for lattice Boltzmann flow, with them filled in)."""
-        sizes_label = selectable(QtWidgets.QLabel())
-        sizes_label.setWordWrap(True)
-        sizes_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        sizes_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         button = QtWidgets.QPushButton('Edit these sizes')
         button.setToolTip(rich_tooltip(_EDIT_AUTOMATIC_SIZES_TIP))
         box = QtWidgets.QGroupBox('Automatic sizes')
         box_layout = QtWidgets.QVBoxLayout(box)
         box_layout.addWidget(sizes_label)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(button)
-        row.addStretch(1)
-        box_layout.addLayout(row)
+        box_layout.addLayout(_button_row(button))
 
         def current_estimate():
             return self._document.mesh_estimate(self._form_mesh(self._document.spec).name)
@@ -2426,7 +2412,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _element_build_group(self, kind):
         """'Triangles' / 'Tetrahedra' group of an element mesh form: Build mesh (the mesher alone, on the worker;
-        COMSOL's Build All) and the state of the elements the canvas shows (tetrahedra: cut by its shown plane)."""
+        the industry-standard build-all step) and the state of the elements the canvas shows (tetrahedra: cut by its
+        shown plane)."""
         noun = 'tetrahedra' if kind == 'tetrahedra' else 'triangles'
         auto_limit = AUTO_PREVIEW_MAX_TETRAHEDRA if kind == 'tetrahedra' else AUTO_PREVIEW_MAX_ELEMENTS
         button = QtWidgets.QPushButton('Build mesh')
@@ -2434,15 +2421,10 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             f'Make the {noun} of this mesh now and show them in the mesh view, without building the model'
             + (' (cut by the shown layer or cut plane).' if kind == 'tetrahedra' else '.')
             + f'\n\nBuilding the model makes the same {noun} (the mesher gives the same mesh for the same model).'))
-        status = selectable(QtWidgets.QLabel())
-        status.setWordWrap(True)
-        status.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        status = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         box = QtWidgets.QGroupBox(noun.capitalize())
         box_layout = QtWidgets.QVBoxLayout(box)
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(button)
-        row.addStretch(1)
-        box_layout.addLayout(row)
+        box_layout.addLayout(_button_row(button))
         box_layout.addWidget(status)
 
         def build():
@@ -2535,16 +2517,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             grid.addWidget(combo, row, 0)
             for column, (param, attribute) in enumerate(((_REFINEMENT_DX, 'dx'), (_REFINEMENT_MARGIN, 'margin')),
                                                         start=1):
-                editor = ExpressionEdit(param, getattr(refinement, attribute), ctx)
-                if attribute == 'margin':
-                    editor.setPlaceholderText('three times the cell size')
-                editor.value_committed.connect(_slot(self._set_refinement, index, object_name, attribute))
-                self._refreshers.append(editor.refresh_check)
+                editor = self._expression_edit(
+                    param, getattr(refinement, attribute), ctx,
+                    _slot(self._set_refinement, index, object_name, attribute),
+                    'three times the cell size' if attribute == 'margin' else '')
                 grid.addWidget(editor, row, column)
-            remove_button = QtWidgets.QToolButton()
-            remove_button.setText('Remove')
-            _on_click(remove_button, partial(self._remove_refinement, index, object_name))
-            grid.addWidget(remove_button, row, 3)
+            grid.addWidget(_remove_button(partial(self._remove_refinement, index, object_name)), row, 3)
             if refinement.automatic:
                 grid.addWidget(tip_label('automatic', _AUTOMATIC_REFINEMENT_TIP), row, 4)
         add_button = QtWidgets.QPushButton('Add refinement')
@@ -2573,10 +2551,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             axis_label = QtWidgets.QLabel(axis)
             set_param_help(axis_label, param)
             row_layout.addWidget(axis_label)
-            editor = ExpressionEdit(param, value, ctx)
-            editor.setPlaceholderText('cell size')
-            editor.value_committed.connect(_slot(self._set_refinement, index, refinement.object, param.name))
-            self._refreshers.append(editor.refresh_check)
+            editor = self._expression_edit(param, value, ctx,
+                                           _slot(self._set_refinement, index, refinement.object, param.name),
+                                           'cell size')
             row_layout.addWidget(editor, 1)
         return row_widget
 
@@ -2592,14 +2569,13 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         for index, axis_spec in enumerate(mesh_spec.axes):
             box_layout.addWidget(self._mesh_axis_box(index, axis_spec, ctx))
         present = {axis_spec.axis for axis_spec in mesh_spec.axes}
-        buttons = QtWidgets.QHBoxLayout()
+        buttons = []
         for axis in (_MESH_AXES if spec.is_3d else _MESH_AXES[:2]):
             if axis not in present and _tensor_graded(mesh_spec):
                 button = QtWidgets.QPushButton(f'Add {axis} options')
                 _on_click(button, partial(self._add_mesh_axis, axis))
-                buttons.addWidget(button)
-        buttons.addStretch(1)
-        box_layout.addLayout(buttons)
+                buttons.append(button)
+        box_layout.addLayout(_button_row(*buttons))
         box.setEnabled(mesh_spec.mode in _REFINED_MESH_MODES)
         return box
 
@@ -2609,10 +2585,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         box_layout = QtWidgets.QVBoxLayout(box)
         form = growing_form()
         box_layout.addLayout(form)
-        ratio_editor = ExpressionEdit(_AXIS_MAX_RATIO, axis_spec.max_ratio, ctx)
-        ratio_editor.setPlaceholderText('the mesh maximum growth ratio')
-        ratio_editor.value_committed.connect(_slot(self._set_mesh_axis, index, axis, 'max_ratio'))
-        self._refreshers.append(ratio_editor.refresh_check)
+        ratio_editor = self._expression_edit(_AXIS_MAX_RATIO, axis_spec.max_ratio, ctx,
+                                             _slot(self._set_mesh_axis, index, axis, 'max_ratio'),
+                                             'the mesh maximum growth ratio')
         form.addRow(param_row_label(_AXIS_MAX_RATIO), ratio_editor)
         mode = _axis_cell_mode(axis_spec)
         mode_combo = ValueComboBox(_AXIS_CELL_MODES, mode, _AXIS_CELLS_TIP)
@@ -2647,15 +2622,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         for band_index, band in enumerate(bands):
             row = band_index + 2
             for column, param in enumerate(_BAND_PARAMS):
-                editor = ExpressionEdit(param, getattr(band, param.name), ctx)
-                editor.value_committed.connect(
-                    _slot(self._set_mesh_axis_item, index, axis, 'bands', band_index, param.name))
-                self._refreshers.append(editor.refresh_check)
+                editor = self._expression_edit(param, getattr(band, param.name), ctx,
+                                               _slot(self._set_mesh_axis_item, index, axis, 'bands', band_index,
+                                                     param.name))
                 grid.addWidget(editor, row, column)
-            remove_button = QtWidgets.QToolButton()
-            remove_button.setText('Remove')
-            _on_click(remove_button, partial(self._remove_mesh_axis_item, index, axis, 'bands', band_index))
-            grid.addWidget(remove_button, row, len(_BAND_PARAMS))
+            grid.addWidget(_remove_button(partial(self._remove_mesh_axis_item, index, axis, 'bands', band_index)),
+                           row, len(_BAND_PARAMS))
         add_button = QtWidgets.QPushButton('Add band')
         _on_click(add_button, partial(self._add_mesh_band, index, axis))
         grid.addWidget(add_button, len(bands) + 2, 0, 1, len(_BAND_PARAMS) + 1)
@@ -2674,21 +2646,17 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         for segment_index, segment in enumerate(segments):
             row = segment_index + 1
             for column, param in ((0, end_param), (1, cells_param), (3, ratio_param)):
-                editor = ExpressionEdit(param, getattr(segment, param.name), ctx)
-                if param is end_param:
-                    editor.setPlaceholderText('axis end')
-                editor.value_committed.connect(
-                    _slot(self._set_mesh_axis_item, index, axis, 'segments', segment_index, param.name))
-                self._refreshers.append(editor.refresh_check)
+                editor = self._expression_edit(
+                    param, getattr(segment, param.name), ctx,
+                    _slot(self._set_mesh_axis_item, index, axis, 'segments', segment_index, param.name),
+                    'axis end' if param is end_param else '')
                 grid.addWidget(editor, row, column)
             profile_combo = ValueComboBox(profile_entries, segment.profile, _SEGMENT_PROFILE_TIP)
             profile_combo.value_committed.connect(
                 _slot(self._set_mesh_axis_item, index, axis, 'segments', segment_index, 'profile'))
             grid.addWidget(profile_combo, row, 2)
-            remove_button = QtWidgets.QToolButton()
-            remove_button.setText('Remove')
-            _on_click(remove_button, partial(self._remove_mesh_axis_item, index, axis, 'segments', segment_index))
-            grid.addWidget(remove_button, row, 4)
+            grid.addWidget(_remove_button(partial(self._remove_mesh_axis_item, index, axis, 'segments',
+                                                  segment_index)), row, 4)
         add_button = QtWidgets.QPushButton('Add segment')
         _on_click(add_button, partial(self._add_mesh_segment, index, axis))
         grid.addWidget(add_button, len(segments) + 1, 0, 1, 5)
@@ -2815,22 +2783,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         fitting = [(role, solver_type) for role, solver_type, reason in solver_candidates(spec, self._registry)
                    if not reason]
         for role, solver_type in fitting:
-            row = QtWidgets.QWidget()
-            row_layout = QtWidgets.QGridLayout(row)
-            row_layout.setContentsMargins(0, 6, 0, 0)
-            title = QtWidgets.QLabel(f'{solver_type.label}  ({SOLVER_ROLES[role].lower()})')
-            title.setTextFormat(QtCore.Qt.TextFormat.PlainText)
-            title.setWordWrap(True)
-            add_button = QtWidgets.QPushButton('Add')
-            _on_click(add_button, partial(self._document_op, partial(self._document.add_solver, solver_type.name),
-                                          f'Add {solver_type.label}'))
-            row_layout.addWidget(title, 0, 0)
-            row_layout.addWidget(add_button, 0, 1, QtCore.Qt.AlignmentFlag.AlignTop)
-            summary = solver_type.summary or solver_type.description
-            if summary:
-                row_layout.addWidget(hint_label(summary), 1, 0, 1, 2)
-            row_layout.setColumnStretch(0, 1)
-            add_layout.addWidget(row)
+            add_layout.addWidget(self._type_adder_row(
+                f'{solver_type.label}  ({SOLVER_ROLES[role].lower()})', solver_type,
+                partial(self._document.add_solver, solver_type.name)))
         if not fitting:
             add_layout.addWidget(hint_label('No solver type fits the physics of this model in the current study.'))
         layout.addWidget(add_box)
@@ -2854,9 +2809,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             layout.addWidget(error_label(error_message(exc)))
             return
         form.addRow('Type', QtWidgets.QLabel(solver_type.label))
-        used_by = selectable(QtWidgets.QLabel())
-        used_by.setWordWrap(True)
-        used_by.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        used_by = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         used_by.setToolTip(rich_tooltip('Physics roles this solver fills. Assign it in the Solver group of a '
                                         "physics' settings."))
 
@@ -3079,14 +3032,13 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                                     'profile, for comparison.\n\n'
                                     'A derived curve computes a new curve from result curves after every run, such as '
                                     'transmitted over incident power.'))
-        row = QtWidgets.QHBoxLayout()
+        buttons = []
         for kind, (label, method) in RESULT_SETTING_ADDERS.items():
             add_button = QtWidgets.QPushButton(label)
             add_button.setToolTip(rich_tooltip(RESULT_SETTINGS_TIPS[kind]))
             _on_click(add_button, partial(self._document_op, getattr(self._document, method), label))
-            row.addWidget(add_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+            buttons.append(add_button)
+        layout.addLayout(_button_row(*buttons))
 
     def _build_derived_values_root(self, path, layout):
         layout.addWidget(hint_label('A derived value turns a field into one number after every run, such as the mean '
@@ -3123,25 +3075,19 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _add_button_row(self, layout, label, operation, tip=''):
         """Row with one button running a document operation (refused edits reported); tip: its tooltip."""
-        row = QtWidgets.QHBoxLayout()
         button = QtWidgets.QPushButton(label)
         if tip:
             button.setToolTip(rich_tooltip(tip))
         _on_click(button, partial(self._document_op, operation, label))
-        row.addWidget(button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        layout.addLayout(_button_row(button))
 
     def _build_computed_results(self, path, layout):
         layout.addWidget(hint_label('The fields, probes and spectra of the last build or run are in the Results '
                                     'panel. Derived values, analytic curves and derived curves are set up under Result '
                                     'settings.'))
-        row = QtWidgets.QHBoxLayout()
         show_button = QtWidgets.QPushButton('Show results')
         _on_click(show_button, self.show_results_requested.emit)
-        row.addWidget(show_button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        layout.addLayout(_button_row(show_button))
 
     def _build_derived(self, path, layout):
         name = path[1]

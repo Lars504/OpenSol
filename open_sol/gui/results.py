@@ -29,11 +29,11 @@ from ..viz.common import length_unit, line_profile, normalised_db, probe_spectru
 from .estimation_results import EstimationTab, estimation_curve_options, estimation_plots, estimation_report
 from .document import results_inputs
 from .forms import (derived_operation_text, display_label, fill_table, read_only_table, rich_tooltip, selectable,
-                    table_number)
+                    table_number, wrapped_label)
 from .helpers import (USER_ERRORS, ask_save_path, evaluation_mesh, field_mesh_name, format_duration,
                       physics_mesh_name, remember_directory, several_meshes, study_summary_text)
 from .plot_view import (METRES_PER_NM, PLOT_FILE_TYPES, POINT_OPTIONS, SERIES_COLORS, TABLE_FILE_TYPES, ResultPlotView,
-                        curve_xy, dashed_pen, file_stem, write_export)
+                        curve_xy, dashed_pen, file_stem, fill_combo, write_export)
 
 _COLORMAPS = ('viridis', 'inferno', 'magma', 'plasma', 'cividis', 'turbo', 'RdBu_r', 'coolwarm', 'seismic', 'gray',
               'YlOrBr')
@@ -441,18 +441,14 @@ class ResultsPanel(QtWidgets.QWidget):
         self._play_timer = QtCore.QTimer(self)
         self._play_timer.timeout.connect(self._advance_replay)
 
-        self._stale_label = selectable(QtWidgets.QLabel('Results out of date: the model changed after the last build '
-                                                        '/ run.'))
+        self._stale_label = wrapped_label('Results out of date: the model changed after the last build / run.')
         self._stale_label.setStyleSheet('background:#fff3cd; color:#664d03; padding:3px;')
-        self._stale_label.setWordWrap(True)
         self._stale_label.hide()
-        self._sweep_label = selectable(QtWidgets.QLabel())   # running sweep value / mesh refinement level
-        self._sweep_label.setWordWrap(True)
+        self._sweep_label = wrapped_label()   # running sweep value / mesh refinement level
         self._sweep_label.hide()
-        self._level_label = selectable(QtWidgets.QLabel())   # mesh refinement: level / meshes the results come from
+        # mesh refinement: level / meshes the results come from
+        self._level_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         self._level_label.setStyleSheet('background:#e7f0fb; color:#1a3a66; padding:3px;')
-        self._level_label.setWordWrap(True)
-        self._level_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         self._level_label.hide()
         self._message_label = QtWidgets.QLabel()
         self._message_label.setWordWrap(True)
@@ -954,13 +950,11 @@ class ResultsPanel(QtWidgets.QWidget):
         self._dft_intensity_keys = []   # result keys of the intensity combo entries
         self._dft_show_button = QtWidgets.QPushButton('Show on canvas')
         self._dft_show_button.clicked.connect(lambda checked=False: self._show_dft())
-        self._dft_note = QtWidgets.QLabel('Field intensity over the box at the chosen wavelength: electric field '
-                                          'intensity, or for a magnetic field out of plane physics also the magnetic '
-                                          'field intensity. Export it from the Field tab.')
-        selectable(self._dft_note)
+        self._dft_note = wrapped_label('Field intensity over the box at the chosen wavelength: electric field '
+                                       'intensity, or for a magnetic field out of plane physics also the magnetic '
+                                       'field intensity. Export it from the Field tab.')
         self._dft_note.setToolTip(rich_tooltip('Electric field out of plane: |E_z|^2. Magnetic field out of plane: '
                                                '|E_x|^2 + |E_y|^2, or |H_z|^2. Fetched for one wavelength on demand.'))
-        self._dft_note.setWordWrap(True)
         form.addRow('Monitor', self._dft_combo)
         form.addRow('Wavelength', self._dft_frequency_combo)   # the monitor's frequencies, listed as wavelengths
         form.addRow('Quantity', self._dft_intensity_combo)
@@ -1049,8 +1043,7 @@ class ResultsPanel(QtWidgets.QWidget):
         its derived values) and the combined row."""
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
-        self._sectors_info = selectable(QtWidgets.QLabel('No parity sectors in the last study.'))
-        self._sectors_info.setWordWrap(True)
+        self._sectors_info = wrapped_label('No parity sectors in the last study.')
         self._sectors_table = read_only_table((), (
             'Each row is one run of the drawn part with the mirror planes set to one combination of even and odd. '
             'The combined row is what the drawn sources give alone on the whole structure: powers, fluxes and '
@@ -1097,9 +1090,7 @@ class ResultsPanel(QtWidgets.QWidget):
         Richardson estimate, value / error plots versus the cell count and 'Keep adapted mesh'."""
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
-        self._convergence_info = selectable(QtWidgets.QLabel(_NO_CONVERGENCE))
-        self._convergence_info.setWordWrap(True)
-        self._convergence_info.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._convergence_info = wrapped_label(_NO_CONVERGENCE, QtCore.Qt.TextFormat.PlainText)
         self._convergence_table = read_only_table((), _CONVERGENCE_TABLE_TIP)
         self._convergence_view = self._plot_view(
             self._convergence_plots, curve_options=self._convergence_curve_options,
@@ -1107,9 +1098,7 @@ class ResultsPanel(QtWidgets.QWidget):
             empty_text='run a study with mesh refinement first')
         self._convergence_view.plot_combo.setToolTip('The watched derived value, or the relative error estimates, '
                                                      'versus the number of cells')
-        self._richardson_label = selectable(QtWidgets.QLabel())
-        self._richardson_label.setWordWrap(True)
-        self._richardson_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+        self._richardson_label = wrapped_label(text_format=QtCore.Qt.TextFormat.PlainText)
         self._keep_mesh_button = QtWidgets.QPushButton('Keep adapted mesh')
         self._keep_mesh_button.setToolTip(rich_tooltip(_KEEP_MESH_TIP))
         self._keep_mesh_button.setEnabled(False)
@@ -1281,8 +1270,7 @@ class ResultsPanel(QtWidgets.QWidget):
     def _build_profile_tab(self):
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
-        self._profile_info = selectable(QtWidgets.QLabel(_PROFILE_HINT))
-        self._profile_info.setWordWrap(True)
+        self._profile_info = wrapped_label(_PROFILE_HINT)
         self._profile_combo = QtWidgets.QComboBox()
         self._profile_combo.setToolTip(rich_tooltip('The line drawn on the field view, or the line of an analytic '
                                                     'curve (its field from the final state, with the analytic curve '
@@ -1342,13 +1330,7 @@ class ResultsPanel(QtWidgets.QWidget):
     def _fill_combo(combo, labels, select=None):
         """Refill a combo without firing signals; select = index to show (None: the previous one), the first item
         when out of range."""
-        index = combo.currentIndex() if select is None else select
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItems(labels)
-        if 0 <= index < len(labels):
-            combo.setCurrentIndex(index)
-        combo.blockSignals(False)
+        fill_combo(combo, labels, combo.currentIndex() if select is None else select)
 
     @classmethod
     def _fill_key_combo(cls, combo, keys, current_key, leading_labels=()):

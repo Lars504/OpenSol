@@ -7,9 +7,10 @@ import numpy as np
 
 from ...core.constants import C0, FACES
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import skip_without_cudss
+from ...model.selftest_helpers import skip_result, skip_without_cudss
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec)
+from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'
@@ -19,9 +20,7 @@ _N_EFF_COLUMN = 1       # mode_table row index of n_eff
 
 def _report(normalized, details):
     """Self-test result of {item: error / its tolerance}: measured = error = the worst item, tolerance 1."""
-    worst = max(normalized, key=lambda item: math.inf if math.isnan(normalized[item]) else normalized[item])
-    return {'measured': normalized[worst], 'expected': 0.0, 'error': normalized[worst], 'tolerance': 1.0,
-            'details': {**details, 'normalized_errors': normalized, 'worst_item': worst}}
+    return normalized_result(normalized, dict(details))
 
 
 def _bisect(function, low, high, steps=200):
@@ -532,8 +531,7 @@ def _check_cudss_box(results_by_name):
     """Every SuperLU mode-table n_eff matched by the nearest cudss_mixed one; the eigen role factorised an LDL^T on
     the device (role counters)."""
     if 'cudss_mixed' not in results_by_name:
-        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 1.0,
-                'details': {'skipped': 'nvmath-python (cuDSS) is not installed'}}
+        return skip_result('nvmath-python (cuDSS) is not installed')
     n_eff = {name: [float(row[_N_EFF_COLUMN]) for row in results_by_name[name].result(_PHYSICS, _TABLE)['rows']]
              for name in ('superlu', 'cudss_mixed')}
     if not n_eff['superlu']:

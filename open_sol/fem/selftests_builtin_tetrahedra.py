@@ -8,6 +8,7 @@ import numpy as np
 from ..model.schema import SelfTestCase
 from ..model.selftest_helpers import SubChecks, checks_result
 from ..model.spec import DomainSpec, GeometrySpec, MeshFaceSizeSpec, MeshSpec, ModelSpec, RefinementSpec
+from .selftests_mesh_sizes3d import _refusal_text
 
 _UM = 1e-6
 _SIZE = (4.0 * _UM, 1.0 * _UM, 0.6 * _UM)
@@ -39,12 +40,6 @@ def _graded_mesh_spec(**changes):
     return MeshSpec(**values)
 
 
-def _face_area(mesh, faces) -> float:
-    corners = mesh.points[mesh.faces[faces]]
-    return float(0.5 * np.linalg.norm(np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0]),
-                                      axis=1).sum())
-
-
 def _box_area(box) -> float:
     a, b, c = (box[f'{axis}1'] - box[f'{axis}0'] for axis in 'xyz')
     return 2.0 * (a * b + b * c + c * a)
@@ -67,6 +62,7 @@ def _graded_checks(add, registry):
     from ..model.geometry import resolve_geometry
     from ..model.meshing import estimate_mesh, graded_window_edges, tetrahedron_sizing
     from ..model.tetrahedral_meshing import tetrahedralize
+    from .assembly3d import face_areas_3d
 
     mesh_spec = _graded_mesh_spec()
     spec = _spec(mesh_spec)
@@ -75,7 +71,7 @@ def _graded_checks(add, registry):
     counts = {'elements': (estimate.n_elements, mesh.n_elements), 'nodes': (estimate.n_nodes, mesh.n_points),
               'edges': (estimate.n_edges, mesh.n_edges), 'faces': (estimate.n_faces, mesh.n_faces)}
     add('estimate_equals_built', all(planned == built for planned, built in counts.values()), counts)
-    areas = {name: (_face_area(mesh, mesh.object_faces[name]), _box_area(box))
+    areas = {name: (float(face_areas_3d(mesh, mesh.object_faces[name]).sum()), _box_area(box))
              for name, box in (('bar', _BAR), ('pad', _PAD))}
     add('object_faces_conform', all(abs(found - exact) <= _AREA_RTOL * exact for found, exact in areas.values()),
         areas)
@@ -124,16 +120,11 @@ def _refusal_checks(add, registry):
     from ..model.meshing import tetrahedron_sizing
     from ..model.spec import MeshAxisSpec
 
-    refused = {}
     cases = {'size_points_builtin': _graded_mesh_spec(size_points=[[1.0 * _UM, 0.5 * _UM, 0.3 * _UM, _FINE]]),
              'axes_gmsh': _graded_mesh_spec(mesher='gmsh', refinements=[], axes=[MeshAxisSpec('z')]),
              'per_axis_gmsh': _graded_mesh_spec(mesher='gmsh')}
-    for name, mesh_spec in cases.items():
-        try:
-            tetrahedron_sizing(_spec(mesh_spec), mesh_spec, {}, registry)
-            refused[name] = ''
-        except ValueError as exc:
-            refused[name] = str(exc)
+    refused = {name: _refusal_text(lambda: tetrahedron_sizing(_spec(mesh_spec), mesh_spec, {}, registry))
+               for name, mesh_spec in cases.items()}
     add('refusals', all(refused.values()), refused)
 
 

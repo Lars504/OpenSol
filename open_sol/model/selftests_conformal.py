@@ -7,7 +7,7 @@ import numpy as np
 
 from ..core.constants import C0
 from .schema import SelfTestCase
-from .selftest_helpers import SubChecks, with_exact_cg
+from .selftest_helpers import failed_count_result, with_exact_cg
 from .spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                    SolverDefaultsSpec, StudySpec)
 
@@ -56,14 +56,6 @@ _ANNULUS_TOLERANCE = 5e-3              # cut cells: second order (Shortley-Welle
 _SOURCE_DENSITY = 1e15                 # W/m^3: rise Q b^2 ln(b / a) / (2 k) - Q (b^2 - a^2) / (4 k) ~ 10 K at k = 1
 _INSULATED_TOLERANCE = 5e-3            # apertures + merged volumes: measured 4.2e-3; staircase 5.7e-2 (no longer run)
 _MERGED_AREA_TOLERANCE = 2e-3          # CPU: free area kept by the merged volume fractions around the disc (estimated)
-
-
-def _failed_count_result(checks, details=None):
-    """Self-test result of named sub-checks {name: (value, tolerance)}: error = number failed, tolerance 0."""
-    entries = SubChecks()
-    for name, (value, tolerance) in checks.items():
-        entries.add_error(name, value, tolerance)
-    return entries.result(**(details or {}))
 
 
 # ---- cut geometry ----
@@ -130,7 +122,7 @@ def _check_cut_geometry(results_by_name):
     edges = np.arange(n + 1, dtype=np.float64)
     _, _, volume_fraction = insulated_wall_geometry(outside, outside, edges, edges, np.ones((n, n)), disc)
     merged_area = float(np.sum(volume_fraction[outside]))
-    return _failed_count_result({
+    return failed_count_result({
         'face_fractions': (fraction_error, _FRACTION_TOLERANCE),
         'cell_areas': (float(np.max(np.abs(areas - exact))), _AREA_TOLERANCE),
         'disc_area': (abs(disc_area / (math.pi * radius ** 2) - 1.0), _DISC_AREA_TOLERANCE),
@@ -291,7 +283,7 @@ def _check_operator(results_by_name):
         details[polarization] = {'conformal_error': conformal_error,
                                  'largest_eigenvalue_dt2_over_4': float(conformal_values[-1]) * dt ** 2 / 4.0,
                                  'coefficients': coefficients.summary()}
-    return _failed_count_result(checks, details)
+    return failed_count_result(checks, details)
 
 
 # ---- annulus ----
@@ -315,13 +307,17 @@ def _annulus_spec():
         study=StudySpec(type='stationary')))
 
 
-def _annulus_error(results):
-    """max |T - T_exact| over the free cells (a < r < b) / (T_inner - T_outer), T_exact the logarithmic profile."""
+def _heat_radial(results):
+    """(T [K], distance r [m] from _HEAT_CENTRE) of the heat window cells, float64."""
     field = results.field(f'{_HEAT}.T')
-    temperature = np.asarray(field.values, dtype=np.float64)
     x = np.asarray(field.x_centers, dtype=np.float64)[:, None] - _HEAT_CENTRE[0]
     y = np.asarray(field.y_centers, dtype=np.float64)[None, :] - _HEAT_CENTRE[1]
-    radius = np.sqrt(x ** 2 + y ** 2)
+    return np.asarray(field.values, dtype=np.float64), np.sqrt(x ** 2 + y ** 2)
+
+
+def _annulus_error(results):
+    """max |T - T_exact| over the free cells (a < r < b) / (T_inner - T_outer), T_exact the logarithmic profile."""
+    temperature, radius = _heat_radial(results)
     free = (radius > _INNER_RADIUS) & (radius < _OUTER_RADIUS)
     shape = np.log(np.where(free, radius, _INNER_RADIUS) / _INNER_RADIUS) / math.log(_OUTER_RADIUS / _INNER_RADIUS)
     exact = _T_INNER + (_T_OUTER - _T_INNER) * shape
@@ -357,11 +353,7 @@ def _insulated_spec():
 def _insulated_error(results):
     """max |T - T_exact| over the cells a < r < b / the rise T(b) - T_a, T_exact = T_a + Q (a^2 - r^2) / (4 k) + Q b^2
     ln(r / a) / (2 k) (dT/dr = 0 on r = b)."""
-    field = results.field(f'{_HEAT}.T')
-    temperature = np.asarray(field.values, dtype=np.float64)
-    x = np.asarray(field.x_centers, dtype=np.float64)[:, None] - _HEAT_CENTRE[0]
-    y = np.asarray(field.y_centers, dtype=np.float64)[None, :] - _HEAT_CENTRE[1]
-    radius = np.sqrt(x ** 2 + y ** 2)
+    temperature, radius = _heat_radial(results)
     free = (radius > _INNER_RADIUS) & (radius < _OUTER_RADIUS)
 
     def exact(r):

@@ -494,10 +494,8 @@ def _check_rigid_modes(results_by_name):
                 message = None
             except ValueError as exc:
                 message = str(exc)
-            if message_parts is None:
-                passed = message is None
-            else:
-                passed = message is not None and all(part in message for part in message_parts)
+            passed = (message is None if message_parts is None
+                      else message is not None and all(part in message for part in message_parts))
             failures += 0 if passed else 1
             outcomes[f'{backend}.{name}'] = {'passed': passed, 'message': message, 'expected_parts': message_parts}
     return {'measured': len(outcomes) - failures, 'expected': len(outcomes), 'error': float(failures),

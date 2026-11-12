@@ -72,7 +72,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     # radius_min > 0, or the origin (radius_min 0, set 'pmc': zero face length, no wall row); x_hi cpml (cylindrical PML,
     # complex r) / pec / pmc; y faces pec / pmc / mirrors (rays are mirror lines: C_nv) or periodic / bloch on a domain
     # whose angle_wrap joins them, bloch_ky = the azimuthal order m [1/rad] (F(phi + span) = F(phi) e^{-j m span}: the
-    # C_N sector phase of COMSOL's Floquet periodicity; the domain's angle_wrap only says the faces are joined).
+    # C_N sector phase of a standard Floquet periodicity; the domain's angle_wrap only says the faces are joined).
     coordinate_grids = ('cartesian', 'polar')
 
     def __init__(self, domain, polarization='ez', boundary_config=None, wavelength=1.55e-6, linear_solver='auto',

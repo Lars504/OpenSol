@@ -125,7 +125,7 @@ class CrossSectionMode:
     hy: np.ndarray              # hi-x faces
     hz: np.ndarray              # corners (i+1/2, j+1/2)
     power: float                # 1/2 Re sum (E x H*).z dA [W] of the whole mode: +-1, ~0 when evanescent
-    te_fraction: float          # sum |E_x|^2 dA / sum (|E_x|^2 + |E_y|^2) dA (Lumerical convention)
+    te_fraction: float          # sum |E_x|^2 dA / sum (|E_x|^2 + |E_y|^2) dA (the industry-standard convention)
     effective_area: float       # [m^2] (sum |E|^2 dA)^2 / sum |E|^4 dA at the cell centres, whole mode
     pml_fraction: float         # share of the |h|^2 dA energy on PML-stretched points
     x_face_area: np.ndarray     # (nx, ny) [m^2] dual area of the E_x / H_y points inside the walls (power sums)

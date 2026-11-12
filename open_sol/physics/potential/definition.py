@@ -474,13 +474,17 @@ def _electrolyte_anchors(vctx, feature):
     return values is not None and screening_coefficient(values['concentrations'], values['valences'], 1.0) > 0.0
 
 
+def _nonlinear_electrolytes(vctx, physics_spec):
+    """The enabled electrolyte features of physics_spec whose values resolve to model 'nonlinear'."""
+    return [feature for feature in physics_spec.features
+            if feature.enabled and feature.type == _ELECTROLYTE_FEATURE
+            and (vctx.values(_ELECTROLYTE_PARAMS, feature.params) or {}).get('model') == 'nonlinear']
+
+
 def _nonlinear_precision_issues(vctx, physics_spec, settings_values, path):
     """Warning: a nonlinear electrolyte with a single-precision CG and a Newton tolerance below what float32 V can
     resolve."""
-    nonlinear = any(feature.enabled and feature.type == _ELECTROLYTE_FEATURE
-                    and (vctx.values(_ELECTROLYTE_PARAMS, feature.params) or {}).get('model') == 'nonlinear'
-                    for feature in physics_spec.features)
-    if not nonlinear or validated_linear_precision(vctx, physics_spec) != 'float32' \
+    if not _nonlinear_electrolytes(vctx, physics_spec) or validated_linear_precision(vctx, physics_spec) != 'float32' \
             or settings_values['nonlinear_tolerance'] >= _FLOAT32_NEWTON_TOLERANCE:
         return []
     return [Issue('warning', path, "nonlinear electrolyte with a single-precision linear solver: each Newton step's "
@@ -603,10 +607,15 @@ def _validate_driven(vctx, physics_spec, feature_spec, values):
                   '0 V; use waveform none for a constant voltage')]
 
 
+def _is_driven(feature):
+    """True for an enabled voltage / terminal feature with a waveform (raw params)."""
+    return feature.enabled and feature.type in _ANCHOR_FEATURES \
+        and feature.params.get('waveform', 'none') not in (None, 'none')
+
+
 def _driven_issues(vctx, physics_spec, path):
     """Error: driven voltages / terminals together with an enabled electrolyte (no superposition)."""
-    driven = any(feature.enabled and feature.type in _ANCHOR_FEATURES
-                 and feature.params.get('waveform', 'none') not in (None, 'none') for feature in physics_spec.features)
+    driven = any(_is_driven(feature) for feature in physics_spec.features)
     electrolyte = any(feature.enabled and feature.type == _ELECTROLYTE_FEATURE for feature in physics_spec.features)
     if driven and electrolyte:
         return [Issue('error', path, 'a voltage or terminal with a waveform cannot be combined with an electrolyte: '
@@ -619,9 +628,7 @@ def _driven_waveform_count(physics_spec):
     """Distinct (waveform, frequency, bandwidth) entries of the enabled driven voltages / terminals (raw params)."""
     return len({(feature.params.get('waveform'), str(feature.params.get('frequency')),
                  str(feature.params.get('bandwidth')))
-                for feature in physics_spec.features
-                if feature.enabled and feature.type in _ANCHOR_FEATURES
-                and feature.params.get('waveform', 'none') not in (None, 'none')})
+                for feature in physics_spec.features if _is_driven(feature)})
 
 
 # ---- feature apply / result callbacks (worker thread, GPU) ----
@@ -825,9 +832,7 @@ def _make_validate(kind):
             issues.extend(Issue('error', feature_path(physics_spec, feature),
                                 f'a nonlinear electrolyte needs azimuthal_order 0: the Boltzmann charge of an '
                                 f"order-{order} potential is no single order (use model 'linear')")
-                          for feature in physics_spec.features
-                          if feature.enabled and feature.type == _ELECTROLYTE_FEATURE
-                          and (vctx.values(_ELECTROLYTE_PARAMS, feature.params) or {}).get('model') == 'nonlinear')
+                          for feature in _nonlinear_electrolytes(vctx, physics_spec))
         issues.extend(mapped_domain_issues(vctx, physics_spec, frozenset({flux_feature}), names.property_prefix))
         if on_triangles(vctx, physics_spec):
             issues.extend(_triangle_issues(vctx, physics_spec, order, path))
@@ -845,14 +850,10 @@ def _triangle_issues(vctx, physics_spec, order, path):
     issues.extend(Issue('error', feature_path(physics_spec, feature),
                         "a nonlinear electrolyte needs a tensor mesh (rectangular cells); on triangles use model "
                         "'linear'")
-                  for feature in physics_spec.features
-                  if feature.enabled and feature.type == _ELECTROLYTE_FEATURE
-                  and (vctx.values(_ELECTROLYTE_PARAMS, feature.params) or {}).get('model') == 'nonlinear')
+                  for feature in _nonlinear_electrolytes(vctx, physics_spec))
     issues.extend(Issue('error', feature_path(physics_spec, feature),
                         'a voltage waveform needs a tensor mesh (rectangular cells); on triangles use waveform none')
-                  for feature in physics_spec.features
-                  if feature.enabled and feature.type in _ANCHOR_FEATURES and isinstance(feature.params, dict)
-                  and feature.params.get('waveform', 'none') not in (None, 'none'))
+                  for feature in physics_spec.features if isinstance(feature.params, dict) and _is_driven(feature))
     return issues
 
 
@@ -875,9 +876,7 @@ def _three_d_issues(vctx, physics_spec, settings_values, names, path):
                                            'a full domain'))
     issues.extend(Issue('error', feature_path(physics_spec, feature),
                         'a voltage waveform needs a 2D model on a tensor mesh; in 3D use waveform none')
-                  for feature in physics_spec.features
-                  if feature.enabled and feature.type in _ANCHOR_FEATURES and isinstance(feature.params, dict)
-                  and feature.params.get('waveform', 'none') not in (None, 'none'))
+                  for feature in physics_spec.features if isinstance(feature.params, dict) and _is_driven(feature))
     for material_name in cross_term_materials(vctx, names.property_prefix):
         issues.append(Issue('error', ('material', material_name),
                             f"material '{material_name}' sets {names.property_prefix}_xy, which {names.label} in 3D "
@@ -952,13 +951,16 @@ def _make_memory_estimate(kind):
     return estimate
 
 
+def _has_nonlinear_electrolyte(physics_spec) -> bool:
+    """True when an enabled electrolyte feature has model 'nonlinear' (raw params)."""
+    return any(feature.enabled and feature.type == _ELECTROLYTE_FEATURE and isinstance(feature.params, dict)
+               and feature.params.get('model', 'linear') == 'nonlinear' for feature in physics_spec.features)
+
+
 def _operator_changes(context, spec) -> bool:
     """Whether the run re-assembles the operator: a nonlinear electrolyte (Newton) or a coefficient of the kind that
     follows a state field (a piezo / coupling source leaves the build's factor)."""
-    nonlinear_electrolyte = any(
-        feature.enabled and feature.type == _ELECTROLYTE_FEATURE and isinstance(feature.params, dict)
-        and feature.params.get('model', 'linear') == 'nonlinear' for feature in context.physics_spec.features)
-    return nonlinear_electrolyte or material_follows_state(
+    return _has_nonlinear_electrolyte(context.physics_spec) or material_follows_state(
         context, tuple(name for name, arrays in POTENTIAL_PROPERTY_ARRAYS.items()
                        if set(arrays) & set(spec.coefficient_arrays)))
 
@@ -995,9 +997,6 @@ def _make_time_estimate(kind):
     spec = KINDS[kind]
 
     def estimate(settings_values, mesh, context):
-        nonlinear_electrolyte = any(
-            feature.enabled and feature.type == _ELECTROLYTE_FEATURE and isinstance(feature.params, dict)
-            and feature.params.get('model', 'linear') == 'nonlinear' for feature in context.physics_spec.features)
         operator_changes = _operator_changes(context, spec)
         if mesh.kind in ('triangles', 'tetrahedra'):
             unknowns, entries = fem_time_system(mesh, element_order(settings_values))
@@ -1012,7 +1011,7 @@ def _make_time_estimate(kind):
         missing = []
         if spec.with_ions and _driven_waveform_count(context.physics_spec):
             missing.append('driven terminal basis solves (one per waveform after each operator change)')
-        if nonlinear_electrolyte:
+        if _has_nonlinear_electrolyte(context.physics_spec):
             missing.append('nonlinear electrolyte Newton iterations (one solve each; priced as one solve)')
         return te.combine((linear, te.TimeEstimate(not_estimated=tuple(missing)))) if missing else linear
     return estimate

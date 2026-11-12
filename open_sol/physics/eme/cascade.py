@@ -47,12 +47,6 @@ def append_phase(smatrix, phase):
                    phase[:, None] * smatrix.s22 * phase[None, :])
 
 
-def prepend_phase(phase, smatrix):
-    """A section of propagation factors phase (N,) followed by smatrix."""
-    return SMatrix(phase[:, None] * smatrix.s11 * phase[None, :], phase[:, None] * smatrix.s12,
-                   smatrix.s21 * phase[None, :], smatrix.s22)
-
-
 def smatrix_power(smatrix, count):
     """smatrix cascaded `count` (>= 0) times with itself (star products by repeated squaring); equal port mode counts."""
     count = int(count)
