@@ -9,8 +9,9 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES_3D
-from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES,
-                                     MemoryEstimate, combine, host_real_lu_bytes)
+from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
+                                     FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES, MemoryEstimate, combine,
+                                     host_counted_lu_bytes, host_real_lu_bytes)
 from ...fem.diffusion import lagrange_entries_per_dof
 from ...core.kernels import numba_available
 from ...fem.elasticity3d import (TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRADIENT_CACHE_BYTES,
@@ -625,19 +626,26 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
 
 
 def host_factor_items(name, superlu_label, superlu_bytes, n_unknowns, entries, symmetric=True,
-                      complex_values=False) -> tuple:
+                      complex_values=False, fill=None) -> tuple:
     """Host items of a factor booked by its SuperLU heuristic: ((superlu_label, bytes),) for any name but a MUMPS /
     PARDISO back end / factorization (host_direct.HOST_DIRECT_BACK_ENDS; eigen names through eigen_host_direct first),
     which gets the bytes x host_direct.superlu_bytes_scale with the library's factor kind in place of 'SuperLU L + U'
     in the label, plus its own copies beside the library factor (host_direct.solver_host_bytes of n_unknowns and the
     stored entries: equilibrated operator, row scale; mixed: GMRES vectors), as fem_system_estimate books them
-    (uncalibrated; also used by definition)."""
+    (uncalibrated; also used by definition). fill: a counted cudss_factor.FactorFill (factor_fill on a built mesh)
+    replaces the SuperLU heuristic bytes for MUMPS / PARDISO (nested-dissection orderings, as the count)."""
     if name not in HOST_DIRECT_BACK_ENDS:
         return ((superlu_label, int(superlu_bytes)),)
     library = factor_label(name)
     kind = f"{library} {'LDL^T' if symmetric else 'LU'}"
     label = superlu_label.replace('SuperLU L + U', kind).replace('SuperLU', kind)
-    return ((f'{label} (SuperLU heuristic scaled, uncalibrated)',
+    counted_entries = getattr(fill, 'entries', None)
+    if counted_entries is not None:
+        superlu_bytes = host_counted_lu_bytes(counted_entries, n_unknowns)   # complex128 L + U of the counted triangle
+        if not complex_values:
+            superlu_bytes = superlu_bytes * FLOAT64_CSR_ENTRY_BYTES / COMPLEX128_CSR_ENTRY_BYTES
+        label = label.replace('heuristic', 'counted fill')
+    return ((f"{label} ({'' if counted_entries is not None else 'SuperLU heuristic '}scaled, uncalibrated)",
              int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=complex_values))),
             (f'{library} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
              solver_host_bytes(n_unknowns, entries, complex_values=complex_values, symmetric=symmetric,
@@ -1252,10 +1260,10 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
         parts = [context.solver_work('eigen', unknowns=unknowns, eigenpairs=eigenpairs, plan_reused=True,
                                      pencil_terms=3 if loaded else 2, **shift_work, **factor)]
         if _static_state_solved(settings_values, context, context.study.type == EIGENFREQUENCY_STUDY):
-            # stress stiffening: solve_static_state factorises K_ff and solves once before the pencils
+            # stress stiffening: solve_static_state factorises K_ff (planned from the host CSR) and solves once
+            # before the pencils
             parts.append(context.solver_work('linear', unknowns=unknowns, solves=1.0, solves_kind='exact',
-                                             factorizations=1.0, factorizations_kind='exact', device_values=True,
-                                             **scales))
+                                             factorizations=1.0, factorizations_kind='exact', **scales))
         films = _squeeze_film_time(mesh, context)
         return te.combine(parts + ([] if films is None else [films]))
     if context.study.type == FREQUENCY_RESPONSE_STUDY:   # the study's harmonic_factorizations (sweep_method)
@@ -1273,12 +1281,12 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     if nonlinear:   # every static solve is a Newton loop: a tangent factor per iteration
         return _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind, per_step)
     refactor = stiffness_follows_state(context)
-    # system_fem3d's DiffusionDirectSolver factorises the device CSR (piezoelectric: PiezoSystem's own route)
+    # system_fem3d's DiffusionDirectSolver factorises the host K_ff: planned from it, later ones upload its values
+    # (piezoelectric: PiezoSystem's own host route)
     return context.solver_work('linear', unknowns=unknowns, solves=solves, **scales,
                                solves_kind=kind, factorizations=solves if refactor else 1.0,
                                factorizations_kind=kind if refactor else 'exact', per_step=per_step,
-                               factorizations_per_step=per_step and refactor,
-                               device_values=not settings_values.get('piezoelectric'))
+                               factorizations_per_step=per_step and refactor)
 
 
 def _squeeze_film_unknowns(mesh) -> int:
@@ -1417,8 +1425,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     # fills far less than a compact 3D mesh), else the 3D growth law
     fill = factor_fill(mesh, order, factored, 4 if piezoelectric else 3, 3)
     if static_solve:
-        # system_fem3d uploads the reduced K_ff (or tangent) CSR with the first solve; in an eigenfrequency study
-        # solve_static_state releases that factor before the pencil's is planned
+        # system_fem3d plans the K_ff factor from the host CSR at the first solve (cuDSS: its lower triangle on the
+        # device); in an eigenfrequency study solve_static_state releases that factor before the pencil's is planned
         held, passing, factors = linear_factor_items(factored, factored_entries, linear_back_end, on_gpu, fill,
                                                      kept=not eigenfrequency)
         run_items += held
@@ -1503,7 +1511,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                                 f'SuperLU factor of {pencil} ({kind}, heuristic)',
                                                 complex_factor * factor_bytes, factored, factored_entries,
                                                 complex_values=complex_factor > 1,
-                                                symmetric=_trivial_bloch_phase(settings_values)))
+                                                symmetric=_trivial_bloch_phase(settings_values), fill=fill))
         # a PML, loss or resistive load: the complex symmetric pencil runs eigs_shifted (device Krylov-Schur on a
         # DevicePencil); a real or Hermitian (Bloch phase) one eigsh_shifted
         pml = bool(_pml_faces(settings_values))
@@ -1516,7 +1524,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
             term_bytes=FLOAT64_BYTES if loaded else eigen_bytes,
             # a Bloch phase: Hermitian or not vouched (the device check runs and fails), full terms
             symmetric=_trivial_bloch_phase(settings_values), checked=not _trivial_bloch_phase(settings_values),
-            dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis)
+            dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis,
+            # the elastic mass couples one component per row (piezoelectric: the pencil's count, an upper bound)
+            mass_entries=None if piezoelectric else factored_entries // 3)
         host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
             context, factored, rigid_motions, pml, basis_on_device))
         host_items.extend(eigen_host_items)
@@ -1539,13 +1549,14 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             6 * _COMPLEX_BYTES * factored)])
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
-                                                2 * factor_bytes, factored, factored_entries, complex_values=True))
+                                                2 * factor_bytes, factored, factored_entries, complex_values=True,
+                                                fill=fill))
         host_items.extend(reduced_sweep_memory_items(context, factored, factored_entries))   # adaptive / modal
     elif host_factor:
         what = 'the coupled operator' if piezoelectric else 'K'
         # piezoelectric: the coupled operator is real symmetric indefinite (LDL^T on MUMPS / PARDISO as well)
         host_items.extend(host_factor_items(linear_back_end, f'SuperLU factor of {what} (float64, heuristic)',
-                                            factor_bytes, factored, factored_entries))
+                                            factor_bytes, factored, factored_entries, fill=fill))
     return MemoryEstimate.from_items(device_items, host_items=host_items, run_items=run_items,
                                      transient_items=transient_items, **cudss_external(factors))
 

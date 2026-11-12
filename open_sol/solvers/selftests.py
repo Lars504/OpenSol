@@ -1108,13 +1108,22 @@ _PRECISION_CASES = (
     ('heat_node_same_precision', 'heat', 'linear', 'stationary', 'single', ('pcg', {'precision': 'single'}), 'gpu',
      ('pcg', 'single', False)),
     ('heat_cpu_direct', 'heat', 'linear', 'stationary', 'single', None, 'cpu', ('sparse_direct', 'double', True)),
-    ('solid_single', 'solid_mechanics', 'linear', 'stationary', 'single', None, 'gpu', ('pcg', 'single', False)),
-    # solid_mechanics (tensor): its role accepts mixed, Automatic on the gpu backend is pcg mixed (as the 3D type)
-    ('solid_mixed', 'solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
-    ('solid_auto_gpu_mixed', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'gpu', ('pcg', 'mixed', False)),
+    # solid_mechanics (tensor): stationary on the gpu backend = the sparse_direct study default (double only, so single /
+    # mixed are listed as ignored); its pcg role accepts mixed, Automatic outside the study defaults on the gpu backend is
+    # pcg mixed (as the 3D type), and a pcg node setting no precision takes that one in a stationary study too
+    ('solid_single', 'solid_mechanics', 'linear', 'stationary', 'single', None, 'gpu', ('sparse_direct', 'double', True)),
+    ('solid_mixed', 'solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu', ('sparse_direct', 'double', True)),
+    ('solid_auto_gpu_direct', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'gpu',
+     ('sparse_direct', 'double', False)),
+    ('solid_modal_auto_gpu_mixed', 'solid_mechanics', 'linear', 'eigenfrequency', 'auto', None, 'gpu',
+     ('pcg', 'mixed', False)),
+    ('solid_modal_single', 'solid_mechanics', 'linear', 'eigenfrequency', 'single', None, 'gpu',
+     ('pcg', 'single', False)),
+    ('solid_node_takes_automatic_mixed', 'solid_mechanics', 'linear', 'stationary', 'auto',
+     ('pcg', {'tolerance': 1e-10}), 'gpu', ('pcg', 'mixed', False)),
     ('solid_auto_cpu_double', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu',
      ('pcg', 'double', False)),
-    ('solid_default_double_wins', 'solid_mechanics', 'linear', 'stationary', 'double', None, 'gpu',
+    ('solid_default_double_wins', 'solid_mechanics', 'linear', 'eigenfrequency', 'double', None, 'gpu',
      ('pcg', 'double', False)),
     ('solid_3d_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
     ('solid_3d_auto_gpu_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'gpu',
@@ -1214,6 +1223,20 @@ def _check_study_default_fit(results_by_name):
         'validate_info_line': len(infos) == (1 if switched else 0),
         'node_never_candidate': study_default_roles(node_spec, registry, {}) == frozenset(),
     }
+    # the 2D solid's stationary gpu default (cuDSS factor of A_solve): over the budget it resolves pcg mixed again
+    solid_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', None, 'gpu')
+    solid_meshes = estimate_meshes(solid_spec, {}, registry)
+    solid_factor = estimate_memory(solid_spec, {}, registry, solid_meshes)
+    solid_plain = estimate_memory(solid_spec, {}, registry, solid_meshes, plain_roles=expected_roles)
+    _, solid_tight = fitted_memory_estimate(solid_spec, {}, registry, solid_meshes, solid_factor.device_peak - 1)
+    solid_resolved = resolved_solvers(solid_spec, registry, solid_spec.physics[0], 'stationary', {},
+                                      solid_tight)['linear']
+    checks.update({
+        'solid_candidates': study_default_roles(solid_spec, registry, {}) == expected_roles,
+        'solid_factor_dominates': not switched or solid_plain.device_peak < solid_factor.device_peak,
+        'solid_tight_switches': solid_tight == expected_roles,
+        'solid_tight_resolves_pcg': solid_resolved.solver_type.name == ('pcg' if switched else 'sparse_direct'),
+    })
     failed = [name for name, passed in checks.items() if not passed]
     return {'measured': len(failed), 'expected': 0, 'error': float(len(failed)), 'tolerance': 0.0,
             'details': {'failed': failed, 'cudss_available': switched,
@@ -1239,7 +1262,7 @@ _MULTIGRID_CASES = (
     ('heat_node_multigrid_single', 'heat', 'auto', ('pcg', {'precision': 'single', 'preconditioner': 'multigrid'}),
      'gpu', ('pcg', 'single', 'multigrid')),
     ('heat_cpu_direct', 'heat', 'auto', None, 'cpu', ('sparse_direct', 'double', None)),
-    ('solid_auto_jacobi', 'solid_mechanics', 'auto', None, 'gpu', ('pcg', 'mixed', 'jacobi')),
+    ('solid_node_jacobi', 'solid_mechanics', 'auto', ('pcg', {}), 'gpu', ('pcg', 'mixed', 'jacobi')),
 )
 # the same rows in a 3D model (grid 'tensor_3d': Automatic pcg multigrid on the cpu too)
 _MULTIGRID_3D_CASES = (
@@ -1560,6 +1583,46 @@ def _host_direct_spd_checks(back_end, spd, changed, rhs, failed, errors, details
         failed.append(f'{back_end}_released')
 
 
+def _host_direct_kept_checks(back_end, spd, changed, rhs, failed, errors, details):
+    """host_analyses_kept: a factor released inside the block is parked and a new factor object of that pattern adopts
+    it (no analysis, a reused one; solve against spsolve); another pattern misses (one analysis, the parked ones
+    released first); the block's end releases what is parked; outside it release() parks nothing."""
+    import scipy.sparse.linalg
+    from . import host_direct
+    from .host_direct import host_analyses_kept, host_direct_factorization, kept_analysis_bytes
+    if host_direct._kept_analyses is not None:
+        failed.append(f'{back_end}_kept_block_open_before_check')
+        return
+    smaller = spd[:-1, :-1].tocsr()   # another pattern
+    record = {}
+    with host_analyses_kept():
+        first = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+        first.release()
+        record['parked'] = (len(host_direct._kept_analyses), kept_analysis_bytes())
+        second = host_direct_factorization(changed, back_end, real=True, positive_definite=True)
+        solution = second.solve_host(rhs)
+        errors[f'{back_end}_kept'] = norm_relative_error(solution, scipy.sparse.linalg.spsolve(changed.tocsc(), rhs))
+        record['adopted'] = (second.n_analyses, second.last_analysis_kept, second.last_plan_reused,
+                             len(host_direct._kept_analyses))
+        second.release()
+        other = host_direct_factorization(smaller, back_end, real=True, positive_definite=True)
+        record['missed'] = (other.n_analyses, other.last_analysis_kept, len(host_direct._kept_analyses))
+        other.release()
+    record['after_block'] = host_direct._kept_analyses is None
+    outside = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+    outside.release()
+    record['outside'] = (host_direct._kept_analyses is None, outside.valid)
+    if record['parked'][0] != 1 or record['parked'][1] <= 0:
+        failed.append(f'{back_end}_kept_parks')
+    if record['adopted'] != (0, True, True, 0):
+        failed.append(f'{back_end}_kept_adopts')
+    if record['missed'] != (1, False, 0):
+        failed.append(f'{back_end}_kept_miss_releases')
+    if not record['after_block'] or record['outside'] != (True, False):
+        failed.append(f'{back_end}_kept_scoped')
+    details[f'{back_end}_kept'] = record
+
+
 def _host_direct_general_checks(back_end, operators, rhs, failed, errors, details):
     """sparse_direct factorize on the cpu (scipy operators, host_arrays): complex LU (solve, transposed solve, GMRES on
     the factor of a perturbed operator), the symmetrizer LDL^T of D A (solve and transposed solve), a real LU by
@@ -1767,6 +1830,7 @@ def _check_host_direct(results_by_name):
         if library_of(back_end) not in libraries:
             continue
         _host_direct_spd_checks(back_end, spd, changed, real_rhs, failed, errors, details)
+        _host_direct_kept_checks(back_end, spd, changed, real_rhs, failed, errors, details)
         _host_direct_general_checks(back_end, operators, complex_rhs, failed, errors, details)
         _host_direct_pencil_checks(back_end, spd, complex_rhs, failed, errors, details)
         _host_direct_inertia_checks(back_end, failed, details)
@@ -1818,6 +1882,69 @@ def _check_host_scale_numba(_):
     timings['real'] = (*twins(None, np.float64), (real_values, np.zeros(real_values.size)), *_SCALE_CALLS)
     result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
     result['details']['stored_entries'] = int(indices.size)
+    return result
+
+
+_MERGE_ROWS = 40_000        # rows of the random base pattern of solver_pattern_merge_numba
+_MERGE_PER_ROW = 60         # base entries per row (strictly increasing columns, gaps of 1 - 3)
+
+
+def _check_pattern_merge_numba(_):
+    """numba vs numpy arpack_shift_invert.merge_positions: a random sub-pattern (every entry inside) and the same
+    shifted by one column (entries inside and outside)."""
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    from .arpack_shift_invert import merge_positions
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 0.0,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    rng = np.random.default_rng(_SEED)
+    rows = np.arange(_MERGE_ROWS)
+    gaps = rng.integers(1, 4, (_MERGE_ROWS, _MERGE_PER_ROW))
+    start = (7 * rows) % (_MERGE_ROWS - 4 * _MERGE_PER_ROW)
+    columns = start[:, None] + np.cumsum(gaps, axis=1)
+    base_indptr = (np.arange(_MERGE_ROWS + 1) * _MERGE_PER_ROW).astype(np.int32)
+    base_indices = columns.astype(np.int32).ravel()
+    kept = rng.random(columns.shape) < 0.35
+    sub_indptr = np.concatenate([[0], np.cumsum(kept.sum(axis=1))]).astype(np.int64)
+    inside = columns[kept].astype(np.int64)
+    variants = {'inside': inside, 'shifted': inside + 1}
+
+    def twins(indices):   # the positions (as float64) are the compared output
+        def run(numba_flag):
+            def call(out):
+                out[...] = merge_positions(base_indptr, base_indices, sub_indptr, indices, numba=numba_flag)
+            return call
+        return run(False), run(True)
+    comparisons = {label: (*twins(indices), (np.zeros(indices.size),)) for label, indices in variants.items()}
+    timings = {'inside': (*twins(inside), (np.zeros(inside.size),), 3, 10)}
+    # ShiftPencil.mass_product (the host ARPACK M product): real M with a real / complex x, complex M
+    import scipy.sparse
+    from .arpack_shift_invert import ShiftPencil
+    real_mass = scipy.sparse.csr_matrix((rng.standard_normal(base_indices.size), base_indices, base_indptr),
+                                        shape=(_MERGE_ROWS, _MERGE_ROWS))
+    complex_mass = real_mass + 1j * real_mass.multiply(rng.random(real_mass.shape[0])[:, None]).tocsr()
+    pencils = {'real': ShiftPencil((real_mass,), real_mass, np.float64, symmetric=False),
+               'complex': ShiftPencil((complex_mass,), complex_mass, np.complex128, symmetric=False)}
+    vectors = {'real': rng.standard_normal(_MERGE_ROWS),
+               'complex': rng.standard_normal(_MERGE_ROWS) + 1j * rng.standard_normal(_MERGE_ROWS)}
+
+    def product_twins(pencil, vector):   # the product (complex as float64 pairs) is the compared output
+        def run(numba_flag):
+            def call(out):
+                out[...] = np.asarray(pencil.mass_product(vector, numba=numba_flag), dtype=np.complex128).view(
+                    np.float64)
+            return call
+        return run(False), run(True)
+    for mass_kind, pencil in pencils.items():
+        for vector_kind, vector in vectors.items():
+            comparisons[f'mass product {mass_kind} M, {vector_kind} x'] = (
+                *product_twins(pencil, vector), (np.zeros(2 * _MERGE_ROWS),))
+    timings['mass product real'] = (*product_twins(pencils['real'], vectors['real']), (np.zeros(2 * _MERGE_ROWS),),
+                                    10, 30)
+    result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
+    result['details']['base_entries'] = int(base_indices.size)
     return result
 
 
@@ -2023,7 +2150,9 @@ SOLVER_SELFTEST_CASES = (
                     'pcg node without, with another and with the same precision, the cpu backend Automatic '
                     'sparse_direct (double only); solid_mechanics and solid_mechanics_3d linear single and mixed (their '
                     'roles accept mixed), their Automatic (gpu: mixed, cpu: double; '
-                    'solver_defaults.precision double wins over the gpu Automatic mixed); '
+                    'solver_defaults.precision double wins over the gpu Automatic mixed; solid_mechanics stationary on '
+                    'the gpu: the sparse_direct study default, single / mixed ignored, rows in an eigenfrequency study '
+                    'keep pcg, a pcg node without a precision still takes mixed); '
                     'em_fdtd_ez stepper double and half_storage (its role refuses half_storage)): resolved solver type, '
                     'precision and whether the default is reported ignored; node settings are never written; '
                     'with_default_precision directly (fills without a role, a role refusing mixed (a pcg role of the '
@@ -2033,7 +2162,7 @@ SOLVER_SELFTEST_CASES = (
                     'double with preconditioner multigrid (single with solver_defaults.precision single); '
                     'solver_defaults.precision mixed, a pcg node with precision mixed and a node filled with mixed '
                     'resolve jacobi; a pcg node without a preconditioner keeps jacobi, one setting multigrid single '
-                    'keeps it; the cpu backend Automatic stays sparse_direct, solid_mechanics Automatic stays jacobi '
+                    'keeps it; the cpu backend Automatic stays sparse_direct, a solid_mechanics pcg node stays jacobi '
                     '(pcg mixed on the gpu backend). '
                     'Each resolution passes the solver type validate without errors, linear_solver_multigrid (the '
                     'memory estimators) agrees and node settings are never written. error = number of mismatches, '
@@ -2046,8 +2175,9 @@ SOLVER_SELFTEST_CASES = (
                     'cuDSS factor of study_defaults) with a GPU budget 1 byte below its estimate resolves the linear '
                     'role without the study (pcg multigrid) in fitted_memory_estimate, resolved_solvers and validate '
                     '(one info line at the physics); a budget of twice the estimate keeps the factor; a sparse_direct '
-                    'node is never a candidate. Without nvmath-python no role is a candidate. error = number of '
-                    'failed checks, tolerance 0.',
+                    'node is never a candidate. The same for a 2D solid_mechanics stationary model (its gpu default: '
+                    'the cuDSS factor of A_solve; tight budget: pcg). Without nvmath-python no role is a candidate. '
+                    'error = number of failed checks, tolerance 0.',
         specs=lambda: {}, check=_check_study_default_fit, max_wall_time=60.0),
     SelfTestCase(
         name='eigen_inertia_count',
@@ -2080,7 +2210,10 @@ SOLVER_SELFTEST_CASES = (
                     'installed library, both precisions) against scipy spsolve (relative error <= '
                     f'{_PARITY_TOLERANCE:g}) on 30 x 20 grid operators: DiffusionDirectSolver on the 5-point Laplacian '
                     '+ a random diagonal (real SPD: PARDISO double Cholesky, MUMPS and mixed LDL^T), then a value-only '
-                    'change on the kept analysis (one analysis), inertia (n, 0), release; the complex non-symmetric '
+                    'change on the kept analysis (one analysis), inertia (n, 0), release; inside host_analyses_kept '
+                    'a released factor is parked and a new factor object of its pattern adopts the analysis (none '
+                    'of its own, solve against spsolve), another pattern misses (the parked ones released), nothing '
+                    'stays parked after the block or outside it; the complex non-symmetric '
                     'operator of solver_sparse_direct_cpu_gpu by factorize on the cpu (LU, solve, transposed solve, '
                     'GMRES on the factor of a 1e-3-perturbed operator); D^-1 S with S complex symmetric and the '
                     'symmetrizer D (LDL^T of D A, solve and transposed solve); a real non-symmetric operator by '
@@ -2121,4 +2254,16 @@ SOLVER_SELFTEST_CASES = (
                     f'the peak, tolerance {_SCALE_TOLERANCE:g}. Details: ms per call of both. Without numba nothing '
                     'is compared. Not yet run.',
         specs=lambda: {}, check=_check_host_scale_numba, max_wall_time=120.0, backends=('cpu',)),
+    SelfTestCase(
+        name='solver_pattern_merge_numba',
+        label='Shift pencil pattern merge and mass product: numba row loops vs numpy (CPU)',
+        description='arpack_shift_invert.merge_positions (the slots of the mass / diagonal entries in the stiffness '
+                    'pattern of every ShiftPencil) with numba=True against numba=False on a random base pattern of '
+                    f'{_MERGE_ROWS} rows and {_MERGE_PER_ROW} entries per row: a random sub-pattern inside it and the '
+                    'same shifted by one column (slots and -1 outside); ShiftPencil.mass_product (the host ARPACK M '
+                    'product, prange over rows) against scipy on that pattern: real M with a real and a complex x, '
+                    'complex M; measured = error = the worst max |numba - numpy| relative to the peak, tolerance '
+                    f'{_SCALE_TOLERANCE:g} (a wrong slot differs by >= 1 / 2.4e6). Details: ms per call of both. '
+                    'Without numba nothing is compared. Not yet run.',
+        specs=lambda: {}, check=_check_pattern_merge_numba, max_wall_time=120.0, backends=('cpu',)),
 )

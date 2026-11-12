@@ -19,6 +19,7 @@ from ..core.time_estimate import format_seconds, merge_time_checks, time_check, 
 from ..core.wavelengths import resolved_wavelengths, wavelength_label
 from ..solvers import cudss_factor
 from ..solvers.cudss_factor import cudss_orderings_kept
+from ..solvers.host_direct import host_analyses_kept
 from ..solvers.roles import resolved_precision
 from .analytic import derived_references, is_segment_3d, line_endpoints
 from .builder import build as build_model, external_memory_record, run_memory_record
@@ -267,7 +268,9 @@ def run_study(spec, emit, control, build=None, service=None, on_session=None):
     failure = None   # (message, traceback text, out_of_memory): the exception itself is not kept
     try:
         registry = get_registry()
-        with cudss_orderings_kept():   # a cuDSS re-plan of a pattern planned in this study skips the reordering
+        # a cuDSS re-plan of a pattern planned in this study skips the reordering; a MUMPS / PARDISO factor of a
+        # pattern analysed by an earlier session of the study refactors on that parked analysis
+        with cudss_orderings_kept(), host_analyses_kept():
             if spec.study.estimation is not None:   # parameter estimation; validation refuses sweeps / adaptation
                 from .study_estimation import run_estimation   # it imports this module's helpers
                 summary = run_estimation(spec, registry, build, emit, control, service, track_session)
@@ -421,7 +424,16 @@ def _parity_sectors_requested(spec, registry):
 def _run_sweep(spec, registry, build, emit, control, service, on_session):
     """Run one spec copy per sweep value, closing the previous value's session first -> last run's summary + 'sweep'
     table (NaN / {} for failed values, listed in 'failed'; no live session if the last failed), or None (StudyFailed)
-    if none ran."""
+    if none ran. The gc baseline frozen after the first value's full collect is thawed at the end."""
+    try:
+        return _run_sweep_values(spec, registry, build, emit, control, service, on_session)
+    finally:
+        gpu_memory.thaw_collect_baseline()
+
+
+def _run_sweep_values(spec, registry, build, emit, control, service, on_session):
+    """_run_sweep's body: the per-value releases after the first collect only the objects made since
+    (gpu_memory.freeze_collect_baseline: ~25 ms -> ~1 ms each)."""
     parameter = spec.study.sweep.parameter
     setup_failure = None
     try:
@@ -477,6 +489,7 @@ def _run_sweep(spec, registry, build, emit, control, service, on_session):
         if built_now:
             if index == 0:
                 release_session(on_session)
+                gpu_memory.freeze_collect_baseline()   # after that full collect: only sweep-made objects scanned
             else:
                 release_session(on_session, previous_session, emit)
                 previous_session = None

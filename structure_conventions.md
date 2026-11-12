@@ -4,13 +4,13 @@ Gotchas and cross-file code flow only; signatures and help texts live in the cod
 Examples live outside the package (`examples/README.md`); `experiments/` holds the user's research models in the same
 format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
 `gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
-`dev_tools/` holds developer tooling outside the package (imports open_sol, never imported by it; not in the pip
+`tools_profilers/` holds developer tooling outside the package (imports open_sol, never imported by it; not in the pip
 package, but public on GitHub with the repository, so every clone has it):
-`dev_tools/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
+`tools_profilers/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
 problems assembled by open_sol's own operator code and on whole model files; it is not `python -m open_sol profile` (the run-time estimate's profile).
-`dev_tools/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
-syncs); `dev_tools/time_profilers/example_profilers` does the same on the analytic examples, one group per physics
-module (the performance set, on the case_profilers harness); `dev_tools/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
+`tools_profilers/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
+syncs); `tools_profilers/time_profilers/example_profilers` does the same on the analytic examples, one group per physics
+module (the performance set, on the case_profilers harness); `tools_profilers/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
 User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
 `INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
 cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
@@ -452,7 +452,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   a MUMPS / PARDISO factor (`host_direct.HostDirectFactorization`) holds host memory outside numpy: release it or pass
   it as `previous=` (refactorised on the same pattern) before the next one; its own guard (the library's estimate
   after analysis vs HOST_FRACTION of the available RAM) raises. Their threads are the library defaults
-  (OMP_NUM_THREADS / MKL_NUM_THREADS; no open_sol setting): oversubscription with numba / BLAS threads is the user's
+  (OMP_NUM_THREADS / MKL_NUM_THREADS; no open_sol setting; a small PARDISO solve runs serial): oversubscription with numba / BLAS threads is the user's
   to set, except PARDISO beside an OpenBLAS numpy / scipy (MKL solves alternating with threaded BLAS calls run 4 - 25 x
   slower): a HostDirectFactorization holds the OpenBLAS pools at one thread during its own calls, and code looping
   around a PARDISO factor with BLAS work of its own (a Krylov / ARPACK loop) wraps the loop in
@@ -467,7 +467,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - Host numpy over elements x points: never a broadcast `np.matmul` of 2x2 / 3x3 matrices per point or
   `np.linalg.det / inv` on 3x3 stacks (numpy loops per batch, no BLAS: write components out, e.g.
   `fem.mesh3d.span_adjugate`, or one GEMM over shared rows), never `np.add.at` (bincount: `fem.assembly.scatter_local`,
-  `fem.fixed_pattern.scatter_add` (complex-safe) / `scatter_rows` (trailing axes)); mesh-constant integrals are cached
+  `fem.fixed_pattern.scatter_add` (complex-safe) / `scatter_rows` (trailing axes)); a bincount costs its whole index
+  window, not its entries: element chunks whose indices span the target (P2 numbering: nodes first, edge dofs last)
+  scatter directly instead (`FixedPatternCsr.add_elements`, numba); mesh-constant integrals are cached
   per dof map, derived fields computed on read (fem sub file "Dofs and assembly").
 - `gpu_memory.release_all` / cuFFT plan cache: core sub file "GPU memory" (an unconditional clear is a hidden full
   `gc.collect()`).
@@ -477,7 +479,11 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   `self._nx_i32`, `np.float64(...)`; `real_t` = the field dtype of a RealRawKernel); Python floats / ints silently
   corrupt them. Bool arrays: cupy bool, `const
   bool*`. A kernel a cpu-capable physics launches is a `core.kernels` twin (numpy twin of the same call, written in
-  the same edit; core sub file "Kernel twins").
+  the same edit; core sub file "Kernel twins"). A numba twin built with `cache=True` never holds another numba
+  dispatcher in a closure cell: numba's cache key pickles the cells and a dispatcher pickles with a per-process uuid,
+  so the cache misses (a full compile, plus a new `.nbc` in `__pycache__`) in every process. Publish the helper as a
+  module global instead (`fluid.lattice._numba_step_helpers`). Symptom: `<name>-<line>.py311.N.nbc` with N rising run
+  after run.
 - Non-uniform spacing and CPML kappa are folded into the 1D `inv_dx/inv_dy` arrays: never branch kernels on
   uniformity.
 - A `cp.ReductionKernel` reducing a whole array to one scalar runs on one thread block (RTX 3050: ~13 GB/s float32 /
@@ -600,7 +606,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure.
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
-- `dev_tools/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result
+- `tools_profilers/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result
   line), case_profilers (script layout, wrap before the registry, unresolved parts), example_profilers (choice rule,
   what it imports from case_profilers, engine parts); usage in its README.md.
-- `dev_tools/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).
+- `tools_profilers/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).

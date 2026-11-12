@@ -90,7 +90,8 @@ at module level."""
 # nvmath / cuDSS error plans as before.
 # refactorize_device_values (plan G5, H1, R7): values on the device on a canonical host pattern: R from |diag| (or the
 # caller's row_scale) and E = R A R by device index maps (rows, columns, indptr, diagonal slots, lower take and the
-# lower triangle's indices / indptr: ~20 B per entry, built once per plan), no host CSR. On the planned pattern and kind
+# lower triangle's indices / indptr: ~20 B per entry; _DeviceIndexMaps uploads each at its first read, once per plan,
+# so refactorize_device_lower holds only the lower triangle's: ~4 B per entry), no host CSR. On the planned pattern and kind
 # the values are refreshed in place; else (first call, new pattern or kind) the plan is made from those device arrays
 # (from_device_values: a new factor). Two entry points: "symmetric known" (the caller vouches for symmetry when it
 # asks for it: DevicePencil sweeps, device Newton tangents) and "check first" (check_symmetry: max |E - E^T| / max |E|
@@ -101,9 +102,10 @@ at module level."""
 # refactorize_device_lower (R4): a symmetric DevicePencil stores only the lower triangle; its combined lower values go
 # through one ElementwiseKernel (_scaled_lower_kernel: E_l = a_l r_i r_j and the factor-dtype copy in one pass) into
 # the planned buffers (E7: refresh 4.9 -> 2.8 ms, pencil terms 53 -> 29 MB). The operator norm of a device refresh is
-# lazy (operator_norm: one pass over the stored E, a symmetric one from its lower triangle) and a double deferred check
-# whose relative residual passes skips the backward error (probe_backward_error None), so it is built only when a
-# mixed GMRES, a probe or a missed check reads it.
+# lazy (operator_norm: one atomic-add kernel pass over the stored E, a symmetric one from its lower triangle; no
+# value-sized temporary: |E|, its off-diagonal copy and the mask were 17 B per stored entry at the probe, the pool
+# peak of a lower-stored eigen pencil) and a double deferred check whose relative residual passes skips the backward
+# error (probe_backward_error None), so it is built only when a mixed GMRES, a probe or a missed check reads it.
 # Fallback re-plans (_replan_in_place) keep the device storage: only the kind or the factor dtype changes. The host
 # route (_equilibrated, relative_asymmetry, _lower_triangle, _plan) remains for first plans and new patterns of host
 # operators and for symmetrizer factors.
@@ -259,6 +261,7 @@ def _read_ordering(solver):
         cudss.data_get(solver.handle, solver.data_ptr, cudss.DataParam.ND_PARTITION_TREE, 0, 0, size.ctypes.data)
         tree = np.zeros(int(size[0]) // np.dtype(np.int32).itemsize, dtype=np.int32)
         if not tree.size:
+            _LOGGER.info('cuDSS ordering not kept (no partition tree)')
             return None
         cudss.data_get(solver.handle, solver.data_ptr, cudss.DataParam.ND_PARTITION_TREE, tree.ctypes.data,
                        int(tree.nbytes), size.ctypes.data)
@@ -311,6 +314,28 @@ def _scaled_lower_kernel(single_copy):
             _SCALED_LOWER_KERNELS[False] = cp.ElementwiseKernel(inputs, 'T scaled', operation,
                                                                 'open_sol_cudss_scaled_lower')
     return _SCALED_LOWER_KERNELS[single_copy]
+
+
+_MAGNITUDE_SUM_KERNELS = {}   # (lower, complex_values) -> ElementwiseKernel (built on first use)
+
+
+def _magnitude_sums_kernel(lower, complex_values):
+    """ElementwiseKernel adding |e| of each stored entry to its row's sum and, lower: off the diagonal also to its
+    column's row sum (the mirrored entry), else to its column's column sum; atomic adds, no value-sized temporary."""
+    key = (bool(lower), bool(complex_values))
+    if key not in _MAGNITUDE_SUM_KERNELS:
+        import cupy as cp
+        magnitude = f"const double magnitude = {'abs(value)' if complex_values else 'fabs((double)value)'}; "
+        if lower:
+            sums = 'raw float64 row_sums'
+            adds = 'atomicAdd(&row_sums[row], magnitude); if (row != column) atomicAdd(&row_sums[column], magnitude);'
+        else:
+            sums = 'raw float64 row_sums, raw float64 column_sums'
+            adds = 'atomicAdd(&row_sums[row], magnitude); atomicAdd(&column_sums[column], magnitude);'
+        name = f"open_sol_cudss_{'lower' if lower else 'full'}_{'complex' if complex_values else 'real'}_magnitude_sums"
+        _MAGNITUDE_SUM_KERNELS[key] = cp.ElementwiseKernel('T value, int32 row, int32 column', sums, magnitude + adds,
+                                                           name)
+    return _MAGNITUDE_SUM_KERNELS[key]
 
 
 _SINGLE_SOLVE_KERNELS = {}   # name -> ElementwiseKernel of _single_solve (built on first use)
@@ -366,12 +391,20 @@ def solve_peak_bytes(n_unknowns, value_bytes=16, mixed=False) -> int:
     return vectors * int(value_bytes) * int(n_unknowns)
 
 
-def index_map_bytes(n_unknowns, entries, symmetry_check=True) -> int:
+def index_map_bytes(n_unknowns, entries, symmetry_check=True, lower_only=False, symmetric=True) -> int:
     """Pool bytes of the index maps a device refactorisation keeps per plan (rows, columns, lower take, its rows /
-    indices, diagonal slots; symmetry_check: the transpose map): a run item once the first refresh made them."""
+    indices, diagonal slots; symmetry_check: the transpose map): a run item once the first refresh made them.
+    _DeviceIndexMaps uploads per key: lower_only (refactorize_device_lower, a lower-stored DevicePencil) = the lower
+    triangle's rows / indices / indptr, its diagonal slots and has_diagonal alone; symmetric False (a general LU) = no
+    lower-triangle arrays."""
     n_unknowns, entries = int(n_unknowns), int(entries)
     lower = (entries + n_unknowns) // 2
-    return 8 * entries + 12 * lower + 29 * n_unknowns + (4 * entries if symmetry_check else 0)
+    if lower_only:
+        return 8 * lower + 13 * n_unknowns + 4
+    transpose = 4 * entries if symmetry_check else 0
+    if not symmetric:
+        return 8 * entries + 13 * n_unknowns + 4 + transpose
+    return 8 * entries + 12 * lower + 29 * n_unknowns + transpose
 
 
 def refresh_peak_bytes(entries, value_bytes=16, symmetry_check=True, n_unknowns=0, mixed=False) -> int:
@@ -639,6 +672,91 @@ def _lower_triangle(csr):
     return _int32_csr(csr.data[keep], csr.indices[keep], indptr, csr.shape)
 
 
+class _DeviceIndexMaps:
+    """Device index arrays of one planned canonical host pattern (indptr, indices: never modified), each uploaded at its
+    first read, so a factor holds only what its route reads: 'indptr', 'columns', 'rows', 'diagonal_slots' (full-pattern
+    slot of each row's diagonal, has_diagonal False where none), the 'lower' take, and the lower triangle's 'lower_rows'
+    / 'lower_indices' / 'lower_indptr' / 'lower_diagonal_slots' (refactorize_device_lower reads only these and
+    has_diagonal); 'transpose' is set by _device_asymmetry. The host passes over the pattern (rows, lower take, diagonal
+    slots) are shared by the keys of one refactorisation and freed by drop_host."""
+
+    def __init__(self, indptr, indices):
+        self._indptr, self._indices = indptr, indices
+        self._arrays = {}
+        self._host = None        # rows / lower / diagonal_slots / has_diagonal of the pattern until drop_host
+        self._n_lower = None
+        self.take_dtype = np.int32 if indices.size < 2 ** 31 else np.int64
+
+    def __contains__(self, key) -> bool:
+        return key in self._arrays
+
+    def __setitem__(self, key, array) -> None:
+        self._arrays[key] = array
+
+    def __getitem__(self, key):
+        found = self._arrays.get(key)
+        if found is None:
+            found = self._arrays[key] = self._uploaded(key)
+        return found
+
+    def values(self):
+        """The device arrays uploaded so far."""
+        return self._arrays.values()
+
+    @property
+    def n_lower(self) -> int:
+        """Entries of the lower triangle (diagonal included)."""
+        if self._n_lower is None:
+            self._host_passes()
+        return self._n_lower
+
+    def drop_host(self) -> None:
+        """Free the host passes (a later first read of a key makes them again)."""
+        self._host = None
+
+    def _host_passes(self) -> dict:
+        if self._host is None:
+            indptr, indices = self._indptr, self._indices
+            n_rows = indptr.size - 1
+            rows = csr_rows(indptr, np.int32)
+            lower = np.flatnonzero(indices <= rows)          # int64 full-pattern slots of the lower triangle
+            on_diagonal = np.flatnonzero(indices == rows)
+            diagonal_slots = np.zeros(n_rows, dtype=np.int64)
+            has_diagonal = np.zeros(n_rows, dtype=bool)
+            diagonal_slots[rows[on_diagonal]] = on_diagonal
+            has_diagonal[rows[on_diagonal]] = True
+            self._n_lower = int(lower.size)
+            self._host = {'rows': rows, 'lower': lower, 'diagonal_slots': diagonal_slots, 'has_diagonal': has_diagonal}
+        return self._host
+
+    def _lower_rows(self, host) -> np.ndarray:
+        if 'lower_rows' not in host:
+            host['lower_rows'] = host['rows'][host['lower']]
+        return host['lower_rows']
+
+    def _uploaded(self, key):
+        import cupy as cp
+        if key == 'indptr':
+            return cp.asarray(self._indptr.astype(np.int32, copy=False))
+        if key == 'columns':
+            return cp.asarray(self._indices.astype(np.int32, copy=False))
+        host = self._host_passes()
+        if key in ('rows', 'diagonal_slots', 'has_diagonal'):
+            return cp.asarray(host[key])
+        if key == 'lower':
+            return cp.asarray(host['lower'].astype(self.take_dtype))
+        if key == 'lower_rows':
+            return cp.asarray(self._lower_rows(host))
+        if key == 'lower_indices':
+            return cp.asarray(self._indices[host['lower']].astype(np.int32, copy=False))
+        if key == 'lower_indptr':
+            counts = np.bincount(self._lower_rows(host), minlength=self._indptr.size - 1)
+            return cp.asarray(np.concatenate([[0], np.cumsum(counts)]).astype(np.int32))
+        if key == 'lower_diagonal_slots':   # rank of each diagonal among the lower entries (0 where a row has none)
+            return cp.asarray(np.searchsorted(host['lower'], host['diagonal_slots']).astype(np.int64))
+        raise KeyError(key)
+
+
 def _direct_solver(operator, rhs, kind):
     """Blocking nvmath DirectSolver on a cupyx CSR (kind 'symmetric' / 'spd': its lower triangle) and its cupy rhs
     buffer, single-threaded host planning unless the environment variable CUDSS_THREADING_LIB names a threading layer."""
@@ -888,6 +1006,8 @@ class CudssFactorization(ProbedFactor):
 
     def _finish_refactorize(self, reused, started, mark) -> bool:
         """refactorize's bookkeeping once a factor was accepted (reused: on the kept plan); returns reused."""
+        if self._device_maps is not None:   # the index maps this factorisation read are uploaded: free their host passes
+            self._device_maps.drop_host()
         self.last_plan_reused = reused
         if reused:
             self.plan_seconds = 0.0
@@ -1055,10 +1175,10 @@ class CudssFactorization(ProbedFactor):
         if not same_pattern:
             self._set_pattern(indptr, indices)
         self.n_unknowns = n_rows
-        maps = self._device_index_maps()
-        if lower_values.size != maps['lower'].size:
+        maps = self._device_index_maps()   # this route reads the lower triangle's arrays only
+        if lower_values.size != maps.n_lower:
             raise ValueError(f'CudssFactorization.refactorize_device_lower: {lower_values.size} values for a lower '
-                             f"triangle of {maps['lower'].size} entries")
+                             f'triangle of {maps.n_lower} entries')
         row_scale = self._checked_row_scale(lower_values[maps['lower_diagonal_slots']], row_scale, maps)
         self.asymmetry = 0.0
         kind, reuse = self._kind_and_reuse(True, same_pattern, *self._pattern)
@@ -1126,22 +1246,22 @@ class CudssFactorization(ProbedFactor):
     @property
     def operator_norm(self):
         """sqrt(||E||_1 ||E||_inf) of the factorised E (backward errors); a device refresh leaves it to the first use
-        (R4: one pass over the stored E; a symmetric E from its lower triangle, row sums = column sums)."""
+        (R4: one kernel pass over the stored E, _magnitude_sums_kernel: no |E| copy; a symmetric E from its lower
+        triangle, row sums = column sums)."""
         if self._operator_norm is None and self._operator is not None:
             import cupy as cp
-            import cupyx
             maps = self._device_index_maps()
-            magnitudes = cp.abs(self._operator.data)
+            values = self._operator.data
+            complex_values = values.dtype.kind == 'c'
             row_sums = cp.zeros(self.n_unknowns)
             if self._diagonal is not None:
-                rows, columns = maps['lower_rows'], maps['lower_indices']
-                cupyx.scatter_add(row_sums, rows, magnitudes)
-                cupyx.scatter_add(row_sums, columns, cp.where(rows != columns, magnitudes, 0.0))
+                _magnitude_sums_kernel(True, complex_values)(values, maps['lower_rows'], maps['lower_indices'],
+                                                             row_sums)
                 self._operator_norm = float(row_sums.max())
             else:
                 column_sums = cp.zeros(self.n_unknowns)
-                cupyx.scatter_add(row_sums, maps['rows'], magnitudes)
-                cupyx.scatter_add(column_sums, maps['columns'], magnitudes)
+                _magnitude_sums_kernel(False, complex_values)(values, maps['rows'], maps['columns'], row_sums,
+                                                              column_sums)
                 self._operator_norm = float(cp.sqrt(row_sums.max() * column_sums.max()))
         return self._operator_norm
 
@@ -1209,7 +1329,7 @@ class CudssFactorization(ProbedFactor):
             cp.minimum(slots, keys.size - 1, out=slots)
             found = keys[slots] == mirrored
             del keys, mirrored
-            maps['transpose'] = cp.where(found, slots, -1).astype(maps['lower'].dtype)
+            maps['transpose'] = cp.where(found, slots, -1).astype(maps.take_dtype)
             del slots, found
         transpose = maps['transpose']
         difference = values[cp.maximum(transpose, 0)]   # the mirror entry (0 without one), minus the entry, in place
@@ -1229,34 +1349,11 @@ class CudssFactorization(ProbedFactor):
             return True
         return False
 
-    def _device_index_maps(self) -> dict:
-        """Device index arrays of the planned pattern, built once per plan: rows / columns of every entry, indptr, the
-        diagonal slot of every row (has_diagonal False where the pattern has none), the lower-triangle take and the
-        lower triangle's own rows / indices / indptr / diagonal slots (+ 'transpose', built by _device_asymmetry when
-        first needed)."""
+    def _device_index_maps(self) -> _DeviceIndexMaps:
+        """The planned pattern's device index arrays (one _DeviceIndexMaps per plan: each array uploaded at its first
+        read; + 'transpose', built by _device_asymmetry when first needed)."""
         if self._device_maps is None:
-            import cupy as cp
-            indptr, indices = self._pattern
-            n_rows = indptr.size - 1
-            rows = csr_rows(indptr, np.int32)
-            on_diagonal = np.flatnonzero(indices == rows)
-            diagonal_slots = np.zeros(n_rows, dtype=np.int64)
-            has_diagonal = np.zeros(n_rows, dtype=bool)
-            diagonal_slots[rows[on_diagonal]] = on_diagonal
-            has_diagonal[rows[on_diagonal]] = True
-            take_dtype = np.int32 if indices.size < 2 ** 31 else np.int64
-            is_lower = indices <= rows
-            lower = np.flatnonzero(is_lower)
-            lower_indptr = np.concatenate([[0], np.cumsum(np.bincount(rows[lower], minlength=n_rows))])
-            lower_rank = np.cumsum(is_lower) - 1   # position of a lower entry in the lower take
-            self._device_maps = {'rows': cp.asarray(rows), 'columns': cp.asarray(indices.astype(np.int32, copy=False)),
-                                 'indptr': cp.asarray(indptr.astype(np.int32, copy=False)),
-                                 'diagonal_slots': cp.asarray(diagonal_slots), 'has_diagonal': cp.asarray(has_diagonal),
-                                 'lower': cp.asarray(lower.astype(take_dtype)),
-                                 'lower_rows': cp.asarray(rows[lower]),
-                                 'lower_indices': cp.asarray(indices[lower].astype(np.int32, copy=False)),
-                                 'lower_indptr': cp.asarray(lower_indptr.astype(np.int32)),
-                                 'lower_diagonal_slots': cp.asarray(lower_rank[diagonal_slots].astype(np.int64))}
+            self._device_maps = _DeviceIndexMaps(*self._pattern)
         return self._device_maps
 
     def _equilibrated(self, host_operator, row_scale, symmetrizer, canonical=False):

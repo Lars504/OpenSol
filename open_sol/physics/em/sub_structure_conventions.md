@@ -118,11 +118,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   normal keeps the arithmetic share). Not conformal: FDFD / em_modes poles. Selftests em_conformal_pole_weights,
   em_conformal_drude_film (heavy).
 - FDTD step graphs (gpu, `fdtd_2d_base.STEP_GRAPHS`, as em3d `_fixed_block`): `update_h` runs Yee + conformal + H CPML
-  of every field set as one CUDA graph (`_h_block`), `_update_e_set` Yee + E CPML per set (key ('e', set index)); the
-  first step of a key runs eagerly, the second captures, later ones replay. The outer-face rows, poles, gain /
-  nonlinear media, sources, PEC keep and monitors stay eager between them (a column-row wall copy overlaps its source
-  row in cupy's bounds check, which copies the input: an allocation inside a capture), so the engines call the CPML
-  (`_cpml_post`) and `apply_*_walls` apart instead of `apply_*_post`. Fields, psi, ca / cb / da / db, the 1D spacings
+  + the post's H rows of every field set as one CUDA graph (`_h_block`), `_update_e_set` Yee + E CPML + E rows per set
+  (key ('e', set index)); the first step of a key runs eagerly, the second captures, later ones replay. The wall
+  re-pins after the sources, poles, gain / nonlinear media, sources, PEC keep and monitors stay eager between them, so
+  the engines call the CPML (`_cpml_post`) and `apply_*_walls` apart instead of `apply_*_post`. Outer-face rows are
+  one fused launch per call (`boundaries` wall_centre_rows / wall_plane_rows: corners = s_x s_y x the inner corner
+  cell, what the sequential row copies give), face types read once at BoundaryManager construction; with < 3 cells
+  along a pinned axis (`fused_walls` False) the old cupy row copies run eagerly outside the graphs (a column-row copy
+  overlaps its source row in cupy's bounds check, which copies the input: an allocation inside a capture). Fields, psi, ca / cb / da / db, the 1D spacings
   and the conformal arrays are rewritten in place only (a new `set_conformal_*` tuple changes the H key); a new
   replaceable input of a block joins its key. A failed capture warns and steps eagerly for good. The time recipe
   books 1 + n_sets graph launches on the gpu instead of the weighted Yee / CPML launches.
@@ -431,7 +434,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `fem_modes.host_solver_label` names the library), plus the library's own memory check after the analysis.
   Eigen: `_eigen_symmetrizer` returns D for every LDLT_FACTORIZATIONS entry; `solve_resonances` polishes every own
   mixed LDL^T (factor_precision 'mixed' and symmetric: cuDSS on the device, host `solve_host(refinement_steps=
-  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; an own host factor logs `_host_direct_factor_text`; elimination
+  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; and a double own LDL^T of a complex A when the caller passed a
+  tolerance_floor > 0 (open models): ARPACK to MIXED_ARPACK_TOLERANCE + the quotients, no refinement steps (`refine`
+  is mixed only); a closed lossless model keeps its floor (Q = inf); an own host factor logs `_host_direct_factor_text`; elimination
   orders (em3d) are skipped. Texts: solve_summary / direct_text / `HOST_DIRECT_KINDS` (em_modes factor_kind prefixes)
   name the description and the library's factor bytes. Estimates: `memory_estimates.host_factor_items` (the SuperLU
   heuristic x `superlu_bytes_scale`, LDL^T where D A / the pencil is symmetric, + `solver_host_bytes`; an eigen mixed
@@ -500,7 +505,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   eps_ii; magnetic loss not counted. Renderer primary `<field>_re` (the stationary fixed point compares it).
 - Eigenfrequency (A6, `eigenfrequency.py`, host only): `solve_resonances` is dimension-free ('shift_invert' 2D,
   'squared_cayley' for curl-curl with a gradient null space; sparse mass / energy weights via `_PencilMass`, a pinned
-  row absent, not zero; em_eigen_sparse_mass). 2D shift-invert factor: host SuperLU (`_eigen_size_warnings`), a
+  row absent, not zero; em_eigen_sparse_mass; a host B v from HOST_MASS_THREAD_MIN_ENTRIES runs by row blocks on a
+  process-wide thread pool, `_mass_pool`, relying on scipy's CSR kernel releasing the GIL). 2D shift-invert factor: host SuperLU (`_eigen_size_warnings`), a
   line_block node's kept factor, or cudss / cudss_mixed / the host direct ones (`_eigen_symmetrizer`, LDL^T of D A).
   Own factor at sigma =
   k_t^2 (1 + SHIFT_RELATIVE_OFFSET): a target on a lossless resonance gave a singular factor cuDSS refused. Drops Re
@@ -509,7 +515,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   eigenpairs^2, so ask only for resonances that exist near the target). Own cuDSS factor, or a host factor on a gpu
   runtime where `device_arnoldi_fits(host_matvec=True)`: device Arnoldi (`eigs_device`, the first pass reserving
   WIDENING_BASIS_RESERVE x its basis rows), widenings resume the Krylov-Schur decomposition in place (`basis_kept` in
-  the info). The candidate filter (`_ResonanceFilter`, built once per solve: on the device on a gpu runtime or own
+  the info). Any other host factor: the host twin (`eigs_host`, `_HostKrylovSchur`, numpy rows, same reserve and resume;
+  host ARPACK only below DEVICE_ARNOLDI_MIN_RATIO), so cpu runs follow the gpu algorithm. The candidate filter (`_ResonanceFilter`, built once per solve: on the device on a gpu runtime or own
   cuDSS factor, else host) takes per column v^H B v, v^H A v, the D-scaled Rayleigh terms and the energy / window /
   region sums from ONE sparse product per operator and block of FILTER_BLOCK_COLUMNS vectors; never per-column host
   csr_matvec loops (tetrahedral Mie: 2.4 s of 8 s). `squared_cayley_roots` takes those products, not the vectors.

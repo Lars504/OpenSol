@@ -266,6 +266,14 @@ def _face_scalar(eps_a, eps_b, sig_a, sig_b, weight_a, weight_b, dt, eps0, smoot
     return (1.0 - loss) / (1.0 + loss), (dt / eps) / (1.0 + loss)
 
 
+def _publish_numba_face_scalar(numba):
+    """Builds once the module global _numba_face_scalar (numba _face_scalar) the E numba twins call."""
+    # a global, not a closure cell: numba's cache key pickles the closure cells and a dispatcher pickles with a
+    # per-process uuid, so a kernel closing over one recompiled in every process (structure_conventions)
+    if '_numba_face_scalar' not in globals():
+        globals()['_numba_face_scalar'] = numba.njit(cache=True)(_face_scalar)
+
+
 # H on the edges: H_x (centre x, hi y, hi z), H_y (hi x, centre y, hi z), H_z (hi x, hi y, centre z); mu_r and
 # sigma_m of the lower cell (i, j, k). The hi neighbour wraps; on non-periodic axes ih*[n-1] = 0, so the last edge row
 # of that axis couples only to the normal E of the same row, a closed subsystem the interior never drives: H stays 0
@@ -474,7 +482,7 @@ def _update_e_host(ex, ey, ez, hx, hy, hz, phx, phy, phz, mat, t_ex, t_ey, t_ez,
 
 def _update_e_numba(numba):
     eps0 = float(EPS0)
-    face = numba.njit(cache=True)(_face_scalar)
+    _publish_numba_face_scalar(numba)
 
     @numba.njit(parallel=True, cache=True)
     def kernel(ex, ey, ez, hx, hy, hz, phx, phy, phz, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face,
@@ -505,16 +513,16 @@ def _update_e_numba(numba):
                     smoothed_x = t_face[face_index] if face_index != 0 else 0.0
                     smoothed_y = t_face[face_index + 1] if face_index != 0 else 0.0
                     smoothed_z = t_face[face_index + 2] if face_index != 0 else 0.0
-                    ca, cb = face(t_ex[m], t_ex[mat[ip, j, k]], t_sig[m], t_sig[mat[ip, j, k]], wlx[i], wux[i], dt,
-                                  eps0, smoothed_x)
+                    ca, cb = _numba_face_scalar(t_ex[m], t_ex[mat[ip, j, k]], t_sig[m], t_sig[mat[ip, j, k]], wlx[i],
+                                                wux[i], dt, eps0, smoothed_x)
                     ex[i, j, k] = ca * ex[i, j, k] + cb * h_to_e * ((hz0 - ly * hz_y) * iey[j] * irfh[i]
                                                                     - (hy0 - lz * hy_z) * iez[k])
-                    ca, cb = face(t_ey[m], t_ey[mat[i, jp, k]], t_sig[m], t_sig[mat[i, jp, k]], wly[j], wuy[j], dt,
-                                  eps0, smoothed_y)
+                    ca, cb = _numba_face_scalar(t_ey[m], t_ey[mat[i, jp, k]], t_sig[m], t_sig[mat[i, jp, k]], wly[j],
+                                                wuy[j], dt, eps0, smoothed_y)
                     ey[i, j, k] = ca * ey[i, j, k] + cb * h_to_e * ((hx0 - lz * hx_z) * iez[k]
                                                                     - (hz0 - lx * hz_x) * iex[i])
-                    ca, cb = face(t_ez[m], t_ez[mat[i, j, kp]], t_sig[m], t_sig[mat[i, j, kp]], wlz[k], wuz[k], dt,
-                                  eps0, smoothed_z)
+                    ca, cb = _numba_face_scalar(t_ez[m], t_ez[mat[i, j, kp]], t_sig[m], t_sig[mat[i, j, kp]], wlz[k],
+                                                wuz[k], dt, eps0, smoothed_z)
                     ez[i, j, k] = ca * ez[i, j, k] + cb * h_to_e * ((rfh[i] * hy0 - lx * rfh[im] * hy_x) * iex[i]
                                                                     - (hx0 - ly * hx_y) * iey[j]) * irce[i]
     return kernel
@@ -692,7 +700,7 @@ def _cpml_e_host(e_first, e_second, h_first, h_second, psi_first, psi_second, b,
 
 def _cpml_e_numba(numba):
     eps0 = float(EPS0)
-    face = numba.njit(cache=True)(_face_scalar)
+    _publish_numba_face_scalar(numba)
 
     @numba.njit(cache=True)
     def component_cb(comp, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face,
@@ -710,7 +718,9 @@ def _cpml_e_numba(numba):
             eps_a, eps_b, weight_a, weight_b = t_ez[m], t_ez[partner], wlz[gk], wuz[gk]
         face_index = 3 * fid[gi, gj, gk] if use_face != 0 else 0
         smoothed = t_face[face_index + comp] if face_index != 0 else 0.0
-        return face(eps_a, eps_b, t_sig[m], t_sig[partner], weight_a, weight_b, dt, eps0, smoothed)[1]
+        return _numba_face_scalar(eps_a, eps_b, t_sig[m], t_sig[partner], weight_a, weight_b, dt, eps0, smoothed)[1]
+
+    globals()['_numba_cpml_component_cb'] = component_cb   # a global for the kernel, not a closure cell
 
     @numba.njit(parallel=True, cache=True)
     def kernel(e_first, e_second, h_first, h_second, psi_first, psi_second, b, a, inv, sw, of, mat, t_ex, t_ey, t_ez,
@@ -735,15 +745,15 @@ def _cpml_e_numba(numba):
                     lo_i, lo_j, lo_k = gi - step_x, gj - step_y, gk - step_z
                     psi = decay * psi_first[i, j, k] + gain * (h_first[gi, gj, gk] - h_first[lo_i, lo_j, lo_k])
                     psi_first[i, j, k] = psi
-                    cb = component_cb(comp_first, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig,
-                                      fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
+                    cb = _numba_cpml_component_cb(comp_first, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey,
+                                                  t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
                     e_first[gi, gj, gk] += sign_first * cb * h_to_e * psi
                     g = r + np.int64(row0)
                     psi = decay * psi_second[i, j, k] + gain * (sw[g] * h_second[gi, gj, gk]
                                                                 - sw[g - 1] * h_second[lo_i, lo_j, lo_k]) * of[g]
                     psi_second[i, j, k] = psi
-                    cb = component_cb(comp_second, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig,
-                                      fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
+                    cb = _numba_cpml_component_cb(comp_second, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey,
+                                                  t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
                     e_second[gi, gj, gk] += sign_second * cb * h_to_e * psi
     return kernel
 

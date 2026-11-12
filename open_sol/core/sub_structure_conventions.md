@@ -30,7 +30,9 @@ coordinate rules stay in the root file.
   `Simulation.memory_report` passes the Domain's backend and prints `cpu_memory_status()` on the cpu.
 - Every physics type declares 'cpu' (`PhysicsType.backends`): host solves through scipy, fields on `domain.xp`,
   explicit-engine kernels and coupling-transform kernels are `core.kernels` twins (other transforms allocate on their
-  input's / the Domain's xp); `FieldProbe` keeps its buffer on the first record's module. A coupling runs on the cpu
+  input's / the Domain's xp); `FieldProbe` keeps its buffer on the first record's module. `FieldProbe.record` of a
+  float32 / float64 cupy field is one `core.probe_store` launch (`trace[slot] = field[element offset]`, any strides);
+  numpy, float16 (em3d half_storage), complex or out-of-shape cells take the indexed `record_value`. A coupling runs on the cpu
   once both partner types declare it. gpu only: the half_storage steppers and the cusolver_qr back end (solver
   backend_misfit).
 - Memory estimates: `diffusion_system_estimate(direct=True)` (a host SuperLU sparse_direct linear solver, the cpu
@@ -61,6 +63,10 @@ coordinate rules stay in the root file.
   MUMPS / PARDISO factor (`solvers.host_direct`) holds host memory outside numpy (its `host_bytes`): guarded by the
   library's own estimate after analysis against HOST_FRACTION of `host_memory.available_bytes()` (no guard when that is
   None), estimated as host items; a check measuring numpy host arrays does not see it.
+- `release_all`'s full `gc.collect` walks every tracked object (modules, registry: ~25 ms). A sweep
+  (`study._run_sweep`) calls `freeze_collect_baseline()` after its first value's collect and `thaw_collect_baseline()`
+  at its end, so the per-value collects walk only sweep-made objects; skipped when the gc is frozen already
+  (selftest_cache freezes for the whole selftest), never unfreezing a freeze of its own caller.
 
 ## Accepted host syncs (the root rule: none per step in hot loops)
 - The build's Courant check; one `Device().synchronize()` per study chunk and one at the end of each study run

@@ -38,10 +38,15 @@ all but drift_diffusion.
   `add` from ROW_SUM_MIN_ENTRIES block entries runs a row-parallel sum instead (next-gains N2: per group the (element,
   local row) pairs sorted by global row once, `_row_orders`; a thread owns whole rows, so no atomics and a fixed order;
   `add(numba=False)` forces the bincount; self-test fem_fixed_pattern_row_sum_numba). A pair's columns all lie in its
-  row: keep that if slot maps ever change. `add_elements` (slots searched per call) stays bincount. The row sum, the
+  row: keep that if slot maps ever change. `add_elements` (no kept slots) runs the numba block scatter
+  ('fem.block_scatter': a binary search per dof pair in its scalar row, then the block x block entries; serial, no
+  slot arrays, always checked) once numba is loaded or from SCATTER_COLD_ENTRIES pattern entries, else searchsorted +
+  one bincount over the chunk's slot window (P2 numbering, nodes first and edge dofs last, makes that window most of
+  the matrix: 9.7 s of a 12.8 s stiffness assembly on 72k P2 tetrahedra); `numba=` forces one, the self-test above
+  compares them. The row sum, the block scatter, the
   block expansion and the free restriction are `core.kernels.host_twin`s of their numpy forms (`_row_sum_host`,
-  `_expand_host`, `_restrict_host`: change both of a pair); every bincount sum (scatter_add, `_sum_into`, `summed`)
-  goes through `_add_bincount`.
+  `_scatter_host`, `_expand_host`, `_restrict_host`: change both of a pair; slot arithmetic of both scatter forms =
+  `_block_slots`); every bincount sum (scatter_add, `_sum_into`, `summed`) goes through `_add_bincount`.
   TangentAssembler3D caches rule gradients / weights only below `TANGENT_GRADIENT_CACHE_BYTES` (P2 ~6.7 kB per element;
   the int32 scatter map is always kept); `internal_force_and_tangent[_3d]` stays the one-off COO assembly of the full
   (unmirrored) element products (the self-test's reference).
@@ -52,9 +57,17 @@ all but drift_diffusion.
   mesh (`element_meshes_kept`, run_study only) skips the build: `assemble_elastic_stiffness_3d` sums its chunks into
   the base by `add_elements` (slots searched per chunk, no kept slot map; `check=False` there, since its chunks are
   rows of the element dofs the base was built from: any other caller keeps the check) and TangentAssembler3D takes its grouped
-  copy of the same base. Kept objects are shared: never write into their index arrays. Symmetric element products
+  copy of the same base. `assemble_geometric_stiffness_3d` sums its scalar blocks x I3 into that base when one is kept
+  for its elements (`kept_pattern_if_any`: never builds one; else COO + kron), so `pattern_sum` of K and K_sigma (canonical
+  CSRs on one pattern) adds values only. Kept objects are shared: never write into their index arrays. Symmetric element products
   (elastic stiffness, the batched tangent) go through `_symmetric_operator_blocks` (column groups on and below the diagonal
-  multiplied, the rest mirrored; `SYMMETRIC_COLUMN_GROUPS`); a non-symmetric C would need `_operator_blocks`.
+  multiplied, the rest mirrored; `SYMMETRIC_COLUMN_GROUPS`); a non-symmetric C would need `_operator_blocks`. The scalar
+  pattern of a FixedPatternCsr comes from `scalar_pattern` (numba: node -> element lists and a prange of per-row sorts,
+  host twin 'fem.pattern_summed', once numba is loaded or from PATTERN_KERNEL_COLD_ENTRIES / 4 block entries; else
+  COO -> CSR); a real `assemble_elastic_stiffness_3d` takes its blocks from the numba element kernel of
+  tangent_kernel3d at u = 0 without S0 (`_stiffness_element_kernel`: numba loaded or ELEMENT_KERNEL_COLD_ELEMENTS
+  elements; a PML stretch keeps the batched products). Self-test fem_elastic_assembly_numba. In a cold process the
+  first numba user pays the import + cache load (~1 s): on a 3D P2 profile that sat inside the pattern build.
 - Device tangents (`TangentAssembler3D(device=True)`): the Green-Lagrange helpers take xp from their first array
   (`elasticity3d._array_module`): keep new code in them xp-generic. S0 is uploaded once per `initial_stress` object (a
   new S0 value needs a new StressField). `force` / `force_and_tangent` return the force on the host, the data on the
@@ -211,8 +224,13 @@ all but drift_diffusion.
 - Affine route (2D `assemble_stiffness` / `assemble_mass`, 3D Lagrange stiffness / mass and `assemble_nedelec_3d`): an
   element-constant coefficient (number / per-element values, never a callable) on straight elements takes reference
   matrices (2D: det J (J^-1 K J^-T)_ab against 4 gradient products, c det J x the reference mass; Nedelec: J^T nu J /
-  |det J| and |det J| J^-1 eps J^-T against 9 products), lru-cached per (order, degree), equal to the quadrature at that
-  rule up to rounding. Curved elements, axisymmetric weights and callables keep the quadrature path.
+  |det J| and |det J| J^-1 eps J^-T against 6 symmetric-pair products), lru-cached per (order, degree), equal to the
+  quadrature at that rule up to rounding. Curved elements, axisymmetric weights and callables keep the quadrature path;
+  a Nedelec callable (PML) takes the same T = P^T nu P per rule point against cached per-point pair products, one
+  (m, 6 q) @ (6 q, n n) real GEMM per chunk (`nedelec_blocks_3d`), never physical basis values.
+- `element_blocks_csr` (assembly3d): several block arrays over one element dof list -> CSRs from one slot map
+  (`_coo_slots`: COO -> CSR of the entry numbers with duplicates kept, a row sort, a bincount per matrix) and an
+  optional free restriction at COO level; FEMPhysics3D sums K, M, W this way (window then PML elements, one order).
 - Square assemblies (`_assemble` with test is trial, assembly3d `_assemble_lagrange`) go through `blocks_csr`: after
   PATTERN_REUSE_CALLS calls on one element row list of a dof map (`kept_block_pattern`, weak per map) the blocks are
   summed into the kept FixedPatternCsr slots, else COO -> CSR. `_to_csr` converts with int32 indices below 2^31; tocsr

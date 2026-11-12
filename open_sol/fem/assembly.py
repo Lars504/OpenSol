@@ -212,7 +212,19 @@ class CsrAccumulator:
 
 def pattern_sum(matrices):
     """CSR sum of same-shape sparse matrices keeping every stored entry (explicit zeros too): scipy `a + b` drops exact
-    zero results, so its pattern would depend on the values (dimension-free)."""
+    zero results, so its pattern would depend on the values (dimension-free). Canonical CSRs on one pattern (terms
+    assembled on a kept FixedPatternCsr) sum their values only (no COO round trip)."""
+    import scipy.sparse
+    first = matrices[0]
+    if all(scipy.sparse.issparse(matrix) and matrix.format == 'csr' and matrix.shape == first.shape
+           for matrix in matrices) and first.has_canonical_format and all(
+            matrix.indices is first.indices or (np.array_equal(matrix.indptr, first.indptr)
+                                                and np.array_equal(matrix.indices, first.indices))
+            for matrix in matrices[1:]):
+        data = np.zeros(first.indices.size, dtype=np.result_type(*(matrix.dtype for matrix in matrices)))
+        for matrix in matrices:
+            data += matrix.data
+        return scipy.sparse.csr_matrix((data, first.indices.copy(), first.indptr.copy()), shape=first.shape)
     parts = [matrix.tocoo() for matrix in matrices]
     return _to_csr([part.row for part in parts], [part.col for part in parts], [part.data for part in parts],
                    parts[0].shape)

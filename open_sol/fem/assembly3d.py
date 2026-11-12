@@ -17,6 +17,7 @@ numpy, scipy inside functions."""
 # blocks by bincount instead of COO -> CSR (same canonical pattern, explicit zeros kept).
 import functools
 import hashlib
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -74,84 +75,168 @@ def coefficient_at(coefficient, points, elements, n_elements, n_points) -> np.nd
     return values
 
 
-def _component_blocks(test_vectors, trial_vectors) -> np.ndarray:
-    """(m, n_test, n_trial) sum over points and components of test_i . trial_j, vectors (m, q, n, 3): one batched
-    matmul over (point, component)."""
-    count = len(test_vectors)
-    test = np.ascontiguousarray(test_vectors.swapaxes(-1, -2)).reshape(count, -1, test_vectors.shape[2])
-    trial = np.ascontiguousarray(trial_vectors.swapaxes(-1, -2)).reshape(count, -1, trial_vectors.shape[2])
-    return test.swapaxes(1, 2) @ trial
-
-
 def assemble_nedelec_3d(dofs, curl_coefficient=None, mass_coefficient=None, elements=None, degree=None) -> tuple:
     """(K, M) scipy CSR (n_dofs, n_dofs): K = int curl W_i . nu curl W_j, M = int W_i . eps W_j over `elements` (None =
     all, indices or a bool mask) with diagonal-tensor coefficients nu = curl_coefficient, eps = mass_coefficient (None
-    skips that matrix: None returned); rule degree default 2 x the Nedelec degree. Element-constant coefficients take
-    the affine reference form (J^T nu J / |det J| resp. |det J| J^-1 eps J^-T against 9 reference products); callables
-    are integrated point by point."""
-    import scipy.sparse
+    skips that matrix: None returned); rule degree default 2 x the Nedelec degree (nedelec_blocks_3d); K and M share
+    one COO -> CSR slot map (element_blocks_csr)."""
+    elements, curl_blocks, mass_blocks = nedelec_blocks_3d(dofs, curl_coefficient, mass_coefficient, elements, degree)
+    return element_blocks_csr(dofs.n_dofs, dofs.element_dofs[elements], (curl_blocks, mass_blocks))
+
+
+def nedelec_blocks_3d(dofs, curl_coefficient=None, mass_coefficient=None, elements=None, degree=None) -> tuple:
+    """(elements (m,) int64 ascending, K blocks (m, n, n) or None, M blocks or None) of assemble_nedelec_3d before the
+    sparse sum. Every block is T_ab against reference products (module constant _NEDELEC_PAIRS): T = P^T nu P |det J|
+    per element (affine form) or per rule point (callables), P = J / det J for curls, J^-T for vectors."""
     if dofs.family != 'nedelec':
         raise ValueError('assemble_nedelec_3d needs a Nedelec dof map')
     mesh = dofs.mesh
     elements = _element_list(mesh, elements)
     rule_degree = 2 * dofs.order if degree is None else int(degree)
     rule = tetrahedron_rule(rule_degree)
-    n_points = len(rule.weights)
-    reference_vectors, reference_curls = nedelec_basis_3d(dofs.order, rule.points)
     needs_points = callable(curl_coefficient) or callable(mass_coefficient)
-    n_local = dofs.n_local
-    rows, columns, curl_blocks, mass_blocks = [], [], [], []
+    curl_blocks, mass_blocks = [], []
     for chunk, geometry in element_chunks_3d(mesh, elements):
-        weights = np.abs(geometry.determinant)[:, None] * rule.weights[None, :]   # (m, q)
+        absolute = np.abs(geometry.determinant)
         points = geometry.points(rule.points) if needs_points else None
-        local = dofs.element_dofs[chunk]
-        rows.append(np.repeat(local, n_local, axis=1).ravel())
-        columns.append(np.tile(local, (1, n_local)).ravel())
-        if curl_coefficient is not None and not callable(curl_coefficient):
-            nu = coefficient_at(curl_coefficient, None, chunk, mesh.n_elements, 1)[:, 0]   # (m, 3)
-            jacobian = geometry.jacobian
-            mapped = (np.einsum('mca,mc,mcb->mab', jacobian, nu, jacobian)
-                      / np.abs(geometry.determinant)[:, None, None])
-            curl_blocks.append((mapped.reshape(len(chunk), 9)
-                                @ _nedelec_reference_products(dofs.order, rule_degree, 'curl')).ravel())
-        elif curl_coefficient is not None:
-            curls = piola_curls_3d(reference_curls, geometry)
-            nu = coefficient_at(curl_coefficient, points, chunk, mesh.n_elements, n_points) * weights[..., None]
-            curl_blocks.append(_component_blocks(curls * nu[:, :, None, :], curls).ravel())
-        if mass_coefficient is not None and not callable(mass_coefficient):
-            eps = coefficient_at(mass_coefficient, None, chunk, mesh.n_elements, 1)[:, 0]   # (m, 3)
-            inverse = geometry.inverse
-            mapped = (np.einsum('mac,mc,mbc->mab', inverse, eps, inverse)
-                      * np.abs(geometry.determinant)[:, None, None])
-            mass_blocks.append((mapped.reshape(len(chunk), 9)
-                                @ _nedelec_reference_products(dofs.order, rule_degree, 'mass')).ravel())
-        elif mass_coefficient is not None:
-            vectors = piola_vectors_3d(reference_vectors, geometry)
-            eps = coefficient_at(mass_coefficient, points, chunk, mesh.n_elements, n_points) * weights[..., None]
-            mass_blocks.append(_component_blocks(vectors * eps[:, :, None, :], vectors).ravel())
-    rows = np.concatenate(rows) if rows else np.zeros(0, dtype=np.int64)
-    columns = np.concatenate(columns) if columns else np.zeros(0, dtype=np.int64)
-    shape = (dofs.n_dofs, dofs.n_dofs)
+        weights = absolute[:, None] * rule.weights[None, :] if needs_points else None   # (m, q)
+        context = (chunk, mesh.n_elements, points, weights, absolute, dofs.order, rule_degree)
+        if curl_coefficient is not None:
+            curl_maps = geometry.jacobian / geometry.determinant[:, None, None]   # physical curl = P reference curl
+            curl_blocks.append(_mapped_blocks(curl_coefficient, curl_maps, 'curl', *context))
+        if mass_coefficient is not None:
+            mass_maps = geometry.inverse.swapaxes(1, 2)   # physical vector = J^-T reference vector
+            mass_blocks.append(_mapped_blocks(mass_coefficient, mass_maps, 'mass', *context))
+    n_local = dofs.n_local
 
-    def matrix(blocks):
-        if not blocks:
-            return scipy.sparse.csr_matrix(shape)
-        return _to_csr([rows], [columns], [np.concatenate(blocks)], shape)
+    def stacked(blocks, coefficient):
+        if coefficient is None:
+            return None
+        return np.concatenate(blocks) if blocks else np.zeros((0, n_local, n_local))
 
-    return (None if curl_coefficient is None else matrix(curl_blocks),
-            None if mass_coefficient is None else matrix(mass_blocks))
+    return elements, stacked(curl_blocks, curl_coefficient), stacked(mass_blocks, mass_coefficient)
+
+
+# symmetric component pairs (a, b), a <= b, of T_ab = sum_c P_ca nu_c P_cb: T is symmetric, so the 9 products W_i[a]
+# W_j[b] fold to 6 (an off-diagonal pair carries W_i[a] W_j[b] + W_i[b] W_j[a])
+_NEDELEC_PAIRS = ((0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2))
+_PAIR_FIRST = np.array([pair[0] for pair in _NEDELEC_PAIRS])
+_PAIR_SECOND = np.array([pair[1] for pair in _NEDELEC_PAIRS])
+
+
+def _mapped_blocks(coefficient, maps, kind, chunk, n_elements, points, weights, absolute, order, degree) -> np.ndarray:
+    """(m, n, n) blocks of one chunk: T (m, [q,] 6) of the maps P (m, 3, 3) and the diagonal coefficient, then one
+    (m, [q] 6) @ ([q] 6, n n) product against the reference products (the point products for a callable)."""
+    pair_maps = maps[:, :, _PAIR_FIRST] * maps[:, :, _PAIR_SECOND]   # (m, 3 c, 6): P_ca P_cb
+    if callable(coefficient):
+        values = coefficient_at(coefficient, points, chunk, n_elements, weights.shape[1]) * weights[..., None]
+        products = _nedelec_point_products(order, degree, kind)            # (q 6, n n)
+    else:
+        values = coefficient_at(coefficient, None, chunk, n_elements, 1) * absolute[:, None, None]   # (m, 1, 3)
+        products = _nedelec_pair_products(order, degree, kind)             # (6, n n)
+    tensor = np.einsum('mqc,mck->mqk', values, pair_maps).reshape(len(maps), -1)
+    if np.iscomplexobj(tensor):   # two real GEMMs (a complex one would upcast the real products per call)
+        blocks = np.empty((len(maps), products.shape[1]), dtype=np.complex128)
+        blocks.real = np.ascontiguousarray(tensor.real) @ products
+        blocks.imag = np.ascontiguousarray(tensor.imag) @ products
+    else:
+        blocks = tensor @ products
+    n_local = math.isqrt(products.shape[1])
+    return blocks.reshape(len(maps), n_local, n_local)
 
 
 @functools.lru_cache(maxsize=None)
-def _nedelec_reference_products(order, degree, kind) -> np.ndarray:
-    """Read-only (9, n n) reference integrals at tetrahedron_rule(degree), row 3 a + b: 'mass' sum_q w W_i[a] W_j[b],
-    'curl' sum_q w curl W_i[a] curl W_j[b] (no signs: ascending node orientation)."""
+def _nedelec_point_products(order, degree, kind) -> np.ndarray:
+    """Read-only (q 6, n n) reference products per point of tetrahedron_rule(degree), row 6 point + pair (_NEDELEC_PAIRS
+    order): 'mass' W_i[a] W_j[b] (+ W_i[b] W_j[a] for a != b), 'curl' the same of curl W (no weights, no signs:
+    ascending node orientation)."""
     rule = tetrahedron_rule(degree)
     vectors, curls = nedelec_basis_3d(order, rule.points)   # (q, n, 3) each
     basis = vectors if kind == 'mass' else curls
-    products = np.einsum('q,qia,qjb->abij', rule.weights, basis, basis).reshape(9, -1)
-    products.flags.writeable = False
-    return products
+    products = np.einsum('qia,qjb->qabij', basis, basis)    # (q, 3, 3, n, n)
+    folded = products[:, _PAIR_FIRST, _PAIR_SECOND]         # (q, 6, n, n)
+    off_diagonal = _PAIR_FIRST != _PAIR_SECOND
+    folded[:, off_diagonal] += products[:, _PAIR_SECOND[off_diagonal], _PAIR_FIRST[off_diagonal]]
+    folded = np.ascontiguousarray(folded.reshape(len(rule.weights) * len(_NEDELEC_PAIRS), -1))
+    folded.flags.writeable = False
+    return folded
+
+
+@functools.lru_cache(maxsize=None)
+def _nedelec_pair_products(order, degree, kind) -> np.ndarray:
+    """Read-only (6, n n) rule-weighted sums over the points of _nedelec_point_products (the affine form)."""
+    point_products = _nedelec_point_products(order, degree, kind)
+    weights = tetrahedron_rule(degree).weights
+    summed = np.ascontiguousarray(np.einsum('q,qkx->kx', weights, point_products.reshape(len(weights), 6, -1)))
+    summed.flags.writeable = False
+    return summed
+
+
+def element_blocks_csr(n_dofs, element_dofs, block_arrays, free=None) -> tuple:
+    """Canonical CSRs (explicit zeros kept) of square element blocks (m, n, n) over element_dofs (m, n), one per array of
+    block_arrays (None stays None), all from one COO -> CSR slot map; free (sorted dof indices): only their rows /
+    columns, renumbered (the free-free restriction of every matrix at once)."""
+    import scipy.sparse
+    element_dofs = np.asarray(element_dofs)
+    count, n_local = element_dofs.shape
+    n_entries = count * n_local * n_local
+    index_dtype = np.int32 if max(int(n_dofs), n_entries) < 2 ** 31 else np.int64
+    element_dofs = element_dofs.astype(index_dtype, copy=False)
+    rows = np.repeat(element_dofs, n_local, axis=1).ravel()   # block entry (e, i, j): row dof i, column dof j
+    columns = np.tile(element_dofs, (1, n_local)).ravel()
+    take, n_rows = None, int(n_dofs)
+    if free is not None:
+        free = np.asarray(free)
+        renumber = np.full(int(n_dofs), -1, dtype=index_dtype)
+        renumber[free] = np.arange(free.size, dtype=index_dtype)
+        rows, columns = renumber[rows], renumber[columns]
+        take = np.flatnonzero((rows >= 0) & (columns >= 0))
+        rows, columns, n_rows = rows[take], columns[take], int(free.size)
+    shape = (n_rows, n_rows)
+    slots, indptr, indices = _coo_slots(rows, columns, shape, index_dtype)
+    del rows, columns
+    matrices = []
+    for blocks in block_arrays:
+        if blocks is None:
+            matrices.append(None)
+            continue
+        values = np.asarray(blocks).reshape(-1)
+        if values.size != n_entries:
+            raise ValueError(f'element_blocks_csr: {values.size} block values for {count} elements of {n_local} dofs')
+        if take is not None:
+            values = values[take]
+        data = np.bincount(slots, weights=np.ascontiguousarray(values.real, dtype=np.float64), minlength=indices.size)
+        if np.iscomplexobj(values):
+            data = data + 1j * np.bincount(slots, weights=np.ascontiguousarray(values.imag, dtype=np.float64),
+                                           minlength=indices.size)
+        matrix = scipy.sparse.csr_matrix((data, indices.copy(), indptr.copy()), shape=shape)
+        matrix.has_canonical_format = True
+        matrices.append(matrix)
+    return tuple(matrices)
+
+
+def _coo_slots(rows, columns, shape, index_dtype) -> tuple:
+    """(slots (k,) int64 = data position of every COO entry, indptr, indices) of the canonical CSR pattern of COO (rows,
+    columns): one COO -> CSR of the entry numbers keeping duplicates, a per-row sort, duplicates sharing a slot."""
+    import scipy.sparse
+    if not rows.size:
+        return np.zeros(0, dtype=np.int64), np.zeros(shape[0] + 1, dtype=index_dtype), np.zeros(0, dtype=index_dtype)
+    entries = scipy.sparse.coo_matrix((np.arange(rows.size, dtype=np.float64), (rows, columns)), shape=shape)
+    entries.has_canonical_format = True   # tocsr then skips sum_duplicates: every entry number stays its own value
+    grouped = entries.tocsr()
+    grouped.sort_indices()
+    order = grouped.data.astype(np.int64)   # COO entry at each grouped position
+    sorted_columns, starts = grouped.indices, grouped.indptr
+    opens = np.empty(order.size, dtype=bool)   # the position opens a new slot
+    opens[0] = True
+    np.not_equal(sorted_columns[1:], sorted_columns[:-1], out=opens[1:])
+    row_starts = starts[:-1][starts[:-1] < starts[1:]]
+    opens[row_starts] = True
+    position_slots = np.cumsum(opens, dtype=np.int64) - 1
+    slots = np.empty(order.size, dtype=np.int64)
+    slots[order] = position_slots
+    indptr = np.concatenate([[0], position_slots + 1])[starts].astype(index_dtype)
+    return slots, indptr, sorted_columns[opens].astype(index_dtype, copy=False)
 
 
 # ---- Lagrange coefficients ----

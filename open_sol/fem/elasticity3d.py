@@ -10,8 +10,10 @@ elements; host numpy, scipy / core.backend inside functions."""
 # The matrices keep the full vector numbering (3 x the scalar map's dofs); rows of dofs no listed element touches stay
 # empty, callers restrict to their free dofs (as fem.assembly3d). The elastic stiffness sums its blocks into the block
 # pattern of fem.fixed_pattern.kept_pattern (scalar pattern x dense 3 x 3 blocks, kept per mesh and element set; slots
-# searched per chunk, no kept slot map), the same base TangentAssembler3D groups; the other matrices sum COO into CSR in
-# batches (fem.assembly.CsrAccumulator) so the assembly peak stays bounded (P2: 900 entries per element). Symmetric
+# searched per chunk, no kept slot map), the same base TangentAssembler3D groups; the geometric stiffness sums its
+# scalar blocks x I3 into that pattern too while it is kept (the pencil K + K_sigma is then a same-pattern sum); the other
+# matrices sum COO into CSR in batches (fem.assembly.CsrAccumulator) so the assembly peak stays bounded (P2: 900
+# entries per element). Symmetric
 # element products (B^T C B, the tangent) multiply only the column groups on and below the diagonal
 # (_symmetric_operator_blocks, SYMMETRIC_COLUMN_GROUPS) and mirror the rest.
 import numpy as np
@@ -21,7 +23,7 @@ from .assembly3d import (CHUNK_ELEMENTS, _element_list, _rule_degree, _volume_we
                          assemble_lagrange_load_3d, assemble_lagrange_mass_3d, element_chunks_3d)
 from .elasticity import _fixed_field, as_stress_field, component_dofs, fixed_stress_at, stress_degree
 from .elements3d import LOCAL_EDGES, REFERENCE_VERTICES_3D, lagrange_basis_3d, piola_vectors_3d, tetrahedron_geometry
-from .fixed_pattern import kept_pattern, scatter_add
+from .fixed_pattern import kept_pattern, kept_pattern_if_any, scatter_add
 from .quadrature3d import tetrahedron_rule
 from .tangent_kernel3d import element_bytes, element_force_tangent_3d, kernel_fits
 
@@ -45,6 +47,9 @@ TANGENT_DEVICE_CHUNK_BYTES = 2 ** 30
 TANGENT_DEVICE_CHUNK_SHARE = 0.25
 # column groups of the symmetric element products: (groups + 1) / (2 groups) of the full matmul flops, groups launches
 SYMMETRIC_COLUMN_GROUPS = 3
+# elements from which assemble_elastic_stiffness_3d runs the numba element kernel although numba is not imported yet
+# (import + cache load ~1 s against ~10 us per P2 element of batched numpy products saved; a guess)
+ELEMENT_KERNEL_COLD_ELEMENTS = 50_000
 
 
 def tangent_chunk_element_bytes(n_local, points, element_kernel=False) -> int:
@@ -147,10 +152,24 @@ def _stretched(gradients, weights, stretch, geometry, rule, chunk) -> tuple:
     return gradients / stretches[:, :, None, :], weights * np.prod(stretches, axis=-1)
 
 
-def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, stretch=None):
+def _stiffness_element_kernel(n_elements, stretch, element_kernel) -> bool:
+    """True when assemble_elastic_stiffness_3d runs the numba element kernel (tangent_kernel3d at u = 0, no S0): a real
+    stiffness, numba available and loaded already or n_elements >= ELEMENT_KERNEL_COLD_ELEMENTS (element_kernel None),
+    or forced (True; False: the batched numpy products)."""
+    if stretch is not None or element_kernel is False:
+        return False
+    import sys
+    if element_kernel is None and 'numba' not in sys.modules and n_elements < ELEMENT_KERNEL_COLD_ELEMENTS:
+        return False
+    from .tangent_kernel3d import ELEMENT_TANGENT_3D
+    return ELEMENT_TANGENT_3D.host_kind == 'numba'
+
+
+def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, stretch=None, element_kernel=None):
     """CSR (3 n, 3 n) of int B^T C B dV over `elements` (None / indices / bool mask); material (n_elements, 6, 6)
     Voigt stiffness per mesh element (isotropic_matrix_3d / voigt_matrix_3d); rule degree default 2 (order - 1), + 2
-    with a PML stretch (_stretched: complex symmetric, d/dx_i -> d/dx_i / s_i, dV -> s_x s_y s_z dV)."""
+    with a PML stretch (_stretched: complex symmetric, d/dx_i -> d/dx_i / s_i, dV -> s_x s_y s_z dV). element_kernel:
+    _stiffness_element_kernel (None: by numba and size)."""
     _require_vector(dofs, 'assemble_elastic_stiffness_3d')
     mesh = dofs.mesh
     material = _material_3d(material, mesh.n_elements)
@@ -163,14 +182,19 @@ def assemble_elastic_stiffness_3d(dofs, material, elements=None, degree=None, st
     _, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
     pattern = kept_pattern(mesh, n_vector, dofs.element_dofs[elements], block=COMPONENTS)
     data = np.zeros(pattern.nnz, dtype=np.float64 if stretch is None else np.complex128)
+    kernel = _stiffness_element_kernel(len(elements), stretch, element_kernel)
+    zero_displacement = np.zeros((CHUNK_ELEMENTS, dofs.n_local, COMPONENTS)) if kernel else None
     for chunk, geometry in element_chunks_3d(mesh, elements):
         gradients, weights = _stretched(piola_vectors_3d(reference_gradients, geometry), _volume_weights(geometry, rule),
                                         stretch, geometry, rule, chunk)
-        operator = strain_operator_3d(gradients)                                       # (m, q, 6, 3 n)
-        stress_operator = np.matmul(material[chunk][:, None], operator)                # C B
+        if kernel:   # the tangent at u = 0 without S0 = B^T C B (prange over the chunk's elements)
+            blocks = element_force_tangent_3d(gradients, weights, zero_displacement[:len(chunk)], material[chunk])[1]
+        else:
+            operator = strain_operator_3d(gradients)                                   # (m, q, 6, 3 n)
+            stress_operator = np.matmul(material[chunk][:, None], operator)            # C B
+            blocks = _symmetric_operator_blocks(operator, stress_operator, weights)
         # chunk rows of the element dofs the kept pattern was built from (its digest): no slot check needed
-        pattern.add_elements(data, dofs.element_dofs[chunk],
-                             _symmetric_operator_blocks(operator, stress_operator, weights), check=False)
+        pattern.add_elements(data, dofs.element_dofs[chunk], blocks, check=False)
     return pattern.full(data, copy_pattern=True)
 
 
@@ -447,7 +471,9 @@ def _scalar_geometric_blocks(gradients, stress, weights) -> np.ndarray:
 
 def assemble_geometric_stiffness_3d(dofs, stress, elements=None, degree=None, stretch=None):
     """CSR (3 n, 3 n) K_sigma = (int grad N_a . sigma grad N_b dV) x I3 over `elements`; stress a fem.elasticity
-    StressField or its prescribed forms; PML stretch as assemble_elastic_stiffness_3d (complex symmetric, rule + 2)."""
+    StressField or its prescribed forms; PML stretch as assemble_elastic_stiffness_3d (complex symmetric, rule + 2).
+    On the kept pattern of a K of the same elements (assemble_elastic_stiffness_3d before) K_sigma takes K's pattern
+    (explicit zeros off the component diagonal), so K + K_sigma (pattern_sum) sums values only."""
     from scipy.sparse import identity, kron
     _require_vector(dofs, 'assemble_geometric_stiffness_3d')
     field = as_stress_field(stress)
@@ -456,14 +482,32 @@ def assemble_geometric_stiffness_3d(dofs, stress, elements=None, degree=None, st
     default = 2 * dofs.order - 2 + stress_degree(field, dofs.order) + (2 if stretch is not None else 0)
     rule = tetrahedron_rule(_rule_degree(default, degree))
     _, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
+    pattern = (kept_pattern_if_any(mesh, COMPONENTS * dofs.n_dofs, dofs.element_dofs[elements], block=COMPONENTS)
+               if len(elements) else None)
+    if pattern is not None:
+        data = np.zeros(pattern.nnz, dtype=np.float64 if stretch is None else np.complex128)
     accumulator = CsrAccumulator((dofs.n_dofs, dofs.n_dofs))
     for chunk, geometry in element_chunks_3d(mesh, elements):
         physical = piola_vectors_3d(reference_gradients, geometry)
         stress_values = _stress_at_3d(field, dofs, chunk, geometry.points(rule.points), physical)
         gradients, weights = _stretched(physical, _volume_weights(geometry, rule), stretch, geometry, rule, chunk)
-        accumulator.add(np.asarray(dofs.element_dofs[chunk], dtype=np.int64),
-                        _scalar_geometric_blocks(gradients, stress_values, weights))
+        blocks = _scalar_geometric_blocks(gradients, stress_values, weights)
+        if pattern is None:
+            accumulator.add(np.asarray(dofs.element_dofs[chunk], dtype=np.int64), blocks)
+        else:   # element dofs of the pattern's own build: no slot check needed
+            pattern.add_elements(data, dofs.element_dofs[chunk], _component_identity_blocks(blocks), check=False)
+    if pattern is not None:
+        return pattern.full(data, copy_pattern=True)
     return kron(accumulator.result(), identity(COMPONENTS), format='csr')
+
+
+def _component_identity_blocks(blocks) -> np.ndarray:
+    """(m, 3 r, 3 r) blocks x I3 on the interleaved vector dofs (3 d + component) of scalar blocks (m, r, r)."""
+    m, size, _ = blocks.shape
+    expanded = np.zeros((m, size, COMPONENTS, size, COMPONENTS), dtype=blocks.dtype)
+    for component in range(COMPONENTS):
+        expanded[:, :, component, :, component] = blocks
+    return expanded.reshape(m, COMPONENTS * size, COMPONENTS * size)
 
 
 def initial_stress_force_3d(dofs, stress, elements=None, degree=None) -> np.ndarray:

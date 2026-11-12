@@ -596,19 +596,22 @@ def cudss_factorization(host_operator, back_end, previous=None, real=False, symm
 
 
 # DevicePencil pool bytes per stored entry of the full pattern beside its term values: the factor's device index maps
-# (rows, columns, lower take, the lower triangle's rows / indices; refactorize_device_values / _lower) and one
-# frequency's transients (the combined lower values, |E| of the lazy norm; complex128)
+# (refactorize_device_values: rows, columns, lower take, the lower triangle's rows / indices; a lower-stored pencil's
+# refactorize_device_lower: the lower triangle's rows / indices alone) and one frequency's transients (the combined
+# values and the product of the term being added to them, DevicePencil.combined; complex128)
 DEVICE_PENCIL_MAP_BYTES = 14
 DEVICE_PENCIL_TRANSIENT_BYTES = 32
 LOWER_STORED_FRACTION = 0.55   # lower triangle + diagonal / all entries of a symmetric FEM pattern (rounded up)
+DEVICE_PENCIL_LOWER_MAP_BYTES = 8 * LOWER_STORED_FRACTION
 
 
 def device_pencil_bytes(entries, term_value_bytes, symmetric=False) -> int:
     """Estimated pool bytes of a DevicePencil of `entries` stored entries whose terms take term_value_bytes (one value
     size per term, e.g. (16, 8) for complex K and real M) plus its factor's maps and per-frequency transients; a
-    symmetric pencil keeps its terms on the lower triangle only (R4)."""
+    symmetric pencil keeps its terms on the lower triangle only (R4) and its factor the lower triangle's maps."""
     term_bytes = sum(int(size) for size in term_value_bytes) * (LOWER_STORED_FRACTION if symmetric else 1.0)
-    return int(math.ceil(int(entries) * (term_bytes + DEVICE_PENCIL_MAP_BYTES + DEVICE_PENCIL_TRANSIENT_BYTES)))
+    map_bytes = DEVICE_PENCIL_LOWER_MAP_BYTES if symmetric else DEVICE_PENCIL_MAP_BYTES
+    return int(math.ceil(int(entries) * (term_bytes + map_bytes + DEVICE_PENCIL_TRANSIENT_BYTES)))
 
 
 class DevicePencil:
@@ -624,14 +627,24 @@ class DevicePencil:
         self.indptr, self.indices = np.asarray(indptr), np.asarray(indices)
         self.n_rows = int(self.indptr.size) - 1
         self._host_rows = csr_rows(self.indptr)   # host int64 row of every stored entry (slots, symmetry, mirror)
-        terms = [cp.asarray(values).reshape(-1) for values in term_values]
+        terms = [(values if isinstance(values, np.ndarray) else cp.asarray(values)).reshape(-1)
+                 for values in term_values]
         if any(term.size != self.indices.size for term in terms):
             raise ValueError(f'DevicePencil: every term needs {self.indices.size} values (one per stored entry)')
-        self.symmetric = bool(symmetric) and (bool(symmetric_known) or self._terms_symmetric(terms))
+        vouched = bool(symmetric) and bool(symmetric_known)
+        if not vouched:   # the symmetry check and a full-pattern pencil read every entry on the device
+            terms = [cp.asarray(term) for term in terms]
+        self.symmetric = vouched or (bool(symmetric) and self._terms_symmetric(terms))
         self.lower_stored = self.symmetric
         if self.lower_stored:
-            lower = cp.asarray(np.flatnonzero(self.indices <= self._host_rows))
-            terms = [term[lower] for term in terms]
+            host_lower = np.flatnonzero(self.indices <= self._host_rows)
+            device_lower = None
+            for index, term in enumerate(terms):
+                if isinstance(term, np.ndarray):   # vouched host values: only the lower triangle is uploaded
+                    terms[index] = cp.asarray(term[host_lower])
+                else:
+                    device_lower = cp.asarray(host_lower) if device_lower is None else device_lower
+                    terms[index] = term[device_lower]
         self.stored_terms = terms
         self.device_bytes = sum(int(term.nbytes) for term in self.stored_terms)
         self._full_take = None   # lower_stored: device (nnz,) stored-layout position of every full-pattern entry (lazy)
@@ -1264,6 +1277,9 @@ class DiffusionDirectSolver(ExactSolveRecord):
         # window cell shape of a tensor-grid DiffusionSystem (its prepare; None elsewhere): a 3D window starts SuperLU
         # from grid_nested_dissection instead of minimum degree (fill ~ n^(4/3) on 7-point stencils)
         self.grid_shape = None
+        # False: factorize_host_operator asks cuDSS / MUMPS / PARDISO for a symmetric indefinite LDL^T instead of the SPD
+        # request, the kind of a shifted pencil that refactorises the detached factor (mechanics stress stiffening)
+        self.positive_definite = True
 
     def _refuse_cusolver_qr(self, back_end) -> None:
         if back_end == 'cusolver_qr':
@@ -1303,7 +1319,8 @@ class DiffusionDirectSolver(ExactSolveRecord):
             start = time.perf_counter()
             try:
                 factor = cudss_factorization(host_operator, back_end, previous=self._factor, real=True,
-                                             positive_definite=True, symmetric_known=symmetric_known)
+                                             symmetric=not self.positive_definite,
+                                             positive_definite=self.positive_definite, symmetric_known=symmetric_known)
                 self._factor = self.runtime._counted(factor, start)
                 self._device_operator = None
                 return
@@ -1379,14 +1396,15 @@ class DiffusionDirectSolver(ExactSolveRecord):
             raise ValueError(f'{self.label()}: {diffusion_size_issue(n_unknowns, back_end=back_end)[1]}')
         start = time.perf_counter()
         previous = self._factor if is_host_direct_factor(self._factor) else None
+        definite = self.positive_definite   # False: LDL^T, the kind of a pencil refactorising the detached factor
         if symmetric_known:   # a canonical symmetric CSR (FEM Newton tangents): no copy, compare or asymmetry check
             csr = host_operator.tocsr()
             factor = host_direct_values_factorization(csr.data, csr.indptr, csr.indices, back_end, previous=previous,
-                                                      real=True, symmetric_known=True, defer_check=defer_check,
-                                                      positive_definite=True)
+                                                      real=True, symmetric=not definite, symmetric_known=True,
+                                                      defer_check=defer_check, positive_definite=definite)
         else:
             factor = host_direct_factorization(host_operator, back_end, previous=previous, real=True,
-                                               positive_definite=True)
+                                               symmetric=not definite, positive_definite=definite)
         factor.host_arrays = True
         self._factor = self.runtime._counted(factor, start)
         self._host_operator = host_operator.tocsr() if self.compute_residual else None
@@ -1400,6 +1418,13 @@ class DiffusionDirectSolver(ExactSolveRecord):
         if release is not None:
             release()
         self._host_operator = self._device_operator = None
+
+    def detach_factor(self):
+        """The factor (None without one), forgotten here without a release: the caller owns it now (releases it, or
+        hands it as previous= to a factorisation that refactorises it in place); the next solve needs a factorize."""
+        factor, self._factor = self._factor, None
+        self._host_operator = self._device_operator = None
+        return factor
 
     def solve(self, rhs, solution, reference=None) -> None:
         """solution[...] = A^-1 rhs (flat arrays of the backend); reference ignored (exact solve)."""

@@ -77,7 +77,7 @@ def assign_solver(spec, physics_name, role, solver_type_name, values, registry) 
     """Add a solver node of solver_type_name with the choice params of `values` (over the settings of the node the
     physics uses for `role` when it is of the same type) and assign it; returns the node name."""
     from open_sol.model.spec import SolverSpec
-    from dev_tools.time_profilers.solver_catalog import choice_names
+    from tools_profilers.time_profilers.solver_catalog import choice_names
     physics_spec = spec.physics_by_name(physics_name)
     nodes = {node.name: node for node in spec.solvers}
     current = nodes.get((physics_spec.solvers or {}).get(role) or '')

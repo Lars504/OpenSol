@@ -42,8 +42,9 @@ _POLE_ITEM_LABEL = 'dispersive poles (weights, cb, J / P)'
 # run-time recipe (calibrate from the selftest time_check of em3d_fdtd_cpu_gpu*, em3d_conformal_pec_cavity): a field
 # kernel launch (~40 arguments) costs ~3 profile launches of host overhead (gpu ~20 us vs the 6.7 us fused floor)
 _FIELD_LAUNCH_WEIGHT = 3
-# per-step launches of a feature (flux DFT: phase + 2 pairs x (E, H) per plane, a box 6 planes; pec_domain none)
-_FEATURE_LAUNCHES = {'flux_plane': 5, 'flux_box': 30, 'far_field': 30, 'mode_monitor': 5, 'mode_source': 6,
+# per-step launches of a feature (flux DFT: phase + 2 pairs x (E, H) per plane, a box 6 planes; mode source: one H and
+# one E pair launch of ~15 arguments; pec_domain none)
+_FEATURE_LAUNCHES = {'flux_plane': 5, 'flux_box': 30, 'far_field': 30, 'mode_monitor': 5, 'mode_source': 3,
                      'plane_wave_source': 10, 'dft_plane': 4, 'pec_domain': 0}
 _DEFAULT_FEATURE_LAUNCHES = 2
 _POLE_LAUNCHES = 6                     # per field set with poles: 3 drive + 3 correction kernels (one pole assumed)

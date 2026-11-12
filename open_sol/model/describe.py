@@ -1978,7 +1978,10 @@ def _solvers_section(registry, physics_types):
                                      for backend, (type_name, settings) in solver_role.backend_defaults.items()},
             'automatic_by_grid': {grid: {'type': type_name, 'settings': _plain(settings)}
                                   for grid, (type_name, settings) in solver_role.grid_defaults.items()},
-            'automatic_by_study': {f'{study} study, {grid} mesh': {'type': type_name, 'settings': _plain(settings)}
+            'automatic_by_study': {f"{study} study, {grid} mesh{backends}": {'type': type_name,
+                                                                              'settings': _plain(settings)}
+                                   for backends in [''.join(f', {name} backend'
+                                                            for name in solver_role.study_default_backends)]
                                    for (study, grid), (type_name, settings) in solver_role.study_defaults.items()},
             'auto_back_end_by_grid': dict(solver_role.auto_back_ends),
             'precisions': list(solver_role.precisions),

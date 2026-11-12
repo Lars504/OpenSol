@@ -20,9 +20,19 @@ MATERIAL_STATE_ARRAYS = ('youngs_modulus', 'poisson_ratio')
 
 class ElasticSystemBase:
     """Precision / tolerance settings, the run backend (xp / sparse / ndimage modules) and the solvers.pcg.PCGSolver of
-    an elastic window system; the convergence record is the PCGSolver's."""
+    an elastic window system (2D: or a sparse_direct runtime through DiffusionDirectSolver); the convergence record is
+    the linear solver's."""
+
+    accepts_direct = False   # 2D ElasticSystem: a sparse_direct runtime factorises A_solve
 
     def __init__(self, precision, tol, max_iter, label, compute_residual=False, linear_solver=None, backend='gpu'):
+        from ...solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver   # numpy only at module level
+        if isinstance(linear_solver, SparseDirectSolver):
+            linear_solver = DiffusionDirectSolver(linear_solver)   # PCGSolver protocol: factorize / solve
+        self.direct = isinstance(linear_solver, DiffusionDirectSolver)   # exact solves of a factor of A_solve
+        if self.direct and not self.accepts_direct:
+            raise ValueError(f'{label()}: the sparse_direct linear solver is not available on a 3D rectangular mesh; '
+                             'assign Automatic or a pcg node')
         if linear_solver is not None:   # the build's 'linear' solver (ctx.solvers): its precision, tol and limit win
             precision = SOLVER_DTYPE_NAMES[linear_solver.precision]
         if precision not in SOLVER_PRECISIONS:

@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]   # memory_profilers -> dev_tools -> repository
+ROOT = Path(__file__).resolve().parents[2]   # memory_profilers -> tools_profilers -> repository
 sys.path.insert(0, str(ROOT))
 OUT_DIR = Path(__file__).resolve().parent / 'out'
 SNAPSHOT_SLACK_BYTES = 64 * 1024   # a stage peak re-snapshots once it grew this much past its last snapshot

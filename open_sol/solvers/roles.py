@@ -59,11 +59,14 @@ class SolverRole:
     # {(study type name, grid kind): (type name, settings)}: Automatic in that study on that grid kind on every backend,
     # read first (fixed-dt 2D diffusion transients: a kept direct factor)
     study_defaults: dict = field(default_factory=dict)
+    # backends study_defaults apply on (() = every backend; 2D solid statics: the gpu only, its cuDSS factor)
+    study_default_backends: tuple = ()
 
     def automatic(self, backend='gpu', grid='tensor', study=None) -> tuple:
         """(SolverType name, settings dict) Automatic resolves to in the study (None: any) on the backend and grid
         kind."""
-        found = self.study_defaults.get((study, grid)) if study is not None else None
+        by_study = study is not None and (not self.study_default_backends or backend in self.study_default_backends)
+        found = self.study_defaults.get((study, grid)) if by_study else None
         type_name, settings = found if found is not None else self.grid_defaults.get(
             grid, self.backend_defaults.get(backend, (self.default_type, self.default_settings)))
         return type_name, dict(settings)
@@ -83,6 +86,7 @@ class SolverRole:
         _require_keys(owner, 'auto_back_ends keys', tuple(self.auto_back_ends), GRID_KINDS, allow_empty=True)
         _require_keys(owner, 'study_defaults grid kinds', tuple(grid for _, grid in self.study_defaults), GRID_KINDS,
                       allow_empty=True)
+        _require_keys(owner, 'study_default_backends', self.study_default_backends, BACKENDS, allow_empty=True)
         key = 'back_end' if 'back_end' in self.setting_choices else 'factorization'
         offered = self.setting_choices.get(key, ())
         for grid, back_end in self.auto_back_ends.items():

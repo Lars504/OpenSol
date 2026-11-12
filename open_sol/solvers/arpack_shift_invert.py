@@ -49,6 +49,9 @@ from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrd
 # from HOST_MATVEC_DEVICE_MIN_ENTRIES basis entries: host ARPACK costs 2-5 ns per basis entry and application, the device
 # path a fixed cost per application that grew with the host solve between reads (the GPU idles there: the read after
 # a 0.5 ms solve took ~0.15 ms, after a 30 ms one ~6.6 ms; 15:51 profiles, three reads per application then).
+# Host Krylov-Schur (eigs_host, _HostKrylovSchur): the same algorithm on numpy rows for solve_resonances around a host-only
+# factor, so its widening resumes too (host ARPACK restarted from a new start: the PARDISO Mie run's pass 2 at basis 160
+# was the larger part of ~620 applications of 80 ms); CGS2 costs ~4 basis passes per application on the host BLAS.
 # a count shift on an eigenvalue (singular factor) is retried once at sigma (1 + this)
 COUNT_SHIFT_NUDGE = 1e-9
 # ShiftPencils with fewer stored entries keep the host route on cuDSS too (factorize_host: host equilibration,
@@ -87,21 +90,87 @@ def _shift_factor_error(error, sigma) -> CudssAccuracyError:
                               f'(made at its first solve, inside ARPACK): {error}')
 
 
-def _pattern_keys(csr):
-    """Ascending int64 keys row * n + column of a canonical CSR's stored entries."""
-    return csr_rows(csr.indptr) * csr.shape[0] + csr.indices
+MERGE_COLD_ENTRIES = 2_000_000   # pattern entries from which the numba row merge runs although numba is not loaded yet
 
 
-def _values_on_pattern(keys, matrix):
-    """Values of a canonical CSR on the pattern of `keys` (_pattern_keys; zeros elsewhere), None when one of its stored
+def _merge_positions_host(base_indptr, base_indices, indptr, indices, positions) -> None:
+    """numpy form of the row merge (its arguments): positions[e] = slot of entry e of (indptr, indices) in the base
+    pattern, -1 outside it (one searchsorted of row * n + column keys; both canonical, same row count)."""
+    n_columns = max(int(base_indices.max()) if base_indices.size else 0, int(indices.max()) if indices.size else 0) + 1
+    base_keys = csr_rows(base_indptr) * n_columns + base_indices
+    keys = csr_rows(indptr) * n_columns + indices
+    if not base_keys.size:
+        positions[...] = -1
+        return
+    found = np.minimum(np.searchsorted(base_keys, keys), base_keys.size - 1)
+    positions[...] = np.where(base_keys[found] == keys, found, -1)
+
+
+def _merge_positions_numba(numba):
+    """Row-parallel merge of each row's sorted columns into the base row's (cost ~ both entry counts)."""
+    @numba.njit(parallel=True, cache=True)
+    def merge(base_indptr, base_indices, indptr, indices, positions):
+        for prange_row in numba.prange(indptr.size - 1):
+            row = np.int64(prange_row)
+            slot = np.int64(base_indptr[row])
+            end = np.int64(base_indptr[row + 1])
+            for entry in range(indptr[row], indptr[row + 1]):
+                column = indices[entry]
+                while slot < end and base_indices[slot] < column:
+                    slot += 1
+                if slot < end and base_indices[slot] == column:
+                    positions[entry] = slot
+                else:
+                    positions[entry] = -1
+    return merge
+
+
+def merge_positions(base_indptr, base_indices, indptr, indices, numba=None) -> np.ndarray:
+    """Int64 slot in the base pattern of every stored entry of a canonical CSR pattern (same rows), -1 outside it; numba
+    None: the numba twin once numba is loaded or from MERGE_COLD_ENTRIES base entries, True / False force one."""
+    import sys
+    from ..core.kernels import host_twin
+    twin = host_twin('solvers.pattern_merge', _merge_positions_host, _merge_positions_numba)
+    if numba is None:
+        numba = 'numba' in sys.modules or base_indices.size >= MERGE_COLD_ENTRIES
+    positions = np.empty(len(indices), dtype=np.int64)
+    (twin if numba else twin.cpu)(np.asarray(base_indptr), np.asarray(base_indices), np.asarray(indptr),
+                                  np.asarray(indices), positions)
+    return positions
+
+
+# stored mass entries from which a host ShiftPencil hands ARPACK the numba row-parallel M product instead of the scipy
+# CSR (one thread; ~16 ms per product at 8e6 entries); below, scipy's call overhead is the smaller cost
+MASS_PRODUCT_MIN_ENTRIES = 1_000_000
+
+
+def _csr_product_host(indptr, indices, data, vector, out) -> None:
+    """numpy form of the row-parallel CSR product (its arguments): out = A x by scipy."""
+    import scipy.sparse
+    n_rows = int(indptr.size) - 1
+    out[...] = scipy.sparse.csr_matrix((data, indices, indptr), shape=(n_rows, vector.size)) @ vector
+
+
+def _csr_product_numba(numba):
+    """out[i] += sum_k data[k] x[indices[k]] over row i (prange over rows; out zeros on entry; real or complex)."""
+    @numba.njit(parallel=True, cache=True)
+    def product(indptr, indices, data, vector, out):
+        for prange_row in numba.prange(indptr.size - 1):
+            row = np.int64(prange_row)
+            total = out[row]   # zeros from the caller: the output dtype
+            for entry in range(indptr[row], indptr[row + 1]):
+                total += data[entry] * vector[indices[entry]]
+            out[row] = total
+    return product
+
+
+def _values_on_pattern(base, matrix):
+    """Values of a canonical CSR on the canonical pattern of `base` (zeros elsewhere), None when one of its stored
     entries lies outside that pattern (FEM: the mass pattern lies inside the stiffness one)."""
-    matrix_keys = _pattern_keys(matrix)
-    if not keys.size:
-        return None if matrix_keys.size else np.zeros(0, dtype=matrix.dtype)
-    positions = np.minimum(np.searchsorted(keys, matrix_keys), keys.size - 1)
-    if not np.array_equal(keys[positions], matrix_keys):
+    positions = merge_positions(base.indptr, base.indices, matrix.indptr, matrix.indices)
+    if positions.size and int(positions.min()) < 0:
         return None
-    values = np.zeros(keys.size, dtype=matrix.dtype)
+    values = np.zeros(base.indices.size, dtype=matrix.dtype)
     values[positions] = matrix.data
     return values
 
@@ -123,21 +192,20 @@ class ShiftPencil:
         matrices = [canonical_csr(term, self.dtype) for term in stiffness_terms] + [canonical_csr(self.mass,
                                                                                                     self.dtype)]
         base = matrices[0]
-        keys = _pattern_keys(base)
-        term_values = [base.data] + [_values_on_pattern(keys, matrix) for matrix in matrices[1:]]
+        term_values = [base.data] + [_values_on_pattern(base, matrix) for matrix in matrices[1:]]
         if any(values is None for values in term_values):   # an entry outside the first term's pattern: merge them all
             terms = [pattern_combination(matrices, [float(index == position) for index in range(len(matrices))])
                      for position in range(len(matrices))]   # the same COO entries: one pattern, explicit zeros kept
             base, term_values = terms[0], [term.data for term in terms]
-            keys = _pattern_keys(base)
         # own index arrays: cuDSS matches a refreshed pattern by their identity (never modified in place), so a caller
         # changing its K afterwards cannot alias them; base.data is read, never modified
         self.indptr, self.indices = base.indptr.copy(), base.indices.copy()
         self.term_values = term_values
-        diagonal_keys = np.arange(self.n_rows, dtype=np.int64) * (self.n_rows + 1)
-        positions = np.minimum(np.searchsorted(keys, diagonal_keys), max(keys.size - 1, 0))
-        stored = keys[positions] == diagonal_keys if keys.size else np.zeros(self.n_rows, dtype=bool)
-        self.diagonals = [np.where(stored, values[positions], 0) if keys.size else np.zeros(self.n_rows, self.dtype)
+        rows = np.arange(self.n_rows, dtype=np.int64)
+        positions = merge_positions(base.indptr, base.indices, np.arange(self.n_rows + 1, dtype=np.int64), rows)
+        stored = positions >= 0
+        safe = np.where(stored, positions, 0)
+        self.diagonals = [np.where(stored, values[safe], 0) if values.size else np.zeros(self.n_rows, self.dtype)
                           for values in term_values]
         self.device = (None if device_runtime is None or self.indices.size < device_min_entries else
                        device_runtime.device_pencil(self.indptr, self.indices, self.term_values, symmetric=symmetric,
@@ -148,21 +216,36 @@ class ShiftPencil:
         """Forget the DevicePencil (a runtime fell back to SuperLU): host route and host M products from now on."""
         self.device = self._device_mass = None
 
+    def mass_product(self, vector, numba=None) -> np.ndarray:
+        """Host M x of a flat vector by the row-parallel CSR product (host twin 'solvers.csr_product'; scipy's is one
+        thread: ~16 ms per product of a 3D P2 vector mass, 116 per eigsh); numba False: the numpy twin (scipy)."""
+        from ..core.kernels import host_twin
+        twin = host_twin('solvers.csr_product', _csr_product_host, _csr_product_numba)
+        vector = np.ascontiguousarray(np.asarray(vector).reshape(-1))
+        out = np.zeros(self.n_rows, dtype=np.result_type(self.mass.dtype, vector.dtype))
+        mass = self.mass
+        (twin.cpu if numba is False else twin)(mass.indptr, mass.indices, mass.data, vector, out)
+        return out
+
     def device_mass(self):
-        """cupyx CSR of M on the pencil pattern from the DevicePencil's M term (built once: full_term mirrors a
-        lower-stored term, a full copy of M's values; + 4 B index per entry)."""
+        """cupyx CSR of M on its own pattern (the host M uploaded once): a vector FEM mass stores a third of the pencil
+        pattern's entries, and mirroring the lower-stored M term to the full pencil pattern (DevicePencil.full_term)
+        costs six int64 arrays of that pattern while it is built."""
         if self._device_mass is None:
-            import cupy as cp
             import cupyx.scipy.sparse
-            self._device_mass = cupyx.scipy.sparse.csr_matrix(
-                (self.device.full_term(-1), cp.asarray(self.indices.astype(np.int32, copy=False)),
-                 cp.asarray(self.indptr.astype(np.int32, copy=False))), shape=(self.n_rows, self.n_rows))
+            self._device_mass = cupyx.scipy.sparse.csr_matrix(self.mass)
         return self._device_mass
 
     def mass_operator(self):
-        """M for scipy: the host CSR, or on a DevicePencil a LinearOperator whose product runs on the device."""
+        """M for scipy: the host CSR (from MASS_PRODUCT_MIN_ENTRIES stored entries with numba a LinearOperator of the
+        row-parallel product, mass_product), or on a DevicePencil a LinearOperator whose product runs on the device."""
         if self.device is None:
-            return self.mass
+            from ..core.kernels import numba_available
+            if self.mass.nnz < MASS_PRODUCT_MIN_ENTRIES or not numba_available():
+                return self.mass
+            import scipy.sparse.linalg
+            return scipy.sparse.linalg.LinearOperator((self.n_rows, self.n_rows), dtype=self.dtype,
+                                                      matvec=self.mass_product)
         import cupy as cp
         import scipy.sparse.linalg
         device_mass = self.device_mass()
@@ -346,6 +429,8 @@ class ArpackShiftInvertSolver:
         self.symmetric_factor = False   # the last cudss factorisation is an LDL^T
         self.double_fallbacks = 0   # cudss_mixed factors rejected by their probe and replaced by double ones
         self.n_cudss_plans = 0      # cuDSS analyses of factorize_host (the pencil runtime counts its own)
+        self.n_cudss_reused_orderings = 0   # of those, plans on a kept ordering (cudss_factor "Ordering reuse")
+        self.total_cudss_plan_seconds = 0.0
         self.n_host_direct_analyses = 0   # MUMPS / PARDISO analyses (fallback re-analyses included)
         self.host_direct_threads = None   # the last host direct factor's library thread count
         self.orderings = SuperLUOrdering()   # SuperLU elimination order of the last pattern (shifts of one pencil)
@@ -353,7 +438,7 @@ class ArpackShiftInvertSolver:
         self.device_pencil_min_entries = DEVICE_PENCIL_MIN_ENTRIES
         self.mixed_min_unknowns = int(mixed_min_unknowns)   # S5c: cudss_mixed below this factors in double
         self.device_arnoldi = bool(device_arnoldi)
-        self.last_arnoldi = ''   # 'ARPACK' or 'device Krylov-Schur': the last eigs / eigs_device run (log texts)
+        self.last_arnoldi = ''   # 'ARPACK', 'device Krylov-Schur' or 'host Krylov-Schur' of the last run (log texts)
 
     def factorization_for(self, n_unknowns) -> str:
         """The factorization used for an operator of n_unknowns: cudss for a cudss_mixed request below
@@ -471,6 +556,8 @@ class ArpackShiftInvertSolver:
                 self.symmetric_factor = factor.symmetric
                 self.double_fallbacks += int(factor.last_double_fallback)
                 self.n_cudss_plans += int(not factor.last_plan_reused)
+                self.n_cudss_reused_orderings += factor.last_reused_orderings
+                self.total_cudss_plan_seconds += factor.last_plans_seconds
         if factor is None:
             factor = factorize_host(matrix, real=real, ordering=ordering, orderings=self.orderings)
         self.total_factor_seconds += time.perf_counter() - start
@@ -716,6 +803,31 @@ class ArpackShiftInvertSolver:
             self.n_unconverged += 1
         return theta, vectors, search.applications, converged, search.state()
 
+    def eigs_host(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0,
+                  max_restarts=MAX_RESTARTS, default_basis=0, resume=None, reserve_basis=0):
+        """eigs_device on the host (_HostKrylovSchur, numpy matvec): the same 5-tuple, so a widening resumes the last
+        decomposition instead of a host ARPACK restart; below the DEVICE_ARNOLDI_MIN_RATIO size host ARPACK, state None."""
+        basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
+        if not device_arnoldi_fits(n_unknowns, basis_size):
+            theta, vectors, applications, converged = self._host_eigs(
+                matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts, default_basis)
+            return theta, vectors, applications, converged, None
+        self.last_arnoldi = 'host Krylov-Schur'
+        start = time.perf_counter()
+        tolerance = max(self.tolerance, float(tolerance_floor)) or float(np.finfo(np.float64).eps)
+        search = _HostKrylovSchur(matvec, int(n_unknowns), int(n_wanted), basis_size, tolerance, start_vector, resume,
+                                  capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1))
+        try:
+            with quiet_openblas(self.factorization):   # its gemv between the PARDISO solves (host_direct header)
+                theta, vectors, converged = search.run(int(max_restarts))
+        finally:
+            self.total_eigen_seconds += time.perf_counter() - start
+            self.n_eigen_solves += 1
+            self.operator_applications += search.applications
+        if not converged:
+            self.n_unconverged += 1
+        return theta, vectors, search.applications, converged, search.state()
+
     def eigsh_inverse(self, inverse_matvec, mass_matvec, n_unknowns, n_wanted, start_vector=None,
                       tolerance_floor=0.0, max_restarts=MAX_RESTARTS):
         """(lambda, vectors, applications, converged, tolerance) of the n_wanted eigenpairs K x = lambda M x nearest 0 of
@@ -764,12 +876,19 @@ class ArpackShiftInvertSolver:
             counters['eigen_auto_fallbacks'] = self.n_auto_fallbacks
         if self.factorization in CUDSS_FACTORIZATIONS or self.n_auto_fallbacks:
             runtime = self._pencil_runtime   # its plans (deferred fallbacks included); factorisations counted here
-            plans, fallbacks = (0, 0) if runtime is None else (runtime.n_cudss_plans, runtime.n_cudss_double_fallbacks)
+            plans, fallbacks, reused, plan_seconds = (
+                (0, 0, 0, 0.0) if runtime is None else
+                (runtime.n_cudss_plans, runtime.n_cudss_double_fallbacks, runtime.n_cudss_reused_orderings,
+                 runtime.total_cudss_plan_seconds))
+            # eigen_reused_orderings above is SuperLU's; a cuDSS plan on a kept ordering (e.g. the static K_ff's) shows
+            # here, plan seconds = upload, index maps, reordering (unless reused) and symbolic factorisation
             counters.update(eigen_factor_device_bytes=self.device_bytes, eigen_permanent_bytes=self.permanent_bytes,
                             eigen_lu_entries=self.lu_entries, eigen_refinement_steps=self.refinement_steps,
                             eigen_factor_symmetric=int(self.symmetric_factor),
                             eigen_double_fallbacks=self.double_fallbacks + fallbacks,
-                            eigen_cudss_plans=self.n_cudss_plans + plans)
+                            eigen_cudss_plans=self.n_cudss_plans + plans,
+                            eigen_cudss_reused_orderings=self.n_cudss_reused_orderings + reused,
+                            eigen_cudss_plan_seconds=self.total_cudss_plan_seconds + plan_seconds)
         if self.factorization in HOST_DIRECT_FACTORIZATIONS:
             counters.update(eigen_host_direct_analyses=self.n_host_direct_analyses, eigen_lu_entries=self.lu_entries,
                             eigen_factor_symmetric=int(self.symmetric_factor),
@@ -973,6 +1092,97 @@ class _KrylovSchur:
         vectors = np.empty((self.n_unknowns, coefficient_rows.shape[0]), dtype=np.complex128)
         for start, stop in _column_chunks(self.n_unknowns, self.basis_size):
             vectors[start:stop] = cp.asnumpy(coefficient_rows @ self.basis[:self.basis_size, start:stop]).T
+        return vectors
+
+
+class _HostKrylovSchur(_KrylovSchur):
+    """The numpy twin of _KrylovSchur (eigs_host): basis rows in host memory, a numpy matvec, CGS2 by BLAS gemv on the
+    rows (no conjugated basis copy); run / Schur ordering / restart test shared, so a widening resumes as on the device."""
+
+    def __init__(self, matvec, n_unknowns, n_wanted, basis_size, tolerance, start_vector, resume, capacity=0):
+        self.matvec = matvec
+        self.matvec_on_host = True
+        self._product = np.empty(n_unknowns, dtype=np.complex128)
+        self._host_row = None
+        self.n_unknowns = n_unknowns
+        self.n_wanted = n_wanted
+        self.basis_size = basis_size
+        self.keep = min(basis_size - 1, max(n_wanted + (basis_size - n_wanted) // 2, n_wanted + 1))
+        self.tolerance = tolerance
+        self.applications = 0
+        self.hessenberg = np.zeros((basis_size + 1, basis_size), dtype=np.complex128)
+        self.size = 0
+        self._random = np.random.default_rng(_BREAKDOWN_SEED)
+        self._state = None
+        if resume is not None and resume[1].shape[1] < basis_size:   # a widening: the earlier decomposition kept
+            kept_basis, kept_hessenberg = resume
+            self.size = kept_hessenberg.shape[1]
+            if kept_basis.shape[0] >= basis_size + 1:   # reserved rows (np.empty: untouched pages until used)
+                self.basis = kept_basis
+            else:
+                self.basis = np.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=np.complex128)
+                self.basis[:self.size + 1] = kept_basis[:self.size + 1]
+            self.hessenberg[:self.size + 1, :self.size] = kept_hessenberg
+            return
+        self.basis = np.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=np.complex128)
+        if start_vector is None:
+            start_vector = self._random.standard_normal(n_unknowns) + 1j * self._random.standard_normal(n_unknowns)
+        vector = np.asarray(start_vector, dtype=np.complex128)
+        norm = float(np.linalg.norm(vector))
+        if not norm > 0.0:
+            raise ValueError('eigs_host needs a nonzero start vector')
+        self.basis[0] = vector / norm
+
+    def _expand(self):
+        """Arnoldi steps from column p to m (one operator application each)."""
+        for column in range(self.size, self.basis_size):
+            self._product[...] = self.matvec(self.basis[column])
+            self.applications += 1
+            coefficients, norm = self._orthogonalized(column + 1)
+            self.hessenberg[:column + 1, column] = coefficients
+            if norm <= 1e-12 * math.sqrt(float(np.sum(np.abs(coefficients) ** 2)) + norm ** 2):
+                self.basis[column + 1] = self._fresh_direction(column + 1)   # invariant subspace: H[column + 1] = 0
+            else:
+                self.hessenberg[column + 1, column] = norm
+        self.size = self.basis_size
+
+    @staticmethod
+    def _host_gram_schmidt(rows, vector):
+        """CGS2 of `vector` (in place) against the orthonormal rows (k, n): V^H w = conj(V conj(w)), w -= c V (gemv
+        on the C-contiguous rows both ways); the summed projections."""
+        coefficients = np.conj(rows @ np.conj(vector))
+        vector -= coefficients @ rows
+        correction = np.conj(rows @ np.conj(vector))
+        vector -= correction @ rows
+        return coefficients + correction
+
+    def _orthogonalized(self, rows):
+        coefficients = self._host_gram_schmidt(self.basis[:rows], self._product)
+        norm = float(np.linalg.norm(self._product))
+        np.multiply(self._product, 1.0 / max(norm, _UNIT_ROW_FLOOR), out=self.basis[rows])
+        return coefficients, norm
+
+    def _fresh_direction(self, rows):
+        vector = self._random.standard_normal(self.n_unknowns) + 1j * self._random.standard_normal(self.n_unknowns)
+        self._host_gram_schmidt(self.basis[:rows], vector)
+        return vector / np.linalg.norm(vector)
+
+    def _truncate(self, schur, unitary, residual_row):
+        keep, size = self.keep, self.basis_size
+        coefficient_rows = np.ascontiguousarray(unitary[:, :keep].T)
+        for start, stop in _column_chunks(self.n_unknowns, size):   # in place: each chunk read before it is written
+            self.basis[:keep, start:stop] = coefficient_rows @ self.basis[:size, start:stop]
+        self.basis[keep] = self.basis[size]
+        self.hessenberg[:] = 0.0
+        self.hessenberg[:keep, :keep] = schur[:keep, :keep]
+        self.hessenberg[keep, :keep] = residual_row[:keep]
+        self.size = keep
+
+    def _vectors(self, coefficients):
+        coefficient_rows = np.ascontiguousarray(coefficients.T)
+        vectors = np.empty((self.n_unknowns, coefficient_rows.shape[0]), dtype=np.complex128)
+        for start, stop in _column_chunks(self.n_unknowns, self.basis_size):
+            vectors[start:stop] = (coefficient_rows @ self.basis[:self.basis_size, start:stop]).T
         return vectors
 
 

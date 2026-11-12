@@ -196,6 +196,25 @@ def release_all(collect_garbage=True) -> None:
     cp.get_default_pinned_memory_pool().free_all_blocks()
 
 
+_FROZEN_BASELINE = {'on': False}   # freeze_collect_baseline froze the gc and thaw_collect_baseline has not yet run
+
+
+def freeze_collect_baseline() -> None:
+    """gc.freeze right after a full collect (a sweep's first release): the objects alive then (modules, registry, spec)
+    leave the cyclic gc, so the release_all collects after it scan only objects made since (a sweep value's session);
+    nothing when the gc is frozen already (selftest_cache's freeze is never undone here)."""
+    if not _FROZEN_BASELINE['on'] and gc.get_freeze_count() == 0:
+        gc.freeze()
+        _FROZEN_BASELINE['on'] = True
+
+
+def thaw_collect_baseline() -> None:
+    """Undo freeze_collect_baseline (the frozen objects rejoin the oldest generation); nothing when it did not freeze."""
+    if _FROZEN_BASELINE['on']:
+        _FROZEN_BASELINE['on'] = False
+        gc.unfreeze()
+
+
 def is_out_of_memory(exc) -> bool:
     """True when exc or a cause / context link is a GPU allocation failure (cupy pool or CUDA library); a host
     MemoryError is an ordinary failure."""

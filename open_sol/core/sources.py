@@ -179,6 +179,8 @@ class PointSource:
 
     def inject(self, target, t: float):
         value = DTYPE(self.amplitude * self.temporal(t))
+        if value == 0:   # a pulse past its float32 envelope: adding 0 is exact, skip the launch
+            return
         if self.weight is None:
             target[self.ix, self.iy] += value
         else:
@@ -218,6 +220,8 @@ class LineSource:
 
     def inject(self, target, t: float):
         value = DTYPE(self.amplitude * self.temporal(t))
+        if value == 0:   # exact no-op (a pulse past its envelope)
+            return
         line = self.target_line(target)
         if self.profile is None:
             line += value

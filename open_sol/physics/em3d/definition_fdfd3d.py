@@ -14,8 +14,8 @@ from ...core.memory_estimate import (COMPLEX64_BYTES, COMPLEX128_BYTES, COMPLEX1
 from ...model.definition_helpers import (DISCRETIZATION_PARAM, eigen_factorization, eigen_role, eigen_subspace_size,
                                          element_order)
 from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, solver_backend
-from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS, MIXED_FACTORIZATIONS,
-                                            arnoldi_basis_size)
+from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS,
+                                            MIXED_FACTORIZATIONS, arnoldi_basis_size)
 from ...solvers.sparse_direct import vector_3d_size_issue
 from ..em.definition_common import (DEFAULT_WAVELENGTH, EM_FAMILY, _refractive_index, all_solved_wavelengths,
                                     boundary_settings_params, make_validate_physics, object_result, physics_counter,
@@ -437,9 +437,11 @@ def _time_estimate(settings_values, mesh, context):
                     * max(unknowns / CURL_CURL_LU_GROWTH_FROM, 1.0) ** CURL_CURL_LU_GROWTH_EXPONENT)
     config = _boundary_config(settings_values)
     factorization = eigen_factorization(context.solvers)
-    # the polished mixed path (ARPACK floor 1e-6) only on a mixed factor: small operators factor in double (S5c)
-    if (factorization in MIXED_FACTORIZATIONS and not config.has_bloch_phase
-            and unknowns >= MIXED_EIGEN_MIN_UNKNOWNS):
+    # the polished path (ARPACK floor 1e-6): a mixed factor (small operators factor in double, S5c) or, with cpml (a
+    # complex A, floored), any LDL^T of D A (solve_resonances polishes a double one there too)
+    if not config.has_bloch_phase and (
+            (factorization in MIXED_FACTORIZATIONS and unknowns >= MIXED_EIGEN_MIN_UNKNOWNS)
+            or (factorization in LDLT_FACTORIZATIONS and config.needs_cpml)):
         applications_per_basis = MIXED_APPLICATIONS_PER_BASIS
     else:
         applications_per_basis = (APPLICATIONS_PER_BASIS_PER_AXIS_CELL * float(mesh.n_cells) ** (1.0 / 3.0)

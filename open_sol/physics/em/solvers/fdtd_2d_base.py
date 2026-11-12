@@ -13,9 +13,10 @@ from ..placement import PERMITTIVITY_SLOTS
 from ..yee_grid import grid_cell_widths, yee_inverse_spacings
 from . import fdtd_ez_2d_kernels as _kernels
 
-# gpu: the fixed-argument launches of a step (H: Yee + conformal + H CPML of every field set; E: Yee + E CPML per set)
-# replay as CUDA graphs (as em3d engine3d); walls, poles, sources and monitors stay eager (the wall copies of column
-# rows overlap their source in cupy's bounds check, which copies the input: an allocation inside a capture)
+# gpu: the fixed-argument launches of a step (H: Yee + conformal + H CPML + fused H rows of every field set; E: Yee +
+# E CPML + fused E rows per set) replay as CUDA graphs (as em3d engine3d); the wall re-pins after the sources, poles,
+# sources and monitors stay eager (and the row copies of a grid too small for the fused rows: a column-row copy
+# overlaps its source in cupy's bounds check, which copies the input: an allocation inside a capture)
 STEP_GRAPHS = True
 _MAX_STEP_GRAPHS = 8   # graph keys kept (stale ones belong to replaced conformal tables)
 

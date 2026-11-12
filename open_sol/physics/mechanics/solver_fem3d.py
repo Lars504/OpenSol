@@ -236,6 +236,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._output_omega = None                                # rad/s of a shown mode / response (None: static)
         # (with_loads, K_sigma host CSR or None, text, the nonlinear tangent K_T host CSR or None)
         self._prestress = None
+        self._pencil_factor = None   # the static K_ff factor solve_static_state kept for the modal pencil (owned here)
         self.frequency_probes = []                               # (HarmonicProbeRecord, element, reference)
         self._supports = []                                      # SupportRegion of the support features
         self._harmonic_reactions = {}                            # support name -> HarmonicProbeRecord (F_x, F_y, F_z)
@@ -452,7 +453,12 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             text = ('geometric nonlinearity: the pencil stiffness is the tangent K_T of the nonlinear static state '
                     f'(every load, initial stress and thermal strain; {self._nonlinear_text()})')
         elif with_loads:
-            self._static_solve()
+            # a K_ff factor the modal pencil refactorises takes the pencil's kind (LDL^T, not the SPD request)
+            system.linear_solver.positive_definite = not self._pencil_handover()
+            try:
+                self._static_solve()
+            finally:
+                system.linear_solver.positive_definite = True
             stress = StressField(prescribed=initial, material=self._stiffness, displacement=system.unknown.copy(),
                                  thermal=np.where(solid[:, None], self._thermal_stress()
                                                   * self._temperature_change()[:, None], 0.0))
@@ -477,8 +483,26 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._prestress = (bool(with_loads), geometric, text, tangent)
         self._drop_harmonic()
         if not refused:   # the pencil / harmonic factorisations follow: free the static factor (cuDSS: device memory)
-            system.release_factor()
+            if with_loads and tangent is None and self._pencil_handover():
+                # the modal pencil's first shift factor refactorises it on the kept analysis / plan (same free pattern:
+                # K + K_sigma on K's kept pattern, M inside it); released with the pencil, or by _drop_harmonic
+                self._pencil_factor = system.hand_over_factor()
+            else:
+                system.release_factor()
         return text
+
+    def _pencil_handover(self) -> bool:
+        """True when the static K_ff factor can be the real symmetric modal pencil's first shift factor: the 'linear'
+        back end (cuDSS or MUMPS / PARDISO) is the eigen factorization, no piezoelectric pencil and no loss (complex)."""
+        from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_DIRECT_BACK_ENDS
+        back_end = self.system.runtime.back_end
+        return (back_end in CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS
+                and getattr(self.eigen_solver, 'factorization', None) == back_end and not self.piezoelectric
+                and not self._loss_values(LOSS_ARRAYS[0], self._solid).any())
+
+    def _take_pencil_factor(self):
+        factor, self._pencil_factor = self._pencil_factor, None
+        return factor
 
     def warm_start_fields(self) -> dict:
         """WarmStartSolver: host copies of the last converged nonlinear state (u (n_dofs, 3), its external load and held
@@ -515,7 +539,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._drop_harmonic()
 
     def _drop_harmonic(self):
-        """Drop the elastic HarmonicSystem, releasing its factor first (a cuDSS factor lives outside the cupy pool)."""
+        """Drop the elastic HarmonicSystem and a static factor kept for the modal pencil, releasing their factors first
+        (a cuDSS / MUMPS / PARDISO factor lives outside the cupy pool / numpy)."""
+        getattr(self._take_pencil_factor(), 'release', lambda: None)()
         if self._harmonic is not None and self._harmonic.factor is not None:
             getattr(self._harmonic.factor, 'release', lambda: None)()
         self._harmonic = None
@@ -838,6 +864,9 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         else:
             pencil = ModalPencil(stiffness, self.modal_mass, system.free, COMPONENTS, self.eigen_solver,
                                  prolongation=prolongation, rigid_motions=system.n_rigid_motions, bloch_text=bloch_text)
+            if prolongation is None:   # the static K_ff factor: previous= of the first shift (released with the pencil)
+                pencil.factor = self._take_pencil_factor()
+        getattr(self._take_pencil_factor(), 'release', lambda: None)()   # a complex pencil cannot refactorise it
         return pencil, self._evaluated_films
 
     def _evaluated_films(self, solve):

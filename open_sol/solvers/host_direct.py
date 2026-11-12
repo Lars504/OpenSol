@@ -26,6 +26,12 @@ helpers here are GUI-thread safe."""
 # iparm[16]) KiB) above HOST_FRACTION of core.host_memory.available_bytes() is HostDirectMemoryError (no check when
 # that is unknown). The factor lives in library memory outside numpy: holders release() it before replacing it.
 # Refactorize: the same canonical pattern (indptr, indices) and kind refactors numerically on the kept analysis.
+# Kept analyses (host_analyses_kept, entered by run_study): inside the block release() parks the library factor
+# (analysis + factor memory) instead of freeing it, and a new analysis of another HostDirectFactorization adopts a
+# parked one of the same library, kind, real, factor dtype and canonical pattern (compared entry by entry; pydiso
+# checks only the nnz): numeric factorisation only, counted as a reused analysis. A miss releases every parked one
+# before it analyses (a changed mesh never holds a stale factor beside the new one), at most KEPT_ANALYSES are parked
+# (oldest released first), and the block's end releases the rest. A failed factorisation never parks.
 # Value refreshes (refactorize_values, the sparse_direct.HostPencil route of frequency sweeps): values of a canonical
 # pattern the caller never modifies in place, matched by identity first (no canonicalising copy, no array compare);
 # the per-entry rows and diagonal positions are kept per pattern, ||E|| is lazy (built only when a residual misses
@@ -99,7 +105,8 @@ class HostDirectMemoryError(ValueError):
 HOST_DIRECT_REFUSALS = (HostDirectSingularError, HostDirectAccuracyError, HostDirectMemoryError)
 
 # equilibration E = R S R of every (re)factorisation (next-gains N6): a numba row loop writing the scaled values into
-# the new array from this many stored entries (below, or without numba: the numpy gathers)
+# the new array from this many stored entries when numba is already imported (below, or else: the numpy gathers; heat
+# 2D, 3.2e6 entries: importing numba + loading the cached twin ~1 s against ~30 ms of numpy gathers)
 HOST_SCALE_MIN_ENTRIES = 200_000
 
 
@@ -122,14 +129,16 @@ def _scale_numba(numba):
 
 def scaled_values(values, indptr, indices, row_scale, symmetrizer, value_dtype, numba=None) -> np.ndarray:
     """New value_dtype array of values x symmetrizer[row] x row_scale[row] x row_scale[column] on the CSR pattern
-    (symmetrizer None: 1). numba None: the numba row loop from HOST_SCALE_MIN_ENTRIES (core.kernels.host_twin), True /
-    False: forced."""
+    (symmetrizer None: 1). numba None: the numba row loop from HOST_SCALE_MIN_ENTRIES once numba is imported
+    (core.kernels.host_twin; never imports it), True / False: forced."""
     from ..core.kernels import host_twin
     scale = host_twin('solvers.host_scale', _scale_host, _scale_numba)
     values = np.asarray(values).reshape(-1)
     if numba and scale.host_kind != 'numba':
         raise RuntimeError('host_direct.scaled_values(numba=True): the numba scaling is not available')
-    if not (values.size >= HOST_SCALE_MIN_ENTRIES if numba is None else numba):
+    if numba is None:
+        numba = values.size >= HOST_SCALE_MIN_ENTRIES and 'numba' in sys.modules
+    if not numba:
         scale = scale.cpu
     out = np.empty(values.size, dtype=value_dtype)
     scale(out, values.astype(value_dtype, copy=False), indptr, indices,
@@ -159,6 +168,14 @@ def double_of(name):
 def is_host_direct_factor(factor) -> bool:
     """True for a HostDirectFactorization (its back_end is a library name of HOST_DIRECT_LIBRARIES)."""
     return getattr(factor, 'back_end', None) in HOST_DIRECT_LIBRARIES
+
+
+def library_solve_text(factor) -> str:
+    """Log text of the library's own solve work of a HostDirectFactorization (PARDISO: _PardisoFactor.solve_text);
+    '' for MUMPS, a released factor or any other factor."""
+    library = getattr(factor, '_library', None)
+    solve_text = getattr(library, 'solve_text', None)
+    return solve_text() if callable(solve_text) else ''
 
 
 def _is_host_name(name) -> bool:
@@ -345,6 +362,77 @@ def _gib(n_bytes) -> str:
     return f'{float(n_bytes) / 2 ** 30:.2f} GiB'
 
 
+# --- kept analyses (module header "Kept analyses") --------------------------------------------------------------------
+KEPT_ANALYSES = 4      # most library factors parked at once inside host_analyses_kept
+_kept_analyses = None  # list of _KeptAnalysis (oldest first) while host_analyses_kept is on, else None
+
+
+class _KeptAnalysis:
+    """A parked library factor and what an adopting factor must match (its canonical pattern: owned int32 copies)."""
+
+    __slots__ = ('library', 'back_end', 'kind', 'real', 'factor_dtype', 'indptr', 'indices')
+
+    def __init__(self, library, back_end, kind, real, factor_dtype, pattern):
+        self.library, self.back_end, self.kind, self.real = library, back_end, kind, real
+        self.factor_dtype = factor_dtype
+        self.indptr, self.indices = pattern
+
+    def matches(self, back_end, kind, real, factor_dtype, pattern) -> bool:
+        indptr, indices = pattern
+        return (self.back_end == back_end and self.kind == kind and self.real == real
+                and self.factor_dtype == factor_dtype and self.indptr.size == indptr.size
+                and self.indices.size == indices.size and np.array_equal(self.indptr, indptr)
+                and np.array_equal(self.indices, indices))
+
+
+@contextlib.contextmanager
+def host_analyses_kept():
+    """Context manager: MUMPS / PARDISO factors released inside the block are parked for a later factor of the same
+    pattern, the parked ones released at its end (run_study; nested blocks leave it to the outer one)."""
+    global _kept_analyses
+    if _kept_analyses is not None:
+        yield
+        return
+    _kept_analyses = []
+    try:
+        yield
+    finally:
+        entries, _kept_analyses = _kept_analyses, None
+        _release_kept(entries)
+
+
+def kept_analysis_bytes() -> int:
+    """Host bytes of the parked library factors (their factor_bytes; 0 outside host_analyses_kept)."""
+    return sum(int(entry.library.factor_bytes()) for entry in (_kept_analyses or ()))
+
+
+def _release_kept(entries) -> None:
+    for entry in entries:
+        entry.library.release()
+    entries.clear()
+
+
+def _park_analysis(entry) -> bool:
+    """Park a library factor (True), or False outside host_analyses_kept; the oldest beyond KEPT_ANALYSES released."""
+    if _kept_analyses is None:
+        return False
+    _kept_analyses.append(entry)
+    while len(_kept_analyses) > KEPT_ANALYSES:
+        _kept_analyses.pop(0).library.release()
+    return True
+
+
+def _adopt_analysis(back_end, kind, real, factor_dtype, pattern):
+    """The parked entry matching (taken out of the list), else None after releasing every parked one (a miss)."""
+    if not _kept_analyses:
+        return None
+    for position, entry in enumerate(_kept_analyses):
+        if entry.matches(back_end, kind, real, factor_dtype, pattern):
+            return _kept_analyses.pop(position)
+    _release_kept(_kept_analyses)
+    return None
+
+
 class HostDirectFactorization(ProbedFactor):
     """Host MUMPS / PARDISO LU / LDL^T / Cholesky of the equilibrated operator (module header; precision mixed: float32
     / complex64 factor + float64 GMRES refinement) of a square host scipy operator: solve (cupy or numpy in, the same
@@ -406,6 +494,7 @@ class HostDirectFactorization(ProbedFactor):
         self.factor_seconds = 0.0         # last refactorize: equilibration, (analysis,) factorisation and probe
         self.total_factor_seconds = 0.0
         self.last_plan_reused = False     # the last refactorize kept the analysis (name as CudssFactorization)
+        self.last_analysis_kept = False   # its analysis was a parked factor's (host_analyses_kept; counted as reused)
         self.n_solves = 0                 # library solves (probes and refinement solves included) and their wall time
         self.solve_seconds = 0.0
         self.n_refinements = 0            # GMRES / plain refinement iterations of all solves, and of the last one
@@ -477,6 +566,7 @@ class HostDirectFactorization(ProbedFactor):
         reuse = (self._library is not None and same_pattern and kind == self.matrix_kind
                  and self._factor_dtype == self._wanted_factor_dtype())
         self.last_double_fallback = False
+        self.last_analysis_kept = False
         attempt_kind, retried = kind, False
         try:
             while True:
@@ -490,9 +580,10 @@ class HostDirectFactorization(ProbedFactor):
                         raise rejected.error from None
                     retried = True
         except Exception:
+            self._free_library()   # a failed factor is never parked
             self.release()
             raise
-        self.last_plan_reused = reuse and not retried
+        self.last_plan_reused = (reuse and not retried) or self.last_analysis_kept
         if self.last_plan_reused:
             self.analysis_seconds = 0.0
         self.last_analyses = self.n_analyses - analyses
@@ -614,14 +705,23 @@ class HostDirectFactorization(ProbedFactor):
         try:
             if analyse:
                 self._free_library()
-                started = time.perf_counter()
-                self._library = _ADAPTERS[self.back_end](matrix, kind, self.real)
-                self.matrix_kind = kind
-                self.analysis_seconds = time.perf_counter() - started
-                self.n_analyses += 1
-                self.peak_bytes = self._library.estimated_bytes()
-                self._check_memory(self.peak_bytes)
-                self._library.factor()
+                kept = _adopt_analysis(self.back_end, kind, self.real, self._factor_dtype, self._pattern)
+                self.last_analysis_kept = kept is not None
+                if kept is not None:   # a parked factor of this pattern (host_analyses_kept): numeric only
+                    self._library = kept.library
+                    self.matrix_kind = kind
+                    self.analysis_seconds = 0.0
+                    self.peak_bytes = self._library.estimated_bytes()
+                    self._library.refactor(matrix)
+                else:
+                    started = time.perf_counter()
+                    self._library = _ADAPTERS[self.back_end](matrix, kind, self.real)
+                    self.matrix_kind = kind
+                    self.analysis_seconds = time.perf_counter() - started
+                    self.n_analyses += 1
+                    self.peak_bytes = self._library.estimated_bytes()
+                    self._check_memory(self.peak_bytes)
+                    self._library.factor()
             else:
                 self._library.refactor(matrix)
         except HostDirectSingularError as error:
@@ -919,7 +1019,13 @@ class HostDirectFactorization(ProbedFactor):
         return self._library.inertia(self.n_unknowns)
 
     def release(self) -> None:
-        """Free the library factor and the operator copies (idempotent)."""
+        """Free the library factor (inside host_analyses_kept: parked for a later factor of its pattern) and the
+        operator copies (idempotent)."""
+        library = self._library
+        if (library is not None and self._pattern is not None and self.matrix_kind is not None
+                and _park_analysis(_KeptAnalysis(library, self.back_end, self.matrix_kind, self.real,
+                                                 self._factor_dtype, self._pattern))):
+            self._library = None
         self._free_library()
         self._operator = self._operator_transpose = self._row_scale = self._symmetrizer = None
         self._check_pending = self._probe_clean = False
@@ -1094,10 +1200,28 @@ class _MumpsFactor:
 _PARDISO_TYPES = {('general', True): 11, ('general', False): 13, ('symmetric', True): -2, ('symmetric', False): 6,
                   ('spd', True): 2}
 _PARDISO_ORDERING = 3   # iparm[1]: OpenMP nested dissection (pydiso FillReducingOrdering.PARALLEL_NESTED_DISSECTION)
-# constructor keywords by pydiso generation, newest first (a TypeError: the next; the last = the library defaults)
+# constructor keywords by pydiso generation, newest first (a TypeError: the next); a set without the ordering keyword
+# (pydiso 0.2: none) runs on _ordered_pardiso_class, which sets iparm[1] on the handle before the analysis
 _PARDISO_OPTIONS = ({'fill_reducing_ordering': _PARDISO_ORDERING, 'report_nnz': True}, {'report_nnz': True}, {})
 _PARDISO_SINGULAR = (-4, -7)
 _PARDISO_MEMORY = (-2, -9)
+
+
+@functools.lru_cache(maxsize=None)
+def _ordered_pardiso_class(base):
+    """Subclass of a pydiso MKLPardisoSolver without the ordering keyword (its constructor analyses at once) whose
+    analysis runs with iparm[1] = _PARDISO_ORDERING (pydiso 0.2: serial METIS otherwise)."""
+    class OrderedPardisoSolver(base):
+        def _analyze(self):
+            self._handle.set_iparm(1, _PARDISO_ORDERING)   # the handle keeps iparm[0] = 1: MKL reads the value
+            super()._analyze()
+    return OrderedPardisoSolver
+# below this many factor entries (iparm[17]) a solve (phase 33, ~4 flops per entry) is ms-scale work that the per-level
+# OpenMP barriers of a many-thread solve dominate (fluid heat transient, 57 000 entries on 16 threads: 0.88 ms per solve)
+_PARDISO_SERIAL_SOLVE_LU_ENTRIES = 1_000_000
+# TEMPORARY measurement override: an int here is written to iparm[24] (parallel forward / backward solve control) of
+# every PARDISO handle before its first solve; unset = MKL's default. The solve text names the value used
+PARDISO_SOLVE_PARALLEL_VARIABLE = 'OPEN_SOL_PARDISO_SOLVE_PARALLEL'
 
 
 class _PardisoFactor:
@@ -1112,9 +1236,11 @@ class _PardisoFactor:
 
         def create():
             for options in _PARDISO_OPTIONS:
+                solver_class = mkl_solver.MKLPardisoSolver
+                if 'fill_reducing_ordering' not in options:   # older pydiso: the ordering set on the handle instead
+                    solver_class = _ordered_pardiso_class(solver_class)
                 try:
-                    return mkl_solver.MKLPardisoSolver(matrix, matrix_type=matrix_type, factor=False, verbose=False,
-                                                       **options)
+                    return solver_class(matrix, matrix_type=matrix_type, factor=False, verbose=False, **options)
                 except TypeError:   # an older pydiso without these keywords
                     if not options:
                         raise
@@ -1174,8 +1300,51 @@ class _PardisoFactor:
         self._matrix = matrix
         self.factor()
 
+    # solve counters (class defaults, set per instance by solve): MKL's own refinement steps (iparm[6] after each phase
+    # 33; iparm[7] = 0 lets MKL refine twice per solve on its own when the factor has perturbed pivots, iparm[13])
+    library_solves = 0
+    library_refinement_steps = 0
+    _solve_parallel = None   # iparm[24] written to the handle (None: MKL's default kept)
+
     def solve(self, rhs, transpose=False):
-        return self._call(lambda: self._solver.solve(rhs, transpose=bool(transpose)), 'solve')
+        """Phase 33; a factor below _PARDISO_SERIAL_SOLVE_LU_ENTRIES solves on one MKL thread (restored after);
+        counts MKL's own refinement steps (iparm[6])."""
+        if self._solve_parallel is None:
+            self._set_solve_parallel()
+
+        def run():
+            solution = self._solver.solve(rhs, transpose=bool(transpose))
+            self.library_solves += 1
+            self.library_refinement_steps += int(self._solver.iparm[6])
+            return solution
+        if self.lu_entries() >= _PARDISO_SERIAL_SOLVE_LU_ENTRIES:
+            return self._call(run, 'solve')
+        library_threads = int(self._module.get_mkl_pardiso_max_threads())
+        if library_threads <= 1:
+            return self._call(run, 'solve')
+        self._module.set_mkl_pardiso_threads(1)
+        try:
+            return self._call(run, 'solve')
+        finally:
+            self._module.set_mkl_pardiso_threads(library_threads)
+
+    def _set_solve_parallel(self) -> None:
+        """iparm[24] (forward / backward solve algorithm) from PARDISO_SOLVE_PARALLEL_VARIABLE once per handle;
+        unset: MKL's default (-1 recorded)."""
+        text = os.environ.get(PARDISO_SOLVE_PARALLEL_VARIABLE, '').strip()
+        self._solve_parallel = -1
+        if text:
+            self._solver.set_iparm(24, int(text))
+            self._solve_parallel = int(text)
+
+    def solve_text(self) -> str:
+        """', MKL refinement k steps in m solves, p perturbed pivots[, iparm[24] = v]'; '' before a solve."""
+        if not self.library_solves:
+            return ''
+        refined = (f', MKL refinement {self.library_refinement_steps} steps in {self.library_solves} solves, '
+                   f'{self.perturbed_pivots()} perturbed pivots')
+        overridden = self._solve_parallel is not None and self._solve_parallel >= 0
+        return refined + (f', iparm[24] = {self._solve_parallel}' if overridden else '')
 
     def factor_bytes(self) -> int:
         iparm = self._iparm()

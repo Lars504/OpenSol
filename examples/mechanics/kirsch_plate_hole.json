@@ -50,16 +50,13 @@
         {"name": "near", "type": "solid_probe", "selection": ["near_point"], "params": {"component": "stress_xx"},
          "enabled": true}
       ],
-      "every": 1,
-      "solvers": {"linear": "cg"}
+      "every": 1
     }
   ],
   "couplings": [],
   "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
            "points_per_wavelength": 20.0, "refinements": []},
-  "solvers": [
-    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10}}
-  ],
+  "solvers": [],
   "study": {"type": "stationary", "settings": {},
             "stored_fields": ["solid.u_abs", "solid.stress_xx", "solid.stress_yy", "solid.von_mises"], "sweep": null},
   "derived_values": [

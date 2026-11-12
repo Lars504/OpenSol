@@ -51,7 +51,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + _methods(PHYSICS, 'physics', (
 )) + _methods(DEVICE_PENCIL, 'device pencil', (
     '__init__', '_terms_symmetric', 'combined', 'full_values',
 )) + _methods(CUDSS, 'cudss', (
-    '__init__', 'from_device_values', '_equilibrated', '_plan_solver', '_device_plan', '_device_index_maps',
+    '__init__', 'from_device_values', '_equilibrated', '_plan_solver', '_device_plan',
     '_device_asymmetry', '_upload_values', '_factorize_with_fallbacks', '_factorize_and_probe', '_replace_by_double',
     '_deferred_check_passed', '_probe_errors', '_inner_solve', '_gmres_refine', '_single_solve', 'release',
 )) + tuple((f'{ELASTICITY}:{function}', f'fem: {function}') for function in (
@@ -59,6 +59,9 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + _methods(PHYSICS, 'physics', (
     'assemble_geometric_stiffness_3d', 'assemble_body_load_3d', 'element_strains_3d', 'nodal_average_3d',
 )) + (
     ('open_sol.fem.assembly:pattern_sum', 'fem: pattern_sum'),
+    ('open_sol.fem.fixed_pattern:FixedPatternCsr.add_elements', 'fem: FixedPatternCsr.add_elements (block scatter)'),
+    ('open_sol.solvers.cudss_factor:_DeviceIndexMaps._host_passes', 'cudss: index maps host passes'),
+    ('open_sol.solvers.cudss_factor:_DeviceIndexMaps._uploaded', 'cudss: index maps upload'),
     ('open_sol.solvers.cudss_factor:canonical_csr', 'cudss: canonical_csr'),
     ('open_sol.solvers.arpack_shift_invert:pattern_combination', 'arpack: pattern_combination'),
     ('open_sol.fem.sampling3d:evaluate_lagrange_3d', 'fem: evaluate_lagrange_3d'),

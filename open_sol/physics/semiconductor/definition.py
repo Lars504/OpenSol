@@ -303,7 +303,8 @@ def _cudss_estimate(context, unknowns, csr_entries, poisson_unknowns, poisson_en
         """factorize_values plans from device values and keeps the full equilibrated E (+ the float32 copy when mixed),
         rhs buffer, row scale and the device route's index maps (no transpose map: an LU); later Newton steps refresh."""
         return (operator_copy_bytes(rows, entries, FLOAT64_BYTES, symmetric=False, mixed=mixed)
-                + solve_buffer_bytes(rows, FLOAT64_BYTES, mixed) + index_map_bytes(rows, entries, symmetry_check=False))
+                + solve_buffer_bytes(rows, FLOAT64_BYTES, mixed)
+                + index_map_bytes(rows, entries, symmetry_check=False, symmetric=False))
 
     def refactor_bytes(rows, entries):
         return refresh_peak_bytes(entries, FLOAT64_BYTES, symmetry_check=False, n_unknowns=rows, mixed=mixed)

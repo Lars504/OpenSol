@@ -547,9 +547,9 @@ def _fdtd_physics_type(polarization):
 # a 2D field / CPML launch costs ~3 profile launches of host overhead (as em3d _FIELD_LAUNCH_WEIGHT: the CPML side
 # launch also slices ~5 views per call); the flat 8 + 2 per feature priced 0.087 ms vs 0.33-0.41 ms per gpu step
 _FIELD_LAUNCH_WEIGHT = 3
-# boundaries.BoundaryManager outer-face rows, each one launch, applied twice per step (in the post and again after
-# the sources): ez H rows on pmc faces, E_z rows on pec / pmc / mirror faces; hz H_z rows on pec / pmc / mirror
-# faces, E rows on pec / antisymmetric faces
+# boundaries.BoundaryManager outer-face rows, one fused launch per kind for every face, applied twice per step (in
+# the post, inside the step graphs on the gpu, and again after the sources): ez H rows on pmc faces, E_z rows on pec
+# / pmc / mirror faces; hz H_z rows on pec / pmc / mirror faces, E rows on pec / antisymmetric faces
 _WALL_ROW_FACES = {'ez': (('pmc',), ('pec', 'pmc', 'symmetric', 'antisymmetric')),
                    'hz': (('pec', 'pmc', 'symmetric', 'antisymmetric'), ('pec', 'antisymmetric'))}
 _PEC_KEEP_LAUNCHES = {'ez': 1, 'hz': 2}   # per field set: ez[pec_box] *= keep / ex, ey on their keeps (advance)
@@ -566,13 +566,14 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
     faces = [settings_values.get(f'bc_{face}') for face in FACES]
     cpml_sides = faces.count('cpml')
     n_sets = 2 if bloch_active_axes(settings_values) else 1
+    from .solvers.fdtd_2d_base import STEP_GRAPHS
     h_rows, e_rows = _WALL_ROW_FACES[polarization]
-    wall_rows = 2 * sum(1 for face in faces if face in h_rows) + 2 * sum(1 for face in faces if face in e_rows)
+    wall_kinds = int(any(face in h_rows for face in faces)) + int(any(face in e_rows for face in faces))
+    wall_rows = wall_kinds * (1 if context.backend == 'gpu' and STEP_GRAPHS else 2)   # gpu: only the re-pins eager
     pec = any(feature.type == 'pec_domain' for feature in features)
     conformal = pec and context.spec.solver_defaults.conformal_boundaries is True
     memory_items = context.memory.items if context.memory is not None else ()
     poles = any(label.endswith('dispersive poles') and size > 0 for label, size in memory_items)
-    from .solvers.fdtd_2d_base import STEP_GRAPHS
     per_set = (wall_rows + (_PEC_KEEP_LAUNCHES[polarization] if pec else 0)
                + (_POLE_LAUNCHES[polarization] if poles else 0))
     numba_launches = _FIELD_LAUNCH_WEIGHT * n_sets * 2

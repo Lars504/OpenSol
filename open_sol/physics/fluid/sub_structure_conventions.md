@@ -15,7 +15,9 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   `_step_numba` (single only) uses float32 constants / tables: a float64 literal or int table entry promotes to
   float64 in numba. It compiles with `cache=True` (uncached, the ~9 s compile lands in whichever of fluid_step_numba /
   the cpu_gpu parities runs first, so their wall times swap with the selftest order; a "Cannot cache" NumbaWarning = a
-  closure value stopped pickling). half_storage stays gpu-only.
+  closure value stopped pickling). The helpers `neighbour_velocity` / `face_velocity_gradient` are the module globals
+  `_numba_neighbour_velocity` / `_numba_face_velocity_gradient` (`_numba_step_helpers`). As closure cells, their
+  per-process dispatcher uuids missed the kernel's cache in every process. half_storage stays gpu-only.
 - Step arguments (`_step_arguments`, `lattice.STORE_*`): `_run_steps(n, final_mode)` runs all but the last step at
   STORE_BOUNDARY (lattice macros written on the window boundary cells only, for the pressure rule's previous
   velocity; interior values stale), the last at STORE_LATTICE (march: the check reads them) or STORE_PUBLISHED
