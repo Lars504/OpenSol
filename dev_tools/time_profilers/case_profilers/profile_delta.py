@@ -2,7 +2,7 @@
 out/history/<timestamp>/<folder>.runs.json copies run_all_profilers.py keeps) and prints, per run, the parts whose
 exclusive time changed by more than --min-ms and --min-percent, largest first.
 Run (from any folder): python profile_delta.py solid_mechanics_3d_nonlinear__gpu [--before PATH] [--after PATH]
-[--min-ms 20] [--min-percent 30]"""
+[--min-ms 20] [--min-percent 30] [--history DIR]"""
 import argparse
 import json
 from pathlib import Path
@@ -13,9 +13,9 @@ DEFAULT_MIN_MS = 20.0        # smaller changes are below what one run resolves
 DEFAULT_MIN_PERCENT = 30.0   # run-to-run noise of a part on a busy machine
 
 
-def history_runs(folder) -> list:
+def history_runs(folder, history=HISTORY) -> list:
     """Paths of the history copies '<timestamp>/<folder>.runs.json', oldest first."""
-    return sorted(HISTORY.glob(f'*/{folder}.runs.json'), key=lambda path: path.parent.name)
+    return sorted(Path(history).glob(f'*/{folder}.runs.json'), key=lambda path: path.parent.name)
 
 
 def _exclusive_ms(run) -> dict:
@@ -60,8 +60,10 @@ def main():
     parser.add_argument('--after', type=Path, help='runs.json of the later profile (default: newest copy)')
     parser.add_argument('--min-ms', type=float, default=DEFAULT_MIN_MS)
     parser.add_argument('--min-percent', type=float, default=DEFAULT_MIN_PERCENT)
+    parser.add_argument('--history', type=Path, default=HISTORY,
+                        help='history folder (default: case_profilers/out/history; example_profilers/out/history)')
     options = parser.parse_args()
-    kept = history_runs(options.folder)
+    kept = history_runs(options.folder, options.history)
     after = options.after or (kept[-1] if kept else None)
     before = options.before or next((path for path in reversed(kept) if path != after), None)
     if before is None or after is None:

@@ -526,6 +526,7 @@ def _build(spec, registry, log, live_parameters):
     start = time.perf_counter()
     registry = registry if registry is not None else get_registry()
     log = log if log is not None else _print_log
+    _warm_cudss(spec, registry)   # the library load overlaps validation and meshing
 
     budget = gpu_memory.budget_bytes()
     if budget is not None:   # arrays of other live sessions (an earlier api Results) already hold part of the pool
@@ -546,8 +547,12 @@ def _build(spec, registry, log, live_parameters):
         meshing_start = time.perf_counter()
         mesh_estimate, memory_estimate = _built_estimates(spec, registry, mesh_estimate, cached_shapes, log)
         meshing_seconds = time.perf_counter() - meshing_start
+    # D1 4b: a study default (kept cuDSS factor) over the budget resolves as the other studies' Automatic
+    memory_estimate, plain_roles = _fitted_estimate(spec, registry, mesh_estimate, memory_estimate, budget,
+                                                    cached_shapes)
     issues = validate(spec, registry, mesh_estimate=mesh_estimate, memory_budget=budget,
-                      memory_estimate=memory_estimate, host_budget=host_budget)
+                      memory_estimate=memory_estimate, host_budget=host_budget, plain_roles=plain_roles)
+    plain_roles = plain_roles or frozenset()
     _raise_errors(issues)
     for issue in issues:
         log(issue.level, f'{node_label(issue.path)}: {issue.message}')
@@ -570,7 +575,7 @@ def _build(spec, registry, log, live_parameters):
         ledger.add_time('element meshes for the memory check', meshing_seconds)
     ledger.add_time('parameters, geometry + memory record', time.perf_counter() - validated)
     try:
-        session = _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_parameters)
+        session = _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_parameters, plain_roles)
         ledger.finish()
     except Exception as exc:   # the ledger so far travels with the exception (CPU data only, no frames)
         exc.build_memory = _memory_record(ledger, estimate, compare=False)
@@ -584,16 +589,52 @@ def _build(spec, registry, log, live_parameters):
     if check_message:
         log('warning', check_message)
         session.warnings.append(check_message)
-    session.time_estimate = _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes)
+    session.time_estimate = _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes, plain_roles)
     return session
 
 
-def _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes=None):
+def _warm_cudss(spec, registry):
+    """cudss_factor.warm_cudss_library when a role of this gpu build resolves a cuDSS back end (speedup B3); a model
+    that does not resolve is left to validate."""
+    if solver_backend(spec) != 'gpu':
+        return
+    from ..solvers.cudss_factor import cudss_available, warm_cudss_library
+    from ..solvers.sparse_direct import CUDSS_BACK_ENDS
+    if not cudss_available():
+        return
+    try:
+        parameters = evaluate_parameters(spec.parameters)
+        uses_cudss = any(resolved.values.get(key) in CUDSS_BACK_ENDS
+                         for physics_spec in spec.physics
+                         for resolved in resolved_solvers(spec, registry, physics_spec, spec.study.type,
+                                                          parameters).values()
+                         for key in ('back_end', 'factorization'))
+    except Exception:
+        return
+    if uses_cudss:
+        warm_cudss_library()
+
+
+def _fitted_estimate(spec, registry, mesh_estimate, memory_estimate, budget, shapes):
+    """(memory estimate, plain_roles) of meshing.fitted_memory_estimate against the build budget; (memory_estimate,
+    None) when it cannot be judged here (validate then fits and reports)."""
+    from . import meshing
+    if memory_estimate is None or not mesh_estimate or any(mesh is None for mesh in mesh_estimate.values()):
+        return memory_estimate, None
+    try:
+        return meshing.fitted_memory_estimate(spec, evaluate_parameters(spec.parameters), registry, mesh_estimate,
+                                              budget, estimate=memory_estimate, shapes=shapes)
+    except Exception:
+        return memory_estimate, None
+
+
+def _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes=None, plain_roles=frozenset()):
     """model.time_estimate of one study run (CPU, priced on the stored machine profile), logged; None without a
     profile; a failing estimate is logged as a warning (a recipe bug), never stops the build."""
     from .time_estimate import estimate_time
     try:
-        estimate, message = estimate_time(spec, parameters, registry, mesh_estimate, per_run=True, shapes=shapes)
+        estimate, message = estimate_time(spec, parameters, registry, mesh_estimate, per_run=True, shapes=shapes,
+                                          plain_roles=plain_roles)
     except Exception as exc:
         log('warning', f'run-time estimate failed (no time check for this run): {_exception_message(exc)}')
         return None
@@ -617,9 +658,11 @@ def _log_build_estimate(spec, parameters, registry, mesh_estimate, build_memory,
         log('warning', f'build-time estimate failed: {_exception_message(exc)}')
 
 
-def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_parameters=()):
+def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_parameters=(),
+                  plain_roles=frozenset()):
     """GPU part of build (per mesh: domain, materials, subpixel geometry; then solvers, physics, features, updates,
-    couplings), each stage tracked by ledger; per-mesh stages are labelled '<stage> <mesh>' when there are several."""
+    couplings), each stage tracked by ledger; per-mesh stages are labelled '<stage> <mesh>' when there are several;
+    plain_roles: of _fitted_estimate (resolved_solvers)."""
     mesh_names = [mesh_spec.name for mesh_spec in spec.used_meshes()]
     several = len(mesh_names) > 1
     backend = solver_backend(spec)
@@ -666,7 +709,7 @@ def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_p
     for physics_spec in spec.physics:   # own stage: a solver is never created inside a physics create (ledger nesting)
         physics_type = present_types[physics_spec.type]
         with _issue_at(('physics', physics_spec.name)):
-            resolved = resolved_solvers(spec, registry, physics_spec, ctx.study_type, parameters)
+            resolved = resolved_solvers(spec, registry, physics_spec, ctx.study_type, parameters, plain_roles)
         for role, resolved_solver in resolved.items():
             path = ('solver', resolved_solver.node) if resolved_solver.node else ('physics', physics_spec.name)
             with ledger.track(f"solver '{physics_spec.name}.{role}'"), _issue_at(path):

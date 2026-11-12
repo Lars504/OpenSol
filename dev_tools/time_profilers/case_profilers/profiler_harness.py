@@ -352,10 +352,11 @@ def case_specs(case_name, runs=None, variant=None):
 SETTING_ALIASES = {'back_end': ('back_end', 'factorization'), 'factorization': ('factorization', 'back_end')}
 
 
-def _compared_variant(spec, setting, value, backend, registry):
-    """(spec copy, ['physics.role', ...] changed): every solver role the study uses whose solver type has `setting` (or
-    its alias) and whose setting_choices accept `value` gets a new node with it (over its node's settings, or its
-    Automatic type and settings on `backend`)."""
+def _compared_variant(spec, setting, value, backend, registry, excluded=()):
+    """(spec copy, [(physics, role), ...] changed): every solver role the study uses (but `excluded`) whose solver type
+    has `setting` (or its alias) and whose setting_choices accept `value` (an opt-in value, e.g. MUMPS / PARDISO, only
+    where they list it: roles.solver_misfit) gets a new node with it (over its node's settings, or its Automatic type
+    and settings on `backend`)."""
     from open_sol.model.schema import solver_grid
     from open_sol.model.spec import SolverSpec
     variant = copy.deepcopy(spec)
@@ -364,20 +365,36 @@ def _compared_variant(spec, setting, value, backend, registry):
     for physics_spec in variant.physics:
         physics_type = registry.physics_type(physics_spec.type)
         for role, solver_role in physics_type.solver_roles.items():
-            if not solver_role.used_in(variant.study.type):
+            if not solver_role.used_in(variant.study.type) or (physics_spec.name, role) in excluded:
                 continue
             node = nodes.get((physics_spec.solvers or {}).get(role) or '')
             type_name, settings = ((node.type, node.settings) if node is not None else
                                    solver_role.automatic(backend, solver_grid(variant, physics_spec)))
-            names = {param.name for param in registry.solver_type(type_name).params}
+            solver_type = registry.solver_type(type_name)
+            names = {param.name for param in solver_type.params}
             key = next((name for name in SETTING_ALIASES.get(setting, (setting,)) if name in names), None)
             if key is None or value not in solver_role.setting_choices.get(key, (value,)):
                 continue
-            node_name = f'compared_{physics_spec.name}_{role}'
-            variant.solvers.append(SolverSpec(node_name, type_name, {**dict(settings), key: value}))
-            physics_spec.solvers[role] = node_name
-            changed.append(f'{physics_spec.name}.{role}')
+            if value in solver_type.opt_in_settings.get(key, ()) and key not in solver_role.setting_choices:
+                continue
+            physics_spec.solvers[role] = _compared_node_name(physics_spec.name, role)
+            variant.solvers.append(SolverSpec(physics_spec.solvers[role], type_name, {**dict(settings), key: value}))
+            changed.append((physics_spec.name, role))
     return variant, changed
+
+
+def _compared_node_name(physics_name, role) -> str:
+    return f'compared_{physics_name}_{role}'
+
+
+def _refused_roles(variant, changed, backend, registry) -> set:
+    """The (physics, role) of `changed` whose compared node an error of the variant's validation names: a physics that
+    refuses the value in its own validate (the 1D membrane's banded host factor takes only auto / scipy_splu)."""
+    from open_sol.model.validate import validate
+    checked = copy.deepcopy(variant)
+    checked.solver_defaults.backend = backend
+    errors = [issue.message for issue in validate(checked, registry) if issue.level == 'error']
+    return {entry for entry in changed if any(f"'{_compared_node_name(*entry)}'" in message for message in errors)}
 
 
 def _run_key(variant, spec) -> str:
@@ -393,7 +410,8 @@ def _run_key(variant, spec) -> str:
 
 
 def setting_variants(specs, assignment, backend, keep_unchanged=True):
-    """{'<run> NAME=value': spec copy} per spec and value of assignment 'NAME=v1,v2,...' (_compared_variant); a value no
+    """{'<run> NAME=value': spec copy} per spec and value of assignment 'NAME=v1,v2,...' (_compared_variant; a role whose
+    physics refuses the value in validation keeps its node); a value no
     role of a run accepts is skipped, a run no value applies to runs once as written (keep_unchanged) or is dropped, a
     run that under a value is the same model as an earlier one (it differed only by the node the value replaces) is
     dropped (all printed). Values stay strings (choice settings such as back_end)."""
@@ -409,6 +427,11 @@ def setting_variants(specs, assignment, backend, keep_unchanged=True):
         skipped = []
         for value in values:
             variant, changed = _compared_variant(spec, setting, value, backend, registry)
+            refused = _refused_roles(variant, changed, backend, registry) if changed else set()
+            if refused:
+                print(f"--compare: run {run_name!r}: {', '.join('.'.join(entry) for entry in sorted(refused))} refuse "
+                      f'{setting}={value} in validation; left as written', flush=True)
+                variant, changed = _compared_variant(spec, setting, value, backend, registry, excluded=refused)
             if not changed:
                 skipped.append(value)
                 continue

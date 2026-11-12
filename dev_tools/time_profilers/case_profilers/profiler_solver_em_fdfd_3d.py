@@ -1,8 +1,8 @@
 """Profile em_fdfd_3d on the Yee tensor grid (eigenfrequency, cudss_mixed eigen node) on the gpu: the example
-fdfd_mie_sphere_resonance_3d (open CPML eighth sphere, subpixel smoothing, ~1e5 unknowns), the same on the double cuDSS
-factor (mie_double_factor: one solve per application against the mixed factor's refinement) and the
-em3d_fdfd_bragg_cell k_z sweep (2.3 s). Run from any folder (scale the example with --set dx_cell=30*nm):
-python profiler_solver_em_fdfd_3d.py [--runs mie mie_double_factor bragg__sweep] [--no-cprofile]"""
+fdfd_mie_sphere_resonance_3d (open CPML eighth sphere, subpixel smoothing, ~1e5 unknowns) and the em3d_fdfd_bragg_cell
+k_z sweep (2.3 s); the example on the double cuDSS factor: profiler_solver_em_fdfd_3d_double_factor.py. Run from any
+folder (scale the example with --set dx_cell=30*nm):
+python profiler_solver_em_fdfd_3d.py [--runs mie bragg__sweep] [--no-cprofile]"""
 import copy
 import sys
 from pathlib import Path
@@ -23,12 +23,15 @@ def double_factor(spec):
     return spec
 
 
-def _specs():
-    """{'mie': the example, 'mie_double_factor': it on the double factor, 'bragg__sweep': the em3d_fdfd_bragg_cell
-    sweep run}."""
+def load_example():
+    """The fdfd_mie_sphere_resonance_3d example spec (cudss_mixed eigen node)."""
     from open_sol import api
-    example = api.load(EXAMPLE)
-    runs = {'mie': example, 'mie_double_factor': double_factor(example)}
+    return api.load(EXAMPLE)
+
+
+def _specs():
+    """{'mie': the example, 'bragg__sweep': the em3d_fdfd_bragg_cell sweep run}."""
+    runs = {'mie': load_example()}
     runs.update({f'bragg__{run}': spec for run, spec in case_specs('em3d_fdfd_bragg_cell').items()})
     return runs
 
@@ -63,7 +66,8 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
 ) + methods(f'{EM3D}.renderer_fdfd3d:FDFDRenderer3D', 'renderer', ('device_field', 'device_plane', '_field',
                                                                     '_centre'))
 
+NOTE = ('CudssFactorization.solve and ArpackShiftInvertSolver.eigs are role parts: eigs excl = host ARPACK '
+        '+ the per-application asnumpy / asarray of solve_resonances')
+
 if __name__ == '__main__':
-    main('em_fdfd_3d', PARTS, __doc__, specs=_specs,
-         note='CudssFactorization.solve and ArpackShiftInvertSolver.eigs are role parts: eigs excl = host ARPACK '
-              '+ the per-application asnumpy / asarray of solve_resonances')
+    main('em_fdfd_3d', PARTS, __doc__, specs=_specs, note=NOTE)

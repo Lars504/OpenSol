@@ -456,7 +456,9 @@ templates, describe. Current state, no changelog.
   the estimate by `meshing.backend_memory` (cpu backend: device bytes count as host, no GPU budget): check_memory,
   `_sweep_value_problem` and study_adaptation `_memory_problem` alike. `MemoryContext.material_regions` box cells are
   the selection's bounding box (an upper bound). `builder.build` estimates mesh and memory once (`_cached_estimates`)
-  and passes them to validate and the ledger check; only `make_domain` plans the grid again.
+  and passes them to validate and the ledger check; only `make_domain` plans the grid again. Against a GPU budget the
+  judged estimate is `meshing.fitted_memory_estimate` (an over-budget study default resolves without its study,
+  `plain_roles`: solvers sub file "Model path"); `_sweep_value_problem` fits each sweep value the same way.
 - Memory estimate parts: `core.memory_estimate.MemoryEstimate` (gpu_steady, gpu_build_peak, host, gpu_run, items /
   host_items / run_items, transient_items, gpu_external / external_extra / external_items; gpu_run = device bytes the
   study allocates after the build: run_items stay once allocated (harmonic FDTD accumulators, growing probe traces,

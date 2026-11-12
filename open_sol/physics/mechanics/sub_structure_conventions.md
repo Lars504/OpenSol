@@ -231,7 +231,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   elastic strain and energy densities with dT = 0 and no sigma0, as a mode: `_write_outputs(thermal=False)` on every
   mesh kind), u_abs = |u| of the complex centre displacement; on the tensor mesh support
   reactions and electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes,
-  complex records"). Each solve appends a `FrequencyPoint`.
+  complex records"). Each solve appends a `FrequencyPoint`. solid_frequency_response_bar's 'heated' run (the elastic
+  bar with a uniform temperature_change) pins this on the tensor mesh: its u_x and stresses equal the unheated run's.
 - Reduced sweeps (sweep_method adaptive / modal; fem sub file "Reduced sweeps"): `HarmonicSystem.plan_reduced(omegas,
   method, fixed, load, extra_rhs)`; `solve` raises when fixed / load / extra_rhs differ from the planned ones.
   `set_output_rows(rows)`: `solve(fields=False)` returns vectors exact ONLY at registered rows, so a solver's records

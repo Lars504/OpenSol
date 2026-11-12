@@ -1184,6 +1184,44 @@ def _check_default_precision(results_by_name):
             'details': {'n_checks': n_checks, 'mismatches': mismatches, 'outcomes': outcomes}}
 
 
+def _check_study_default_fit(results_by_name):
+    """D1 4b fit guard (CPU): a tight budget moves the 2D gpu heat transient off its kept cuDSS factor, a roomy one
+    keeps it, a node is never a candidate."""
+    from ..model.meshing import estimate_memory, estimate_meshes, fitted_memory_estimate
+    from ..model.schema import get_registry, resolved_solvers, study_default_roles
+    from ..model.validate import validate
+    from .cudss_factor import cudss_available
+    registry = get_registry()
+    spec = _precision_spec('heat', 'linear', 'time_dependent', 'auto', None, 'gpu')
+    meshes = estimate_meshes(spec, {}, registry)
+    expected_roles = frozenset({('p', 'linear')}) if cudss_available() else frozenset()
+    switched = bool(expected_roles)
+    factor_estimate = estimate_memory(spec, {}, registry, meshes)
+    plain_estimate = estimate_memory(spec, {}, registry, meshes, plain_roles=expected_roles)
+    tight_budget = factor_estimate.device_peak - 1
+    _, tight_roles = fitted_memory_estimate(spec, {}, registry, meshes, tight_budget)
+    _, roomy_roles = fitted_memory_estimate(spec, {}, registry, meshes, 2 * factor_estimate.device_peak)
+    resolved = resolved_solvers(spec, registry, spec.physics[0], 'time_dependent', {}, tight_roles)['linear']
+    infos = [issue.message for issue in validate(spec, registry, mesh_estimate=meshes, memory_budget=tight_budget)
+             if issue.level == 'info' and issue.path == ('physics', 'p') and 'GPU budget' in issue.message]
+    node_spec = _precision_spec('heat', 'linear', 'time_dependent', 'auto', ('sparse_direct', {}), 'gpu')
+    checks = {
+        'candidates': study_default_roles(spec, registry, {}) == expected_roles,
+        'factor_dominates': not switched or plain_estimate.device_peak < factor_estimate.device_peak,
+        'tight_switches': tight_roles == expected_roles,
+        'roomy_keeps_factor': roomy_roles == frozenset(),
+        'tight_resolves_pcg': resolved.solver_type.name == ('pcg' if switched else 'sparse_direct'),
+        'validate_info_line': len(infos) == (1 if switched else 0),
+        'node_never_candidate': study_default_roles(node_spec, registry, {}) == frozenset(),
+    }
+    failed = [name for name, passed in checks.items() if not passed]
+    return {'measured': len(failed), 'expected': 0, 'error': float(len(failed)), 'tolerance': 0.0,
+            'details': {'failed': failed, 'cudss_available': switched,
+                        'factor_device_peak': int(factor_estimate.device_peak),
+                        'plain_device_peak': int(plain_estimate.device_peak),
+                        'resolved_type': resolved.solver_type.name, 'infos': infos}}
+
+
 # --- Automatic multigrid of the diffusion types (mesh plan M0 / D16) ------------------------------------------------
 
 # (check name, physics type, default precision, node (type, settings) or None, backend,
@@ -2001,6 +2039,16 @@ SOLVER_SELFTEST_CASES = (
                     'memory estimators) agrees and node settings are never written. error = number of mismatches, '
                     'tolerance 0.',
         specs=lambda: {}, check=_check_default_precision, max_wall_time=60.0),
+    SelfTestCase(
+        name='solver_study_default_fit',
+        label='Automatic transient direct factor: memory fit guard',
+        description='meshing.fitted_memory_estimate on the CPU, no run: a 2D gpu heat transient (Automatic = the kept '
+                    'cuDSS factor of study_defaults) with a GPU budget 1 byte below its estimate resolves the linear '
+                    'role without the study (pcg multigrid) in fitted_memory_estimate, resolved_solvers and validate '
+                    '(one info line at the physics); a budget of twice the estimate keeps the factor; a sparse_direct '
+                    'node is never a candidate. Without nvmath-python no role is a candidate. error = number of '
+                    'failed checks, tolerance 0.',
+        specs=lambda: {}, check=_check_study_default_fit, max_wall_time=60.0),
     SelfTestCase(
         name='eigen_inertia_count',
         label='Eigen solver: counting eigenvalues below a shift',

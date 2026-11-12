@@ -129,7 +129,10 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
 # Case profilers (`case_profilers/`)
 
 Whole selftest runs per solver engine (gpu by default), to find host work (numpy / scipy / Python, device-host
-round trips) around the solves. Run from any folder:
+round trips) around the solves. They cover the engines and mesh kinds that no analytic example covers (pressure
+acoustics, em_eme_3d, magnetostatics_3d, 3D tensor / tetrahedra / nonlinear solid mechanics, the triangle and
+tetrahedra FEM engines, the membrane plate), plus the example-based em_fdfd_3d and sin_square scripts; the per-module
+performance set is `example_profilers/` below. Run from any folder:
 
 ```
 python dev_tools/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
@@ -195,7 +198,7 @@ Each solver has its backend:
   gives both lines).
 
 `auto @gpu` is the gpu model with the solver Automatic picks. Some of those runs factorise on the host with SuperLU
-(the FDFD body-of-revolution / conical / nonlinear, membrane line and magnetostatics tensor cases).
+(e.g. the em_fdfd example group's dbr cavity, whose solver node asks for it).
 
 **Timeout.** Each command is killed after `--timeout` seconds (default 60; `0`: no limit; the harness itself has
 none). A killed command that was profiling becomes a point at the `>60` tick of the run wall panel, above a thin
@@ -225,3 +228,20 @@ the run (restore it from a `profile_points_before.json`), and a file in the firs
 
 `--plot-only` redraws the plot without running anything. `measure_cudss_reordering.py` times cuDSS
 reordering choices on synthetic matrices; `profiler_example_sin_square_membrane.py` profiles an example file.
+
+# Example profilers (`example_profilers/`)
+
+The performance set: analytic examples at their own sizes, grouped per physics module (one or two examples of a
+few seconds each, several short ones where each is under ~2 s), so the time is the physics, the geometry and the
+solve. `python example_profiler.py --list` prints the groups with each example's selftest wall (about 110 s of runs in
+all). Run from any folder:
+
+```
+python dev_tools/time_profilers/example_profilers/example_profiler.py GROUP [--runs STEM ...] [--warmup] [--compare back_end=cudss,cudss_mixed]
+python dev_tools/time_profilers/example_profilers/run_all_examples.py [--only SUBSTRING ...] [--cudss --pardiso ...] [--backend gpu cpu]
+python dev_tools/time_profilers/case_profilers/profile_delta.py em_fdtd__gpu --history dev_tools/time_profilers/example_profilers/out/history
+```
+
+The harness options, reports, `runs.json`, solver flags, timeout, history and plot are those of the case profilers
+above, written to `example_profilers/out/`. Each group times the study / runner / output parts, the solver roles, the
+study hooks of its engine classes and the shared part lists of its engines.

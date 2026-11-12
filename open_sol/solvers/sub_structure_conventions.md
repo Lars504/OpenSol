@@ -17,7 +17,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   record of BandedSolver and DiffusionDirectSolver), `cudss_factor.gmres_refine` (the GMRES-IR loop of cuDSS mixed
   factors and of host_direct, array module xp), `sparse_direct.recycled_gmres` (GMRES on an earlier factor's solve),
   `cudss_factor.ProbedFactor` (base of CudssFactorization and HostDirectFactorization: symmetric / mixed_factor /
-  factor_precision / can_refactorize, the probe vector and gate; host_direct also takes its `_FactorRejected`).
+  factor_precision / can_refactorize, the probe vector and gate; host_direct also takes its `_FactorRejected`),
+  `pcg.DeviceCsrProduct` (the capturable gpu CSR product: call -> its own vector, `apply(vector, out)`; mechanics
+  `_CsrApply`, time_profile).
+- `cudss_factor.warm_cudss_library()` (builder `_warm_cudss`, a gpu build resolving a cuDSS back end): a daemon host
+  thread imports nvmath.sparse.advanced and loads the library (`cudss.get_property`), nothing on the device; handles and
+  plans stay on the GPU-owning thread, and `_direct_solver` joins the thread before the first DirectSolver (cuDSS is
+  not thread-safe). nvmath's `cudss_data_ifc` / `cudss_config_ifc` set their thread-local `size_written` buffer only on
+  the importing thread, so `_direct_solver` gives the GPU thread its own (`_thread_size_buffers`; a renamed nvmath
+  module or attribute is an ImportError / AttributeError there). The handle creation is still in the first plan; measure what is left of speedup B3's 0.65 s.
 - `host_direct.py` (MUMPS via python-mumps, MKL PARDISO via pydiso) imports numpy and the cudss_factor helpers at module
   level (sparse_direct, arpack_shift_invert, definition_helpers and solvers.definition import it there), the wrappers
   (`mumps`, `pydiso.mkl_solver`), scipy, core and `sparse_direct.recycled_gmres` inside functions only (import
@@ -53,7 +61,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. `SolverRole.study_defaults` {(study, grid): (type,
   settings)} is read first on every backend: CG_DIFFUSION_LINEAR_ROLE ('time_dependent', 'tensor') -> sparse_direct
   (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu through auto_back_ends['tensor']), a fallback-table
-  rule autopick will replace: no size logic there. Every caller of `automatic` passes the study (resolved_solvers,
+  rule autopick will replace. Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
+  registry, meshes, memory_budget, estimate=None, by_mesh=None)` -> (estimate, plain_roles); when the gpu estimate
+  exceeds the budget, `schema.study_default_roles` (Automatic roles from study_defaults on a cuDSS back end; a node
+  never) resolve with study None if that estimate is lower. `plain_roles` {(physics, role)} goes to
+  `resolved_solvers(..., plain_roles)`, `estimate_memory(plain_roles=)`, `ValidationContext.plain_roles`,
+  `validate(plain_roles=)` (None: fitted there against memory_budget; one info line per physics), `estimate_time(
+  per_run, plain_roles=)`; the builder fits once against its budget (`_fitted_estimate`) and hands it to all of them,
+  api.check (its 'solvers' block) and the GUI document likewise (its memory cache drops on a budget change). Self-test
+  `solver_study_default_fit`. Every caller of `automatic` passes the study (resolved_solvers,
   with_node_precision, default_precision_ignored, validate, api `_variant_spec`, GUI combos); a self-test counting CG
   iterations in a 2D transient pins a pcg node. Every role must fit (`solver_misfit`:
   `SolverType.backends` + optional `backend_misfit(values, backend)`, Automatic roles too). Runtimes take `backend=` from
@@ -66,7 +82,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `diffusion_system_estimate(direct=)`. em_fdfd_3d's curl-curl eigen factor: `sparse_direct.vector_3d_size_issue`
   (SPLU_VECTOR_3D_*, first values to lower from measured factors; no iterative remedy) + `host_lu_bytes(n,
   dimensions=3)`.
-- `schema.resolved_solvers(spec, registry, physics_spec, study, parameters)` is the one resolution rule (validate,
+- `schema.resolved_solvers(spec, registry, physics_spec, study, parameters, plain_roles=frozenset())` is the one
+  resolution rule (validate,
   `meshing.estimate_memory` -> `MemoryContext.solvers`, builder): only roles `used_in(study)`. A pcg preconditioner the
   node does not set resolves 'jacobi' at precision 'mixed' unless the role lists it in `mixed_preconditioners` (so
   the Automatic CSR multigrid never meets mixed); a

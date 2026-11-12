@@ -753,6 +753,7 @@ class ValidationContext:
     mesh_name: str = ''               # the mesh `mesh` / `mesh_error` describe: the default (first used) mesh, or
                                       # inside on_mesh the current physics' own
     _material_maps: dict = field(default_factory=dict, init=False, repr=False, compare=False)
+    plain_roles: frozenset = frozenset()   # meshing.fitted_memory_estimate: roles resolved without study_defaults
     _solvers: dict = field(default_factory=dict, init=False, repr=False, compare=False)   # id -> (spec, roles)
 
     @contextmanager
@@ -814,7 +815,8 @@ class ValidationContext:
         cached = self._solvers.get(id(physics_spec))
         if cached is None or cached[0] is not physics_spec:   # the entry holds its spec: a reused id starts over
             try:
-                roles = resolved_solvers(self.spec, self.registry, physics_spec, self.study_type, self.parameters)
+                roles = resolved_solvers(self.spec, self.registry, physics_spec, self.study_type, self.parameters,
+                                         self.plain_roles)
             except (KeyError, ValueError, TypeError, AttributeError):
                 roles = None
             cached = self._solvers[id(physics_spec)] = (physics_spec, roles)
@@ -1188,10 +1190,11 @@ def conformal_boundaries_physics(spec, registry) -> tuple:
                               domain_reason)
 
 
-def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
+def resolved_solvers(spec, registry, physics_spec, study, parameters, plain_roles=frozenset()) -> dict:
     """{role: ResolvedSolver} of the roles the physics' type uses in `study`: its assigned solver node, else Automatic
     (SolverRole.automatic of the study, run backend and solver_grid: default_type with default_settings unless
-    study_defaults / grid_defaults / backend_defaults differ); solver_defaults.precision fills a precision no node sets (with_default_precision; it
+    study_defaults / grid_defaults / backend_defaults differ; a (physics name, role) in plain_roles skips its
+    study_defaults: meshing.fitted_memory_estimate); solver_defaults.precision fills a precision no node sets (with_default_precision; it
     also replaces an Automatic one), else a node of the Automatic type takes the Automatic one (with_node_precision); a
     preconditioner the node does not set resolves 'jacobi' at precision 'mixed'; back_end 'auto' resolves by
     auto_back_end_values (the role's cuDSS back end on the gpu backend). CPU, GUI-thread safe; ValueError
@@ -1214,7 +1217,8 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
                 solver_type = registry.solver_type(node.type)
                 raw = with_node_precision(spec, solver_type, node.settings, solver_role, backend, grid, study)
             else:
-                type_name, raw = solver_role.automatic(backend, grid, study)
+                automatic_study = None if (physics_spec.name, role) in plain_roles else study
+                type_name, raw = solver_role.automatic(backend, grid, automatic_study)
                 solver_type = registry.solver_type(type_name)
                 # a role's Automatic precision (solid_mechanics_3d gpu: mixed) yields to solver_defaults.precision
                 filled = with_default_precision(spec, solver_type,
@@ -1233,6 +1237,28 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
         resolved[role] = ResolvedSolver(solver_type, auto_back_end_values(values, solver_role, backend, grid),
                                         node_name)
     return resolved
+
+
+def study_default_roles(spec, registry, parameters) -> frozenset:
+    """{(physics name, role)} of the Automatic roles whose solver comes from SolverRole.study_defaults on a cuDSS back
+    end (a factor outside the pool), the roles meshing.fitted_memory_estimate may resolve without the study."""
+    from ..solvers.sparse_direct import AUTO_BACK_END_KEY   # numpy only at module level
+    study = spec.study.type
+    roles = set()
+    for physics_spec, physics_type in known_physics(spec, registry):
+        grid = solver_grid(spec, physics_spec)
+        assigned = physics_spec.solvers if isinstance(physics_spec.solvers, dict) else {}
+        candidates = [role for role, solver_role in physics_type.solver_roles.items()
+                      if not assigned.get(role) and (study, grid) in solver_role.study_defaults]
+        if not candidates:
+            continue
+        try:
+            resolved = resolved_solvers(spec, registry, physics_spec, study, parameters)
+        except ValueError:   # reported by validate
+            continue
+        roles.update((physics_spec.name, role) for role in candidates
+                     if role in resolved and resolved[role].values.get(AUTO_BACK_END_KEY))
+    return frozenset(roles)
 
 
 def auto_back_end_values(values, solver_role, backend, grid) -> dict:

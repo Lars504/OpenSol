@@ -64,24 +64,25 @@ SERIES_STYLES = {'first': dict(linestyle=':', linewidth=1.2, markersize=5, marke
 PICK_RING = dict(s=220, facecolors='none', edgecolors='#0b0b0b', linewidths=1.5, zorder=5)
 
 COMMANDS = (
-    'pressure_acoustics', 'pressure_acoustics_tetrahedra', 'elastic_waves', 'laminar_flow',
-    'em_fdfd_ez', 'em_fdfd_hz', 'em_fdfd_triangles', 'em_fdfd_nonlinear', 'em_modes', 'em_modes_triangles',
-    'em_fdfd_bor', 'em_fdfd_bor_eigen', 'em_fdfd_bor_triangles', 'em_fdfd_conical', 'em_fdfd_conical_triangles',
-    'em_fdtd_bor', 'em_fdtd_ez', 'em_fdtd_hz',
-    'em_fdtd_3d', 'em_fdfd_3d', 'em_fdfd_3d_tetrahedra', 'em_eme', 'em_eme_3d',
-    'heat --kind 2d', 'heat --kind 3d', 'heat --kind steady',
-    'heat_fem --kind triangles', 'heat_fem --kind tetrahedra', 'heat_fem --kind steady', 'heat_noise',
-    'potential --kind tensor', 'potential --kind electrolyte', 'potential --kind waveform',
-    'potential --kind triangles', 'potential --kind tetrahedra',
-    'magnetostatics --kind tensor', 'magnetostatics --kind triangles', 'magnetostatics --kind linear',
-    'magnetic_fields_ac --kind tensor', 'magnetic_fields_ac --kind triangles', 'magnetic_fields_ac --kind strip',
+    'pressure_acoustics', 'pressure_acoustics_tetrahedra',
+    'em_fdfd_triangles', 'em_modes_triangles',
+    'em_fdfd_3d', 'em_fdfd_3d_double_factor', 'em_fdfd_3d_tetrahedra', 'em_fdfd_3d_tetrahedra_double_factor',
+    'em_eme_3d',
+    'heat_fem --kind triangles', 'heat_fem --kind tetrahedra', 'heat_fem --kind steady',
     'magnetostatics_3d --kind tensor', 'magnetostatics_3d --kind tetrahedra', 'magnetostatics_3d --kind sphere',
     'magnetostatics_3d --kind coil',
-    'drift_diffusion --kind tensor', 'drift_diffusion --kind triangles',
-    'solid_mechanics_tensor', 'solid_mechanics_triangles', 'solid_mechanics_3d_tensor --warmup',
+    'solid_mechanics_triangles', 'solid_mechanics_3d_tensor --warmup',
     'solid_mechanics_3d_tetrahedra --warmup', 'solid_mechanics_3d_nonlinear --warmup',   # cuDSS load out of run 1
-    'membrane_film', 'membrane_plate', 'membrane_line',
+    'membrane_plate',
 )
+PLOT_TITLE = 'case profilers per command'
+
+
+def command_line(entry) -> list:
+    """[script path, arguments...] of one COMMANDS entry (a suite reusing main replaces this, COMMANDS, OUT,
+    POINTS_PATH, PLOT_PATH and PLOT_TITLE: example_profilers/run_all_examples.py)."""
+    script, *arguments = entry.split()
+    return [str(HERE / f'profiler_solver_{script}.py'), *arguments]
 
 
 def variant_label(solver, backend) -> str:
@@ -90,10 +91,10 @@ def variant_label(solver, backend) -> str:
 
 def command_point(runs_path, command_seconds, started, token):
     """({run_seconds (sum of the counted runs' walls), command_seconds, gpu_peak_bytes / host_peak_bytes (largest over
-    them), runs, when} or None, names of the token's runs not counted) of one command; counted: the completed runs
-    whose name holds token (all for None) and in which a role taking the token's value factorised (a matrix-free
-    eigen solve never does: that run measures another solver). None when runs.json is missing, older than the command
-    or has no counted run."""
+    them), runs, when} or None, names of the token's runs not counted) of one command; counted: the runs whose name
+    holds token (all for None) and in which a role taking the token's value factorised (a matrix-free eigen solve
+    never does: that run measures another solver). None when runs.json is missing, older than the command, has no
+    counted run or one of the token's runs did not complete (a part not run would shorten the wall)."""
     if not runs_path.is_file() or runs_path.stat().st_mtime < started:
         return None, []
     named = {name: run for name, run in json.loads(runs_path.read_text(encoding='utf-8')).items()
@@ -108,7 +109,7 @@ def command_point(runs_path, command_seconds, started, token):
     runs = [run for run in completed.values() if not idle(run)]
     not_completed = ([f"{name} ({run.get('status')})" for name, run in named.items() if name not in completed]
                      + [f'{name} ({value} {NEVER_FACTORISED})' for name, run in completed.items() if idle(run)])
-    if not runs:
+    if not runs or len(completed) < len(named):
         return None, not_completed
 
     def largest(key):
@@ -122,6 +123,17 @@ def command_point(runs_path, command_seconds, started, token):
             'gpu_peak_bytes': largest('gpu_peak_bytes'), 'host_peak_bytes': largest('host_peak_bytes'),
             'runs': len(runs), 'chosen': names('solvers'), 'automatic': names('automatic'),
             'when': time.strftime('%Y-%m-%d %H:%M:%S')}, not_completed
+
+
+def used_solvers(runs_path, started) -> str | None:
+    """'+'-joined solvers the command's runs used per role (back end, else preconditioner, else solver type), or None
+    when runs.json is missing or older than the command."""
+    if not runs_path.is_file() or runs_path.stat().st_mtime < started:
+        return None
+    names = {choice.get('back_end') or choice.get('preconditioner') or choice.get('type')
+             for run in json.loads(runs_path.read_text(encoding='utf-8')).values()
+             for choice in run.get('solvers') or ()}
+    return '+'.join(sorted(name for name in names if name)) or None
 
 
 def timed_out_point(command_seconds, timeout):
@@ -263,7 +275,7 @@ def plot_points(points, path):
             axis.spines[side].set_visible(False)
     first_when = min((point['when'] for by_series in points.values() for point in by_series['first'].values()),
                      default='none yet')
-    axes[0].set_title(f'case profilers per command (first complete profile {first_when}; GPU peak: pool high-water '
+    axes[0].set_title(f'{PLOT_TITLE} (first complete profile {first_when}; GPU peak: pool high-water '
                       '+ cuDSS factors; RAM peak: the process)', fontsize=10, loc='left')
     variant_handles = [Line2D([], [], color=color(variant), marker=BACKEND_MARKERS.get(variant.partition(' @')[2], 'o'),
                               linewidth=2.0, label=variant) for variant in variants]
@@ -301,8 +313,8 @@ def _save_figure(figure, path):
     return path
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(description=None):
+    parser = argparse.ArgumentParser(description=description or __doc__)
     parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these')
     for solver, variant in SOLVERS.items():
         parser.add_argument(f'--{solver.replace("_", "-")}', dest=f'solver_{solver}', action='store_true',
@@ -338,9 +350,7 @@ def main():
         for solver, backend in variants:
             label = variant_label(solver, backend)
             for entry in commands:
-                script, *arguments = entry.split()
-                command = [sys.executable, str(HERE / f'profiler_solver_{script}.py'), *arguments,
-                           '--backend', backend, *SOLVERS[solver]['arguments']]
+                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments']]
                 print(f'>>> {entry} [{label}]', flush=True)
                 started = time.time()
                 start = time.perf_counter()
@@ -352,7 +362,7 @@ def main():
                     return_code, stdout, stderr = None, _text(expired.stdout), _text(expired.stderr)
                 wall = time.perf_counter() - start
                 report = [line for line in stdout.splitlines() if line.startswith('report: ')]
-                point, not_completed = None, []
+                point, not_completed, shown = None, [], label   # shown: auto replaced by the solvers it used
                 if return_code is None:
                     if NOTHING_PROFILED not in stdout:   # it was profiling this solver when killed
                         point = timed_out_point(wall, options.timeout)
@@ -363,6 +373,9 @@ def main():
                     runs_path = report_path.parent / 'runs.json'   # per-part seconds: what profile_delta.py compares
                     if runs_path.is_file() and runs_path.stat().st_mtime >= started:
                         shutil.copyfile(runs_path, history_folder / f'{report_path.parent.name}.runs.json')
+                    used = used_solvers(runs_path, started) if solver == 'auto' else None
+                    if used:
+                        shown = variant_label(used, backend)
                     if return_code == 0:
                         point, not_completed = command_point(report_path.parent / 'runs.json', wall, started,
                                                              SOLVERS[solver]['token'])
@@ -378,11 +391,15 @@ def main():
                 if return_code is None:
                     reported = (f'timed out after {options.timeout:g} s'
                                 + (' (plotted at the timeout tick)' if point is not None else ''))
-                else:
-                    reported = (f'exit {return_code}, {wall:.1f} s, '
+                else:   # pass: the script exited 0 and every run of the solver completed
+                    run_failed = any(NEVER_FACTORISED not in text for text in not_completed)
+                    verdict = (f'FAIL (exit {return_code})' if return_code else
+                               'FAIL (a run did not complete: not recorded, the plot keeps the earlier point)'
+                               if run_failed else 'pass')
+                    reported = (f'{verdict}, {wall:.1f} s, '
                                 + (report[-1] if report else 'no report (no run takes this solver, or it failed)'))
                 failed_runs = f', not counted: {", ".join(not_completed)}' if not_completed else ''
-                line = f'{entry} [{label}]: {reported}{failed_runs}{tail}'
+                line = f'{entry} [{shown}]: {reported}{failed_runs}{tail}'
                 print(line, flush=True)
                 log.write(line + '\n')
                 log.flush()

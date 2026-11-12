@@ -269,8 +269,8 @@ def _arithmetic_kernel(xp):
 
 def _device_csr_product(matrix):
     """vector -> A vector of the pcg gpu CSR kernel (the solvers' product, into one owned vector)."""
-    from ..solvers.pcg import _DeviceCsrProduct
-    return _DeviceCsrProduct(matrix)
+    from ..solvers.pcg import DeviceCsrProduct
+    return DeviceCsrProduct(matrix)
 
 
 def _laplacian(n_per_axis, dimensions, dtype):

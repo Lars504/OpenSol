@@ -26,7 +26,8 @@ from .geometry import (GEOMETRY_KINDS, axis_parallel_faces, bounding_box, contai
                        domain_size_z, expand_entities, is_plain, line_orientation, material_selections,
                        paint_material_index, point_z, rasterize_window, resolve_geometry, z_extent)
 from .schema import (MESH_KIND_DEFAULTS, MESH_PARAMS, DomainRequirements, array_owner, get_registry,
-                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, state_field_names)
+                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, state_field_names,
+                     study_default_roles)
 from .spec import REFINEMENT_PLACES
 from .boundary_locator import conformal_memory_estimate
 from .subpixel_geometry import subpixel_memory_estimate
@@ -2249,15 +2250,15 @@ class MemoryContext:
 
 
 def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh=None,
-                    by_physics=None, shapes=None) -> MemoryEstimate:
+                    by_physics=None, shapes=None, plain_roles=frozenset()) -> MemoryEstimate:
     """CPU MemoryEstimate of building and running the spec, summed over its used meshes (each: MaterialGrid arrays of
     the types on it, build caches, state-dependent material updates, coupling arrays into its physics, every physics'
     and enabled feature's memory_estimate on it (none: 0 bytes); labels prefixed "mesh '<name>'" when several) plus
     the grid transfers of cross-mesh couplings. mesh_estimate: {name: estimate}, or one estimate of the default mesh;
     missing ones are estimated. by_mesh: a dict that receives {name: MemoryEstimate} per mesh (transfers excluded);
     by_physics: {physics name: MemoryEstimate} of the physics' own and its features' estimates (the time recipes'
-    array traffic). shapes: the caller's resolve_geometry (None = resolved here). MESH_ESTIMATE_ERRORS on model errors
-    (validate reports them)."""
+    array traffic). shapes: the caller's resolve_geometry (None = resolved here); plain_roles: of
+    fitted_memory_estimate (resolved_solvers). MESH_ESTIMATE_ERRORS on model errors (validate reports them)."""
     registry = registry if registry is not None else get_registry()
     shapes = resolve_geometry(spec, parameters, errors={}) if shapes is None else shapes
     meshes = _mesh_estimate_map(spec, parameters, registry, mesh_estimate, shapes)
@@ -2265,7 +2266,8 @@ def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh
     parts, build_cache_bytes = [], 0
     for name, mesh in meshes.items():
         on_mesh = spec.physics_on(name) if spec.physics else []
-        part, cache_bytes = _mesh_memory(spec, parameters, registry, shapes, mesh, name, on_mesh, several, by_physics)
+        part, cache_bytes = _mesh_memory(spec, parameters, registry, shapes, mesh, name, on_mesh, several, by_physics,
+                                         plain_roles)
         if by_mesh is not None:
             by_mesh[name] = part
         parts.append(part.labelled(f"mesh '{name}'") if several else part)
@@ -2275,6 +2277,34 @@ def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh
         (f"grid transfer '{record['coupling']}' ({record['source_mesh']} -> {record['target_mesh']}, "
          f"{record['kind']})", record['bytes']) for record in transfers))
     return combine(parts, build_cache_bytes=build_cache_bytes)
+
+
+def fitted_memory_estimate(spec, parameters, registry, mesh_estimate, memory_budget, estimate=None, by_mesh=None,
+                           shapes=None) -> tuple:
+    """(MemoryEstimate, plain_roles): when the gpu estimate exceeds memory_budget, the study_default_roles (a kept
+    cuDSS factor) resolve without their study if that estimate is lower (D1 4b), else frozenset(); estimate: a given one."""
+    if estimate is None:
+        estimate = estimate_memory(spec, parameters, registry, mesh_estimate, by_mesh=by_mesh, shapes=shapes)
+    if not memory_budget or solver_backend(spec) == 'cpu' or estimate.device_peak <= memory_budget:
+        return estimate, frozenset()
+    roles = study_default_roles(spec, registry, parameters)
+    if not roles:
+        return estimate, frozenset()
+    parts = {}
+    plain = estimate_memory(spec, parameters, registry, mesh_estimate, by_mesh=parts, shapes=shapes, plain_roles=roles)
+    if plain.device_peak >= estimate.device_peak:
+        return estimate, frozenset()
+    if by_mesh is not None:
+        by_mesh.clear()
+        by_mesh.update(parts)
+    return plain, roles
+
+
+def plain_roles_text(plain_roles) -> str:
+    """Info line naming the roles fitted_memory_estimate resolved without their study default."""
+    names = ', '.join(f"'{physics}.{role}'" for physics, role in sorted(plain_roles))
+    return (f'Automatic {names}: the kept direct factor of this study exceeds the GPU budget, so the Automatic '
+            f'solver of the other studies runs instead (assign a solver node to choose)')
 
 
 def backend_memory(spec, estimate) -> MemoryEstimate:
@@ -2298,7 +2328,8 @@ def _mesh_estimate_map(spec, parameters, registry, mesh_estimate, shapes=None):
             for mesh_spec in spec.used_meshes()}
 
 
-def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, several, by_physics=None):
+def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, several, by_physics=None,
+                 plain_roles=frozenset()):
     """(MemoryEstimate, build-cache bytes) of one mesh and the physics on it (on_mesh; its material arrays those of
     mesh_material_types); physics and features whose type does not run on the mesh's kind are left out (validate
     refuses them); one mesh: identical to the whole model. by_physics receives each physics' own parts combined."""
@@ -2317,7 +2348,7 @@ def _mesh_memory(spec, parameters, registry, shapes, mesh, mesh_name, on_mesh, s
         first_part = len(parts)
         if physics_type.memory_estimate is not None:
             settings = physics_settings(physics_type, physics_spec, parameters)
-            solvers = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters)
+            solvers = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters, plain_roles)
             context = MemoryContext(spec, physics_spec, parameters, registry, regions, solvers, mesh=mesh)
             parts.append(physics_type.memory_estimate(settings, mesh, context).labelled(
                 f"physics '{physics_spec.name}'"))

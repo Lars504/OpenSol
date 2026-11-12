@@ -63,8 +63,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   `EMPTY_RECORD` layout): cpu/wall cannot tell device-bound parts (the blocking sync spins a core), the wait column
   only partly can: it counts the work still queued at exit, so a device-bound part ending in a host read (a PCG solve
   reading its residual) shows ~0 wait.
-- Selftest specs assign the double `exact_cg` node (`with_exact_cg`) to every pcg physics: a profiler run meant to
-  time the Automatic solver drops that node from a copy (tensor 3D profiler `_on_automatic`).
+- Selftest specs assign the double, tolerance 1e-12 Jacobi `exact_cg` node (`with_exact_cg`) to every pcg physics; a
+  profiler run on it times the selftest's accuracy, not production (it was ~70 % of the tensor 3D profile). Profilers
+  drop the node (Automatic) or keep only the setting under study on it (`scaled_spec`, tensor 3D `_production`).
 - `SOLVER_ROLE_PARTS` includes private cuDSS / DevicePencil / host direct (`_PardisoFactor` / `_MumpsFactor`) /
   multigrid phases by name: a new solver module or library adapter needs its phases added there. A script that also lists one of its
   targets gets "already timed" in the unresolved section (drop it from the script). A renamed private method drops
@@ -80,19 +81,20 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores the
   spec's nodes and a runtime cuDSS fallback. A back end name that is not a SOLVERS key (or a renamed
   `back_end` / `factorization` / `preconditioner` param) silently drops the rings. A changed `runs.json` key (`wall_seconds`, `gpu_peak_bytes`,
-  `host_peak_bytes`) silently empties that panel. On the cpu backend summary.json `build.gpu_peak_bytes` is the
+  `host_peak_bytes`) silently empties that panel; the log line of an auto command names the solvers its runs used
+  (`used_solvers`: `solvers[]` back_end, else preconditioner, else type), and falls back to 'auto' without them. On the cpu backend summary.json `build.gpu_peak_bytes` is the
   MemoryLedger's tracemalloc peak (host bytes), so `_run_memory` writes null there instead of reading it, and the plot skips `@cpu` variants in the GPU panel
   (old points included). The points are keyed by '<solver> @<backend>', then the COMMANDS
-  entry: renaming an entry starts a new series and leaves the old one plotted at the end of the axis. A compare
-  solver counts only the completed runs (`status` 'completed' of summary.json, copied into runs.json) whose name holds its `NAME=value` token (the harness's variant label), so a change of
-  that label drops every compare point; and only those in which a role holding the value factorised (`runs.json`
+  entry: renaming an entry starts a new series and leaves the old one plotted at the end of the axis. A command's
+  point is recorded only when every run whose name holds the solver's `NAME=value` token (the harness's variant
+  label; all runs for auto) completed (`status` 'completed' of summary.json, copied into runs.json): one failed run
+  records nothing (log 'FAIL'; 'pass' = exit 0 and every run completed) and the earlier point stays. A change of that label drops every compare point; and only those in which a role holding the value factorised (`runs.json`
   `solvers[].factorizations`, from the role's `factorizations` / `eigen_factorizations` counter; None = no counter,
   counted): a matrix-free eigen solve or a line_block run under `back_end=pardiso` measures another solver. A command
   whose every run of the solver is such a run loses that solver's points of the command (the one case where points
   are dropped; `profile_points_before.json` of the run keeps them). A renamed counter makes every run count again. A timed-out command counts as profiling unless its partial stdout holds the
-  harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. `--compare` checks only the
-  solver setting's `setting_choices`; a physics that refuses the back end in its own validation (the 1D membrane takes
-  only auto / scipy_splu) fails at build, and those runs are not counted. The plot is saved to a timestamped sibling
+  harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. `--compare` leaves out the roles
+  that refuse the value (setting_choices, opt-in values, validation: below), so no run fails for the value itself. The plot is saved to a timestamped sibling
   and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
   `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
   nodes (cuDSS, device line_block) fail at build and those runs are not counted.
@@ -100,9 +102,36 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   It counts only a new value, so keep that attribute assigned fresh on every call.
 - `--compare` adds a solver node per (physics, role) to a deep copy of the spec, never editing the spec's nodes. Values
   stay strings, so it suits choice settings (`back_end`, `precision`). `SETTING_ALIASES` pairs `back_end` with the
-  shift-invert `factorization`; a value outside the role's `setting_choices` is skipped, never an invalid node. A run
-  that differs from an earlier one only by a node the value replaces (a script's `*_double_factor` twin) is the same
+  shift-invert `factorization`; a value outside the role's `setting_choices` is skipped, never an invalid node, and so
+  is an opt-in value (cuDSS, MUMPS / PARDISO: `SolverType.opt_in_settings`) the role does not list (em_modes / em_fdfd_bor
+  'shifted' does real work only as line_block); a compared node an error of the variant's validation names (a physics
+  refusing the value itself: the 1D membrane) is dropped again (`_refused_roles`), so the run keeps its other roles. A run
+  that differs from an earlier one only by a node the value replaces (a mixed / double twin of one model) is the same
   model under that value and is dropped (`_run_key`: the specs' JSON without the displaced nodes).
+- A command's point sums its runs' walls, so a run added to a script doubles the plotted point: a solver twin of a
+  model gets its own script (`*_double_factor.py` reuses its sibling's PARTS / example loader), not a run in the
+  existing one.
+- `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
+  `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
+  main and its helpers read those globals at call time, never bind them at import.
 - Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
   callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
   every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).
+
+## example_profilers
+- The performance set: analytic examples (`examples/<folder>/<stem>.json`, loaded as the example selftest loads them,
+  never refined or edited) grouped per physics module in `example_profiler.py` `GROUPS` (one group = one command =
+  one plotted point, its examples the runs). Choice rule: a module's examples by selftest wall, one or two of a few
+  seconds, several short ones only when each is under ~2 s; span over engines, studies and mesh kinds before
+  adding seconds. A new example group needs no other edit (`run_all_examples.py` takes `GROUPS`).
+- It is built on case_profilers, never a copy: `profiler_harness` (its `OUT_ROOT` set to `example_profilers/out`
+  before `main`), the shared part lists (`profiler_em2d_parts`, `profiler_diffusion_parts`,
+  `profiler_em_bor_fdtd_common`) and the PARTS / loaders of the case scripts that profile an example
+  (`profiler_solver_em_fdfd_3d*.py`, `profiler_example_sin_square_membrane.py`): deleting one of those breaks the
+  import here. Parts are deduplicated by target (`unique_parts`).
+- Engine parts come from the code: `engine_parts('module:Class', explicit)` times the `ENGINE_HOOKS` the class or an
+  open_sol base defines; `explicit` (FDTD, elastic_waves, laminar_flow, heat beside a flow) leaves out `step`, which
+  would sync the GPU once per time step (the runner's `advance` times the stepping). A new study hook in
+  `model/solver_hooks.py` belongs in `ENGINE_HOOKS`.
+- The examples run on `--backend` (default gpu, as the case profilers), not on their own `solver_defaults.backend`
+  (em_fdfd's dbr cavity runs on cpu in the selftest; its SuperLU node keeps the factor on the host either way).

@@ -1,29 +1,33 @@
 """Profile em_fdfd_3d on a 'tetrahedra' mesh (Nedelec FEM eigenfrequency) on the gpu: the example
-fem_mie_sphere_resonance_3d (gmsh sphere, PML shell, cudss_mixed; builtin mesher when gmsh is missing), the same on
-the double cuDSS factor (mie_double_factor) and the em3d_fem_model_bloch run moved to the gpu (Bloch LU, derived
-values on tetrahedra). Run from any folder:
-python profiler_solver_em_fdfd_3d_tetrahedra.py [--runs mie mie_double_factor bloch__run] [--no-cprofile]"""
+fem_mie_sphere_resonance_3d (gmsh sphere, PML shell, cudss_mixed; builtin mesher when gmsh is missing) and the
+em3d_fem_model_bloch run moved to the gpu (Bloch LU, derived values on tetrahedra); the example on the double cuDSS
+factor: profiler_solver_em_fdfd_3d_tetrahedra_double_factor.py. Run from any folder:
+python profiler_solver_em_fdfd_3d_tetrahedra.py [--runs mie bloch__run] [--no-cprofile]"""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from profiler_em_bor_fdtd_common import methods  # noqa: E402
 from profiler_harness import REPOSITORY, SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
-from profiler_solver_em_fdfd_3d import double_factor  # noqa: E402
 
 EXAMPLE = REPOSITORY / 'examples' / 'em3d' / 'fem_mie_sphere_resonance_3d.json'
+NOTE = 'eigs excl = host ARPACK + per-application transfers; renderer sample re-evaluates E per component'
 
 
-def _specs():
-    """{'mie': the example (mesher builtin without gmsh), 'mie_double_factor': it on the double cuDSS factor,
-    'bloch__run': the em3d_fem_model_bloch run}."""
+def load_example():
+    """The fem_mie_sphere_resonance_3d example spec (cudss_mixed), on mesher builtin when gmsh is missing."""
     from open_sol import api
     from open_sol.fem.gmsh_io import find_gmsh
     example = api.load(EXAMPLE)
     if find_gmsh() is None:
         print('gmsh not found (OPEN_SOL_GMSH / PATH): the mie run uses mesher builtin', flush=True)
         example.meshes[0].mesher = 'builtin'
-    runs = {'mie': example, 'mie_double_factor': double_factor(example)}
+    return example
+
+
+def _specs():
+    """{'mie': the example, 'bloch__run': the em3d_fem_model_bloch run}."""
+    runs = {'mie': load_example()}
     runs.update({f'bloch__{run}': spec for run, spec in case_specs('em3d_fem_model_bloch').items()})
     return runs
 
@@ -67,5 +71,4 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
 ) + methods(f'{EM3D}.renderer_fem3d:FEMRenderer3D', 'renderer', ('sample', 'device_field'))
 
 if __name__ == '__main__':
-    main('em_fdfd_3d_tetrahedra', PARTS, __doc__, specs=_specs, spec_edit=_on_gpu,
-         note='eigs excl = host ARPACK + per-application transfers; renderer sample re-evaluates E per component')
+    main('em_fdfd_3d_tetrahedra', PARTS, __doc__, specs=_specs, spec_edit=_on_gpu, note=NOTE)

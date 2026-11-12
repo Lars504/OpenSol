@@ -74,7 +74,8 @@ def _check_kappa(results_by_name):
 # tangent, admittance feature) on a band around mode 1 vs the dense complex 1D system [[K_uu (1 + j eta) - omega^2 M,
 # K_uphi], [K_phiu, -K_phiphi (1 - j tan delta)]] (u_0 = 0, phi_0 = 0, phi_N = V; Q = -(phi row N), Y = j omega W Q /
 # V), plus the BVD fit against the lossless short / open mode-1 frequencies; 'elastic' (no piezo: a traction on x_hi,
-# loss factor) at three frequencies: Re u_x and u_abs = |u| per snapshot vs the 1D solution.
+# loss factor) at three frequencies: Re u_x and u_abs = |u| per snapshot vs the 1D solution; 'heated' (elastic plus a
+# uniform temperature_change): the harmonic drive holds no thermal load, so its u_x and stresses equal 'elastic' (D3).
 _DRIVE = 10.0                 # V
 _LOSS_FACTOR = float32_value(2e-3)    # float32-exact material values (as the selftests_piezo bar)
 _LOSS_TANGENT = float32_value(1e-3)
@@ -86,6 +87,9 @@ _ADMITTANCE_TOLERANCE = 1e-8  # relative complex Y (float64 host solves)
 _FIELD_TOLERANCE = 1e-5       # float32 outputs, relative to the peak
 _BVD_FREQUENCY_TOLERANCE = 5e-3   # the single-mode BVD of a distributed resonator vs its discrete frequencies
 _BVD_COUPLING_TOLERANCE = 5e-2
+_THERMAL_EXPANSION = float32_value(2.6e-6)   # 1/K (heated run)
+_TEMPERATURE_CHANGE = 50.0                   # K: a static thermal stress the confined bar would carry
+_HEATED_FIELDS = ('u_x', 'stress_xx', 'stress_yy', 'stress_zz')
 
 
 def _lossless_mode_one():
@@ -105,6 +109,9 @@ def _bar_spec(run):
     properties = {'youngs_modulus': _YOUNGS_MODULUS, 'poisson_ratio': _POISSON_RATIO, 'rho': _DENSITY,
                   'mechanical_loss_factor': _LOSS_FACTOR}
     features = [FeatureSpec('rails', 'roller', ['y_lo', 'y_hi']), FeatureSpec('anchor', 'roller', ['x_lo'])]
+    if run == 'heated':
+        properties['alpha'] = _THERMAL_EXPANSION
+        features.append(FeatureSpec('heating', 'temperature_change', ['all'], {'delta_T': _TEMPERATURE_CHANGE}))
     if run == 'piezo':
         properties.update(piezo_e11=_PIEZO_E11, eps_dc=_EPS_DC, dielectric_loss_tangent=_LOSS_TANGENT)
         features += [FeatureSpec('ground', 'electrode', ['x_lo'], {'connection': 'voltage', 'voltage': 0.0}),
@@ -122,11 +129,12 @@ def _bar_spec(run):
         materials=[MaterialSpec('bar', properties=properties, selection=['all'])],
         physics=[PhysicsSpec(_PHYSICS, _SOLID_TYPE, settings={'piezoelectric': run == 'piezo'}, features=features)],
         mesh=MeshSpec(mode='uniform', dx=_CELL),
-        study=StudySpec(type=_STUDY, settings=study, stored_fields=[f'{_PHYSICS}.u_x', f'{_PHYSICS}.u_abs']))
+        study=StudySpec(type=_STUDY, settings=study, stored_fields=[
+            f'{_PHYSICS}.{name}' for name in dict.fromkeys(('u_x', 'u_abs') + _HEATED_FIELDS)]))
 
 
 def _bar_specs():
-    return {'piezo': _bar_spec('piezo'), 'elastic': _bar_spec('elastic')}
+    return {run: _bar_spec(run) for run in ('piezo', 'elastic', 'heated')}
 
 
 def _bar_1d(omega, piezo, load=0.0, voltage=0.0):
@@ -192,6 +200,14 @@ def _check_bar(results_by_name):
             item = f'elastic {factor:g} f_1 {name}'
             errors[item] = float(np.max(np.abs(field - values[:, None]))) / float(np.max(np.abs(centres)))
             tolerances[item] = _FIELD_TOLERANCE
+    heated = results_by_name['heated']
+    for index, factor in enumerate(_ELASTIC_FACTORS):
+        for name in _HEATED_FIELDS:
+            plain = np.asarray(elastic.snapshot_field(index, f'{_PHYSICS}.{name}').values, dtype=np.float64)
+            warm = np.asarray(heated.snapshot_field(index, f'{_PHYSICS}.{name}').values, dtype=np.float64)
+            item = f'heated {factor:g} f_1 {name}'
+            errors[item] = float(np.max(np.abs(warm - plain))) / max(float(np.max(np.abs(plain))), 1e-300)
+            tolerances[item] = _FIELD_TOLERANCE
     return scaled_worst_result(errors, tolerances, **details)
 
 
@@ -229,6 +245,9 @@ FREQUENCY_RESPONSE_CASES = (
                     f'f_open^2 ({_BVD_COUPLING_TOLERANCE:g}). elastic (piezoelectric off): a {_TRACTION:g} Pa traction '
                     f"on x_hi at {', '.join(f'{factor:g}' for factor in _ELASTIC_FACTORS)} x the lowest chain frequency; "
                     'per snapshot the real part u_x and the amplitude u_abs against the 1D solution within '
+                    f'{_FIELD_TOLERANCE:g} of its peak. heated: the elastic run with alpha {_THERMAL_EXPANSION:g} 1/K '
+                    f'and a uniform temperature_change of {_TEMPERATURE_CHANGE:g} K (the harmonic drive holds no '
+                    'thermal load): u_x and stress_xx / yy / zz per snapshot equal the elastic run within '
                     f'{_FIELD_TOLERANCE:g} of its peak. measured = error = the worst deviation in tolerance units, '
                     'tolerance 1: this pins the complex host solve, both loss models, the electrode charge and '
                     'current, the admittance sign and the snapshot outputs. Not yet run with 201 frequencies on the '

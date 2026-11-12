@@ -9,7 +9,8 @@ package, but public on GitHub with the repository, so every clone has it):
 `dev_tools/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
 problems assembled by open_sol's own operator code and on whole model files; it is not `python -m open_sol profile` (the run-time estimate's profile).
 `dev_tools/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
-syncs); `dev_tools/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
+syncs); `dev_tools/time_profilers/example_profilers` does the same on the analytic examples, one group per physics
+module (the performance set, on the case_profilers harness); `dev_tools/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
 User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
 `INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
 cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
@@ -396,7 +397,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   shared one from definition_helpers when it fits); validate and estimators read the resolution
   (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting. Automatic = the role's default
   type at its defaults (per study, grid and backend: `SolverRole.automatic(backend, grid, study)`, every caller passes
-  the study; a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
+  the study; a study default (kept cuDSS factor) whose gpu estimate exceeds the budget resolves without the study:
+  `meshing.fitted_memory_estimate` -> `plain_roles`, which validate, estimators, build and api.check share, solvers sub
+  file; a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
   `SolverRole.auto_back_ends`, solvers sub file; the optional host MUMPS / PARDISO back ends of `solvers.host_direct`
   are opt-in only, never auto: a role lists them in its `setting_choices`, every such tuple derived from
   `host_direct.HOST_DIRECT_*`, never spelled out); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
@@ -482,7 +485,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   a full reduction in a hot loop uses a multi-block one (`solvers.pcg.device_vector_dot`), or reduces the shortest
   axis first (`core.kernels.axis_first_reduce`, for fused ReductionKernels of >= 2D arrays). cupy refuses cuSPARSE calls during stream capture
   (NotImplementedError), so a CUDA graph cannot contain cupyx SpMV: use the CSR RawKernels of `solvers.pcg`
-  (`CSR_ROW_SOURCE`, `_DeviceCsrProduct`; the multigrid V-cycle is captured that way, and so are the CG check blocks
+  (`CSR_ROW_SOURCE`, `DeviceCsrProduct` with `apply(vector, out)`; the multigrid V-cycle is captured that way, and so
+  are the CG check blocks
   of a pcg factorized with capture_blocks: solvers sub file "pcg"). Below ~1e6 unknowns a cupyx
   SpMV costs more host time (~60 us: descriptors, workspace, output allocation) than device time.
 - Launch-bound steppers replay their fixed-argument launches as CUDA graphs (gpu only; one eager run per key, then
@@ -597,5 +601,6 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `dev_tools/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result
-  line), case_profilers (script layout, wrap before the registry, unresolved parts); usage in its README.md.
+  line), case_profilers (script layout, wrap before the registry, unresolved parts), example_profilers (choice rule,
+  what it imports from case_profilers, engine parts); usage in its README.md.
 - `dev_tools/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).

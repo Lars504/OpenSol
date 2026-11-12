@@ -15,8 +15,8 @@ from ..model.analytic import CURVE_RESULT_KINDS
 from ..model.expressions import RESERVED_NAMES, error_message, evaluate_parameters, is_identifier
 from ..model.geometry import (GEOMETRY_KINDS, Z_PARAM_NAMES, domain_extent, domain_size_z, resolve_geometry,
                               z_param_set)
-from ..model.meshing import (MESH_ESTIMATE_ERRORS, element_mesh_key, element_window_size, estimate_memory,
-                             estimate_mesh, physics_settings, with_built_counts)
+from ..model.meshing import (MESH_ESTIMATE_ERRORS, element_mesh_key, element_window_size, estimate_mesh,
+                             fitted_memory_estimate, physics_settings, with_built_counts)
 from ..model.schema import (FREE_MESH_KINDS, GLOBAL_DERIVED_OPERATION, INTERFACE_SIDES, MESH_KINDS, SELECTION_KINDS,
                             SOLVER_ROLES, coupling_role_text,
                             coupling_type_accepts, fill_defaults, new_physics_space, output_field_names,
@@ -154,7 +154,7 @@ class SpecEstimates:
         return estimates, errors
 
     def memory_estimate(self):
-        """meshing.estimate_memory of the cached used-mesh estimates (CPU only), None when a mesh or the estimate
+        """meshing.fitted_memory_estimate of the cached used-mesh estimates (CPU only), None when a mesh or the estimate
         fails (validation reports why)."""
         return self._memory_estimates()[0]
 
@@ -164,19 +164,22 @@ class SpecEstimates:
         return self._memory_estimates()[1].get(name)
 
     def _memory_estimates(self):
-        """(MemoryEstimate or None, {used mesh name: its part}), cached per revision."""
+        """(MemoryEstimate or None, {used mesh name: its part}, plain_roles or None) of
+        meshing.fitted_memory_estimate against the last GPU budget, cached per revision and budget."""
         def estimate():
             estimates, _errors = self.used_mesh_estimates()
             if not estimates or any(mesh is None for mesh in estimates.values()):
-                return None, {}
+                return None, {}, None
             by_mesh = {}
             try:
-                return estimate_memory(self.spec, self.parameters(), self.registry, estimates, by_mesh=by_mesh), by_mesh
+                memory, plain_roles = fitted_memory_estimate(self.spec, self.parameters(), self.registry, estimates,
+                                                             self.memory_budget, by_mesh=by_mesh)
+                return memory, by_mesh, plain_roles
             except MESH_ESTIMATE_ERRORS:
-                return None, {}
+                return None, {}, None
             except Exception:   # crashing estimator: traceback to the log, validation reports it
                 sys.excepthook(*sys.exc_info())
-                return None, {}
+                return None, {}, None
         return self._cached('memory_estimate', estimate)
 
     def time_estimate(self):
@@ -201,17 +204,17 @@ class SpecEstimates:
         message) and checking against the last known GPU budget and available host RAM."""
         def check():
             meshes, mesh_errors = self.used_mesh_estimates()
-            memory, memory_parts = self._memory_estimates()
+            memory, memory_parts, plain_roles = self._memory_estimates()
             return validate(self.spec, self.registry, mesh_estimate=meshes, mesh_error=mesh_errors,
                             memory_budget=self.memory_budget, memory_estimate=memory,
                             host_budget=self.host_memory_budget,
-                            memory_parts=None if memory is None else memory_parts)
+                            memory_parts=None if memory is None else memory_parts, plain_roles=plain_roles)
         return list(self._cached('issues', check))
 
     def memory_verdict(self):
         """validate.memory_verdict of the cached estimates against the last budgets (the mesh a budget issue is
         reported at, over or not, element meshes still to build); None without a memory estimate."""
-        memory, memory_parts = self._memory_estimates()
+        memory, memory_parts, _plain_roles = self._memory_estimates()
         if memory is None:
             return None
         return memory_verdict(self.spec, self.used_mesh_estimates()[0], memory, self.memory_budget,
@@ -479,6 +482,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
             self.host_memory_budget = int(host_budget)
         self.estimate_inputs_version += 1
         self._cache.pop('issues', None)
+        self._cache.pop('memory_estimate', None)   # fitted against the GPU budget (meshing.fitted_memory_estimate)
         self.issues_invalidated.emit()
         return True
 

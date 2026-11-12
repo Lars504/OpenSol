@@ -38,7 +38,7 @@ from .model.expressions import error_message, evaluate_parameters
 from .model.import_contracts import check as check_import_contracts, rule_text
 from .model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
 from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate_memory, estimate_mesh,
-                            estimate_meshes, line_block_hint, mesh_transfers,
+                            estimate_meshes, fitted_memory_estimate, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
 from .model.scene_3d import build_scene
 from .model.schema import (ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values, resolved_solvers,
@@ -197,11 +197,19 @@ def check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=N
         if not mesh_errors and refused_on_estimated_counts(model_spec, meshes, memory, memory_budget, host_budget):
             meshes, memory, by_mesh, override_issues = _judged_estimates(
                 model_spec, registry, parameter_values, meshes, memory, by_mesh, override_issues)
+        plain_roles = None   # D1 4b: the build's fit guard on these estimates (None: validate fits itself)
+        if memory is not None and not mesh_errors:
+            try:
+                memory, plain_roles = fitted_memory_estimate(model_spec, parameter_values, registry, meshes,
+                                                             memory_budget, estimate=memory, by_mesh=by_mesh)
+            except Exception:   # model errors and crashing estimators: validate reports them
+                plain_roles = None
         issues = override_issues + validate(model_spec, registry, mesh_estimate=meshes, mesh_error=mesh_errors,
                                             memory_budget=memory_budget, memory_estimate=memory,
-                                            host_budget=host_budget, memory_parts=by_mesh or None)
+                                            host_budget=host_budget, memory_parts=by_mesh or None,
+                                            plain_roles=plain_roles)
         study = _study_estimate(model_spec, registry, parameter_values, list(meshes.values()))
-        solvers = _solver_report(model_spec, registry, parameter_values)
+        solvers = _solver_report(model_spec, registry, parameter_values, plain_roles or frozenset())
         if meshes and not mesh_errors and memory is not None:
             time_record, time_issue = _time_report(model_spec, parameter_values, registry, meshes, max_wall_time)
             issues.append(time_issue)
@@ -273,14 +281,14 @@ def _time_report(spec, parameters, registry, meshes, max_wall_time=None):
     return record, Issue('info', ('study',), estimate.text(count=3) + build_text)
 
 
-def _solver_report(spec, registry, parameters):
+def _solver_report(spec, registry, parameters, plain_roles=frozenset()):
     """check.json 'solvers' block: per physics the resolved role solvers {role: {type, solver (node or None), backend,
     precision, settings}} of the study, None for a physics whose solvers do not resolve (validate reports it)."""
     backend = solver_backend(spec)
     report = {}
     for physics_spec in spec.physics:
         try:
-            resolved = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters)
+            resolved = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters, plain_roles)
         except Exception:   # unknown type / node, bad settings or a crashing callback: validate reports each
             report[physics_spec.name] = None
             continue

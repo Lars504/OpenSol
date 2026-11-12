@@ -60,17 +60,18 @@ def _apply_inverse_blocks(inverse_blocks, residual, preconditioned):
 
 class _CsrApply:
     """apply(vector, out) = A vector of a backend CSR for a matrix-free PCGSolver ('mixed'): gpu the pcg CSR RawKernel
-    (capturable in a CUDA graph, unlike a cupyx SpMV) copied into out; cpu scipy's in-place kernel."""
+    (pcg.DeviceCsrProduct.apply, capturable in a CUDA graph, unlike a cupyx SpMV) into out; cpu scipy's in-place
+    kernel."""
 
     def __init__(self, matrix, backend):
-        from ...solvers.pcg import _DeviceCsrProduct, host_csr_matvec
+        from ...solvers.pcg import DeviceCsrProduct, host_csr_matvec
         self.matrix = matrix
-        self._device_product = _DeviceCsrProduct(matrix) if backend == 'gpu' else None
+        self._device_product = DeviceCsrProduct(matrix) if backend == 'gpu' else None
         self._host_matvec = None if backend == 'gpu' else host_csr_matvec()
 
     def __call__(self, vector, out):
         if self._device_product is not None:
-            cp.copyto(out, self._device_product(vector))
+            self._device_product.apply(vector, out)
             return
         matrix = self.matrix
         if self._host_matvec is None:

@@ -348,14 +348,15 @@ def stored_profile(backend):
 
 
 def estimate_time(spec, parameters, registry=None, mesh_estimate=None, profile=None, per_run=False, shapes=None,
-                  runs=None):
+                  runs=None, plain_roles=frozenset()):
     """(TimeEstimate, message) of running the spec on its backend: every physics' recipe (none: 'not estimated'),
     per-step work times the steps of the study, priced on `profile` (None: the stored machine profile of the
     backend). per_run: the spec as one run (the post-run check), else every study run (sweep values on their own
     mesh, parity sectors: study_runs), summed (items labelled '<run label>: ...', no counters), times the runs of a
     parameter estimation (estimation_runs: an upper bound). shapes: the caller's resolve_geometry of these parameters
-    (per_run only; None = resolved where needed); runs: estimated_runs of the spec (None = study_runs here). (None,
-    reason) without a profile; model errors raise as for estimate_memory."""
+    (per_run only; None = resolved where needed); runs: estimated_runs of the spec (None = study_runs here);
+    plain_roles: of meshing.fitted_memory_estimate (per_run only). (None, reason) without a profile; model errors raise
+    as for estimate_memory."""
     registry = registry if registry is not None else get_registry()
     backend = solver_backend(spec)
     if profile is None:
@@ -363,7 +364,8 @@ def estimate_time(spec, parameters, registry=None, mesh_estimate=None, profile=N
         if profile is None:
             return None, f'{reason}: run `python -m open_sol profile` to estimate run times'
     if per_run:
-        estimate = _run_estimate(spec, parameters, registry, mesh_estimate, backend, shapes=shapes)
+        estimate = _run_estimate(spec, parameters, registry, mesh_estimate, backend, shapes=shapes,
+                                 plain_roles=plain_roles)
         return estimate.priced(profile, backend), ''
     runs = study_runs(spec, parameters, mesh_estimate) if runs is None else runs
     evaluations = estimation_runs(spec)
@@ -433,13 +435,15 @@ def _mesh_signature(spec, parameters, meshes):
     return tuple(signature)
 
 
-def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_kept=False, shapes=None) -> TimeEstimate:
+def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_kept=False, shapes=None,
+                  plain_roles=frozenset()) -> TimeEstimate:
     """Unpriced TimeEstimate of one study run of the spec on mesh_estimate (None / {}: estimated here, on shapes when
     given); ordering_kept: a later run on an unchanged mesh (TimeContext.ordering_kept)."""
     meshes = (mesh_estimate if isinstance(mesh_estimate, dict) and mesh_estimate
               else meshing.estimate_meshes(spec, parameters, registry, shapes))
     memory_parts = {}
-    meshing.estimate_memory(spec, parameters, registry, meshes, by_physics=memory_parts, shapes=shapes)
+    meshing.estimate_memory(spec, parameters, registry, meshes, by_physics=memory_parts, shapes=shapes,
+                            plain_roles=plain_roles)
     study = study_counts(spec, parameters, registry)
     coupled = {name for coupling in spec.couplings if coupling.enabled for name in (coupling.source, coupling.target)}
     fixed_point = fixed_point_physics(spec.couplings, registry)
@@ -447,7 +451,8 @@ def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_k
     for mesh_name, mesh in meshes.items():
         for physics_spec in spec.physics_on(mesh_name):
             parts.append(_physics_part(spec, parameters, registry, physics_spec, mesh, memory_parts, backend, study,
-                                       physics_spec.name in coupled, physics_spec.name in fixed_point, ordering_kept))
+                                       physics_spec.name in coupled, physics_spec.name in fixed_point, ordering_kept,
+                                       plain_roles))
     estimate = combine((_with_study_steps(parts, study), TimeEstimate(snapshot_read_items(spec, meshes, study))))
     if study.type == 'time_dependent':
         missing = tuple(f"coupling '{coupling.name}' transfers" for coupling in spec.couplings if coupling.enabled)
@@ -654,7 +659,7 @@ def _coupling_type(registry, name):
 
 
 def _physics_part(spec, parameters, registry, physics_spec, mesh, memory_parts, backend, study, coupled, fixed_point,
-                  ordering_kept=False):
+                  ordering_kept=False, plain_roles=frozenset()):
     """(TimeEstimate labelled "physics '<name>'", every) of one physics; a missing or failing recipe -> not estimated."""
     label = f"physics '{physics_spec.name}'"
     try:
@@ -665,7 +670,7 @@ def _physics_part(spec, parameters, registry, physics_spec, mesh, memory_parts, 
         return TimeEstimate(not_estimated=(f'{label} ({physics_type.name} has no time recipe)',)), 1
     try:
         settings = meshing.physics_settings(physics_type, physics_spec, parameters)
-        solvers = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters)
+        solvers = resolved_solvers(spec, registry, physics_spec, spec.study.type, parameters, plain_roles)
         context = TimeContext(spec, physics_spec, parameters, registry, solvers, mesh,
                               memory_parts.get(physics_spec.name), backend, study, coupled, fixed_point, ordering_kept)
         part = physics_type.time_estimate(settings, mesh, context).labelled(label)

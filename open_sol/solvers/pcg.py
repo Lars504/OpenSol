@@ -247,8 +247,9 @@ def _csr_product_functions() -> dict:
     return device_template_functions('pcg_csr_product', CSR_ROW_SOURCE, names)
 
 
-class _DeviceCsrProduct:
-    """gpu y = A x of one cupyx CSR (float32 / float64, int32 indices) into one owned vector by csr_product."""
+class DeviceCsrProduct:
+    """gpu y = A x of one cupyx CSR (float32 / float64, int32 indices) by csr_product: call -> one owned vector,
+    apply(vector, out) -> the caller's (both capturable in a CUDA graph, unlike a cupyx SpMV)."""
 
     def __init__(self, matrix):
         import cupy as cp
@@ -265,12 +266,17 @@ class _DeviceCsrProduct:
         self.out = cp.empty(n_rows, dtype=self.dtype)
 
     def __call__(self, vector):
-        if vector.dtype != self.dtype or not vector.flags.c_contiguous:
-            raise ValueError(f'gpu CSR product: the vector must be C-contiguous {self.dtype.name}, got {vector.dtype}')
+        return self.apply(vector, self.out)
+
+    def apply(self, vector, out):
+        """out = A vector (C-contiguous of the matrix dtype, not overlapping vector); returns out."""
+        for name, array in (('vector', vector), ('out', out)):
+            if array.dtype != self.dtype or not array.flags.c_contiguous:
+                raise ValueError(f'gpu CSR product: {name} must be C-contiguous {self.dtype.name}, got {array.dtype}')
         matrix = self.matrix   # read per call: callers write new values into matrix.data in place
         self._function(self._grid, (CSR_THREADS,), (self._n_rows, matrix.indptr, matrix.indices, matrix.data, vector,
-                                                     self.out))
-        return self.out
+                                                     out))
+        return out
 
 
 class _DeviceReductions:
@@ -529,7 +535,7 @@ class _MatrixOperator:
         self._host_matvec = None
         if backend == 'gpu':
             matrix.sum_duplicates()   # canonical rows (a no-op when already canonical)
-            self._device_product = _DeviceCsrProduct(matrix)
+            self._device_product = DeviceCsrProduct(matrix)
         elif matrix.format == 'csr':
             self._host_matvec = host_csr_matvec()
 

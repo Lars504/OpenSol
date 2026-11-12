@@ -28,7 +28,8 @@ from .geometry import (DOMAIN_COORDINATES, GEOMETRY_KINDS, array_overlap, bounda
                        z_param_set)
 from .meshing import (MESH_ESTIMATE_ERRORS, PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR,
                       backend_memory, boundary_config_difference_text, estimate_memory, estimate_mesh, estimate_meshes,
-                      awaits_built_mesh, has_estimated_counts, largest_adjacent_ratio, size_points_problem)
+                      awaits_built_mesh, fitted_memory_estimate, has_estimated_counts, largest_adjacent_ratio,
+                      plain_roles_text, size_points_problem)
 from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DERIVED_OPERATIONS,
                      GLOBAL_DERIVED_OPERATION, INTERFACE_OPERATIONS, SOURCE_FREE_DERIVED_OPERATIONS,
                      INTERFACE_PROJECTIONS, INTERFACE_SIDES, INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS,
@@ -63,17 +64,18 @@ _GMSH_ENVIRONMENT = 'OPEN_SOL_GMSH'   # path of the gmsh program (MeshSpec.meshe
 
 
 def validate(spec, registry=None, mesh_estimate=None, mesh_error=None, memory_budget=None, memory_estimate=None,
-             host_budget=None, memory_parts=None):
+             host_budget=None, memory_parts=None, plain_roles=None):
     """Issues of the model in GUI tree order (errors block building); CPU only, never raises for model errors.
     mesh_estimate / mesh_error: cached meshing estimates {mesh name: estimate} / failure messages {mesh name: text}, or
     one estimate / message of the default mesh; the missing used meshes are estimated here; memory_budget: GPU pool
     budget [bytes] (None: no GPU memory check); memory_estimate: a cached meshing.estimate_memory result of those
     meshes (else computed); host_budget: available host RAM [bytes] (core.host_memory.available_bytes; None: only the
     fixed LARGE_HOST_BYTES warning); memory_parts: that estimate's by_mesh parts, naming the mesh a budget issue is
-    reported at (None: computed when one is reported)."""
+    reported at (None: computed when one is reported); plain_roles: the caller's meshing.fitted_memory_estimate of
+    that estimate (None: fitted here against memory_budget)."""
     registry = get_registry() if registry is None else registry
     return _Validator(spec, registry, mesh_estimate, mesh_error, memory_budget, memory_estimate, host_budget,
-                      memory_parts).run()
+                      memory_parts, plain_roles).run()
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,7 @@ class _Validator:
     """One validation pass: partial evaluation (parameters, geometry, mesh) in __init__, the checks in run()."""
 
     def __init__(self, spec, registry, mesh_estimate, mesh_error, memory_budget=None, memory_estimate=None,
-                 host_budget=None, memory_parts=None):
+                 host_budget=None, memory_parts=None, plain_roles=None):
         self.spec = spec
         self.registry = registry
         self.memory_budget = memory_budget
@@ -143,6 +145,7 @@ class _Validator:
                                       mesh_error=mesh_errors.get(default_name), study_type=spec.study.type,
                                       state_names=state_field_names(spec, registry), meshes=meshes,
                                       mesh_errors=mesh_errors, mesh_name=default_name)
+        self.vctx.plain_roles = self._plain_roles(plain_roles)
         self.state_names = frozenset(self.vctx.state_names)
         self.output_names = output_field_names(spec, registry)   # {field name: (physics, field)}, read-only
         self.objects = _first_by_name(spec.geometry)
@@ -153,6 +156,27 @@ class _Validator:
         self.scalar_names = set()   # '<physics>_<scalar>' of valid scalar outputs (check_physics; derived values)
         self.mesh_inputs_ok = True  # False when physics settings / boundary providers (mesh estimate inputs) fail
         self.empty_object_messages = {}   # (mesh name, domain object) -> warning when it selects no cell, else None
+
+    def _plain_roles(self, given):
+        """given, else meshing.fitted_memory_estimate's roles against memory_budget (the fitted estimate replaces
+        memory_estimate then); frozenset() when the meshes or the estimate fail (reported by their checks)."""
+        if given is not None:
+            return frozenset(given)
+        meshes = self.vctx.meshes
+        if not self.memory_budget or not meshes or any(mesh is None for mesh in meshes.values()):
+            return frozenset()
+        parts = {} if self.memory_parts is not None else None
+        try:
+            estimate, roles = fitted_memory_estimate(self.spec, self.vctx.parameters, self.registry, meshes,
+                                                     self.memory_budget, estimate=self.memory_estimate, by_mesh=parts,
+                                                     shapes=self.vctx.shapes)
+        except Exception:   # check_memory estimates again and reports the failure
+            return frozenset()
+        if self.memory_estimate is None or roles:
+            self.memory_estimate = estimate
+        if roles:
+            self.memory_parts = parts
+        return roles
 
     def run(self):
         self.check_names()
@@ -1316,14 +1340,18 @@ class _Validator:
         memory_check_level, error by default; warning above MEMORY_WARN_FRACTION; no GPU budget: no GPU check; no host
         budget: LARGE_HOST_BYTES warning), at the ('mesh', name) of memory_verdict (the largest part); on the cpu
         backend the device estimate counts against host_budget too. An error on size-based element counts says so:
-        build always meshes first and judges the built counts, api.check when refused_on_estimated_counts."""
+        build always meshes first and judges the built counts, api.check when refused_on_estimated_counts. Roles the
+        fit guard resolved without their study default get an info line at their physics."""
+        for physics_name in dict.fromkeys(physics for physics, _ in sorted(self.vctx.plain_roles)):
+            self.info(('physics', physics_name), plain_roles_text(
+                [entry for entry in self.vctx.plain_roles if entry[0] == physics_name]))
         if not self.vctx.meshes or any(mesh is None for mesh in self.vctx.meshes.values()):
             return
         whole_estimate = self.memory_estimate
         if whole_estimate is None:
             try:
                 whole_estimate = estimate_memory(self.spec, self.vctx.parameters, self.registry, self.vctx.meshes,
-                                                 shapes=self.vctx.shapes)
+                                                 shapes=self.vctx.shapes, plain_roles=self.vctx.plain_roles)
             except MESH_ESTIMATE_ERRORS:
                 return   # the failing input is reported at its own node
             except Exception as exc:   # a crashing memory_estimate callback must not take down validation
@@ -1381,7 +1409,7 @@ class _Validator:
         parts = {}
         try:
             estimate_memory(self.spec, self.vctx.parameters, self.registry, self.vctx.meshes, by_mesh=parts,
-                            shapes=self.vctx.shapes)
+                            shapes=self.vctx.shapes, plain_roles=self.vctx.plain_roles)
         except Exception:   # check_memory already has the whole estimate: only the node of its issue is at stake
             return {}
         return parts
@@ -2011,8 +2039,8 @@ class _Validator:
         if not gpu_budget and self.host_budget is None:
             return None
         try:
-            estimate = backend_memory(self.spec, estimate_memory(self.spec, parameters, self.registry, meshes,
-                                                                 shapes=shapes))
+            estimate = backend_memory(self.spec, fitted_memory_estimate(self.spec, parameters, self.registry, meshes,
+                                                                        gpu_budget, shapes=shapes)[0])
         except MESH_ESTIMATE_ERRORS as exc:
             return f'memory estimate failed: {error_message(exc)}', 'error'
         level = memory_check_level(self.spec)

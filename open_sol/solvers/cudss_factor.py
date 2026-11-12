@@ -119,6 +119,7 @@ import hashlib
 import importlib.util
 import logging
 import math
+import threading
 import time
 
 import numpy as np
@@ -172,6 +173,44 @@ CUDSS_REFUSALS = (CudssSingularError, CudssAccuracyError, CudssMemoryError)   # 
 def cudss_available() -> bool:
     """True when nvmath-python is installed (find_spec once per process, nothing imported: GUI-thread safe)."""
     return importlib.util.find_spec('nvmath') is not None
+
+
+_library_thread = None   # warm_cudss_library's host thread; _direct_solver joins it before the first cuDSS call
+
+
+def warm_cudss_library() -> None:
+    """Import nvmath's DirectSolver and load the cuDSS library on a daemon host thread, once per process (speedup B3);
+    no CUDA call there: handles and plans stay on the GPU-owning thread, which joins it first."""
+    global _library_thread
+    if _library_thread is not None or not cudss_available():
+        return
+    _library_thread = threading.Thread(target=_load_cudss_library, name='open_sol cuDSS load', daemon=True)
+    _library_thread.start()
+
+
+def _load_cudss_library():
+    """Host-only part of the first cuDSS use: the nvmath import and the library load (cudssGetProperty)."""
+    try:
+        import nvmath.sparse.advanced  # noqa: F401
+        from nvmath.bindings import cudss
+        cudss.get_property(0)   # libraryPropertyType MAJOR_VERSION: loads cuDSS and its dependencies
+    except Exception:   # the first plan on the GPU-owning thread reports a broken install
+        pass
+
+
+def _join_library_thread():
+    """Wait for warm_cudss_library's thread (cuDSS is not thread-safe: nothing of it runs while the GPU thread plans)."""
+    if _library_thread is not None:
+        _library_thread.join()
+
+
+def _thread_size_buffers():
+    """nvmath fills its cuDSS getter buffer (`_tls.size_written`) only on the thread that imported it (the load thread):
+    give the calling thread its own, else every plan / info read raises AttributeError."""
+    from nvmath.sparse._internal import cudss_config_ifc, cudss_data_ifc
+    for module in (cudss_config_ifc, cudss_data_ifc):
+        if not hasattr(module._tls, 'size_written'):
+            module._tls.size_written = np.empty((1,), dtype=np.uint64)
 
 
 _kept_orderings = None   # ordering key -> (row permutation, partition tree) while remember_cudss_orderings is on
@@ -605,8 +644,10 @@ def _direct_solver(operator, rhs, kind):
     buffer, single-threaded host planning unless the environment variable CUDSS_THREADING_LIB names a threading layer."""
     # Not the wheel's own layer: nvidia/cu13/bin/cudss_mtlayer_vcomp14064_0.dll solved correctly here, then crashed
     # the process with access violations in its worker threads (Windows, nvmath 1.0 / cuDSS 0.8).
+    _join_library_thread()
     from nvmath.sparse.advanced import DirectSolver, DirectSolverMatrixType, DirectSolverMatrixViewType
-    options = {'blocking': True, 'logger': _LOGGER}
+    _thread_size_buffers()
+    options ={'blocking': True, 'logger': _LOGGER}
     if kind != 'general':
         options.update(sparse_system_type=(DirectSolverMatrixType.SPD if kind == 'spd'
                                            else DirectSolverMatrixType.SYMMETRIC),
