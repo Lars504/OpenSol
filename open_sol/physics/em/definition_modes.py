@@ -14,7 +14,8 @@ from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EM
                                 object_result, other_em_physics_labels, physics_counter, raw_settings, role_counter,
                                 scipy_issues, shortest_solved_wavelength, source_slot_docs, unused_wavelength_issues,
                                 write_dispersive_materials)
-from .cross_section_modes import BEND_MODELS, LINE_BLOCK_BOTH_PERIODIC_TEXT, line_block_axis, size_issue_for
+from .cross_section_modes import (BEND_MODELS, LINE_BLOCK_BOTH_PERIODIC_TEXT, cpml_cross_section, line_block_axis,
+                                  mode_default_basis, size_issue_for)
 from .definition_bloch import bloch_active_axes, bloch_params, fdfd_bloch_issues, fdfd_domain_requirements
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
 from .materials import EM_MATERIAL_SCHEMAS
@@ -696,9 +697,11 @@ def _time_estimate(settings_values, mesh, context):
     solves = te.TimeEstimate((te.TimeItem('cross-section assemblies', 'solve', points, 'exact',
                                           tuple((main + detached, op) for op in assembly),
                                           counter=physics_counter(context, 'solves')),))
+    eigenpairs = 2 * int(settings_values['n_modes']) + 10
     common = dict(unknowns=unknowns, nnz=nnz, value_bytes=16, solves=points * (main + detached),
-                  eigenpairs=2 * int(settings_values['n_modes']) + 10, factor_scale=MODE_LU_SCALE,
-                  solve_scale=MODE_SOLVE_SCALE)   # the line_block path prices its own product_ops
+                  eigenpairs=eigenpairs, factor_scale=MODE_LU_SCALE, solve_scale=MODE_SOLVE_SCALE,
+                  default_basis=mode_default_basis(eigenpairs, cpml_cross_section(settings_values)))
+    # the line_block path prices its own product_ops
     shifted = context.solvers.get('shifted')
     if shifted is None or shifted.solver_type.name != 'line_block':
         return te.combine((solves, context.solver_work('eigen', factorizations=points * (main + detached),

@@ -10,6 +10,14 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 - CPML slab launches are cached per (slab, field set, ids of the material tables / subpixel face arrays, curl factor)
   (`FDTDEngine3D._cpml_launch`): tables are replaced only by rebuild_materials and the scale only by set_field_scale,
   which change the key; field / psi / coefficient arrays are rewritten in place, never reassigned.
+- Step graphs (gpu, `STEP_GRAPHS`): `advance` runs the fixed-argument launches as two blocks, H (Yee per set +
+  conformal faces + H CPML slabs) and E (Yee per set + E CPML slabs), through `_fixed_block`: one eager run per key,
+  then a captured CUDA graph replayed per step. The key holds the ids of the inputs that may be replaced (tables, face
+  table, conformal arrays) and the curl factor, the entry keeps them alive. Valid only while fields, psi, material_id,
+  face_id and the 1D arrays are rewritten in place: a new kernel argument that can be reassigned joins the key, a
+  kernel with per-step scalars (sources, poles, mirrors, monitors) stays outside the blocks, and nothing inside them
+  may sync or allocate (no timed profiler part inside). A failed capture warns and steps eagerly. The run-time recipe
+  counts these kernels at weight 1 on the gpu (`_step_launches`).
 - Contract members shared by the 3D EM physics live in physics3d (`EM3DSlots`: permittivity_arrays / inject_source;
   `StaticEM3DContract` for em_fdfd_3d; `complex_cell_materials`, `check_pole`); the Yee renderers subclass
   `renderer3d.YeeRenderer3D`; `mode_ports3d.AXIS_PERMITTIVITY` is the one E component -> permittivity array map;
@@ -208,7 +216,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 ## Tetrahedral Nedelec eigen path (fem3d; igor3d_plan section 7)
 - `FEMPhysics3D(mesh, BoundaryConfig3D, materials, background, element_order 1 / 2, wavelength, eigen_solver)` on a
   `fem.mesh3d.TetrahedronMesh` (scripts): `solve_eigenfrequencies` / `select_resonance` as em_fdfd_3d; `invalidate()`
-  re-assembles at the next solve.
+  re-assembles at the next solve. `fields_located` keeps its read-only E / H per located array pair (identity of the
+  read-only arrays of `TetrahedronDomain.locate`, up to FIELD_CACHE_POINTS) until the next `select_resonance`, so the
+  renderer's per-component reads of a plane evaluate the Nedelec basis once; writable located arrays are not cached.
 - Model path: em_fdfd_3d on 'tetrahedra' creates `fem_solver3d.FEMResonancePhysics3D` (materials per element from the
   MaterialGrid at every assembly; PEC / pole masks from `_apply_pec` / `write_dispersive_regions_3d`, which branch on
   `ctx.domain.grid_kind`; 'discretization' = Nedelec degree, quadratic default) and `renderer_fem3d.FEMRenderer3D`
@@ -316,7 +326,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   One cell layer's materials from the tables (PEC = table_eps_z < 0; PEC cells keep MaterialGrid values for the face
   means), `_PortBoundary`, solved at the numerical frequency (beta_d = (2/D) arcsin(K D/2)). Source corrections via
   em/mode_ports `_port_correction` with live cb / db planes; amplitude sqrt(P / (cos(omega dt/2) cos(beta_d D/2))) so a
-  flux plane reads P at f0. Modes solved until the first step only. Monitor = `PlaneFlux3D` + per-frequency
+  flux plane reads P at f0. Modes solved until the first step only; within one `_refresh_materials` round ports on
+  layers with equal materials (digest of the CrossSectionMaterials arrays), the same normal axis, omega (12 digits) and
+  mode count share one solve (`physics.port_mode_solves`): the solve objects are shared, never mutate them. Monitor = `PlaneFlux3D` + per-frequency
   `mode_overlap`, a+- = (X / c +- Y) / (2 N) unconjugated; fraction_* needs exactly one ModeSource3D.
 - Near-to-far (`NearToFar3D`): a `FluxBox3D`'s pairs give J / M on their own sample grids; result 'far_field' as a cut
   plane ('power' a.u. per sr without the 1/2 and the flux cos(omega dt/2)), so 2D consumers keep working. Flux boxes and

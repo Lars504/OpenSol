@@ -28,7 +28,7 @@ from ..em.memory_estimates import _harmonic_wavelength_count, _point_trace_items
 from .boundaries3d import AXES, FACE_TYPES_3D, BoundaryConfig3D, cpml_psi_bytes
 from .definition_sources3d import (SOURCE_FEATURES, box_edge_issues, box_face_spectra_memory, domain_sizes,
                                    face_types, nearest_window_edge, plane_cells, plane_edge_message, window_axes)
-from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES   # the chunk the estimate books
+from .engine3d import _INDEX_CHUNK_CELLS, COMPONENT_AXES, STEP_GRAPHS   # the chunk the estimate books
 from .monitors3d import DFT_PLANE_QUANTITY, dft_plane_result, flux_result
 from .physics3d import EMPhysics3D, PERMITTIVITY_SLOTS
 from .renderer3d import EMRenderer3D
@@ -609,12 +609,14 @@ def _step_launches(settings_values, context, n_sets):
     kinds = {feature.type for feature in features}
     cpml_faces = sum(1 for face in FACES_3D if settings_values.get(f'bc_{face}') == 'cpml')
     conformal = context.spec.solver_defaults.conformal_boundaries is True and 'pec_domain' in kinds
-    numba_launches = _FIELD_LAUNCH_WEIGHT * n_sets * (2 + 2 * cpml_faces)
+    # gpu: the field kernels replay from two CUDA graphs (engine3d.STEP_GRAPHS), so they lose their argument overhead
+    weight = 1 if context.backend == 'gpu' and STEP_GRAPHS else _FIELD_LAUNCH_WEIGHT
+    numba_launches = weight * n_sets * (2 + 2 * cpml_faces)
     memory_items = context.memory.items if context.memory is not None else ()
     poles = any(label.endswith(_POLE_ITEM_LABEL) and size > 0 for label, size in memory_items)
     feature_launches = sum(0 if feature.type == 'far_field' and 'flux_box' in kinds   # shares the box's DFTs
                            else _FEATURE_LAUNCHES.get(feature.type, _DEFAULT_FEATURE_LAUNCHES) for feature in features)
-    launches = (numba_launches + _FIELD_LAUNCH_WEIGHT * n_sets * (1 if conformal else 0)
+    launches = (numba_launches + weight * n_sets * (1 if conformal else 0)
                 + (n_sets * _POLE_LAUNCHES if poles else 0) + feature_launches)
     return launches, numba_launches
 

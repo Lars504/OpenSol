@@ -62,6 +62,9 @@ GROUP_RELATIVE_STEP = 1e-3      # mode_group_indices: solves at omega (1 +- step
 # eigenvalues restart slowly at machine precision (em_modes_cpu_gpu: the 300-restart cap, 12 of 14 converged); a
 # wanted mode keeps |d beta^2| <= floor |beta^2 - shift| (n_eff ~1e-12, n_group by +-GROUP_RELATIVE_STEP ~1e-9)
 PML_ARPACK_TOLERANCE_FLOOR = 1e-12
+# Arnoldi basis per wanted eigenpair of such a solve (as em3d's ARNOLDI_BASIS_PER_WANTED, fem_bor): scipy's 2 k + 1
+# basis restarted ~85 applications per basis vector on the PML clusters (em_modes_cpu_gpu: 2479, the 300-restart cap)
+PML_ARNOLDI_BASIS_PER_WANTED = 5
 LINE_BLOCK_BOTH_PERIODIC_TEXT = ('the line_block shifted solver cannot take two periodic axes (a periodic wrap along the '
                                  'line axis is not block-tridiagonal); use the sparse_direct solver (Automatic)')
 _SIZE_REMEDY = ('coarsen the mesh or shrink the cross-section (a symmetric / antisymmetric mirror face halves it per '
@@ -697,10 +700,11 @@ def solve_prepared_modes(problem, n_modes, start_vector=None, eigen_solver=None,
     if initial is None:   # deterministic (reproducible solves and run times), not ARPACK's process-wide random state
         random = np.random.default_rng(_START_VECTOR_SEED)
         initial = random.standard_normal(n_unknowns) + 1j * random.standard_normal(n_unknowns)
-    has_pml = bool(layout.stretched_hx.any() or layout.stretched_hy.any())
+    pml_clusters = drop_pml_modes and bool(layout.stretched_hx.any() or layout.stretched_hy.any())
     theta, vectors, applications, converged = eigen_solver.eigs(   # a gpu runtime: the device Krylov-Schur
         lambda vector: factorization.solve_host(b_active @ vector), n_unknowns, n_wanted, initial,
-        tolerance_floor=PML_ARPACK_TOLERANCE_FLOOR if drop_pml_modes and has_pml else 0.0,
+        tolerance_floor=PML_ARPACK_TOLERANCE_FLOOR if pml_clusters else 0.0,
+        default_basis=mode_default_basis(n_wanted, pml_clusters),
         device_matvec=device_factor_matvec(factorization, b_active))
     if not converged:
         warnings.append(f'ARPACK converged {np.size(theta)} of {n_wanted} eigenvalues near n_eff = {guess:.6g}; modes '
@@ -739,6 +743,17 @@ def solve_prepared_modes(problem, n_modes, start_vector=None, eigen_solver=None,
     return CrossSectionSolve(modes=modes, info=info)
 
 
+def mode_default_basis(n_wanted, pml_clusters):
+    """Arnoldi default_basis of a cross-section mode solve (CPU, also the estimators): PML_ARNOLDI_BASIS_PER_WANTED x
+    n_wanted when PML modes are dropped on a CPML cross-section, else 0 (scipy's)."""
+    return PML_ARNOLDI_BASIS_PER_WANTED * int(n_wanted) if pml_clusters else 0
+
+
+def cpml_cross_section(settings_values):
+    """True when an em_modes settings dict puts a cpml on any outer face (estimators: mode_default_basis)."""
+    return any(settings_values.get(f'bc_{face}') == 'cpml' for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi'))
+
+
 def line_block_layout(problem):
     """solvers.line_block LineBlockLayout of a problem's active [h_x; h_y] unknowns: blocks = grid rows j (block_axis
     0, x inside) or columns i (1); the periodic axis inside the blocks, else the cheaper n_blocks b^3; ValueError with
@@ -769,7 +784,7 @@ def line_block_bytes(nx, ny, periodic_x, periodic_y, precision, n_operators=1):
     n_blocks, block_size = (ny, 2 * nx) if axis == 0 else (nx, 2 * ny)
     n_unknowns = 2 * nx * ny
     per_operator = (operator_shift_bytes(n_blocks, block_size, n_unknowns, 9 * n_unknowns, precision)
-                    + shift_bytes(n_blocks, block_size, n_unknowns, 1, precision))
+                    + shift_bytes(n_blocks, block_size, n_unknowns, 1, precision, kept=True))
     return int(n_operators) * per_operator
 
 

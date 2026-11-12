@@ -72,9 +72,13 @@ all but drift_diffusion.
   `element_kernel=False` runs them directly). Chunk temporaries are then only forces, blocks and gathered displacements
   (`element_bytes`, ~7.7 kB per P2 element against ~117 kB batched). A change to one formula changes the CUDA source,
   the numba twin and the batched helpers together (fem3d_tangent_assembler / _gpu compare kernel vs batched,
-  fem3d_tangent_kernel_numba numba vs numpy).
-- `assembly._to_csr` only sums duplicates and keeps explicit zeros, so every assembly over one dof map (same free /
-  fixed split) has one CSR pattern whatever the coefficients: the precondition of cuDSS plan reuse for Newton tangents
+  fem3d_tangent_kernel_numba numba vs numpy). 2D twin `tangent_kernel2d` (host only: host twin
+  'fem.element_tangent_2d', numba prange per element, numpy = the batched `_green_lagrange_group` / `_tangent_blocks`):
+  planar `TangentAssembler` groups take it when `use_kernel` (numba already in sys.modules, or >= NUMBA_MIN_ELEMENTS
+  elements, so a gpu run of a small map never pays the numba start); axisymmetric groups keep the batched formulas
+  (self-test solid_fem_tangent_kernel_numba, mechanics).
+- `assembly._to_csr` / `blocks_csr` only sum duplicates and keep explicit zeros, so every assembly over one dof map
+  (same free / fixed split) has one CSR pattern whatever the coefficients: the precondition of cuDSS plan reuse for Newton tangents
   and coefficient updates. Never `eliminate_zeros` an operator a factor will be refreshed with; sum terms with
   `assembly.pattern_sum` (root "Solver contract"; the 2D / 3D diffusion systems do). `assembly.CsrAccumulator`
   adds its 2e7-entry batches with `+` (bounded peak memory; its zeros are structural, so the pattern is stable).
@@ -84,7 +88,9 @@ all but drift_diffusion.
   BCSide / memory_estimate / monitors / solver_base; solvers.sparse_direct / multigrid inside functions), `renderer.py` /
   `renderer3d.py` (core.renderer), `transfer.py` (core.backend inside `FEMTransfer.apply`), `fixed_pattern.py` /
   `elasticity3d.py` (core.backend, elasticity3d also core.gpu_memory, inside functions), `tangent_kernel3d.py`
-  (core.kernels at module level: its raw twin; core.backend inside functions); `fem/__init__` imports none of these (import by module); core
+  (core.kernels at module level: its raw twin; core.backend inside functions), `tangent_kernel2d.py` (core.kernels at
+  module level: its host twin; `elasticity` inside its numpy twin, since elasticity imports it at module level);
+  `fem/__init__` imports none of these (import by module); core
   never imports fem. physics imports fem, never the reverse. Model side: `model/triangle_meshing.py` (the only reader
   of geometry shape internals for the mesher; sizes from `meshing.triangle_sizing`); `meshing.make_domain` of a
   'triangles' mesh returns `TriangleDomain(triangulate(...))`. selftests*.py follow the root selftest import rule.
@@ -197,10 +203,19 @@ all but drift_diffusion.
   2, 2)), or callables f(points (m, q, 2), mesh elements (m,)) -> (m, q) / (m, q, 2, 2) (pass `degree`). Edge
   coefficients: number, per mesh edge, or f(points (k, q, 2), edges (k,)). A constant tensor goes per element
   (`np.broadcast_to(K, (n_elements, 2, 2))`): a bare (2, 2) array reads as per-element values.
-- Assembly over chunks of `CHUNK_ELEMENTS`, straight and curved groups with their own rules. Element blocks are batched
-  matmuls (`_tensor_blocks`, elasticity `_material_blocks` / `_basis_product_blocks`): tensors only broadcast, never
-  materialised to (m, q, 2, 2); a shared rule broadcast, never copied per element. They differ from einsum at ~1e-16.
-  Basis values only: `elements.lagrange_values`.
+- Assembly over chunks of `CHUNK_ELEMENTS`, straight and curved groups with their own rules (`_element_groups_by_kind`
+  flags the curved chunks). Element blocks are batched matmuls (`_tensor_blocks`, elasticity `_material_blocks` /
+  `_basis_product_blocks`): tensors only broadcast, never materialised to (m, q, 2, 2); a shared rule broadcast, never
+  copied per element. They differ from einsum at ~1e-16. Basis values only: `elements.lagrange_values`.
+- Affine route (2D `assemble_stiffness` / `assemble_mass`, 3D Lagrange stiffness / mass and `assemble_nedelec_3d`): an
+  element-constant coefficient (number / per-element values, never a callable) on straight elements takes reference
+  matrices (2D: det J (J^-1 K J^-T)_ab against 4 gradient products, c det J x the reference mass; Nedelec: J^T nu J /
+  |det J| and |det J| J^-1 eps J^-T against 9 products), lru-cached per (order, degree), equal to the quadrature at that
+  rule up to rounding. Curved elements, axisymmetric weights and callables keep the quadrature path.
+- Square assemblies (`_assemble` with test is trial, assembly3d `_assemble_lagrange`) go through `blocks_csr`: after
+  PATTERN_REUSE_CALLS calls on one element row list of a dof map (`kept_block_pattern`, weak per map) the blocks are
+  summed into the kept FixedPatternCsr slots, else COO -> CSR. `_to_csr` converts with int32 indices below 2^31; tocsr
+  sums duplicates (canonical, explicit zeros kept), so no second sum_duplicates.
 - Edge terms: the geometry part of the rule is cached per (edge set, degree) in `DofMap.edge_quadrature` (up to
   EDGE_QUADRATURE_ENTRIES), so repeated loads pay only the coefficient. Cached arrays are read-only: an edge coefficient
   callable must not write into its points / edges. 3D face terms likewise keep (face-local dofs, areas) per face set in
@@ -220,10 +235,15 @@ all but drift_diffusion.
   (`display_triangulation`; node values by `node_values` = coefficients scattered by global id, never by locating the
   nodes) and reduces derived values over `quadrature_samples(mesh, 4, window elements)`.
 - `TriangleDomain.located(points, order)` / `quadrature_located(degree, elements)` remember each point set (blake2b; up
-  to LOCATE_CACHE_POINTS) as a `LocatedPoints` (location + Lagrange basis per order, gradients when read);
-  `evaluate(location=LocatedPoints)` reuses them. Everything is READ-ONLY (copy first); `locate` returns read-only
-  elements. `raster_sampler` / `locator` are small module caches for scripts and self-tests; Session code never keeps
-  basis arrays at module level (root "Selftest reuse").
+  to LOCATE_CACHE_POINTS) as a `LocatedPoints` (location + Lagrange basis per order, gradients when read); a READ-ONLY
+  points array seen before is matched by identity, no hash (the entry holds the array, so its id stays unique): keep
+  raster / window point sets read-only and reuse the object (TriangleAccess keeps them per raster shape / window
+  centres). `evaluate(location=LocatedPoints)` of a Lagrange field without gradients is one product with
+  `LocatedPoints.sampler(dofs)` (host CSR points x dofs of the basis values + outside mask, built once per dof map by
+  identity, the latest SAMPLER_ENTRIES; charged to the domain's LOCATE_CACHE_POINTS store in point equivalents), so a
+  renderer handing out a new DofMap per read rebuilds it each time: keep the map. Everything is READ-ONLY (copy first);
+  `locate` returns read-only elements. `raster_sampler` / `locator` are small module caches for scripts and self-tests;
+  Session code never keeps basis arrays at module level (root "Selftest reuse").
 - PointLocator: uniform bucket grid (~1 element per bucket) over element boxes (curved boxes include the midside node);
   affine reference coordinates, Newton on the P2 map for curved elements (a miss = inf); deepest containing element
   wins, ties to the lowest index (deterministic on shared edges). Locate with the dof map's geometry order. On strongly
@@ -365,8 +385,10 @@ all but drift_diffusion.
 - PointLocator3D: k-d tree passes over the previous misses (FIRST_CANDIDATES 8, LOCATE_CANDIDATES 24,
   FALLBACK_CANDIDATES 128), then brute force over elements whose box holds the point (one numpy pass per point: many
   misses on a huge mesh are slow). A point on a face between equidistant centroids may land in either.
-- `TetrahedronDomain.locate` remembers each point set (blake2b; up to LOCATE_CACHE_POINTS) and returns READ-ONLY arrays;
-  callers copy first, renderers keep no location cache of their own.
+- `TetrahedronDomain.locate` remembers each point set (blake2b; up to LOCATE_CACHE_POINTS; a read-only array seen
+  before by identity) and returns READ-ONLY arrays; callers copy first, renderers keep no location cache of their own
+  and pass the points they get on unchanged. `sample_plane(axis, index)` keeps the flat read-only lattice plane (up to
+  one lattice), so the Session's cuts / volumes locate without hashing.
 - `renderer3d.LagrangeSampleRenderer(physics, name, field_infos, time_label)`: the physics provides `domain` and
   `lagrange_field(component)` -> (DofMap3D, coefficients); device_field = centroid values. `evaluate_lagrange_3d` gives
   NaN at element -1.
@@ -430,6 +452,14 @@ all but drift_diffusion.
 - Anchors by topology (`floating_region_count(reduced, anchored_rows)`): loss / capacity / Robin mass row sums are ~h^2
   a / k of the stiffness diagonal (~1e-12 for a weak loss on 0.3 um cells), below the ANCHOR_RTOL row-sum test, which
   refused such systems as singular. The 2D system passes the same topology anchors.
+- Re-assembly (2D and 3D, `fem.diffusion`): `KeptTerms` returns the stiffness / loss / capacity / Robin matrices again
+  while their inputs repeat (DofMap or active mask, coefficient arrays by value; a radiation or sigma(T) loop
+  re-assembles only what moved), `SlotSum` sums terms by kept slots in the summed pattern (= pattern_sum: every entry
+  kept), `ReducedSplit` gathers the reduced / coupling values by kept slot maps and reuses the anchor regions while the
+  reduced zero entries repeat; the 2D DofMap is kept while the active set repeats (its integral caches stay warm). A
+  term whose pattern depends on its values (CsrAccumulator batches) only rebuilds the slots. Memory: one fem estimate
+  host item for the kept stiffness and maps (`fem_system_estimate(kept_terms=True)`; a physics with a system class of
+  its own that borrows the estimate passes False: magnetostatics on triangles, `MagneticFEMSystem`).
 - `diffusion.FEMDiffusionPhysicsCommon` is the dimension-free physics wrapper (records, face BCs on `_faces`, held /
   initial / loss terms, field helpers) under FEMDiffusionPhysicsBase (triangles) and FEMDiffusionPhysicsBase3D.
 - FEMDiffusionPhysicsBase3D: BCSides on FACES_3D, surface conditions, held / initial / loss on element masks,
@@ -467,7 +497,9 @@ all but drift_diffusion.
   the reduced K, C, M to the device once per assembly (`_device_terms`: DevicePencil) and each frequency calls
   `factorize_pencil` (no host A(omega)); frequency_terms (ports) go in through `extra=` at slots mapped once; a block
   outside the pattern, or unsymmetric with a symmetric pencil, takes `factorize_host`. `HarmonicPencil.of` takes a
-  shared pattern as is, else the pattern_sum union; index maps from one pass over the stored entries (scipy fancy
+  shared pattern as is, else the largest term's pattern when it holds every other term's (volume K beside an edge /
+  face damping term: `_covering_term`, checked entry by entry; terms must be canonical CSR), else the pattern_sum
+  union; index maps from one pass over the stored entries (scipy fancy
   indexing is slow at 1e7 entries). Active elements = `set_active(mask)`, not a > 0. Robin: n . a grad u = value -
   (admittance + j omega damping) u.
 - MUMPS / PARDISO back ends: `_device_terms` asks `linear_solver.pencil(...)`, a HostPencil (full pattern, host

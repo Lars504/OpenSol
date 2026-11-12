@@ -841,7 +841,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         resonance = self.eigen_solve.resonances[number - 1]
         mode = np.asarray(resonance.displacement).reshape(-1, self.system.components)
         if np.iscomplexobj(mode):
-            self._show_harmonic(mode, thermal=False, omega=resonance.omega)
+            self._show_harmonic(mode, omega=resonance.omega)
         else:
             self.system.unknown = np.array(mode, dtype=np.float64)
             self._complex_displacement = None
@@ -1051,12 +1051,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         solid elements)."""
         return self._stiffness_loss(stretched=False), self.system.mass(self._solid_density('a frequency response'))
 
-    def _show_harmonic(self, displacement, thermal=True, omega=None):
-        """Write the real parts of a complex response or damped mode (n_dofs, c; thermal False: a mode) into the outputs
-        (no initial stress), u_abs = |u| (nodal and at the centroids), the imaginary parts (u_x_im / u_y_im) and the
-        time-averaged energy densities at omega [rad/s]; reactions become unavailable."""
+    def _show_harmonic(self, displacement, omega=None):
+        """Write the real parts of a complex response or damped mode (n_dofs, c) into the outputs (no thermal part, no
+        initial stress: both are static), u_abs = |u| (nodal and at the centroids), the imaginary parts (u_x_im /
+        u_y_im) and the time-averaged energy densities at omega [rad/s]; reactions become unavailable."""
         self.system.unknown = np.ascontiguousarray(displacement.real)
-        self._write_outputs(thermal=thermal, prestress=False, omega=0.0 if omega is None else float(omega),
+        self._write_outputs(thermal=False, prestress=False, omega=0.0 if omega is None else float(omega),
                             imaginary=np.ascontiguousarray(displacement.imag))
         self._complex_displacement = np.array(displacement, dtype=np.complex128)   # read by the primary group
         self._shows_mode, self._shows_harmonic = False, True

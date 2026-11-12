@@ -112,6 +112,15 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   the cell mask; the Courant check reads `_pole_stability_regions`. Exact first order for E tangential only (hz E
   normal keeps the arithmetic share). Not conformal: FDFD / em_modes poles. Selftests em_conformal_pole_weights,
   em_conformal_drude_film (heavy).
+- FDTD step graphs (gpu, `fdtd_2d_base.STEP_GRAPHS`, as em3d `_fixed_block`): `update_h` runs Yee + conformal + H CPML
+  of every field set as one CUDA graph (`_h_block`), `_update_e_set` Yee + E CPML per set (key ('e', set index)); the
+  first step of a key runs eagerly, the second captures, later ones replay. The outer-face rows, poles, gain /
+  nonlinear media, sources, PEC keep and monitors stay eager between them (a column-row wall copy overlaps its source
+  row in cupy's bounds check, which copies the input: an allocation inside a capture), so the engines call the CPML
+  (`_cpml_post`) and `apply_*_walls` apart instead of `apply_*_post`. Fields, psi, ca / cb / da / db, the 1D spacings
+  and the conformal arrays are rewritten in place only (a new `set_conformal_*` tuple changes the H key); a new
+  replaceable input of a block joins its key. A failed capture warns and steps eagerly for good. The time recipe
+  books 1 + n_sets graph launches on the gpu instead of the weighted Yee / CPML launches.
 - Both engines re-pin walls after injection (new engines must too): a source on a pinned row / face does nothing (line
   / point / mode sources warn). An E_z symmetric face next to the copied row is frozen, not re-zeroed, so an
   injection there accumulates. `engine.time`, `q_accum_time` are host float64.
@@ -234,6 +243,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `*_h` row n-1 zero, `*_e` row 0 = +w_0 (as the kernels; complex symmetric up to row scaling). omega None = real
   kappa stretch as FDTD (selftest em_operators_consistency). pec / pmc / mirror faces are plain edges (caller sets
   outer rows); Bloch phases the wrap entries (`bloch_wrap_phases`; then not complex symmetric, nothing relies on it).
+  `yee_operators(xp=cupy)` assembles with scipy on the host and uploads each CSR once (the cupyx coo / kron chain was
+  ~50 ms of launches per call); without scipy it assembles on the device (same canonical CSR, same values).
   `helmholtz_operator`, `pin_cells` = D A D + (I - D), `pin_image_cells` (pinned image folded into its neighbour's
   diagonal). Never multiply by a sparse diagonal (`diags(...) @ A`): a cuSPARSE SpGEMM whose workspace grows with the
   rows (5e6 rows asked 6.5 GB); scale stored entries (`_column_scaled`, `_kept_entries`, `_entry_rows`) keeping the
@@ -599,7 +610,10 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   modes outrank weakly guided ones); PML modes (> half |h|^2 dA on stretched points) dropped unless
   `drop_pml_modes=False` (physics/eme), so fewer than asked may return. `size_issue_for` =
   `sparse_direct.size_issue(..., unknowns_per_cell=2)`. Non-convergence keeps converged pairs and warns in
-  `info['warnings']`. Tolerance machine precision, `PML_ARPACK_TOLERANCE_FLOOR` (1e-12) when dropping PML modes on CPML.
+  `info['warnings']`. Tolerance machine precision, `PML_ARPACK_TOLERANCE_FLOOR` (1e-12) when dropping PML modes on CPML,
+  then also a `PML_ARNOLDI_BASIS_PER_WANTED` (5) x n_wanted basis (`mode_default_basis`; the em_modes memory and time
+  estimates take it via `cpml_cross_section(settings)`; scipy's 2 k + 1 hit the 300-restart cap in em_modes_cpu_gpu,
+  2479 applications). EME (drop_pml_modes False) keeps scipy's basis and machine precision.
 - Degenerate pairs (fibre HE11) come back as arbitrary non-orthogonal combinations; separate them with mirrors.
   `mode_overlap` = |c_ab c_ba| / |c_aa c_bb|; `mode_group_indices` re-solves at omega (1 +- 1e-3) with the modes as
   ARPACK v0, tracks by overlap (NaN + warning below 0.9): pass the solve's n_eff_guess.
@@ -996,7 +1010,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - Phasor convention (`phasor_yee`): j on E_phi, H_r, H_z; a 'phi' current q_u = r I s(t) is the em_fdfd_bor phi
   current at phase +90 deg: powers and moduli agree, phases of phi sources differ.
 - dt = courant x 2 / omega_max of the vacuum operator with the build's PEC (`stable_time_step`: dense eigvalsh up to
-  400 active points, else eigsh 'LA' with a 1e-5 margin), not the 2D CFL rule; `refresh_coefficients` refuses a point
+  400 active points, else eigsh 'LA' with a 1e-5 margin; an order sum seeds each order's eigsh with the previous
+  order's eigenvector, `warm_start`), not the 2D CFL rule; `refresh_coefficients` refuses a point
   eps / mu below 1 and, with poles, eps - sum w P below `stability_ratio`^2 (P = physics/em `_pole_step_term`). PEC and
   poles only before finalize; material changes re-read the arrays and refresh decay / gain, injection, pole correction
   and field-injection weights.

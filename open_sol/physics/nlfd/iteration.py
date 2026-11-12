@@ -107,14 +107,34 @@ class ScaledSource:
                      for faces in self._source.face_currents(physics, system))
 
 
+def _real_view(vector):
+    """float64 view (real, imaginary parts interleaved) of a contiguous complex128 vector: Re <u, v> = view dot."""
+    return vector.view(array_module_of(vector).float64)
+
+
+def block_norms(vectors, blocks):
+    """[[||vector[block]|| per channel block] per complex128 store-layout vector] as host floats, one device -> host
+    transfer for all of them."""
+    if not vectors or not blocks:
+        return [[] for _ in vectors]
+    xp = array_module_of(vectors[0])
+    squares = []
+    for vector in vectors:
+        real = _real_view(xp.ascontiguousarray(vector))
+        for block in blocks:
+            part = real[2 * block.start:2 * block.stop]
+            squares.append(part @ part)
+    host = to_host(xp.stack(squares))
+    count = len(blocks)
+    return [[math.sqrt(max(float(value), 0.0)) for value in host[start:start + count]]
+            for start in range(0, len(host), count)]
+
+
 def channel_residual(change, values, blocks):
-    """(max over channels ||change_k|| / ||values_k|| (0 for a channel staying 0), [||values_k||]) (host syncs)."""
-    xp = array_module_of(values)
-    ratios, norms = [], []
-    for block in blocks:
-        size, difference = float(xp.linalg.norm(values[block])), float(xp.linalg.norm(change[block]))
-        norms.append(size)
-        ratios.append(difference / size if size > 0.0 else (0.0 if difference == 0.0 else math.inf))
+    """(max over channels ||change_k|| / ||values_k|| (0 for a channel staying 0), [||values_k||]) (one host sync)."""
+    norms, differences = block_norms((values, change), blocks)
+    ratios = [difference / size if size > 0.0 else (0.0 if difference == 0.0 else math.inf)
+              for size, difference in zip(norms, differences)]
     return (max(ratios) if ratios else 0.0), norms
 
 
@@ -186,19 +206,31 @@ class AndersonMixer:
             return None if self.relaxation == 1.0 else x + self.relaxation * f
         df, dx = self._df[:self._count], self._dx[:self._count]
         gamma = xp.asarray(self._coefficients(df, f))
-        return x + self.relaxation * f - (dx + self.relaxation * df).T @ gamma
+        # gamma is real: the history combination is two real GEMVs on the float64 views (no (depth, N) temporary)
+        mixed = xp.multiply(f, self.relaxation)
+        mixed += x
+        mixed_real = _real_view(mixed)
+        mixed_real -= gamma @ _real_view(dx)
+        mixed_real -= (self.relaxation * gamma) @ _real_view(df)
+        return mixed
 
     def _coefficients(self, df, f):
-        """Real gamma of min || W (f - dF^T gamma) || (host normal equations of Re <u, v>, blockwise weighted Gram): the
-        map conjugates fields (only real-linear), so complex gamma would mix differences by phases it does not respect."""
+        """Real gamma of min || W (f - dF^T gamma) || (host normal equations of Re <u, v>, blockwise weighted Gram from
+        real-view GEMMs, one transfer): the map conjugates fields (only real-linear), so complex gamma would mix
+        differences by phases it does not respect."""
         xp = array_module_of(df)
-        gram = np.zeros((df.shape[0], df.shape[0]), dtype=np.float64)
-        rhs = np.zeros(df.shape[0], dtype=np.float64)
+        count = df.shape[0]
+        df_real, f_real = _real_view(df), _real_view(f)
+        gram = xp.zeros((count, count), dtype=xp.float64)
+        rhs = xp.zeros(count, dtype=xp.float64)
         for block, weight in zip(self.blocks, self._weights):
-            columns = xp.conj(df[:, block])
-            gram += weight ** 2 * to_host(columns @ df[:, block].T).real
-            rhs += weight ** 2 * to_host(columns @ f[block]).real
-        return np.linalg.lstsq(gram, rhs, rcond=_LSTSQ_RCOND)[0]
+            part = slice(2 * block.start, 2 * block.stop)
+            columns = df_real if len(self.blocks) == 1 else xp.ascontiguousarray(df_real[:, part])
+            gram += (weight ** 2) * (columns @ columns.T)
+            rhs += (weight ** 2) * (columns @ f_real[part])
+        system = to_host(xp.concatenate((gram.ravel(), rhs)))
+        return np.linalg.lstsq(system[:count * count].reshape(count, count), system[count * count:],
+                               rcond=_LSTSQ_RCOND)[0]
 
 
 def solve_pump_depleted(channel_physics, channels, order, store, kerr_terms, settings, nonlinear_types,
@@ -257,19 +289,22 @@ def solve_pump_depleted(channel_physics, channels, order, store, kerr_terms, set
 
 
 def _real_dot(first, second):
-    """Re <first, second> of two complex vectors (host float)."""
-    return float(array_module_of(first).vdot(first, second).real)
+    """Re <first, second> of two complex128 vectors (host float; real-view dot)."""
+    xp = array_module_of(first)
+    return float(_real_view(xp.ascontiguousarray(first)) @ _real_view(xp.ascontiguousarray(second)))
 
 
 def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterations=GMRES_MAX_ITERATIONS):
-    """Restarted GMRES from 0 for a real-linear `apply` (complex vectors of the rhs' module, real inner product Re <u,
-    v>, real Hessenberg; classical Gram-Schmidt twice) -> (solution, products, relative residual estimate)."""
+    """Restarted GMRES from 0 for a real-linear `apply` (complex128 vectors of the rhs' module, real inner product Re
+    <u, v> = dots of the float64 views, real Hessenberg; classical Gram-Schmidt twice, one host transfer per column) ->
+    (solution, products, relative residual estimate)."""
     xp = array_module_of(rhs)
     rhs_norm = math.sqrt(max(_real_dot(rhs, rhs), 0.0))
     solution = xp.zeros_like(rhs)
     if rhs_norm == 0.0:
         return solution, 0, 0.0
-    basis = xp.empty((restart + 1, rhs.size), dtype=rhs.dtype)
+    basis = xp.empty((restart + 1, rhs.size), dtype=xp.complex128)
+    basis_real = _real_view(basis)   # (restart + 1, 2 N): Re <v_i, w> = basis_real[i] . w_real
     residual_vector, products, relative = rhs, 0, 1.0
     while products < max_iterations:
         beta = math.sqrt(max(_real_dot(residual_vector, residual_vector), 0.0))
@@ -277,13 +312,17 @@ def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterat
         hessenberg = np.zeros((restart + 1, restart))
         columns, finished, least_squares = 0, False, np.zeros(0)
         for column in range(restart):
-            work = apply(basis[column])
+            work = xp.ascontiguousarray(apply(basis[column]), dtype=xp.complex128)
             products += 1
-            for _ in range(2):   # CGS2: re-orthogonalise once
-                projection = (basis[:column + 1] @ xp.conj(work)).real   # Re <v_i, w>
-                work -= projection.astype(xp.complex128) @ basis[:column + 1]   # row-major basis: no transpose copy
-                hessenberg[:column + 1, column] += to_host(projection)
-            norm = math.sqrt(max(_real_dot(work, work), 0.0))
+            work_real = _real_view(work)
+            projections = None
+            for _ in range(2):   # CGS2: re-orthogonalise once (row-major basis: GEMVs without transpose copies)
+                projection = basis_real[:column + 1] @ work_real   # Re <v_i, w>
+                work_real -= projection @ basis_real[:column + 1]
+                projections = projection if projections is None else projections + projection
+            coefficients = to_host(xp.concatenate((projections, xp.reshape(work_real @ work_real, (1,)))))
+            hessenberg[:column + 1, column] = coefficients[:-1]
+            norm = math.sqrt(max(float(coefficients[-1]), 0.0))
             hessenberg[column + 1, column] = norm
             columns = column + 1
             target = np.zeros(columns + 1)
@@ -295,12 +334,15 @@ def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterat
             if finished:
                 break
             xp.multiply(work, 1.0 / norm, out=basis[column + 1])
-            del work
-        solution += xp.asarray(least_squares.astype(np.complex128)) @ basis[:columns]
+            del work, work_real
+        # real coefficients: real GEMVs on the float64 views (no complex cast of y)
+        solution_real = _real_view(solution)
+        solution_real += xp.asarray(least_squares) @ basis_real[:columns]
+        del solution_real
         if finished:
             break
         # restart: r = V_{m+1} (beta e1 - H y) (Arnoldi relation, no extra product)
-        residual_vector = xp.asarray(remainder.astype(np.complex128)) @ basis[:columns + 1]
+        residual_vector = (xp.asarray(remainder) @ basis_real[:columns + 1]).view(xp.complex128)
     return solution, products, relative
 
 
@@ -312,10 +354,8 @@ def _scale_blocks(vector, blocks, factors):
 
 
 def _scaled_norm(vector, blocks, weights):
-    """sqrt(sum_k w_k^2 ||v_k||^2) (host sync per block)."""
-    xp = array_module_of(vector)
-    return math.sqrt(sum((weight * float(xp.linalg.norm(vector[block]))) ** 2
-                         for block, weight in zip(blocks, weights)))
+    """sqrt(sum_k w_k^2 ||v_k||^2) (one host sync)."""
+    return math.sqrt(sum((weight * size) ** 2 for size, weight in zip(block_norms((vector,), blocks)[0], weights)))
 
 
 def _forcing(previous, norm, previous_norm, tolerance):

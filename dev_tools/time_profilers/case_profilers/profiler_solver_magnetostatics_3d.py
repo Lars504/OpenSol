@@ -29,15 +29,19 @@ TENSOR_3D_PARTS = methods('open_sol.physics.magnetic.solver3d:MagneticPhysics3D'
 FEM_3D_PARTS = methods('open_sol.physics.magnetic.solver_fem3d:MagneticFEMPhysics3D', (
     'prepare', 'finalize', 'step', '_assemble', '_update_constraints', '_read_permeability', '_host_material',
     '_remanence', '_refresh_saturation', '_solve_saturated', '_saturated_log_permeability', '_coil_dofs',
-    '_solve_once', '_drive_load', '_update_fields', '_write_current_density', '_record_probes', 'lagrange_field',
-    'scalars', 'coil_results', 'field_energy',
+    '_solve_once', '_drive_load', '_saturating_flux_rms', '_update_fields', '_write_current_density',
+    '_record_probes', 'lagrange_field', 'scalars', 'coil_results', 'field_energy',
 ), 'magnetostatics_3d tetrahedra')
+# the saturation loops' kept multigrid hierarchy / direct factor (2D and 3D tensor)
+KEPT_PARTS = methods('open_sol.physics.magnetic.kept_preconditioner:KeptPreconditionerSolver', (
+    'factorize', 'solve', '_build', '_solve_kept_multigrid', '_solve_kept_direct', '_rebuild_and_solve',
+), 'kept preconditioner')
 # the 'sphere' kind also runs 2D axisymmetric magnetostatics (MagneticPhysics)
 AXISYMMETRIC_PARTS = methods('open_sol.physics.magnetic.solver:MagneticPhysics', (
     'prepare', 'finalize', 'step', '_assemble', '_solve_once', '_update_fields',
 ), 'magnetostatics 2D')
 PARTS = (COMMON_PARTS + TENSOR_DIFFUSION_PARTS + TENSOR_3D_PARTS + FEM_DIFFUSION_PARTS + FEM_ASSEMBLY_PARTS
-         + FEM_3D_PARTS + AXISYMMETRIC_PARTS)
+         + FEM_3D_PARTS + AXISYMMETRIC_PARTS + KEPT_PARTS)
 KINDS = {
     'tensor': {'case': 'magnet3d_saturating_slab', 'repeat': 3},
     'tetrahedra': {'case': 'magnet3d_fem_saturating_slab'},

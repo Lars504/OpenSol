@@ -49,6 +49,9 @@ class TetrahedronDomain:
         self._locator = None
         self._located = {}         # points digest -> read-only (elements, reference) of locate()
         self._located_points = 0   # points held in _located
+        self._identity = {}        # id(read-only points) -> (points, _located key)
+        self._planes = {}          # (axis, index) -> read-only flat (p, 3) lattice plane points (sample_plane)
+        self._plane_points = 0     # points held in _planes
 
     @property
     def xp(self):
@@ -99,23 +102,29 @@ class TetrahedronDomain:
 
     def locate(self, points) -> tuple:
         """(elements (p,) int64, -1 outside; reference coordinates (p, 3)) of points (p, 3) [m], read-only arrays
-        remembered per point set (lattice planes come again for every component) up to LOCATE_CACHE_POINTS."""
-        points = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3)
-        key = hashlib.blake2b(points.tobytes(), digest_size=16).digest()
+        remembered per point set (lattice planes come again for every component) up to LOCATE_CACHE_POINTS; a read-only
+        array seen before (sample_plane) is matched by identity (no hash)."""
+        held = self._identity.get(id(points))
+        if held is not None and held[0] is points and held[1] in self._located:
+            return self._located[held[1]]
+        host = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3)
+        key = hashlib.blake2b(host.tobytes(), digest_size=16).digest()
         located = self._located.get(key)
-        if located is not None:
-            return located
-        if self._locator is None:
-            self._locator = PointLocator3D(self.mesh)
-        located = self._locator.locate(points)
-        for array in located:
-            array.flags.writeable = False
-        if len(points) <= LOCATE_CACHE_POINTS:
-            if self._located_points + len(points) > LOCATE_CACHE_POINTS:
-                self._located.clear()
-                self._located_points = 0
-            self._located[key] = located
-            self._located_points += len(points)
+        if located is None:
+            if self._locator is None:
+                self._locator = PointLocator3D(self.mesh)
+            located = self._locator.locate(host)
+            for array in located:
+                array.flags.writeable = False
+            if len(host) <= LOCATE_CACHE_POINTS:
+                if self._located_points + len(host) > LOCATE_CACHE_POINTS:
+                    self._located.clear()
+                    self._identity.clear()
+                    self._located_points = 0
+                self._located[key] = located
+                self._located_points += len(host)
+        if isinstance(points, np.ndarray) and not points.flags.writeable and key in self._located:
+            self._identity[id(points)] = (points, key)   # the entry holds the array: its id stays unique
         return located
 
     def sample_points(self, axis, index) -> tuple:
@@ -128,3 +137,20 @@ class TetrahedronDomain:
         points[..., others[0]] = u_centres[:, None]
         points[..., others[1]] = v_centres[None, :]
         return points, others
+
+    def sample_plane(self, axis, index) -> tuple:
+        """(read-only flat (n_u n_v, 3) points, (n_u, n_v)) of sample_points(axis, index), kept per plane (up to one
+        lattice): the same array object every read, so locate matches it without hashing."""
+        key = (int(axis), int(index))
+        held = self._planes.get(key)
+        if held is None:
+            points, _ = self.sample_points(axis, index)
+            flat = points.reshape(-1, 3)
+            flat.flags.writeable = False
+            held = (flat, points.shape[:2])
+            if self._plane_points + len(flat) > LOCATE_CACHE_POINTS:
+                self._planes.clear()
+                self._plane_points = 0
+            self._planes[key] = held
+            self._plane_points += len(flat)
+        return held

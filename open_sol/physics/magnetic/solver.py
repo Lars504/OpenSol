@@ -12,6 +12,7 @@ from ...core.damped_iteration import DampedIteration, DampingSettings
 from ...core.fv_diffusion import (BCSide, DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig,
                                   edge_extension_views)
 from .fields import MagneticFields2D
+from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_solver
 from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, SATURATION_ARRAY
 from .renderer import MagneticRenderer
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
@@ -85,11 +86,13 @@ class MagneticPhysics(DiffusionPhysicsBase):
         self._axisymmetric = bool(axisymmetric)
         self.material_schema = dict(self._base_material_schema)
         # planar operator in both geometries: the ring-weighted one would cancel the 1 / r of c; linear_solver (the
-        # build's pcg) replaces precision / tol / max_iter
+        # build's pcg) replaces precision / tol / max_iter; a multigrid / direct one keeps its build across the
+        # saturation loop (kept_preconditioner)
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
             unknown_name='vector potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
-            compute_residual=compute_residual, axisymmetric=False, linear_solver=linear_solver)
+            compute_residual=compute_residual, axisymmetric=False,
+            linear_solver=kept_preconditioner_solver(linear_solver))
         insulation = ScalarBoundaryConfig(**{face: BCSide('dirichlet', value=0.0) for face in FACES})
         if self._axisymmetric:
             # Axis rule: the x_lo half cell's series resistance int r / nu dr puts c at r_c / 2, doubling the planar
@@ -136,6 +139,8 @@ class MagneticPhysics(DiffusionPhysicsBase):
         domain.materials.add_properties(self.material_schema)
         system = self.system
         system.prepare(domain)
+        if isinstance(system.linear_solver, KeptPreconditionerSolver):
+            system.linear_solver.bind_window(system.window_shape)
 
         nx, ny = domain.grid.nx, domain.grid.ny
         if self.fields is None or (self.fields.nx, self.fields.ny) != (nx, ny):
@@ -238,8 +243,14 @@ class MagneticPhysics(DiffusionPhysicsBase):
         return values
 
     def work_counters(self) -> dict:
-        """The saturation Picard loop's counters (nonlinear_runs / _iterations / _unconverged) once it ran, else {}."""
-        return self.picard.work_counters() if self.picard.n_runs else {}
+        """The saturation Picard loop's counters (nonlinear_runs / _iterations / _unconverged) and its kept-preconditioner
+        solves once it ran, else {}."""
+        if not self.picard.n_runs:
+            return {}
+        counters = self.picard.work_counters()
+        if isinstance(self.system.linear_solver, KeptPreconditionerSolver):
+            counters.update(self.system.linear_solver.work_counters())
+        return counters
 
     # --- magnetics API (shared settings, add_boundary_flux, probes: DiffusionPhysicsBase) ---------------------
 
@@ -448,6 +459,8 @@ class MagneticPhysics(DiffusionPhysicsBase):
         state = self._log_reluctivity_state
 
         def propose(log_reluctivity):   # the state itself, read by _coefficients through the attribute
+            if isinstance(self.system.linear_solver, KeptPreconditionerSolver):   # later iterations may keep its build
+                self.system.linear_solver.offer_state(log_reluctivity, fresh=first[0])
             self._assemble(full=first[0])
             first[0] = False
             self._solve_once()

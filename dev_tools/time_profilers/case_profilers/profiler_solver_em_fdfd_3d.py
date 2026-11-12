@@ -1,7 +1,9 @@
 """Profile em_fdfd_3d on the Yee tensor grid (eigenfrequency, cudss_mixed eigen node) on the gpu: the example
-fdfd_mie_sphere_resonance_3d (open CPML eighth sphere, subpixel smoothing, ~1e5 unknowns) and the em3d_fdfd_bragg_cell
-k_z sweep (2.3 s). Run from any folder (scale the example with --set dx_cell=30*nm):
-python profiler_solver_em_fdfd_3d.py [--runs mie bragg__sweep] [--no-cprofile]"""
+fdfd_mie_sphere_resonance_3d (open CPML eighth sphere, subpixel smoothing, ~1e5 unknowns), the same on the double cuDSS
+factor (mie_double_factor: one solve per application against the mixed factor's refinement) and the
+em3d_fdfd_bragg_cell k_z sweep (2.3 s). Run from any folder (scale the example with --set dx_cell=30*nm):
+python profiler_solver_em_fdfd_3d.py [--runs mie mie_double_factor bragg__sweep] [--no-cprofile]"""
+import copy
 import sys
 from pathlib import Path
 
@@ -11,10 +13,21 @@ from profiler_harness import REPOSITORY, SOLVER_ROLE_PARTS, STUDY_PARTS, case_sp
 EXAMPLE = REPOSITORY / 'examples' / 'em3d' / 'fdfd_mie_sphere_resonance_3d.json'
 
 
+def double_factor(spec):
+    """Deep copy of spec with every arpack_shift_invert node on factorization cudss (the double cuDSS factor)."""
+    spec = copy.deepcopy(spec)
+    for node in spec.solvers:
+        if node.type == 'arpack_shift_invert':
+            node.settings = {**dict(node.settings), 'factorization': 'cudss'}
+    return spec
+
+
 def _specs():
-    """{'mie': the example, 'bragg__sweep': the em3d_fdfd_bragg_cell sweep run}."""
+    """{'mie': the example, 'mie_double_factor': it on the double factor, 'bragg__sweep': the em3d_fdfd_bragg_cell
+    sweep run}."""
     from open_sol import api
-    runs = {'mie': api.load(EXAMPLE)}
+    example = api.load(EXAMPLE)
+    runs = {'mie': example, 'mie_double_factor': double_factor(example)}
     runs.update({f'bragg__{run}': spec for run, spec in case_specs('em3d_fdfd_bragg_cell').items()})
     return runs
 

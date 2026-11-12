@@ -31,7 +31,12 @@ FEM_MAGNETIC_PARTS = methods('open_sol.physics.magnetic.solver_fem:MagneticFEMPh
     'curl_operator', 'curl_quadrature', 'local_flux_density', 'quadrature_flux_density', 'curl_vector',
     'assemble_curl_tangent', 'quadrature_integral', 'block_load', 'element_integrals',
 ), 'fem.magnetostatics')
-PARTS = COMMON_PARTS + TENSOR_DIFFUSION_PARTS + MAGNETIC_PARTS + FEM_MAGNETIC_PARTS + FEM_ASSEMBLY_PARTS
+# the saturation loop's kept multigrid hierarchy / direct factor (tensor)
+KEPT_PARTS = methods('open_sol.physics.magnetic.kept_preconditioner:KeptPreconditionerSolver', (
+    'factorize', 'solve', '_build', '_solve_kept_multigrid', '_solve_kept_direct', '_rebuild_and_solve',
+), 'kept preconditioner')
+PARTS = (COMMON_PARTS + TENSOR_DIFFUSION_PARTS + MAGNETIC_PARTS + FEM_MAGNETIC_PARTS + FEM_ASSEMBLY_PARTS
+         + KEPT_PARTS)
 KINDS = {
     'tensor': {'case': 'magnet_saturating_sheet', 'refine': 8.0, 'repeat': 2},
     'triangles': {'case': 'magnet_fem_deep_saturation', 'refine': 2.0, 'repeat': 2},

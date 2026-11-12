@@ -7,28 +7,28 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/: lines 33-38
 - open_sol/core/: lines 40-75
 - open_sol/coupling/: lines 77-103
-- open_sol/fem/: lines 105-169
-- open_sol/gui/: lines 171-191
-- open_sol/io/: lines 193-197
-- open_sol/materials/: lines 199-214
-- open_sol/mesh_study/: lines 216-226
-- open_sol/model/: lines 228-296
-- open_sol/physics/: lines 298-300
-- open_sol/physics/acoustics/: lines 302-320
-- open_sol/physics/em/: lines 322-435
-- open_sol/physics/em/solvers/: lines 437-459
-- open_sol/physics/em3d/: lines 461-497
-- open_sol/physics/eme/: lines 499-516
-- open_sol/physics/fluid/: lines 518-529
-- open_sol/physics/heat/: lines 531-556
-- open_sol/physics/magnetic/: lines 558-587
-- open_sol/physics/mechanics/: lines 589-668
-- open_sol/physics/membrane/: lines 670-688
-- open_sol/physics/nlfd/: lines 690-709
-- open_sol/physics/potential/: lines 711-728
-- open_sol/physics/semiconductor/: lines 730-743
-- open_sol/solvers/: lines 745-759
-- open_sol/viz/: lines 761-768
+- open_sol/fem/: lines 105-170
+- open_sol/gui/: lines 172-192
+- open_sol/io/: lines 194-198
+- open_sol/materials/: lines 200-215
+- open_sol/mesh_study/: lines 217-227
+- open_sol/model/: lines 229-297
+- open_sol/physics/: lines 299-301
+- open_sol/physics/acoustics/: lines 303-321
+- open_sol/physics/em/: lines 323-436
+- open_sol/physics/em/solvers/: lines 438-460
+- open_sol/physics/em3d/: lines 462-498
+- open_sol/physics/eme/: lines 500-517
+- open_sol/physics/fluid/: lines 519-530
+- open_sol/physics/heat/: lines 532-557
+- open_sol/physics/magnetic/: lines 559-589
+- open_sol/physics/mechanics/: lines 591-670
+- open_sol/physics/membrane/: lines 672-690
+- open_sol/physics/nlfd/: lines 692-711
+- open_sol/physics/potential/: lines 713-730
+- open_sol/physics/semiconductor/: lines 732-745
+- open_sol/solvers/: lines 747-761
+- open_sol/viz/: lines 763-770
 
 ## open_sol/
 
@@ -165,6 +165,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_tetrahedra.py`: Self-tests of the tetrahedral FEM core (igor3d_plan section 7, T1 / T2; CPU, specs() empty, check({}) on structured Kuhn meshes, no gmsh): quadrature exactness, mesh conformity, Nedelec tangential continuity, point location and the ...
 - `squeeze_film.py`: Physics-neutral squeeze-film gas damping (new_modules_plan S6, Basiri E4): SqueezeFilm solves the linearised compressible Reynolds equation by fem.harmonic.ScalarHarmonicSystem on a planar TriangleMesh (a solid's footprint or a membrane's ...
 - `surface_mesh.py`: Planar triangle meshes of flat tetrahedron boundary faces (new_modules_plan S6): surface_triangle_mesh builds a TriangleMesh with node / edge / face maps back into the TetrahedronMesh from faces on one coordinate plane, normal_displacement ...
+- `tangent_kernel2d.py`: Per-element total-Lagrangian force and tangent of planar P1 / P2 triangles (the 2D twin of fem.tangent_kernel3d): one core.kernels host twin 'fem.element_tangent_2d' = a numba prange over the elements, with the batched numpy formulas of ...
 - `tangent_kernel3d.py`: Per-element total-Lagrangian force and tangent of P1 / P2 tetrahedra (next-gains R1): one core.kernels raw twin 'fem.element_tangent_3d' = a CUDA block per element (rule-point operators in shared memory), a numba prange over the elements, ...
 - `transfer.py`: Transfers between tensor grids and triangle meshes (mesh plan 2.9 / 1.4), the GridTransfer interface (apply(array, out=None)) over one host CSR
 
@@ -567,6 +568,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `definition_ac.py`: Model-layer definition of the 'magnetic_fields_ac' physics type (time-harmonic eddy currents at one frequency on tensor or triangle meshes: settings, coils with solid conductors, material vocabulary, validation, estimates, scalars) plus ...
 - `definition_magnetostatics.py`: Model-layer definition of the 'magnetostatics' physics type (settings, features, material vocabulary, validation, memory estimate, scalars) plus its templates and selftests; registered through definition.py
 - `fields.py`: Magnetic field sets: MagneticFields2D (A, B, H, w_mag, currents), MagneticFields3D (phi_m, B, H) and the AC phasor MagneticFieldsAC2D.
+- `kept_preconditioner.py`: KeptPreconditionerSolver: the 'linear' solver of a tensor saturation loop's DiffusionSystem that keeps the multigrid hierarchy or host direct factor of an earlier loop iteration while the coefficients move little and solves each new ...
 - `materials.py`: Material vocabulary of the magnetic physics (no cupy: the definitions import it): relative permeability arrays (always), remanence and saturation arrays (magnetostatics, allocated only when a material sets them), the static conductivity ...
 - `renderer.py`: Window-shaped magnetic fields: MagneticRenderer (magnetostatics), MagneticRenderer3D, MagneticACRenderer (phasors) and their FieldInfo tables.
 - `saturation.py`: Anhysteretic B-H curves of magnetostatics stage 4 (array-module agnostic, no cupy import): the Frohlich-Kennelly curve B = mu0 H + J_s a H / (1 + a H), a = mu0 (mu_dc - 1) / J_s, with its closed-form secant reluctivity nu(|B|) (and the ...

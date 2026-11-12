@@ -403,13 +403,13 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         def propose(log_permeability):   # the state itself, read by _assemble through the attribute
             self._assemble(full=first[0])
             first[0] = False
-            self._solve_once(linkages=False)   # the coil linkages of the last solve only, after the loop
-            field_strength = self._values['B_rms'][self._nonlinear] / (MU0 * np.exp(log_permeability))
+            self.system.solve(None, extra_load=self._drive_load())   # fields and linkages once, after the loop
+            field_strength = self._saturating_flux_rms() / (MU0 * np.exp(log_permeability))
             return self._saturated_log_permeability(field_strength)
 
         if not self.picard.run(state, propose, 1.0):
             self.runtime_warnings.append(self.picard.last_warning)
-        self._update_linkages()
+        self._update_fields()   # of the last iterate's solve
 
     def _saturated_log_permeability(self, field_strength):
         """ln of the secant mu_r of the saturating elements at |H| = field_strength (J_s curve with mu_dc_xx, each B-H
@@ -442,11 +442,10 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         """Nedelec-1 dofs of the total T [A] (sum of current x T per ampere: line integrals add over axes)."""
         return sum(coil.current * coil.per_ampere for coil in self.coils)
 
-    def _solve_once(self, linkages=True):
-        """One solve on the assembled operator with the drive's gradient load, then the fields and scalars (linkages
-        False: the coil linkages wait for _update_linkages)."""
+    def _solve_once(self):
+        """One solve on the assembled operator with the drive's gradient load, then the fields and scalars."""
         self.system.solve(None, extra_load=self._drive_load())
-        self._update_fields(linkages)
+        self._update_fields()
 
     def _drive_load(self):
         """int grad v . (mu0 mu T + B_r) dV over the active elements (None without a coil or remanence)."""
@@ -481,6 +480,20 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
         flux += residual[:, None, :]
         return flux, weights, mu, residual
 
+    def _saturating_flux_rms(self):
+        """B_rms [T] (k,) of the saturating elements of the last solve, 0 in held / inactive ones: the loop's only read
+        (_update_fields' formula on those elements alone)."""
+        nonlinear = self._nonlinear
+        flux_rms = np.zeros(nonlinear.size)
+        remanence = self._remanence()
+        coil_dofs = self._coil_dofs() if self.coils else None
+        positions = np.flatnonzero((self.system.active & ~self._held)[nonlinear])
+        for start in range(0, positions.size, POST_CHUNK):   # sorted subsets of the field chunks' element set
+            chunk_positions = positions[start:start + POST_CHUNK]
+            flux, weights, _, _ = self._chunk_flux(nonlinear[chunk_positions], coil_dofs, remanence)
+            flux_rms[chunk_positions] = np.sqrt(np.einsum('mqc,mqc,mq->m', flux, flux, weights) / weights.sum(axis=1))
+        return flux_rms
+
     def _field_chunks(self):
         """Yield (chunk, B, weights, mu, B_r) per POST_CHUNK block of the free elements (active, not held)."""
         remanence = self._remanence()
@@ -496,18 +509,10 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
             per_ampere, _, _ = rule_values_3d(self.edge_map, coil.per_ampere, chunk, RULE_DEGREE)
             linkages[coil.name] += float(np.einsum('mqc,mqc,mq->', per_ampere, flux, weights))
 
-    def _update_linkages(self) -> None:
-        """Each coil's linkage int T / I . B dV of the last solve (after a saturation loop that skipped them)."""
-        linkages = {coil.name: 0.0 for coil in self.coils}
-        if self.coils:
-            for chunk, flux, weights, _, _ in self._field_chunks():
-                self._coil_linkages(chunk, flux, weights, linkages)
-        self._linkages = linkages
-
-    def _update_fields(self, linkages=True):
+    def _update_fields(self):
         """Per free element at the rule points: B = mu (mu0 T - grad u) + B_r; element means of B, H = (B - B_r) / (mu0
-        mu), w_mag = B^2 / (2 mu0 mu), B_abs = |mean B|, B_rms; the energy and (linkages) each coil's linkage int T /
-        I . B dV; phi_m at the centroids; 0 in held / shell elements. Copies the float32 state."""
+        mu), w_mag = B^2 / (2 mu0 mu), B_abs = |mean B|, B_rms; the energy and each coil's linkage int T / I . B dV;
+        phi_m at the centroids; 0 in held / shell elements. Copies the float32 state."""
         system = self.system
         count = self.domain.mesh.n_elements
         values = {name: np.zeros(count) for name in (*_ELEMENT_FIELDS, 'B_rms')}
@@ -525,12 +530,11 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
             values['w_mag'][chunk] = np.einsum('mqc,mqc,mc,mq->m', flux, flux, 0.5 / (MU0 * mu), weights) / volume
             values['B_rms'][chunk] = np.sqrt(np.einsum('mqc,mqc,mq->m', flux, flux, weights) / volume)
             energy += float(np.einsum('mqc,mqc,mc,mq->', flux, flux, 0.5 / (MU0 * mu), weights))
-            if linkages:
-                self._coil_linkages(chunk, flux, weights, coil_linkages)
+            self._coil_linkages(chunk, flux, weights, coil_linkages)
         current_density = {name: self._values[name] for name in MAGNETIC_3D_CURRENT_NAMES if name in self._values}
         self._values = {**values, **current_density}
         self._energy = energy
-        self._linkages = coil_linkages   # zeros until _update_linkages when skipped
+        self._linkages = coil_linkages
         xp = self.xp
         self._state['phi_m'][...] = xp.asarray(system.centroid_values() / MU0, dtype=DTYPE)
         for name in _ELEMENT_FIELDS:

@@ -46,9 +46,14 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   solver values outside resolved_solvers must go through the helpers.
 - Backends (S6): the run backend must be in `PhysicsType.backends` (default ('gpu',); see each definition; misfits are
   validate errors per physics, greyed out in Add physics: `schema.physics_type_misfit`) and fit every role. Automatic
-  resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid)` (register_physics checks
-  those types too): CG_DIFFUSION_LINEAR_ROLE on the cpu = sparse_direct (host SuperLU via `DiffusionDirectSolver`;
-  cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. Every role must fit (`solver_misfit`:
+  resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid, study)` (register_physics
+  checks those types too): CG_DIFFUSION_LINEAR_ROLE on the cpu = sparse_direct (host SuperLU via `DiffusionDirectSolver`;
+  cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. `SolverRole.study_defaults` {(study, grid): (type,
+  settings)} is read first on every backend: CG_DIFFUSION_LINEAR_ROLE ('time_dependent', 'tensor') -> sparse_direct
+  (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu through auto_back_ends['tensor']), a fallback-table
+  rule autopick will replace: no size logic there. Every caller of `automatic` passes the study (resolved_solvers,
+  with_node_precision, default_precision_ignored, validate, api `_variant_spec`, GUI combos); a self-test counting CG
+  iterations in a 2D transient pins a pcg node. Every role must fit (`solver_misfit`:
   `SolverType.backends` + optional `backend_misfit(values, backend)`, Automatic roles too). Runtimes take `backend=` from
   `SolverRequest.backend` and work on that backend's arrays only (`core.backend.array_module` / `sparse_module`): an
   array of the other backend is a TypeError, never a silent transfer. On the cpu `check_memory` counts the device
@@ -74,8 +79,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   physics_names=(), node_name=None)` (sparse_direct back_end, or for role 'eigen' an arpack_shift_invert factorization;
   node 'host_direct_<back_end>' / 'host_direct_eigen_<back_end>'), `available_host_direct()` (installed libraries) and
   `skip_without_host_direct()` (skip_result when none is installed).
-- Shared roles (model.definition_helpers): `CG_LINEAR_ROLE` (pcg single / double, jacobi only: solid_mechanics),
-  `CG_ELASTIC_3D_LINEAR_ROLE` (+ 'mixed', jacobi only, Automatic on the gpu backend pcg 'mixed': solid_mechanics_3d),
+- Shared roles (model.definition_helpers; solid_mechanics keeps its own `physics.mechanics.definition.SOLID_LINEAR_ROLE`:
+  pcg single / double / 'mixed', jacobi only, Automatic on the gpu backend pcg 'mixed'):
+  `CG_ELASTIC_3D_LINEAR_ROLE` (pcg single / double / 'mixed', Automatic on the gpu backend pcg 'mixed': solid_mechanics_3d),
   `CG_DIFFUSION_LINEAR_ROLE` (+ 'mixed': heat,
   electric_currents, electrostatics, magnetostatics; Automatic on the gpu = pcg multigrid), `DIRECT_LINEAR_ROLE`
   (sparse_direct double, setting_choices back_end auto / scipy_splu / cusolver_qr + the host direct names:
@@ -147,7 +153,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (operator, fused object, solution pointer, length), then is captured once and replayed as one launch (`_BlockGraphs`,
   at most MAX_BLOCK_GRAPHS kept); a failed capture warns and stays eager. Graphs bake every pointer the callbacks read:
   an opting-in caller calls `release_block_graphs()` whenever it replaces those arrays (ElasticSystem3D.assemble);
-  factorize drops them. Nothing inside a block may sync or allocate (the residual read sits between blocks).
+  factorize drops them. Nothing inside a block may sync or allocate (the residual read sits between blocks). The own
+  multigrid hierarchy (`_multigrid_bound`: the bound callback is `self._multigrid.precondition`) is a `_BlockGraphs`
+  participant: its `inside_capture` flag is set during a capture, so `_DeviceCycle.apply` launches its plan's kernels
+  into the block's graph instead of launching / capturing its own (a graph launch inside a capture is not relied on);
+  the hierarchy is rebuilt only by factorize, which makes new _BlockGraphs. Caller-built V-cycles (multigrid3d) are no
+  participants.
 - cpu: numpy twins of the fused kernels (`_HOST_KERNELS`, same signatures: a kernel change changes its twin),
   allocation-free (BLAS axpy, scipy's private `_sparsetools.csr_matvec` into the workspace product, falling back to
   `dot` when missing or dtypes differ; Jacobi z in the product vector); dots / axpys of vectors shorter than
@@ -181,8 +192,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Smoothed-aggregation AMG, one symmetric V(1,1)-cycle per application (l1-Jacobi, 1 / a_ii on rows without
   off-diagonals: SPD for any SPD A); P = (I - W_F A_F) T with the filtered A_F (`_filtered_rows`: weak entries lumped
   into the diagonal; built by array masks, since cupyx `eliminate_zeros` failed with INSUFFICIENT_RESOURCES); Galerkin
-  R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host eigh pseudo-inverse (raises on a non-finite
-  inverse). Rounding only weakens the preconditioner (SPD holds for any symmetric A_c).
+  R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host dense inverse (raises on a non-finite inverse):
+  LAPACK potrf / potri (`_cholesky_inverse`, ~4x cheaper than eigh) when min pivot^2 > PSEUDO_INVERSE_CUTOFF x max
+  pivot^2, else the eigh pseudo-inverse (floating regions, pure Neumann; counter multigrid_coarsest_eigh). Rounding
+  only weakens the preconditioner (SPD holds for any symmetric A_c).
 - Products run in row blocks of ~PRODUCT_BLOCK_PRODUCTS (`_row_blocks`): one SpGEMM over a 5e6-row 3D operator needs a
   workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. The block sum merges
   only equal block counts (binary counter): a running sum recopies A_c per block. A cupyx / scipy CSR row slice copies
@@ -207,9 +220,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `CG_DIFFUSION_LINEAR_ROLE` (gpu, and 3D tensor meshes on the cpu; jacobi at mixed); a pcg node without the setting is
   jacobi (`with_exact_cg` too).
 - Aggregation (host numpy): strength -a_ij >= STRENGTH_THRESHOLD sqrt(a_ii a_jj) (negative off-diagonals only) plus each
-  row's largest negative coupling (floor; without it a 3D level-1 operator left ~98 % of rows out of P), symmetrised;
-  distance-2 independent-set roots (Luby, fixed seed: deterministic); rows without negative couplings (held / pinned
-  identity rows) stay out of P. The prolongator filtering keeps the plain threshold rule.
+  row's largest negative coupling (floor; without it a 3D level-1 operator left ~98 % of rows out of P), symmetrised
+  by scipy's row-local CSR merge S + S^T (int8 ones: no sum cancels; it replaced a np.unique of 2 E int64 keys, 70 %
+  of a 3D setup); distance-2 independent-set roots (Luby, fixed seed: deterministic), each round on the edges of rows
+  still near an undecided row (the list only shrinks; the same roots as full rounds); rows without negative couplings
+  (held / pinned identity rows) stay out of P. The prolongator filtering keeps the plain threshold rule.
 - Reuse: one host transfer of each level's CSR only when the fine pattern changed (`_pattern_matches`: identity, then
   array_equal); a value-only factorize (re-assembly, Newton / B-H iterations, refresh_diagonal) rebuilds P, R and coarse
   operators on the backend from the cached aggregates; rows whose strong links turned weak get prolongator weight 0
@@ -261,6 +276,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Launch-bound on small blocks (Python loops over blocks, ~80 us gemm floor per call on an RTX 3050). The time recipe
   prices each block product per call (FACTOR_DENSE_CALLS_PER_BLOCK, SWEEP_PRODUCTS_PER_BLOCK, *_LAUNCHES_PER_BLOCK,
   counted from the code: a loop change updates them).
+- Kept factors (`factorize`, `factorize_operators`: `_factor(kept=True)`) also store G_k = D_k^-1 L_k and H_k =
+  D_k^-1 U_k of the scaled system (`_Chunk.lower / upper`; H_k is the elimination's coupling anyway, G_k one more
+  product per block): `_kept_sweep` = y_k = D_k^-1 y_k - G_k y_(k-1), y_k -= H_k y_(k+1), scales only at both ends. A
+  single rhs on the gpu whose three stacks fit KEPT_SWEEP_KERNEL_MAX_BYTES is one launch of the raw twin
+  'solvers.line_block_kept_sweep' (one CUDA block per shift, a warp per row, blocks in sequence; numpy twin = the
+  block loop `_kept_sweep_loop`, which also runs larger gpu stacks); solve_shifted chunks keep `_sweep`. Memory: 3 block
+  stacks per kept shift (`shift_bytes(kept=True)`, `chunk_size(kept=True)`, batch_size): every kept-factor estimate
+  and sizing passes it (fdfd / bor / cross-section line_block bytes); the recipe of a kept solve is
+  `factor_solve_ops` (`_kept_sweep_ops`). A change of the sweep formula changes the CUDA source and the loop
+  together.
 - Not yet: transposed solves (FDFD adjoint uses host SuperLU), per-shift rhs, BATCHED_INVERSE_MAX_BLOCK crossover, a
   device ARPACK loop, a fused one-launch sweep kernel.
 
@@ -315,7 +340,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   resolved_solvers: validate, estimators, build and summary see the concrete back end) on the gpu with nvmath
   (find_spec); role-less `expected_back_end` / `resolve_back_end` map 'auto' to SuperLU. Opted in: pressure_acoustics
   (triangles, tetrahedra) and membrane (triangles) 'linear' cudss_mixed; CG_ELASTIC_3D_LINEAR_ROLE (tetrahedra)
-  cudss_mixed; cudss for FDFD_LINEAR_ROLE / CUDSS_LINEAR_ROLE (tensor, triangles), CG_LINEAR_ROLE (triangles),
+  cudss_mixed; cudss for FDFD_LINEAR_ROLE / CUDSS_LINEAR_ROLE (tensor, triangles), SOLID_LINEAR_ROLE (triangles),
   CG_DIFFUSION_LINEAR_ROLE (triangles, tetrahedra).
   Self-tests that used Automatic as a SuperLU reference pin a scipy_splu node. Values carry `AUTO_BACK_END_KEY`
   ('back_end_from_auto'); the runtime gets `fallback_back_end='scipy_splu'`, and a cuDSS refusal
@@ -341,7 +366,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   PARDISO then refresh by `host_direct_values_factorization`, pattern matched by identity); never pass it for an
   operator that may be unsorted, duplicated or unsymmetric. defer_check (both tangent routes; Newton solves right after
   factorising): a reused analysis / plan skips its probe, the next solve is the check, so a CudssAccuracyError of an
-  'auto' runtime then comes from that solve (no SuperLU fallback). `factorize_device_values(values, indptr, indices)` (cupy
+  'auto' runtime then comes from that solve (no SuperLU fallback). `SparseDirectSolver.factorize_values(values, indptr,
+  indices, real=, previous=, defer_check=)` is the general role's twin for unsymmetric operators on a fixed canonical
+  pattern (drift_diffusion Newton Jacobians): cuDSS refresh / plan from device values, MUMPS / PARDISO
+  `host_direct_values_factorization`, else SuperLU of the CSR; no host canonicalising or asymmetry check per call.
+  `factorize_device_values(values, indptr, indices)` (cupy
   values on the HOST canonical pattern) -> `refactorize_device_values` / `from_device_values`: equilibration, lower take
   and refresh or plan on the device by index maps built once per plan (`_device_maps`), no host value copy. Either
   symmetry vouched (pencils, device tangents) or `check_symmetry=True` (device transpose map), which also serves
@@ -415,7 +444,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   combos and 'In use' list).
 - `SolverRole.grid_defaults` {grid: (type, settings)} wins over backend_defaults: CG_DIFFUSION_LINEAR_ROLE 'line' ->
   banded, 'tensor_3d' -> pcg multigrid on both backends (cpu: 7-130x faster than 3D SuperLU); CG_DIFFUSION_LINEAR_ROLE /
-  CG_LINEAR_ROLE 'triangles' and CG_DIFFUSION_LINEAR_ROLE / CG_ELASTIC_3D_LINEAR_ROLE 'tetrahedra' -> sparse_direct.
+  SOLID_LINEAR_ROLE 'triangles' and CG_DIFFUSION_LINEAR_ROLE / CG_ELASTIC_3D_LINEAR_ROLE 'tetrahedra' -> sparse_direct
+  (so the gpu Automatic 'mixed' of both solid roles applies on tensor meshes only).
   pcg, sparse_direct and arpack_shift_invert declare grids ('tensor', 'triangles', 'tetrahedra'); banded ('line',) only.
   pcg on tetrahedra is an opt-in node of the scalar FEM systems; solid_mechanics_3d on tetrahedra refuses it at create
   (sparse_direct only; its validation does not catch it yet).
@@ -653,7 +683,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   and solve_preconditioned* itself (`openblas_pools` = pools held, 0 none); a consumer whose own loop does BLAS work
   between PARDISO solves wraps the loop (arpack_shift_invert: the scipy eigs / eigsh calls, by `self.factorization`).
   It is process-wide while held: only vector-sized BLAS work belongs inside, never a dense factorisation. BLAS calls
-  of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those.
+  of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those. The pools
+  are looked up once; `refresh=True` (refactorize / refactorize_values) looks again only when a scipy module that loads
+  scipy's OpenBLAS (`_SCIPY_BLAS_MODULES`) appeared in sys.modules since (a ThreadpoolController walks every loaded
+  library: 4.5 ms per Newton factorisation). A new lazily loaded BLAS user of scipy joins that list.
 - Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
   a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
   checks of mixed factors, pydiso >= 0.3 in the conda env (0.2.0 has no fill_reducing_ordering: METIS analysis), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,

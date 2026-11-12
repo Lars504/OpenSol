@@ -94,6 +94,10 @@ class FEMDiffusionSystem:
         self._face_edges = {}
         self._ring = None
         self._matrix = self._reduced = self._capacity_matrix = None
+        self._split = ReducedSplit()    # reduced / coupling slot maps and anchor regions across re-assemblies
+        self._sum = SlotSum()           # slots of every term in the summed pattern
+        self._terms = KeptTerms()       # assembled terms kept while their inputs repeat
+        self._dof_map_cache = None      # (active mask, DofMap) of the last assembly: kept while the active set repeats
         self._free = self._fixed = self._dof_owner = None
         self._coupling = None       # reduced rows x fixed columns of the last assembly (the lift)
         self._lift = None
@@ -205,40 +209,56 @@ class FEMDiffusionSystem:
         active &= self.window_elements
         if not active.any():
             raise ValueError(f'{self.label()}: no window element conducts, loses or stores (all coefficients 0)')
-        dofs = lagrange_dofs(mesh, self.order, active, geometry_order=self.geometry_order)
+        dofs = self._active_dof_map(active)
         axisymmetric = self.axisymmetric
-        terms = [assemble_stiffness(dofs, tensor, axisymmetric=axisymmetric)]
+        kept = self._terms
+        # terms whose inputs repeat (k in a radiation / sigma(T) loop) are kept, not re-assembled
+        terms = [kept.term('stiffness', (dofs, tensor),
+                           lambda: assemble_stiffness(dofs, tensor, axisymmetric=axisymmetric))]
         storing = active & (self.loss_coefficient > 0.0)
         if self.loss_coefficient.any():
-            terms.append(assemble_mass(dofs, self.loss_coefficient, axisymmetric=axisymmetric))
+            loss = self.loss_coefficient
+            terms.append(kept.term('loss', (dofs, loss), lambda: assemble_mass(dofs, loss, axisymmetric=axisymmetric)))
         self._capacity_matrix = None
         if capacity_over_dt is not None:
-            self._capacity_matrix = assemble_mass(dofs, capacity_over_dt, axisymmetric=axisymmetric)
+            self._capacity_matrix = kept.term('capacity', (dofs, capacity_over_dt), lambda: assemble_mass(
+                dofs, capacity_over_dt, axisymmetric=axisymmetric))
             terms.append(self._capacity_matrix)
             storing |= active & (capacity_over_dt > 0.0)
         anchored_dofs = np.zeros(dofs.n_dofs, dtype=bool)   # anchors by topology (floating_region_count)
         anchored_dofs[dofs.element_dofs[dofs.element_position[storing]].ravel()] = True
         inside = dofs.element_position >= 0
-        for edges, condition, _ in self._all_edge_conditions():
+        for index, (edges, condition, _) in enumerate(self._all_edge_conditions()):
             if len(edges) and robin_assembled(condition):
-                terms.append(assemble_edge_mass(dofs, edges, condition.h, axisymmetric=axisymmetric))
+                terms.append(kept.term(f'robin {index}', (dofs, edges, condition.h), lambda: assemble_edge_mass(
+                    dofs, edges, condition.h, axisymmetric=axisymmetric)))
                 anchoring = robin_anchoring(edges, condition)
                 first, second = side_members(mesh.edge_elements[anchoring], inside)
                 anchored_dofs[dofs.edge_dofs(anchoring[first | second])] = True
-        matrix = pattern_sum(terms)   # one pattern whatever the coefficients (cuDSS plan reuse)
+        kept.drop_unused()
+        matrix = self._sum.sum(terms)   # pattern_sum: one pattern whatever the coefficients (cuDSS plan reuse)
         fixed_value, _ = self._fixed_values(dofs)
         fixed = np.flatnonzero(~np.isnan(fixed_value))
         free = np.flatnonzero(np.isnan(fixed_value))
-        free_rows = matrix[free]   # sliced once for the reduced operator and the lift coupling
-        reduced = free_rows[:, free].tocsr()
+        reduced, coupling = self._split.split(matrix, free, fixed)   # value gathers while pattern and dofs repeat
         if self.require_anchors:
             self._check_anchors(reduced, anchored_dofs[free])
         self.dofs, self._matrix, self._reduced = dofs, matrix, reduced
         self._free, self._fixed = free, fixed
-        self._coupling = free_rows[:, fixed].tocsr()
+        self._coupling = coupling
         self._refresh_constant_terms()
         self._factorize()
         self.operator_dirty = False
+
+    def _active_dof_map(self, active):
+        """DofMap of the active elements: the last one while the active set repeats (its cached element integrals and
+        edge rules stay warm), else a new lagrange_dofs map."""
+        cached = self._dof_map_cache
+        if cached is not None and np.array_equal(cached[0], active):
+            return cached[1]
+        dofs = lagrange_dofs(self.mesh, self.order, active, geometry_order=self.geometry_order)
+        self._dof_map_cache = (active.copy(), dofs)
+        return dofs
 
     def _fixed_values(self, dofs) -> tuple:
         """(value per active dof, NaN when free; sequence of the condition holding it, 0 when free) of the Dirichlet
@@ -277,7 +297,7 @@ class FEMDiffusionSystem:
     def _check_anchors(self, reduced, anchored_rows) -> None:
         """ValueError when a connected region of free dofs has no anchor (no anchored_rows row and all its reduced row
         sums ~0: u + const solves it too)."""
-        floating = floating_region_count(reduced, anchored_rows)
+        floating = floating_region_count(reduced, anchored_rows, regions=self._split.regions(reduced))
         if floating:
             raise ValueError(f'{self.label()}: {floating} connected region(s) of the {self.unknown_name} touch no '
                              f'{self.anchor_text}, so the system is singular. {self.remedy_text}')
@@ -472,23 +492,174 @@ def ring_dof_locations(full) -> tuple:
     return ids, locator(mesh, full.geometry_order).locate(clamped[ids])
 
 
-def floating_region_count(reduced, anchored_rows=None) -> int:
+def region_labels(reduced) -> tuple:
+    """(count, labels per row) of the connected regions of a reduced CSR's stored nonzero entries."""
+    from scipy.sparse.csgraph import connected_components
+    pattern = reduced.copy()
+    pattern.eliminate_zeros()
+    return connected_components(pattern, directed=False)
+
+
+def floating_region_count(reduced, anchored_rows=None, regions=None) -> int:
     """Connected regions of a reduced (free-dof) CSR whose rows all sum to ~0 (ANCHOR_RTOL of the diagonal): u + const
     solves them too, so the system is singular there. anchored_rows: bool per row the caller knows anchored (loss,
-    capacity or Robin terms, which can sit below ANCHOR_RTOL of the stiffness on micrometre elements)."""
-    from scipy.sparse.csgraph import connected_components
+    capacity or Robin terms, which can sit below ANCHOR_RTOL of the stiffness on micrometre elements); regions: its
+    region_labels when the caller kept them (ReducedSplit.regions)."""
     if reduced.shape[0] == 0:
         return 0
     diagonal = reduced.diagonal()
     row_sums = np.asarray(reduced.sum(axis=1)).ravel()
     known = np.zeros(reduced.shape[0], dtype=bool) if anchored_rows is None else np.asarray(anchored_rows, dtype=bool)
     anchored_rows = known | (row_sums > ANCHOR_RTOL * np.abs(diagonal))
-    pattern = reduced.copy()
-    pattern.eliminate_zeros()
-    count, labels = connected_components(pattern, directed=False)
+    count, labels = region_labels(reduced) if regions is None else regions
     anchored = np.zeros(count, dtype=bool)
     anchored[labels[anchored_rows]] = True
     return int(count - anchored.sum())
+
+
+class ReducedSplit:
+    """Free x free (reduced) and free x fixed (coupling) blocks of a canonical CSR with their slot maps kept: while the
+    pattern and the free / fixed dofs repeat (a re-assembly with new coefficient values: k(T), radiation, sigma(T)), a
+    split gathers values instead of scipy fancy slicing, and the anchor regions are reused while the reduced zero
+    entries repeat."""
+
+    def __init__(self):
+        self._key = None       # (indptr, indices, free, fixed) the maps were built from
+        self._maps = None      # ((indptr, indices, take) of reduced, (indptr, indices, take) of coupling)
+        self._regions = None   # (nonzero mask of the reduced values, region_labels)
+        self.n_map_builds = 0
+
+    def split(self, matrix, free, fixed) -> tuple:
+        """(reduced CSR, coupling CSR) of `matrix` (canonical CSR) on the sorted int64 free / fixed dof indices."""
+        from scipy.sparse import csr_matrix
+        if not self._matches(matrix, free, fixed):
+            self._build(matrix, free, fixed)
+        (reduced_indptr, reduced_indices, reduced_take), (coupling_indptr, coupling_indices, coupling_take) = self._maps
+        # own index copies (a memcpy): a consumer canonicalising its input in place cannot reorder the kept maps
+        reduced = csr_matrix((matrix.data[reduced_take], reduced_indices.copy(), reduced_indptr.copy()),
+                             shape=(free.size, free.size))
+        coupling = csr_matrix((matrix.data[coupling_take], coupling_indices.copy(), coupling_indptr.copy()),
+                              shape=(free.size, fixed.size))
+        return reduced, coupling
+
+    def regions(self, reduced) -> tuple:
+        """region_labels of a reduced block of the current maps, recomputed only when its zero entries changed."""
+        nonzero = reduced.data != 0.0
+        if self._regions is None or not np.array_equal(self._regions[0], nonzero):
+            self._regions = (nonzero, region_labels(reduced))
+        return self._regions[1]
+
+    def _matches(self, matrix, free, fixed) -> bool:
+        if self._key is None:
+            return False
+        return all(np.array_equal(kept, current) for kept, current in
+                   zip(self._key, (matrix.indptr, matrix.indices, free, fixed)))
+
+    def _build(self, matrix, free, fixed) -> None:
+        """Slot maps by slicing a CSR of 1-based entry positions the way the values would be sliced; the key keeps
+        references (the owner never writes into a matrix's index arrays or its free / fixed arrays)."""
+        from scipy.sparse import csr_matrix
+        positions = csr_matrix((np.arange(1, matrix.nnz + 1, dtype=np.float64), matrix.indices, matrix.indptr),
+                               shape=matrix.shape)
+        rows = positions[free]
+        take_dtype = np.int32 if matrix.nnz < 2 ** 31 else np.int64
+        maps = []
+        for columns in (free, fixed):
+            block = rows[:, columns].tocsr()
+            maps.append((block.indptr, block.indices, (block.data - 1.0).astype(take_dtype)))
+        self._maps = tuple(maps)
+        self._key = (matrix.indptr, matrix.indices, free, fixed)
+        self._regions = None
+        self.n_map_builds += 1
+
+
+class SlotSum:
+    """assembly.pattern_sum of CSR terms (every stored entry kept, explicit zeros too) with the slot of each term entry
+    in the summed pattern kept: while every term keeps its pattern, a sum is one value scatter per term instead of a
+    COO concatenation and sort (terms are summed in list order, so values agree with pattern_sum to rounding)."""
+
+    def __init__(self):
+        self._patterns = None   # [(indptr, indices)] of the terms the slots were built from
+        self._summed = None     # (indptr, indices, shape) of the summed pattern
+        self._slots = None      # per term: the summed-pattern slot of each stored entry
+        self.n_slot_builds = 0
+
+    def sum(self, terms):
+        """CSR sum of same-shape scipy CSR terms (canonicalised in place first: unique entries per term)."""
+        from scipy.sparse import csr_matrix
+        for term in terms:
+            term.sum_duplicates()
+        if not self._matches(terms):
+            self._build(terms)
+        indptr, indices, shape = self._summed
+        data = np.zeros(indices.size, dtype=np.result_type(*(term.dtype for term in terms)))
+        for term, slots in zip(terms, self._slots):
+            data[slots] += term.data   # unique slots within one term: no np.add.at needed
+        return csr_matrix((data, indices.copy(), indptr.copy()), shape=shape)
+
+    def _matches(self, terms) -> bool:
+        if self._patterns is None or len(self._patterns) != len(terms) or terms[0].shape != self._summed[2]:
+            return False
+        return all((indptr is term.indptr or np.array_equal(indptr, term.indptr))
+                   and (indices is term.indices or np.array_equal(indices, term.indices))
+                   for (indptr, indices), term in zip(self._patterns, terms))
+
+    def _build(self, terms) -> None:
+        """Summed pattern by pattern_sum, each term's slots by searching its (row, column) keys in the summed ones."""
+        summed = pattern_sum(terms)
+        n_columns = summed.shape[1]
+
+        def keys(matrix):   # row-major int64 key per stored entry (ascending for a canonical CSR)
+            rows = np.repeat(np.arange(matrix.shape[0], dtype=np.int64), np.diff(matrix.indptr))
+            return rows * n_columns + matrix.indices
+        summed_keys = keys(summed)
+        slot_dtype = np.int32 if summed.nnz < 2 ** 31 else np.int64
+        self._slots = [np.searchsorted(summed_keys, keys(term)).astype(slot_dtype) for term in terms]
+        self._summed = (summed.indptr, summed.indices, summed.shape)
+        self._patterns = [(term.indptr, term.indices) for term in terms]
+        self.n_slot_builds += 1
+
+
+class KeptTerms:
+    """Assembled operator terms by name, each kept with copies of its inputs (a DofMap compared by identity, arrays and
+    numbers by value) and returned again while they repeat; drop_unused frees the names an assembly no longer used."""
+
+    def __init__(self):
+        self._kept = {}     # name -> (inputs, matrix)
+        self._used = set()
+        self.n_builds = 0
+        self.n_reuses = 0
+
+    def term(self, name, inputs, build):
+        """The kept matrix of `name` while its inputs repeat, else build() (kept with copies of the inputs)."""
+        self._used.add(name)
+        kept = self._kept.get(name)
+        if kept is not None and all(_same_input(old, new) for old, new in zip(kept[0], inputs)):
+            self.n_reuses += 1
+            return kept[1]
+        matrix = build()
+        self._kept[name] = (tuple(np.array(value, copy=True) if isinstance(value, np.ndarray) else value
+                                  for value in inputs), matrix)
+        self.n_builds += 1
+        return matrix
+
+    def drop_unused(self) -> None:
+        """Forget the terms not asked for since the last call (end of an assembly)."""
+        for name in set(self._kept) - self._used:
+            del self._kept[name]
+        self._used = set()
+
+
+def _same_input(old, new) -> bool:
+    """A kept term input equals the current one: identical object, equal arrays, or equal numbers."""
+    if old is new:
+        return True
+    if isinstance(old, np.ndarray) or isinstance(new, np.ndarray):
+        return (isinstance(old, np.ndarray) and isinstance(new, np.ndarray) and old.shape == new.shape
+                and old.dtype == new.dtype and np.array_equal(old, new))
+    if isinstance(old, (int, float)) and isinstance(new, (int, float)):
+        return old == new
+    return False
 
 
 def coefficient_tensor(c_xx, c_yy, c_xy=None) -> np.ndarray:
@@ -698,9 +869,10 @@ def lagrange_entries_per_dof(mesh, order) -> float:
 
 
 def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
-                           refactorizes=False, active_fraction=1.0) -> MemoryEstimate:
+                           refactorizes=False, active_fraction=1.0, kept_terms=True) -> MemoryEstimate:
     """FEMDiffusionSystem + its physics on a TriangleMeshEstimate (fem_system_estimate; SuperLU fill FEM_FILL_FACTOR on
-    the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None."""
+    the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None;
+    kept_terms False: a system of its own without KeptTerms / SlotSum / ReducedSplit (magnetostatics on triangles)."""
     n_dofs = int(mesh.n_nodes) + (int(mesh.n_edges) if order == 2 else 0)
     n_active = active_dofs(n_dofs, active_fraction)
     direct_factor = direct_factor_item(direct, FEM_FILL_FACTOR * host_real_lu_bytes(n_active),
@@ -709,7 +881,7 @@ def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=F
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 2, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
-                               host_direct=host_direct_name(direct))
+                               host_direct=host_direct_name(direct), kept_terms=kept_terms)
 
 
 def host_direct_name(direct):
@@ -751,11 +923,12 @@ def painted_fraction(mesh, material_names) -> float:
 
 def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element_fields, nodal_fields, dimensions,
                         direct_factor=None, multigrid=False, cudss=None, refactorizes=False,
-                        active_fraction=1.0, host_direct=None) -> MemoryEstimate:
+                        active_fraction=1.0, host_direct=None, kept_terms=True) -> MemoryEstimate:
     """FEMDiffusionSystem[3D] and physics: float32 element state, host nodal arrays, the operator and linear solver on
     the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS / MUMPS / PARDISO take it as a temporary);
     refactorizes: per change; host_direct: the MUMPS / PARDISO back end of direct_factor (its own arrays beside the
-    library factor, host_direct.solver_host_bytes) or None."""
+    library factor, host_direct.solver_host_bytes) or None; kept_terms: the system keeps its terms and slot maps across
+    re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class)."""
     n_active = active_dofs(n_dofs, active_fraction)
     entries = int(round(float(entries_per_dof) * n_active))
     csr_bytes = FLOAT64_CSR_ENTRY_BYTES * entries + INT32_BYTES * (n_active + 1)
@@ -764,6 +937,11 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
                   (f'FEM nodal values and loads ({nodal_fields + 4} x float64)', (nodal_fields + 4) * FLOAT64_BYTES
                    * int(n_dofs)),
                   ('FEM assembly COO (transient)', 3 * FLOAT64_BYTES * local_dofs * local_dofs * int(n_elements))]
+    if kept_terms:
+        # KeptTerms: the stiffness CSR; SlotSum: int32 slots of stiffness and capacity / loss, the summed indices;
+        # ReducedSplit: reduced indices, int32 value take, the first assembly's indices its key keeps
+        host_items.insert(1, ('FEM kept stiffness and slot maps (term slots, reduced take, kept patterns)',
+                              (FLOAT64_CSR_ENTRY_BYTES + 6 * INT32_BYTES) * entries))
     if cudss:   # FEMDiffusionSystem._factorize: the device CSR is factorize_device_csr's input only
         items.append(('FEM solution vector (run backend)', FLOAT64_BYTES * n_active))
         own = MemoryEstimate.from_items(items, host_items=host_items)

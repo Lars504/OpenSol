@@ -99,12 +99,13 @@ TENSOR_DIFFUSION_PARTS = methods(DIFFUSION_SYSTEM, (
     'prepare', 'assemble', 'refresh_diagonal', 'refresh_capacity', '_check_anchors', '_label_anchors', 'build_rhs',
     'solve', 'flux_at_centres', 'axis_flux_at_centres', 'cross_flux_at_centres', 'dissipation_density',
     'fixed_region_outflow', 'face_inward_flux', 'flux_jump_indicator', 'update_face_value',
+    '_factorize_solver',
 ), 'DiffusionSystem') + methods('open_sol.core.fv_diffusion:DiffusionPhysicsBase', (
     '_extend_into_pml', 'error_indicator',
 ), 'DiffusionPhysicsBase') + functions('open_sol.core.fv_diffusion', (
-    'build_anisotropic_laplacian', '_build_pattern', 'cross_quads',
+    'build_anisotropic_laplacian', 'cross_quads',
 ), 'fv_diffusion') + functions('open_sol.core.fv_diffusion_3d', (
-    'build_laplacian_3d', 'anchor_link_graph_3d', 'flux_at_centres_3d', 'face_flows_3d',
+    'build_laplacian', 'anchor_link_graph', 'flux_at_centres', 'face_flows_3d',
 ), 'fv_diffusion_3d')
 
 # ---- FEM diffusion (fem.diffusion triangles, fem.diffusion3d tetrahedra) + assembly ----
@@ -114,8 +115,12 @@ FEM_DIFFUSION_PARTS = methods('open_sol.fem.diffusion:FEMDiffusionSystem', (
 ), 'FEMDiffusionSystem') + methods('open_sol.fem.diffusion:FEMDiffusionPhysicsBase', (
     'nodal_field', 'element_field', '_record_probes',
 ), 'FEMDiffusionPhysicsBase') + functions('open_sol.fem.diffusion', (
-    'floating_region_count', 'ring_dof_locations', 'coefficient_tensor', 'element_means',
-), 'fem.diffusion') + methods('open_sol.fem.diffusion3d:FEMDiffusionSystem3D', (
+    'floating_region_count', 'region_labels', 'ring_dof_locations', 'coefficient_tensor', 'element_means',
+), 'fem.diffusion') + methods('open_sol.fem.diffusion:ReducedSplit', (
+    'split', 'regions', '_build',
+), 'ReducedSplit') + methods('open_sol.fem.diffusion:FEMDiffusionSystem', (
+    '_active_dof_map',
+), 'FEMDiffusionSystem') + methods('open_sol.fem.diffusion3d:FEMDiffusionSystem3D', (
     'assemble', '_factorize', 'solve', '_extend_into_shell', 'reaction', 'face_flux', 'inward_flux', 'value_at',
     'centroid_values', 'element_integrals',
 ), 'FEMDiffusionSystem3D') + methods('open_sol.fem.diffusion3d:FEMDiffusionPhysicsBase3D', (

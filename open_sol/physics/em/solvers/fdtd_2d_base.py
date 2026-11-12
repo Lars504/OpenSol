@@ -1,6 +1,7 @@
 """_YeeEngine2DBase: shared part of the 2D FDTD Yee engines (curl spacings, field sets, solver contract, J.E window)
 plus PEC-mask and dispersive-region helpers."""
 import math
+import warnings
 
 import numpy as np
 from ....core.backend import cp, to_host
@@ -11,6 +12,12 @@ from ..materials import register_em_arrays
 from ..placement import PERMITTIVITY_SLOTS
 from ..yee_grid import grid_cell_widths, yee_inverse_spacings
 from . import fdtd_ez_2d_kernels as _kernels
+
+# gpu: the fixed-argument launches of a step (H: Yee + conformal + H CPML of every field set; E: Yee + E CPML per set)
+# replay as CUDA graphs (as em3d engine3d); walls, poles, sources and monitors stay eager (the wall copies of column
+# rows overlap their source in cupy's bounds check, which copies the input: an allocation inside a capture)
+STEP_GRAPHS = True
+_MAX_STEP_GRAPHS = 8   # graph keys kept (stale ones belong to replaced conformal tables)
 
 
 def _bounding_box(weight):
@@ -189,6 +196,12 @@ class _YeeEngine2DBase(PhysicsSolver):
         self.nonlinear = None
         self.gain_media = []
 
+        # (phase key) -> [graph or None after its eager run, kept inputs] (_fixed_block; gpu only); n_step_graphs =
+        # captures made
+        self.use_step_graphs = STEP_GRAPHS and self.xp is not np
+        self._step_graphs = {}
+        self.n_step_graphs = 0
+
     # --- PhysicsSolver contract -----------------------------------------------
 
     def prepare(self, domain):
@@ -362,6 +375,56 @@ class _YeeEngine2DBase(PhysicsSolver):
                 monitor.record(fields, t_full)
             elif self.n_step % monitor.sample_interval == 0:   # DFT monitors sample every sample_interval steps
                 monitor.update(fields, t_full)
+
+    def _cpml_post(self, field_set, kind, *arrays):
+        """CPML psi update + correction of one field set (BoundaryManager.apply_*_post without its outer-face rows):
+        kind 'h' / 'e' (ez) or 'hz' / 'exy' (hz), arrays as the CPMLSided method takes them; nothing without CPML."""
+        cpml = field_set.boundary_mgr.cpml
+        if cpml:
+            getattr(cpml, f'apply_{kind}')(*arrays)
+
+    def _fixed_block(self, key, kept, block):
+        """Run block() (launches with fixed arguments, no sync, no allocation): eagerly on the cpu, on the first step of
+        a key and when capture failed, else replayed from its CUDA graph. key holds the ids of the replaceable inputs,
+        kept alive with the entry (an id is never reused while its graph lives); fields, CPML psi, coefficients and the
+        1D spacings are rewritten in place, never reassigned (physics/em sub file "FDTD step graphs")."""
+        if not self.use_step_graphs:
+            block()
+            return
+        entry = self._step_graphs.get(key)
+        if entry is None:   # eager run first: compiles / loads the kernels outside the capture
+            if len(self._step_graphs) >= _MAX_STEP_GRAPHS:
+                self._step_graphs.clear()
+            self._step_graphs[key] = [None, kept]
+            block()
+            return
+        if entry[0] is None:
+            entry[0] = self._capture(block)
+            if entry[0] is None:
+                block()
+                return
+        entry[0].launch(self.xp.cuda.get_current_stream())
+
+    def _capture(self, block):
+        """CUDA graph of block() (None, with a warning and eager steps from now on, when capture fails)."""
+        cupy = self.xp
+        stream = cupy.cuda.Stream(non_blocking=True)
+        try:
+            with stream:
+                stream.begin_capture()
+                try:
+                    block()
+                finally:
+                    graph = stream.end_capture()
+        except Exception as error:   # capture unsupported here: the same kernels launched one by one
+            self.use_step_graphs = False
+            self._step_graphs.clear()
+            warnings.warn(f'em_fdtd_{self.polarization}: CUDA graph capture of the step kernels failed '
+                          f'({type(error).__name__}: {error}); launching them one by one from now on', RuntimeWarning,
+                          stacklevel=4)
+            return None
+        self.n_step_graphs += 1
+        return graph
 
     # --- masks ----------------------------------------------------------------
 

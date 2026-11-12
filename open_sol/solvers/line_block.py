@@ -34,6 +34,14 @@ FACTOR_LAUNCHES_PER_BLOCK = 12
 SWEEP_PRODUCTS_PER_BLOCK = 4       # forward coupling + inverse, backward coupling + inverse
 SWEEP_LAUNCHES_PER_BLOCK = 7       # forward 4, backward 3
 SWEEP_FIXED_LAUNCHES = 18          # per sweep: padding, scaling, residual product, norms
+# kept factors (factorize, factorize_operators) also store G_k = D_k^-1 L_k and H_k = D_k^-1 U_k of the scaled system:
+# their sweep is 3 products per block and no scale multiplies (loop: 5 launches per block); a single-rhs sweep on the
+# gpu whose three stacks fit KEPT_SWEEP_KERNEL_MAX_BYTES per shift is one launch (one CUDA block per shift)
+KEPT_BLOCK_STACKS = 3
+KEPT_SWEEP_PRODUCTS_PER_BLOCK = 3
+KEPT_SWEEP_LAUNCHES_PER_BLOCK = 5
+KEPT_SWEEP_KERNEL_MAX_BYTES = 64 << 20  # one SM streams them: ~25 GB/s on an RTX 3050, ~2.5 ms at the cap
+KEPT_SWEEP_THREADS = 256
 
 
 # --- CPU helpers (no cupy: estimators) ----------------------------------------------------------------------------
@@ -79,13 +87,34 @@ def _sweep_ops(n_unknowns, block, nnz, rhs):
 
 def factor_solve_ops(n_unknowns, block_size=0, nnz=0.0, precision='mixed') -> tuple:
     """Ops of one solve on a kept factor (LineBlockFactorization.solve_host, e.g. a shift-invert application): host rhs
-    to the device, one sweep + the precision's REFINEMENT_SWEEPS_GUESS refinement sweeps, the solution back."""
+    to the device, one kept sweep + the precision's REFINEMENT_SWEEPS_GUESS refinement sweeps, the solution back."""
     from ..core import time_estimate as te
     n_unknowns = float(n_unknowns)
     block = float(block_size or max(math.isqrt(int(n_unknowns)), 1))
     sweeps = 1.0 + _refinement_sweeps(precision)
-    pairs = (entry if isinstance(entry, tuple) else (1.0, entry) for entry in _sweep_ops(n_unknowns, block, nnz, 1.0))
+    pairs = (entry if isinstance(entry, tuple) else (1.0, entry)
+             for entry in _kept_sweep_ops(n_unknowns, block, nnz, precision))
     return tuple((sweeps * multiplicity, op) for multiplicity, op in pairs) + (te.Transfer(2.0 * 16 * n_unknowns),)
+
+
+def _kept_sweep_ops(n_unknowns, block, nnz, precision):
+    """Ops of one single-rhs sweep on a kept factor: one kernel launch over the three block stacks when they fit
+    KEPT_SWEEP_KERNEL_MAX_BYTES (gpu), else KEPT_SWEEP_PRODUCTS_PER_BLOCK calls per block; plus the fixed launches,
+    the complex128 residual product and read-back."""
+    from ..core import time_estimate as te
+    n_blocks = n_unknowns / block
+    complex_bytes, _ = _item_bytes(precision or 'mixed')
+    if KEPT_BLOCK_STACKS * n_blocks * block * block * complex_bytes <= KEPT_SWEEP_KERNEL_MAX_BYTES:
+        products = (1.0, te.DenseFlops(8.0 * block ** 2 * KEPT_SWEEP_PRODUCTS_PER_BLOCK * n_blocks))
+        launches = SWEEP_FIXED_LAUNCHES + 1
+        calls = 4.0
+    else:
+        products = (max(KEPT_SWEEP_PRODUCTS_PER_BLOCK * n_blocks - 2.0, 1.0), te.DenseFlops(8.0 * block ** 2))
+        launches = int(KEPT_SWEEP_LAUNCHES_PER_BLOCK * n_blocks + SWEEP_FIXED_LAUNCHES)
+        calls = 3.0 * n_blocks
+    return (products, te.elementwise(launches * block, 2, 1, 16, launches=launches),
+            te.Spmv(n_unknowns, max(nnz, 5.0 * n_unknowns), 16), te.Reduction(n_unknowns, 16, read_back=True),
+            te.PythonCalls(calls))
 
 
 def _item_bytes(precision):
@@ -106,13 +135,15 @@ def operator_bytes(n_blocks, block_size, n_unknowns, n_entries, n_terms, precisi
             + int(n_unknowns) * 8)
 
 
-def shift_bytes(n_blocks, block_size, n_unknowns, n_rhs, precision, matrix_terms=False) -> int:
-    """Device bytes per shift of a chunk (or of a kept factor): block inverses, factor temporaries (+ the per-shift
-    coupling blocks of matrix terms), padded shift diagonal and scales, sweep and complex128 refinement vectors."""
+def shift_bytes(n_blocks, block_size, n_unknowns, n_rhs, precision, matrix_terms=False, kept=False) -> int:
+    """Device bytes per shift of a chunk (or of a kept factor): block inverses (kept: + the pre-multiplied couplings
+    G_k, H_k), factor temporaries (+ the per-shift coupling blocks of matrix terms), padded shift diagonal and scales,
+    sweep and complex128 refinement vectors."""
     complex_bytes, real_bytes = _item_bytes(precision)
     b, padded, n_rhs = int(block_size), int(n_blocks) * int(block_size), int(n_rhs)
     temporaries = (9 if matrix_terms else 6) * b * b * complex_bytes
-    return (padded * b * complex_bytes + temporaries + padded * (16 + complex_bytes + real_bytes)
+    stacks = KEPT_BLOCK_STACKS if kept else 1
+    return (stacks * padded * b * complex_bytes + temporaries + padded * (16 + complex_bytes + real_bytes)
             + 3 * padded * n_rhs * complex_bytes + ((7 if matrix_terms else 6) * n_rhs + 1) * int(n_unknowns) * 16)
 
 
@@ -186,8 +217,9 @@ class _ShiftOperators:
 
 class _Chunk:
     """Device factor state of a batch of shifts: diagonal shift (n_c, n) complex128, matrix-term coefficients (n_c,
-    n_matrix) complex128 / work dtype (None without matrix terms), equilibration scales, block inverses, and the
-    per-shift _ShiftOperators of a factorize_operators batch (None: the bound operator family)."""
+    n_matrix) complex128 / work dtype (None without matrix terms), equilibration scales, block inverses, the kept
+    factors' pre-multiplied couplings G_k / H_k (None in a solve_shifted chunk), and the per-shift _ShiftOperators of a
+    factorize_operators batch (None: the bound operator family)."""
 
     def __init__(self, shift_flat, matrix_coefficients, matrix_work, scale, inverses=None, operators=None):
         self.shift_flat = shift_flat
@@ -196,14 +228,19 @@ class _Chunk:
         self.scale = scale
         self.inverses = inverses
         self.operators = operators
+        self.lower = None   # kept: (n_c, n_blocks, b, b) G_k = D_k^-1 L_k (scaled system; G_0 = 0)
+        self.upper = None   # kept: (n_c, n_blocks, b, b) H_k = D_k^-1 U_k (H_last = 0)
 
     def select(self, index):
         """_Chunk view of shift `index` alone (no copies)."""
         part = slice(index, index + 1)
-        return _Chunk(None if self.shift_flat is None else self.shift_flat[part],
-                      None if self.matrix_coefficients is None else self.matrix_coefficients[part],
-                      None if self.matrix_work is None else self.matrix_work[part], self.scale[part],
-                      self.inverses[part], None if self.operators is None else self.operators.select(part))
+        selected = _Chunk(None if self.shift_flat is None else self.shift_flat[part],
+                          None if self.matrix_coefficients is None else self.matrix_coefficients[part],
+                          None if self.matrix_work is None else self.matrix_work[part], self.scale[part],
+                          self.inverses[part], None if self.operators is None else self.operators.select(part))
+        if self.lower is not None:
+            selected.lower, selected.upper = self.lower[part], self.upper[part]
+        return selected
 
 
 class LineBlockFactor:
@@ -386,7 +423,7 @@ class LineBlockSolver:
         device = tuple(sparse_module(self.backend).csr_matrix(matrix.astype(np.complex128)) for matrix, _ in matrices)
         del matrices
         chunk = self._factor_chunk(cp.zeros((n_chunk, 0), dtype=cp.complex128),
-                                   _ShiftOperators(cache, row_norms, device))
+                                   _ShiftOperators(cache, row_norms, device), kept=True)
         self.n_batches += 1
         self.n_shifts += n_chunk
         self.n_kept_factors += 1
@@ -445,16 +482,16 @@ class LineBlockSolver:
         from ..core.backend import array_module
         return array_module(self.backend)
 
-    def chunk_size(self, n_shifts, n_rhs, layout=None, extra_shift_bytes=0) -> int:
-        """Shifts per chunk (or per kept factor): all, at most max_chunk_shifts and what MEMORY_FRACTION of the free
-        memory holds (gpu: pool budget - pool used; cpu: the available RAM); layout + extra_shift_bytes (operator_shift_
-        bytes): a factorize_operators batch, else the bound operator family."""
+    def chunk_size(self, n_shifts, n_rhs, layout=None, extra_shift_bytes=0, kept=False) -> int:
+        """Shifts per chunk (or per kept factor: kept=True, its coupling stacks counted): all, at most max_chunk_shifts
+        and what MEMORY_FRACTION of the free memory holds (gpu: pool budget - pool used; cpu: the available RAM);
+        layout + extra_shift_bytes (operator_shift_bytes): a factorize_operators batch, else the bound operator family."""
         if layout is None:
             layout, matrix_terms = self.layout, bool(self._matrix_device)
         else:
             matrix_terms = False
         per_shift = shift_bytes(layout.n_blocks, layout.block_size, layout.n_unknowns, n_rhs, self.precision,
-                                matrix_terms=matrix_terms) + int(extra_shift_bytes)
+                                matrix_terms=matrix_terms, kept=kept) + int(extra_shift_bytes)
         if self.backend == 'cpu':
             from ..core.host_memory import available_bytes
             available = available_bytes()
@@ -469,7 +506,7 @@ class LineBlockSolver:
         """Operators of one factorize_operators batch (chunk_size with operator_shift_bytes of n_entries CSR entries)."""
         return self.chunk_size(n_operators, 1, layout, operator_shift_bytes(layout.n_blocks, layout.block_size,
                                                                              layout.n_unknowns, n_entries,
-                                                                             self.precision))
+                                                                             self.precision), kept=True)
 
     def _checked_coefficients(self, coefficients):
         """Host complex128 (n_shifts, n_terms) coefficients; RuntimeError before set_operator, ValueError on shape."""
@@ -511,7 +548,7 @@ class LineBlockSolver:
         (size it with chunk_size(n_shifts, 1)); its solve(rhs, index) sweeps and refines against that shift."""
         cp = self._xp()
         coefficients = self._checked_coefficients(coefficients)
-        chunk = self._factor_chunk(cp.asarray(coefficients))
+        chunk = self._factor_chunk(cp.asarray(coefficients), kept=True)
         self.n_batches += 1
         self.n_shifts += coefficients.shape[0]
         self.n_kept_factors += 1
@@ -565,9 +602,9 @@ class LineBlockSolver:
                                    'final_residual': float(np.nanmax(relative))})
         return solution, relative
 
-    def _factor_chunk(self, coefficients, operators=None):
-        """_Chunk (equilibration scales, block inverses) of backend complex128 coefficients (n_c, n_terms); `operators`:
-        the _ShiftOperators of a factorize_operators batch (coefficients (n_c, 0))."""
+    def _factor_chunk(self, coefficients, operators=None, kept=False):
+        """_Chunk (equilibration scales, block inverses; kept: + G_k / H_k) of backend complex128 coefficients (n_c,
+        n_terms); `operators`: the _ShiftOperators of a factorize_operators batch (coefficients (n_c, 0))."""
         cp = self._xp()
         layout = self.layout
         n_chunk = coefficients.shape[0]
@@ -594,7 +631,7 @@ class LineBlockSolver:
             denominator = denominator + cp.einsum('sj,jkb->skb', cp.abs(matrix_coefficients), self._matrix_row_norms)
         scale = (1.0 / cp.sqrt(cp.where(denominator > 0.0, denominator, 1.0))).astype(self.real_dtype)
         chunk = _Chunk(shift_flat, matrix_coefficients, matrix_work, scale, operators=operators)
-        chunk.inverses = self._factor(chunk, None if shift_padded is None else shift_padded.astype(self.work_dtype))
+        self._factor(chunk, None if shift_padded is None else shift_padded.astype(self.work_dtype), kept)
         return chunk
 
     def _refine(self, chunk, rhs3, rhs_norms):
@@ -646,14 +683,18 @@ class LineBlockSolver:
         cp = self._xp()
         return block + cp.einsum('sj,jab->sab', chunk.matrix_work, self._matrix_caches[:, k, offset])
 
-    def _factor(self, chunk, shift_padded):
-        """Block Thomas forward elimination of S (K + shift) S: the inverses D_k^-1 (n_c, n_blocks, b, b); shift_padded
+    def _factor(self, chunk, shift_padded, kept=False):
+        """Block Thomas forward elimination of S (K + shift) S into the chunk: the inverses D_k^-1 (n_c, n_blocks, b,
+        b); kept: also G_k = D_k^-1 L_k and H_k = D_k^-1 U_k (the coupling the elimination forms anyway); shift_padded
         None: no diagonal shift (a factorize_operators batch)."""
         cp = self._xp()
         scale = chunk.scale
         n_chunk, n_blocks, block_size = scale.shape
         diagonal = cp.arange(block_size)
-        inverses = cp.empty((n_chunk, n_blocks, block_size, block_size), dtype=self.work_dtype)
+        shape = (n_chunk, n_blocks, block_size, block_size)
+        inverses = cp.empty(shape, dtype=self.work_dtype)
+        kept_lower = cp.zeros(shape, dtype=self.work_dtype) if kept else None
+        kept_upper = cp.zeros(shape, dtype=self.work_dtype) if kept else None
         coupling = None   # C_{k-1} = D_{k-1}^-1 A_{k-1,2}
         for k in range(n_blocks):
             block = cp.empty((n_chunk, block_size, block_size), dtype=self.work_dtype)
@@ -662,14 +703,19 @@ class LineBlockSolver:
                                              else shift_padded[:, k] + self._pad_identity[k])
             block *= scale[:, k, :, None]
             block *= scale[:, k, None, :]
+            lower = None
             if k > 0:
                 lower = scale[:, k, :, None] * self._coupling(chunk, k, 0) * scale[:, k - 1, None, :]
                 block -= cp.matmul(lower, coupling)
             inverses[:, k] = self._invert(block)
+            if kept and lower is not None:
+                kept_lower[:, k] = cp.matmul(inverses[:, k], lower)
             if k < n_blocks - 1:
                 upper = scale[:, k, :, None] * self._coupling(chunk, k, 2) * scale[:, k + 1, None, :]
                 coupling = cp.matmul(inverses[:, k], upper)
-        return inverses
+                if kept:
+                    kept_upper[:, k] = coupling
+        chunk.inverses, chunk.lower, chunk.upper = inverses, kept_lower, kept_upper
 
     def _invert(self, block):
         """Inverses of a (n_c, b, b) stack: batched for small b (always on the cpu: LAPACK per matrix), a loop of 2D
@@ -680,7 +726,10 @@ class LineBlockSolver:
         return cp.stack([cp.linalg.inv(matrix) for matrix in block])
 
     def _sweep(self, rhs_padded, chunk):
-        """x = S (S A S)^-1 S r for padded r (n_c, n_blocks, b, m): forward and backward block substitution."""
+        """x = S (S A S)^-1 S r for padded r (n_c, n_blocks, b, m): forward and backward block substitution (a kept
+        factor: on its pre-multiplied couplings, _kept_sweep)."""
+        if chunk.lower is not None:
+            return self._kept_sweep(rhs_padded, chunk)
         cp = self._xp()
         inverses = chunk.inverses
         n_blocks = self.layout.n_blocks
@@ -697,6 +746,25 @@ class LineBlockSolver:
                                                       scale_columns[:, k + 1] * solution[:, k + 1])
             block = solution[:, k]
             block -= cp.matmul(inverses[:, k], coupled)
+        solution *= scale_columns
+        return solution
+
+    def _kept_sweep(self, rhs_padded, chunk):
+        """The sweep on a kept factor: y = S r, y_k = D_k^-1 y_k - G_k y_(k-1) forward, y_k -= H_k y_(k+1) backward,
+        x = S y; a single rhs on the gpu whose stacks fit KEPT_SWEEP_KERNEL_MAX_BYTES in one launch, else the loop."""
+        cp = self._xp()
+        scale_columns = chunk.scale[..., None]
+        scaled = cp.ascontiguousarray(rhs_padded * scale_columns)
+        solution = cp.empty_like(scaled)
+        n_chunk, n_blocks, block_size, n_rhs = scaled.shape
+        stack_bytes = KEPT_BLOCK_STACKS * n_blocks * block_size * block_size * np.dtype(self.work_dtype).itemsize
+        arguments = (np.int32(n_blocks), np.int32(block_size), chunk.inverses, chunk.lower, chunk.upper, scaled,
+                     solution)
+        if self.backend == 'cpu' or (n_rhs == 1 and stack_bytes <= KEPT_SWEEP_KERNEL_MAX_BYTES
+                                     and all(array.flags.c_contiguous for array in arguments[2:5])):
+            _kept_sweep_twin()((n_chunk,), (KEPT_SWEEP_THREADS,), arguments)   # cpu: the numpy loop twin
+        else:
+            _kept_sweep_loop(*arguments)
         solution *= scale_columns
         return solution
 
@@ -736,3 +804,97 @@ class LineBlockSolver:
         from ..core.backend import to_host
         cp = self._xp()
         return to_host((cp.linalg.norm(residual, axis=2) / rhs_norms).max(axis=1))
+
+
+# --- kept-factor sweep (core.kernels raw twin 'solvers.line_block_kept_sweep') ---------------------------------------
+
+# one CUDA block per shift, one warp per row (lanes over the columns: coalesced rows of the row-major blocks), the
+# blocks of the line in sequence (__syncthreads between them); rhs / out (n_c, n_blocks, b) with one rhs
+_KEPT_SWEEP_SOURCE = r'''
+__device__ __forceinline__ void multiply_add(const cplx a, const cplx v, real& re, real& im) {
+    re += a.x * v.x - a.y * v.y;
+    im += a.x * v.y + a.y * v.x;
+}
+
+__device__ __forceinline__ void warp_sum(real& re, real& im) {
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        re += __shfl_down_sync(0xffffffffu, re, offset);
+        im += __shfl_down_sync(0xffffffffu, im, offset);
+    }
+}
+
+extern "C" __global__ void line_block_kept_sweep(int n_blocks, int b, const cplx* inverses, const cplx* lower,
+                                                 const cplx* upper, const cplx* rhs, cplx* out) {
+    const long long bb = (long long)b * b;
+    const long long shift = blockIdx.x;
+    inverses += shift * n_blocks * bb;
+    lower += shift * n_blocks * bb;
+    upper += shift * n_blocks * bb;
+    rhs += shift * n_blocks * (long long)b;
+    out += shift * n_blocks * (long long)b;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, n_warps = blockDim.x >> 5;
+    for (int k = 0; k < n_blocks; ++k) {   // y_k = D_k^-1 r_k - G_k y_(k-1)
+        const cplx* y = rhs + (long long)k * b;
+        const cplx* previous = out + (long long)(k > 0 ? k - 1 : 0) * b;
+        for (int i = warp; i < b; i += n_warps) {
+            const cplx* inverse_row = inverses + k * bb + (long long)i * b;
+            const cplx* lower_row = lower + k * bb + (long long)i * b;
+            real re = 0, im = 0, lower_re = 0, lower_im = 0;
+            for (int j = lane; j < b; j += 32) {
+                multiply_add(inverse_row[j], y[j], re, im);
+                if (k > 0) multiply_add(lower_row[j], previous[j], lower_re, lower_im);
+            }
+            re -= lower_re;
+            im -= lower_im;
+            warp_sum(re, im);
+            if (lane == 0) { cplx value; value.x = re; value.y = im; out[(long long)k * b + i] = value; }
+        }
+        __syncthreads();
+    }
+    for (int k = n_blocks - 2; k >= 0; --k) {   // y_k -= H_k y_(k+1)
+        const cplx* next = out + (long long)(k + 1) * b;
+        for (int i = warp; i < b; i += n_warps) {
+            const cplx* upper_row = upper + k * bb + (long long)i * b;
+            real re = 0, im = 0;
+            for (int j = lane; j < b; j += 32) multiply_add(upper_row[j], next[j], re, im);
+            warp_sum(re, im);
+            if (lane == 0) { out[(long long)k * b + i].x -= re; out[(long long)k * b + i].y -= im; }
+        }
+        __syncthreads();
+    }
+}
+'''
+_KEPT_SWEEP_TYPES = {np.dtype(np.complex64): ('float2', 'float'), np.dtype(np.complex128): ('double2', 'double')}
+_KEPT_SWEEP_KERNELS = {}   # work dtype -> cupy RawKernel
+
+
+def _kept_sweep_gpu(grid, block, arguments):
+    """The CUDA sweep, compiled per work dtype (complex64 / complex128) on first use."""
+    import cupy as cp
+    dtype = np.dtype(arguments[2].dtype)
+    kernel = _KEPT_SWEEP_KERNELS.get(dtype)
+    if kernel is None:
+        complex_type, real_type = _KEPT_SWEEP_TYPES[dtype]
+        kernel = _KEPT_SWEEP_KERNELS[dtype] = cp.RawKernel(
+            f'typedef {complex_type} cplx;\ntypedef {real_type} real;\n' + _KEPT_SWEEP_SOURCE, 'line_block_kept_sweep')
+    kernel(grid, block, arguments)
+
+
+def _kept_sweep_loop(n_blocks, block_size, inverses, lower, upper, rhs, out):
+    """The kept sweep as a block loop on the arrays' module (the numpy twin; gpu stacks above the kernel cap, several
+    rhs): rhs / out (n_c, n_blocks, b, m) scaled, 3 products per block."""
+    from ..core.backend import array_module_of
+    xp = array_module_of(out)
+    for k in range(int(n_blocks)):
+        out[:, k] = xp.matmul(inverses[:, k], rhs[:, k])
+        if k > 0:
+            out[:, k] -= xp.matmul(lower[:, k], out[:, k - 1])
+    for k in range(int(n_blocks) - 2, -1, -1):
+        out[:, k] -= xp.matmul(upper[:, k], out[:, k + 1])
+
+
+def _kept_sweep_twin():
+    """The registered raw twin (gpu kernel, numpy loop), registered on first use (core imports stay in functions)."""
+    from ..core.kernels import REGISTRY, raw_twin
+    found = REGISTRY.get('solvers.line_block_kept_sweep')
+    return found if found is not None else raw_twin('solvers.line_block_kept_sweep', _kept_sweep_gpu, _kept_sweep_loop)

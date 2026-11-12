@@ -31,6 +31,15 @@ def _sparse_module(xp):
     raise TypeError(f"xp must be the numpy or the cupy module, got {xp!r}")
 
 
+def _host_sparse_available():
+    """True when scipy.sparse imports (the gpu FDFD runs without scipy: yee_operators then assembles on the device)."""
+    try:
+        import scipy.sparse   # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def pml_stretch(sigma, kappa, alpha, omega):
     """Complex128 coordinate stretch s = kappa + sigma/(alpha + j omega eps0) where sigma > 0, exactly kappa where
     sigma = 0 (Im s < 0 in exp(+j omega t)); sigma, alpha [S/m], omega [rad/s] > 0."""
@@ -197,6 +206,13 @@ def yee_operators(cell_widths, boundary_config, pml_dx, omega=None, xp=np, spars
     # (1 / r) d/dphi; the row scale keeps the operator complex symmetric up to diag(cell areas), as graded grids do.
     if omega is not None:
         omega = float(omega)
+    if sparse and xp is not np and _host_sparse_available():
+        # cupy: assembled by scipy on the host and uploaded once per operator (the cupyx coo -> csr and kron chains cost
+        # ~50 ms of launches per call, 10 % of the FDFD profiles); both give canonical CSR of the same host values
+        host = yee_operators(cell_widths, boundary_config, pml_dx, omega, np, True, polar_radius_min)
+        upload = _sparse_module(xp).csr_matrix
+        return YeeOperators2D(nx=host.nx, ny=host.ny, omega=omega, dx_e=upload(host.dx_e), dx_h=upload(host.dx_h),
+                              dy_e=upload(host.dy_e), dy_h=upload(host.dy_h))
     dx_cells, dy_cells = cell_widths
     spacings = yee_inverse_spacings(dx_cells, dy_cells)
     nx, ny = spacings.inv_dx_e.size, spacings.inv_dy_e.size

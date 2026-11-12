@@ -13,7 +13,6 @@ from . import kernels as _kernels
 
 PROBE_COMPONENTS = ('pressure', 'vx', 'vy', 'sxx', 'syy', 'sxy', 'stt')   # stt: axisymmetric only
 VELOCITY_COMPONENTS = frozenset({'vx', 'vy'})
-_STORED_UNITS = DTYPE(1.0)   # pressure kernel scale of a probe sample (stored units; get_data scales)
 
 
 def _waveform_frequency(temporal):
@@ -146,49 +145,98 @@ class HeatPulseSource:
                 _kernels.thermoelastic_hoop_stress(gruneisen, self.heating, scale, half_bits(physics.fields.stt[box]))
 
 
-class AcousticProbe:
-    """Samples one component in a cell after every step: stresses / pressure at t_n+1, velocities (on the +x / +y face
-    of the cell) at t_n+1/2, each with its own time; one host transfer in get_data. Samples are in stored units, times
-    value_scale (half_storage) in get_data; the sample buffer lives on xp."""
+class ProbeRecorder:
+    """Every AcousticProbe of one physics, sampled by one 'probe_record' field kernel per step into a (rows, probes)
+    float32 sample buffer on xp (stored units; doubled when full) with host times t_n+1 and dt per row: one launch per
+    step instead of one or two cupy operations per probe (launch-bound small grids)."""
 
-    def __init__(self, ix, iy, component, xp, axisymmetric=False):
+    def __init__(self, ny, xp, axisymmetric=False):
+        self.ny = int(ny)   # flat cell index i * ny + j
+        self._xp = xp
+        self._axisymmetric = bool(axisymmetric)
+        self.probes = []
+        self._cells = self._codes = None   # int32 (probes,) on xp, rebuilt when a probe is added
+        self._samples = None               # float32 (capacity, probes) on xp
+        self._times = np.empty(1024, dtype=np.float64)   # t_n+1 per row
+        self._steps = np.empty(1024, dtype=np.float64)   # dt per row (velocities are stamped t_n+1 - dt / 2)
+        self.n_rows = 0
+        self._launch = None                # (grid, block) over the probes
+        self._n_probes_i32 = np.int32(0)
+
+    def add(self, ix, iy, component) -> 'AcousticProbe':
+        """A probe of `component` in cell (ix, iy); added after steps were recorded it starts at the next row."""
         if component not in PROBE_COMPONENTS:
             raise ValueError(f"probe component must be one of {', '.join(PROBE_COMPONENTS)}, got {component!r}")
-        if component == 'stt' and not axisymmetric:
+        if component == 'stt' and not self._axisymmetric:
             raise ValueError("probe component 'stt' (hoop stress) needs geometry axisymmetric")
+        probe = AcousticProbe(self, len(self.probes), self.n_rows, int(ix), int(iy), component)
+        if component == 'pressure' and self._axisymmetric:
+            probe.code_name = 'pressure_axisymmetric'
+        self.probes.append(probe)
+        xp = self._xp
+        self._cells = xp.asarray(np.array([item.ix * self.ny + item.iy for item in self.probes], dtype=np.int32))
+        self._codes = xp.asarray(np.array([_kernels.PROBE_RECORD_CODES[item.code_name] for item in self.probes],
+                                          dtype=np.int32))
+        capacity = self._times.size
+        grown = xp.zeros((capacity, len(self.probes)), dtype=DTYPE)
+        if self._samples is not None:
+            grown[:, :-1] = self._samples
+        self._samples = grown
+        self._n_probes_i32 = np.int32(len(self.probes))
+        self._launch = _kernels.scatter_launch(len(self.probes))
+        return probe
+
+    def record(self, physics, fields, t_full, dt) -> None:
+        """Sample every probe after a step (stresses / pressure at t_full = t_n+1, velocities at t_full - dt / 2)."""
+        if not self.probes:
+            return
+        row = self.n_rows
+        if row == self._times.size:
+            self._grow()
+        stt = fields.sxx if fields.stt is None else fields.stt   # a planar dummy: no planar probe reads stt
+        physics.kernels['probe_record'](
+            self._launch[0], self._launch[1],
+            (fields.vx, fields.vy, fields.sxx, fields.syy, fields.sxy, stt, self._cells, self._codes, self._samples,
+             np.int32(row), self._n_probes_i32))
+        self._times[row] = t_full
+        self._steps[row] = dt
+        self.n_rows = row + 1
+
+    def _grow(self) -> None:
+        capacity = 2 * self._times.size
+        samples = self._xp.empty((capacity, self._samples.shape[1]), dtype=DTYPE)
+        samples[:self.n_rows] = self._samples[:self.n_rows]
+        self._samples = samples
+        for name in ('_times', '_steps'):
+            grown = np.empty(capacity, dtype=np.float64)
+            grown[:self.n_rows] = getattr(self, name)[:self.n_rows]
+            setattr(self, name, grown)
+
+    def column(self, probe) -> tuple:
+        """(host times float64, host stored samples float32) of one probe's rows (one host transfer)."""
+        rows = slice(probe.start, self.n_rows)
+        values = np.array(to_host(self._xp.ascontiguousarray(self._samples[rows, probe.column])), dtype=np.float32)
+        times = self._times[rows] - 0.5 * self._steps[rows] if probe.velocity else self._times[rows].copy()
+        return times, values
+
+
+class AcousticProbe:
+    """Samples one component in a cell after every step (recorded by its physics' ProbeRecorder): stresses / pressure
+    at t_n+1, velocities (on the +x / +y face of the cell) at t_n+1/2; samples in stored units, times value_scale
+    (half_storage) in get_data."""
+
+    def __init__(self, recorder, column, start, ix, iy, component):
+        self.recorder = recorder
+        self.column, self.start = int(column), int(start)
         self.ix, self.iy = int(ix), int(iy)
         self.field_component = component
-        self.value_scale = 1.0                    # physical value per stored unit (set by AcousticPhysics)
-        self._axisymmetric = bool(axisymmetric)   # pressure = -(srr + szz + stt) / 3
-        self._velocity = component in VELOCITY_COMPONENTS
-        self._xp = xp
-        self._buf = xp.empty(1024, dtype=DTYPE)
-        self._times = np.empty(1024, dtype=np.float64)
-        self._n = 0
-
-    def record(self, fields, t_full, dt):
-        if self._n == self._buf.size:
-            grown = self._xp.empty(self._buf.size * 2, dtype=DTYPE)
-            grown[:self._n] = self._buf
-            self._buf = grown
-            grown_times = np.empty(self._times.size * 2, dtype=np.float64)
-            grown_times[:self._n] = self._times
-            self._times = grown_times
-        ix, iy, n = self.ix, self.iy, self._n
-        if self.field_component == 'pressure' and self._axisymmetric:
-            _kernels.pressure_from_stress_axisymmetric(fields.sxx[ix:ix + 1, iy], fields.syy[ix:ix + 1, iy],
-                                                       fields.stt[ix:ix + 1, iy], _STORED_UNITS, self._buf[n:n + 1])
-        elif self.field_component == 'pressure':
-            _kernels.pressure_from_stress(fields.sxx[ix:ix + 1, iy], fields.syy[ix:ix + 1, iy], _STORED_UNITS,
-                                          self._buf[n:n + 1])
-        else:
-            self._buf[n] = getattr(fields, self.field_component)[ix, iy]
-        self._times[n] = t_full - 0.5 * dt if self._velocity else t_full
-        self._n = n + 1
+        self.code_name = component              # PROBE_RECORD_CODES key (set by the recorder)
+        self.value_scale = 1.0                  # physical value per stored unit (set by AcousticPhysics)
+        self.velocity = component in VELOCITY_COMPONENTS
 
     def get_data(self):
         """(times float64, values float32 in m/s / Pa) numpy copies; single host transfer."""
-        values = np.array(to_host(self._buf[:self._n]))
+        times, values = self.recorder.column(self)
         if self.value_scale != 1.0:
             values = values * np.float32(self.value_scale)
-        return self._times[:self._n].copy(), values
+        return times, values

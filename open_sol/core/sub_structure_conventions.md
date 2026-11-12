@@ -497,7 +497,11 @@ coordinate rules stay in the root file.
   drives: never put held values [u] into b (against eps0-scaled rows the tolerance then stops CG after a few
   iterations). An injected sparse_direct runtime (a node, or the cpu Automatic) is wrapped in
   `solvers.sparse_direct.DiffusionDirectSolver` (PCGSolver protocol over one real float64 host SuperLU per assembly;
-  tol / max_iter unused, compute_residual honoured). PCG details: solvers sub file.
+  tol / max_iter unused, compute_residual honoured). PCG details: solvers sub file. On the gpu a PCGSolver whose
+  preconditioner is in `CAPTURED_PRECONDITIONERS` (Jacobi and multigrid: the V-cycle kernels launch into the block's
+  capture, solvers sub file "pcg") is factorized with capture_blocks (`_factorize_solver`): every array a CG block reads
+  (A_solve data, inverse_diagonal, the solution vector, the multigrid hierarchy) may change only together with a new
+  factorize. A 2D tensor time_dependent study runs sparse_direct by Automatic (solvers sub file "Model path").
 - `BCSide(conductance_factor=f)` (dirichlet / robin, default 1) scales that face's half-cell conductance 2 c / w in
   `fv_diffusion_3d.boundary_face_terms`, so assembly, anchors, flux, dissipation and `face_inward_flux` stay consistent
   (magnetic axis: 2, the exact half cell of psi with c = nu / r).

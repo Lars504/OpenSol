@@ -39,6 +39,18 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   max_bias_step, halved down to 1/64; a failed warm continuation restarts cold, a failed cold one raises RuntimeError.
   Secant predictor (`_predicted_state`) from a ramp's second converged step, half the iteration limit; a failed
   prediction is counted (`rejected_predictions`) and the rest of that ramp goes unpredicted.
+- Chord steps (both Newton loops): once an update is <= `_CHORD_START` (1e-2 scaled) the next iterations solve on the
+  last factor (`_linear_solve` returns (solution, chord = factor + row norms); `_chord_solve`: residual only, no
+  Jacobian values or factorisation) while each update shrinks to <= `_CHORD_CONTRACTION` of the one before; a growing
+  update is dropped and the Jacobian factorised. The loops drop the chord before the next factorisation (one SuperLU
+  factor alive). cusolver_qr keeps no factor: no chord. Counted in `newton_iterations` and `chord_steps` (coupled
+  only); the time estimate prices factorisations as iterations minus `CHORD_STEPS_PER_STEP_GUESS`. Self-tests that
+  count factorisations per Newton iteration must allow for them.
+- Jacobian pattern: `_PinnedPattern` expands the scalar `_SiteGraph` (built once per core: faces fixed) per unknown
+  component from the block layout (`_POISSON_LAYOUT` / `_COUPLED_LAYOUT`: (row side, row component, column side,
+  column component), sides lo / hi / site); a new Jacobian term is a layout block plus its values in
+  `_coupled_system`, in the same order. One face per pair of different sites (checked); pinned-row values go to the
+  dummy slot nnz.
 - Study warm_start: `warm_start_fields` = the core's `converged_state()` (host physical psi / n / p / generation per
   site + the voltages); `seed_warm_start` keeps it as `_converged` when sites, contacts and gates match
   (`seed_converged_state`, else a cold start), so the next sweep value ramps from the previous value's voltages. It
@@ -95,8 +107,10 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
 
 ## cuDSS and MUMPS / PARDISO 'linear' back ends
 - Role `CUDSS_LINEAR_ROLE` (shared with em_fdfd_bor / _conical), tensor and triangles (size rules return None on
-  cuDSS). `_linear_solve`: equilibrated COO -> host CSR (explicit zeros kept), `factorize_host(real=True, previous=)`:
-  real LU (nonsymmetric Jacobian). `_kept_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n) on
+  cuDSS). `_linear_solve`: equilibrated layout values on the canonical `_PinnedPattern` -> on the kept-factor back
+  ends `factorize_values(data, pattern.indptr, pattern.indices, real=True, previous=, defer_check=False)` (values only:
+  no host CSR canonicalising or asymmetry check per Newton step; the pattern arrays are matched by identity, never
+  modified), SuperLU `factorize_host` of the host CSR: real LU (nonsymmetric Jacobian). `_kept_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n) on
   `drift_diffusion.KEPT_FACTOR_BACK_ENDS` (CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS: cuDSS and the opt-in
   MUMPS / PARDISO back ends; any other back end falls through to the cusolver_qr grid path, so a new kept-factor back
   end joins that tuple): the pattern is fixed while the pinned set is, so later iterations refactorise on the kept plan
@@ -109,7 +123,7 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   `host_direct.superlu_bytes_scale`, real LU, + `solver_host_bytes`); time: the sparse_direct recipe prices them as
   SuperLU items. Self-test semiconductor_host_direct (`selftests_cudss.py`, cpu; skipped without python-mumps /
   pydiso): the forward junction on pardiso / mumps / pardiso_mixed vs a scipy_splu node.
-- Automatic: 'auto' resolves to cuDSS on the gpu with nvmath. A refusal (inside `factorize_host` or a deferred
+- Automatic: 'auto' resolves to cuDSS on the gpu with nvmath. A refusal (inside `factorize_values` or a deferred
   cudss_mixed check in `solve_host` -> `linear_solver.fall_back`) switches it to SuperLU for good and releases every
   kept cuDSS factor: `_factor_solve` reads `linear_solver.back_end` per call, never a cached choice. Self-tests needing
   SuperLU pin a scipy_splu node; semiconductor_cudss also runs Automatic expecting auto_fallbacks 0.

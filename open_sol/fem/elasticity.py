@@ -22,6 +22,7 @@ from .assembly import (CHUNK_ELEMENTS, _element_groups, _tensor_blocks, _to_csr,
 from .elements import REFERENCE_VERTICES, element_geometry, lagrange_basis, physical_gradients
 from .fixed_pattern import FixedPatternCsr, scatter_add
 from .quadrature import TRIANGLE_DEGREES
+from .tangent_kernel2d import element_force_tangent_2d, use_kernel
 
 COMPONENTS = 2                 # u_x (u_r), u_y (u_z) per scalar dof
 RING = 2.0 * math.pi           # axisymmetric integrals are whole rings
@@ -571,10 +572,35 @@ class TangentAssembler:
         self.groups = []   # (positions, points, basis, gradients, weights, C, vector dofs) per element group
         for positions, geometry, basis, gradients, weights in _rule_values(dofs, rule_degree, self.axisymmetric):
             elements = dofs.elements[positions]
-            self.groups.append((positions, geometry.points, basis, gradients, weights,
+            self.groups.append((positions, geometry.points, basis, np.ascontiguousarray(gradients),
+                                np.ascontiguousarray(weights),
                                 material_matrix(coefficients, elements, self.axisymmetric),
                                 vector_dofs(dofs.element_dofs[positions])))
         self.pattern = FixedPatternCsr(self.n_vector, [group[-1] for group in self.groups], free=free)
+        # planar: the per-element numba kernel (fem.tangent_kernel2d) once numba is loaded or the map is large
+        self.n_elements = sum(len(group[0]) for group in self.groups)
+
+    def _kernel_route(self) -> bool:
+        return not self.axisymmetric and use_kernel(self.n_elements)
+
+    def _kernel_pass(self, displacement, initial_stress, want_tangent) -> tuple:
+        """(force, tangent data or None) by the per-element kernel of every planar group."""
+        fixed = _fixed_field(initial_stress)
+        displacement = np.asarray(displacement, dtype=np.float64).reshape(self.dofs.n_dofs, COMPONENTS)
+        force = np.zeros(self.n_vector)
+        data = self.pattern.zeros() if want_tangent else None
+        rows = strain_rows(False)
+        for index, (positions, points, _, gradients, weights, material, local_dofs) in enumerate(self.groups):
+            fixed_stress = (None if fixed is None else
+                            fixed_stress_at(fixed, points, self.dofs.elements[positions], self.dofs.mesh.n_elements,
+                                            rows))
+            element_force, blocks = element_force_tangent_2d(
+                gradients, weights, displacement[self.dofs.element_dofs[positions]], material, fixed_stress,
+                want_tangent)
+            scatter_add(force, local_dofs, element_force)
+            if want_tangent:
+                self.pattern.add(data, index, blocks)
+        return force, data
 
     def _terms(self, displacement, initial_stress):
         """Yield (group index, B + B_NL, S) of every group at the displacement (S0 = initial_stress)."""
@@ -592,6 +618,8 @@ class TangentAssembler:
 
     def force(self, displacement, initial_stress=None) -> np.ndarray:
         """internal_force (2 n,) at the displacement."""
+        if self._kernel_route():
+            return self._kernel_pass(displacement, initial_stress, False)[0]
         force = np.zeros(self.n_vector)
         for index, operator, stress in self._terms(displacement, initial_stress):
             weights, local_dofs = self.groups[index][4], self.groups[index][6]
@@ -600,6 +628,8 @@ class TangentAssembler:
 
     def force_and_tangent(self, displacement, initial_stress=None) -> tuple:
         """(internal force (2 n,), tangent data (nnz,)) in one pass; CSRs by `full` / `reduced`."""
+        if self._kernel_route():
+            return self._kernel_pass(displacement, initial_stress, True)
         force = np.zeros(self.n_vector)
         data = self.pattern.zeros()
         for index, operator, stress in self._terms(displacement, initial_stress):

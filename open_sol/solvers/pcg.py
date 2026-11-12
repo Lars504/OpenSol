@@ -644,14 +644,16 @@ class PCGWorkspace:
 
 class _BlockGraphs:
     """gpu CUDA graphs of whole CG check blocks (CG_BLOCK_GRAPHS): per key one eager run (kernels loaded), then one
-    capture, replayed as a single launch; a failed capture warns and keeps every block eager."""
+    capture, replayed as a single launch; a failed capture warns and keeps every block eager. participants: objects
+    whose `inside_capture` flag is set during a capture (a multigrid V-cycle then launches into the block's graph)."""
 
-    def __init__(self):
+    def __init__(self, participants=()):
         import cupy as cp
         self._cp = cp
         self.enabled = CG_BLOCK_GRAPHS
         self._graphs = {}   # key -> captured graph, or None after the eager run
         self.n_graphs = 0   # captures made
+        self._participants = tuple(participants)
 
     def clear(self):
         self._graphs.clear()
@@ -682,9 +684,13 @@ class _BlockGraphs:
         try:
             with stream:
                 stream.begin_capture()
+                for participant in self._participants:
+                    participant.inside_capture = True
                 try:
                     block()
                 finally:
+                    for participant in self._participants:
+                        participant.inside_capture = False
                     graph = stream.end_capture()
         except Exception as error:   # capture unsupported here: the same kernels launched one by one
             self.enabled = False
@@ -761,6 +767,7 @@ class PCGSolver:
         self._mixed = None                  # mixed: _MixedWorkspace
         self._fused = None                  # the caller's fused_iteration of the CG loop (mixed: the float32 one)
         self._block_graphs = None           # gpu, capture_blocks: _BlockGraphs
+        self._multigrid_bound = False       # the bound preconditioner is self._multigrid.precondition
         self.n_solves = 0
         self.last_iters = 0
         self.total_iters = 0
@@ -786,9 +793,12 @@ class PCGSolver:
         arrays its callbacks read are replaced)."""
         start = time.perf_counter()
         self._fused = None
+        self._multigrid_bound = False   # _factorize: the bound preconditioner is self._multigrid's V-cycle
         self._factorize(operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
                         single_fused_iteration)
-        self._block_graphs = _BlockGraphs() if capture_blocks and self.backend == 'gpu' else None
+        # an own multigrid hierarchy (rebuilt only here, so the new _BlockGraphs never replays its old vectors) joins
+        participants = (self._multigrid,) if self._multigrid_bound else ()
+        self._block_graphs = (_BlockGraphs(participants) if capture_blocks and self.backend == 'gpu' else None)
         self.total_factorize_seconds += time.perf_counter() - start
         self.n_factorizations += 1
 
@@ -823,6 +833,7 @@ class PCGSolver:
             self._operator = _MatrixOperator(operator, self.backend)
         if self.preconditioner == 'multigrid':
             preconditioner = self._multigrid_preconditioner(operator, preconditioner)
+            self._multigrid_bound = self._multigrid is not None and preconditioner == self._multigrid.precondition
         if preconditioner is None:
             if self._operator.matrix_free:
                 raise TypeError(f'{self.label()}: a matrix-free operator needs a preconditioner (its inverse diagonal '

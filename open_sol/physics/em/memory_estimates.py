@@ -523,7 +523,9 @@ def modes_memory_estimate(settings_values, mesh, context):
     unknowns = 2 * n_cells   # mirrors halve it: an upper figure
     n_modes = int(settings_values.get('n_modes', 4))
     n_eigen = min(2 * n_modes + 10, max(unknowns - 2, 1))
-    arnoldi_vectors = arnoldi_basis_size(n_eigen, unknowns, eigen_subspace_size(context.solvers))
+    from .cross_section_modes import cpml_cross_section, mode_default_basis
+    arnoldi_vectors = arnoldi_basis_size(n_eigen, unknowns, eigen_subspace_size(context.solvers),
+                                         mode_default_basis(n_eigen, cpml_cross_section(settings_values)))
     factorization = eigen_factorization(context.solvers)
     on_device = factorization in CUDSS_FACTORIZATIONS
     operator_bytes = 2 * 9 * COMPLEX128_CSR_ENTRY_BYTES * unknowns

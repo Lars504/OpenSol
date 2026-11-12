@@ -1120,8 +1120,13 @@ _PRECISION_CASES = (
      ('pcg', 'single', False)),
     ('heat_cpu_direct', 'heat', 'linear', 'stationary', 'single', None, 'cpu', ('sparse_direct', 'double', True)),
     ('solid_single', 'solid_mechanics', 'linear', 'stationary', 'single', None, 'gpu', ('pcg', 'single', False)),
-    ('solid_mixed_refused_by_role', 'solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu',
-     ('pcg', 'double', True)),
+    # solid_mechanics (tensor): its role accepts mixed, Automatic on the gpu backend is pcg mixed (as the 3D type)
+    ('solid_mixed', 'solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
+    ('solid_auto_gpu_mixed', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'gpu', ('pcg', 'mixed', False)),
+    ('solid_auto_cpu_double', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu',
+     ('pcg', 'double', False)),
+    ('solid_default_double_wins', 'solid_mechanics', 'linear', 'stationary', 'double', None, 'gpu',
+     ('pcg', 'double', False)),
     ('solid_3d_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
     ('solid_3d_auto_gpu_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'auto', None, 'gpu',
      ('pcg', 'mixed', False)),
@@ -1158,8 +1163,8 @@ def _precision_spec(physics_type, role, study, precision, node, backend, size_z=
 
 def _check_default_precision(results_by_name):
     """schema.resolved_solvers / default_precision_ignored / with_default_precision against the S9 rules (CPU)."""
-    from ..model.schema import (default_precision_ignored, get_registry, resolved_precision, resolved_solvers,
-                                with_default_precision)
+    from ..model.schema import (SolverRole, default_precision_ignored, get_registry, resolved_precision,
+                                resolved_solvers, with_default_precision)
     registry = get_registry()
     mismatches, outcomes = [], {}
     for name, physics_type, role, study, precision, node, backend, expected in _PRECISION_CASES:
@@ -1173,10 +1178,11 @@ def _check_default_precision(results_by_name):
         if node is not None and spec.solvers[0].settings != node[1]:
             mismatches.append(f'{name}_node_settings_unchanged')
     pcg_type = registry.solver_type('pcg')
-    solid_role = registry.physics_type('solid_mechanics').solver_roles['linear']
+    # a pcg role of the default precisions (single / double): no registered pcg role refuses mixed any more
+    refusing_role = SolverRole('spd', 'pcg')
     mixed_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'mixed', None, 'gpu')
     direct = {'no_role_fills': (with_default_precision(mixed_spec, pcg_type, {}), {'precision': 'mixed'}),
-              'role_refuses': (with_default_precision(mixed_spec, pcg_type, {}, solid_role), {}),
+              'role_refuses': (with_default_precision(mixed_spec, pcg_type, {}, refusing_role), {}),
               'explicit_wins': (with_default_precision(mixed_spec, pcg_type, {'precision': 'double'}),
                                 {'precision': 'double'})}
     for name, (got, expected) in direct.items():
@@ -1206,7 +1212,7 @@ _MULTIGRID_CASES = (
     ('heat_node_multigrid_single', 'heat', 'auto', ('pcg', {'precision': 'single', 'preconditioner': 'multigrid'}),
      'gpu', ('pcg', 'single', 'multigrid')),
     ('heat_cpu_direct', 'heat', 'auto', None, 'cpu', ('sparse_direct', 'double', None)),
-    ('solid_auto_jacobi', 'solid_mechanics', 'auto', None, 'gpu', ('pcg', 'double', 'jacobi')),
+    ('solid_auto_jacobi', 'solid_mechanics', 'auto', None, 'gpu', ('pcg', 'mixed', 'jacobi')),
 )
 # the same rows in a 3D model (grid 'tensor_3d': Automatic pcg multigrid on the cpu too)
 _MULTIGRID_3D_CASES = (
@@ -1991,19 +1997,20 @@ SOLVER_SELFTEST_CASES = (
         description='solver_defaults.precision (S9) resolution on the CPU, no run: schema.resolved_solvers and '
                     'default_precision_ignored on one-physics models (heat linear: auto / single / mixed Automatic, a '
                     'pcg node without, with another and with the same precision, the cpu backend Automatic '
-                    'sparse_direct (double only); solid_mechanics linear single and mixed (its role refuses mixed), '
-                    'solid_mechanics_3d linear mixed (its role accepts it), its Automatic (gpu: mixed, cpu: double; '
+                    'sparse_direct (double only); solid_mechanics and solid_mechanics_3d linear single and mixed (their '
+                    'roles accept mixed), their Automatic (gpu: mixed, cpu: double; '
                     'solver_defaults.precision double wins over the gpu Automatic mixed); '
                     'em_fdtd_ez stepper double and half_storage (its role refuses half_storage)): resolved solver type, '
                     'precision and whether the default is reported ignored; node settings are never written; '
-                    'with_default_precision directly (fills without a role, a refusing role and an explicit precision '
-                    'leave the settings). Also the Automatic linear solver multigrid resolution of the diffusion types '
+                    'with_default_precision directly (fills without a role, a role refusing mixed (a pcg role of the '
+                    'default precisions) and an explicit precision leave the settings). Also the Automatic linear solver multigrid resolution of the diffusion types '
                     '(mesh plan M0, rows multigrid_*): heat, '
                     'electric_currents, electrostatics and magnetostatics Automatic on the gpu backend resolve pcg '
                     'double with preconditioner multigrid (single with solver_defaults.precision single); '
                     'solver_defaults.precision mixed, a pcg node with precision mixed and a node filled with mixed '
                     'resolve jacobi; a pcg node without a preconditioner keeps jacobi, one setting multigrid single '
-                    'keeps it; the cpu backend Automatic stays sparse_direct, solid_mechanics Automatic stays jacobi. '
+                    'keeps it; the cpu backend Automatic stays sparse_direct, solid_mechanics Automatic stays jacobi '
+                    '(pcg mixed on the gpu backend). '
                     'Each resolution passes the solver type validate without errors, linear_solver_multigrid (the '
                     'memory estimators) agrees and node settings are never written. error = number of mismatches, '
                     'tolerance 0.',

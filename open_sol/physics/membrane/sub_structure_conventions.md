@@ -107,6 +107,10 @@ Kirchhoff plate, D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega
 - A tiny D is not a film near clamped walls: the layer moves the outer solution's wall inward by sqrt(D / T) even
   when unresolved (D = 1e-12 in the port tunnelling model lowers T11 by 17 %).
 - plate_poisson_ratio enters M only; 1D ignores it.
+- Straight (affine) elements take constant Hessians once per element (`straight_hessians`): the volume term is one
+  point (area x H : M), edge sides per-point gradients only; curved elements and stretched parts keep the per-point
+  isoparametric path (`p2_derivatives`). Only PML ring elements and edges touching the ring are stretched (s = 1, s' = 0
+  inside the window, so skipping it there is exact). A new term on straight elements uses the constant path too.
 - PML (plan F1): every assembler takes `stretch`; penalty x J (n . S^-2 n)^2 (`penalty_scale`: the plan's J / s_n^2
   would rotate the penalty's phase against the rest of the form); edge points from `EdgeSides.points`, the seam takes
   each side's own. Outer sides of PML faces are slope-held too. The strength uses the propagating plate wave
@@ -149,7 +153,8 @@ Kirchhoff plate, D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega
   the corner node (Dirichlet + slope = clamped, Dirichlet only = supported, slope only = symmetry, none = free). A
   clamped wall holds w' by the 2D clamped edges' Nitsche terms (`_wall_nitsche`), so an unresolved boundary layer
   behaves alike on both sides. A wall on a PML face raises.
-- Modes per frequency (cached for the last omega): dense eig of the 2 n companion pencil on traces scaled by ell (mean
+- Modes per frequency (cached for the last omega; a port whose strip matrices match an earlier port's within round-off,
+  `link_twin_strips` after every assembly, reuses that twin's StripModes at an equal medium and omega): dense eig of the 2 n companion pencil on traces scaled by ell (mean
   strip width; unscaled the blocks sat ~h^4 below w's and eig returned huge spurious roots as mode 1). The DtN keeps
   ALL 2 n modes (truncating breaks the exact power balance: R is complex per mode); mode_count only limits reported /
   incident modes, so it must cover the propagating ones for a power balance. Trace map = L2 projection onto the free

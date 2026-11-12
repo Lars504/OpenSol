@@ -36,8 +36,8 @@ HIERARCHY_ENTRIES_PER_UNKNOWN = 12
 SETUP_ENTRIES_PER_UNKNOWN = 8    # transient stacked P blocks and coarse products per fine unknown
 HIERARCHY_VECTORS_PER_UNKNOWN = 4
 HIERARCHY_ROWS_PER_UNKNOWN = 4   # CSR indptr rows of T, P, R and the coarse operators per fine unknown
-# host aggregation of the fine operator: its copy plus int64 / bool temporaries (+16: the symmetrised int64 edge keys
-# of strong_links and their sort)
+# host aggregation of the fine operator: its copy plus int64 / bool temporaries (+16: strong_links' symmetric union,
+# int8 / int32 S, S^T and S + S^T, then its int64 columns)
 HOST_BYTES_PER_ENTRY = 56
 HOST_BYTES_PER_UNKNOWN = 80
 # Galerkin products in row blocks of at most this many partial products: one cuSPARSE SpGEMM over a 5e6-row 3D operator
@@ -103,10 +103,11 @@ def aggregation_host_bytes(n_unknowns, entries_per_row) -> int:
 
 # run-time recipe (CPU, uncalibrated: compare with the pcg factorize_seconds / solve_seconds of summary.json): unknowns
 # kept per coarsening step, operator complexity, host passes over the aggregation bytes, device passes over the setup
-# entries (Galerkin products, smoothing of P)
+# entries (Galerkin products, smoothing of P); the host passes: strength test, symmetric union (a row-local CSR merge,
+# no global sort of 2 E int64 keys), Luby rounds on a shrinking edge list, two joins
 COARSENING_RATIO_GUESS = 0.2
 OPERATOR_COMPLEXITY_GUESS = 1.8
-AGGREGATION_HOST_PASSES = 10
+AGGREGATION_HOST_PASSES = 7
 SETUP_DEVICE_PASSES = 20
 
 
@@ -138,14 +139,15 @@ def v_cycle_ops(n_unknowns, nnz, value_bytes, backend='gpu') -> tuple:
 
 def setup_ops(n_unknowns, nnz, value_bytes) -> tuple:
     """Ops of one setup: host aggregation of the fine pattern (a reused pattern skips it: counted as if not),
-    transfers, Galerkin products on the backend, the coarsest dense pseudo-inverse."""
+    transfers, Galerkin products on the backend, the coarsest dense inverse (Cholesky; n^3 / 3 potrf + 2 n^3 / 3
+    potri)."""
     from ..core import time_estimate as te
     entries_per_row = nnz / max(n_unknowns, 1.0)
     host_bytes = aggregation_host_bytes(n_unknowns, max(int(round(entries_per_row)), 1))
     return (te.HostStream(AGGREGATION_HOST_PASSES * host_bytes), te.Transfer(nnz * (value_bytes + 4)),
             te.Elementwise(SETUP_DEVICE_PASSES * SETUP_ENTRIES_PER_UNKNOWN * n_unknowns * (HIERARCHY_VALUE_BYTES + 4),
                            0.0, launches=50 * level_count_guess(n_unknowns)),
-            te.DenseFlops(float(COARSEST_UNKNOWNS) ** 3 * 4.0, host=True))
+            te.DenseFlops(float(COARSEST_UNKNOWNS) ** 3 * 1.0, host=True))
 
 
 # --- host aggregation (numpy) ---------------------------------------------------------------------------------------
@@ -185,12 +187,17 @@ def strong_links(indptr, indices, data, n_unknowns):
     spread = np.bincount(candidate_rows, weights=coupling, minlength=n_unknowns) >= FLOOR_ROW_SUM_RATIO * diagonal
     strong |= ((coupling > 0.0) & (coupling >= _row_max(coupling, candidate_indptr, 0.0)[candidate_rows])
                & spread[candidate_rows])
-    edges = np.unique(np.concatenate((candidate_rows[strong] * n_unknowns + candidate_columns[strong],
-                                      candidate_columns[strong] * n_unknowns + candidate_rows[strong])))
-    strong_rows, strong_columns = np.divmod(edges, n_unknowns)   # sorted by row, then column
-    strong_indptr = np.zeros(n_unknowns + 1, dtype=np.int64)
-    strong_indptr[1:] = np.cumsum(np.bincount(strong_rows, minlength=n_unknowns))
-    return strong_indptr, strong_columns
+    # symmetric union S + S^T by scipy's row-local CSR merge (int8 ones, so no sum cancels): the same sorted,
+    # duplicate-free (row, column) set as a np.unique of 2 E int64 keys, without the global sort
+    from scipy.sparse import csr_matrix
+    one_way_indptr = np.zeros(n_unknowns + 1, dtype=np.int64)
+    one_way_indptr[1:] = np.cumsum(np.bincount(candidate_rows[strong], minlength=n_unknowns))
+    one_way = csr_matrix((np.ones(int(np.count_nonzero(strong)), dtype=np.int8), candidate_columns[strong],
+                          one_way_indptr), shape=(n_unknowns, n_unknowns))
+    one_way.sum_duplicates()   # canonical (sorted, unique) before the merge; a no-op check on canonical operators
+    union = (one_way + one_way.T.tocsr()).tocsr()
+    union.sort_indices()
+    return np.asarray(union.indptr, dtype=np.int64), np.asarray(union.indices, dtype=np.int64)
 
 
 def _distance_two_roots(strong_indptr, strong_columns, n_unknowns):
@@ -199,18 +206,37 @@ def _distance_two_roots(strong_indptr, strong_columns, n_unknowns):
     rank = np.random.default_rng(AGGREGATION_SEED).permutation(n_unknowns).astype(np.int64)
     state = np.zeros(n_unknowns, dtype=np.int64)            # 0 undecided, 1 root, -1 out
     state[np.diff(strong_indptr) == 0] = -1
+    # each round works on the edges of rows still near an undecided row (it or a neighbour undecided): hop 1 needs
+    # them, hop 2 only the undecided rows' own; later rounds' undecided sets are subsets, so the list only shrinks
+    edge_rows, edge_columns = csr_rows(strong_indptr), np.asarray(strong_columns, dtype=np.int64)
     for _ in range(MIS_MAX_ROUNDS):
         undecided = state == 0
         if not undecided.any():
             break
+        near = undecided.copy()
+        near[edge_columns[undecided[edge_rows]]] = True     # the graph is symmetric: neighbours of undecided rows
+        keep = near[edge_rows]
+        edge_rows, edge_columns = edge_rows[keep], edge_columns[keep]   # still row-sorted
         key = (state + 1) * n_unknowns + rank              # root > undecided > out, unique within each state
-        best = key
-        for _hop in range(2):
-            best = np.maximum(best, _row_max(best[strong_columns], strong_indptr, -1))
+        hop_one = key.copy()                               # correct on near rows (the only ones hop 2 reads)
+        rows, largest = _segment_max(key[edge_columns], edge_rows)
+        hop_one[rows] = np.maximum(hop_one[rows], largest)
+        own = undecided[edge_rows]
+        rows, largest = _segment_max(hop_one[edge_columns[own]], edge_rows[own])
+        best = hop_one.copy()
+        best[rows] = np.maximum(best[rows], largest)
         state[undecided & (best == key)] = 1                # largest undecided key within distance 2
         state[undecided & (best != key) & (best >= 2 * n_unknowns)] = -1   # a root within distance 2
     state[state == 0] = 1
     return state == 1
+
+
+def _segment_max(values, edge_rows) -> tuple:
+    """(rows, per-row maximum of values) over row-sorted edges (each row with an edge once)."""
+    if not edge_rows.size:
+        return edge_rows, values
+    starts = np.concatenate(([0], np.flatnonzero(edge_rows[1:] != edge_rows[:-1]) + 1))
+    return edge_rows[starts], np.maximum.reduceat(values, starts)
 
 
 def aggregate_strong_links(indptr, indices, data, n_unknowns):
@@ -232,6 +258,24 @@ def aggregate_strong_links(indptr, indices, data, n_unknowns):
     leftover = (aggregate < 0) & ~isolated                  # none after a complete independent set
     aggregate[leftover] = n_aggregates + np.arange(np.count_nonzero(leftover), dtype=np.int64)
     return aggregate, n_aggregates + int(np.count_nonzero(leftover))
+
+
+def _cholesky_inverse(dense) -> tuple:
+    """(inverse, largest squared pivot) of a symmetric dense matrix by LAPACK potrf / potri, or (None, 0) when it is
+    not positive definite to PSEUDO_INVERSE_CUTOFF (min pivot^2 vs max pivot^2): then the eigh pseudo-inverse."""
+    from scipy.linalg import lapack
+    factor, info = lapack.dpotrf(dense, lower=False, clean=True)
+    if info != 0:
+        return None, 0.0
+    pivots_squared = np.diag(factor) ** 2
+    largest = float(pivots_squared.max())
+    if not float(pivots_squared.min()) > PSEUDO_INVERSE_CUTOFF * largest:
+        return None, 0.0
+    upper, info = lapack.dpotri(factor, lower=False)
+    if info != 0:
+        return None, 0.0
+    upper = np.triu(upper)   # potri fills the upper triangle only
+    return upper + np.triu(upper, 1).T, largest
 
 
 # --- hierarchy and cycle (backend) -----------------------------------------------------------------------------------
@@ -421,8 +465,9 @@ class _DeviceCycle:
         self.use_graphs = CUDA_GRAPH_CYCLES
         self.n_graphs = 0          # plans captured into a CUDA graph
 
-    def apply(self, residual, out):
-        """out = the scaled V-cycle of residual (C-contiguous vectors of the fine dtype)."""
+    def apply(self, residual, out, inside_capture=False):
+        """out = the scaled V-cycle of residual (C-contiguous vectors of the fine dtype); inside_capture (a caller's
+        stream capture is running): the plan's kernels launched eagerly, so they land in the caller's graph."""
         key = (residual.data.ptr, out.data.ptr, residual.size)
         plan = self._plans.get(key)
         if plan is None:
@@ -430,6 +475,10 @@ class _DeviceCycle:
                 self._plans.clear()
             plan = self._plans[key] = [self._plan(residual, out), 0, None]
         launches, uses, graph = plan
+        if inside_capture:   # no graph launch / capture of our own inside a capture
+            for function, grid, block, arguments in launches:
+                function(grid, block, arguments)
+            return
         if graph is None and self.use_graphs and uses >= GRAPH_AFTER_EAGER_CYCLES:
             graph = plan[2] = self._capture(launches)
         if graph is not None:
@@ -570,6 +619,8 @@ class MultigridPreconditioner:
         self.n_cycle_graphs = 0      # gpu: launch plans captured into CUDA graphs, all setups
         self.n_setups = 0
         self.n_aggregations = 0
+        self.n_coarsest_eigh = 0     # coarsest levels not positive definite to PSEUDO_INVERSE_CUTOFF (eigh, not Cholesky)
+        self.inside_capture = False  # set by pcg around a CG block capture: the cycle launches eagerly into it
         self.device_bytes = 0                # last setup's hierarchy, the fine operator excluded (_record_size)
         self.entries_per_unknown = 0.0       # stored T, P, R and coarse-operator entries per fine unknown
         self.operator_complexity = 1.0       # entries of every level operator / the fine operator's
@@ -872,16 +923,21 @@ class MultigridPreconditioner:
             dense = np.asarray(to_host(operator.toarray()), dtype=np.float64)
             dense = 0.5 * (dense + dense.T)
             inverse = np.zeros_like(dense)
+            largest = 0.0   # largest coarsest eigenvalue (Cholesky: the largest squared pivot, its lower bound)
             if n_unknowns:
-                eigenvalues, vectors = np.linalg.eigh(dense)
-                keep = eigenvalues > PSEUDO_INVERSE_CUTOFF * max(float(eigenvalues.max()), 0.0)
-                inverse = (vectors[:, keep] / eigenvalues[keep]) @ vectors[:, keep].T
+                inverse, largest = _cholesky_inverse(dense)
+                if inverse is None:   # singular to PSEUDO_INVERSE_CUTOFF (floating region, pure Neumann)
+                    eigenvalues, vectors = np.linalg.eigh(dense)
+                    largest = max(float(eigenvalues.max()), 0.0)
+                    keep = eigenvalues > PSEUDO_INVERSE_CUTOFF * largest
+                    inverse = (vectors[:, keep] / eigenvalues[keep]) @ vectors[:, keep].T
+                    self.n_coarsest_eigh += 1
             with np.errstate(over='ignore'):
                 low = inverse.astype(operator.dtype)
             if not np.isfinite(low).all():   # a collapsed hierarchy: every cycle would return inf / NaN
-                raise RuntimeError(f'multigrid: the coarsest-level pseudo-inverse ({n_unknowns} unknowns) overflows '
-                                   f'{np.dtype(operator.dtype).name} (largest coarsest eigenvalue '
-                                   f'{float(eigenvalues.max()):.3g}): the coarse operators collapsed')
+                raise RuntimeError(f'multigrid: the coarsest-level inverse ({n_unknowns} unknowns) overflows '
+                                   f'{np.dtype(operator.dtype).name} (largest coarsest eigenvalue ~{largest:.3g}): '
+                                   'the coarse operators collapsed')
             return ('dense', xp.asarray(low))
         return ('smooth', operator, self._smoother_weights(operator), xp.zeros(n_unknowns, dtype=operator.dtype))
 
@@ -891,7 +947,7 @@ class MultigridPreconditioner:
         if self._coarsest is None:
             raise RuntimeError('multigrid: setup before precondition')
         if self._device_cycle is not None:   # gpu: the fused kernels / CUDA graph of the same cycle
-            self._device_cycle.apply(residual, out)
+            self._device_cycle.apply(residual, out, self.inside_capture)
             return
         xp = self._xp
         scaled = self._scaled_residual
@@ -943,6 +999,7 @@ class MultigridPreconditioner:
     def work_counters(self) -> dict:
         """Setups, host aggregations and the current level count (merged into the pcg counters)."""
         return {'multigrid_setups': self.n_setups, 'multigrid_aggregations': self.n_aggregations,
+                'multigrid_coarsest_eigh': self.n_coarsest_eigh,
                 'multigrid_levels': self.n_levels, 'multigrid_device_bytes': self.device_bytes,
                 'multigrid_entries_per_unknown': round(self.entries_per_unknown, 2),
                 'multigrid_operator_complexity': round(self.operator_complexity, 3),

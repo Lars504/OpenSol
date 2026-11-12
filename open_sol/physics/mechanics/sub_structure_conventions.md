@@ -94,7 +94,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   axisymmetric: a held u_y only). Validation checks only that both directions are held somewhere.
 - Block-Jacobi PCG (stop reference 'rhs'): `assemble` factorizes it with the A_solve CSR and the 2x2 node-block
   inverse (diagonal fallback when det <= 0). max_iterations 0 = twice `solvers.pcg.resolve_max_iterations` (set by
-  `definition_common.solid_linear_solver`; elastic conditioning ~2-4x worse than diffusion).
+  `definition_common.solid_linear_solver`; elastic conditioning ~2-4x worse than diffusion). The role is
+  `definition.SOLID_LINEAR_ROLE` (local, not definition_helpers'). gpu check blocks are CUDA graphs (capture_blocks;
+  every `assemble` factorizes again, which starts new graphs: anything replacing A_solve / the inverse blocks without
+  `_bind_linear_solver` must call `release_block_graphs`). 'mixed' (Automatic on the gpu): float32 copies of A_solve
+  and the inverse blocks per assembly, products through `system._CsrApply` (pcg's CSR RawKernel: a cupyx SpMV cannot
+  be captured), the float64 A_solve refreshes the outer residual.
 - Reactions: `ElasticSystem.reaction(dof_mask)` = sum of K u - f (float64) over the held dofs (N/m); needs
   `load_full` of the last build_rhs, so loads must not change between solve and read (they change only through
   features / inject_source, which mark dirty).
@@ -222,7 +227,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   cells), piezo dielectric_loss_tangent (eps -> eps (1 - j tan delta)): loss operator `coupled_operator(eta c, 0, -tan
   delta eps)`. Host K / L / M are rebuilt in float64 from the ElementStiffness, never copied from the device CSR; kept
   in `_harmonic_operators` until the next assembly or a loss / rho change.
-- Outputs (`_show_harmonic`): real parts, u_abs = |u| of the complex centre displacement; on the tensor mesh support
+- Outputs (`_show_harmonic`; tetrahedra `_write_complex_outputs`): real parts of the harmonic amplitude alone (stress,
+  elastic strain and energy densities with dT = 0 and no sigma0, as a mode: `_write_outputs(thermal=False)` on every
+  mesh kind), u_abs = |u| of the complex centre displacement; on the tensor mesh support
   reactions and electrode tables raise and probes record nothing (FEM meshes: section "Prestress, damped modes,
   complex records"). Each solve appends a `FrequencyPoint`.
 - Reduced sweeps (sweep_method adaptive / modal; fem sub file "Reduced sweeps"): `HarmonicSystem.plan_reduced(omegas,
@@ -384,7 +391,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   n_unconverged). Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` (thin plate in void) fail on a
   fallback, so the guard cannot hide a weak cycle. Counters via `PCGSolver.preconditioner_counters`; estimator items 'multigrid levels' / build
   transient / coarsest host build, time recipe `_multigrid_ops` (cycle as preconditioner_ops, build as setup_ops).
-- pcg 'mixed' (`CG_ELASTIC_3D_LINEAR_ROLE`; the 2D CG_LINEAR_ROLE refuses it): float64 system + `_single_operator`
+- pcg 'mixed' (`CG_ELASTIC_3D_LINEAR_ROLE`; 2D: section "SolidMechanicsPhysics / ElasticSystem"): float64 system + `_single_operator`
   float32 copy per assemble (blocks inverted in float64, then cast). Automatic on the gpu backend (speed plan A1: the
   float64 product runs at the FP64 rate of consumer cards; 25 s -> 1.5 s at 2e5 nodes); cpu Automatic stays double;
   solver_defaults.precision replaces it. Kernels pick their real type from args[0]: every array argument of one call
@@ -607,6 +614,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   the assembler's byte-capped device size: fem sub file "Device tangents"). The K pattern of the tetrahedra
   (`assemble_elastic_stiffness_3d`) and the tangent's are one kept block pattern per mesh (fem sub file "Block
   patterns"): the host estimate counts it once, under the stiffness.
+- 2D tangents stay host: planar `TangentAssembler` groups run `fem.tangent_kernel2d` (numba prange per element, the
+  2D twin of tangent_kernel3d) once numba is in sys.modules or the map has >= NUMBA_MIN_ELEMENTS elements (a gpu run
+  never pays the numba start for a small map); axisymmetric keeps the batched numpy formulas. Self-test
+  solid_fem_tangent_kernel_numba (selftests_nonlinear.py, cpu) compares the twins.
 - Newton start (`nonlinear_start.py`): sweep seed (`seed_warm_start`; 2D on full-mesh dof rows), else the last
   converged state of the same kind of this assembly (`forget_last` in `_assemble`), else u = 0. A failed warm start
   (incl. NaN / singular raise) reruns the cold ramp from 0 ('warm start failed: cold ramp'). `warm_start_fields` is {}
@@ -699,8 +710,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 ## Self-tests (`selftests.py`)
 - Nonlinear: `selftests_nonlinear3d.py` (definition3d loader; solid_fem3d_newton_gpu needs cuDSS), `selftests_nonlinear.py`
   (2D; its helpers serve the 3D twins), sweep_nonlinear_string_warm_start (model/selftests_sweep).
-- Exact-in-Q1 cases (1e-6, float64 CG to 1e-12): solid_bilayer_tension_graded, solid_simple_shear (the only gamma != 0
-  case: pins c66). Heat coupling, body force, traction and reactions are covered by examples. solid_em_strain_optic_plate
+- Exact-in-Q1 cases (1e-6, float64 CG to 1e-12): solid_bilayer_tension_graded (variants 'mixed' / 'mixed_cpu': pcg
+  mixed on both backends), solid_simple_shear (the only gamma != 0 case: pins c66). Heat coupling, body force, traction and reactions are covered by examples. solid_em_strain_optic_plate
   and em_solid_optical_force_slab (`selftests_optical_force.py`) are registered only inside solid_optics_cpu_gpu.
 - `selftests_formulations.py` (reuses selftests.py helpers): plane stress, generalized plane strain (+ bending),
   axisymmetric cases.

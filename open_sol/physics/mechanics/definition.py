@@ -15,18 +15,19 @@ from ...core.monitors import probe_result
 from ...coupling.coupling_term import CouplingGroup, CouplingTerm
 from ...coupling.index_terms import index_contributor, index_slots, target_type, writes_index_slots
 from ..em.index_reference import INDEX_SLOTS
-from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, CG_LINEAR_ROLE,
+from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, DIFFUSION_DIRECT_BACK_ENDS,
                                          axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of,
                                          cg_solver_issues, coupling_target, cudss_external, eigen_factorization,
                                          eigen_role,
                                          eigen_search_counts, eigen_subspace_size,
                                          evaluates_to, frequency_sweep_counts, geometry_param, host_direct_back_end,
                                          is_axisymmetric,
-                                         linear_solver_precision, on_triangles, point_cells, reduced_sweep_memory_items,
+                                         linear_solver_mixed, linear_solver_precision, on_triangles, point_cells,
+                                         reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
-from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path,
-                             solver_backend)
+from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole,
+                             feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
 from ...solvers.host_direct import factor_label
 from ...solvers.pcg import workspace_bytes
@@ -80,6 +81,20 @@ _PLANE_BODY_FORCES = ('f_x', 'f_y')
 _BOTH_GRIDS = ('tensor', _TRIANGLES)   # features the triangle solid (solver_fem) runs too
 _FEM_STUDIES = ('stationary', 'time_dependent', EIGENFREQUENCY_STUDY,   # studies of the solid on a triangle mesh
                 FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)
+
+# The 'linear' SolverRole of solid_mechanics (local: no other type uses it): tensor
+# mesh = block-Jacobi CSR pcg (no scalar multigrid: it does not fit the vector problem), 'mixed' = float32 inner CG on
+# float32 copies of the CSR and the 2 x 2 inverse blocks (system.ElasticSystem._bind_linear_solver); Automatic on the
+# gpu backend = pcg mixed (3D speed plan A1: float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
+# ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh (mesh plan D11) = sparse_direct
+# on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double, thin-film K is badly
+# conditioned and its frequency response near resonance converges worst in float32)
+SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mixed'),
+                               setting_choices={'preconditioner': ('jacobi',), 'back_end': DIFFUSION_DIRECT_BACK_ENDS},
+                               mixed_preconditioners=('jacobi',),
+                               backend_defaults={'gpu': ('pcg', {'precision': 'mixed'})},
+                               grid_defaults={_TRIANGLES: ('sparse_direct', {})},
+                               auto_back_ends={_TRIANGLES: 'cudss'})
 
 _DISCRETIZATION_PARAM = Param(
     'discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
@@ -684,7 +699,7 @@ def _formulation_issues(vctx, physics_spec, settings_values, path, axial_wavenum
 
 def _triangle_issues(vctx, physics_spec, settings_values, path):
     """A solid on a triangle mesh (solver_fem): errors for piezoelectric, guided modes, a study outside _FEM_STUDIES, a
-    planar optomechanics study, a strain-optic coupling from it and a 'linear' solver other than sparse_direct (CG_LINEAR_ROLE keeps cusolver_qr out of
+    planar optomechanics study, a strain-optic coupling from it and a 'linear' solver other than sparse_direct (SOLID_LINEAR_ROLE keeps cusolver_qr out of
     its back_end choices); the host SuperLU size rule of its dofs (skipped with a cuDSS eigen factor in a modal study
     or a cuDSS 'linear' back_end in the other studies)."""
     from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_LIMIT_UNKNOWNS, SPLU_WARN_UNKNOWNS   # numpy only
@@ -707,7 +722,7 @@ def _triangle_issues(vctx, physics_spec, settings_values, path):
                                 f"{STRAIN_OPTIC_COUPLING} from '{physics_spec.name}' on a triangle mesh {refused}"))
     solvers = vctx.solvers(physics_spec) or {}
     resolved = solvers.get('linear')
-    if resolved is not None and resolved.solver_type.name != 'sparse_direct':   # back_end: CG_LINEAR_ROLE's choices
+    if resolved is not None and resolved.solver_type.name != 'sparse_direct':   # back_end: SOLID_LINEAR_ROLE's choices
         issues.append(Issue('error', path, f"linear solver '{resolved.node or resolved.solver_type.name}' is "
                                            f'{resolved.solver_type.name}: on a triangle mesh the solid solves with '
                                            'sparse_direct (host SuperLU, or cuDSS by its opt-in back ends): assign '
@@ -1175,6 +1190,7 @@ def _memory_estimate(settings_values, mesh, context):
     if getattr(mesh, 'kind', 'tensor') == _TRIANGLES:
         return _fem_memory_estimate(settings_values, mesh, context)
     precision = linear_solver_precision(context)
+    mixed = linear_solver_mixed(context)   # float64 system, float32 inner CG (system.ElasticSystem._bind_linear_solver)
     value_bytes = FLOAT64_BYTES if precision == 'float64' else FLOAT32_BYTES
     n_x, n_y = _window_elements(mesh)
     elements = n_x * n_y
@@ -1184,9 +1200,13 @@ def _memory_estimate(settings_values, mesh, context):
     fields = MemoryEstimate.from_items(((f'fields ({n_fields} x float32)',
                                          n_fields * FLOAT32_BYTES * int(mesh.n_cells)),))
     # unknown, held values, applied load, rhs, CG unknown; held mask and its rigid-check copy; PCGSolver workspace
-    # (residual, direction, CSR product, preconditioned); held-u_z node mask
+    # (residual, direction, CSR product, preconditioned; mixed: float32 + the float64 outer vectors and the float32 CSR
+    # values); held-u_z node mask
     vectors = ((5 * value_bytes + 2 * BOOL_BYTES) * dofs + BOOL_BYTES * (dofs // 2)
-               + workspace_bytes(dofs, SOLVER_PRECISIONS[precision], jacobi=False))
+               + workspace_bytes(dofs, 'mixed' if mixed else SOLVER_PRECISIONS[precision], jacobi=False,
+                                 csr_entries=entries if mixed else 0))
+    if mixed:   # float32 inverse blocks (3 per node), the two CSR product outputs (float64 + float32)
+        vectors += 3 * FLOAT32_BYTES * (dofs // 2) + (FLOAT64_BYTES + FLOAT32_BYTES) * dofs
     # stencil positions (int64), indices / entry rows (int32) per entry; indptr per dof, diagonal-block positions
     pattern = (_INT64_BYTES + 2 * INT32_BYTES) * entries + (INT32_BYTES + 2 * _INT64_BYTES) * dofs
     operators = 2 * value_bytes * entries   # operator_full and A_solve data
@@ -1761,8 +1781,8 @@ def _time_estimate(settings_values, mesh, context):
     items = (te.TimeItem('stiffness assembly', 'assembly', assemblies, assemblies_kind, assembly_ops,
                          per_step=per_step and follows),
              te.TimeItem('load and outputs', 'solve', outer_solves, kind, io_ops, per_step=per_step))
-    # 2 x 2 node-block Jacobi: 2 residual + 3 inverse entries read, 2 written per node
-    precondition = (te.elementwise(nodes, 5, 2, value_bytes),)
+    # 2 x 2 node-block Jacobi: 2 residual + 3 inverse entries read, 2 written per node (mixed: in the float32 inner CG)
+    precondition = (te.elementwise(nodes, 5, 2, FLOAT32_BYTES if linear_solver_mixed(context) else value_bytes),)
     return te.combine((te.TimeEstimate(items), context.solver_work(
         'linear', unknowns=float(dofs), nnz=float(entries), value_bytes=value_bytes, dimensions=2, solves=solves,
         solves_kind=kind, factorizations=assemblies, factorizations_kind=assemblies_kind, per_step=per_step,
@@ -1990,7 +2010,9 @@ SOLID_MECHANICS = PhysicsType(
                 'thermal expansion alpha_xx / alpha_yy / alpha_zz: sigma = C (eps - alpha dT), dT = temperature_rise '
                 f'(coupled, {THERMAL_STRAIN_COUPLING}) + temperature_rise_ext (temperature_change features). '
                 'Discretisation: bilinear elements on the cells of the physical window, displacement on the cell '
-                'corners, block-Jacobi PCG; outputs at the cell centres (u = mean of the 4 corners; strain, stress '
+                'corners, block-Jacobi PCG (Automatic on the gpu backend: precision mixed, a float32 inner CG with '
+                'float64 residual refreshes to the same tolerance; GPUs with slow float64 arithmetic); outputs at the '
+                'cell centres (u = mean of the 4 corners; strain, stress '
                 'and von Mises from the centre gradients), 0 in void cells (no youngs_modulus or c11 > 0: not '
                 'solved, carry nothing), copied edge-extended into an EM PML ring. Units per unit z length: forces and reactions '
                 'N/m. strain_xy is the tensor shear strain (half the engineering strain); stress_zz = nu (sigma_xx + '
@@ -2078,7 +2100,7 @@ SOLID_MECHANICS = PhysicsType(
                        FREQUENCY_RESPONSE_STUDY),
     default_study={'type': 'stationary'},
     # eigen: the real symmetric eigsh_shifted pencil (piezo: indefinite), cudss_mixed refined to full accuracy per solve
-    solver_roles={'linear': CG_LINEAR_ROLE, 'eigen': eigen_role(_MODAL_STUDIES, mixed_factorization=True,
+    solver_roles={'linear': SOLID_LINEAR_ROLE, 'eigen': eigen_role(_MODAL_STUDIES, mixed_factorization=True,
                                                                 auto_factorizations={'triangles': 'cudss'})},
     frequency_sweep_methods=('direct', 'adaptive', 'modal'),   # frequency_response.HarmonicSystem.plan_reduced
     backends=('gpu', 'cpu'),   # cpu: scipy CSR + numpy block-Jacobi twin; modal, guided, piezo solves are host anyway

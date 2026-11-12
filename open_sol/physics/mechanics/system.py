@@ -48,6 +48,38 @@ _block_precondition = twin('mechanics.elastic_block_jacobi', cp.ElementwiseKerne
     'elastic_block_jacobi'), _block_precondition_host)
 
 
+def _apply_inverse_blocks(inverse_blocks, residual, preconditioned):
+    """preconditioned = B^-1 residual per node (flat interleaved vectors, blocks of their dtype); no allocation, so a
+    captured CG block may hold it."""
+    inverse_xx, inverse_xy, inverse_yy = inverse_blocks
+    residual_nodes = residual.reshape(-1, 2)
+    preconditioned_nodes = preconditioned.reshape(-1, 2)
+    _block_precondition(residual_nodes[:, 0], residual_nodes[:, 1], inverse_xx, inverse_xy, inverse_yy,
+                        preconditioned_nodes[:, 0], preconditioned_nodes[:, 1])
+
+
+class _CsrApply:
+    """apply(vector, out) = A vector of a backend CSR for a matrix-free PCGSolver ('mixed'): gpu the pcg CSR RawKernel
+    (capturable in a CUDA graph, unlike a cupyx SpMV) copied into out; cpu scipy's in-place kernel."""
+
+    def __init__(self, matrix, backend):
+        from ...solvers.pcg import _DeviceCsrProduct, host_csr_matvec
+        self.matrix = matrix
+        self._device_product = _DeviceCsrProduct(matrix) if backend == 'gpu' else None
+        self._host_matvec = None if backend == 'gpu' else host_csr_matvec()
+
+    def __call__(self, vector, out):
+        if self._device_product is not None:
+            cp.copyto(out, self._device_product(vector))
+            return
+        matrix = self.matrix
+        if self._host_matvec is None:
+            out[...] = matrix.dot(vector)
+            return
+        out.fill(0)   # the kernel accumulates y += A x
+        self._host_matvec(matrix.shape[0], matrix.shape[1], matrix.indptr, matrix.indices, matrix.data, vector, out)
+
+
 class ElasticPattern:
     """CSR index structure of the c n_nodes square operator for one node grid (c = components, 2 in plane strain, 3 for
     the 2.5D guided modes; xp = numpy or cupy): dof = c node + component, node = i ny_nodes + j; each row holds the 3 x 3
@@ -312,6 +344,7 @@ class ElasticSystem(ElasticSystemBase):
         self.fixed_values = None    # prescribed values on held / pinned dofs, 0 on free ones (flat)
         self.fixed_coupling = None  # operator_full . fixed_values
         self.inverse_blocks = None  # (inverse_xx, inverse_xy, inverse_yy) per node
+        self._single_products = None   # pcg 'mixed': (float64 apply, float32 apply, float32 inverse blocks)
         self._rigid_signature = None
         self.operator_dirty = True
 
@@ -461,8 +494,26 @@ class ElasticSystem(ElasticSystemBase):
         self.fixed_values = fixed_values
         self.free = free
         self.operator_full = operator
-        self.linear_solver.factorize(self.A_solve, self._precondition)
+        self._bind_linear_solver()
         self.operator_dirty = False
+
+    def _bind_linear_solver(self) -> None:
+        """Factorize the PCGSolver on the new A_solve with gpu check blocks captured as CUDA graphs (a factorize starts
+        new graphs); 'mixed': float32 copies of A_solve and the inverse blocks run the inner CG, the float64 A_solve
+        refreshes the outer residual."""
+        solver = self.linear_solver
+        self._single_products = None   # free the previous float32 copies first
+        if solver.precision != 'mixed':
+            solver.factorize(self.A_solve, self._precondition, capture_blocks=True)
+            return
+        matrix = self.A_solve
+        single = self.sparse.csr_matrix((matrix.data.astype(np.float32), matrix.indices, matrix.indptr),
+                                        shape=matrix.shape)
+        double_product, single_product = _CsrApply(matrix, self.backend), _CsrApply(single, self.backend)
+        single_blocks = tuple(block.astype(np.float32) for block in self.inverse_blocks)
+        self._single_products = (double_product, single_product, single_blocks)
+        solver.factorize(double_product, n_unknowns=self.n_dofs, single_operator=single_product,
+                         single_preconditioner=self._precondition_single, capture_blocks=True)
 
     def _check_rigid_modes(self, solid_elements):
         """Raise ValueError when a solid region (elements with stiffness, joined through shared corners) admits a
@@ -531,11 +582,10 @@ class ElasticSystem(ElasticSystemBase):
         return self.A_solve is not None
 
     def _precondition(self, residual, preconditioned):
-        inverse_xx, inverse_xy, inverse_yy = self.inverse_blocks
-        residual_nodes = residual.reshape(-1, 2)
-        preconditioned_nodes = preconditioned.reshape(-1, 2)
-        _block_precondition(residual_nodes[:, 0], residual_nodes[:, 1], inverse_xx, inverse_xy, inverse_yy,
-                            preconditioned_nodes[:, 0], preconditioned_nodes[:, 1])
+        _apply_inverse_blocks(self.inverse_blocks, residual, preconditioned)
+
+    def _precondition_single(self, residual, preconditioned):
+        _apply_inverse_blocks(self._single_products[2], residual, preconditioned)
 
     def solve_homogeneous(self, load_nodes, solution) -> None:
         """PCG of K w = f on the free dofs of the last assembly with every held dof at 0 (flat solution: the warm start

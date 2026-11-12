@@ -394,7 +394,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   building one itself (scripts still may). Solver knobs are never physics settings (a new type declares a role, a
   shared one from definition_helpers when it fits); validate and estimators read the resolution
   (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting. Automatic = the role's default
-  type at its defaults (a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
+  type at its defaults (per study, grid and backend: `SolverRole.automatic(backend, grid, study)`, every caller passes
+  the study; a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
   `SolverRole.auto_back_ends`, solvers sub file; the optional host MUMPS / PARDISO back ends of `solvers.host_direct`
   are opt-in only, never auto: a role lists them in its `setting_choices`, every such tuple derived from
   `host_direct.HOST_DIRECT_*`, never spelled out); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
@@ -483,6 +484,15 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   (`CSR_ROW_SOURCE`, `_DeviceCsrProduct`; the multigrid V-cycle is captured that way, and so are the CG check blocks
   of a pcg factorized with capture_blocks: solvers sub file "pcg"). Below ~1e6 unknowns a cupyx
   SpMV costs more host time (~60 us: descriptors, workspace, output allocation) than device time.
+- Launch-bound steppers replay their fixed-argument launches as CUDA graphs (gpu only; one eager run per key, then
+  capture, a failed capture warns and stays eager): em_fdtd_3d `engine3d._fixed_block`, em_fdtd_ez / _hz
+  `fdtd_2d_base._fixed_block`, laminar_flow `solver._run_steps`, the pcg CG blocks (capture_blocks: solid_mechanics
+  2D / 3D, DiffusionSystem Jacobi and multigrid: a V-cycle launches its kernels into the CG block's capture, never a
+  graph of its own inside it). A graph holds array pointers and scalar values of capture time: every array a
+  block reads is rewritten in place, or its id is in the graph key and the entry keeps it alive; every scalar is fixed
+  for the engine's life or in the key. Inside a block: no host sync, no allocation (also not cupy's copy of an input
+  that overlaps the output, e.g. `a[:, 0] = a[:, 1]`), no kernel with per-step scalars (sources, poles, walls,
+  monitors stay outside), no timed profiler part. A new kernel argument of a captured launch follows these rules.
 - A per-frequency (or per-iteration) cuDSS refactorisation of a fixed-pattern pencil goes through
   `sparse_direct.DevicePencil` / `factorize_pencil` (or `refactorize_device_values`), never a host A(omega) into
   `factorize_host`: the host canonicalising, asymmetry check and lower-triangle take cost more than the cuDSS
@@ -492,8 +502,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   factorize_host with previous= on the planned pattern refreshes on the device (values uploaded only), but it still
   pays the host assembly / canonical check that a DevicePencil saves.
 - Point location dominates reads on element meshes (renderers, checks, derived values): locate through
-  `TetrahedronDomain.locate` / `TriangleDomain.located` (remembers point sets and, on triangles, the Lagrange basis;
-  read-only results), never a fresh locator per component or plane. A selftest whose time split shows a large 'other' is paying for its check's reads (model sub file).
+  `TetrahedronDomain.locate` / `TriangleDomain.located` (remembers point sets, a kept read-only points array by
+  identity, and on triangles the sampling operator per dof map; read-only results), never a fresh locator or points
+  array per component or plane. A selftest whose time split shows a large 'other' is paying for its check's reads (model sub file).
 - Allocate where needed (mandatory for new engines): pole arrays on their bounding box, optional accumulators once
   enabled, build temporaries only in BuildContext caches (`release_caches()`); status of the EM engines: physics/em
   sub file "Registered EM types".

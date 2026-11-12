@@ -35,16 +35,23 @@ def _axis_view(axis, part):
     return tuple(index)
 
 
-def centres_to_faces(centre_values, axis, periodic, cell_widths, xp=None, wrap_factor=1.0):
-    """C* of face_mean_at_centres(wrap_factor=) along `axis`: hi-face values (n,) from centre values, area-weighted
-    (cell widths w, dual widths (w_k + w_(k+1)) / 2); a Bloch wrap_factor e^{+j k L} gives the last face cell 0 times
-    conj(wrap_factor) (the cell one period above); complex or float arrays (xp None = their module), new array."""
-    xp = array_module_of(centre_values) if xp is None else xp
+def collocation_weights(cell_widths, axis, xp):
+    """(half widths w / 2, dual widths (w_k + w_(k+1)) / 2, widths w) float64 arrays of `xp` shaped to broadcast along
+    `axis` of a 2D array: the weights of centres_to_faces and its transposes."""
     widths = np.asarray(cell_widths, dtype=np.float64)
     shape = [1, 1]
     shape[axis] = widths.size
-    half_widths = xp.asarray((0.5 * widths).reshape(shape))
-    dual_widths = xp.asarray((0.5 * (widths + np.roll(widths, -1))).reshape(shape))
+    return (xp.asarray((0.5 * widths).reshape(shape)), xp.asarray((0.5 * (widths + np.roll(widths, -1))).reshape(shape)),
+            xp.asarray(widths.reshape(shape)))
+
+
+def centres_to_faces(centre_values, axis, periodic, cell_widths, xp=None, wrap_factor=1.0, weights=None):
+    """C* of face_mean_at_centres(wrap_factor=) along `axis`: hi-face values (n,) from centre values, area-weighted
+    (cell widths w, dual widths (w_k + w_(k+1)) / 2); a Bloch wrap_factor e^{+j k L} gives the last face cell 0 times
+    conj(wrap_factor) (the cell one period above); complex or float arrays (xp None = their module), new array;
+    weights = collocation_weights of cell_widths (kept device copies: no upload) or None."""
+    xp = array_module_of(centre_values) if xp is None else xp
+    half_widths, dual_widths, _ = collocation_weights(cell_widths, axis, xp) if weights is None else weights
     weighted = centre_values * half_widths        # each cell gives half its weight to its hi and to its lo face
     faces = weighted.copy()
     faces[_axis_view(axis, slice(None, -1))] += weighted[_axis_view(axis, slice(1, None))]   # lo face of cell k + 1
@@ -84,6 +91,13 @@ class ChannelFieldStore:
         self.periodic_x, self.periodic_y = bool(boundary_config.periodic_x), bool(boundary_config.periodic_y)
         self.versions = [0] * len(self.channels)
         self.values = None
+        self._weights = {}   # axis -> collocation_weights of that axis' cell widths (small arrays of the backend)
+
+    def weights(self, axis):
+        """collocation_weights along `axis` (0: the x cell widths), kept on the backend (no per-call upload)."""
+        if axis not in self._weights:
+            self._weights[axis] = collocation_weights(self.cell_dx if axis == 0 else self.cell_dy, axis, self.xp)
+        return self._weights[axis]
 
     def vector(self):
         """The flat complex128 store (zeros at the first call): channel `index` occupies blocks[index]."""
@@ -267,8 +281,10 @@ def density_face_currents(density, store, omega, face_density=None, target=0):
     (the sheets' deposit)."""
     scale = -1j * omega
     wrap_x, wrap_y = store.wrap_factors[target]
-    jx_faces = centres_to_faces(density[0], 1, store.periodic_y, store.cell_dy, store.xp, wrap_factor=wrap_y)
-    jy_faces = centres_to_faces(density[1], 0, store.periodic_x, store.cell_dx, store.xp, wrap_factor=wrap_x)
+    jx_faces = centres_to_faces(density[0], 1, store.periodic_y, store.cell_dy, store.xp, wrap_factor=wrap_y,
+                                weights=store.weights(1))
+    jy_faces = centres_to_faces(density[1], 0, store.periodic_x, store.cell_dx, store.xp, wrap_factor=wrap_x,
+                                weights=store.weights(0))
     if face_density is not None:
         jx_faces += face_density[0]
         jy_faces += face_density[1]

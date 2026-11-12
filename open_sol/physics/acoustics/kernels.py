@@ -395,9 +395,11 @@ def _stress_host(axisymmetric, strain_accumulator=False, monoclinic=False):
 # numba twins of the single-precision velocity / stress updates: per-cell loops transcribing the CUDA sources (prange
 # over i, fields (nx, ny) read by [i, j]); the variant flags are compile-time closure constants, and an absent array
 # (planar stt / radial, strain, rates) is passed as a dummy of the same type that the frozen flags never touch.
+# cache=True: numba keys closures by their cell values (one cache entry per variant), so only the first process after
+# an edit of this file compiles them (~0.5-1 s per variant and signature otherwise in every cpu process).
 def _velocity_numba(axisymmetric):
     def factory(numba):
-        @numba.njit(parallel=True, cache=False)
+        @numba.njit(parallel=True, cache=True)
         def kernel(vx, vy, sxx, syy, sxy, stt, va_x, vb_x, va_y, vb_y, inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h, slab_x,
                    slab_y, pml_x, pml_y, radial, psi_x_sxx, psi_x_sxy, psi_y_sxy, psi_y_syy, stress_to_velocity, nx, ny,
                    periodic_x, periodic_y):
@@ -457,7 +459,7 @@ def _velocity_numba(axisymmetric):
 
 def _stress_numba(axisymmetric, strain_accumulator=False, monoclinic=False):
     def factory(numba):
-        @numba.njit(parallel=True, cache=False)
+        @numba.njit(parallel=True, cache=True)
         def kernel(sxx, syy, sxy, stt, vx, vy, c11, c12, c22, c66c, strain_xx, strain_yy, shear_strain, rate_xx,
                    rate_yy, rate_xy, inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h, slab_x, slab_y, pml_x, pml_y, radial,
                    psi_x_vx, psi_x_vy, psi_y_vy, psi_y_vx, dt, velocity_to_stress, gruneisen, heating, thermal_scale, nx,
@@ -867,6 +869,53 @@ void acoustic_volume_scatter(field_t* sxx, field_t* syy,
 """
 
 
+# Every probe of a physics in one launch per step: samples[row, k] = the stored-unit value of probe k at its cell (codes
+# PROBE_RECORD_CODES: a field, or the pressure -(sxx + syy) / 2, axisymmetric -(srr + szz + stt) / 3, as
+# pressure_from_stress with scale 1); stt is a dummy (sxx) in planar physics, whose probes never read it.
+PROBE_RECORD_CODES = {'vx': 0, 'vy': 1, 'sxx': 2, 'syy': 3, 'sxy': 4, 'stt': 5, 'pressure': 6,
+                      'pressure_axisymmetric': 7}
+_PROBE_RECORD_SOURCE = r"""
+extern "C" __global__
+void acoustic_probe_record(const field_t* vx, const field_t* vy, const field_t* sxx, const field_t* syy,
+                           const field_t* sxy, const field_t* stt, const int* cells, const int* codes, float* samples,
+                           int row, int n_probes)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= n_probes) return;
+    int c = cells[k];
+    float value;
+    switch (codes[k]) {
+        case 0: value = FLOAD(vx[c]); break;
+        case 1: value = FLOAD(vy[c]); break;
+        case 2: value = FLOAD(sxx[c]); break;
+        case 3: value = FLOAD(syy[c]); break;
+        case 4: value = FLOAD(sxy[c]); break;
+        case 5: value = FLOAD(stt[c]); break;
+        case 6: value = -0.5f * ((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c])) * 1.0f; break;
+        default: value = -((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c]) + (float)FLOAD(stt[c])) / 3.0f * 1.0f;
+    }
+    samples[(long long)row * n_probes + k] = value;
+}
+"""
+
+
+def _probe_record_host(vx, vy, sxx, syy, sxy, stt, cells, codes, samples, row, n_probes):
+    """numpy twin of acoustic_probe_record (a loop over the few probes; float32 arithmetic as _pressure_host)."""
+    fields = tuple(_flat(field) for field in (vx, vy, sxx, syy, sxy, stt))
+    target = _flat(samples)
+    base = int(row) * int(n_probes)
+    for k in range(int(n_probes)):
+        cell, code = int(cells[k]), int(codes[k])
+        if code <= 5:
+            value = np.float32(fields[code][cell])
+        elif code == 6:
+            value = np.float32(-0.5) * (np.float32(fields[2][cell]) + np.float32(fields[3][cell])) * np.float32(1.0)
+        else:
+            value = (-(np.float32(fields[2][cell]) + np.float32(fields[3][cell]) + np.float32(fields[5][cell]))
+                     / np.float32(3.0) * np.float32(1.0))
+        target[base + k] = value
+
+
 def _scatter_add_host(field, coefficient, index, weight, n, value):
     """numpy twin of acoustic_scatter_add (np.add.at: repeated indices add like atomicAdd)."""
     cells = index[:int(n)]
@@ -906,6 +955,7 @@ _FIELD_SOURCES = {
     'scatter': ('', _SCATTER_SOURCE, 'acoustic_scatter_add'),
     'volume_scatter': ('', _VOLUME_SCATTER_SOURCE, 'acoustic_volume_scatter'),
     'volume_scatter_axisymmetric': (_AXISYMMETRIC, _VOLUME_SCATTER_SOURCE, 'acoustic_volume_scatter'),
+    'probe_record': ('', _PROBE_RECORD_SOURCE, 'acoustic_probe_record'),
 }
 # key -> numpy twin of the single-precision field kernels (half_storage has none: gpu only)
 _FIELD_HOST_TWINS = {
@@ -919,6 +969,7 @@ _FIELD_HOST_TWINS = {
     'scatter': _scatter_add_host,
     'volume_scatter': _volume_scatter_host(False),
     'volume_scatter_axisymmetric': _volume_scatter_host(True),
+    'probe_record': _probe_record_host,
 }
 # key -> numba factory of the per-step velocity / stress updates (single only; the rest stays numpy)
 _FIELD_NUMBA_TWINS = {

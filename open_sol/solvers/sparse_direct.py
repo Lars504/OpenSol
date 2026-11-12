@@ -1083,6 +1083,44 @@ class SparseDirectSolver:
                 raise
         return self._counted(factorize_host(operator.get(), real=real, orderings=self.orderings), start)
 
+    def factorize_values(self, values, indptr, indices, real=True, previous=None, defer_check=True):
+        """Factorization of an unsymmetric operator given as values on a fixed canonical host CSR pattern (indptr,
+        indices: sorted, no duplicates, never modified in place: matched by identity), counted (Newton Jacobians):
+        cuDSS refreshes a previous factor of the same options on the device (refactorize_device_values; values host
+        or device; a refusal of an 'auto' runtime: SuperLU, B1b), MUMPS / PARDISO on their kept analysis
+        (host_direct_values_factorization), else host SuperLU of the CSR; defer_check as factorize_pencil."""
+        from .cudss_factor import CUDSS_REFUSALS, CudssFactorization
+        start = time.perf_counter()
+        n_rows = int(np.asarray(indptr).size) - 1
+        if self.back_end in HOST_DIRECT_BACK_ENDS:
+            from ..core.backend import to_host
+            factor = host_direct_values_factorization(np.asarray(to_host(values)), indptr, indices, self.back_end,
+                                                      previous=previous, real=real, defer_check=defer_check)
+            return self._counted(factor, start)
+        if self.back_end in CUDSS_BACK_ENDS and self.backend == 'gpu':
+            import cupy as cp
+            precision = cudss_precision(self.back_end)
+            device_values = cp.asarray(values, dtype=np.float64 if real else np.complex128)
+            try:
+                if isinstance(previous, CudssFactorization) and previous.valid:
+                    if previous.n_unknowns == n_rows and previous.can_refactorize(real, precision):
+                        previous.refactorize_device_values(device_values, indptr, indices, defer_check=defer_check)
+                        return self._counted(previous, start)
+                    previous.release()
+                factor = CudssFactorization.from_device_values(device_values, indptr, indices, real=real,
+                                                               precision=precision)
+                factor.fallback_listener = self._count_deferred_fallback
+                return self._counted(factor, start)
+            except CUDSS_REFUSALS as error:
+                if not self.fall_back(error, n_rows):
+                    raise
+        if isinstance(previous, CudssFactorization):   # replaced by SuperLU after a fall_back
+            previous.release()
+        import scipy.sparse
+        from ..core.backend import to_host
+        host = scipy.sparse.csr_matrix((np.asarray(to_host(values)), indices, indptr), shape=(n_rows, n_rows))
+        return self._counted(factorize_host(host, real=real, orderings=self.orderings), start)
+
     def _count_deferred_fallback(self, plans, plan_seconds, reused_orderings) -> None:
         """A deferred check inside a solve replaced a cudss_mixed factor by a double one (its plans, one fallback)."""
         self.n_cudss_plans += plans

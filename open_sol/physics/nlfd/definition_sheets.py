@@ -308,10 +308,10 @@ def _site_bytes(order):
 
 def _sheet_run_parts(n_sites, n_cells):
     """(run_items, transient_items) of one target: the kept full-grid deposit (_sheet_density, hz 2 components) and
-    one evaluation's site fields / P_s and scatter temporaries (approximate)."""
+    one evaluation's site fields / P_s and scatter indices (approximate; the scatter adds into the deposit itself)."""
     run_items = [('kept sheet deposit (one hz target, 2 x complex128, approximate)', 2 * COMPLEX128_BYTES * n_cells)]
-    transient_items = [('sheet evaluation', 'sheet site fields and scatter temporaries (one target, approximate)',
-                        8 * 3 * COMPLEX128_BYTES * n_sites + (COMPLEX128_BYTES + FLOAT64_BYTES) * n_cells)]
+    transient_items = [('sheet evaluation', 'sheet site fields, P_s and scatter indices (one target, approximate)',
+                        8 * 3 * COMPLEX128_BYTES * n_sites + 2 * 2 * 8 * n_sites)]
     return run_items, transient_items
 
 

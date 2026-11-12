@@ -38,6 +38,7 @@ from ..em.eigenfrequency import solve_resonances
 from .fdfd3d import ARNOLDI_BASIS_PER_WANTED, ARPACK_TOLERANCE_FLOOR
 
 ELEMENT_ORDERS = (1, 2)
+FIELD_CACHE_POINTS = 500_000   # sampled points whose E / H (96 B each) fields_located keeps per selected resonance
 _FIXED_FACE_TYPES = frozenset(('pec', 'antisymmetric', 'cpml'))   # tangential E 0 on the mesh's outer side
 # host SuperLU size rule (MUMPS / PARDISO keep it): FEM unknowns x this ~ the Yee E unknowns of equal fill (denser
 # rows: ~18 / ~45 nonzeros vs Yee's 13); uncalibrated first figures (igor3d_plan 7.2 T8)
@@ -199,6 +200,8 @@ class FEMPhysics3D:
         self.coefficients = None        # complex (n_dofs,) Nedelec coefficients of the selected resonance
         self._inverse_mu = None         # (m,) complex 1 / mu per element when it was selected
         self._locator = None
+        self._field_cache = {}          # (id(elements), id(reference)) -> (elements, reference, read-only fields)
+        self._field_cache_points = 0
         self._counters = {'assemblies': 0, 'assembly_seconds': 0.0}
 
     # ---- materials and walls ----
@@ -323,6 +326,8 @@ class FEMPhysics3D:
             coefficients = np.zeros(self.dofs.n_dofs, dtype=np.complex128)
             coefficients[self.system.free] = resonance.field
             self.coefficients = coefficients
+        self._field_cache.clear()
+        self._field_cache_points = 0
         self.selected_resonance = number
         _, self._inverse_mu, _ = self._element_materials()   # of the solved materials: H of fields_at
 
@@ -339,13 +344,29 @@ class FEMPhysics3D:
         return self.fields_located(*self._locator.locate(points))
 
     def fields_located(self, elements, reference) -> dict:
-        """fields_at of points already located (PointLocator3D.locate: elements (p,), reference (p, 3))."""
+        """fields_at of points already located (PointLocator3D.locate: elements (p,), reference (p, 3)); read-only
+        arrays, kept per located array pair until the next select_resonance (renderers read one plane per component)."""
         if self.coefficients is None:
             raise RuntimeError('FEMPhysics3D: fields before select_resonance')
+        key = (id(elements), id(reference))
+        cached = self._field_cache.get(key)
+        if cached is not None and cached[0] is elements and cached[1] is reference:
+            return cached[2]
         e_field, curl = evaluate_nedelec_3d(self.dofs, self.coefficients, elements, reference)
         element_inverse_mu = np.where(elements >= 0, self._inverse_mu[np.maximum(elements, 0)], np.nan)
         h_field = 1j * curl * element_inverse_mu[:, None] / (self.resonance_omega * MU0)
-        return {'e': e_field, 'h': h_field}
+        e_field.flags.writeable = False
+        h_field.flags.writeable = False
+        fields = {'e': e_field, 'h': h_field}
+        # only read-only located arrays (TetrahedronDomain.locate) can be keyed by identity: a writable pair may be
+        # refilled in place by the caller
+        if not (elements.flags.writeable or reference.flags.writeable) and len(elements) <= FIELD_CACHE_POINTS:
+            if self._field_cache_points + len(elements) > FIELD_CACHE_POINTS:
+                self._field_cache.clear()
+                self._field_cache_points = 0
+            self._field_cache[key] = (elements, reference, fields)   # holds the arrays: their ids stay unique
+            self._field_cache_points += len(elements)
+        return fields
 
     def plane_cut(self, axis, position, counts=(64, 64)) -> dict:
         """Fields of the selected resonance on a counts grid over the window cut normal to axis (0 / 1 / 2) at

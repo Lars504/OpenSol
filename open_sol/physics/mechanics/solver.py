@@ -667,8 +667,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
 
     def _show_harmonic(self, displacement, potential):
         """Write the real parts of a complex nodal response ((nx_nodes, ny_nodes, 2) u, (nx_nodes, ny_nodes) phi or
-        None) into the outputs, u_abs = the amplitude of the complex centre displacement; reactions and static electrode
-        values become unavailable."""
+        None) into the outputs (no thermal part: the temperature change is static), u_abs = the amplitude of the complex
+        centre displacement; reactions and static electrode values become unavailable."""
         system = self.system
         xp = system.xp
         xp.copyto(system.unknown, xp.asarray(displacement.real.reshape(-1), dtype=system.dtype))
@@ -676,7 +676,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             self._potential_nodes = xp.array(potential.real, dtype=system.dtype)
         self._piezo_reaction = None
         self._electrode_values = {}
-        self._write_outputs()
+        self._write_outputs(thermal=False)
         centre = 0.25 * (displacement[:-1, :-1] + displacement[1:, :-1] + displacement[:-1, 1:] + displacement[1:, 1:])
         amplitude = xp.asarray(np.sqrt(np.sum(np.abs(centre) ** 2, axis=-1)), dtype=DTYPE)
         self.fields.u_abs[system.window] = xp.where(self._solid, amplitude, 0.0)
@@ -868,7 +868,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
 
     def _write_outputs(self, thermal=True):
         """Displacement, strain, stress and von Mises at the cell centres of the window (0 in void cells; thermal False:
-        dT = 0, a mode shape; a shown guided mode adds u_z = its quadrature amplitude and strain_zz = k_z u_z, the phi
+        dT = 0, a mode shape or a harmonic response; a shown guided mode adds u_z = its quadrature amplitude and strain_zz = k_z u_z, the phi
         = 0 values; the _zz outputs are the out-of-plane, axisymmetric the hoop components); the base step then
         edge-extends them into the PML."""
         system = self.system

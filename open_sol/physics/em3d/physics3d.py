@@ -157,6 +157,7 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         self._materials_dirty = True
         self._quantised_arrays = set()   # arrays whose re-quantisation was already reported
         self._reported_warnings = set()  # source / monitor calibration warnings already reported
+        self.port_mode_solves = None     # mode_ports3d solves shared by the ports of one _refresh_materials round
         # Conformal PEC (solver_defaults.conformal_boundaries): the model's 3D geometry locator, the regions of
         # add_conformal_pec_region [(window, cropped mask, inside(x, y, z))], their ConformalPEC3D once finalized
         self.conformal_locator = None
@@ -260,11 +261,15 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
         """Rebuild the material index and recalibrate the sources; returns a note per array newly re-quantised."""
         engine = self.engine
         engine.rebuild_materials()
-        for source in self.sources:
-            source.calibrate(engine)
-        for monitor in self.monitors:   # mode monitors solve their modes until the first step
-            if hasattr(monitor, 'calibrate'):
-                monitor.calibrate(engine)
+        self.port_mode_solves = {}   # ports on equal layers share a mode solve per omega (this round only)
+        try:
+            for source in self.sources:
+                source.calibrate(engine)
+            for monitor in self.monitors:   # mode monitors solve their modes until the first step
+                if hasattr(monitor, 'calibrate'):
+                    monitor.calibrate(engine)
+        finally:
+            self.port_mode_solves = None
         self._materials_dirty = False
         notes = []
         for name, error in engine.quantisation_errors.items():

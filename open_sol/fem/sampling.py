@@ -17,6 +17,7 @@ _NEWTON_STEPS = 12
 _NEWTON_STEP_TOLERANCE = 1e-12   # reference-coordinate step below which a point's Newton stops (quadratic: done)
 CURVED_BOX_SLACK = 0.25       # x the node box's longer side: a curved candidate outside its widened box skips Newton
 _RASTER_CACHE_SIZE = 4
+SAMPLER_ENTRIES = 4           # sampling operators (dof maps) kept per LocatedPoints
 
 
 @dataclass(frozen=True, eq=False)
@@ -31,18 +32,51 @@ class Location:
 
 
 class LocatedPoints:
-    """A located point set (read-only Location) with its Lagrange basis values per order, computed on first use and
-    read-only, so reads of several fields on one point set share them (TriangleDomain.located keeps these)."""
+    """A located point set (read-only Location) with its Lagrange basis values per order and its sampling operators
+    per dof map, computed on first use and read-only, so reads of several fields on one point set share them
+    (TriangleDomain.located keeps these)."""
 
-    def __init__(self, location: Location):
+    def __init__(self, location: Location, charge=None):
         location.element.flags.writeable = False
         location.reference.flags.writeable = False
         self.location = location
         self._values = {}      # order -> read-only (n, 1, k) basis values of every point
         self._gradients = {}   # order -> read-only (n, 1, k, 2) reference gradients of every point
+        self._samplers = OrderedDict()   # id(dofs) -> (dofs, CSR (points x dofs), read-only outside mask)
+        self._charge = charge  # callable(point equivalents) of the owning domain's store, or None
 
     def __len__(self) -> int:
         return len(self.location.element)
+
+    def sampler(self, dofs) -> tuple:
+        """(host CSR (points x dofs) of the Lagrange values, read-only bool outside mask) of a Lagrange dof map, kept per
+        map (identity; the latest SAMPLER_ENTRIES): a read is then one CSR product."""
+        held = self._samplers.get(id(dofs))
+        if held is not None and held[0] is dofs:
+            self._samplers.move_to_end(id(dofs))
+            return held[1], held[2]
+        from scipy.sparse import csr_matrix
+        location = self.location
+        position = np.where(location.found, dofs.element_position[np.maximum(location.element, 0)], -1)
+        inside = position >= 0
+        local = np.asarray(dofs.element_dofs[position[inside]], dtype=np.int32)   # (k, n)
+        cached = self._values.get(int(dofs.order))
+        basis = (cached[inside] if cached is not None
+                 else lagrange_values(dofs.order, location.reference[inside][:, None, :]))[:, 0, :]
+        indptr = np.zeros(len(position) + 1, dtype=np.int32)
+        np.cumsum(inside.astype(np.int32) * np.int32(local.shape[1]), out=indptr[1:])
+        rows = csr_matrix((np.ascontiguousarray(basis, dtype=np.float64).ravel(), local.ravel(), indptr),
+                          shape=(len(position), int(dofs.n_dofs)))
+        for array in (rows.data, rows.indices, rows.indptr):
+            array.flags.writeable = False
+        outside = ~inside
+        outside.flags.writeable = False
+        self._samplers[id(dofs)] = (dofs, rows, outside)
+        while len(self._samplers) > SAMPLER_ENTRIES:
+            self._samplers.popitem(last=False)
+        if self._charge is not None:   # 12 B per stored value: a P2 sampler ~ the dense P2 basis it replaces
+            self._charge(max(1, rows.nnz // 6))
+        return rows, outside
 
     def lagrange(self, order, gradient=False) -> tuple:
         """(values (n, 1, k), reference gradients (n, 1, k, 2) or None) of the order-`order` Lagrange basis at every
@@ -200,6 +234,12 @@ def evaluate(dofs, coefficients, points=None, *, location=None, gradient=False):
     the dof map's elements."""
     coefficients = np.asarray(coefficients)
     located = location if isinstance(location, LocatedPoints) else None
+    dtype = np.result_type(coefficients.dtype, np.float64)
+    if located is not None and dofs.family == 'lagrange' and not gradient:   # kept sampling operator: one CSR product
+        rows, outside = located.sampler(dofs)
+        values = np.asarray(rows @ coefficients).astype(dtype, copy=False)
+        values[outside] = np.nan
+        return values
     if located is not None:
         location = located.location
     elif location is None:
@@ -208,7 +248,6 @@ def evaluate(dofs, coefficients, points=None, *, location=None, gradient=False):
     inside = position >= 0
     lagrange = dofs.family == 'lagrange'
     count = len(position)
-    dtype = np.result_type(coefficients.dtype, np.float64)
     values = np.full((count,) if lagrange else (count, 2), np.nan, dtype=dtype)
     derivative = np.full((count, 2) if lagrange else (count,), np.nan, dtype=dtype)
     if inside.any():

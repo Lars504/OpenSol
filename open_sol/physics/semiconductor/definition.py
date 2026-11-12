@@ -272,10 +272,11 @@ def _create(ctx, physics_spec, values):
                          max_bias_step=values['max_bias_step'], axisymmetric=is_axisymmetric(values))
 
 
-# Host bytes per window cell of one Newton step: ~49 COO entries (20 per face, 2 faces per cell, 9 per cell) as int64
-# rows / cols + float64 values, held about three times (assembly, pinned copy, equilibrated copy).
+# Host bytes per window cell of one Newton step: ~49 COO entries (20 per face, 2 faces per cell, 9 per cell), three
+# 8-byte arrays each: the kept CSR slot map (int64, drift_diffusion._PinnedPattern), the block values and their
+# concatenation (float64); rows / cols are never formed (the pattern expands the scalar site graph).
 _COO_ENTRIES_PER_CELL = 49
-_COO_COPIES = 3
+_COO_ARRAYS = 3
 # CSR entries per window cell of that Jacobian once duplicates are summed (the cuDSS device copies): Poisson row 5 V
 # + n + p, each continuity row 5 of its carrier + 5 V + the other carrier (recombination)
 _CSR_ENTRIES_PER_CELL = 29
@@ -299,8 +300,8 @@ def _cudss_estimate(context, unknowns, csr_entries, poisson_unknowns, poisson_en
     mixed = resolved_back_end(context.solvers) == 'cudss_mixed'
 
     def held_bytes(rows, entries):
-        """factorize_host keeps the full equilibrated E (+ the float32 copy when mixed), rhs buffer and row scale; the
-        later Newton steps refactorise on the device route and keep its index maps (no transpose map: an LU)."""
+        """factorize_values plans from device values and keeps the full equilibrated E (+ the float32 copy when mixed),
+        rhs buffer, row scale and the device route's index maps (no transpose map: an LU); later Newton steps refresh."""
         return (operator_copy_bytes(rows, entries, FLOAT64_BYTES, symmetric=False, mixed=mixed)
                 + solve_buffer_bytes(rows, FLOAT64_BYTES, mixed) + index_map_bytes(rows, entries, symmetry_check=False))
 
@@ -332,7 +333,7 @@ def _triangle_memory_estimate(mesh, context):
     entries = _COO_ENTRIES_PER_EDGE * edges + _COO_ENTRIES_PER_NODE * nodes
     items = [(f'element fields ({len(SEMICONDUCTOR_FIELD_INFOS)} x float32)',
               len(SEMICONDUCTOR_FIELD_INFOS) * FLOAT32_BYTES * elements)]
-    host_items = [('Newton COO arrays', _COO_COPIES * 3 * FLOAT64_BYTES * entries),
+    host_items = [('Newton COO arrays', _COO_ARRAYS * FLOAT64_BYTES * entries),
                   ('nodal and element arrays (float64)', FLOAT64_BYTES * (_TRIANGLE_HOST_ARRAYS_PER_NODE * nodes
                                                                           + _TRIANGLE_HOST_ARRAYS_PER_ELEMENT * elements))]
     if linear_solver_cudss(context.solvers):   # COO entries bound the coupled CSR; Poisson: the P1 node graph
@@ -371,7 +372,7 @@ def _memory_estimate(settings_values, mesh, context):
     entries = _COO_ENTRIES_PER_CELL * window_cells
     items = [(f'fields ({len(SEMICONDUCTOR_FIELD_INFOS)} x float32)',
               len(SEMICONDUCTOR_FIELD_INFOS) * FLOAT32_BYTES * int(mesh.n_cells))]
-    host_items = [('Newton COO arrays', _COO_COPIES * 3 * FLOAT64_BYTES * entries),
+    host_items = [('Newton COO arrays', _COO_ARRAYS * FLOAT64_BYTES * entries),
                   ('state, inputs and face arrays (float64)', _SOLVE_HOST_ARRAYS * FLOAT64_BYTES * window_cells)]
     if linear_solver_cudss(context.solvers):   # Poisson: the 5-point window system
         return combine((MemoryEstimate.from_items(items, host_items=host_items),
@@ -394,10 +395,15 @@ def _memory_estimate(settings_values, mesh, context):
 # a generation change is one step) and of the equilibrium start (nonlinear Poisson from charge neutrality)
 NEWTON_ITERATIONS_PER_STEP_GUESS = 6
 EQUILIBRIUM_NEWTON_ITERATIONS_GUESS = 10
-# host bytes moved per Jacobian COO entry by one Newton iteration (value concatenation, the kept-entry take and slot
-# bincount of drift_diffusion._PinnedPattern, L1 equilibration, the CSC conversion of SuperLU; calibrate against
-# solve_seconds minus the factor_seconds)
-NEWTON_ASSEMBLY_BYTES_PER_ENTRY = 150
+# of those, chord steps on the last factor (drift_diffusion _CHORD_START: once a quadratic Newton's update is below 1e-2,
+# ~2 more solves reach the 1e-8 tolerance), per continuation step and per equilibrium start: no Jacobian values, no
+# factorisation (their residual assembly, ~1/3 of an iteration's host work, is left out)
+CHORD_STEPS_PER_STEP_GUESS = 2
+EQUILIBRIUM_CHORD_STEPS_GUESS = 2
+# host bytes moved per Jacobian COO entry by one Newton iteration (value concatenation, the slot bincount of
+# drift_diffusion._PinnedPattern (pinned rows into a dummy slot: no kept-entry take, 24 B less), L1 equilibration, the
+# CSC conversion of SuperLU; calibrate against solve_seconds minus the factor_seconds)
+NEWTON_ASSEMBLY_BYTES_PER_ENTRY = 126
 _POISSON_COO_ENTRIES_PER_CELL = 9   # 4 per interior face (2 faces per cell) + the cell charge term
 # numpy calls (definition_helpers.numpy_calls: host_stream latency each) of one Newton iteration, counted from
 # drift_diffusion: coupled = _coupled_system ~200 (bernoulli + 2 derivatives ~35, recombination ~27, 27 block
@@ -430,38 +436,44 @@ def _ramp_steps(settings_values, context):
 _PLANNED_SYSTEMS = 2
 
 
-def _counted(estimate, counter, plan_share):
-    """Copy with every item's counter set to `counter` (() = not measured on its own); a cuDSS plan item keeps the
-    role's cudss_plans counter x plan_share (the plans of every Newton part), dropped at plan_share 0 (kept plan)."""
+def _counted(estimate, counter, plan_share, factorized_share=1.0):
+    """Copy with every item's counter set to `counter` (() = not measured on its own), a factorisation item's x
+    factorized_share (the iterations that factorise); a cuDSS plan item keeps the role's cudss_plans counter x
+    plan_share (the plans of every Newton part), dropped at plan_share 0 (kept plan)."""
     items = []
     for item in estimate.items:
-        if item.unit != 'plan':
+        if item.unit == 'factorisation':
+            items.append(replace(item, counter=counter, counter_scale=factorized_share))
+        elif item.unit != 'plan':
             items.append(replace(item, counter=counter))
         elif plan_share > 0.0:
             items.append(replace(item, counter_scale=plan_share))
     return replace(estimate, items=tuple(items))
 
 
-def _newton_part(context, label, cells, components, iterations, limit, per_step, counter, plans=True):
-    """Newton iterations (items labelled '<label>: ...') on the system of `components` unknowns per window cell: the
-    host Jacobian assembly and one factorisation + solve of the 'linear' role each (a real LU: sparse_direct SuperLU or
-    cuDSS, one plan per part unless plans=False: a re-solve on the kept plan)."""
+def _newton_part(context, label, cells, components, iterations, chord_steps, limit, per_step, counter, plans=True):
+    """Newton iterations (items labelled '<label>: ...') on the system of `components` unknowns per window cell: one
+    solve of the 'linear' role each, the host Jacobian assembly and one factorisation for all but the chord steps (a
+    real LU: sparse_direct SuperLU or cuDSS, one plan per part unless plans=False: a re-solve on the kept plan)."""
     coupled = components == COMPONENTS
     coo_entries = (_COO_ENTRIES_PER_CELL if coupled else _POISSON_COO_ENTRIES_PER_CELL) * cells
-    assembly = te.TimeItem('Jacobian assembly', 'iteration', iterations, 'guess',
+    factorizations = max(iterations - chord_steps, min(iterations, 1.0))
+    factorized_share = factorizations / iterations if iterations > 0.0 else 1.0
+    assembly = te.TimeItem('Jacobian assembly', 'iteration', factorizations, 'guess',
                            (te.HostStream(NEWTON_ASSEMBLY_BYTES_PER_ENTRY * coo_entries),
                             numpy_calls(_COUPLED_NEWTON_NUMPY_CALLS if coupled else _POISSON_NEWTON_NUMPY_CALLS)),
-                           limit=limit, per_step=per_step, counter=counter)
+                           limit=limit, per_step=per_step, counter=counter, counter_scale=factorized_share)
     # priced on the scalar 5-point host LU curve at 3 n unknowns: the 3 x 3 cell blocks fill ~b^1.5 = 5x more (no
     # block size in te.HostLU yet); cuDSS likewise on its 5-point curves
     value_bytes = FLOAT64_BYTES   # real LU on every back end (cuDSS and SuperLU)
     solver = context.solver_work('linear', unknowns=components * cells, nnz=coo_entries, value_bytes=value_bytes,
                                  dimensions=2,
-                                 solves=iterations, solves_kind='guess', factorizations=iterations,
+                                 solves=iterations, solves_kind='guess', factorizations=factorizations,
                                  factorizations_kind='guess', per_step=per_step,
                                  backend='cpu')   # factorize_host on either backend
     plan_share = 1.0 / _PLANNED_SYSTEMS if plans else 0.0
-    return te.combine((te.TimeEstimate((assembly,)), _counted(solver, counter, plan_share))).labelled(label)
+    return te.combine((te.TimeEstimate((assembly,)),
+                       _counted(solver, counter, plan_share, factorized_share))).labelled(label)
 
 
 def _time_estimate(settings_values, mesh, context):
@@ -479,19 +491,22 @@ def _time_estimate(settings_values, mesh, context):
     re_solves = 1.0 if per_step else (context.static_solves()[0] - 1.0 if driven else 0.0)
     newton_counter = ('solvers', context.name, 'counters', 'newton_iterations')
     cold = ramp * NEWTON_ITERATIONS_PER_STEP_GUESS
+    cold_chord = ramp * CHORD_STEPS_PER_STEP_GUESS
     io_ops = (te.HostStream(2 * _SOLVE_HOST_ARRAYS * FLOAT64_BYTES * cells),
               te.Transfer((len(SEMICONDUCTOR_FIELD_INFOS) + len(SEMICONDUCTOR_SCHEMA)) * FLOAT32_BYTES * cells),
               te.PythonCalls(150))
     parts = [_newton_part(context, 'equilibrium Newton', cells, 1, float(EQUILIBRIUM_NEWTON_ITERATIONS_GUESS),
-                          newton_limit, False, ())]
+                          float(EQUILIBRIUM_CHORD_STEPS_GUESS), newton_limit, False, ())]
     if per_step:   # newton_iterations then counts the cold and the per-step iterations together: no counter
-        parts += [_newton_part(context, 'Newton ramp', cells, COMPONENTS, float(cold), ramp * newton_limit, False, ()),
+        parts += [_newton_part(context, 'Newton ramp', cells, COMPONENTS, float(cold), float(cold_chord),
+                               ramp * newton_limit, False, ()),
                   _newton_part(context, 'Newton re-solve', cells, COMPONENTS, float(NEWTON_ITERATIONS_PER_STEP_GUESS),
-                               newton_limit, True, (), plans=False),
+                               float(CHORD_STEPS_PER_STEP_GUESS), newton_limit, True, (), plans=False),
                   te.TimeEstimate((te.TimeItem('inputs and outputs', 'solve', 1.0, 'bounded', io_ops, per_step=True),))]
     else:
         iterations = cold + re_solves * NEWTON_ITERATIONS_PER_STEP_GUESS
-        parts += [_newton_part(context, 'Newton', cells, COMPONENTS, float(iterations),
+        chord_steps = cold_chord + re_solves * CHORD_STEPS_PER_STEP_GUESS
+        parts += [_newton_part(context, 'Newton', cells, COMPONENTS, float(iterations), float(chord_steps),
                                (ramp + re_solves) * newton_limit, False, newton_counter),
                   te.TimeEstimate((te.TimeItem('inputs and outputs', 'solve', 1.0 + re_solves,
                                                'exact' if re_solves == 0 else 'guess', io_ops),))]

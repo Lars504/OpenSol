@@ -15,7 +15,7 @@ from ...core.solver_base import PhysicsSolver
 from . import kernels as _kernels
 from .axisymmetric import density_shares, kernel_rows, radial_stability_factor
 from .cpml import AcousticAxisLayers, psi_array
-from .sources import VELOCITY_COMPONENTS, AcousticProbe, HeatPulseSource, VelocitySource, VolumeSource
+from .sources import VELOCITY_COMPONENTS, HeatPulseSource, ProbeRecorder, VelocitySource, VolumeSource
 
 BOUNDARY_TYPES = ('absorbing', 'rigid', 'periodic')
 HEATING_SLOT = 'heating_power'
@@ -214,6 +214,8 @@ class AcousticPhysics(PhysicsSolver):
         self.va_x, self.vb_x, self.va_y, self.vb_y = (xp.empty(shape, dtype=DTYPE) for _ in range(4))
         self._rigid_keep = None                      # float32 (nx, ny), 0 in rigid cells; allocated by add_rigid
         self._no_keep = xp.ones(1, dtype=DTYPE)
+        self._no_thermal = (self._no_keep, self._no_keep, DTYPE(0.0))   # stress kernel tail without a heating slot
+        self._launch_cache = None                    # (dt, _launch_arguments) of the per-step launches
 
         self._k_grid, self._k_block = _kernels.launch(nx, ny)
         self._nx_i32, self._ny_i32 = np.int32(nx), np.int32(ny)
@@ -221,7 +223,8 @@ class AcousticPhysics(PhysicsSolver):
 
         self._velocity_sources = []
         self._stress_sources = []
-        self.probes = []
+        self._probe_recorder = ProbeRecorder(ny, xp, axisymmetric=self.axisymmetric)   # one launch per step for all
+        self.probes = self._probe_recorder.probes                                     # the same list
         self._heating = None                         # heating_power slot array (kept by reference)
         # piezo: all six arrays when a material set one (scripts: add any of them first); planar only
         present = [name for name in PIEZO_ARRAYS if name in self.materials.property_names()]
@@ -291,6 +294,7 @@ class AcousticPhysics(PhysicsSolver):
 
     def materials_changed(self, names) -> None:
         """Rebuild the coefficients in place (dt stays: faster runtime materials are not stability-checked)."""
+        self._launch_cache = None   # the monoclinic launch holds c16 / c26 arrays
         if not _COEFFICIENT_MATERIALS.isdisjoint(names):
             self._rebuild_coefficients()
 
@@ -340,6 +344,34 @@ class AcousticPhysics(PhysicsSolver):
     def advance(self, t, dt) -> None:
         """v^(n+1/2) from s^n (+ forces at t_n), s^(n+1) from v^(n+1/2) (+ volume / thermoelastic sources at t_n +
         dt/2; piezo / monoclinic: the strain accumulator too; monoclinic: the c16 / c26 terms), then the probes."""
+        velocity_kernel, velocity_args, stress_kernel, stress_head, flags, monoclinic_args = self._launch_arguments(dt)
+        t_half = t + 0.5 * dt
+        # the coupled heating slot at t_n + dt/2, fused into the stress kernel (thermal scale 0: no slot, dummies)
+        thermal = self._no_thermal
+        if self._heating is not None:
+            envelope = 1.0 if self.heating_envelope is None else self.heating_envelope(t_half)
+            if envelope > 1e-30:
+                thermal = (self.materials.gruneisen, self._heating, DTYPE(dt * envelope / self.stress_scale))
+        grid, block = self._k_grid, self._k_block
+        velocity_kernel(grid, block, velocity_args)
+        for source in self._velocity_sources:
+            source.inject_velocity(self, t)
+        stress_kernel(grid, block, stress_head + thermal + flags)
+        if monoclinic_args is not None:   # c16 / c26 terms from the rates the stress kernel wrote
+            self.kernels['monoclinic_stress'](grid, block, monoclinic_args)
+        for source in self._stress_sources:
+            source.inject_stress(self, t_half, dt)
+        self.n_step += 1
+        self.time = t + dt
+        self._probe_recorder.record(self, self.fields, self.time, dt)
+
+    def _launch_arguments(self, dt):
+        """(velocity kernel, its args, stress kernel, its args before the thermal triple, the flags after it, monoclinic
+        args or None) for step dt, built once per (dt, configuration): every array in them is persistent (rewritten in
+        place); _configure, the storage scales and material changes drop them."""
+        cached = self._launch_cache
+        if cached is not None and cached[0] == dt:
+            return cached[1]
         fields = self.fields
         x_layers, y_layers = self._x_layers, self._y_layers
         psi_x, psi_y = self._psi_x, self._psi_y
@@ -358,36 +390,18 @@ class AcousticPhysics(PhysicsSolver):
                                     + ('_monoclinic' if self.monoclinic else '')]
         strain = () if self._strain is None else self._strain
         rates = () if self._strain_rates is None else self._strain_rates
-        t_half = t + 0.5 * dt
-        # the coupled heating slot at t_n + dt/2, fused into the stress kernel (thermal scale 0: no slot, dummies)
-        thermal = (self._no_keep, self._no_keep, DTYPE(0.0))
-        if self._heating is not None:
-            envelope = 1.0 if self.heating_envelope is None else self.heating_envelope(t_half)
-            if envelope > 1e-30:
-                thermal = (self.materials.gruneisen, self._heating, DTYPE(dt * envelope / self.stress_scale))
-        velocity_kernel(
-            self._k_grid, self._k_block,
-            (fields.vx, fields.vy, *stresses, *hoop, self.va_x, self.vb_x, self.va_y, self.vb_y,
-             *common, *radial, psi_x[0], psi_x[1], psi_y[0], psi_y[1], self._stress_to_velocity, *flags))
-        for source in self._velocity_sources:
-            source.inject_velocity(self, t)
-        stress_kernel(
-            self._k_grid, self._k_block,
-            (*stresses, *hoop, fields.vx, fields.vy, self.c11, self.c12, self.c22, self.c66c, *strain, *rates,
-             *common, *radial, psi_x[2], psi_x[3], psi_y[2], psi_y[3], DTYPE(dt), self._velocity_to_stress, *thermal,
-             *flags))
-        if self.monoclinic:   # c16 / c26 terms from the rates the stress kernel wrote
-            kernels['monoclinic_stress'](
-                self._k_grid, self._k_block,
-                (*stresses, *rates, self.materials.c16, self.materials.c26, self.c66c,
-                 DTYPE(dt * float(self._velocity_to_stress)), self._nx_i32, self._ny_i32, self._periodic_x_i32,
-                 self._periodic_y_i32))
-        for source in self._stress_sources:
-            source.inject_stress(self, t_half, dt)
-        self.n_step += 1
-        self.time = t + dt
-        for probe in self.probes:
-            probe.record(fields, self.time, dt)
+        velocity_args = (fields.vx, fields.vy, *stresses, *hoop, self.va_x, self.vb_x, self.va_y, self.vb_y, *common,
+                         *radial, psi_x[0], psi_x[1], psi_y[0], psi_y[1], self._stress_to_velocity, *flags)
+        stress_head = (*stresses, *hoop, fields.vx, fields.vy, self.c11, self.c12, self.c22, self.c66c, *strain, *rates,
+                       *common, *radial, psi_x[2], psi_x[3], psi_y[2], psi_y[3], DTYPE(dt), self._velocity_to_stress)
+        monoclinic_args = None
+        if self.monoclinic:
+            monoclinic_args = (*stresses, *rates, self.materials.c16, self.materials.c26, self.c66c,
+                               DTYPE(dt * float(self._velocity_to_stress)), self._nx_i32, self._ny_i32,
+                               self._periodic_x_i32, self._periodic_y_i32)
+        arguments = (velocity_kernel, velocity_args, stress_kernel, stress_head, flags, monoclinic_args)
+        self._launch_cache = (dt, arguments)
+        return arguments
 
     def _apply_field_component(self, slot, field):
         """Stress of one field component's change since its last transfer: sxx / syy at the centres, sxy at the
@@ -515,6 +529,7 @@ class AcousticPhysics(PhysicsSolver):
         """Coefficients and CPML recursions for time step dt [s] (coefficients_current: the velocity coefficients were
         just built with this dt, no second pass)."""
         self.dt = float(dt)
+        self._launch_cache = None
         self._x_layers.configure(self.reference_speed, self.pml_reflection, self.dt)
         self._y_layers.configure(self.reference_speed, self.pml_reflection, self.dt)
         if not coefficients_current:
@@ -593,6 +608,7 @@ class AcousticPhysics(PhysicsSolver):
         self.velocity_scale = self.stress_scale / 2.0 ** round(math.log2(impedance))
         self._stress_to_velocity = DTYPE(self.stress_scale / self.velocity_scale)
         self._velocity_to_stress = DTYPE(self.velocity_scale / self.stress_scale)
+        self._launch_cache = None
         for probe in self.probes:
             probe.value_scale = self._storage_scale(probe.field_component)
 
@@ -702,9 +718,8 @@ class AcousticPhysics(PhysicsSolver):
             xp.copyto(target, xp.asarray(value, dtype=DTYPE), where=mask)
 
     def add_probe(self, ix, iy, component):
-        probe = AcousticProbe(ix, iy, component, self.xp, axisymmetric=self.axisymmetric)
+        probe = self._probe_recorder.add(ix, iy, component)
         probe.value_scale = self._storage_scale(component)
-        self.probes.append(probe)
         return probe
 
     def source_waveforms(self):

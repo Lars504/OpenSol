@@ -27,8 +27,9 @@ dJ/d eps per cell from the forward and one adjoint cascade field (Lorentz recipr
 # integrand sums the products of each period's fields (amplitude_pairs over PeriodicAdjointFields: the amplitudes at the
 # planes between periods from partial cascades extended one cell at a time, then the cell cascade inside each period).
 # Held fixed: the port modes (first / last slice). Per slice the integral of the products of e^{-j k s} /
-# e^{-j k (L - s)} terms is closed form, each term written as exp(start + rate t) with Re <= 0 at both ends (stable
-# with evanescent modes); u' multiplies a by -j k and b by +j k.
+# e^{-j k (L - s)} terms is closed form: per-mode factors e^{-j k s0}, e^{-j k (L - s1)} at the slice ends times two
+# symmetric (N, N) integrals per slice width (slice_exponentials), every factor of modulus <= 1 (stable with evanescent
+# modes) and no N^2 exponentials; u' multiplies a by -j k and b by +j k.
 import math
 
 import numpy as np
@@ -79,15 +80,40 @@ def objective_cotangents(objectives, input_face, blocks, column, unit_power):
     return total, cotangents
 
 
-def _exponential_integrals(start_exponent, rate, width):
-    """Elementwise int_0^width exp(start_exponent + rate t) dt (series of (e^z - 1) / z for small |rate width|)."""
+def _closed_integrals(difference, start, rate, width):
+    """Elementwise int_0^width start e^{rate t} dt = difference / rate, difference = start (e^{rate width} - 1) given;
+    the series of (e^z - 1) / z where |rate width| is small (cancellation)."""
     z = rate * width
     small = np.abs(z) < _SERIES_LIMIT
-    start = np.exp(start_exponent)
-    series = 1.0 + z * (1.0 / 2.0 + z * (1.0 / 6.0 + z * (1.0 / 24.0 + z * (1.0 / 120.0 + z * (1.0 / 720.0
-                                                                                                   + z / 5040.0)))))
-    direct = (np.exp(start_exponent + z) - start) / np.where(small, 1.0, rate)
-    return np.where(small, start * width * series, direct)
+    values = difference / np.where(small, 1.0, rate)
+    if np.any(small):
+        z_small = z[small]
+        series = 1.0 + z_small * (1.0 / 2.0 + z_small * (1.0 / 6.0 + z_small * (1.0 / 24.0 + z_small * (
+            1.0 / 120.0 + z_small * (1.0 / 720.0 + z_small / 5040.0)))))
+        values[small] = np.broadcast_to(start, z.shape)[small] * width * series
+    return values
+
+
+def _pair_integrals(k, width):
+    """((N, N) int_0^w e^{-j (k_n + k_m) t} dt, (N, N) int_0^w e^{-j k_n t} e^{-j k_m (w - t)} dt) of one slice width
+    w, from the N phases e^{-j k w} (no N^2 exponentials); both symmetric, every factor of modulus <= 1."""
+    phase = np.exp(-1j * k * float(width))
+    k_n, k_m = k[:, None], k[None, :]
+    sum_integrals = _closed_integrals(np.outer(phase, phase) - 1.0, 1.0, -1j * (k_n + k_m), width)
+    difference_integrals = _closed_integrals(phase[:, None] - phase[None, :], phase[None, :], -1j * (k_n - k_m),
+                                             width)
+    return sum_integrals, difference_integrals
+
+
+def slice_exponentials(k, slice_widths, length, start_offset=0.0):
+    """(lead (n, N) e^{-j k s0}, trail (n, N) e^{-j k (L - s1)}, (n,) width index, [(sum, difference) _pair_integrals
+    per distinct width]) of slices [s0, s1] with slice_widths in a section of `length` (slice_products' factors)."""
+    widths = np.asarray(slice_widths, dtype=np.float64)
+    starts = float(start_offset) + np.cumsum(widths) - widths
+    after = np.maximum(float(length) - starts - widths, 0.0)
+    distinct, width_index = np.unique(widths, return_inverse=True)
+    return (np.exp(-1j * np.outer(starts, k)), np.exp(-1j * np.outer(after, k)), width_index.ravel(),
+            [_pair_integrals(k, width) for width in distinct])
 
 
 def amplitude_pairs(amplitude_sets):
@@ -101,25 +127,24 @@ def amplitude_pairs(amplitude_sets):
     return pairs
 
 
-def slice_products(k, profiles, pairs, slice_widths, length, start_offset=0.0):
+def slice_products(k, profiles, pairs, slice_widths, length, start_offset=0.0, exponentials=None):
     """(n_slices, M) complex int over each slice of u_t Lambda_t ds in a section of `length` [m] whose slices have
     slice_widths (lo to hi, the first starting start_offset [m] into the section): u = sum (a e^{-jks} + b e^{-jk(L -
     s)}) profile, profiles (N, M), Lambda likewise (amplitudes as Cascade.section_amplitudes), pairs = amplitude_pairs
-    of the amplitude sets."""
-    widths = np.asarray(slice_widths, dtype=np.float64)
-    starts = float(start_offset) + np.cumsum(widths) - widths
-    length = float(length)
-    k_u, k_adjoint = k[:, None], k[None, :]
-    total, difference = k_u + k_adjoint, k_u - k_adjoint
-    products = np.empty((widths.size, profiles.shape[1]), dtype=np.complex128)
-    for index, (start, width) in enumerate(zip(starts, widths)):
-        remaining = length - start
-        kernel = (pairs[0] * _exponential_integrals(-1j * total * start, -1j * total, width)
-                  + pairs[1] * _exponential_integrals(-1j * (k_u * start + k_adjoint * remaining), -1j * difference,
-                                                      width)
-                  + pairs[2] * _exponential_integrals(-1j * (k_u * remaining + k_adjoint * start), 1j * difference,
-                                                      width)
-                  + pairs[3] * _exponential_integrals(-1j * total * remaining, 1j * total, width))
+    of the amplitude sets; exponentials = slice_exponentials of the same slices (None: computed here)."""
+    # slice [s0, s0 + w]: e^{-jk_u s} e^{-jk_a s} = lead_u lead_a e^{-j(k_u + k_a) t}, e^{-jk_u s} e^{-jk_a (L - s)} =
+    # lead_u trail_a e^{-jk_u t} e^{-jk_a (w - t)}, the b a' and b b' terms mirrored (t -> w - t)
+    if exponentials is None:
+        exponentials = slice_exponentials(k, slice_widths, length, start_offset)
+    lead, trail, width_index, integrals = exponentials
+    weighted = [(pairs[0] * sums, pairs[1] * differences, pairs[2] * differences, pairs[3] * sums)
+                for sums, differences in integrals]
+    products = np.empty((lead.shape[0], profiles.shape[1]), dtype=np.complex128)
+    for index in range(lead.shape[0]):
+        aa, ab, ba, bb = weighted[width_index[index]]
+        lo, hi = lead[index], trail[index]
+        kernel = lo[:, None] * (aa * lo[None, :] + ab * hi[None, :]) + hi[:, None] * (ba * lo[None, :]
+                                                                                      + bb * hi[None, :])
         products[index] = np.sum(profiles * (kernel @ profiles), axis=0)
     return products
 
@@ -239,8 +264,11 @@ def section_gradient(cascade, index, line, modes, slice_widths, length, omega, i
     rate = -1j * modes.k   # u' = sum (rate a e^{-jks} - rate b e^{-jk(L - s)}) u_n
     rates = np.outer(rate, rate)
     derivative_pairs = [rates * pairs[0], -rates * pairs[1], -rates * pairs[2], rates * pairs[3]]
-    derivatives = slice_products(modes.k, modes.profiles, derivative_pairs, slice_widths, length)
-    face_products = slice_products(modes.k, face_differences(line, modes.profiles), pairs, slice_widths, length)
+    exponentials = slice_exponentials(modes.k, slice_widths, length)
+    derivatives = slice_products(modes.k, modes.profiles, derivative_pairs, slice_widths, length,
+                                 exponentials=exponentials)
+    face_products = slice_products(modes.k, face_differences(line, modes.profiles), pairs, slice_widths, length,
+                                   exponentials=exponentials)
     cell_factor, face_factor = hz_factors(omega, line, centre_scale, face_scale)
     return (2.0 * np.real(cell_factor[None, :] * derivatives), 2.0 * np.real(face_factor[None, :] * face_products))
 
@@ -294,9 +322,10 @@ def cross_section_gradient(cascade, index, modes, points, area_stretch, slice_wi
     n_x, n_y = points.centre_area.shape
     n_points = n_x * n_y
     # E_x, E_y products from e = [E_x; -E_y] (the E_y sign squares out); E_z of the backward waves has the opposite sign
-    transverse = slice_products(modes.k, modes.e, pairs, slice_widths, length, start_offset)
+    exponentials = slice_exponentials(modes.k, slice_widths, length, start_offset)
+    transverse = slice_products(modes.k, modes.e, pairs, slice_widths, length, start_offset, exponentials)
     longitudinal = slice_products(modes.k, modes.profiles[:, 2, :], [pairs[0], -pairs[1], -pairs[2], pairs[3]],
-                                  slice_widths, length, start_offset)
+                                  slice_widths, length, start_offset, exponentials)
     layout = points.layout
     factor = -0.5j * float(omega) * EPS0
     # stretched dual area x bend factor of the E_x (hi-x face), E_y (hi-y face) and E_z (centre) points

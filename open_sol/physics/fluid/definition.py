@@ -419,7 +419,8 @@ def _time_estimate(settings_values, mesh, context):
     transient = context.time_dependent and settings_values['time_mode'] == 'transient'
     if transient:
         dt_lbm = offset * dx * dx / (3.0 * max(kinematic))
-        return explicit_step_estimate(context, 'lattice', dt_lbm, launches=4, counter=counter)
+        # per runner step: the lattice step (lattice_to_physical fused into it), ring copies, probe samples
+        return explicit_step_estimate(context, 'lattice', dt_lbm, launches=3, counter=counter)
     window_shape = tuple(max(count, 1) for count in mesh.window_axis_cells[:2])
     face_kinds = _face_kinds(context)
     solves, kind, limit = context.static_solves()
@@ -433,7 +434,8 @@ def _time_estimate(settings_values, mesh, context):
     decay_steps = 1.0 / (mean_lattice_viscosity * _slowest_shear_rate(window_shape, face_kinds))
     decay_times = max(math.log(1.0 / min(float(settings_values['tolerance']), 0.5)), 1.0)
     guess = float(march_steps_estimate(decay_steps, decay_times, first_interval, largest_interval, max_steps))
-    return explicit_step_estimate(context, 'lattice', None, launches=4, counter=counter).with_steps(
+    # a march step is one kernel launch (on the gpu fewer: solver.GRAPH_STEPS steps per CUDA graph replay)
+    return explicit_step_estimate(context, 'lattice', None, launches=1, counter=counter).with_steps(
         solves * guess, 'guess', steps_limit=solves * max_steps, measured_by_ticks=False)
 
 

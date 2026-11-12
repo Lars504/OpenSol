@@ -1,4 +1,5 @@
-"""Profile solid_mechanics on tensor (Q1) meshes on the gpu: stationary (plane stress, generalized plane strain bending),
+"""Profile solid_mechanics on tensor (Q1) meshes on the gpu: stationary (plane stress, its bilayer again with pcg mixed,
+generalized plane strain bending),
 eigenfrequency (nearest, shifted, band, targets) and frequency response (piezo admittance sweep, elastic sweep), selftest
 specs with refined meshes (~8-10 s gpu total). Run from any folder:
 python profiler_solver_solid_mechanics_tensor.py [--repeat N] [--no-cprofile]"""
@@ -45,10 +46,22 @@ def _elastic_sweep(spec):
     return spec
 
 
+def _with_cg_precision(spec, precision):
+    """Copy of spec with every pcg node at `precision` (the selftest specs carry a double exact_cg node)."""
+    spec = copy.deepcopy(spec)
+    for solver in spec.solvers:
+        if solver.type == 'pcg':
+            solver.settings = {**solver.settings, 'precision': precision}
+    return spec
+
+
 def _specs():
     specs = {}
     for run, spec in case_specs('solid_plane_stress').items():   # plate 40 x 20 um, bilayer: 16x the cells
         specs[f'stationary_plane_stress_{run}'] = refined(spec, 4)
+    # twin of the bilayer with pcg mixed (the gpu Automatic): float32 inner CG on float32 CSR / block copies
+    specs['stationary_plane_stress_bilayer_mixed'] = _with_cg_precision(specs['stationary_plane_stress_bilayer'],
+                                                                        'mixed')
     specs['stationary_gps_bending'] = refined(
         case_specs('solid_generalized_plane_strain_bending', runs=['along_x'])['along_x'], 4)
     for run, spec in case_specs('solid_eigenfrequency_roller_box').items():   # lowest / shifted, 160 x 64 cells
@@ -74,7 +87,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     'solve_frequency_response', 'publish_frequency_response', '_show_frequency_response', '_build_harmonic_operators',
     '_host_stiffness_stencil', '_show_harmonic',
 )) + tuple((f'{SYSTEM}.{method}', f'system: {method}') for method in (
-    'prepare', 'assemble', '_check_rigid_modes', 'build_rhs', 'solve', 'solve_homogeneous', 'reaction',
+    'prepare', 'assemble', '_bind_linear_solver', '_check_rigid_modes', 'build_rhs', 'solve', 'solve_homogeneous', 'reaction',
     'element_kinematics', 'add_stress_load', 'add_volume_load',
 )) + tuple((f'{HARMONIC}.{method}', f'harmonic: {method}') for method in (
     '__init__', '_factorize', 'solve', '_product', '_rows_solve', 'plan_reduced', 'set_output_rows', '_reduced_solve',

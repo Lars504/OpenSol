@@ -9,7 +9,11 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   each (forces at t_n, volume / heat-pulse thermoelastic at t_n + dt/2); the coupled heating slot's -gruneisen q is
   fused into the stress kernel (args gruneisen, heating, thermal_scale = dt x envelope at t_n + dt/2 / stress_scale; 0 =
   none: dummies, never read; the numpy / numba twins likewise); probes record stresses at t_n+1, velocities stamped
-  t_n+1/2.
+  t_n+1/2, all probes of a physics in one 'probe_record' field kernel per step (`sources.ProbeRecorder`: a (rows,
+  probes) stored-unit buffer, host times; a probe added after steps starts at the next row).
+- Per-step launch arguments are built once per (dt, configuration) (`_launch_arguments`, dropped by `_configure`, the
+  storage scales and `materials_changed`): every array in them must stay persistent (rewritten in place, never
+  reassigned); a new argument that changes per step goes outside the cache (as the thermal triple).
 - Non-periodic outer faces are slip walls (v_n = 0, shear 0) by construction (missing lo neighbour reads 0, hi face /
   corner pinned by zero coefficients). 'absorbing' = that wall behind a CPML in the outermost `pml_cells` cells
   (`cpml.py`, kappa 1, alpha 0; reflects ~exp(-0.45 (c dt / L) ln(1/R)^2): 7 % at R = 0.01, 80 cells, courant 0.9).
@@ -75,8 +79,9 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   RawKernels); arrays on `domain.xp`. Host twins write in place through flat views: fields must stay C-contiguous
   (np.add.at for atomicAdd ones); a CUDA source change changes its `_*_host` twin in the same edit. half_storage on the
   cpu: ValueError. numba twins of the six single velocity / stress updates unpack args through `_velocity_arguments` /
-  `_stress_arguments`, so a new kernel argument goes there once. Piezo kernels and the volume scatter have twins but no
-  parity case.
+  `_stress_arguments`, so a new kernel argument goes there once; they compile with `cache=True` (keyed per closure
+  variant: after an edit of kernels.py the first cpu process compiles again, profile twice). Piezo kernels and the
+  volume scatter have twins but no parity case.
 - heat_pulse_source takes `xp.where(mask, power_density, 0)` on the selection box: the expression may be non-finite
   outside (0 * NaN would fill the run with NaN).
 - initial_velocity: written into vx / vy at apply (single precision only), at the staggered face centres
@@ -185,6 +190,8 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   `SurfaceMonitor.quadrature` (built once): triangles read fem.assembly's edge-rule cache (`_edge_quadrature(self.full,
   entities, order + 2 + axisymmetric)`), tetrahedra `triangle_face_rule(order + 2)`: a change of either default degree /
   face rule in fem.assembly / assembly3d changes it here too.
+- Probes keep their element dofs and basis weights (`_point_weights`, at add): a probe read is one dot product, so a
+  change of the field's basis / geometry order must change `_point_weights` too.
 - Shown fields: `_show_solution` keeps host `_scattered` and `_background_nodal`; `_publish` writes only per-element
   state (on cupy after a cuDSS solve from `system.device_values()`). The host total is formed on first read: readers
   call `_host_total()`, never `_total` directly.

@@ -20,6 +20,13 @@ from .metric import GRIDS, face_positions, ring_angle, window_metric, window_met
 from .monitors import FieldProbe
 from .solver_base import PhysicsSolver
 
+# gpu PCGSolver preconditioners whose CG check blocks are replayed as CUDA graphs (pcg factorize capture_blocks): a
+# Jacobi block is 16 iterations of ~6 launches, launch-bound below ~1e5 cells. Every array a block reads (A_solve data,
+# inverse_diagonal, the solution vector) is replaced only together with a new factorize, which drops the graphs.
+# 'multigrid': a block of 2 iterations with its V-cycles (their kernels launched into the block's capture instead of
+# their own graph; the hierarchy is rebuilt only by factorize too).
+CAPTURED_PRECONDITIONERS = ('jacobi', 'multigrid')
+
 
 class BCSide:
     """Outer-face condition: dirichlet (value required = the unknown at the face), neumann (value = inward flux
@@ -844,7 +851,7 @@ class DiffusionSystem:
         self.rhs_offset = free * (rhs_drive - coupling_to_fixed)
 
         self.inverse_diagonal = 1.0 / solve_data[diagonal_positions]
-        self.linear_solver.factorize(self.A_solve, self.inverse_diagonal)
+        self._factorize_solver()
 
         xp.copyto(self.unknown2d, fixed_values, where=fixed)
         self.fixed_values = fixed_values
@@ -935,12 +942,22 @@ class DiffusionSystem:
         self.rhs_drive = rhs_bc + self.extra_rhs
         self.rhs_offset = self.free * (self.rhs_drive - coupling_to_fixed)
         self.inverse_diagonal = 1.0 / solve_diagonal
-        self.linear_solver.factorize(self.A_solve, self.inverse_diagonal)
+        self._factorize_solver()
         xp.copyto(self.unknown2d, self.fixed_values, where=fixed)
         self.capacity_over_dt = capacity_over_dt
         self.n_diagonal_refreshes += 1
         self.operator_dirty = False
         return True
+
+    def _factorize_solver(self) -> None:
+        """Bind A_solve and the Jacobi diagonal to the linear solver; a gpu PCGSolver with a CAPTURED_PRECONDITIONERS
+        preconditioner replays its CG check blocks as CUDA graphs."""
+        solver = self.linear_solver
+        if isinstance(solver, PCGSolver):
+            capture = self.backend == 'gpu' and solver.preconditioner in CAPTURED_PRECONDITIONERS
+            solver.factorize(self.A_solve, self.inverse_diagonal, capture_blocks=capture)
+        else:
+            solver.factorize(self.A_solve, self.inverse_diagonal)
 
     def _check_anchors(self, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells):
         """Anchor check of an assembly: _label_anchors only when the per-cell anchor code differs from the last checked

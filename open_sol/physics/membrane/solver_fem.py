@@ -28,7 +28,7 @@ from ...fem.mesher import MERGE_TOLERANCE
 from ...fem.pml import DEFAULT_PML_REFLECTION, pml_ring
 from ...fem.renderer import FEMFieldRenderer
 from .bending_fem import assemble_plate_bending, assemble_seam_bending, seam_phase
-from .plate_ports import PlatePort
+from .plate_ports import PlatePort, link_twin_strips
 from .ports import (PORT_UNIFORM_RTOL, MembranePort, ProjectionRecord, folded_mode, mode_projector, port_edges,
                     unfolded_modes)
 from .renderer import MEMBRANE_FIELD_INFOS, PHASOR_FIELD_NAMES, shown_label
@@ -77,6 +77,7 @@ class MembraneTriangleSystem(ScalarHarmonicSystem):
                 count = len(port.positions)
                 rows.append(np.repeat(port.positions, count))
                 cols.append(np.tile(port.positions, count))
+            link_twin_strips(self.ports)   # plate ports of equal strips share their per-frequency strip modes
             size = self.dofs.n_dofs
             terms['stiffness'].append(_to_csr(rows, cols, [np.zeros(len(part)) for part in rows], (size, size)))
         return terms

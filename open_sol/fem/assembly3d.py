@@ -17,24 +17,20 @@ numpy, scipy inside functions."""
 # blocks by bincount instead of COO -> CSR (same canonical pattern, explicit zeros kept).
 import functools
 import hashlib
-import weakref
 from dataclasses import dataclass
 
 import numpy as np
 
-from .assembly import (DirichletSystem, _tensor_blocks, _to_csr, append_blocks, eliminate_dirichlet,   # noqa: F401
-                       restrict)   # DirichletSystem, eliminate_dirichlet, restrict re-exported
+from .assembly import (PATTERN_REUSE_CALLS, DirichletSystem, _tensor_blocks, _to_csr, append_blocks,   # noqa: F401
+                       blocks_csr, eliminate_dirichlet, restrict)   # DirichletSystem, eliminate_dirichlet, restrict,
+#                                                                     PATTERN_REUSE_CALLS re-exported
 from .elements3d import (lagrange_basis_3d, nedelec_basis_3d, piola_curls_3d, piola_vectors_3d,
                          tetrahedron_geometry)
 from .fixed_pattern import scatter_add
 from .quadrature3d import TETRAHEDRON_MAX_DEGREE, tetrahedron_rule, triangle_face_rule
 
 CHUNK_ELEMENTS = 1000   # elements per vectorised block: (chunk, q <= 64, 20, 3) complex arrays stay <= ~60 MB
-PATTERN_REUSE_CALLS = 4            # Lagrange assemblies over one element set before its slot map is kept (its build
-#                                    costs ~3-4 COO -> CSR conversions: a first build of up to 3 terms never pays it)
-PATTERN_MAX_SLOT_BYTES = 1 << 28   # largest kept slot map (int32 per block entry); above it COO -> CSR every time
 FACE_QUADRATURE_ENTRIES = 32      # face sets kept per DofMap3D (_face_entities), then the cache is cleared
-_PATTERNS = weakref.WeakKeyDictionary()   # DofMap3D -> [elements digest, calls, FixedPatternCsr | None, element_dofs]
 
 
 def element_chunks_3d(mesh, elements):
@@ -90,13 +86,16 @@ def _component_blocks(test_vectors, trial_vectors) -> np.ndarray:
 def assemble_nedelec_3d(dofs, curl_coefficient=None, mass_coefficient=None, elements=None, degree=None) -> tuple:
     """(K, M) scipy CSR (n_dofs, n_dofs): K = int curl W_i . nu curl W_j, M = int W_i . eps W_j over `elements` (None =
     all, indices or a bool mask) with diagonal-tensor coefficients nu = curl_coefficient, eps = mass_coefficient (None
-    skips that matrix: None returned); rule degree default 2 x the Nedelec degree."""
+    skips that matrix: None returned); rule degree default 2 x the Nedelec degree. Element-constant coefficients take
+    the affine reference form (J^T nu J / |det J| resp. |det J| J^-1 eps J^-T against 9 reference products); callables
+    are integrated point by point."""
     import scipy.sparse
     if dofs.family != 'nedelec':
         raise ValueError('assemble_nedelec_3d needs a Nedelec dof map')
     mesh = dofs.mesh
     elements = _element_list(mesh, elements)
-    rule = tetrahedron_rule(2 * dofs.order if degree is None else int(degree))
+    rule_degree = 2 * dofs.order if degree is None else int(degree)
+    rule = tetrahedron_rule(rule_degree)
     n_points = len(rule.weights)
     reference_vectors, reference_curls = nedelec_basis_3d(dofs.order, rule.points)
     needs_points = callable(curl_coefficient) or callable(mass_coefficient)
@@ -108,11 +107,25 @@ def assemble_nedelec_3d(dofs, curl_coefficient=None, mass_coefficient=None, elem
         local = dofs.element_dofs[chunk]
         rows.append(np.repeat(local, n_local, axis=1).ravel())
         columns.append(np.tile(local, (1, n_local)).ravel())
-        if curl_coefficient is not None:
+        if curl_coefficient is not None and not callable(curl_coefficient):
+            nu = coefficient_at(curl_coefficient, None, chunk, mesh.n_elements, 1)[:, 0]   # (m, 3)
+            jacobian = geometry.jacobian
+            mapped = (np.einsum('mca,mc,mcb->mab', jacobian, nu, jacobian)
+                      / np.abs(geometry.determinant)[:, None, None])
+            curl_blocks.append((mapped.reshape(len(chunk), 9)
+                                @ _nedelec_reference_products(dofs.order, rule_degree, 'curl')).ravel())
+        elif curl_coefficient is not None:
             curls = piola_curls_3d(reference_curls, geometry)
             nu = coefficient_at(curl_coefficient, points, chunk, mesh.n_elements, n_points) * weights[..., None]
             curl_blocks.append(_component_blocks(curls * nu[:, :, None, :], curls).ravel())
-        if mass_coefficient is not None:
+        if mass_coefficient is not None and not callable(mass_coefficient):
+            eps = coefficient_at(mass_coefficient, None, chunk, mesh.n_elements, 1)[:, 0]   # (m, 3)
+            inverse = geometry.inverse
+            mapped = (np.einsum('mac,mc,mbc->mab', inverse, eps, inverse)
+                      * np.abs(geometry.determinant)[:, None, None])
+            mass_blocks.append((mapped.reshape(len(chunk), 9)
+                                @ _nedelec_reference_products(dofs.order, rule_degree, 'mass')).ravel())
+        elif mass_coefficient is not None:
             vectors = piola_vectors_3d(reference_vectors, geometry)
             eps = coefficient_at(mass_coefficient, points, chunk, mesh.n_elements, n_points) * weights[..., None]
             mass_blocks.append(_component_blocks(vectors * eps[:, :, None, :], vectors).ravel())
@@ -123,10 +136,22 @@ def assemble_nedelec_3d(dofs, curl_coefficient=None, mass_coefficient=None, elem
     def matrix(blocks):
         if not blocks:
             return scipy.sparse.csr_matrix(shape)
-        return scipy.sparse.coo_matrix((np.concatenate(blocks), (rows, columns)), shape=shape).tocsr()
+        return _to_csr([rows], [columns], [np.concatenate(blocks)], shape)
 
     return (None if curl_coefficient is None else matrix(curl_blocks),
             None if mass_coefficient is None else matrix(mass_blocks))
+
+
+@functools.lru_cache(maxsize=None)
+def _nedelec_reference_products(order, degree, kind) -> np.ndarray:
+    """Read-only (9, n n) reference integrals at tetrahedron_rule(degree), row 3 a + b: 'mass' sum_q w W_i[a] W_j[b],
+    'curl' sum_q w curl W_i[a] curl W_j[b] (no signs: ascending node orientation)."""
+    rule = tetrahedron_rule(degree)
+    vectors, curls = nedelec_basis_3d(order, rule.points)   # (q, n, 3) each
+    basis = vectors if kind == 'mass' else curls
+    products = np.einsum('q,qia,qjb->abij', rule.weights, basis, basis).reshape(9, -1)
+    products.flags.writeable = False
+    return products
 
 
 # ---- Lagrange coefficients ----
@@ -204,31 +229,11 @@ def _reference_products(order, degree, kind) -> np.ndarray:
     return products
 
 
-def _kept_pattern(dofs, elements):
-    """FixedPatternCsr of dofs' element blocks over `elements` once PATTERN_REUSE_CALLS Lagrange assemblies asked for
-    that element set (one set per dof map, kept for the map's lifetime; slot map <= PATTERN_MAX_SLOT_BYTES), else None:
-    a one-off build stays COO -> CSR (building the slot map costs more than one conversion)."""
-    from .fixed_pattern import FixedPatternCsr
-    digest = hashlib.blake2b(np.ascontiguousarray(elements), digest_size=16).hexdigest()
-    try:
-        state = _PATTERNS.get(dofs)
-    except TypeError:   # not weak-referenceable: no reuse
-        return None
-    if state is None or state[0] != digest or state[3] is not dofs.element_dofs:
-        state = [digest, 0, None, dofs.element_dofs]
-        _PATTERNS[dofs] = state
-    state[1] += 1
-    if state[2] is None and state[1] >= PATTERN_REUSE_CALLS:
-        local = dofs.element_dofs[elements]
-        if 4 * local.size * local.shape[1] <= PATTERN_MAX_SLOT_BYTES:
-            state[2] = FixedPatternCsr(dofs.n_dofs, [local])
-    return state[2]
-
-
 def _assemble_lagrange(dofs, elements, parts):
     """CSR (n_dofs, n_dofs) of element blocks over the listed elements: parts = [(selected: bool over the element list
-    or None = all, block(chunk) -> (m, n, n))]; summed on the kept slot map of the element set (_kept_pattern), else by
-    COO -> CSR. Either way canonical, explicit zeros kept (the pattern never depends on the values)."""
+    or None = all, block(chunk) -> (m, n, n))]; summed on the kept slot map of the element set
+    (assembly.blocks_csr), else by COO -> CSR. Either way canonical, explicit zeros kept (the pattern never depends on
+    the values)."""
     import scipy.sparse
     elements = _element_list(dofs.mesh, elements)
     shape = (dofs.n_dofs, dofs.n_dofs)
@@ -246,14 +251,7 @@ def _assemble_lagrange(dofs, elements, parts):
         ordered = np.empty_like(blocks)
         ordered[np.concatenate(order)] = blocks
         blocks = ordered
-    pattern = _kept_pattern(dofs, elements)
-    if pattern is not None:
-        return scipy.sparse.csr_matrix((pattern.summed(0, blocks), pattern.indices.copy(), pattern.indptr.copy()),
-                                       shape=shape)
-    local = dofs.element_dofs[elements]
-    rows = np.broadcast_to(local[:, :, None], blocks.shape).ravel()
-    columns = np.broadcast_to(local[:, None, :], blocks.shape).ravel()
-    return scipy.sparse.coo_matrix((blocks.ravel(), (rows, columns)), shape=shape).tocsr()
+    return blocks_csr(dofs, elements, blocks)
 
 
 def _volume_weights(geometry, rule) -> np.ndarray:

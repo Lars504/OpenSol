@@ -354,6 +354,9 @@ def build_session(spec, emit, on_session=None, build=None, registry=None, live_p
     return session, None
 
 
+_COLLECTED_LIVE = {'bytes': None}   # (pool used, cuDSS external) bytes right after the last collecting release_session
+
+
 def release_session(on_session=None, session=None, emit=None, baseline_bytes=None, collect_garbage=True):
     """on_session(None), session.close(), then free cupy's pools (GPU thread; collect_garbage: gc.collect first); with
     emit, pool use above the baseline (baseline_bytes, else session.pool_baseline_bytes) is logged as a leak. Returns
@@ -366,6 +369,8 @@ def release_session(on_session=None, session=None, emit=None, baseline_bytes=Non
         session.close()
     gpu_memory.release_all(collect_garbage=collect_garbage)
     used_bytes = gpu_memory.pool_used_bytes()
+    if collect_garbage:   # what stays live after a collect (_run_single skips the next one while it is unchanged)
+        _COLLECTED_LIVE['bytes'] = (used_bytes, cudss_factor.external_live_bytes())
     if emit is not None and baseline_bytes is not None:
         residual_bytes = used_bytes - baseline_bytes
         if residual_bytes > gpu_memory.LEAK_TOLERANCE_BYTES:
@@ -378,9 +383,10 @@ def release_session(on_session=None, session=None, emit=None, baseline_bytes=Non
 
 def _run_single(spec, registry, build, emit, control, service, on_session):
     """Build and run one spec; summary dict, or None after a build failure (StudyFailed emitted)."""
-    # the last close collected already: gc.collect (25 ms) only while device arrays or cuDSS solvers are still live
-    release_session(on_session, collect_garbage=gpu_memory.pool_used_bytes() > 0
-                    or cudss_factor.external_live_bytes() > 0)
+    # the last close collected already: gc.collect (25 ms) only while device arrays or cuDSS solvers are live beyond
+    # what that collect left (pool used bytes were never 0 after a close: solidmech3d round 5)
+    live = (gpu_memory.pool_used_bytes(), cudss_factor.external_live_bytes())
+    release_session(on_session, collect_garbage=live != (0, 0) and live != _COLLECTED_LIVE['bytes'])
     session, failure = build_session(spec, emit, on_session, build=build, registry=registry)
     if failure is not None:
         emit(StudyFailed(f'build failed: {failure.message}', failure.traceback,

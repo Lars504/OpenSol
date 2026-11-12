@@ -52,7 +52,7 @@ def order_factorizations(solver, assembly, orders, owner=None):
         solver.set_operator(base, bor_layout(assembly.shape, unknown_index), (), owner=owner, matrix_terms=matrix_terms)
         coefficients = (np.array([[order, order ** 2] for order in class_orders], dtype=np.complex128) if matrix_terms
                         else np.zeros((len(class_orders), 0), dtype=np.complex128))
-        step = solver.chunk_size(len(class_orders), 1)
+        step = solver.chunk_size(len(class_orders), 1, kept=True)
         for start in range(0, len(class_orders), step):
             factor = solver.factorize(coefficients[start:start + step])
             try:   # also on an exception in the consumer or an early close of the generator
@@ -93,7 +93,7 @@ def line_block_bytes(shape, precision, n_shifts=1):
     entries = 25 * n_unknowns
     return (operator_bytes(n_blocks, block_size, n_unknowns, entries, 0, precision, complex_operator=True,
                            n_matrix_terms=2, matrix_entries=2 * entries),
-            int(n_shifts) * shift_bytes(n_blocks, block_size, n_unknowns, 1, precision, matrix_terms=True))
+            int(n_shifts) * shift_bytes(n_blocks, block_size, n_unknowns, 1, precision, matrix_terms=True, kept=True))
 
 
 def driven_line_block_bytes(shape, precision, n_operators, entries):
@@ -104,7 +104,7 @@ def driven_line_block_bytes(shape, precision, n_operators, entries):
     nr, nz = shape
     n_unknowns = 3 * nr * nz + nr + nz
     n_blocks, block_size = min((nz + 1, 3 * nr + 1), (nr + 1, 3 * nz + 1), key=lambda pair: pair[0] * pair[1] ** 3)
-    factor = shift_bytes(n_blocks, block_size, n_unknowns, 1, precision)
+    factor = shift_bytes(n_blocks, block_size, n_unknowns, 1, precision, kept=True)
     if int(n_operators) < 2:
         return operator_bytes(n_blocks, block_size, n_unknowns, entries, 0, precision, complex_operator=True) + factor
     return int(n_operators) * (operator_shift_bytes(n_blocks, block_size, n_unknowns, entries, precision) + factor)

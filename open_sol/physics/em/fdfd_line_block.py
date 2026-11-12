@@ -42,4 +42,4 @@ def fdfd_line_block_bytes(nx, ny, periodic_x, periodic_y, precision, entries_per
     n_unknowns = nx * ny
     return (operator_bytes(n_blocks, block_size, n_unknowns, entries_per_row * n_unknowns, 0, precision,
                            complex_operator=True),
-            shift_bytes(n_blocks, block_size, n_unknowns, 1, precision))
+            shift_bytes(n_blocks, block_size, n_unknowns, 1, precision, kept=True))

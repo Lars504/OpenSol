@@ -21,7 +21,10 @@ from .mode_sets import is_propagating
 
 def overlap_matrix(left, right):
     """(N_left, N_right) unconjugated <e_left,m, h_right,n> = sum e h w s over the line cells."""
-    if left.weights.shape != right.weights.shape or not np.allclose(left.weights, right.weights, rtol=1e-12, atol=0.0):
+    same_line = left.weights is right.weights or (left.weights.shape == right.weights.shape and (
+        np.array_equal(left.weights, right.weights)
+        or np.allclose(left.weights, right.weights, rtol=1e-12, atol=0.0)))
+    if not same_line:
         raise ValueError('overlap_matrix: the two mode sets live on different transverse lines')
     return (left.e * left.weights[None, :]) @ right.h.T
 
@@ -51,15 +54,17 @@ def interface_defects(smatrix, left, right):
     s21^T| / max |s21|."""
     largest = max(float(np.max(np.abs(smatrix.s21))), float(np.max(np.abs(smatrix.s12))), 1e-300)
     reciprocity = float(np.max(np.abs(smatrix.s12 - smatrix.s21.T))) / largest
-    defects = []
+    worst = -1.0
     for incident, reflection, transmission, other in ((left, smatrix.s11, smatrix.s21, right),
                                                       (right, smatrix.s22, smatrix.s12, left)):
         incident_mask, other_mask = is_propagating(incident), is_propagating(other)
-        for column in np.flatnonzero(incident_mask):
-            carried = (np.sum(np.abs(reflection[incident_mask, column]) ** 2 * incident.power[incident_mask])
-                       + np.sum(np.abs(transmission[other_mask, column]) ** 2 * other.power[other_mask]))
-            defects.append(abs(1.0 - float(carried) / float(incident.power[column])))
-    return (max(defects) if defects else float('nan')), reciprocity
+        columns = np.flatnonzero(incident_mask)
+        if columns.size == 0:
+            continue
+        carried = (incident.power[incident_mask] @ np.abs(reflection[np.ix_(incident_mask, columns)]) ** 2
+                   + other.power[other_mask] @ np.abs(transmission[np.ix_(other_mask, columns)]) ** 2)
+        worst = max(worst, float(np.max(np.abs(1.0 - carried / incident.power[columns]))))
+    return (worst if worst >= 0.0 else float('nan')), reciprocity
 
 
 def cascade_mode_sets(mode_sets, lengths):

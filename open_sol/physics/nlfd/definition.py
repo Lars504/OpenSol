@@ -1383,7 +1383,7 @@ def _time_estimate(settings_values, mesh, context):
                          limit=channel_limit, counter=physics_counter + ('solves',)),
              te.TimeItem('nonlinear polarisation densities', 'evaluation', density_count, kind, tuple(density),
                          limit=density_limit)]
-    krylov = (te.elementwise(store, 2 * GMRES_RESTART, 2, COMPLEX128_BYTES, launches=8), te.Sync(4),
+    krylov = (te.elementwise(store, 2 * GMRES_RESTART, 2, COMPLEX128_BYTES, launches=8), te.Sync(2),
               te.PythonCalls(30 + 4 * n_channels))   # CGS2 over half the restart basis on average
     if newton:
         count, limit = _over(outer, passes, passes_limit)
@@ -1393,7 +1393,7 @@ def _time_estimate(settings_values, mesh, context):
     elif pump_depleted:
         count, limit = _over(outer, passes, passes_limit)
         depth = int(settings_values['anderson_depth'])
-        anderson = (te.elementwise(store, 2 * depth + 4, 3, COMPLEX128_BYTES, launches=10), te.Sync(2 * n_channels),
+        anderson = (te.elementwise(store, 2 * depth + 4, 3, COMPLEX128_BYTES, launches=10), te.Sync(2),
                     te.PythonCalls(20 + 4 * n_channels))
         items.append(te.TimeItem('Anderson mixing sweeps', 'sweep', count, 'guess', anderson, limit=limit,
                                  counter=physics_counter + ('sweeps',) if single else ()))
@@ -1504,8 +1504,8 @@ def _memory_estimate(settings_values, mesh, context):
                 transient_items.append(('absorbed power', 'absorbed-power temporaries (float64 + 4 x complex128)',
                                         (FLOAT64_BYTES + 4 * COMPLEX128_BYTES) * n_cells))
                 if _enabled_features(physics_spec, SHEET_NONLINEARITY.name):   # sheet SPM / XPM tap scatter
-                    transient_items.append(('absorbed power', 'sheet absorption scatter (complex128 + 2 x float64)',
-                                            (COMPLEX128_BYTES + 2 * FLOAT64_BYTES) * n_cells))
+                    transient_items.append(('absorbed power', 'sheet absorption scatter (complex128 + float64)',
+                                            (COMPLEX128_BYTES + FLOAT64_BYTES) * n_cells))
             else:   # undepleted: the float64 total, its float32 cast and one hz channel's collocated centre fields
                 transient_items.append(('absorbed power', 'absorbed-power temporaries (float64 + float32 + hz '
                                         'centre fields)', (FLOAT64_BYTES + FLOAT32_BYTES

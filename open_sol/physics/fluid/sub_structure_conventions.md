@@ -16,6 +16,20 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   float64 in numba. It compiles with `cache=True` (uncached, the ~9 s compile lands in whichever of fluid_step_numba /
   the cpu_gpu parities runs first, so their wall times swap with the selftest order; a "Cannot cache" NumbaWarning = a
   closure value stopped pickling). half_storage stays gpu-only.
+- Step arguments (`_step_arguments`, `lattice.STORE_*`): `_run_steps(n, final_mode)` runs all but the last step at
+  STORE_BOUNDARY (lattice macros written on the window boundary cells only, for the pressure rule's previous
+  velocity; interior values stale), the last at STORE_LATTICE (march: the check reads them) or STORE_PUBLISHED
+  (transient: lattice_to_physical fused in, zeros in solids; `_extend_into_ring` after). Host code reading
+  `_lattice_x / _y / _deviation` does so only between calls. On the gpu, one fluid viscosity reads 1-element rates
+  (`relaxation_stride` 0, `_update_relaxation`) and a physics that never got a force (`_force_present`: add_body_force
+  with a non-zero value, inject_source) reads force element 0 (`force_stride` 0: all zero); the host twins take
+  stride 0 too (broadcast / np.full) but the solver passes stride 1 there (one numba signature). A new writer of
+  body_force_* sets `_force_present`.
+- Step graphs (gpu, `STEP_GRAPHS`): STORE_BOUNDARY runs of >= GRAPH_STEPS (32, even) steps replay CUDA graphs
+  (`_fixed_block`, as em3d: eager first, then capture; a failed capture warns and launches singly). The key holds
+  the argument ids (kept alive) and scalar values: populations, macros, rates, forces, face tables are rewritten in
+  place, never reassigned while a graph lives; a new reassignable kernel argument joins `_step_arguments` (so the
+  key). The run-time recipe counts one launch per march step.
 - Stepper precision (`FluidPhysics(precision=)`): half_storage stores g x POPULATION_SCALE (1024) as float16 via
   POP_LOAD / POP_STORE, everything else float32. Transient only (raises, validate errors). Host code writing
   populations goes through `_store_populations`; masking multiplies the uint16 bits (`stored = half_bits(array);
@@ -87,7 +101,9 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   heated_microchannel uses library water.
 - `selftests_backend` (heavy): fluid_cpu_gpu (incl. fluid_bouzidi_channel, measured = max u_x so the parity is on a flow
   value), fluid_heat_convection_cpu_gpu, fluid_step_numba (`.cpu` vs `kernel(None, None, args)` shares the numba compile
-  with fluid_cpu_gpu; a twin that fell back to numpy gives error inf; without numba it passes vacuously).
+  with fluid_cpu_gpu; a twin that fell back to numpy gives error inf; without numba it passes vacuously; at
+  STORE_PUBLISHED into a ring-padded full grid, the first face set at stride 0). The gpu store modes, strides and
+  step graphs are covered only by the fluid_cpu_gpu parities.
 
 ## Triangles / cuDSS: decision (agent_help batch, 2026-10-23; nothing implemented)
 - LBM stays on the uniform tensor lattice (`grids = ('tensor',)`); no unstructured LBM (loses exact streaming, adds

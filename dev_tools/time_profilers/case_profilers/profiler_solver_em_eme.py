@@ -50,6 +50,8 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     (f'{EME}.cascade:CascadeBuilder.finish', 'cascade: CascadeBuilder.finish'),
     (f'{EME}.cascade:Cascade.section_amplitudes', 'cascade: Cascade.section_amplitudes'),
     (f'{EME}.adjoint:section_gradient', 'adjoint: section_gradient'),
+    (f'{EME}.adjoint:slice_exponentials', 'adjoint: slice_exponentials'),
+    (f'{EME}.adjoint:slice_products', 'adjoint: slice_products'),
     (f'{EME}.adjoint:objective_cotangents', 'adjoint: objective_cotangents'),
     (f'{EME}.renderer:EMERenderer.device_field', 'renderer: EMERenderer.device_field'),
 )

@@ -403,17 +403,18 @@ def sheet_site_polarizations(terms, grid_fields, sheets, components, omega, xp, 
 
 
 def _scatter_add(target, index, values, xp):
-    """target[index] += values with repeated indices summed (flat complex128 target)."""
+    """target[index] += values with repeated indices summed (flat contiguous complex128 target); cupy: one float64
+    scatter into the target's real view (interleaved re / im slots), no full-grid temporaries."""
     index, values = index.ravel(), values.ravel()
     if xp is np:
         from ...fem.fixed_pattern import scatter_add   # contract nlfd_tables_numpy_only: inside the function
         scatter_add(target, index, values)
         return
     import cupyx
-    for part, unit in ((values.real, 1.0), (values.imag, 1j)):
-        accumulated = xp.zeros(target.shape, dtype=xp.float64)
-        cupyx.scatter_add(accumulated, index, xp.ascontiguousarray(part))
-        target += unit * accumulated
+    slots = 2 * index
+    interleaved = xp.stack((slots, slots + 1), axis=1).ravel()
+    parts = xp.ascontiguousarray(values, dtype=xp.complex128).view(xp.float64)
+    cupyx.scatter_add(target.view(xp.float64), interleaved, parts)
 
 
 def sheet_grid_density(site_polarizations, sheets, components, shape, xp):

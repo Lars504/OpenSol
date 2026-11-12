@@ -571,8 +571,9 @@ def fdtd_time_estimate(polarization):
 def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
     """Explicit 2D Yee engine (ez / hz): per Courant step (mesh dt) its arrays and its features' (DFT monitors, poles,
     CPML) streamed once; per field set (Bloch k != 0: two) the H / E kernels plus an H and an E launch per CPML side
-    (x their host overhead weight), the outer-face rows, the PEC keep, conformal faces and pole kernels; two per
-    enabled feature (sources, probes, monitors); cpu: numba Yee twins, numpy for the rest."""
+    (x their host overhead weight; gpu: replayed as 1 + n_sets step graphs), the outer-face rows, the PEC keep,
+    conformal faces and pole kernels; two per enabled feature (sources, probes, monitors); cpu: numba Yee twins, numpy
+    for the rest."""
     features = [feature for feature in context.physics_spec.features if feature.enabled]
     faces = [settings_values.get(f'bc_{face}') for face in _CPML_FACES_2D]
     cpml_sides = faces.count('cpml')
@@ -583,10 +584,15 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
     conformal = pec and context.spec.solver_defaults.conformal_boundaries is True
     memory_items = context.memory.items if context.memory is not None else ()
     poles = any(label.endswith('dispersive poles') and size > 0 for label, size in memory_items)
-    per_set = (wall_rows + (_PEC_KEEP_LAUNCHES[polarization] if pec else 0) + (1 if conformal else 0)
+    from .solvers.fdtd_2d_base import STEP_GRAPHS
+    per_set = (wall_rows + (_PEC_KEEP_LAUNCHES[polarization] if pec else 0)
                + (_POLE_LAUNCHES[polarization] if poles else 0))
     numba_launches = _FIELD_LAUNCH_WEIGHT * n_sets * 2
-    launches = numba_launches + n_sets * (_FIELD_LAUNCH_WEIGHT * 2 * cpml_sides + per_set) + 2 * len(features)
+    if context.backend == 'gpu' and STEP_GRAPHS:   # one H graph of every set + one E graph per set (fdtd_2d_base)
+        field_launches = 1 + n_sets
+    else:
+        field_launches = numba_launches + n_sets * (_FIELD_LAUNCH_WEIGHT * 2 * cpml_sides + (1 if conformal else 0))
+    launches = field_launches + n_sets * per_set + 2 * len(features)
     # cpu: only the H / E Yee kernels have numba twins (fdtd_*_2d_kernels); CPML psi, poles, gain, loss and monitors
     # run numpy twins
     return explicit_step_estimate(context, 'Yee', mesh.dt, launches=launches, numba_items=_numba_stepped,

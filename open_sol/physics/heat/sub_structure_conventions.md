@@ -45,7 +45,8 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   h / external are arrays per mesh edge / face (`EdgeCondition`; fem.diffusion `robin_assembled` / `robin_anchoring`:
   an array is assembled on all its entities, zeros included, and anchors where h > 0), linearised at the edge
   midpoint / face centroid T (hooks `_entity_rise` etc.); the same steady loop, but each re-linearisation changes h,
-  so it re-assembles and refactorises. Self-tests heat_radiation_slab (tensor), heat_radiation_slab_triangles (P2).
+  so it re-assembles (only the Robin term: the fem diffusion systems keep unchanged terms and slot maps, fem sub file
+  "Re-assembly") and refactorises. Self-tests heat_radiation_slab (tensor), heat_radiation_slab_triangles (P2).
 - `Q` is the coupled slot (overwritten per transfer), `Q_ext` the applied sources; W/m^3 times the cell area (3D:
   volume). Model vocabulary `cp`; `cp_` only in library `Material.thermal` (`Material.model_properties` renames it).
 

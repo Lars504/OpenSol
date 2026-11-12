@@ -1596,7 +1596,7 @@ class _Validator:
             if solver_role is not None:   # the default precision applies per role (schema.resolved_solvers)
                 settings = self.spec.solver(node_name).settings
                 role_values = self.vctx.values(solver_type.params, with_node_precision(
-                    self.spec, solver_type, settings, solver_role, backend, solver_grid(self.spec, physics)))
+                    self.spec, solver_type, settings, solver_role, backend, solver_grid(self.spec, physics), study))
                 values = values if role_values is None else role_values
             misfit = solver_misfit(solver_type, values, physics_type, role, study, backend,
                                    solver_grid(self.spec, physics))
@@ -1625,7 +1625,7 @@ class _Validator:
         grid = solver_grid(self.spec, physics)
         fitting = [f"'{name}'" for name, (solver_type, values) in node_values.items()
                    if not solver_misfit(solver_type, values, physics_type, role, study, backend, grid)]
-        automatic_type = solver_role.automatic(backend, grid)[0]
+        automatic_type = solver_role.automatic(backend, grid, study)[0]
         return 'fitting: ' + ', '.join([f"Automatic ('{automatic_type}': leave the role out)"] + fitting)
 
     def _check_feature_precisions(self, physics, physics_type):

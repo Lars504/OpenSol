@@ -143,6 +143,10 @@ ports, 'eigen' solver role).
   face_scale for hz).
 - J = sum of power fractions (unit 1, `EMEBase.objective_unit`, passed to `DesignRegion(objective_unit=)`);
   eps_sensitivity in 1/m^2.
+- Slice integrals: `slice_products` takes `slice_exponentials` (per-mode e^{-jk s0} / e^{-jk (L - s1)} per slice, two
+  symmetric (N, N) integrals per distinct width, no N^2 exponentials); a section's calls with the same k and slices
+  share one (hz: derivative and face products; 3D: transverse and E_z). Keep every factor of modulus <= 1 (a factor
+  e^{+jk t} overflows on strongly evanescent modes).
 
 ## Self-tests (selftests.py, selftests3d.py)
 - 2D CPU cases on hand-built SlabLines (`_slab_line`: uniform cells, mu 1); model runs eme_lossy_film_absorption,

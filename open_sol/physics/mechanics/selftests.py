@@ -2,7 +2,7 @@
 of the CPU-vs-GPU parity case and the 'heated_waveguide_stress' template."""
 import numpy as np
 
-from ...model.schema import SelfTestCase
+from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import EXACT_CG_TOLERANCE, cell_edges, max_relative_error, with_exact_cg, worst_error
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, StudySpec)
@@ -297,6 +297,14 @@ _BILAYER_TEXT = (
     f'- nu + nu^2), pull reaction F = sum of sigma_xx h = {_bilayer_closed_forms()[3]:.6g} N/m and the left roller -F. '
     'error = max(max |u_x - eps_xx x| / d, max |u_y - u_y,exact| / max |u_y|, max strain errors / eps_xx, max stress '
     'and von Mises errors / max sigma_xx, |F_pull - F| / F, |F_left + F| / F, |F_bottom,y| / F)')
+# pcg 'mixed' (system.ElasticSystem._bind_linear_solver) on both backends: the gpu runs its CSR RawKernel products in
+# captured CG blocks, the cpu scipy's in-place kernel
+_MIXED_VARIANTS = (SelfTestVariant('mixed', tolerance=_TOLERANCE, precision='mixed', roles=('linear',)),
+                   SelfTestVariant('mixed_cpu', tolerance=_TOLERANCE, backend='cpu', precision='mixed',
+                                   roles=('linear',)))
+_MIXED_TEXT = ("Variants 'mixed' / 'mixed_cpu' repeat the run with pcg precision mixed (float32 inner CG on float32 "
+               'copies of the CSR and the 2 x 2 inverse blocks, float64 residual refreshes) at the same tolerance, on '
+               'the gpu and the cpu backend.')
 SELFTEST_CASES = (
     SelfTestCase(
         name='solid_bilayer_tension_graded', label='Solid mechanics: bilayer under tension on a graded mesh',
@@ -310,8 +318,9 @@ SELFTEST_CASES = (
                      'unequal-width elements, the Poisson contraction under plane strain, a material interface, the '
                      'roller / displacement supports, the natural traction-free faces, the cell-centre strains, '
                      'stresses and von Mises and the reaction read-out (the uniform-mesh run of the former '
-                     'solid_bilayer_tension is contained). Not yet run with the strain / von Mises items.'),
-        specs=_bilayer_specs, check=_check_bilayer),
+                     'solid_bilayer_tension is contained). Not yet run with the strain / von Mises items. '
+                     f'{_MIXED_TEXT}'),
+        specs=_bilayer_specs, check=_check_bilayer, variants=_MIXED_VARIANTS),
     SelfTestCase(
         name='solid_simple_shear', label='Solid mechanics: simple shear along x and y',
         description=(f'Plane-strain solid mechanics on a {_SHEAR_SIZE[0] * 1e6:g} x {_SHEAR_SIZE[1] * 1e6:g} um block '

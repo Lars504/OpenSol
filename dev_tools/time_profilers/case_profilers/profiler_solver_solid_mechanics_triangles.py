@@ -78,6 +78,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
 )) + tuple((f'{MODAL}:ModalPencil.{method}', f'modal: ModalPencil.{method}') for method in (
     '__init__', '_pencil', 'solve_at', '_shift_solve', '_candidates', '_resonance', 'release',
 )) + (
+    ('open_sol.fem.tangent_kernel2d:element_force_tangent_2d', 'fem: element_force_tangent_2d (numba kernel)'),
     ('open_sol.fem.assembly:pattern_sum', 'fem: pattern_sum'),
     ('open_sol.fem.assembly:assemble_load', 'fem: assemble_load'),
     ('open_sol.fem.assembly:nodal_average', 'fem: nodal_average'),

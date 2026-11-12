@@ -14,6 +14,10 @@ BLOCK_SIZE = 256
 FACE_WALL, FACE_SLIP, FACE_VELOCITY, FACE_PRESSURE, FACE_PERIODIC = 0, 1, 2, 3, 4
 FACE_KIND_NAMES = {FACE_WALL: 'wall', FACE_SLIP: 'slip', FACE_VELOCITY: 'velocity', FACE_PRESSURE: 'pressure',
                    FACE_PERIODIC: 'periodic'}
+# store_mode of a step: lattice macros (velocity, density deviation) on the window boundary cells only (the pressure
+# rule's previous velocity; interior values stay stale: steps no host code reads), on every fluid cell, or those plus
+# the SI fields (u_x, u_y, u_abs, pressure on the full grid: lattice_to_physical fused in). Host twins always store all.
+STORE_BOUNDARY, STORE_LATTICE, STORE_PUBLISHED = 0, 1, 2
 # Lattice directions (i along x): rest, +x, +y, -x, -y, (+x+y), (-x+y), (-x-y), (+x-y); weights of the rest equilibrium.
 DIRECTION_X = np.array([0, 1, 0, -1, 0, 1, -1, -1, 1])
 DIRECTION_Y = np.array([0, 0, 1, 0, -1, 1, 1, -1, -1])
@@ -37,6 +41,10 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # Speed: the bulk direction loop is unrolled (literal tables fold, g[] stays in registers); the face rules and the
 # Bouzidi links run out of line (__noinline__, __constant__ tables) so their dynamic indexing never spills a bulk cell
 # to local memory; periodic wraps compare-and-add, no integer modulo. Same arithmetic as the numpy / numba twins.
+# Bytes per cell (the kernel is bandwidth-bound on large windows): relaxation_stride 0 reads omega_plus / _minus[0]
+# (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force: all zero); store_mode
+# (STORE_*) skips the interior macros between host reads and fuses lattice_to_physical into the last step of a call
+# (published_* full-grid (nx, field_ny) arrays at window origin (window_x0, window_y0); 0 in solid cells).
 _STEP_SOURCE = r'''
 // direction tables of the out-of-line boundary helpers (dynamic q; the bulk loop keeps literal tables)
 __constant__ int LINK_X[9] = {0, 1, 0, -1, 0, 1, -1, -1, 1};
@@ -49,8 +57,8 @@ __constant__ float LINK_WEIGHT[9] = {4.f / 9.f, 1.f / 9.f, 1.f / 9.f, 1.f / 9.f,
 
 // lattice velocity u = sum c g* - F/2 of window cell (i, j) from its post-collision populations; false outside / solid
 __device__ bool neighbour_velocity(const pop_t* g_in, const bool* fluid, const float* force_x, const float* force_y,
-                                   int i, int j, const int wx, const int wy, const bool periodic_x,
-                                   const bool periodic_y, float* u)
+                                   const int force_stride, int i, int j, const int wx, const int wy,
+                                   const bool periodic_x, const bool periodic_y, float* u)
 {
     if (periodic_x) i = ((i % wx) + wx) % wx;
     if (periodic_y) j = ((j % wy) + wy) % wy;
@@ -61,8 +69,8 @@ __device__ bool neighbour_velocity(const pop_t* g_in, const bool* fluid, const f
     const pop_t* p = g_in + s;
     float g[9];
     for (int q = 1; q < 9; ++q) g[q] = POP_LOAD(p[q * n_cells]);
-    u[0] = g[1] - g[3] + g[5] - g[6] - g[7] + g[8] - 0.5f * force_x[s];
-    u[1] = g[2] - g[4] + g[5] + g[6] - g[7] - g[8] - 0.5f * force_y[s];
+    u[0] = g[1] - g[3] + g[5] - g[6] - g[7] + g[8] - 0.5f * force_x[s * force_stride];
+    u[1] = g[2] - g[4] + g[5] + g[6] - g[7] - g[8] - 0.5f * force_y[s * force_stride];
     return true;
 }
 
@@ -72,7 +80,7 @@ __device__ bool neighbour_velocity(const pop_t* g_in, const bool* fluid, const f
 // side neighbour: central at the cell (one-sided second order next to solids / window ends). Normal derivative of the
 // tangential component one-sided inward, the normal one from continuity (d_n u_n = -d_t u_t).
 __device__ void face_velocity_gradient(const pop_t* g_in, const bool* fluid, const float* force_x,
-                                       const float* force_y, const int face, const int i, const int j,
+                                       const float* force_y, const int fs, const int face, const int i, const int j,
                                        const int side, const float* u0, const int wx, const int wy,
                                        const bool periodic_x, const bool periodic_y, float* gradient)
 {
@@ -81,35 +89,36 @@ __device__ void face_velocity_gradient(const pop_t* g_in, const bool* fluid, con
     const int inward = (face % 2 == 0) ? 1 : -1;
     const int ni = x_face ? inward : 0, nj = x_face ? 0 : inward;
     float up[2], um[2], u2[2], u_side[2], u_inward[2], tangential[2] = {0.f, 0.f}, normal[2] = {0.f, 0.f};
-    const bool has_side = side != 0 && neighbour_velocity(g_in, fluid, force_x, force_y, i + side * ti,
+    const bool has_side = side != 0 && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + side * ti,
                                                           j + side * tj, wx, wy, periodic_x, periodic_y, u_side);
-    const bool has_plus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, i + ti, j + tj, wx, wy,
+    const bool has_plus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ti, j + tj, wx, wy,
                                                           periodic_x, periodic_y, up);
-    const bool has_minus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, i - ti, j - tj, wx, wy,
+    const bool has_minus = !has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i - ti, j - tj, wx, wy,
                                                            periodic_x, periodic_y, um);
     if (has_side) {
         for (int c = 0; c < 2; ++c) tangential[c] = side * (u_side[c] - u0[c]);
     } else if (has_plus && has_minus) {
         for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (up[c] - um[c]);
     } else if (has_plus) {
-        if (neighbour_velocity(g_in, fluid, force_x, force_y, i + 2 * ti, j + 2 * tj, wx, wy,
+        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + 2 * ti, j + 2 * tj, wx, wy,
                                periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (-3.f * u0[c] + 4.f * up[c] - u2[c]);
         } else {
             for (int c = 0; c < 2; ++c) tangential[c] = up[c] - u0[c];
         }
     } else if (has_minus) {
-        if (neighbour_velocity(g_in, fluid, force_x, force_y, i - 2 * ti, j - 2 * tj, wx, wy,
+        if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i - 2 * ti, j - 2 * tj, wx, wy,
                                periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) tangential[c] = 0.5f * (3.f * u0[c] - 4.f * um[c] + u2[c]);
         } else {
             for (int c = 0; c < 2; ++c) tangential[c] = u0[c] - um[c];
         }
     }
-    if (neighbour_velocity(g_in, fluid, force_x, force_y, i + ni, j + nj, wx, wy, periodic_x, periodic_y, u_inward)) {
+    if (neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ni, j + nj, wx, wy, periodic_x, periodic_y,
+                           u_inward)) {
         for (int c = 0; c < 2; ++c) normal[c] = inward * (u_inward[c] - u0[c]);
-        if (has_side && neighbour_velocity(g_in, fluid, force_x, force_y, i + ni + side * ti, j + nj + side * tj,
-                                           wx, wy, periodic_x, periodic_y, u2)) {
+        if (has_side && neighbour_velocity(g_in, fluid, force_x, force_y, fs, i + ni + side * ti,
+                                           j + nj + side * tj, wx, wy, periodic_x, periodic_y, u2)) {
             for (int c = 0; c < 2; ++c) normal[c] = 0.5f * (normal[c] + inward * (u2[c] - u_side[c]));
         }
     }
@@ -131,6 +140,7 @@ __device__ __forceinline__ int wrap_once(const int index, const int size)
 __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const float* __restrict__ velocity_x,
                                         const float* __restrict__ velocity_y, const bool* __restrict__ fluid,
                                         const float* __restrict__ force_x, const float* __restrict__ force_y,
+                                        const int force_stride,
                                         const int* __restrict__ face_kind, const float* __restrict__ face_values,
                                         const float wp, const int q, const int i, const int j, const int si,
                                         const int sj, const int n, const int wx, const int wy, const int face_length,
@@ -170,7 +180,7 @@ __device__ __noinline__ float face_link(const pop_t* __restrict__ g_in, const fl
         const float old_y = velocity_y[n];
         const float old_velocity[2] = {old_x, old_y};
         float gradient[4];
-        face_velocity_gradient(g_in, fluid, force_x, force_y, face, i, j, face < 2 ? -link_y : -link_x,
+        face_velocity_gradient(g_in, fluid, force_x, force_y, force_stride, face, i, j, face < 2 ? -link_y : -link_x,
                                old_velocity, wx, wy, periodic_x, periodic_y, gradient);
         const float cu = link_x * old_x + link_y * old_y;
         const float directional_shear = link_x * link_x * gradient[0] + link_x * link_y * (gradient[1] + gradient[2])
@@ -216,13 +226,25 @@ void lbm_trt_step(const pop_t* __restrict__ g_in, pop_t* __restrict__ g_out,
                   const float* __restrict__ force_x, const float* __restrict__ force_y,
                   const int* __restrict__ face_kind, const float* __restrict__ face_values,
                   const int wx, const int wy, const int face_length,
-                  const int* __restrict__ wall_row, const float* __restrict__ wall_fraction)
+                  const int* __restrict__ wall_row, const float* __restrict__ wall_fraction,
+                  const int relaxation_stride, const int force_stride, const int store_mode,
+                  float* __restrict__ published_x, float* __restrict__ published_y,
+                  float* __restrict__ published_speed, float* __restrict__ published_pressure,
+                  const float* __restrict__ mass_density, const int field_ny, const int window_x0,
+                  const int window_y0, const float velocity_scale, const float pressure_scale)
 {
     const int n = blockDim.x * blockIdx.x + threadIdx.x;
     const int n_cells = wx * wy;
-    if (n >= n_cells || !fluid[n]) return;
+    if (n >= n_cells) return;
     const int i = n / wy;
     const int j = n - i * wy;
+    if (!fluid[n]) {
+        if (store_mode == 2) {
+            const int f = (i + window_x0) * field_ny + j + window_y0;
+            published_x[f] = 0.f; published_y[f] = 0.f; published_speed[f] = 0.f; published_pressure[f] = 0.f;
+        }
+        return;
+    }
     // literal tables: indexed by the unrolled q only, so they fold into immediates (no local memory)
     const int cx[9] = {0, 1, 0, -1, 0, 1, -1, -1, 1};
     const int cy[9] = {0, 0, 1, 0, -1, 1, 1, -1, -1};
@@ -231,8 +253,8 @@ void lbm_trt_step(const pop_t* __restrict__ g_in, pop_t* __restrict__ g_out,
                         1.f / 36.f, 1.f / 36.f, 1.f / 36.f, 1.f / 36.f};
     const bool periodic_x = face_kind[0] == 4;
     const bool periodic_y = face_kind[2] == 4;
-    const float wp = omega_plus[n];
-    const float wm = omega_minus[n];
+    const float wp = omega_plus[n * relaxation_stride];
+    const float wm = omega_minus[n * relaxation_stride];
     float g[9];
 #pragma unroll
     for (int q = 0; q < 9; ++q) {
@@ -254,8 +276,8 @@ void lbm_trt_step(const pop_t* __restrict__ g_in, pop_t* __restrict__ g_out,
 #endif
             }
         } else {
-            g[q] = face_link(g_in, velocity_x, velocity_y, fluid, force_x, force_y, face_kind, face_values, wp, q, i,
-                             j, si, sj, n, wx, wy, face_length, periodic_x, periodic_y);
+            g[q] = face_link(g_in, velocity_x, velocity_y, fluid, force_x, force_y, force_stride, face_kind,
+                             face_values, wp, q, i, j, si, sj, n, wx, wy, face_length, periodic_x, periodic_y);
         }
     }
     float deviation = 0.f, momentum_x = 0.f, momentum_y = 0.f;
@@ -265,8 +287,8 @@ void lbm_trt_step(const pop_t* __restrict__ g_in, pop_t* __restrict__ g_out,
         momentum_x += cx[q] * g[q];
         momentum_y += cy[q] * g[q];
     }
-    const float fx = force_x[n];
-    const float fy = force_y[n];
+    const float fx = force_x[n * force_stride];
+    const float fy = force_y[n * force_stride];
     const float ux = momentum_x + 0.5f * fx;
     const float uy = momentum_y + 0.5f * fy;
     const float u_squared = ux * ux + uy * uy;
@@ -291,9 +313,20 @@ void lbm_trt_step(const pop_t* __restrict__ g_in, pop_t* __restrict__ g_out,
         g_out[q * n_cells + n] = POP_STORE(g[q] + relax_plus + relax_minus);
         g_out[o * n_cells + n] = POP_STORE(g[o] + relax_plus - relax_minus);
     }
-    velocity_x[n] = ux;
-    velocity_y[n] = uy;
-    density_deviation[n] = deviation;
+    if (store_mode != 0 || i == 0 || i == wx - 1 || j == 0 || j == wy - 1) {
+        velocity_x[n] = ux;
+        velocity_y[n] = uy;
+        density_deviation[n] = deviation;
+    }
+    if (store_mode == 2) {   // lattice_to_physical of this cell, same operation order
+        const int f = (i + window_x0) * field_ny + j + window_y0;
+        const float scaled_x = ux * velocity_scale;
+        const float scaled_y = uy * velocity_scale;
+        published_x[f] = scaled_x;
+        published_y[f] = scaled_y;
+        published_speed[f] = sqrtf(scaled_x * scaled_x + scaled_y * scaled_y);
+        published_pressure[f] = deviation * pressure_scale * mass_density[n];
+    }
 }
 '''
 
@@ -417,13 +450,36 @@ def _face_link_values(q, populations, fluid, lattice_velocity, kinds, face_value
     return values
 
 
+def _stride_expanded(array, stride, wx, wy):
+    """(wx, wy) values of a kernel argument read at n * stride: the array itself, or its element 0 broadcast."""
+    return array if int(stride) else np.broadcast_to(array.reshape(-1)[0], (wx, wy))
+
+
+def _publish_window_host(velocity_x, velocity_y, density_deviation, fluid, mass_density, store_mode, published_x,
+                         published_y, published_speed, published_pressure, window_x0, window_y0, velocity_scale,
+                         pressure_scale):
+    """The kernel's store_mode STORE_PUBLISHED part on the host: lattice_to_physical into the full-grid windows."""
+    if int(store_mode) != STORE_PUBLISHED:
+        return
+    wx, wy = fluid.shape
+    window = (slice(int(window_x0), int(window_x0) + wx), slice(int(window_y0), int(window_y0) + wy))
+    _to_physical_host(velocity_x, velocity_y, density_deviation, fluid, mass_density, velocity_scale, pressure_scale,
+                      published_x[window], published_y[window], published_speed[window], published_pressure[window])
+
+
 def _step_host(precision, bouzidi):
     """numpy twin of lbm_trt_step at a stepper precision (stored = g x POPULATION_SCALE under half_storage)."""
     scale = POPULATION_SCALE if precision == 'half_storage' else 1.0
 
     def lbm_trt_step_host(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus,
-                          force_x, force_y, face_kind, face_values, wx, wy, face_length, wall_row, wall_fraction):
+                          force_x, force_y, face_kind, face_values, wx, wy, face_length, wall_row, wall_fraction,
+                          relaxation_stride, force_stride, store_mode, published_x, published_y, published_speed,
+                          published_pressure, mass_density, field_ny, window_x0, window_y0, velocity_scale,
+                          pressure_scale):
         wx, wy = int(wx), int(wy)
+        omega_plus, omega_minus = (_stride_expanded(array, relaxation_stride, wx, wy)
+                                   for array in (omega_plus, omega_minus))
+        force_x, force_y = (_stride_expanded(array, force_stride, wx, wy) for array in (force_x, force_y))
         kinds = np.asarray(face_kind, dtype=np.int64)
         periodic_x, periodic_y = bool(kinds[0] == FACE_PERIODIC), bool(kinds[2] == FACE_PERIODIC)
         populations = g_in if scale == 1.0 else g_in.astype(np.float32) * np.float32(1.0 / scale)
@@ -494,6 +550,9 @@ def _step_host(precision, bouzidi):
         velocity_x[fluid] = ux[fluid]
         velocity_y[fluid] = uy[fluid]
         density_deviation[fluid] = deviation[fluid]
+        _publish_window_host(velocity_x, velocity_y, density_deviation, fluid, mass_density, store_mode, published_x,
+                             published_y, published_speed, published_pressure, window_x0, window_y0, velocity_scale,
+                             pressure_scale)
 
     return lbm_trt_step_host
 
@@ -697,10 +756,24 @@ def _step_numba(bouzidi):
                     density_deviation[i, j] = deviation
 
         def lbm_trt_step_numba(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus,
-                               force_x, force_y, face_kind, face_values, wx, wy, face_length, wall_row, wall_fraction):
+                               force_x, force_y, face_kind, face_values, wx, wy, face_length, wall_row, wall_fraction,
+                               relaxation_stride, force_stride, store_mode, published_x, published_y, published_speed,
+                               published_pressure, mass_density, field_ny, window_x0, window_y0, velocity_scale,
+                               pressure_scale):
+            wx, wy = int(wx), int(wy)
+            # stride 0 (FluidPhysics passes it on the gpu only): full C arrays, so the compiled signature stays one
+            if not int(relaxation_stride):
+                omega_plus, omega_minus = (np.full((wx, wy), array.reshape(-1)[0], dtype=np.float32)
+                                           for array in (omega_plus, omega_minus))
+            if not int(force_stride):
+                force_x, force_y = (np.full((wx, wy), array.reshape(-1)[0], dtype=np.float32)
+                                    for array in (force_x, force_y))
             # flat wall tables: the (wx, wy) rows / (n_rows, 8) fractions and the 1D halfway stand-ins alike
             kernel(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus, force_x,
-                   force_y, face_kind, face_values, int(wx), int(wy), wall_row.reshape(-1), wall_fraction.reshape(-1))
+                   force_y, face_kind, face_values, wx, wy, wall_row.reshape(-1), wall_fraction.reshape(-1))
+            _publish_window_host(velocity_x, velocity_y, density_deviation, fluid, mass_density, store_mode,
+                                 published_x, published_y, published_speed, published_pressure, window_x0, window_y0,
+                                 velocity_scale, pressure_scale)
         return lbm_trt_step_numba
     return factory
 

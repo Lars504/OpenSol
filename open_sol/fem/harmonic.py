@@ -103,6 +103,29 @@ def system_positions(global_ids, full_ids) -> tuple:
 
 
 # ---- the pencil on one pattern ----
+def _covering_term(stored) -> tuple:
+    """(the canonical CSR term with the most entries, {id(term): positions of each other term's entries in it}, its
+    int64 row per entry) when its pattern holds every other term's, else (None, {}, None)."""
+    if not stored:
+        return None, {}, None
+    largest = max(stored, key=lambda matrix: matrix.nnz)
+    rows = np.repeat(np.arange(largest.shape[0], dtype=np.int64), np.diff(largest.indptr))
+    largest_keys = rows * largest.shape[1] + largest.indices   # row-major: sorted for a canonical CSR
+    slots = {}
+    for matrix in stored:
+        if matrix is largest:
+            continue
+        if matrix.shape != largest.shape:
+            return None, {}, None
+        keys = (np.repeat(np.arange(matrix.shape[0], dtype=np.int64), np.diff(matrix.indptr)) * matrix.shape[1]
+                + matrix.indices)
+        where = np.minimum(np.searchsorted(largest_keys, keys), largest.nnz - 1)
+        if not np.array_equal(largest_keys[where], keys):
+            return None, {}, None
+        slots[id(matrix)] = where
+    return largest, slots, rows
+
+
 @dataclass(frozen=True, eq=False)
 class HarmonicPencil:
     """K, C, M of A(omega) = K + j omega C - omega^2 M on one canonical CSR pattern (system numbering) with the free /
@@ -127,9 +150,14 @@ class HarmonicPencil:
         stored = [matrix for matrix in terms if matrix.nnz]
         same = stored and all(np.array_equal(matrix.indptr, stored[0].indptr)
                               and np.array_equal(matrix.indices, stored[0].indices) for matrix in stored[1:])
-        union = stored[0] if same else pattern_sum(terms)   # explicit zeros kept; one shared pattern: no sums
+        # explicit zeros kept; one shared pattern: no sums; the largest term holding every other one (volume K beside
+        # an edge / face damping term): its own pattern, no pattern_sum (55 ms per 3D build)
+        union, slots, rows = (stored[0], {}, None) if same else _covering_term(stored)
+        if union is None:
+            union, slots, rows = pattern_sum(terms), {}, None
         n_rows = union.shape[0]
-        rows = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(union.indptr))
+        if rows is None:
+            rows = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(union.indptr))
         union_keys = None
 
         def aligned(matrix):
@@ -139,13 +167,16 @@ class HarmonicPencil:
             if matrix is union or (np.array_equal(matrix.indptr, union.indptr)
                                    and np.array_equal(matrix.indices, union.indices)):
                 return matrix.data.astype(dtype)   # a copy
-            nonlocal union_keys
-            if union_keys is None:
-                union_keys = rows * union.shape[1] + union.indices   # row-major: sorted for a canonical CSR
-            keys = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(matrix.indptr)) * union.shape[1] + matrix.indices
-            where = np.minimum(np.searchsorted(union_keys, keys), union.nnz - 1)
-            if not np.array_equal(union_keys[where], keys):
-                raise RuntimeError('HarmonicPencil: a term did not align with the union pattern')
+            where = slots.get(id(matrix))
+            if where is None:
+                nonlocal union_keys
+                if union_keys is None:
+                    union_keys = rows * union.shape[1] + union.indices   # row-major: sorted for a canonical CSR
+                keys = np.repeat(np.arange(n_rows, dtype=np.int64), np.diff(matrix.indptr)) * union.shape[1] \
+                    + matrix.indices
+                where = np.minimum(np.searchsorted(union_keys, keys), union.nnz - 1)
+                if not np.array_equal(union_keys[where], keys):
+                    raise RuntimeError('HarmonicPencil: a term did not align with the union pattern')
             data = np.zeros(union.nnz, dtype=dtype)
             data[where] = matrix.data
             return data

@@ -5,7 +5,9 @@ Dirichlet elimination with lifting, integrals and L2 errors. Host numpy, scipy i
 Coefficients: a number; an array over mesh elements (n_elements,) scalar, (n_elements, 2) diagonal or
 (n_elements, 2, 2) tensor; or a callable f(points (m, q, 2), elements (m,)) -> (m, q) or (m, q, 2, 2) values at the
 quadrature points (PML stretch tensors, position-dependent sources). Complex values give complex matrices."""
+import functools
 import hashlib
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,6 +20,12 @@ from .quadrature import CURVED_DEGREE, TRIANGLE_DEGREES, gauss_line, triangle_ru
 CHUNK_ELEMENTS = 16384   # elements per element-block chunk (bounds the (m, q, n, n) temporaries)
 EDGE_QUADRATURE_ENTRIES = 32   # edge rules kept per DofMap (edge set x degree), then the cache is cleared
 COO_BATCH_ENTRIES = 20_000_000   # CsrAccumulator: COO entries per conversion to CSR
+# Square assemblies over one dof map's element rows (2D Lagrange stiffness / mass, assembly3d's Lagrange terms):
+# PATTERN_REUSE_CALLS calls on one row list keep its slot map (fixed_pattern.FixedPatternCsr), later ones sum blocks
+# by bincount instead of COO -> CSR (same canonical pattern, explicit zeros kept)
+PATTERN_REUSE_CALLS = 4
+PATTERN_MAX_SLOT_BYTES = 1 << 28   # largest kept slot map (int32 per block entry); above it COO -> CSR every time
+_PATTERNS = weakref.WeakKeyDictionary()   # DofMap -> [rows digest, calls, FixedPatternCsr | None, element_dofs]
 
 
 # ---- coefficients and element groups ----
@@ -49,15 +57,21 @@ def _coefficient_values(coefficient, points, elements, tensor):
 def _element_groups(dofs, degree):
     """Yield (positions into dofs.elements, rule) per element chunk: straight elements at `degree`, curved ones (when
     the geometry order is 2) at max(degree, CURVED_DEGREE)."""
+    for positions, rule, _ in _element_groups_by_kind(dofs, degree):
+        yield positions, rule
+
+
+def _element_groups_by_kind(dofs, degree):
+    """_element_groups with a third item: True for the chunks of curved elements (False: affine)."""
     if dofs.geometry_order == 2:
         curved = curved_elements(dofs.mesh, dofs.elements)
     else:
         curved = np.zeros(len(dofs.elements), dtype=bool)
-    for mask, rule_degree in ((~curved, degree), (curved, max(degree, CURVED_DEGREE))):
+    for mask, rule_degree, is_curved in ((~curved, degree, False), (curved, max(degree, CURVED_DEGREE), True)):
         positions = np.flatnonzero(mask)
         rule = triangle_rule(rule_degree)
         for start in range(0, len(positions), CHUNK_ELEMENTS):
-            yield positions[start:start + CHUNK_ELEMENTS], rule
+            yield positions[start:start + CHUNK_ELEMENTS], rule, is_curved
 
 
 def _weights(geometry, rule, axisymmetric):
@@ -108,14 +122,51 @@ def append_blocks(rows, cols, values, row_dofs, blocks, column_dofs=None) -> Non
 
 
 def _to_csr(rows, cols, values, shape):
+    """Canonical CSR of COO lists (duplicates summed by tocsr, explicit zeros kept); int32 indices below 2^31."""
     from scipy.sparse import coo_matrix
 
     if not values:
         return coo_matrix(shape).tocsr()
+    index_dtype = np.int32 if max(shape) < 2 ** 31 else np.int64
     data = np.concatenate([block.ravel() for block in values])
-    matrix = coo_matrix((data, (np.concatenate(rows), np.concatenate(cols))), shape=shape).tocsr()
-    matrix.sum_duplicates()
-    return matrix
+    rows = np.concatenate(rows).astype(index_dtype, copy=False)
+    cols = np.concatenate(cols).astype(index_dtype, copy=False)
+    return coo_matrix((data, (rows, cols)), shape=shape).tocsr()   # tocsr sums duplicates: canonical already
+
+
+def kept_block_pattern(dofs, rows):
+    """FixedPatternCsr of the square blocks over dofs.element_dofs[rows] (rows in block order) once PATTERN_REUSE_CALLS
+    assemblies asked for that row list (one list per dof map, kept for the map's lifetime; slot map <=
+    PATTERN_MAX_SLOT_BYTES), else None: a one-off build stays COO -> CSR (building the slot map costs ~3-4 of them)."""
+    from .fixed_pattern import FixedPatternCsr
+    digest = hashlib.blake2b(np.ascontiguousarray(rows), digest_size=16).hexdigest()
+    try:
+        state = _PATTERNS.get(dofs)
+    except TypeError:   # not weak-referenceable: no reuse
+        return None
+    if state is None or state[0] != digest or state[3] is not dofs.element_dofs:
+        state = [digest, 0, None, dofs.element_dofs]
+        _PATTERNS[dofs] = state
+    state[1] += 1
+    if state[2] is None and state[1] >= PATTERN_REUSE_CALLS:
+        local = dofs.element_dofs[rows]
+        if 4 * local.size * local.shape[1] <= PATTERN_MAX_SLOT_BYTES:
+            state[2] = FixedPatternCsr(dofs.n_dofs, [local])
+    return state[2]
+
+
+def blocks_csr(dofs, rows, blocks):
+    """Canonical CSR (n_dofs, n_dofs) of square element blocks (m, n, n) over dofs.element_dofs[rows]: summed on the
+    kept slot map of that row list (kept_block_pattern), else by COO -> CSR; explicit zeros kept either way."""
+    import scipy.sparse
+    shape = (dofs.n_dofs, dofs.n_dofs)
+    pattern = kept_block_pattern(dofs, rows)
+    if pattern is not None:
+        return scipy.sparse.csr_matrix((pattern.summed(0, blocks), pattern.indices.copy(), pattern.indptr.copy()),
+                                       shape=shape)
+    local = dofs.element_dofs[rows]
+    return _to_csr([np.broadcast_to(local[:, :, None], blocks.shape).ravel()],
+                   [np.broadcast_to(local[:, None, :], blocks.shape).ravel()], [blocks], shape)
 
 
 class CsrAccumulator:
@@ -184,21 +235,60 @@ def congruence(transform, matrix):
     return type(matrix)((data, matrix.indices.copy(), matrix.indptr.copy()), shape=matrix.shape)
 
 
-def _assemble(test, trial, degree, block, elements=None):
+def _assemble(test, trial, degree, block, elements=None, affine=None):
     """CSR (test.n_dofs, trial.n_dofs) of element blocks block(positions, geometry, rule) -> (m, n_test, n_trial);
-    elements: bool per dof map element integrated (None = all)."""
+    elements: bool per dof map element integrated (None = all); affine(positions) -> blocks of the straight chunks
+    (element-constant coefficients: reference matrices, no per-point geometry). A square term (test is trial) sums
+    on the kept slot map of its element rows (blocks_csr)."""
     if test.mesh is not trial.mesh or not np.array_equal(test.elements, trial.elements):
         raise ValueError('assembly: test and trial dof maps must share mesh and elements')
-    rows, cols, values = [], [], []
-    for positions, rule in _element_groups(test, degree):
+    rows, cols, values, order = [], [], [], []
+    for positions, rule, is_curved in _element_groups_by_kind(test, degree):
         if elements is not None:
             positions = positions[elements[positions]]
             if not positions.size:
                 continue
-        geometry = element_geometry(test.mesh, test.elements[positions], rule.points, test.geometry_order)
-        local = block(positions, geometry, rule)
-        append_blocks(rows, cols, values, test.element_dofs[positions], local, trial.element_dofs[positions])
+        if affine is not None and not is_curved:
+            local = affine(positions)
+        else:
+            geometry = element_geometry(test.mesh, test.elements[positions], rule.points, test.geometry_order)
+            local = block(positions, geometry, rule)
+        if test is trial:
+            order.append(positions)
+            values.append(local)
+        else:
+            append_blocks(rows, cols, values, test.element_dofs[positions], local, trial.element_dofs[positions])
+    if test is trial:
+        if not values:
+            return _to_csr([], [], [], (test.n_dofs, test.n_dofs))
+        return blocks_csr(test, np.concatenate(order), np.concatenate(values))
     return _to_csr(rows, cols, values, (test.n_dofs, trial.n_dofs))
+
+
+def _affine_geometry(dofs, positions) -> tuple:
+    """(J^-1 (m, 2, 2), det J (m,)) of straight elements at their centroid (the affine map: equal at every point)."""
+    geometry = element_geometry(dofs.mesh, dofs.elements[positions], np.array([[1.0 / 3.0, 1.0 / 3.0]]),
+                                dofs.geometry_order)
+    return geometry.inverse[:, 0], geometry.determinant[:, 0]
+
+
+@functools.lru_cache(maxsize=None)
+def _reference_products(order, degree, kind) -> np.ndarray:
+    """Read-only reference integrals at triangle_rule(degree): 'mass' (n n,) sum_q w phi_i phi_j; 'stiffness' (4, n n)
+    sum_q w dphi_i/dxi_a dphi_j/dxi_b in row 2 a + b."""
+    rule = triangle_rule(degree)
+    values, gradients = lagrange_basis(order, rule.points)   # (q, n), (q, n, 2)
+    if kind == 'mass':
+        products = np.einsum('q,qi,qj->ij', rule.weights, values, values).ravel()
+    else:
+        products = np.einsum('q,qia,qjb->abij', rule.weights, gradients, gradients).reshape(4, -1)
+    products.flags.writeable = False
+    return products
+
+
+def _element_constant(coefficient) -> bool:
+    """A number or per-element values (not a callable): straight elements take the reference matrices."""
+    return not callable(coefficient)
 
 
 def _degree(dofs, extra=0):
@@ -217,7 +307,17 @@ def assemble_stiffness(dofs, coefficient=1.0, *, degree=None, axisymmetric=False
         _, gradients = _lagrange_at(dofs, geometry, rule)
         values = _coefficient_values(coefficient, geometry.points, dofs.elements[positions], tensor=True)
         return _tensor_blocks(gradients, gradients, values, _weights(geometry, rule, axisymmetric))
-    return _assemble(dofs, dofs, degree, block, elements)
+
+    def affine(positions):   # det J (J^-1 K J^-T)_ab against the 4 reference gradient products
+        inverse, determinant = _affine_geometry(dofs, positions)
+        tensor = np.asarray(_coefficient_values(coefficient, None, dofs.elements[positions], tensor=True))
+        tensor = np.broadcast_to(tensor[:, 0] if tensor.ndim == 4 else tensor, (len(positions), 2, 2))
+        mapped = np.einsum('mab,mbc,mdc->mad', inverse, tensor, inverse) * determinant[:, None, None]
+        n_local = dofs.n_local
+        return (mapped.reshape(len(positions), 4) @ _reference_products(dofs.order, int(degree), 'stiffness')
+                ).reshape(len(positions), n_local, n_local)
+    return _assemble(dofs, dofs, degree, block, elements,
+                     affine if _element_constant(coefficient) and not axisymmetric else None)
 
 
 def assemble_mass(dofs, coefficient=1.0, *, degree=None, axisymmetric=False, elements=None):
@@ -231,7 +331,16 @@ def assemble_mass(dofs, coefficient=1.0, *, degree=None, axisymmetric=False, ele
         weights = np.broadcast_to(scale, geometry.determinant.shape) * _weights(geometry, rule, axisymmetric)
         products = (values[:, :, None] * values[:, None, :]).reshape(len(values), -1)   # (q, n n)
         return (weights @ products).reshape(len(weights), values.shape[1], values.shape[1])
-    return _assemble(dofs, dofs, degree, block, elements)
+
+    def affine(positions):   # c det J x the reference mass
+        _, determinant = _affine_geometry(dofs, positions)
+        scale = np.asarray(_coefficient_values(coefficient, None, dofs.elements[positions], tensor=False))
+        scale = np.broadcast_to(scale.reshape(-1) if scale.ndim else scale, (len(positions),)) * determinant
+        n_local = dofs.n_local
+        return (scale[:, None] * _reference_products(dofs.order, int(degree), 'mass')[None, :]).reshape(
+            len(positions), n_local, n_local)
+    return _assemble(dofs, dofs, degree, block, elements,
+                     affine if _element_constant(coefficient) and not axisymmetric else None)
 
 
 def _cached(dofs, key, build):

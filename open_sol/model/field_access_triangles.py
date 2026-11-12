@@ -12,6 +12,17 @@ from .field_data import FieldData
 from .interface_sampling import interface_selection
 
 TRIANGLE_FIELD_PIXELS = (65_536, 4_000_000)   # triangle-mesh field(): raster pixels, 4 per element within these bounds
+KEPT_RASTERS = 4   # raster / window point sets kept per access (oldest dropped)
+
+
+def _read_only_points(x_centres, y_centres) -> np.ndarray:
+    """Read-only float64 (nx ny, 2) points of the (x, y) centre grid, x outer (indexing 'ij')."""
+    points = np.empty((len(x_centres), len(y_centres), 2))
+    points[..., 0] = np.asarray(x_centres, dtype=np.float64)[:, None]
+    points[..., 1] = np.asarray(y_centres, dtype=np.float64)[None, :]
+    points = points.reshape(-1, 2)
+    points.flags.writeable = False
+    return points
 
 
 class TriangleAccess(ElementAccess):
@@ -21,6 +32,8 @@ class TriangleAccess(ElementAccess):
     def __init__(self, view):
         super().__init__(view)
         self._display_triangulations = {}   # (id(mesh), order) -> read-only (nodes, triangles) shared by every FieldData
+        self._raster_points = {}   # (n_u, n_v) -> read-only (n_u n_v, 2) pixel centres of field() / display_field()
+        self._window_points = {}   # (x centres, y centres bytes) -> read-only window centres of values_on_window
 
     def window_shape(self):
         return (self.window_element_count(),)
@@ -76,10 +89,14 @@ class TriangleAccess(ElementAccess):
         n_u, n_v = max(1, int(width / pixel)), max(1, int(height / pixel))
         if n_u * n_v > max_pixels:   # float rounding guard
             n_u = max(1, max_pixels // n_v)
-        x_centres = x_min + (np.arange(n_u) + 0.5) * (width / n_u)
-        y_centres = y_min + (np.arange(n_v) + 0.5) * (height / n_v)
-        grid_x, grid_y = np.meshgrid(x_centres, y_centres, indexing='ij')
-        points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+        points = self._raster_points.get((n_u, n_v))
+        if points is None:   # read-only and kept: the domain matches it by identity (no meshgrid, no hash per read)
+            x_centres = x_min + (np.arange(n_u) + 0.5) * (width / n_u)
+            y_centres = y_min + (np.arange(n_v) + 0.5) * (height / n_v)
+            points = _read_only_points(x_centres, y_centres)
+            self._raster_points[(n_u, n_v)] = points
+            while len(self._raster_points) > KEPT_RASTERS:
+                self._raster_points.pop(next(iter(self._raster_points)))
         values = fem_evaluate(dofs, coefficients, points, location=self._located(dofs, points)).reshape(n_u, n_v)
         triangulation = None
         if dofs.order > 0:   # node values = the coefficients: locating the nodes of a graded mesh took seconds
@@ -169,10 +186,17 @@ class TriangleAccess(ElementAccess):
         from ..fem.sampling import evaluate as fem_evaluate
         x_centres, y_centres = target.cartesian_centres(f"field '{physics}.{field_name}' on a triangle mesh")
         dofs, coefficients = self.fem_field(self.view.renderer(physics), field_name)
-        grid_x, grid_y = np.meshgrid(x_centres, y_centres, indexing='ij')
-        points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+        x_centres = np.ascontiguousarray(x_centres, dtype=np.float64)
+        y_centres = np.ascontiguousarray(y_centres, dtype=np.float64)
+        key = (x_centres.tobytes(), y_centres.tobytes())   # the 1D centres: cheap to key, unlike the raster
+        points = self._window_points.get(key)
+        if points is None:
+            points = _read_only_points(x_centres, y_centres)
+            self._window_points[key] = points
+            while len(self._window_points) > KEPT_RASTERS:
+                self._window_points.pop(next(iter(self._window_points)))
         values = fem_evaluate(dofs, coefficients, points, location=self._located(dofs, points))
-        return target.domain.xp.asarray(values.reshape(grid_x.shape), dtype=DTYPE)
+        return target.domain.xp.asarray(values.reshape(len(x_centres), len(y_centres)), dtype=DTYPE)
 
     def _located(self, dofs, points):
         """The domain's remembered LocatedPoints of points (basis shared across fields and reads); None (evaluate

@@ -2351,7 +2351,8 @@ def _variant_spec(spec, variant, registry):
                 continue
             node = nodes.get(physics_spec.solvers.get(role))
             type_name, settings = ((node.type, dict(node.settings)) if node is not None
-                                   else solver_role.automatic(backend, solver_grid(spec, physics_spec)))
+                                   else solver_role.automatic(backend, solver_grid(spec, physics_spec),
+                                                              spec.study.type))
             solver_type = registry.solver_type(type_name)
             if not any(param.name == 'precision' for param in solver_type.params):
                 if variant.roles and variant.precision not in solver_type.precisions:

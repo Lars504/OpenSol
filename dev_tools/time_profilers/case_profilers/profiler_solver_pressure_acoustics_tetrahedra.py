@@ -30,9 +30,9 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     'prepare', 'finalize', '_build_system', '_apply_boundaries', '_impedance_damping', '_background_preparation',
     '_background_at', '_background_nodal_at', '_background_load', 'plan_frequency_response',
     'solve_frequency_response', 'publish_frequency_response', '_show_solution', '_record', '_publish', '_host_total',
-    '_surface_background', '_component_field', '_element_velocity', '_device_centroids',
+    '_surface_background', '_component_field', '_element_velocity', '_device_centroids', '_point_value',
 )) + tuple((f'{TETRAHEDRA}.{method}', f'tetrahedra: {method}') for method in (
-    '_dof_maps', '_make_pml', '_window_face_entities', '_entity_load', '_source_operators', '_point_value',
+    '_dof_maps', '_make_pml', '_window_face_entities', '_entity_load', '_source_operators', '_point_weights',
     '_centroid_values', '_centroid_gradients', '_locate', 'lagrange_field',
 )) + tuple((f'{SYSTEM}.{method}', f'fem system: {method}') for method in (
     'assemble', 'load_vector', 'solve', '_solve_free', '_factorize', '_device_terms', '_extra_on_device',

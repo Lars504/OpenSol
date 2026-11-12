@@ -110,9 +110,10 @@ class PressureAcousticsFEMPhysics3D(AcousticHarmonicBase):
                                         np.array([complex(value)]))
         return np.asarray(vector, dtype=np.complex128)
 
-    def _point_value(self, coefficients, probe):
-        values, _ = evaluate_lagrange_3d(self.full, coefficients, np.array([probe.element]), probe.reference[None, :])
-        return values[0]
+    def _point_weights(self, element, reference) -> tuple:
+        """The full map's element dofs and its Lagrange basis at the reference point (evaluate_lagrange_3d's basis)."""
+        basis, _ = lagrange_basis_3d(self.order, np.asarray(reference, dtype=np.float64)[None, :], False)
+        return np.asarray(self.full.element_dofs[element], dtype=np.int64), np.asarray(basis[0], dtype=np.float64)
 
     def _centroid_values(self, coefficients) -> np.ndarray:
         return centroid_values_3d(self.full, coefficients)

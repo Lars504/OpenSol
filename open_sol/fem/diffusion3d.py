@@ -17,11 +17,10 @@ from ..core.monitors import FieldProbe
 from .assembly3d import (assemble_face_load_3d, assemble_face_mass_3d, assemble_lagrange_load_3d,
                          assemble_lagrange_mass_3d, assemble_lagrange_stiffness_3d, assemble_point_load_3d,
                          element_integrals_3d)
-from .assembly import pattern_sum
 from .diffusion import (EdgeCondition as FaceCondition,   # FaceCondition: the same kinds on faces
-                        FEMDiffusionPhysicsCommon, _same_operator, active_dofs, direct_factor_item,
-                        fem_system_estimate, floating_region_count, host_direct_name, lagrange_entries_per_dof,
-                        robin_anchoring, robin_assembled)
+                        FEMDiffusionPhysicsCommon, KeptTerms, ReducedSplit, SlotSum, _same_operator, active_dofs,
+                        direct_factor_item, fem_system_estimate, floating_region_count, host_direct_name,
+                        lagrange_entries_per_dof, robin_anchoring, robin_assembled)
 from .dofs3d import lagrange_dofs_3d
 from .mesh import side_members
 from .mesh3d import PLANE_TOLERANCE, window_faces
@@ -78,6 +77,9 @@ class FEMDiffusionSystem3D:
         self._window_faces = {}
         self._shell = None
         self._matrix = self._reduced = self._capacity_matrix = None
+        self._split = ReducedSplit()   # reduced / coupling slot maps and anchor regions across re-assemblies
+        self._sum = SlotSum()          # slots of every term in the summed pattern
+        self._terms = KeptTerms()      # assembled terms kept while their inputs repeat
         self._free = self._fixed = self._dof_owner = None
         self._coupling = None          # reduced rows x fixed columns of the last assembly (the lift)
         self._lift = self._static_load = self._load = self._solution = None
@@ -202,12 +204,19 @@ class FEMDiffusionSystem3D:
         if not active.any():
             raise ValueError(f'{self.label()}: no window element conducts, loses or stores (all coefficients 0)')
         self.active = active
-        terms = [assemble_lagrange_stiffness_3d(full, tensor, elements=active)]
+        kept = self._terms
+        # terms whose inputs repeat (k in a radiation / sigma(T) loop) are kept, not re-assembled
+        terms = [kept.term('stiffness', (active, tensor),
+                           lambda: assemble_lagrange_stiffness_3d(full, tensor, elements=active))]
         if self.loss_coefficient.any():
-            terms.append(assemble_lagrange_mass_3d(full, self.loss_coefficient, elements=active))
+            loss = self.loss_coefficient
+            terms.append(kept.term('loss', (active, loss),
+                                   lambda: assemble_lagrange_mass_3d(full, loss, elements=active)))
         self._capacity_matrix = None
         if capacity_over_dt is not None:
-            self._capacity_matrix = assemble_lagrange_mass_3d(full, capacity_over_dt, elements=active)
+            self._capacity_matrix = kept.term('capacity', (active, capacity_over_dt),
+                                              lambda: assemble_lagrange_mass_3d(full, capacity_over_dt,
+                                                                                elements=active))
             terms.append(self._capacity_matrix)
         active_dofs = np.zeros(full.n_dofs, dtype=bool)
         active_dofs[full.element_dofs[active].ravel()] = True
@@ -217,26 +226,27 @@ class FEMDiffusionSystem3D:
             storing |= active & (capacity_over_dt > 0.0)
         anchored_dofs = np.zeros(full.n_dofs, dtype=bool)   # anchors by topology (floating_region_count)
         anchored_dofs[full.element_dofs[storing].ravel()] = True
-        for faces, condition, _ in self._all_face_conditions():
+        for index, (faces, condition, _) in enumerate(self._all_face_conditions()):
             faces = self._active_faces(faces) if len(faces) else faces
             if len(faces) and robin_assembled(condition):
-                terms.append(assemble_face_mass_3d(full, faces, condition.h))
+                terms.append(kept.term(f'robin {index}', (faces, condition.h),
+                                       lambda: assemble_face_mass_3d(full, faces, condition.h)))
                 anchored_dofs[full.face_dofs(robin_anchoring(faces, condition))] = True
+        kept.drop_unused()
         fixed_value, _ = self._fixed_values()
         held = ~np.isnan(fixed_value)
         fixed = np.flatnonzero(active_dofs & held)
         free = np.flatnonzero(active_dofs & ~held)
-        matrix = pattern_sum(terms)   # one pattern whatever the coefficients (cuDSS plan reuse)
-        free_rows = matrix[free]   # sliced once for the reduced operator and the lift coupling
-        reduced = free_rows[:, free].tocsr()
+        matrix = self._sum.sum(terms)   # pattern_sum: one pattern whatever the coefficients (cuDSS plan reuse)
+        reduced, coupling = self._split.split(matrix, free, fixed)   # value gathers while pattern and dofs repeat
         if self.require_anchors:
-            floating = floating_region_count(reduced, anchored_dofs[free])
+            floating = floating_region_count(reduced, anchored_dofs[free], regions=self._split.regions(reduced))
             if floating:
                 raise ValueError(f'{self.label()}: {floating} connected region(s) of the {self.unknown_name} touch no '
                                  f'{self.anchor_text}, so the system is singular. {self.remedy_text}')
         self._matrix, self._reduced = matrix, reduced
         self._free, self._fixed = free, fixed
-        self._coupling = free_rows[:, fixed].tocsr()
+        self._coupling = coupling
         self._refresh_constant_terms()
         self._factorize()
         self.operator_dirty = False

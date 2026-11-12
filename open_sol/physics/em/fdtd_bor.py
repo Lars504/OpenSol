@@ -225,9 +225,10 @@ def _derivative_split(curl_static, shape):
     return part(along_z), part(~along_z)
 
 
-def stable_time_step(curl, e_volumes, a_volumes, e_active):
+def stable_time_step(curl, e_volumes, a_volumes, e_active, warm_start=None):
     """Leap-frog limit 2 / omega_max [s] of eps0 mu0 V x'' = -C^T V_a C x on the active E points (vacuum):
-    omega_max^2 = C0^2 lambda_max(V^-1/2 C^T V_a C V^-1/2), dense or by eigsh (with _STABILITY_MARGIN)."""
+    omega_max^2 = C0^2 lambda_max(V^-1/2 C^T V_a C V^-1/2), dense or by eigsh (with _STABILITY_MARGIN); warm_start: a
+    dict whose 'vector' (full E layout) seeds eigsh and receives its eigenvector (the orders of one order sum)."""
     import scipy.sparse
     import scipy.sparse.linalg
     index = np.flatnonzero(e_active)
@@ -241,19 +242,28 @@ def stable_time_step(curl, e_volumes, a_volumes, e_active):
     else:
         operator = scipy.sparse.linalg.LinearOperator((index.size, index.size), dtype=np.float64,
                                                       matvec=lambda vector: weighted.T @ (weighted @ vector))
-        largest = float(scipy.sparse.linalg.eigsh(operator, k=1, which='LA', tol=_EIGEN_TOLERANCE,
-                                                  return_eigenvectors=False)[0])
+        previous = None if warm_start is None else warm_start.get('vector')
+        start = None if previous is None else previous[index]
+        if start is not None and not np.any(start):
+            start = None
+        values, vectors = scipy.sparse.linalg.eigsh(operator, k=1, which='LA', tol=_EIGEN_TOLERANCE, v0=start)
+        largest = float(values[0])
+        if warm_start is not None:   # the next order's operator differs by its order term: a near eigenvector
+            full = np.zeros(e_active.size, dtype=np.float64)
+            full[index] = vectors[:, 0]
+            warm_start['vector'] = full
     if not (math.isfinite(largest) and largest > 0.0):
         raise ValueError(f'body-of-revolution FDTD: the largest operator eigenvalue is {largest!r}: no time step')
     return 2.0 / (C0 * math.sqrt(largest) * (1.0 + _STABILITY_MARGIN))
 
 
-def order_time_step_limit(assembly, order) -> float:
-    """Leap-frog limit 2 / omega_max [s] of azimuthal order `order` on a real-metric BORAssembly (stable_time_step)."""
+def order_time_step_limit(assembly, order, warm_start=None) -> float:
+    """Leap-frog limit 2 / omega_max [s] of azimuthal order `order` on a real-metric BORAssembly (stable_time_step,
+    warm_start passed on)."""
     curl_static, curl_order, e_active, _ = assembly.curl_parts(int(order))
     return stable_time_step((curl_static + int(order) * curl_order).real, np.asarray(assembly.full_energy_weights,
                                                                                      dtype=np.float64),
-                            np.abs(assembly.a_volumes), e_active)
+                            np.abs(assembly.a_volumes), e_active, warm_start=warm_start)
 
 
 # ---- device kernels (numpy twins next to them) ----
@@ -1244,7 +1254,8 @@ class BOROrderSum:
         self.orders = orders
         self.assembly = stretched_assembly(cell_widths, boundary_config, pml_dx, materials, window=window)
         self.shape = self.assembly.shape
-        limits = {order: order_time_step_limit(self.assembly, order) for order in orders}
+        warm_start = {}   # each order's eigsh starts from the previous order's top eigenvector
+        limits = {order: order_time_step_limit(self.assembly, order, warm_start) for order in sorted(orders)}
         self.dt = courant * min(limits.values())
         self.members = tuple(
             OrderMember(order, family, BORTimeStepper(cell_widths, boundary_config, pml_dx, materials, order,

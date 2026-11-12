@@ -63,7 +63,16 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
 - `step` re-solves when dirty (operator: mu_dc, faces, held cells, J_s, add_bh_curve; rhs: sources, coils,
   inject_source, remanence).
 - Saturation (`saturation.py`): J_s array, Frohlich-Kennelly B = mu0 H + J_s a H / (1 + a H), a = mu0 (mu_dc - 1) /
-  J_s (mu_dc = initial permeability), secant nu(|B|), per axis with the same centre |B|. Fixed point (`self.picard`,
+  J_s (mu_dc = initial permeability), secant nu(|B|), per axis with the same centre |B|. Kept preconditioner
+  (`kept_preconditioner.py`, both tensor solvers): the role runtime is wrapped when it is pcg multigrid (the wrapper
+  owns the hierarchy; the pcg's own `_multigrid` stays None, its counters come through `preconditioner_counters`) or
+  sparse_direct (the wrapper builds the DiffusionDirectSolver, so the physics' prepare calls `bind_window`: the system
+  sets grid_shape only on a bare one). Each loop proposal `offer_state`s the loop state before its assembly (first
+  one fresh); a later assembly keeps the earlier build while exp(max - min of the ln c change) <= KEPT_SPREAD_LIMIT
+  and solves by PCG on it (direct: to 1e-10, not exact; cuDSS always refactorises), a kept solve over its cap
+  rebuilds and repeats. Any assembly without an offer builds afresh: a new caller of `_assemble` inside a loop must
+  offer the state, else nothing is kept. The wrapper is no PCGSolver, so the system's anchor check is not deferred to
+  the CG's first sync. Fixed point (`self.picard`,
   core.damped_iteration) on ln nu (float64 (2, k) `_log_reluctivity_state` on the k saturating cells only, flat
   window indices `_nonlinear_flat`, J_s and the curve masks compacted alike; `_coefficients` scatters it into the linear
   1 / (mu0 mu_dc); the 3D tensor ln mu_r state likewise (k,): Anderson cannot make nu negative and never runs over
@@ -142,7 +151,8 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
 - Post-processing at RULE_DEGREE 2 (exact for affine elements, P0 mu), in POST_CHUNK blocks; with exact quadrature
   in load, stiffness and integrals W = Lambda I / 2 holds to round-off (anchor only). Display: phi_m nodal, the rest P0
   (sampled B jumps at element faces). Saturation: compact state ln mu_r over saturating elements, |H| = B_rms / (mu0
-  mu_r), refactor per iteration; the total-T rule values are kept per element chunk (`_coil_field`, keyed by the coil
+  mu_r), refactor per iteration; loop iterations compute only B_rms of the saturating elements
+  (`_saturating_flux_rms`), the fields, energy and linkages once after the loop; the total-T rule values are kept per element chunk (`_coil_field`, keyed by the coil
   currents, cleared per full assembly, at most `COIL_FIELD_CACHE_BYTES`). w_mag = B^2 / (2 mu0 mu) (the energy
   scalar's density, as 2D and the tensor 3D solver; not B . H / 2 inside magnets).
 - Coil results carry 'energy' (both mesh kinds); the identity self-test reads it there since field derived values
@@ -154,7 +164,10 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   (`previous=` through DiffusionDirectSolver); their mixed variants carry the same float32 risk (unmeasured).
 - Memory: magnetostatics / magnetostatics_3d on every mesh kind add a cuDSS 'linear' factor through
   `fem.diffusion.cudss_diffusion_estimate` (tensor: on the kept A_solve; FEM: via `fem_diffusion_estimate[_3d](cudss=)`),
-  `refactorizes` when a material saturates (transient 'refactorisation' per iteration / Newton step). 3D tensor field
+  `refactorizes` when a material saturates (transient 'refactorisation' per iteration / Newton step); a saturating
+  tensor model adds the kept preconditioner's run item (`kept_preconditioner_bytes`: the fine operator values a kept
+  hierarchy holds, or the kept-factor PCG vectors). The shared time recipe still prices one setup / factorisation per
+  saturation iteration (an over-estimate since the kept preconditioner). 3D tensor field
   update and energy / linkage temporaries are transient phases. magnet3d_*_sphere coarse (149k cells, pcg multigrid):
   the estimated build peak is ~1.5x the measured one, from `solvers.multigrid.setup_extra_bytes` (products n x 7^2 x
   32 B, ~2x what that setup takes); the fine variant (593k, products capped) is ~10 % low. Both figures predate

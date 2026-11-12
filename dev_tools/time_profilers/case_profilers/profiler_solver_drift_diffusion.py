@@ -21,9 +21,11 @@ PARTS = (COMMON_PARTS + methods(f'{SEMICONDUCTOR}.solver:DriftDiffusionPhysics',
     'prepare', 'finalize', '_solve', 'fem_field', '_device_window_mask',
 ), 'drift_diffusion triangles') + methods(CORE, (
     'solve', '_finish', '_scaled_state', '_targets', '_continue', '_predicted_state', '_equilibrium_state',
-    '_poisson_system', '_newton', '_coupled_system', '_recombination', '_linear_solve', '_factor_solve',
-    '_face_fluxes', '_quasi_fermi', 'contact_currents', 'gate_charge',
-), 'DriftDiffusionCore') + methods(f'{SEMICONDUCTOR}.drift_diffusion:DriftDiffusionSystem', (
+    '_poisson_system', '_newton', '_coupled_system', '_layout_values', '_recombination', '_linear_solve',
+    '_chord_solve', '_factor_solve', '_face_fluxes', '_quasi_fermi', 'contact_currents', 'gate_charge',
+), 'DriftDiffusionCore') + methods(f'{SEMICONDUCTOR}.drift_diffusion:_SiteGraph', (
+    '__init__',
+), '_SiteGraph') + methods(f'{SEMICONDUCTOR}.drift_diffusion:DriftDiffusionSystem', (
     '_build_faces', 'set_inputs', 'outputs', '_face_average',
 ), 'DriftDiffusionSystem') + methods(f'{SEMICONDUCTOR}.drift_diffusion_fem:FEMDriftDiffusionSystem', (
     'set_inputs', '_resolve_held', 'outputs',

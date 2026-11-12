@@ -33,10 +33,10 @@ from ..em.adjoint import (EpsSensitivity, adjoint_source, objective_cotangents, 
 from ..em.harmonic import face_mean_at_centres
 from ..em.operators import stretched_cell_areas
 from ..em.yee_grid import cell_row, cpml_grading_cell_size, grid_cell_widths
-from .iteration import _scale_blocks, real_gmres
+from .iteration import _scale_blocks, block_norms, real_gmres
 from .mixing import solve_order
 from .sheets import sheet_cotangents
-from .sources import centres_to_faces
+from .sources import centres_to_faces, collocation_weights
 
 ADJOINT_MAX_PRODUCTS = 200       # transposed sweeps (N adjoint solves each) of the pump-depleted adjoint GMRES
 ADJOINT_FAIL_RESIDUAL = 1e-4     # relative GMRES residual above which the pump-depleted gradient is refused
@@ -84,23 +84,23 @@ def transposed_channel_solve(physics, flat_rhs):
     return solution
 
 
+_UNIT_WEIGHTS = (0.5, 1.0, 1.0)   # collocation_weights of unit widths, as scalars (C^T: no array upload)
+
+
 def collocation_transpose(centre_values, axis, periodic, wrap_factor=1.0):
     """Plain transpose C^T of harmonic.face_mean_at_centres(wrap_factor=) along `axis` (centre cotangent -> hi faces;
     the last face takes cell 0 times wrap_factor)."""
     return centres_to_faces(centre_values, axis, periodic, np.ones(centre_values.shape[axis]),
-                            wrap_factor=complex(wrap_factor).conjugate())
+                            wrap_factor=complex(wrap_factor).conjugate(), weights=_UNIT_WEIGHTS)
 
 
-def distribution_transpose(face_values, axis, periodic, cell_widths, wrap_factor=1.0):
+def distribution_transpose(face_values, axis, periodic, cell_widths, wrap_factor=1.0, weights=None):
     """Plain transpose of sources.centres_to_faces(wrap_factor=) (C* = dual^-1 C^T w) along `axis`: w C(f / dual) at
-    the centres, C with the conjugate wrap factor."""
+    the centres, C with the conjugate wrap factor; weights = sources.collocation_weights of cell_widths or None."""
     xp = array_module_of(face_values)
-    widths = np.asarray(cell_widths, dtype=np.float64)
-    shape = [1, 1]
-    shape[axis] = widths.size
-    dual_widths = xp.asarray((0.5 * (widths + np.roll(widths, -1))).reshape(shape))
+    _, dual_widths, widths = collocation_weights(cell_widths, axis, xp) if weights is None else weights
     return face_mean_at_centres(face_values / dual_widths, axis, periodic, xp,
-                                wrap_factor=complex(wrap_factor).conjugate()) * xp.asarray(widths.reshape(shape))
+                                wrap_factor=complex(wrap_factor).conjugate()) * widths
 
 
 def polarization_cotangents(terms, centre_fields, density_cotangent, media, shape, xp):
@@ -154,8 +154,8 @@ def _density_cotangent(physics, adjoint, face_cotangents, store, index):
         current_y += curl_scale * system.weight_hi_x_faces * face_cotangents[1]
     scale = -1j * omega   # J = -j omega (C* P + P_sheets)
     wrap_x, wrap_y = store.wrap_factors[index]
-    return ({0: scale * distribution_transpose(current_x, 1, store.periodic_y, store.cell_dy, wrap_y),
-             1: scale * distribution_transpose(current_y, 0, store.periodic_x, store.cell_dx, wrap_x)},
+    return ({0: scale * distribution_transpose(current_x, 1, store.periodic_y, store.cell_dy, wrap_y, store.weights(1)),
+             1: scale * distribution_transpose(current_y, 0, store.periodic_x, store.cell_dx, wrap_x, store.weights(0))},
             {0: scale * current_x, 1: scale * current_y})
 
 
@@ -349,7 +349,7 @@ def depleted_cotangents(nl, objectives, media):
     store = nl.store
     blocks = store.blocks
     rhs = _pack(store, _transposed_sweep(nl, objectives, {}, media))
-    norms = [float(store.xp.linalg.norm(store.vector()[block])) for block in blocks]
+    norms = block_norms((store.vector(),), blocks)[0]
     largest = max(norms, default=0.0)
     weights = [size / largest if size > 0.0 and largest > 0.0 else 1.0 for size in norms]
     inverse = [1.0 / weight for weight in weights]

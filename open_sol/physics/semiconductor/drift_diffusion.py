@@ -9,7 +9,7 @@ import numpy as np
 from ...core.constants import ELEMENTARY_CHARGE, EPS0, K_B
 from ...core.metric import CARTESIAN, window_metric
 from ...solvers.cudss_factor import CUDSS_REFUSALS, CudssAccuracyError
-from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, HostDirectAccuracyError
+from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_REFUSALS, HostDirectAccuracyError
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SparseDirectSolver
 
 # back ends whose factor is kept per unknown count and refactorised through previous= (cuDSS plan / MUMPS / PARDISO
@@ -23,6 +23,28 @@ _CARRIER_FLOOR = 1e-150           # scaled n, p floor of a Newton update (n exp(
 # the prediction gets this share of the iteration limit before the step restarts from the last converged state
 _PREDICTOR_MAX_LOG_CHANGE = 200.0
 _PREDICTED_NEWTON_SHARE = 0.5
+# chord steps: once an update is <= _CHORD_START (scaled: V_T units, relative carrier change) the next Newton steps solve
+# on the last factorised Jacobian (residual + one solve: no Jacobian values, no factorisation) while each update shrinks
+# to <= _CHORD_CONTRACTION of the one before; an update that grows is dropped and the Jacobian factorised again
+_CHORD_START = 1e-2
+_CHORD_CONTRACTION = 0.25
+# block layout of a Newton system's COO values: (row side, row component, column side, column component) per block, a
+# side being the face's lower site, its upper site or every site; face blocks hold one value per face, site blocks one
+# per site, concatenated in layout order (_PinnedPattern expands the scalar site graph from it)
+_LO, _HI, _SITE = 0, 1, 2
+_POISSON_LAYOUT = ((_LO, 0, _LO, 0), (_LO, 0, _HI, 0), (_HI, 0, _HI, 0), (_HI, 0, _LO, 0), (_SITE, 0, _SITE, 0))
+_COUPLED_LAYOUT = (
+    # Poisson faces (rows u_lo / u_hi) and site charge terms
+    (_LO, 0, _LO, 0), (_LO, 0, _HI, 0), (_HI, 0, _HI, 0), (_HI, 0, _LO, 0), (_SITE, 0, _SITE, 1), (_SITE, 0, _SITE, 2),
+    # electron flux term: + on row n_lo, - on row n_hi
+    (_LO, 1, _LO, 1), (_LO, 1, _HI, 1), (_LO, 1, _HI, 0), (_LO, 1, _LO, 0),
+    (_HI, 1, _LO, 1), (_HI, 1, _HI, 1), (_HI, 1, _HI, 0), (_HI, 1, _LO, 0),
+    # hole flux term
+    (_LO, 2, _LO, 2), (_LO, 2, _HI, 2), (_LO, 2, _HI, 0), (_LO, 2, _LO, 0),
+    (_HI, 2, _LO, 2), (_HI, 2, _HI, 2), (_HI, 2, _HI, 0), (_HI, 2, _LO, 0),
+    # recombination of both continuity rows; the potential diagonal (explicit zero) keeps every row's diagonal
+    (_SITE, 1, _SITE, 1), (_SITE, 1, _SITE, 2), (_SITE, 2, _SITE, 1), (_SITE, 2, _SITE, 2), (_SITE, 0, _SITE, 0),
+)
 
 
 class ContinuationFailed(Exception):
@@ -87,14 +109,16 @@ class DriftDiffusionCore:
         self.continuation_steps = 0
         self.cold_starts = 0
         self.rejected_predictions = 0   # continuation steps whose secant prediction did not converge
+        self.chord_steps = 0            # coupled Newton iterations solved on the last factorised Jacobian
         self.host_factor_bytes = None
         # KEPT_FACTOR_BACK_ENDS (cuDSS, MUMPS, PARDISO): the last factor per unknown count (Poisson n, coupled 3 n),
         # refactorised with previous= so its plan / analysis is reused while the pattern (the pinned set) holds; memory
         # outside the cupy pool / numpy (released by release_kept_factors)
         self._kept_factors = {}
         # _PinnedPattern per unknown count (Poisson n, coupled 3 n): CSR pattern + slot maps of the Newton system, kept
-        # while the pinned set holds (faces are fixed at construction)
+        # while the pinned set holds; both expand the scalar _SiteGraph (faces are fixed at construction: built once)
         self._patterns = {}
+        self._graph = None
         self._inputs_ready = False
         self._converged = None   # physical state + the applied voltages / generation it was converged for
         self._state = None       # scaled (N, 3) state of the last solve
@@ -254,20 +278,38 @@ class DriftDiffusionCore:
 
     def _equilibrium_state(self):
         """Scaled equilibrium state at zero applied voltage (gates at -work_function_difference): nonlinear Poisson
-        with Boltzmann carriers (Fermi level 0), Newton from the charge-neutral guess."""
+        with Boltzmann carriers (Fermi level 0), Newton (chord steps near convergence) from the charge-neutral guess."""
         voltages = np.zeros(len(self.contact_names) + len(self.gate_names))
         targets = self._targets(voltages)[:, 0]
         pinned = self.pinned[:, 0]
         u = np.where(pinned, targets, self.u_equilibrium)
         n_intrinsic = self.n_intrinsic / self.scale   # 0 off the semiconductor
+        chord, last_error = None, math.inf   # (factor, row norms) of the last factorised Jacobian; its update size
         for _ in range(self.max_newton_iterations):
-            residual, values, entries = self._poisson_system(u, n_intrinsic)
-            residual[pinned] = u[pinned] - targets[pinned]
-            delta = self._linear_solve(values, entries, pinned, -residual, 1)
-            if not np.all(np.isfinite(delta)):
+            delta, chord_step = None, chord is not None and last_error <= _CHORD_START
+            if chord_step:
+                residual, _ = self._poisson_system(u, n_intrinsic, jacobian=False)
+                residual[pinned] = u[pinned] - targets[pinned]
+                delta = self._chord_solve(chord, -residual)
+                chord_step = delta is not None
+            if delta is None:
+                chord = None   # dropped before the next factorisation: one SuperLU factor alive at a time
+                residual, values = self._poisson_system(u, n_intrinsic)
+                residual[pinned] = u[pinned] - targets[pinned]
+                delta, chord = self._linear_solve(values, _POISSON_LAYOUT, pinned, -residual, 1)
+            finite = bool(np.all(np.isfinite(delta)))
+            error = float(np.max(np.abs(np.where(pinned, 0.0, delta)))) if finite else math.inf
+            if chord_step:
+                if error > last_error:   # the frozen Jacobian no longer contracts: drop the update, factorise again
+                    chord = None
+                    continue
+                if error > _CHORD_CONTRACTION * last_error:
+                    chord = None
+            elif not finite:
                 break
             u = u + np.where(pinned, delta, _log_damped(delta))
-            if np.max(np.abs(np.where(pinned, 0.0, delta))) <= self.tolerance:
+            last_error = error
+            if error <= self.tolerance:
                 boltzmann = np.where(self.semiconductor, u, 0.0)
                 state = np.zeros((self.n_cells, COMPONENTS))
                 state[:, 0] = u
@@ -277,9 +319,9 @@ class DriftDiffusionCore:
         raise RuntimeError(f'{self.label()}: the equilibrium (nonlinear Poisson) solve did not converge in '
                            f'{self.max_newton_iterations} Newton iterations')
 
-    def _poisson_system(self, u, n_intrinsic):
-        """(residual, COO values, entries) of the scaled equilibrium Poisson equation in u alone (n, p Boltzmann);
-        entries() = the (rows, cols) of the values, called only when the pattern is (re)built."""
+    def _poisson_system(self, u, n_intrinsic, jacobian=True):
+        """(residual, COO values in _POISSON_LAYOUT order) of the scaled equilibrium Poisson equation in u alone (n, p
+        Boltzmann); values None without jacobian (a chord step)."""
         lo, hi = self.face_lo, self.face_hi
         g = self.poisson_conductance * self.vt / (ELEMENTARY_CHARGE * self.scale)
         flux = g * (u[lo] - u[hi])
@@ -289,57 +331,84 @@ class DriftDiffusionCore:
         electrons, holes = n_intrinsic * exp_u, n_intrinsic / exp_u
         residual = (_face_sum(lo, hi, flux, self.n_cells) / area
                     - fraction * (holes - electrons + self.doping / self.scale))
-        values = np.concatenate([g / area[lo], -g / area[lo], g / area[hi], -g / area[hi],
-                                 fraction * (electrons + holes)])
+        if not jacobian:
+            return residual, None
+        g_lo, g_hi = g / area[lo], g / area[hi]
+        return residual, self._layout_values(_POISSON_LAYOUT, (g_lo, -g_lo, g_hi, -g_hi, fraction * (electrons + holes)))
 
-        def entries():
-            cells = np.arange(self.n_cells)
-            return np.concatenate([lo, lo, hi, hi, cells]), np.concatenate([lo, hi, hi, lo, cells])
-        return residual, values, entries
+    def _layout_values(self, layout, blocks):
+        """Concatenated COO values of `blocks` (an array or scalar per layout block: per face, or per site)."""
+        sizes = (self.face_lo.size, self.face_lo.size, self.n_cells)   # indexed by the row side _LO / _HI / _SITE
+        return np.concatenate([np.broadcast_to(values, (sizes[block[0]],)) for block, values in zip(layout, blocks)])
 
     def _newton(self, state, targets, generation, max_iterations=None):
         """(converged, state) of Newton on the coupled system from `state`: log-damped potential updates, carrier
         updates n exp(dn / n) when negative (floored); converged when max |du| and max |dn| / (n + n_i) (p likewise)
-        over the free unknowns are <= tolerance; a non-finite system or update is not converged. max_iterations: None
-        = max_newton_iterations."""
+        over the free unknowns are <= tolerance; a non-finite system or update is not converged. Chord steps (the last
+        factor, no Jacobian) once an update is <= _CHORD_START. max_iterations: None = max_newton_iterations."""
         pinned = self.pinned
         n_intrinsic = (self.n_intrinsic / self.scale)[:, None]
         state = state.copy()
         state[pinned] = targets[pinned]
+        chord, last_error = None, math.inf   # (factor, row norms) of the last factorised Jacobian; its update size
         for _ in range(self.max_newton_iterations if max_iterations is None else max_iterations):
-            residual, values, entries = self._coupled_system(state, generation)
-            if not (np.all(np.isfinite(residual)) and np.all(np.isfinite(values))):
-                return False, state   # never factorise NaN / inf (SuperLU reports it as singular)
-            residual[pinned] = 0.0
-            delta = self._linear_solve(values, entries, pinned.ravel(), -residual.ravel(), COMPONENTS)
+            delta, chord_step = None, chord is not None and last_error <= _CHORD_START
+            if chord_step:
+                residual, _ = self._coupled_system(state, generation, jacobian=False)
+                if not np.all(np.isfinite(residual)):
+                    return False, state
+                residual[pinned] = 0.0
+                delta = self._chord_solve(chord, -residual.ravel())
+                chord_step = delta is not None
+            if delta is None:
+                chord = None   # dropped before the next factorisation: one SuperLU factor alive at a time
+                residual, values = self._coupled_system(state, generation)
+                if not (np.all(np.isfinite(residual)) and np.all(np.isfinite(values))):
+                    return False, state   # never factorise NaN / inf (SuperLU reports it as singular)
+                residual[pinned] = 0.0
+                delta, chord = self._linear_solve(values, _COUPLED_LAYOUT, pinned.ravel(), -residual.ravel(),
+                                                  COMPONENTS)
             self.newton_iterations += 1
+            self.chord_steps += int(chord_step)
             delta = delta.reshape(self.n_cells, COMPONENTS)
             if not np.all(np.isfinite(delta)):
+                if chord_step:
+                    chord = None
+                    continue
                 return False, state
             delta[pinned] = 0.0
             carriers = state[:, 1:]
             relative = delta[:, 1:] / np.where(carriers > 0.0, carriers, 1.0)
             error = max(float(np.max(np.abs(delta[:, 0]))),
                         float(np.max(np.abs(delta[:, 1:]) / (carriers + n_intrinsic + (carriers == 0.0)))))
+            if chord_step:
+                if error > last_error:   # the frozen Jacobian no longer contracts: drop the update, factorise again
+                    chord = None
+                    continue
+                if error > _CHORD_CONTRACTION * last_error:
+                    chord = None
             # np.where evaluates both branches: exp only sees the (selected) non-positive arguments
             carriers_updated = np.maximum(np.where(relative >= 0.0, carriers * (1.0 + relative),
                                                    carriers * np.exp(np.minimum(relative, 0.0))), _CARRIER_FLOOR)
             if not np.all(np.isfinite(carriers_updated)):
+                if chord_step:
+                    chord = None
+                    continue
                 return False, state
             state[:, 0] += _log_damped(delta[:, 0])
             state[:, 1:] = carriers_updated
             state[pinned] = targets[pinned]
+            last_error = error
             if error <= self.tolerance:
                 return True, state
         return False, state
 
-    def _coupled_system(self, state, generation):
-        """(residual (N, 3), COO values, entries) of the scaled coupled system: Poisson rows (charge per control volume),
-        electron / hole continuity rows (SG face terms + volume (R - G)); pinned rows are replaced by the caller.
-        entries() = the (rows, cols) of the values, called only when the pattern is (re)built."""
+    def _coupled_system(self, state, generation, jacobian=True):
+        """(residual (N, 3), COO values in _COUPLED_LAYOUT order) of the scaled coupled system: Poisson rows (charge per
+        control volume), electron / hole continuity rows (SG face terms + volume (R - G)); pinned rows are replaced by
+        the caller. Values None without jacobian (a chord step)."""
         u, n, p = state[:, 0], state[:, 1], state[:, 2]
         lo, hi = self.face_lo, self.face_hi
-        cells = np.arange(self.n_cells)
         area = self.cell_area
         fraction = self.charge_fraction
         g = self.poisson_conductance * self.vt / (ELEMENTARY_CHARGE * self.scale)
@@ -347,10 +416,9 @@ class DriftDiffusionCore:
         delta = u[hi] - u[lo]
         b_plus = bernoulli(delta)
         b_minus = b_plus + delta
-        db_plus = bernoulli_derivative(delta, b_plus)
-        db_minus = bernoulli_derivative(-delta, b_minus)
-        flux_n = self.carrier_n * (n[lo] * b_minus - n[hi] * b_plus)
-        flux_p = self.carrier_p * (p[lo] * b_plus - p[hi] * b_minus)
+        n_lo, n_hi, p_lo, p_hi = n[lo], n[hi], p[lo], p[hi]
+        flux_n = self.carrier_n * (n_lo * b_minus - n_hi * b_plus)
+        flux_p = self.carrier_p * (p_lo * b_plus - p_hi * b_minus)
         recombination, dr_dn, dr_dp = self._recombination(n, p)
         source = area * (recombination - generation)
 
@@ -358,34 +426,24 @@ class DriftDiffusionCore:
         residual[:, 0] = _face_sum(lo, hi, flux_u, self.n_cells) / area - fraction * (p - n + self.doping / self.scale)
         residual[:, 1] = _face_sum(lo, hi, flux_n, self.n_cells) + source
         residual[:, 2] = _face_sum(lo, hi, flux_p, self.n_cells) + source
+        if not jacobian:
+            return residual, None
 
+        db_plus = bernoulli_derivative(delta, b_plus)
+        db_minus = bernoulli_derivative(-delta, b_minus)
         dn_dnlo, dn_dnhi = self.carrier_n * b_minus, -self.carrier_n * b_plus
-        dn_duhi = -self.carrier_n * (n[lo] * db_minus + n[hi] * db_plus)
+        dn_duhi = -self.carrier_n * (n_lo * db_minus + n_hi * db_plus)
         dp_dplo, dp_dphi = self.carrier_p * b_plus, -self.carrier_p * b_minus
-        dp_duhi = self.carrier_p * (p[lo] * db_plus + p[hi] * db_minus)
-        u_lo, u_hi, n_lo, n_hi, p_lo, p_hi = 3 * lo, 3 * hi, 3 * lo + 1, 3 * hi + 1, 3 * lo + 2, 3 * hi + 2
-        u_c, n_c, p_c = 3 * cells, 3 * cells + 1, 3 * cells + 2
-        blocks = (
-            # Poisson faces (rows u_lo / u_hi) and cell charge terms
-            (u_lo, u_lo, g / area[lo]), (u_lo, u_hi, -g / area[lo]),
-            (u_hi, u_hi, g / area[hi]), (u_hi, u_lo, -g / area[hi]),
-            (u_c, n_c, fraction), (u_c, p_c, -fraction),
-            # electron flux term: + on row n_lo, - on row n_hi
-            (n_lo, n_lo, dn_dnlo), (n_lo, n_hi, dn_dnhi), (n_lo, u_hi, dn_duhi), (n_lo, u_lo, -dn_duhi),
-            (n_hi, n_lo, -dn_dnlo), (n_hi, n_hi, -dn_dnhi), (n_hi, u_hi, -dn_duhi), (n_hi, u_lo, dn_duhi),
-            # hole flux term
-            (p_lo, p_lo, dp_dplo), (p_lo, p_hi, dp_dphi), (p_lo, u_hi, dp_duhi), (p_lo, u_lo, -dp_duhi),
-            (p_hi, p_lo, -dp_dplo), (p_hi, p_hi, -dp_dphi), (p_hi, u_hi, -dp_duhi), (p_hi, u_lo, dp_duhi),
-            # recombination of both continuity rows; every row keeps its diagonal entry
-            (n_c, n_c, area * dr_dn), (n_c, p_c, area * dr_dp),
-            (p_c, n_c, area * dr_dn), (p_c, p_c, area * dr_dp),
-            (u_c, u_c, np.zeros(self.n_cells)),
+        dp_duhi = self.carrier_p * (p_lo * db_plus + p_hi * db_minus)
+        g_lo, g_hi = g / area[lo], g / area[hi]
+        volume_dr_dn, volume_dr_dp = area * dr_dn, area * dr_dp
+        blocks = (   # _COUPLED_LAYOUT order
+            g_lo, -g_lo, g_hi, -g_hi, fraction, -fraction,
+            dn_dnlo, dn_dnhi, dn_duhi, -dn_duhi, -dn_dnlo, -dn_dnhi, -dn_duhi, dn_duhi,
+            dp_dplo, dp_dphi, dp_duhi, -dp_duhi, -dp_dplo, -dp_dphi, -dp_duhi, dp_duhi,
+            volume_dr_dn, volume_dr_dp, volume_dr_dn, volume_dr_dp, 0.0,
         )
-        values = np.concatenate([np.broadcast_to(block[2], block[0].shape) for block in blocks])
-
-        def entries():
-            return (np.concatenate([block[0] for block in blocks]), np.concatenate([block[1] for block in blocks]))
-        return residual, values, entries
+        return residual, self._layout_values(_COUPLED_LAYOUT, blocks)
 
     def _recombination(self, n, p, weight=None):
         """(R / C_s, dR/dn, dR/dp) of SRH (mid-gap trap) + radiative + Auger recombination, R = (n p - n_i^2) (1 /
@@ -405,18 +463,24 @@ class DriftDiffusionCore:
                           + excess * self.auger_p)
         return recombination / scale, dr_dn, dr_dp
 
-    def _linear_solve(self, values, entries, pinned_rows, rhs, components):
-        """Solution of the sparse system of COO values (entries() their rows / cols; pinned rows as identity rows) on
-        the kept _PinnedPattern, rows L1-equilibrated, through the linear solver's back end (counted there): real cuDSS
-        / MUMPS / PARDISO LU on KEPT_FACTOR_BACK_ENDS, else a real SuperLU (or cusolver_qr) solve; a cuDSS refusal of
-        an 'auto' runtime switches it to SuperLU (B1b) and the system is solved again there (a MUMPS / PARDISO refusal
-        raises: no fallback)."""
+    def _site_graph(self):
+        """_SiteGraph of the sites and faces (built on first use; faces are fixed at construction)."""
+        if self._graph is None:
+            self._graph = _SiteGraph(self.face_lo, self.face_hi, self.n_cells)
+        return self._graph
+
+    def _linear_solve(self, values, layout, pinned_rows, rhs, components):
+        """(solution, chord) of the sparse system of COO values in `layout` order (pinned rows as identity rows) on the
+        kept _PinnedPattern, rows L1-equilibrated, through the linear solver's back end (counted there): real cuDSS /
+        MUMPS / PARDISO LU on KEPT_FACTOR_BACK_ENDS, else a real SuperLU (or cusolver_qr) solve; a cuDSS refusal of an
+        'auto' runtime switches it to SuperLU (B1b) and the system is solved again there (a MUMPS / PARDISO refusal
+        raises: no fallback). chord = (factor, row norms) for _chord_solve, None on cusolver_qr (QR keeps no factor)."""
         size = rhs.size
         pattern = self._patterns.get(size)
         if pattern is None or not np.array_equal(pattern.pinned_rows, pinned_rows):
-            pattern = self._patterns[size] = _PinnedPattern(*entries(), pinned_rows)
+            pattern = self._patterns[size] = _PinnedPattern(self._site_graph(), layout, components, pinned_rows)
         data = pattern.csr_values(values)
-        row_norm = np.bincount(pattern.slot_rows, np.abs(data), size)
+        row_norm = np.add.reduceat(np.abs(data), pattern.indptr[:-1])   # every row holds an entry
         row_norm = np.where(row_norm > 0.0, row_norm, 1.0)
         data /= np.repeat(row_norm, pattern.row_counts)
         rhs = rhs / row_norm
@@ -434,8 +498,21 @@ class DriftDiffusionCore:
             raise ValueError(f'{self.label()}: singular linear system ({exc}); every insulating region (n_intrinsic '
                              '0) must touch a semiconductor or a gate, and every semiconductor region an ohmic '
                              'contact') from exc
-        self.host_factor_bytes = None if self.linear_solver.back_end in CUDSS_BACK_ENDS else factor.host_bytes
-        return solution
+        back_end = self.linear_solver.back_end
+        self.host_factor_bytes = None if back_end in CUDSS_BACK_ENDS else factor.host_bytes
+        return solution, (None if back_end == 'cusolver_qr' else (factor, row_norm))
+
+    @staticmethod
+    def _chord_solve(chord, rhs):
+        """Solution of the last factorised (equilibrated) Jacobian for a new right-hand side (a chord step: one solve,
+        no assembly or factorisation); None when its factor is gone or refuses the solve (the caller factorises)."""
+        factor, row_norm = chord
+        if not getattr(factor, 'valid', True):
+            return None
+        try:
+            return factor.solve_host(rhs / row_norm)
+        except CUDSS_REFUSALS + HOST_DIRECT_REFUSALS:
+            return None
 
     def _factor_solve(self, pattern, data, rhs, components):
         """(solution, factor) of the equilibrated system (CSR data on `pattern`) on the runtime's current back end: a
@@ -445,10 +522,12 @@ class DriftDiffusionCore:
         back_end = self.linear_solver.back_end
         if back_end in KEPT_FACTOR_BACK_ENDS:
             previous = self._kept_factors.pop(size, None)
-            factor = self.linear_solver.factorize_host(pattern.host_csr(data), real=True, previous=previous)
+            # values on the canonical pattern (identity-matched): no host CSR canonicalising / asymmetry check per step
+            factor = self.linear_solver.factorize_values(data, pattern.indptr, pattern.indices, real=True,
+                                                         previous=previous, defer_check=False)
             if self.linear_solver.back_end in KEPT_FACTOR_BACK_ENDS:
                 self._kept_factors[size] = factor
-            else:   # B1b: factorize_host of an 'auto' runtime fell back to SuperLU: free every cuDSS factor
+            else:   # B1b: factorize_values of an 'auto' runtime fell back to SuperLU: free every cuDSS factor
                 if previous is not None:
                     previous.release()
                 self.release_kept_factors()
@@ -711,32 +790,102 @@ def _log_damped(delta):
     return np.sign(delta) * np.log1p(np.abs(delta))
 
 
-class _PinnedPattern:
-    """Canonical CSR pattern (sorted, no duplicates, explicit zeros kept) of a Newton system's COO entries with the
-    pinned rows as identity rows, built once per pinned set: the CSR slot of every kept COO entry, so a Newton step
-    only sums its values by one bincount (no COO -> CSR conversion, no pattern sort)."""
+class _SiteGraph:
+    """Scalar CSR pattern of the site graph (every site and its face neighbours, columns ascending): the position of
+    each face's two entries and of each site's diagonal within their rows, which _PinnedPattern expands per unknown
+    component. One face per pair of different sites."""
 
-    def __init__(self, rows, cols, pinned_rows):
+    def __init__(self, face_lo, face_hi, n_sites):
+        lo, hi = np.asarray(face_lo, dtype=np.int64), np.asarray(face_hi, dtype=np.int64)
+        n_faces = lo.size
+        sites = np.arange(n_sites, dtype=np.int64)
+        rows = np.concatenate([lo, hi, sites])
+        keys = rows * n_sites + np.concatenate([hi, lo, sites])
+        order = np.argsort(keys)
+        if np.any(lo == hi) or np.any(np.diff(keys[order]) == 0):
+            raise ValueError('drift_diffusion: every face must join two different sites, at most one face per pair')
+        rank = np.empty(keys.size, dtype=np.int64)
+        rank[order] = np.arange(keys.size)
+        self.row_counts = np.bincount(rows, minlength=n_sites)   # face neighbours + 1 per site
+        position = rank - (np.cumsum(self.row_counts) - self.row_counts)[rows]   # column rank within the row
+        self.lo_hi, self.hi_lo = position[:n_faces], position[n_faces:2 * n_faces]
+        self.diagonal = position[2 * n_faces:]
+        self.face_lo, self.face_hi, self.n_sites = lo, hi, int(n_sites)
+
+
+class _PinnedPattern:
+    """Canonical CSR pattern (sorted, no duplicates, explicit zeros kept) of a Newton system with the pinned rows as
+    identity rows, built once per pinned set by expanding the _SiteGraph per unknown component (no sort of the COO
+    entries): the CSR slot of every COO value of the block layout (values of pinned rows go to the dummy slot nnz), so
+    a Newton step only sums its values by one bincount. A free row (site s, component a) holds, per scalar column c of
+    s in ascending order, the components the layout couples a to: of a face neighbour when c != s, of s itself when
+    c == s."""
+
+    def __init__(self, graph, layout, components, pinned_rows):
         self.pinned_rows = np.array(pinned_rows, dtype=bool)
-        size = self.pinned_rows.size
-        rows, cols = np.asarray(rows, dtype=np.int64), np.asarray(cols, dtype=np.int64)
-        self.keep = np.flatnonzero(~self.pinned_rows[rows])   # COO entries outside the pinned rows
+        n_sites = graph.n_sites
+        self.size = n_sites * components
+        if any(_SITE in (side, column_side) and side != column_side for side, _, column_side, _ in layout):
+            raise ValueError('_PinnedPattern: a site block couples a site with itself only')
+        free = ~self.pinned_rows.reshape(n_sites, components)
+        # column components of a face neighbour / of the own site per row component (ascending = CSR column order)
+        neighbour = [sorted({b for side, a, column_side, b in layout if a == row and side != column_side})
+                     for row in range(components)]
+        own = [sorted({b for side, a, column_side, b in layout if a == row and side == column_side})
+               for row in range(components)]
+        neighbour_width = np.array([len(columns) for columns in neighbour], dtype=np.int64)
+        own_width = np.array([len(columns) for columns in own], dtype=np.int64)
+        degree = graph.row_counts - 1
+        self.row_counts = np.where(free, degree[:, None] * neighbour_width + own_width, 1).ravel()
+        if np.any(self.row_counts == 0):
+            raise ValueError('_PinnedPattern: a free row without entries')
+        indptr = np.concatenate([[0], np.cumsum(self.row_counts)])
+        self.nnz = int(indptr[-1])
+        start = indptr[:-1].reshape(n_sites, components)
+        diagonal = graph.diagonal
+
+        def neighbour_slots(row, sites, positions):
+            """Slot of the first column of the face neighbour at scalar `positions` in the rows (sites, row)."""
+            wider = (own_width[row] - neighbour_width[row]) * (positions > diagonal[sites])   # the own site before it
+            return start[sites, row] + positions * neighbour_width[row] + wider
+
+        def own_slots(row, sites):
+            """Slot of the first own-site column in the rows (sites, row)."""
+            return start[sites, row] + diagonal[sites] * neighbour_width[row]
+
+        indices = np.empty(self.nnz, dtype=np.int64)
+        face_sites = np.concatenate([graph.face_lo, graph.face_hi])
+        face_columns = np.concatenate([graph.face_hi, graph.face_lo])
+        face_positions = np.concatenate([graph.lo_hi, graph.hi_lo])
+        all_sites = np.arange(n_sites)
+        for row in range(components):
+            kept = free[face_sites, row]
+            base, columns = neighbour_slots(row, face_sites[kept], face_positions[kept]), face_columns[kept]
+            for offset, component in enumerate(neighbour[row]):
+                indices[base + offset] = components * columns + component
+            sites = all_sites[free[:, row]]
+            base = own_slots(row, sites)
+            for offset, component in enumerate(own[row]):
+                indices[base + offset] = components * sites + component
         pinned_index = np.flatnonzero(self.pinned_rows)
-        keys = np.concatenate([rows[self.keep] * size + cols[self.keep], pinned_index * (size + 1)])
-        slot_keys, slot_of_entry = np.unique(keys, return_inverse=True)   # row-major ascending = canonical CSR order
-        self.slots = slot_of_entry[:self.keep.size]
-        self.pinned_slots = slot_of_entry[self.keep.size:]   # the only entry of each pinned row
-        self.nnz = int(slot_keys.size)
-        index_dtype = np.int32 if max(size, self.nnz) < 2 ** 31 else np.int64
-        self.slot_rows = slot_keys // size
-        self.row_counts = np.bincount(self.slot_rows, minlength=size)
-        self.indices = (slot_keys % size).astype(index_dtype)
-        self.indptr = np.concatenate([[0], np.cumsum(self.row_counts)]).astype(index_dtype)
-        self.size = size
+        self.pinned_slots = indptr[:-1][pinned_index]   # the only entry of each pinned row
+        indices[self.pinned_slots] = pinned_index
+        index_dtype = np.int32 if max(self.size, self.nnz) < 2 ** 31 else np.int64
+        self.indices, self.indptr = indices.astype(index_dtype), indptr.astype(index_dtype)
+        slots = []   # CSR slot of every COO value in layout order
+        for side, row, column_side, component in layout:
+            sites = all_sites if side == _SITE else (graph.face_lo if side == _LO else graph.face_hi)
+            if side == column_side:
+                slot = own_slots(row, sites) + own[row].index(component)
+            else:
+                positions = graph.lo_hi if side == _LO else graph.hi_lo
+                slot = neighbour_slots(row, sites, positions) + neighbour[row].index(component)
+            slots.append(np.where(free[sites, row], slot, self.nnz))
+        self.slots = np.concatenate(slots)
 
     def csr_values(self, values):
-        """Float64 CSR data (nnz,) of COO values in the constructor's entry order (pinned rows: 1 on the diagonal)."""
-        data = np.bincount(self.slots, np.asarray(values, dtype=np.float64)[self.keep], self.nnz)
+        """Float64 CSR data (nnz,) of COO values in layout order (pinned rows: 1 on the diagonal)."""
+        data = np.bincount(self.slots, values, self.nnz + 1)[:self.nnz]
         data[self.pinned_slots] = 1.0
         return data
 

@@ -272,7 +272,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
         system = self.system
         counters = {'newton_iterations': system.newton_iterations, 'continuation_steps': system.continuation_steps,
                     'cold_starts': system.cold_starts, 'rejected_predictions': system.rejected_predictions,
-                    'solve_seconds': self._solve_seconds}
+                    'chord_steps': system.chord_steps, 'solve_seconds': self._solve_seconds}
         if self._owns_linear_solver:
             counters.update(self.linear_solver.work_counters())
         return counters

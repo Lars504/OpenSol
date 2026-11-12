@@ -110,7 +110,9 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   `harmonic.face_mean_at_centres`, distributed by `sources.centres_to_faces` (C*, the adjoint of C in the area-weighted
   products), J_F = -j omega C* P, exposed as `face_currents`. Any new nonlinear term must collocate / distribute through
   C / C* (or its own exact adjoint pair): only then is sum_k W_k = 0 for real Kleinman tensors
-  (nlfd_collocation_transpose). C* is not `yee_grid.face_average` at non-periodic ends.
+  (nlfd_collocation_transpose). C* is not `yee_grid.face_average` at non-periodic ends. The C* / C*^T weights live on
+  the backend in `ChannelFieldStore.weights(axis)` (`sources.collocation_weights`); run-time callers pass them
+  (`weights=`), so a face-current or adjoint evaluation uploads nothing.
 - Sources never read a channel's FDFDPhysics, only `ChannelFieldStore` (flat complex128, captured after every channel
   solve, version per channel): a channel's own solve cannot change what its sources returned for it, and pump-depleted
   mixing writes the store only. Reading `physics.face_fields()` inside a source would recurse for hz self-terms.
@@ -139,6 +141,9 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   centre density, hz face densities added to the face currents without C*). `power()` = bulk centre work + sheet site
   work; the Kerr operator term and carriers read `bulk_terms` only; absorption, nonlinear_absorption and the adjoint
   read both.
+- `sheets._scatter_add` on cupy is one float64 `cupyx.scatter_add` into the complex target's real view (interleaved
+  re / im slots): targets are flat contiguous complex128, and the deposit needs no full-grid temporaries (the 'sheet
+  evaluation' phase holds site-sized arrays only).
 - `sheet_site_absorption` books site work in the cell owning the tap, so sum A q = -site work exactly.
   `sheet_cotangents`: no C^T (the sites sample the store layout).
 - Surface sites = faces between a selected and an unselected cell; E_n = the C mean at the selvedge cell. 'smoothed'
@@ -183,6 +188,10 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   right after a sweep, so store and channel solutions agree. Continuation wraps linear sources in `ScaledSource`
   (attribute pass-through, ports keep working), restored in `finally`. Not converged: CascadeRecord converged False;
   non-finite: RuntimeError.
+- Store-vector algebra (Anderson Gram and mix, `real_gmres` CGS2, `block_norms`) runs on the float64 views of the
+  contiguous complex128 vectors (Re <u, v> = view dot, real coefficients = real GEMVs, no conj copies or (depth, N)
+  temporaries) with one device -> host transfer per Gram, GMRES column or set of block norms: what `apply` returns
+  and what reaches those helpers must be complex128 (made contiguous there).
 - newton (`iteration.solve_newton_krylov`): G_J = block Jacobi; J v by swapping a channel's sources for its tangent
   `DensityPhasor` for one solve (restored in `finally`; never reassembled). `real_gmres` in Re <u, v>; `block_weights`
   give a zero channel the largest weight, never 1 (fields ~1e8 V/m: weight 1 lets a generated channel dominate the

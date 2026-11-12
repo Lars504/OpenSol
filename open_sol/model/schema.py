@@ -1080,13 +1080,13 @@ def with_default_precision(spec, solver_type, settings, solver_role=None) -> dic
     return {**settings, 'precision': precision}
 
 
-def with_node_precision(spec, solver_type, settings, solver_role, backend, grid) -> dict:
+def with_node_precision(spec, solver_type, settings, solver_role, backend, grid, study=None) -> dict:
     """with_default_precision of a node's settings; when that sets no precision and the node's type is the role's
-    Automatic type on backend / grid, the Automatic precision (solid_mechanics_3d gpu tensor: mixed)."""
+    Automatic type on backend / grid (in the study), the Automatic precision (solid_mechanics_3d gpu tensor: mixed)."""
     filled = with_default_precision(spec, solver_type, settings, solver_role)
     if 'precision' in filled:
         return filled
-    automatic_type, automatic_settings = solver_role.automatic(backend, grid)
+    automatic_type, automatic_settings = solver_role.automatic(backend, grid, study)
     if automatic_type != solver_type.name or 'precision' not in automatic_settings:
         return filled
     return {**filled, 'precision': automatic_settings['precision']}
@@ -1112,7 +1112,7 @@ def default_precision_ignored(spec, registry, study) -> list:
             if not solver_role.used_in(study):
                 continue
             node = nodes.get(assigned.get(role) or '')
-            type_name = node.type if node is not None else solver_role.automatic(backend, grid)[0]
+            type_name = node.type if node is not None else solver_role.automatic(backend, grid, study)[0]
             try:
                 solver_type = registry.solver_type(type_name)
             except KeyError:   # reported at the node
@@ -1195,8 +1195,8 @@ def conformal_boundaries_physics(spec, registry) -> tuple:
 
 def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
     """{role: ResolvedSolver} of the roles the physics' type uses in `study`: its assigned solver node, else Automatic
-    (SolverRole.automatic of the run backend and solver_grid: default_type with default_settings unless grid_defaults /
-    backend_defaults differ); solver_defaults.precision fills a precision no node sets (with_default_precision; it
+    (SolverRole.automatic of the study, run backend and solver_grid: default_type with default_settings unless
+    study_defaults / grid_defaults / backend_defaults differ); solver_defaults.precision fills a precision no node sets (with_default_precision; it
     also replaces an Automatic one), else a node of the Automatic type takes the Automatic one (with_node_precision); a
     preconditioner the node does not set resolves 'jacobi' at precision 'mixed'; back_end 'auto' resolves by
     auto_back_end_values (the role's cuDSS back end on the gpu backend). CPU, GUI-thread safe; ValueError
@@ -1217,9 +1217,9 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters) -> dict:
                     raise ValueError(f"unknown solver '{node_name}'" if node is None
                                      else f"solver '{node_name}' settings must be a mapping")
                 solver_type = registry.solver_type(node.type)
-                raw = with_node_precision(spec, solver_type, node.settings, solver_role, backend, grid)
+                raw = with_node_precision(spec, solver_type, node.settings, solver_role, backend, grid, study)
             else:
-                type_name, raw = solver_role.automatic(backend, grid)
+                type_name, raw = solver_role.automatic(backend, grid, study)
                 solver_type = registry.solver_type(type_name)
                 # a role's Automatic precision (solid_mechanics_3d gpu: mixed) yields to solver_defaults.precision
                 filled = with_default_precision(spec, solver_type,

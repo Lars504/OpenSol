@@ -446,7 +446,71 @@ def _check_released(results_by_name):
     return scaled_worst_result(errors, tolerances, **details)
 
 
+# ---- solid_fem_tangent_kernel_numba: numba vs numpy twin of fem.element_tangent_2d (fem.tangent_kernel2d) ----
+_KERNEL_TOLERANCE = 1e-12        # same sums, other order
+_KERNEL_ELEMENTS = 64            # compared elements per (order, S0, tangent) variant
+_KERNEL_SPEED_ELEMENTS = 8192    # P2 elements of the timed call
+_KERNEL_SPEED_CALLS = (1, 5)     # (numpy, numba) timed calls
+_KERNEL_LENGTH = 1e-6            # element size [m] of the random inputs
+_KERNEL_STRESS = 1e8             # S0 scale [Pa]
+
+
+def _kernel_arguments(rng, elements, n_local, points, has_fixed, want_tangent):
+    """The element_tangent_2d args tuple of random P1 / P2-sized inputs: gradients ~1 / L, ~1 % strains, SPD C, S0."""
+    columns = 2 * n_local
+    factor = rng.standard_normal((elements, 3, 3))
+    material = 1e10 * (np.einsum('mij,mkj->mik', factor, factor) + 3.0 * np.eye(3))
+    fixed = _KERNEL_STRESS * rng.standard_normal((elements, points, 3)) if has_fixed else np.zeros((1, 1, 1))
+    return (rng.standard_normal((elements, points, n_local, 2)) / _KERNEL_LENGTH,
+            rng.random((elements, points)) * _KERNEL_LENGTH ** 2,
+            0.01 * _KERNEL_LENGTH * rng.standard_normal((elements, n_local, 2)), material, fixed,
+            np.zeros((elements, columns)),
+            np.zeros((elements, columns, columns)) if want_tangent else np.zeros((1, 1, 1)),
+            np.int32(elements), np.int32(has_fixed), np.int32(want_tangent))
+
+
+def _check_tangent_kernel(_):
+    """numba vs numpy element_tangent_2d: P1 (3 nodes, 1 point) and P2 (6 nodes, 6 points), with and without S0, the
+    force alone too."""
+    from ...core.kernels import numba_available
+    from ...fem import tangent_kernel2d
+    from ...model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _KERNEL_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    numpy_twin = tangent_kernel2d._element_tangent_host
+    numba_twin = tangent_kernel2d._element_tangent_numba(numba)
+    rng = np.random.default_rng(20261111)
+    comparisons = {}
+    for n_local, points in ((3, 1), (6, 6)):
+        for has_fixed in (0, 1):
+            for want_tangent in (1, 0):
+                label = f'n{n_local} q{points} S0 {has_fixed} tangent {want_tangent}'
+                comparisons[label] = (numpy_twin, numba_twin, _kernel_arguments(rng, _KERNEL_ELEMENTS, n_local, points,
+                                                                                has_fixed, want_tangent))
+    timings = {'P2 force and tangent': (numpy_twin, numba_twin,
+                                        _kernel_arguments(rng, _KERNEL_SPEED_ELEMENTS, 6, 6, 1, 1),
+                                        *_KERNEL_SPEED_CALLS)}
+    result = numba_twin_result(comparisons, timings, _KERNEL_TOLERANCE, numba)
+    result['details']['speed_elements'] = _KERNEL_SPEED_ELEMENTS
+    result['details']['registered_host_kind'] = tangent_kernel2d.ELEMENT_TANGENT_2D.host_kind
+    return result
+
+
 NONLINEAR_CASES = (
+    SelfTestCase(
+        name='solid_fem_tangent_kernel_numba',
+        label='Solid mechanics on triangles: numba vs numpy per-element total-Lagrangian force and tangent (CPU)',
+        description=('The numba twin of fem.element_tangent_2d (fem.tangent_kernel2d: per planar element H, '
+                     'Green-Lagrange E, S = C E + S0, B + B_NL, force, (B + B_NL)^T C (B + B_NL) + K_sigma; used by '
+                     'TangentAssembler once numba is loaded or the map has >= NUMBA_MIN_ELEMENTS elements) against its '
+                     f'numpy twin (the batched fem.elasticity formulas) on {_KERNEL_ELEMENTS} random elements per '
+                     'variant: P1-sized (3 nodes, 1 point) and P2-sized (6 nodes, 6 points), with and without S0, force '
+                     'with the tangent and alone; measured = error = the worst max |numba - numpy| relative to the peak '
+                     f'of each output, tolerance {_KERNEL_TOLERANCE:g}. Details: ms per call of both on '
+                     f'{_KERNEL_SPEED_ELEMENTS} P2 elements. Without numba nothing is compared (error 0). Not yet run.'),
+        specs=dict, check=_check_tangent_kernel, backends=('cpu',), max_wall_time=300.0),
     SelfTestCase(
         name='solid_fem_nonlinear_uniform',
         label='Solid mechanics on triangles: geometrically nonlinear homogeneous states (stretch, release, domain hold, '

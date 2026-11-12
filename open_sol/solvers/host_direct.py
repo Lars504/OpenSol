@@ -54,6 +54,7 @@ import importlib.util
 import math
 import os
 import platform
+import sys
 import time
 
 import numpy as np
@@ -283,14 +284,25 @@ def solver_host_bytes(n_unknowns, entries, complex_values=True, mixed=False, sym
     return int(kept + library_copy)
 
 
-_OPENBLAS_POOLS = {}   # 'pools': threadpoolctl controller of the loaded OpenBLAS pools, None without any
+_OPENBLAS_POOLS = {}   # 'pools': threadpoolctl controller of the loaded OpenBLAS pools, None without any; 'marker'
+# scipy extension modules that load scipy's own OpenBLAS (lazily, on their first import): a refresh looks the pools up
+# again only when one of them appeared since the last lookup (a ThreadpoolController walks every loaded library: 4.5 ms
+# per factorisation in the drift_diffusion PARDISO profile)
+_SCIPY_BLAS_MODULES = ('scipy.linalg._fblas', 'scipy.linalg._flapack', 'scipy.sparse.linalg._eigen.arpack._arpack',
+                       'scipy.sparse.linalg._dsolve._superlu', 'scipy.sparse.linalg._isolve._iterative')
+
+
+def _blas_marker() -> tuple:
+    return tuple(name in sys.modules for name in _SCIPY_BLAS_MODULES)
 
 
 def _openblas_pools(refresh=False):
     """threadpoolctl controller of the OpenBLAS thread pools loaded in this process (numpy's, scipy's), None when
-    there is none (numpy on MKL) or threadpoolctl is not installed; looked up on first use and again with refresh
-    (scipy loads its own OpenBLAS lazily; a lookup costs ~0.4 ms)."""
-    if refresh or 'pools' not in _OPENBLAS_POOLS:
+    there is none (numpy on MKL) or threadpoolctl is not installed; looked up on first use and, with refresh, again
+    when a scipy BLAS module was imported since (_SCIPY_BLAS_MODULES)."""
+    marker = _blas_marker()
+    if 'pools' not in _OPENBLAS_POOLS or (refresh and marker != _OPENBLAS_POOLS.get('marker')):
+        _OPENBLAS_POOLS['marker'] = marker
         pools = None
         try:
             import threadpoolctl

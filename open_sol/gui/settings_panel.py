@@ -1950,7 +1950,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
     def _solver_entries(self, spec, physics_type, role, solver_role, grid):
         """(entries, item tips, disabled reasons) of a physics' role combo on its solver grid kind: Automatic, then the
         solver nodes whose type fills the role (misfits disabled with the solver_misfit reason)."""
-        automatic_type_name = solver_role.automatic(solver_backend(spec), grid)[0]
+        automatic_type_name = solver_role.automatic(solver_backend(spec), grid, spec.study.type)[0]
         try:
             default_type = self._registry.solver_type(automatic_type_name)
             automatic_label, automatic_tip = default_type.label, default_type.summary or default_type.description
@@ -1971,7 +1971,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
             tips[node.name] = solver_type.summary or solver_type.description
             settings = node.settings if isinstance(node.settings, dict) else {}
             values = fill_defaults(solver_type.params,
-                                   with_node_precision(spec, solver_type, settings, solver_role, backend, grid))
+                                   with_node_precision(spec, solver_type, settings, solver_role, backend, grid,
+                                                       spec.study.type))
             reason = (solver_misfit(solver_type, values, physics_type, role, spec.study.type, backend, grid)
                       if backend in ('gpu', 'cpu') else '')
             if reason:
@@ -2804,7 +2805,8 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
                     node = self._assigned_solver(physics.name, role)
                     lines.append(f'{physics.name}, {SOLVER_ROLES[role].lower()}: '
                                  + (node or 'Automatic ({})'.format(self._solver_type_label(
-                                     solver_role.automatic(solver_backend(spec), solver_grid(spec, physics))[0]))))
+                                     solver_role.automatic(solver_backend(spec), solver_grid(spec, physics),
+                                                           spec.study.type)[0]))))
         layout.addWidget(_group('In use', hint_label('\n'.join(lines) if lines else
                                                      'No physics of this model hands out a solver job in the current '
                                                      'study.')))

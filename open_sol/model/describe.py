@@ -968,12 +968,15 @@ _RESULTS_NOTES = (
         'physics\' own counters (loops and solves outside a role) em_fdfd_* {solves}; em_fdfd_nonlinear {channels, '
         'sweeps, solves}; magnetic_fields_ac {solves}; em_modes {solves, modes_found, solve_seconds, '
         'line_block_fallbacks with a line_block shifted node}; '
-        'drift_diffusion {newton_iterations, continuation_steps, cold_starts, rejected_predictions (continuation '
+        'drift_diffusion {newton_iterations, chord_steps (Newton iterations solved on the last factorised Jacobian), '
+        'continuation_steps, cold_starts, rejected_predictions (continuation '
         'steps whose secant prediction did not converge), solve_seconds}; laminar_flow '
         '{lattice_steps, solves}; a damped nonlinear loop (electric_currents / electrostatics nonlinear electrolyte, '
         'magnetostatics saturation) {nonlinear_runs, nonlinear_iterations, nonlinear_unconverged; the electrolyte also '
-        'diagonal_refreshes} once it ran; physics with neither are left out (ticks counts the steps of time-stepped '
-        'ones).',
+        'diagonal_refreshes; the tensor saturation loop also kept_preconditioner_solves (solves on a kept multigrid '
+        'hierarchy or direct factor), kept_preconditioner_fallbacks (of those, rebuilt and repeated) and with a direct '
+        'factor kept_factor_cg_iterations} once it ran; physics with neither are left out (ticks counts the steps of '
+        'time-stepped ones).',
         'ticks and tick_unit, what one tick is (time_dependent: runner ticks, step; stationary and optimization: '
         'iterations, iteration; frequency_domain: wavelengths solved, wavelength; mode_analysis: mode snapshots, '
         'mode; eigenfrequency and optomechanics: resonance snapshots, resonance; thermal_noise: factorisations, '
@@ -1975,6 +1978,8 @@ def _solvers_section(registry, physics_types):
                                      for backend, (type_name, settings) in solver_role.backend_defaults.items()},
             'automatic_by_grid': {grid: {'type': type_name, 'settings': _plain(settings)}
                                   for grid, (type_name, settings) in solver_role.grid_defaults.items()},
+            'automatic_by_study': {f'{study} study, {grid} mesh': {'type': type_name, 'settings': _plain(settings)}
+                                   for (study, grid), (type_name, settings) in solver_role.study_defaults.items()},
             'auto_back_end_by_grid': dict(solver_role.auto_back_ends),
             'precisions': list(solver_role.precisions),
             'setting_choices': {name: list(values) for name, values in solver_role.setting_choices.items()}}
@@ -2358,8 +2363,10 @@ def _solvers_blocks(section):
             studies = _names_text(entry['studies']) if entry['studies'] else 'every study'
             restricted = ''.join(f"; {name} {_names_text(values)} only"
                                  for name, values in entry['setting_choices'].items())
+            by_study = ''.join(f"; Automatic `{choice['type']}` in a {key}"
+                               for key, choice in entry['automatic_by_study'].items())
             lines.append(f"- `{physics_name}` {role}: operator {entry['operator']}, Automatic `{entry['automatic']}`, "
-                         f"{studies}, precisions {_names_text(entry['precisions'])}{restricted}")
+                         f"{studies}, precisions {_names_text(entry['precisions'])}{restricted}{by_study}")
     blocks.append(lines or ['none'])
     return blocks
 

@@ -18,6 +18,7 @@ from ...core.fv_diffusion_3d import (centre_gradient_3d, edge_extension_views_3d
                                      face_terms_at_centres_3d)
 from ...core.monitors import FieldProbe
 from .coils3d import coil_drive_per_ampere
+from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_solver
 from .fields import (MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PERMEABILITY_NAME,
                      MAGNETIC_3D_PROBE_COMPONENTS, MagneticFields3D)
 from .materials import MAGNETIC_3D_SCHEMA, PERMEABILITY_3D_ARRAYS, REMANENCE_3D_ARRAYS, SATURATION_ARRAY
@@ -63,7 +64,8 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
             unknown_name='magnetic scalar potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
-            compute_residual=compute_residual, linear_solver=linear_solver)
+            compute_residual=compute_residual,
+            linear_solver=kept_preconditioner_solver(linear_solver))   # kept across the saturation loop
         self._init_diffusion(domain, ScalarBoundaryConfig(), system)   # every face insulated (Neumann, decision 4)
         self.coils = []
         self._source_dirty = True
@@ -100,6 +102,8 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         domain.materials.add_properties(self.material_schema)
         system = self.system
         system.prepare(domain)
+        if isinstance(system.linear_solver, KeptPreconditionerSolver):
+            system.linear_solver.bind_window(system.window_shape)
         if min(system.window_shape) < 3:
             raise ValueError(f"{self.type_label} '{self.name}' needs at least 3 x 3 x 3 window cells, got "
                              f'{system.window_shape}')
@@ -189,8 +193,14 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         return values
 
     def work_counters(self) -> dict:
-        """The saturation loop's counters (nonlinear_runs / _iterations / _unconverged) once it ran, else {}."""
-        return self.picard.work_counters() if self.picard.n_runs else {}
+        """The saturation loop's counters (nonlinear_runs / _iterations / _unconverged) and its kept-preconditioner
+        solves once it ran, else {}."""
+        if not self.picard.n_runs:
+            return {}
+        counters = self.picard.work_counters()
+        if isinstance(self.system.linear_solver, KeptPreconditionerSolver):
+            counters.update(self.system.linear_solver.work_counters())
+        return counters
 
     # --- magnetics API (settings, set_face_bc: DiffusionPhysicsBase; BCSide('neumann', 0) = magnetic insulation, the
     # default; BCSide('dirichlet', 0) = symmetry, u = 0: field normal to the face) ----------------------------------
@@ -396,6 +406,8 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         state = self._log_permeability_state
 
         def propose(log_permeability):   # the state itself, read by _assemble through the attribute
+            if isinstance(self.system.linear_solver, KeptPreconditionerSolver):   # later iterations may keep its build
+                self.system.linear_solver.offer_state(log_permeability, fresh=first[0])
             self._assemble(full=first[0])
             first[0] = False
             self._solve_once()

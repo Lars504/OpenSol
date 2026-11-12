@@ -40,6 +40,7 @@ WALL_KINDS = ('clamped', 'supported', 'symmetry', 'free')
 _HELD = {'clamped': (True, False), 'supported': (True, False), 'symmetry': (False, True), 'free': (False, False)}
 PLATE_PORT_DEGREE = 6        # Gauss degree along the port edges (Hermite cubic x P2 value: exact on straight edges)
 REAL_BETA_RTOL = 1e-9        # |Im beta| below this x |beta|: a propagating mode (direction from its power flux)
+STRIP_TWIN_RTOL = 1e-12      # two port strips whose matrices agree to this share their strip modes (round-off only)
 
 
 @dataclass(frozen=True, eq=False)
@@ -223,6 +224,27 @@ def strip_modes(strip, medium, omega) -> StripModes:
     return StripModes(omega, squared, beta, traces, weights, flux, factor, impedance)
 
 
+def _same_strip(first, second) -> bool:
+    """True when two PlateStrips give the same strip_modes: equal free / value rows, matrices and ell within round-off
+    (translated nodes of the same spacing differ by round-off only)."""
+    if first.size != second.size or not np.array_equal(first.value_rows, second.value_rows):
+        return False
+    if not np.isclose(first.length_scale, second.length_scale, rtol=STRIP_TWIN_RTOL, atol=0.0):
+        return False
+    return all(np.allclose(getattr(first, name), getattr(second, name), rtol=STRIP_TWIN_RTOL,
+                           atol=STRIP_TWIN_RTOL * float(np.abs(getattr(first, name)).max(initial=0.0)))
+               for name in ('mass', 'slope', 'curvature', 'coupling', 'wall_nitsche'))
+
+
+def link_twin_strips(ports) -> None:
+    """Point each assembled PlatePort of ports at the first earlier one with the same strip (its twin), whose StripModes
+    it reuses at an equal medium and omega (both ends of a straight guide: one dense eig per frequency, not two)."""
+    plate_ports = [port for port in ports if isinstance(port, PlatePort)]
+    for index, port in enumerate(plate_ports):
+        port.twin = next((other for other in plate_ports[:index]
+                          if other.twin is None and _same_strip(other.strip, port.strip)), None)
+
+
 class PlatePort(PortBase):
     """Runtime of a port on a plate guide (bending_stiffness > 0 at its face): MembranePort's interface (positions,
     terms, outputs, medium, result extras) on the numeric strip modes (header); the DtN holds every strip mode,
@@ -239,6 +261,7 @@ class PlatePort(PortBase):
         self._trace_map = None      # real (2 n, len(positions)): scaled strip traces (w, ell dn w) of the FE dofs
         self.medium = None          # (T_nn, T_ss (1 + j eta), rho_s, D (1 + j eta), nu)
         self._cached = None         # StripModes of the last omega
+        self.twin = None            # an earlier PlatePort with the same strip matrices (link_twin_strips)
 
     def assemble(self, dofs) -> None:
         """Positions (every system dof of the port's elements: dn v is one-sided) and the trace map Pi: L2 projection of
@@ -287,7 +310,12 @@ class PlatePort(PortBase):
             raise RuntimeError(f"port '{self.name}': medium or strip not set (coefficients not applied yet)")
         omega = float(omega)
         if self._cached is None or self._cached.omega != omega:
-            modes = strip_modes(self.strip, self.medium, omega)
+            twin = self.twin
+            if (twin is not None and twin.medium == self.medium and twin._cached is not None
+                    and twin._cached.omega == omega):
+                modes = twin._cached   # the same strip matrices and medium: the same modes (one dense eig per guide)
+            else:
+                modes = strip_modes(self.strip, self.medium, omega)
             if modes.count < self.mode_count:
                 raise ValueError(f"port '{self.name}': mode_count {self.mode_count} exceeds the {modes.count} strip "
                                  'modes of the port (two per free strip dof)')

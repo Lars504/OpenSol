@@ -13,7 +13,7 @@ from .dofs import lagrange_dofs
 from .mesher import MERGE_TOLERANCE
 from .sampling import Location, LocatedPoints, locator, quadrature_samples
 
-LOCATE_CACHE_POINTS = 2 ** 21   # located points kept per domain (with P2 basis values ~150 MB host)
+LOCATE_CACHE_POINTS = 2 ** 21   # located points + sampler point equivalents kept per domain (~150 MB host with P2)
 
 
 def _digest(array) -> bytes:
@@ -45,7 +45,8 @@ class TriangleDomain:
         self.dx = float(lengths.min())   # smallest element edge [m]
         self._coordinate_cache = {}
         self._located = {}         # (kind, geometry order, ..., digest) -> located() / quadrature_located() result
-        self._located_points = 0   # points held in _located
+        self._located_points = 0   # point equivalents held in _located (located sets + sampling operators)
+        self._identity = {}        # (id(read-only points), geometry order) -> (points, _located key)
 
     @property
     def xp(self):
@@ -104,14 +105,21 @@ class TriangleDomain:
         return self.located(points, geometry_order).location.element
 
     def located(self, points, geometry_order: int = 2) -> LocatedPoints:
-        """LocatedPoints of (n, 2) points [m] (read-only; their Lagrange basis values shared by every read), remembered
-        per point set up to LOCATE_CACHE_POINTS: Session rasters and point reads repeat for every field and snapshot."""
-        points = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 2)
-        key = ('points', int(geometry_order), _digest(points))
+        """LocatedPoints of (n, 2) points [m] (read-only; their basis and sampling operators shared by every read),
+        remembered per point set up to LOCATE_CACHE_POINTS: Session rasters and point reads repeat for every field and
+        snapshot. A read-only array seen before is matched by identity (no hash)."""
+        order = int(geometry_order)
+        held = self._identity.get((id(points), order))
+        if held is not None and held[0] is points and held[1] in self._located:
+            return self._located[held[1]]
+        host = np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 2)
+        key = ('points', order, _digest(host))
         located = self._located.get(key)
         if located is None:
-            located = LocatedPoints(locator(self.mesh, geometry_order).locate(points))
-            self._remember(key, located, len(points))
+            located = LocatedPoints(locator(self.mesh, order).locate(host), charge=self._charge)
+            self._remember(key, located, len(host))
+        if isinstance(points, np.ndarray) and not points.flags.writeable and key in self._located:
+            self._identity[(id(points), order)] = (points, key)   # the entry holds the array: its id stays unique
         return located
 
     def quadrature_located(self, degree, elements, geometry_order: int = 2) -> tuple:
@@ -124,7 +132,7 @@ class TriangleDomain:
             samples = quadrature_samples(self.mesh, degree, elements, geometry_order)
             for array in (samples.x, samples.y, samples.weight):
                 array.flags.writeable = False
-            remembered = (samples, LocatedPoints(Location(samples.element, samples.reference)))
+            remembered = (samples, LocatedPoints(Location(samples.element, samples.reference), charge=self._charge))
             self._remember(key, remembered, len(samples.x))
         return remembered
 
@@ -132,10 +140,16 @@ class TriangleDomain:
         """Keep a located set of count points; the whole store is cleared when it would pass LOCATE_CACHE_POINTS."""
         if count > LOCATE_CACHE_POINTS:
             return
+        self._charge(count)
+        self._located[key] = value
+
+    def _charge(self, count):
+        """Count point equivalents held by the store (located sets, their sampling operators); clear it when it would
+        pass LOCATE_CACHE_POINTS (objects a caller holds stay valid)."""
         if self._located_points + count > LOCATE_CACHE_POINTS:
             self._located.clear()
+            self._identity.clear()
             self._located_points = 0
-        self._located[key] = value
         self._located_points += count
 
     def edge_tag(self, name) -> np.ndarray:

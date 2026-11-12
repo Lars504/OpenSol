@@ -881,7 +881,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         mode = np.asarray(resonance.displacement)
         omega = float(resonance.omega)   # the time-averaged energy densities of the mode
         if np.iscomplexobj(mode):
-            self._write_complex_outputs(mode, thermal=False, omega=omega)
+            self._write_complex_outputs(mode, omega=omega)
         else:
             mode = mode.astype(np.float64, copy=False)
             n_vector = COMPONENTS * self.system.n_dofs
@@ -1120,17 +1120,17 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             return np.zeros(self.domain.n_elements)
         return np.where(elements, _host(getattr(materials, name)), 0.0)
 
-    def _write_complex_outputs(self, solution, thermal=True, omega=None):
-        """Write the real parts of a complex solution (a response, a Bloch mode: thermal False) over every (coupled) dof
-        into the outputs and u_abs = |u| (nodal and at the centroids), the energy densities as time averages at omega
-        [rad/s]; electrode tables become unavailable."""
+    def _write_complex_outputs(self, solution, omega=None):
+        """Write the real parts of a complex solution (a response, a Bloch mode) over every (coupled) dof into the
+        outputs (no thermal part, no initial stress: both are static) and u_abs = |u| (nodal and at the centroids), the
+        energy densities as time averages at omega [rad/s]; electrode tables become unavailable."""
         system = self.system
         n_vector = COMPONENTS * system.n_dofs
         displacement = solution[:n_vector].reshape(-1, COMPONENTS)
         system.unknown = np.ascontiguousarray(displacement.real)
         if self.piezoelectric:
             self._potential = np.ascontiguousarray(solution[n_vector:].real)
-        self._write_outputs(thermal, complex_displacement=np.array(displacement), prestress=False, omega=omega)
+        self._write_outputs(False, complex_displacement=np.array(displacement), prestress=False, omega=omega)
         self._electrode_values = {}
         self._shows_complex = True
 

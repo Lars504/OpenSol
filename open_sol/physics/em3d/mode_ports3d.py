@@ -13,6 +13,7 @@ one cell layer, the one-sided TFSF ModeSource3D, the ModeMonitor3D decomposition
 # H on it, so a mode of solver power 1 W reads cos(omega dt/2) cos(beta_d D/2) W of discrete flux: the source scales by
 # its inverse at f0 (a P W source reads P on flux planes), the monitor reports that flux-equivalent power.
 import cmath
+import hashlib
 import math
 from dataclasses import dataclass
 
@@ -178,18 +179,40 @@ def _smoothing_deltas(engine, normal_axis, layer, ids, pec_cells):
     return tuple(deltas)
 
 
+def _materials_digest(materials) -> bytes:
+    """blake2b digest of every array of a CrossSectionMaterials (shapes included): equal layers give equal modes."""
+    digest = hashlib.blake2b(digest_size=16)
+    arrays = [materials.eps_xx, materials.eps_yy, materials.eps_zz, materials.mu, materials.pec]
+    arrays += list(materials.eps_point_deltas or ()) + list(materials.pec_cuts or ())
+    for array in arrays:
+        array = np.ascontiguousarray(array)
+        digest.update(repr((array.shape, array.dtype.str)).encode())
+        digest.update(array.tobytes())
+    return digest.digest()
+
+
 def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=None):
-    """CrossSectionSolve of the layer at the FDTD numerical frequency of omega (materials at omega)."""
+    """CrossSectionSolve of the layer at the FDTD numerical frequency of omega (materials at omega); within one
+    calibration round (physics.port_mode_solves) ports whose layers hold equal materials share one solve per omega."""
     engine = physics.engine
     u, v = port_axes(normal_axis)
     widths = (engine.widths[u], engine.widths[v])
     pml_dx = max(float(max(axis_widths[0], axis_widths[-1])) for axis_widths in widths)
     numerical_omega = 2.0 / engine.dt * math.sin(0.5 * float(omega) * engine.dt)
+    materials = port_materials(physics, normal_axis, layer, omega)
+    solves = getattr(physics, 'port_mode_solves', None)
+    # same normal axis = same transverse widths and boundary; omega to 12 digits (a source f0 and a monitor frequency
+    # from wavelengths may differ in the last bits); the start vector only seeds Arnoldi
+    key = (int(normal_axis), f'{float(omega):.12e}', int(n_modes), _materials_digest(materials))
+    if solves is not None and key in solves:
+        return solves[key]
     # no 'eigen' role (em3d sub file): a private host SuperLU runtime, its Arnoldi on the device on the gpu backend
     eigen_solver = ArpackShiftInvertSolver(device_arnoldi=engine.xp is not np)
-    return solve_cross_section_modes(widths, port_boundary(engine.config, normal_axis), pml_dx,
-                                     port_materials(physics, normal_axis, layer, omega), numerical_omega, n_modes,
-                                     start_vector=start_vector, eigen_solver=eigen_solver)
+    solve = solve_cross_section_modes(widths, port_boundary(engine.config, normal_axis), pml_dx, materials,
+                                      numerical_omega, n_modes, start_vector=start_vector, eigen_solver=eigen_solver)
+    if solves is not None:
+        solves[key] = solve
+    return solve
 
 
 def discrete_beta(mode, spacing):

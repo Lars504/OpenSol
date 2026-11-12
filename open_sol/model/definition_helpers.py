@@ -235,20 +235,13 @@ def cg_iteration_issues(vctx, solver_values, path, all_cell_sink=False):
                   f'{auto_max_iterations(longest_window_axis)}) or at least {cold_start_iterations}')]
 
 
-# The 'linear' SolverRole of the CG type solid_mechanics: Automatic = pcg with its defaults;
-# block-Jacobi only (a scalar multigrid hierarchy does not fit the vector problem); on a triangle mesh (FEM, mesh plan
-# D11) Automatic = sparse_direct on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double,
-# thin-film K is badly conditioned and its frequency response near resonance converges worst in float32)
-# sparse_direct back_end values of the SPD roles below, whose direct solves go through DiffusionDirectSolver (host
+# sparse_direct back_end values of the SPD 'linear' roles (below, and solid_mechanics' own
+# physics.mechanics.definition.SOLID_LINEAR_ROLE), whose direct solves go through DiffusionDirectSolver (host
 # SuperLU, the real cuDSS Cholesky of the opt-in cuDSS back ends or the host MUMPS / PARDISO Cholesky of the opt-in
 # host direct ones, solvers.host_direct; never cusolver_qr)
 DIFFUSION_DIRECT_BACK_ENDS = ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS
-CG_LINEAR_ROLE = SolverRole('spd', 'pcg', setting_choices={'preconditioner': ('jacobi',),
-                                                           'back_end': DIFFUSION_DIRECT_BACK_ENDS},
-                            grid_defaults={'triangles': ('sparse_direct', {})},
-                            auto_back_ends={'triangles': 'cudss'})
-# ... of solid_mechanics_3d: the same + 'mixed' (float32 inner CG on float32 copies of the matrix-free brick operator and
-# its block inverses; the 2D CSR + block preconditioner has no float32 path); Automatic on the gpu backend (tensor mesh)
+# The 'linear' SolverRole of solid_mechanics_3d: pcg single / double / 'mixed' (float32 inner CG on float32 copies of
+# the matrix-free brick operator and its block inverses); Automatic on the gpu backend (tensor mesh)
 # = pcg mixed (speed plan A1: the float64 brick product runs at the FP64 rate of consumer cards, slower than a 10-thread
 # CPU; mixed reached the same 1e-12 answer 17x faster at 2e5 nodes; a pcg node setting no precision takes it too,
 # schema.with_node_precision); on a tetrahedron mesh (FEM) Automatic =
@@ -265,7 +258,7 @@ CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'doub
                                        grid_defaults={'tetrahedra': ('sparse_direct', {})},
                                        auto_back_ends={'tetrahedra': 'cudss_mixed'})
 # ... of the DiffusionSystem types (heat, electric_currents, electrostatics, magnetostatics): an assembled scalar CSR,
-# so a pcg node may also run 'mixed' or the multigrid preconditioner (solid mechanics keeps CG_LINEAR_ROLE); Automatic
+# so a pcg node may also run 'mixed' or the multigrid preconditioner (2D solid mechanics: block Jacobi only); Automatic
 # on the gpu backend: pcg with multigrid (mesh plan D16 / M0; with solver_defaults.precision 'mixed'
 # schema.resolved_solvers falls back to jacobi); on the cpu backend: host SuperLU in 2D (solver_plan S3.4: a 2D direct
 # solve beats Jacobi-PCG on a CPU up to ~1e6 cells; 700 x 700: 4.2 s for a factor + 20 steps vs 7.1 s multigrid PCG),
@@ -273,7 +266,10 @@ CG_ELASTIC_3D_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'doub
 # 38.6 s for one SuperLU solve vs 1.0 s multigrid PCG); in a 1D model (grid 'line', symmetry 2.20) on both backends:
 # the banded host Cholesky; on a triangle / tetrahedron mesh (FEM, mesh plan D11) on both backends: sparse_direct (host
 # SuperLU; a pcg node is opt-in there; back_end 'auto' = cudss on the gpu backend, B1a: double, since magnetostatics'
-# mu_r makes cond(E) pass the float32 limit and one factor serves few solves)
+# mu_r makes cond(E) pass the float32 limit and one factor serves few solves). A time_dependent study on a 2D tensor
+# mesh: sparse_direct on both backends (study_defaults; speed plan A3: heat_2d spent 5.0 of 5.6 s in 1000 multigrid
+# PCG solves, while a fixed dt keeps one factor, DiffusionSystem.refresh_capacity), back_end 'auto' = cudss on the gpu;
+# steady studies and 3D stay multigrid
 CG_DIFFUSION_LINEAR_ROLE = SolverRole('spd', 'pcg', default_settings={'preconditioner': 'multigrid'},
                                       precisions=('single', 'double', 'mixed'),
                                       setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
@@ -282,7 +278,8 @@ CG_DIFFUSION_LINEAR_ROLE = SolverRole('spd', 'pcg', default_settings={'precondit
                                                      'tensor_3d': ('pcg', {'preconditioner': 'multigrid'}),
                                                      'triangles': ('sparse_direct', {}),
                                                      'tetrahedra': ('sparse_direct', {})},
-                                      auto_back_ends={'triangles': 'cudss', 'tetrahedra': 'cudss'})
+                                      study_defaults={('time_dependent', 'tensor'): ('sparse_direct', {})},
+                                      auto_back_ends={'tensor': 'cudss', 'triangles': 'cudss', 'tetrahedra': 'cudss'})
 
 
 def _linear_dtype_name(solvers) -> str:

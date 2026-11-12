@@ -21,7 +21,7 @@ from ...solvers.roles import resolved_precision
 from .definition_magnetostatics import (_ANDERSON_STATE_ARRAYS, _BH_CURVE, _CURVE_PROPOSAL_ARRAYS, _MU_DC_TIP,
                                         _NONLINEAR_SETTINGS, _bh_curve_material_count, _bh_curve_rows, _coil_result,
                                         _material_property as _material_property_2d, _method_misfit, _set_faces,
-                                        saturation_iterations)
+                                        kept_preconditioner_bytes, saturation_iterations)
 from .fields import MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETIC_3D_PROBE_COMPONENTS
 from .materials import (BH_CURVE_PROPERTY, MAGNETIC_3D_PROPERTY_ARRAYS, MAGNETIC_3D_SCHEMA,
                         OPTIONAL_MAGNETIC_3D_SCHEMA, REMANENCE_3D_ARRAYS, SATURATION_ARRAY)
@@ -479,7 +479,9 @@ def _memory_estimate(settings_values, mesh, context):
                      + _COIL_UPDATE_ARRAYS * FLOAT64_BYTES * window_cells * int(coils)
                      + BOOL_BYTES * int(mesh.n_cells) * int(n_curves > 0)),
         run_items=(('coil and remanence face drives and rhs (window)', 4 * value_bytes * window_cells * int(driven)),
-                   ('saturation state, J_s, proposal and Anderson history (window)', saturation_bytes)),
+                   ('saturation state, J_s, proposal and Anderson history (window)', saturation_bytes),
+                   ('kept preconditioner of the saturation loop',
+                    kept_preconditioner_bytes(window_cells, 7, value_bytes, context, saturation))),
         transient_items=(('field update', 'field update temporaries (window)',
                           _POST_PROCESSING_ARRAYS * value_bytes * window_cells),
                          ('energy and flux linkage', 'energy and flux linkage temporaries (window)',

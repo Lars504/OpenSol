@@ -631,7 +631,9 @@ def _memory_estimate(settings_values, mesh, context):
          ('B-H curve masks (bool window)', BOOL_BYTES * window_cells * n_curves)),
         run_items=(('remanence face terms and rhs (window)', 3 * value_bytes * window_cells * int(remanence)),
                    ('saturation state, J_s, proposal and Anderson history (float64 window)',
-                    saturation_arrays * FLOAT64_BYTES * window_cells * int(saturation))))
+                    saturation_arrays * FLOAT64_BYTES * window_cells * int(saturation)),
+                   ('kept preconditioner of the saturation loop',
+                    kept_preconditioner_bytes(window_cells, 5, value_bytes, context, saturation))))
     parts = [own, diffusion_system_estimate(window_cells, precision, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
                                             direct=linear_solver_direct(context))]
@@ -640,6 +642,19 @@ def _memory_estimate(settings_values, mesh, context):
         parts.append(cudss_diffusion_estimate(window_cells, 5 * window_cells, 2, cudss, input_copy=False,
                                               refactorizes=bool(saturation)))
     return combine(parts)
+
+
+def kept_preconditioner_bytes(window_cells, entries_per_row, value_bytes, context, saturation) -> int:
+    """Run bytes of a tensor saturation loop's kept preconditioner (kept_preconditioner.py): the fine operator values
+    the kept multigrid hierarchy holds, or the PCG vectors of the kept-factor solves of a host direct factor; shared by
+    magnetostatics_3d."""
+    if not saturation:
+        return 0
+    if linear_solver_multigrid(context):
+        return entries_per_row * value_bytes * window_cells
+    if linear_solver_direct(context):
+        return 4 * FLOAT64_BYTES * window_cells
+    return 0
 
 
 SATURATION_ITERATIONS_GUESS = 15   # run-time estimate: saturation loop solves (calibrate from the physics counters)
@@ -690,9 +705,11 @@ def _triangle_memory_estimate(settings_values, mesh, context):
     local = 6 if order == 2 else 3
     elements = int(mesh.n_elements)
     saturation = context.material_sets(SATURATION_ARRAY) or _bh_curve_material_count(context.spec) > 0
+    # MagneticFEMSystem is its own system class: none of FEMDiffusionSystem's kept terms / slot maps
     system = fem_diffusion_estimate(mesh, order, element_fields=_N_FIELDS, nodal_fields=_FEM_NODAL_FIELDS,
                                     direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                                    cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation))
+                                    cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
+                                    kept_terms=False)
     own = MemoryEstimate.from_items(host_items=(
         ('curl quadrature cache (float64)', (2 * local + 3) * points * FLOAT64_BYTES * elements),
         ('quadrature point state of one evaluation (float64)', _FEM_POINT_STATE * points * FLOAT64_BYTES * elements)))

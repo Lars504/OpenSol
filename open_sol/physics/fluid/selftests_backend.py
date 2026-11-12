@@ -84,14 +84,17 @@ _SPEED_WINDOW = (128, 128)  # force-driven periodic channel for the ms-per-step 
 _SPEED_STEPS = {'numpy': 3, 'numba': 100}
 
 
-def _random_step_arguments(rng, kinds, window, lattice, bouzidi):
-    """(inputs before the outputs, the four outputs, inputs after) of one random lbm_trt_step call."""
+def _random_step_arguments(rng, kinds, window, lattice, bouzidi, uniform=False):
+    """(g_in, the outputs, arguments(source, outputs)) of one random lbm_trt_step call at STORE_PUBLISHED; outputs = the
+    target populations, lattice macros and the four full-grid SI fields (window at (1, 1)); uniform: relaxation and
+    force read at stride 0 (1-element rates, element 0 of the forces)."""
     wx, wy = window
     fluid = rng.random(window) > 0.2
     g_in = (rng.standard_normal((lattice.N_DIRECTIONS, wx, wy)) * 1e-2 * fluid).astype(np.float32)
-    omega_plus = rng.uniform(0.6, 1.8, window).astype(np.float32)
+    omega_plus = rng.uniform(0.6, 1.8, (1, 1) if uniform else window).astype(np.float32)
     omega_minus = (1.0 / (0.5 + lattice.MAGIC_LAMBDA / (1.0 / omega_plus - 0.5))).astype(np.float32)
     force_x, force_y = (rng.standard_normal((2, wx, wy)) * 1e-4).astype(np.float32)
+    mass_density = rng.uniform(500.0, 1500.0, window).astype(np.float32)
     face_kind = np.array([{name: code for code, name in lattice.FACE_KIND_NAMES.items()}[kind] for kind in kinds],
                          dtype=np.int32)
     face_length = max(wx, wy)
@@ -108,24 +111,31 @@ def _random_step_arguments(rng, kinds, window, lattice, bouzidi):
         wall_row.ravel()[owners] = np.arange(owners.size, dtype=np.int32)
         if owners.size:   # else the zeros stand-in, as FluidPhysics passes
             wall_fraction = rng.uniform(0.05, 0.95, (owners.size, lattice.N_DIRECTIONS - 1)).astype(np.float32)
+    full_grid = (wx + 2, wy + 2)   # published SI fields: the ring around the window stays untouched
     outputs = (rng.standard_normal((lattice.N_DIRECTIONS, wx, wy)).astype(np.float32),   # untouched in solids
                (rng.standard_normal(window) * 1e-2).astype(np.float32),                  # previous u_x, u_y
                (rng.standard_normal(window) * 1e-2).astype(np.float32),
-               np.zeros(window, dtype=np.float32))
-    before = (g_in,)
-    after = (fluid, omega_plus, omega_minus, force_x, force_y, face_kind, face_values, np.int32(wx), np.int32(wy),
-             np.int32(face_length), wall_row, wall_fraction)
-    return before, outputs, after
+               np.zeros(window, dtype=np.float32),
+               *(rng.standard_normal(full_grid).astype(np.float32) for _ in range(4)))   # u_x, u_y, u_abs, pressure
+    stride = np.int32(0 if uniform else 1)
+
+    def arguments(source, step_outputs):
+        g_out, velocity_x, velocity_y, deviation, *published = step_outputs
+        return (source, g_out, velocity_x, velocity_y, deviation, fluid, omega_plus, omega_minus, force_x, force_y,
+                face_kind, face_values, np.int32(wx), np.int32(wy), np.int32(face_length), wall_row, wall_fraction,
+                stride, stride, np.int32(lattice.STORE_PUBLISHED), *published, mass_density, np.int32(full_grid[1]),
+                np.int32(1), np.int32(1), np.float32(3e-3), np.float32(2e-6))
+    return g_in, outputs, arguments
 
 
-def _step_ms(step, before, outputs, after, n_steps):
+def _step_ms(step, g_in, outputs, arguments, n_steps):
     """Wall time per call [ms] of n_steps ping-pong steps (populations swapped like FluidPhysics)."""
     import time
-    source, target = before[0].copy(), outputs[0].copy()
+    source, target = g_in.copy(), outputs[0].copy()
     rest = tuple(array.copy() for array in outputs[1:])
     start = time.perf_counter()
     for _ in range(n_steps):
-        step(source, target, *rest, *after)
+        step(*arguments(source, (target, *rest)))
         source, target = target, source
     return 1e3 * (time.perf_counter() - start) / n_steps
 
@@ -148,26 +158,27 @@ def _check_step_numba(results_by_name):
     kernels = {bouzidi: lattice.step_kernel('single', bouzidi) for bouzidi in (False, True)}
     steps = {bouzidi: (kernel.cpu, _registered_numba_step(kernel)) for bouzidi, kernel in kernels.items()}
     for bouzidi, (numpy_step, numba_step) in steps.items():
-        for kinds in _NUMBA_FACE_SETS:
-            before, outputs, after = _random_step_arguments(rng, kinds, _NUMBA_WINDOW, lattice, bouzidi)
+        for set_index, kinds in enumerate(_NUMBA_FACE_SETS):
+            uniform = set_index == 0   # relaxation / force at stride 0 (the gpu arguments of one fluid, no force)
+            g_in, outputs, arguments = _random_step_arguments(rng, kinds, _NUMBA_WINDOW, lattice, bouzidi, uniform)
             numpy_out, numba_out = [array.copy() for array in outputs], [array.copy() for array in outputs]
-            numpy_step(*before, *numpy_out, *after)
-            numba_step(*before, *numba_out, *after)
+            numpy_step(*arguments(g_in, numpy_out))
+            numba_step(*arguments(g_in, numba_out))
             difference = max(float(np.max(np.abs(a.astype(np.float64) - b))) for a, b in zip(numpy_out, numba_out))
             peak = max(float(np.max(np.abs(a))) for a in numpy_out)
             error = difference / peak if np.isfinite(difference) and peak > 0.0 else float('inf')
-            errors[f"{'bouzidi' if bouzidi else 'halfway'}:{'/'.join(kinds)}"] = error
+            errors[f"{'bouzidi' if bouzidi else 'halfway'}:{'/'.join(kinds)}{':stride0' if uniform else ''}"] = error
             worst = max(worst, error)
     # a numba twin that failed falls back to numpy for good (the comparison above was numpy vs numpy)
     host_kinds = {f"single{'_bouzidi' if bouzidi else ''}": kernel.host_kind for bouzidi, kernel in kernels.items()}
     if any(kind != 'numba' for kind in host_kinds.values()):
         worst = float('inf')
-    before, outputs, after = _random_step_arguments(rng, ('periodic', 'periodic', 'wall', 'wall'), _SPEED_WINDOW,
-                                                    lattice, False)
+    g_in, outputs, arguments = _random_step_arguments(rng, ('periodic', 'periodic', 'wall', 'wall'), _SPEED_WINDOW,
+                                                      lattice, False)
     numpy_step, numba_step = steps[False]
-    _step_ms(numba_step, before, outputs, after, 2)   # warm-up (compiled above)
-    numpy_ms, numba_ms = (_step_ms(numpy_step, before, outputs, after, _SPEED_STEPS['numpy']),
-                          _step_ms(numba_step, before, outputs, after, _SPEED_STEPS['numba']))
+    _step_ms(numba_step, g_in, outputs, arguments, 2)   # warm-up (compiled above)
+    numpy_ms, numba_ms = (_step_ms(numpy_step, g_in, outputs, arguments, _SPEED_STEPS['numpy']),
+                          _step_ms(numba_step, g_in, outputs, arguments, _SPEED_STEPS['numba']))
     return {'measured': worst, 'expected': 0.0, 'error': worst, 'tolerance': _NUMBA_TOLERANCE,
             'details': {'relative_differences': errors, 'speed_window': list(_SPEED_WINDOW),
                         'numpy_ms_per_step': numpy_ms, 'numba_ms_per_step': numba_ms,
@@ -180,8 +191,10 @@ _STEP_NUMBA_CASE = SelfTestCase(
     description=('The numba twin of the laminar_flow lattice step (fluid.lbm_trt_step_single, halfway and Bouzidi) '
                  f'against its numpy twin on random {_NUMBA_WINDOW[0]} x {_NUMBA_WINDOW[1]} states with solid cells, '
                  'for face sets covering wall, slip, velocity, pressure (TRT shear term) and periodic faces and both '
-                 'corner precedences; measured = error = the worst max |numba - numpy| over the populations, '
-                 f'velocities and density deviation relative to their peak, tolerance {_NUMBA_TOLERANCE:g} (the '
+                 'corner precedences, at store mode published (SI fields fused in) and on the first face set with the '
+                 'relaxation and force read at stride 0; measured = error = the worst max |numba - numpy| over the '
+                 'populations, velocities, density deviation and published fields relative to their peak, tolerance '
+                 f'{_NUMBA_TOLERANCE:g} (the '
                  'registered twins; error inf when a numba twin fell back to numpy). Details: '
                  f'ms per step of both on a {_SPEED_WINDOW[0]} x {_SPEED_WINDOW[1]} channel. Without numba nothing is '
                  'compared (error 0).'),

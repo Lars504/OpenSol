@@ -33,6 +33,7 @@ poles on region boxes and the J.E loss accounting (q_accum) of the EM loss proto
 # Backends (solver_plan S6): every array lives on the Domain's xp (cupy on 'gpu', numpy on 'cpu') and every kernel is
 # a core.kernels twin (kernels3d, the shared 2D pole corrections), so this one code path runs on both.
 import math
+import warnings
 from dataclasses import replace
 
 import numpy as np
@@ -51,6 +52,10 @@ from .kernels3d import (box_face_cb_3d, drude_j_weighted, field_kernels, launch,
 from .material_index3d import build_material_index
 
 MAX_MATERIAL_IDS = 65535       # uint16 index; the last id is the PEC entry
+# gpu: the fixed-argument launches of a step (H Yee + conformal + H CPML; E Yee + E CPML) replay as two CUDA graphs
+# after one eager step per input key (a field kernel launch with ~40 arguments costs ~15 us of host time)
+STEP_GRAPHS = True
+_MAX_STEP_GRAPHS = 8           # graph keys kept (stale ones belong to replaced tables / scales)
 _INDEX_CHUNK_CELLS = 1 << 22   # x-slab size of the material index build (bounds its int64 temporaries)
 # MaterialGrid arrays of the index: always eps_r (E_z, and E_x / E_y without their own array), sigma_e, mu_r; the
 # optional eps_xx, eps_yy, sigma_m only when the model allocated them (em3d definition: optional_material_schema)
@@ -241,6 +246,11 @@ class FDTDEngine3D:
         # (kind, slab, field set, ids of the tables / face arrays, curl factor) -> (grid, block, args, kept arrays) of
         # the CPML slab launches: rebuilt only when rebuild_materials / set_field_scale / smoothing replaced an input
         self._cpml_launches = {}
+        # (phase 'h' / 'e', ids of the replaceable inputs, curl factor) -> [graph or None after its eager run, kept
+        # inputs] (_fixed_block; gpu only); n_step_graphs = captures made
+        self.use_step_graphs = STEP_GRAPHS and xp is not np
+        self._step_graphs = {}
+        self.n_step_graphs = 0
         # igor 1.5: subpixel_smoothing3d.SubpixelSmoothing3D (EMPhysics3D.set_subpixel_smoothing), refreshed by every
         # rebuild_materials; the kernels read its face index through _face_args (1-element placeholders when off; the
         # face id one is 3D like the real index, else the numba twins indexing fid[i, j, k] fail to type)
@@ -472,26 +482,14 @@ class FDTDEngine3D:
         """One Yee step (order in the module header); monitors with update() sample every sample_interval steps."""
         fields = self.fields
         t = self.time
-        nx, ny, nz = self._ints
-        grid, block = self._grid_launch
         accumulate = self._enable_q_accum
-        kernels = self.kernels
         face_args = self._face_args()
         # (set, partner, CPML slabs, wrap scalars): the real set alone (partner itself), or both under Bloch k != 0
         sets = (((fields, fields, self.cpml, self._wrap_args[1]),) if fields.imag is None else
                 ((fields, fields.imag, self.cpml, self._wrap_args[1]),
                  (fields.imag, fields, self.cpml_imag, self._wrap_args[-1])))
-        for field_set, partner, slabs, (h_wrap, _) in sets:
-            kernels['update_h_3d'](grid, block, (
-                field_set.hx, field_set.hy, field_set.hz, field_set.ex, field_set.ey, field_set.ez, partner.ex,
-                partner.ey, partner.ez, self.material_id, self.table_mu, self.table_sigma_m, *self.inv_h,
-                *self._radial_h, nx, ny, nz, self._dt32, self._e_to_h, *h_wrap))
-            if self._conformal is not None:
-                self._conformal_h(field_set)
-        for field_set, _, slabs, _ in sets:   # E is not written in the H phase, so the set order does not matter
-            for slab in slabs:
-                if slab.kind == 'h':
-                    self._cpml_h(slab, field_set)
+        self._fixed_block(('h', id(self.table_mu), id(self.table_sigma_m), id(self._conformal), float(self._e_to_h)),
+                          (self.table_mu, self.table_sigma_m, self._conformal), lambda: self._h_block(sets))
         for source in sources:   # H-type injections (TFSF / mode-port corrections) at the H update centre t
             inject_magnetic = getattr(source, 'inject_magnetic', None)
             if inject_magnetic is not None:
@@ -503,17 +501,9 @@ class FDTDEngine3D:
             self._pole_drive(region)
             if accumulate:
                 self._pole_work(region)
-        for field_set, partner, _, (_, e_wrap) in sets:
-            kernels['update_e_3d'](grid, block, (
-                field_set.ex, field_set.ey, field_set.ez, field_set.hx, field_set.hy, field_set.hz, partner.hx,
-                partner.hy, partner.hz, self.material_id, self.table_eps_x, self.table_eps_y, self.table_eps_z,
-                self.table_sigma, *face_args, *self.inv_e, *self._radial_e, *self.shares[0], *self.shares[1],
-                *self.shares[2], nx, ny, nz,
-                *self._periodic_ints, self._dt32, self._h_to_e, *e_wrap))
-        for field_set, _, slabs, _ in sets:
-            for slab in slabs:
-                if slab.kind == 'e':
-                    self._cpml_e(slab, field_set)
+        e_tables = (self.table_eps_x, self.table_eps_y, self.table_eps_z, self.table_sigma)
+        self._fixed_block(('e', *map(id, e_tables), id(face_args[0]), id(face_args[1]), int(face_args[2]),
+                           float(self._h_to_e)), (*e_tables, face_args), lambda: self._e_block(sets, face_args))
         for region in self.pole_regions:
             self._pole_correct(region)
         for source in sources:
@@ -538,6 +528,80 @@ class FDTDEngine3D:
                     monitor.update(fields, self.time)
             else:
                 monitor.record(fields, self.time)
+
+    def _h_block(self, sets):
+        """H Yee (+ the conformal faces) of every field set, then their H CPML slabs: fixed arguments only."""
+        nx, ny, nz = self._ints
+        grid, block = self._grid_launch
+        for field_set, partner, _, (h_wrap, _) in sets:
+            self.kernels['update_h_3d'](grid, block, (
+                field_set.hx, field_set.hy, field_set.hz, field_set.ex, field_set.ey, field_set.ez, partner.ex,
+                partner.ey, partner.ez, self.material_id, self.table_mu, self.table_sigma_m, *self.inv_h,
+                *self._radial_h, nx, ny, nz, self._dt32, self._e_to_h, *h_wrap))
+            if self._conformal is not None:
+                self._conformal_h(field_set)
+        for field_set, _, slabs, _ in sets:   # E is not written in the H phase, so the set order does not matter
+            for slab in slabs:
+                if slab.kind == 'h':
+                    self._cpml_h(slab, field_set)
+
+    def _e_block(self, sets, face_args):
+        """E Yee of every field set, then their E CPML slabs: fixed arguments only."""
+        nx, ny, nz = self._ints
+        grid, block = self._grid_launch
+        for field_set, partner, _, (_, e_wrap) in sets:
+            self.kernels['update_e_3d'](grid, block, (
+                field_set.ex, field_set.ey, field_set.ez, field_set.hx, field_set.hy, field_set.hz, partner.hx,
+                partner.hy, partner.hz, self.material_id, self.table_eps_x, self.table_eps_y, self.table_eps_z,
+                self.table_sigma, *face_args, *self.inv_e, *self._radial_e, *self.shares[0], *self.shares[1],
+                *self.shares[2], nx, ny, nz,
+                *self._periodic_ints, self._dt32, self._h_to_e, *e_wrap))
+        for field_set, _, slabs, _ in sets:
+            for slab in slabs:
+                if slab.kind == 'e':
+                    self._cpml_e(slab, field_set)
+
+    def _fixed_block(self, key, kept, block):
+        """Run block() (launches with fixed arguments, no sync, no allocation): eagerly on the cpu, on the first step of
+        a key and when capture failed, else replayed from its CUDA graph. key holds the ids of the replaceable inputs
+        (kept alive with the entry, so an id is never reused while its graph lives); fields, CPML psi, index and the
+        1D arrays are rewritten in place, never reassigned (em3d sub file "Engine")."""
+        if not self.use_step_graphs:
+            block()
+            return
+        entry = self._step_graphs.get(key)
+        if entry is None:   # eager run first: loads the kernel modules outside the capture
+            if len(self._step_graphs) >= _MAX_STEP_GRAPHS:
+                self._step_graphs.clear()
+            self._step_graphs[key] = [None, kept]
+            block()
+            return
+        if entry[0] is None:
+            entry[0] = self._capture(block)
+            if entry[0] is None:
+                block()
+                return
+        entry[0].launch(self.xp.cuda.get_current_stream())
+
+    def _capture(self, block):
+        """CUDA graph of block() (None, with a warning and eager steps from now on, when capture fails)."""
+        cp = self.xp
+        stream = cp.cuda.Stream(non_blocking=True)
+        try:
+            with stream:
+                stream.begin_capture()
+                try:
+                    block()
+                finally:
+                    graph = stream.end_capture()
+        except Exception as error:   # capture unsupported here: the same kernels launched one by one
+            self.use_step_graphs = False
+            self._step_graphs.clear()
+            warnings.warn(f'em_fdtd_3d: CUDA graph capture of the step kernels failed ({type(error).__name__}: '
+                          f'{error}); launching them one by one from now on', RuntimeWarning, stacklevel=4)
+            return None
+        self.n_step_graphs += 1
+        return graph
 
     def _slab_dims(self, slab):
         dims = list(self.shape)

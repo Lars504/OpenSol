@@ -319,7 +319,8 @@ class BoundaryManager:
     # ---- E_z polarisation (E_z at cell centres, H_x on hi-y faces, H_y on hi-x faces) ----------------------------
     # Engine order per step: H kernel, apply_h_post, E kernel, apply_e_post; each post runs the fused CPML psi update
     # + correction first (from the other field, untouched by the kernel), then the outer-face rows (apply_h_walls /
-    # apply_ez_walls), which the engine applies again after injecting its sources.
+    # apply_ez_walls), which the engine applies again after injecting its sources. The FDTD engines call the two
+    # halves apart (CPML inside their step graphs, the rows eager: fdtd_2d_base STEP_GRAPHS).
     # Mirrors (inner face of the outermost cell = the window edge, the outermost cell being the padded ghost; E parity
     # as in the H_z block below): symmetric ez[0] = ez[1] (the pmc copy, so the Yee update of the tangential H on the
     # plane vanishes), antisymmetric ez[0] = -ez[1] (E = 0 on the plane; the H face there keeps its Yee update, which
@@ -391,7 +392,8 @@ class BoundaryManager:
     # ---- H_z polarisation (H_z at cell centres, E_x on hi-y faces, E_y on hi-x faces) ----------------------------
     # Engine order per step: H_z kernel, apply_hz_post, E kernel, apply_exy_post; each post runs the fused CPML psi
     # update + correction first, then the outer-face BCs (apply_hz_walls / apply_exy_walls), which the engine applies
-    # again after injecting its sources, so a source sample on a BC-pinned row or face has no effect.
+    # again after injecting its sources, so a source sample on a BC-pinned row or face has no effect (the FDTD engine
+    # calls the halves apart, as for E_z).
     # Mirror convention (E-field parity, both polarisations): 'symmetric' = E mirror-even = PMC plane (H_z odd),
     # 'antisymmetric' = E mirror-odd = PEC plane (H_z even, tangential E = 0); the plane is the inner face of the
     # outermost (ghost) cell = the window edge, on any face, the same plane as for E_z.

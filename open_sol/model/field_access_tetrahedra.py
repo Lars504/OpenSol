@@ -46,9 +46,9 @@ class TetrahedraAccess(ElementAccess):
         if not hasattr(renderer, 'sample'):
             raise ValueError(f"field '{component}': a renderer on a tetrahedron mesh must provide sample(component, "
                              'points) (igor3d_plan T4b)')
-        points, _ = self.domain.sample_points(COORDINATE_AXES.index(axis), index)
-        values = np.asarray(renderer.sample(component, points.reshape(-1, 3)), dtype=np.float64)
-        return values.reshape(points.shape[:2]).astype(np.float32)
+        points, shape = self.domain.sample_plane(COORDINATE_AXES.index(axis), index)   # read-only, kept per plane
+        values = np.asarray(renderer.sample(component, points), dtype=np.float64)
+        return values.reshape(shape).astype(np.float32)
 
     def _field_data(self, physics, component, renderer, plane):
         """FieldData of a tetrahedron-mesh field: the sample-lattice cut normal to plane[0] at the lattice centre

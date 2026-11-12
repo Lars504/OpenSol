@@ -599,7 +599,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         per_operator = operator_shift_bytes(layout.n_blocks, layout.block_size, layout.n_unknowns, host_operator.nnz,
                                             self._line_block.precision)
         n_batch = min(len(upcoming), MAX_BATCH_WAVELENGTHS,
-                      self._line_block.chunk_size(len(upcoming), 1, layout, per_operator))
+                      self._line_block.chunk_size(len(upcoming), 1, layout, per_operator, kept=True))
         if n_batch < 2:
             return None
         batch_omegas = upcoming[:n_batch]   # the other omegas assembled here and again at their solve (deterministic)

@@ -31,7 +31,7 @@ from ...core.solver_base import PhysicsSolver
 from ...fem.assembly import _edge_quadrature, assemble_edge_load, assemble_mass, assemble_stiffness
 from ...fem.diffusion import window_face_edges
 from ...fem.dofs import lagrange_dofs
-from ...fem.elements import lagrange_basis
+from ...fem.elements import lagrange_basis, lagrange_values
 from ...fem.harmonic import FACES_2D, RING_ANGLE, HarmonicCondition, ScalarHarmonicSystem
 from ...fem.mesher import MERGE_TOLERANCE
 from ...fem.pml import DEFAULT_PML_REFLECTION, pml_ring
@@ -197,11 +197,14 @@ class AcousticBoundary:
 
 @dataclass(frozen=True, eq=False)
 class FrequencyProbe:
-    """Point probe: point [m], containing mesh element, reference coordinates and its HarmonicProbeRecord (p, p_s)."""
+    """Point probe: point [m], containing mesh element, reference coordinates, its HarmonicProbeRecord (p, p_s) and the
+    full-numbering dofs / Lagrange basis weights of the element at the point (p = values[dofs] @ weights)."""
     point: np.ndarray
     element: int
     reference: np.ndarray
     record: HarmonicProbeRecord
+    dofs: np.ndarray = None
+    weights: np.ndarray = None
 
 
 @dataclass(frozen=True, eq=False)
@@ -408,7 +411,8 @@ class AcousticHarmonicBase(PhysicsSolver):
         point = np.asarray(point, dtype=np.float64).reshape(self.dimensions)
         element, reference = self._locate(point)
         record = HarmonicProbeRecord(('p', 'p_s'), unit='Pa', label=label or 'Pressure')
-        self.frequency_probes.append(FrequencyProbe(point, element, reference, record))
+        dofs, weights = self._point_weights(element, reference)   # once: each record is then one dot product
+        self.frequency_probes.append(FrequencyProbe(point, element, reference, record, dofs, weights))
         return record
 
     def add_surface_monitor(self, name, faces=(), entities=None, member=None, side='all', weight=1.0) -> SurfaceMonitor:
@@ -900,6 +904,11 @@ class AcousticHarmonicBase(PhysicsSolver):
         raise NotImplementedError
 
     def _point_value(self, coefficients, probe):
+        """Value of full-numbering coefficients at a probe's point (its precomputed element dofs and basis weights)."""
+        return np.asarray(coefficients)[probe.dofs] @ probe.weights
+
+    def _point_weights(self, element, reference) -> tuple:
+        """(int64 full-numbering dofs of the element, float64 Lagrange basis values at the reference point)."""
         raise NotImplementedError
 
     def _centroid_values(self, coefficients) -> np.ndarray:
@@ -1030,9 +1039,11 @@ class PressureAcousticsFEMPhysics(AcousticHarmonicBase):
         np.add.at(vector, self.full.element_dofs[element], basis * (value / self._ring()))
         return vector
 
-    def _point_value(self, coefficients, probe):
-        location = Location(np.array([probe.element], dtype=np.int64), probe.reference[None, :])
-        return evaluate(self.full, coefficients, location=location)[0]
+    def _point_weights(self, element, reference) -> tuple:
+        """The full map's element dofs and its Lagrange values at the reference point (fem.sampling.evaluate's basis)."""
+        return (np.asarray(self.full.element_dofs[element], dtype=np.int64),
+                np.asarray(lagrange_values(self.order, np.asarray(reference, dtype=np.float64)[None, None, :])[0, 0],
+                           dtype=np.float64))
 
     def _centroid_values(self, coefficients) -> np.ndarray:
         return np.asarray(coefficients)[self.full.element_dofs] @ self._centroid_basis()
