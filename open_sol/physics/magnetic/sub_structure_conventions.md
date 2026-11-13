@@ -63,13 +63,22 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   to it only approximately at interfaces.
 - `step` re-solves when dirty (operator: mu_dc, faces, held cells, J_s, add_bh_curve; rhs: sources, coils,
   inject_source, remanence).
+- RerunSolver (sweep reuse_build; MagneticPhysics only, tensor meshes): `reset_records` clears the probe series; the
+  current_source density (parameter-only values: `add_source` of the difference) and the coil current
+  (`set_coil_current`; the live current is the solver's `_coil_currents`, CoilRegion.current stays the build value) follow
+  the sweep; the saturation loop starts from the previous value's state. magnetic_fields_ac (MagneticACPhysics and
+  MagneticACFEMPhysics) is a RerunSolver: its `frequency` setting follows (`set_frequency`: host system dirty, rebuilt
+  on the kept K(nu) stencil / curl matrix; the RecycledFactor sees a new revision, so GMRES on the old factor or a
+  refactorisation on its plan, never a stale factor); its coil values do not follow. The magnetostatics triangle and 3D
+  solvers have no hook yet.
 - Saturation (`saturation.py`): J_s array, Frohlich-Kennelly B = mu0 H + J_s a H / (1 + a H), a = mu0 (mu_dc - 1) /
   J_s (mu_dc = initial permeability), secant nu(|B|), per axis with the same centre |B|. Kept preconditioner
   (`kept_preconditioner.py`, both tensor solvers): the role runtime is wrapped when it is pcg multigrid (the wrapper
   owns the hierarchy; the pcg's own `_multigrid` stays None, its counters come through `preconditioner_counters`) or
   sparse_direct (the wrapper builds the DiffusionDirectSolver, so the physics' prepare calls `bind_window`: the system
   sets grid_shape only on a bare one). Each loop proposal `offer_state`s the loop state before its assembly (first
-  one fresh); a later assembly keeps the earlier build while exp(max - min of the ln c change) <= KEPT_SPREAD_LIMIT
+  one fresh: keeping the hierarchy across a reused sweep's loops saved 1 of 9 setups and cost 20 % more CG
+  iterations on the bh example, so it was dropped); a later assembly keeps the earlier build while exp(max - min of the ln c change) <= KEPT_SPREAD_LIMIT
   and solves by PCG on it (direct: to 1e-10, not exact; cuDSS always refactorises), a kept solve over its cap
   rebuilds and repeats. Any assembly without an offer builds afresh: a new caller of `_assemble` inside a loop must
   offer the state, else nothing is kept. The wrapper is no PCGSolver, so the system's anchor check is not deferred to
@@ -81,7 +90,15 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   reset by prepare, add_bh_curve and `_refresh_saturation` when the saturating set changes or empties (warm-starts
   later loops; all three tensor / tetrahedron solvers follow this rule). Only a loop's first assembly reads / checks
   mu_dc and runs the anchor check (`_assemble(full=False)`). Fields / operator are those of the last iterate's solve,
-  not the final proposal. nonlinear_method 'auto' = 'anderson' here ('newton' on triangles); MagneticPhysics refuses
+  not the final proposal; loop iterations compute only |B| of the saturating cells (`_saturating_flux_magnitude`, 2D and
+  3D tensor: same formula as `_update_fields`), the fields once after the loop. Single precision (float32
+  system dtype): `saturation.Float32StallWatch` ends a tensor loop whose change has not halved in 20 proposals (it
+  returns the state, so picard.run says converged; `record_stop` then counts it unconverged with its own warning). The
+  float32 CG stalls near a 1e-6 relative residual and iron cells (c 1/mu_r of air's) keep |B| errors of percents (bh
+  example: H_cores 8 % off at K = 100, changes 1e-2 after 300 iterations, 25 s), so no stop floor can be met; a
+  rounding floor of the tolerance was tried and did nothing. Validation warns when the resolved 'linear' runs 'single'
+  on a constant mu_dc contrast >= 100 (`definition_helpers.single_precision_contrast_issues`, 2D and 3D; the 3D coil
+  warning replaces it); the role keeps 'single' (a role without it would clash with solver_defaults.precision). nonlinear_method 'auto' = 'anderson' here ('newton' on triangles); MagneticPhysics refuses
   'newton'. Validation per mesh kind is definition_magnetostatics `_mesh_kind_issues`, sharing `_method_misfit` /
   `_anisotropic_saturation` with the GUI mesh form's `_mesh_method` text: a new mesh-kind rule goes into both.
   Undamped Picard diverges where the current imposes H past the knee; Anderson converges (example

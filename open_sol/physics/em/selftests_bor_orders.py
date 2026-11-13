@@ -556,7 +556,7 @@ BOR_ORDER_SELFTEST_CASES = (
             'refinement with matrix terms.'),
         specs=lambda: {},
         check=_check_line_block_family,
-        max_wall_time=180.0, heavy=True),
+        max_wall_time=180.0),
     SelfTestCase(
         name='em_bor_line_block_resonances',
         label='EM body of revolution: line-block shift-invert',
@@ -572,7 +572,7 @@ BOR_ORDER_SELFTEST_CASES = (
             'order. Pins the kept-factor API and the order-list merge.'),
         specs=lambda: {},
         check=_check_line_block_resonances,
-        max_wall_time=180.0, heavy=True),
+        max_wall_time=180.0),
     SelfTestCase(
         name='em_bor_order_list_model',
         label='EM body of revolution: azimuthal order list model run',
@@ -586,7 +586,7 @@ BOR_ORDER_SELFTEST_CASES = (
             f'{_MODEL_SAME_TOLERANCE:g} relative frequency. Pins the model-level order list (one assembly, one '
             'study run), the resonance table column and the shifted role.'),
         specs=lambda: _superlu_runs_on_cpu(_model_order_list_specs()),
-        check=_check_model_order_list, heavy=True),
+        check=_check_model_order_list),
     SelfTestCase(
         name='em_bor_offaxis_dipole',
         label='EM body of revolution: off-axis dipoles as an order sum',
@@ -609,7 +609,7 @@ BOR_ORDER_SELFTEST_CASES = (
             'm = 4: the recorded m = 5 share of the y dipole, 1.9e-5, leaves a ~1e-2 U_max cross term in its pattern.'),
         specs=lambda: {},
         check=_check_offaxis_dipole,
-        max_wall_time=240.0, heavy=True),
+        max_wall_time=240.0),
     SelfTestCase(
         name='em_bor_offaxis_dipole_model',
         label='EM body of revolution: off-axis dipole order-sum model run',
@@ -627,7 +627,7 @@ BOR_ORDER_SELFTEST_CASES = (
             f'(odd in phi, {_ODD_FIELD_TOLERANCE:g}), the azimuthal_orders / power_orders extras. Pins the model '
             'layer of the order sum (create in a driven study, BORPhysics._solve_order_sum, record_order, results).'),
         specs=lambda: cpu_specs(_model_offaxis_specs()),
-        check=_check_model_offaxis, heavy=True),
+        check=_check_model_offaxis),
     SelfTestCase(
         name='em_bor_line_block_wavelengths',
         label='EM body of revolution: line-block wavelength batches',
@@ -645,7 +645,7 @@ BOR_ORDER_SELFTEST_CASES = (
             'must record the shifted role as line_block with batched_operators = the wavelength count and '
             'rejected_factor_solves 0. Not yet confirmed by a run.'),
         specs=lambda: _superlu_runs_on_cpu(_model_wavelength_batch_specs()),
-        check=_check_model_wavelength_batch, heavy=True),
+        check=_check_model_wavelength_batch),
     SelfTestCase(
         name='em_bor_cudss_driven',
         label="EM body of revolution: cuDSS 'linear' back ends vs SuperLU",

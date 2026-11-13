@@ -12,7 +12,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINE
                                          coupling_target, evaluates_to, geometry_param, held_object_conflicts,
                                          host_direct_back_end, is_axisymmetric, linear_solver_cudss,
                                          material_follows_state, numpy_calls, reports_model_checks, resolved_back_end)
-from ...model.expressions import is_identifier
+from ...model.expressions import ExpressionError, is_identifier, referenced_names
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
                                      refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
@@ -127,8 +127,14 @@ _MATERIAL_PROPERTIES = (
 
 # ---- feature callbacks (worker thread, GPU) ----
 def _apply_doping(ctx, solver, feature_spec, values, selection):
+    """Net doping on the selected cells; uniform parameter values follow a reused sweep build (set_doping, cold
+    start)."""
     mask = ctx.domain_mask(selection.entities)
-    solver.add_doping(mask, ctx.eval_field(values['donors'], mask=mask), ctx.eval_field(values['acceptors'], mask=mask))
+    handle = solver.add_doping(mask, ctx.eval_field(values['donors'], mask=mask),
+                               ctx.eval_field(values['acceptors'], mask=mask))
+    ctx.follow_parameters(feature_spec.params, values, ('donors', 'acceptors'),
+                          lambda donors, acceptors: solver.set_doping(handle, donors, acceptors), solver,
+                          f"feature '{feature_spec.name}'")
     return None
 
 
@@ -471,10 +477,32 @@ def _newton_part(context, label, cells, components, iterations, chord_steps, lim
                                  dimensions=2,
                                  solves=iterations, solves_kind='guess', factorizations=factorizations,
                                  factorizations_kind='guess', per_step=per_step,
+                                 # cuDSS: factorize_values refreshes device values (the device curve) and defers each
+                                 # refreshed factor's check to its Newton solve (R3 check items, no probe solve)
+                                 device_values=True,
                                  backend='cpu')   # factorize_host on either backend
     plan_share = 1.0 / _PLANNED_SYSTEMS if plans else 0.0
     return te.combine((te.TimeEstimate((assembly,)),
                        _counted(solver, counter, plan_share, factorized_share))).labelled(label)
+
+
+def _doping_follows_live(context) -> bool:
+    """Whether an enabled doping feature's donors / acceptors read a live parameter of a reused build
+    (TimeContext.live_parameters): its set_doping cold-starts the kept state."""
+    live = context.live_parameters
+    if not live:
+        return False
+    for feature in context.physics_spec.features:
+        if not (feature.enabled and feature.type == 'doping' and isinstance(feature.params, dict)):
+            continue
+        for name in ('donors', 'acceptors'):
+            value = feature.params.get(name)
+            try:
+                if isinstance(value, str) and not referenced_names(value).isdisjoint(live):
+                    return True
+            except ExpressionError:   # reported by validate
+                continue
+    return False
 
 
 def _time_estimate(settings_values, mesh, context):
@@ -486,7 +514,13 @@ def _time_estimate(settings_values, mesh, context):
         return te.TimeEstimate(not_estimated=('drift_diffusion on a triangle mesh',))
     cells = float(context.window_cells())
     newton_limit = int(settings_values['max_iterations'])
-    ramp = _ramp_steps(settings_values, context) or 1
+    # a later sweep value continuing the previous value's converged state (TimeContext.continues_previous: a warm_start
+    # study on the same mesh, seed_warm_start, or a reuse_build sweep's kept session, whose reset_records keeps it): no
+    # equilibrium start, one continuation step (its voltage change is not known per value); a live doping value of a
+    # reused build cold-starts instead (set_doping)
+    continued = (not context.time_dependent and context.continues_previous
+                 and not _doping_follows_live(context))
+    ramp = 1 if continued else (_ramp_steps(settings_values, context) or 1)
     driven = coupling_target(context) or material_follows_state(context, _MATERIAL_PROPERTY_NAMES)
     per_step = context.time_dependent and driven
     re_solves = 1.0 if per_step else (context.static_solves()[0] - 1.0 if driven else 0.0)
@@ -496,8 +530,9 @@ def _time_estimate(settings_values, mesh, context):
     io_ops = (te.HostStream(2 * _SOLVE_HOST_ARRAYS * FLOAT64_BYTES * cells),
               te.Transfer((len(SEMICONDUCTOR_FIELD_INFOS) + len(SEMICONDUCTOR_SCHEMA)) * FLOAT32_BYTES * cells),
               te.PythonCalls(150))
-    parts = [_newton_part(context, 'equilibrium Newton', cells, 1, float(EQUILIBRIUM_NEWTON_ITERATIONS_GUESS),
-                          float(EQUILIBRIUM_CHORD_STEPS_GUESS), newton_limit, False, ())]
+    parts = [] if continued else [
+        _newton_part(context, 'equilibrium Newton', cells, 1, float(EQUILIBRIUM_NEWTON_ITERATIONS_GUESS),
+                     float(EQUILIBRIUM_CHORD_STEPS_GUESS), newton_limit, False, ())]
     if per_step:   # newton_iterations then counts the cold and the per-step iterations together: no counter
         parts += [_newton_part(context, 'Newton ramp', cells, COMPONENTS, float(cold), float(cold_chord),
                                ramp * newton_limit, False, ()),
@@ -590,14 +625,17 @@ def _features():
     return (
         FeatureType('doping', 'Doping', 'domain_condition', 'domain',
                     params=(Param('donors', 'float', 0.0, label='Donor density', unit='1/m^3', min=0.0,
-                                  field_dependent=True,
+                                  field_dependent=True, follows_parameters=True,
                                   help='Ionised donor density N_D [1/m^3] (1e22 = 1e16 cm^-3); may depend on x, y '
-                                       '(e.g. a Gaussian implant profile).',
+                                       '(e.g. a Gaussian implant profile). A uniform value of parameters follows a '
+                                       'reused sweep build (sweep reuse_build; that value then starts cold from '
+                                       'equilibrium).',
                                   tip='Density of donor atoms (n-type doping) per cubic metre; 1e22 equals 1e16 '
                                       'per cubic centimetre.'),
                             Param('acceptors', 'float', 0.0, label='Acceptor density', unit='1/m^3', min=0.0,
-                                  field_dependent=True,
-                                  help='Ionised acceptor density N_A [1/m^3]; may depend on x, y.',
+                                  field_dependent=True, follows_parameters=True,
+                                  help='Ionised acceptor density N_A [1/m^3]; may depend on x, y; a uniform value of '
+                                       'parameters follows a reused sweep build (as donors).',
                                   tip='Density of acceptor atoms (p-type doping) per cubic metre.')),
                     summary='Adds donor and / or acceptor doping to the selected domains. Several doping features '
                             'add up.',

@@ -156,6 +156,22 @@ class MagneticACPhysics(MagneticPhysics):
         if names & (CONDUCTIVITY_ARRAYS | {'mu_dc_loss'}):
             self._host_dirty = True
 
+    def set_frequency(self, frequency) -> None:
+        """New frequency [Hz] (a reused sweep build): the host system is rebuilt on the kept K(nu) stencil and the
+        RecycledFactor solves by GMRES on the old factor or refactorises on its plan."""
+        frequency = float(frequency)
+        if not (math.isfinite(frequency) and frequency > 0.0):
+            raise ValueError(f'magnetic_fields_ac needs a finite frequency > 0 Hz, got {frequency}')
+        if frequency != self.frequency:
+            self.frequency = frequency
+            self.omega = 2.0 * math.pi * frequency
+            self._host_dirty = True
+
+    def reset_records(self) -> None:
+        """RerunSolver (reused sweep build): clear the probe series; the next step re-solves when an input changed."""
+        for probe in self.probes:
+            probe.clear()
+
     def step(self, t: float = 0.0, dt: float = math.inf) -> None:
         """Re-solve only when the operator, a material or a source changed (always at the first call); probes as
         MagneticPhysics."""

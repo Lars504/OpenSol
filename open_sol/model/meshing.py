@@ -12,6 +12,7 @@ from functools import partial
 
 import numpy as np
 
+from ..core import host_memory
 from ..core.constants import C0, FACES, FACES_3D, Z_FACES
 from ..core.domain import Domain, containing_cell
 from ..core.domain3d import Domain3D
@@ -2280,31 +2281,79 @@ def estimate_memory(spec, parameters, registry=None, mesh_estimate=None, by_mesh
 
 
 def fitted_memory_estimate(spec, parameters, registry, mesh_estimate, memory_budget, estimate=None, by_mesh=None,
-                           shapes=None) -> tuple:
-    """(MemoryEstimate, plain_roles): when the gpu estimate exceeds memory_budget, the study_default_roles (a kept
-    cuDSS factor) resolve without their study if that estimate is lower (D1 4b), else frozenset(); estimate: a given one."""
+                           shapes=None, host_budget=None) -> tuple:
+    """(MemoryEstimate, plain_roles): the study_default_roles resolve without their study (D1 4b) when that estimate is
+    lower and a kept cuDSS factor's gpu estimate exceeds memory_budget, or a host factor's host estimate (backend_memory)
+    exceeds host_budget (None: the available RAM); a host factor over the host SuperLU size limit always; else
+    frozenset(). estimate: a given one."""
     if estimate is None:
         estimate = estimate_memory(spec, parameters, registry, mesh_estimate, by_mesh=by_mesh, shapes=shapes)
-    if not memory_budget or solver_backend(spec) == 'cpu' or estimate.device_peak <= memory_budget:
+    if memory_budget and solver_backend(spec) != 'cpu' and estimate.device_peak > memory_budget:
+        roles = study_default_roles(spec, registry, parameters)
+        fitted = _plain_estimate(spec, parameters, registry, mesh_estimate, shapes, estimate, roles,
+                                 lambda memory: memory.device_peak)
+        if fitted is not None:
+            return _with_parts(fitted, by_mesh), roles
+    host_roles = study_default_roles(spec, registry, parameters, host=True)
+    if not host_roles:
         return estimate, frozenset()
-    roles = study_default_roles(spec, registry, parameters)
+    host_budget = host_memory.available_bytes() if host_budget is None else host_budget
+    if host_budget and backend_memory(spec, estimate).host > host_budget:
+        fitted = _plain_estimate(spec, parameters, registry, mesh_estimate, shapes, estimate, host_roles,
+                                 lambda memory: backend_memory(spec, memory).host)
+        if fitted is not None:
+            return _with_parts(fitted, by_mesh), host_roles
+    oversize = _over_direct_size_limit(spec, parameters, registry, mesh_estimate, shapes, host_roles)
+    if not oversize:
+        return estimate, frozenset()
+    fitted = _plain_estimate(spec, parameters, registry, mesh_estimate, shapes, estimate, oversize, None)
+    return _with_parts(fitted, by_mesh), oversize
+
+
+def _plain_estimate(spec, parameters, registry, mesh_estimate, shapes, estimate, roles, peak):
+    """(estimate, by_mesh parts) with roles resolved without their study; None without roles or when peak (a
+    MemoryEstimate -> bytes; None: no test) of it is not below that of estimate."""
     if not roles:
-        return estimate, frozenset()
+        return None
     parts = {}
     plain = estimate_memory(spec, parameters, registry, mesh_estimate, by_mesh=parts, shapes=shapes, plain_roles=roles)
-    if plain.device_peak >= estimate.device_peak:
-        return estimate, frozenset()
+    if peak is not None and peak(plain) >= peak(estimate):
+        return None
+    return plain, parts
+
+
+def _with_parts(fitted, by_mesh):
+    """The fitted estimate of _plain_estimate, its per-mesh parts copied into by_mesh (when given)."""
+    plain, parts = fitted
     if by_mesh is not None:
         by_mesh.clear()
         by_mesh.update(parts)
-    return plain, roles
+    return plain
+
+
+def _over_direct_size_limit(spec, parameters, registry, mesh_estimate, shapes, roles) -> frozenset:
+    """The roles (host-factor study defaults) whose direct_unknowns exceed the host SuperLU limit
+    (sparse_direct.SPLU_LIMIT_UNKNOWNS, 3D: SPLU_3D_LIMIT_UNKNOWNS), which DiffusionDirectSolver refuses at run time."""
+    from ..solvers.sparse_direct import SPLU_3D_LIMIT_UNKNOWNS, SPLU_LIMIT_UNKNOWNS   # numpy only at module level
+    from .definition_helpers import direct_unknowns
+    limit = SPLU_3D_LIMIT_UNKNOWNS if spec.is_3d else SPLU_LIMIT_UNKNOWNS
+    meshes = _mesh_estimate_map(spec, parameters, registry, mesh_estimate, shapes)
+    over = set()
+    for physics_name, role in roles:
+        physics_spec = spec.physics_by_name(physics_name)
+        mesh = meshes.get(spec.mesh_of(physics_spec).name)
+        components = registry.physics_type(physics_spec.type).solver_roles[role].direct_components
+        if mesh is not None and direct_unknowns(mesh, components) > limit:
+            over.add((physics_name, role))
+    return frozenset(over)
 
 
 def plain_roles_text(plain_roles) -> str:
     """Info line naming the roles fitted_memory_estimate resolved without their study default."""
     names = ', '.join(f"'{physics}.{role}'" for physics, role in sorted(plain_roles))
-    return (f'Automatic {names}: the kept direct factor of this study exceeds the GPU budget, so the Automatic '
-            f'solver of the other studies runs instead (assign a solver node to choose)')
+    return (f'Automatic {names}: the kept direct factor of this study exceeds the GPU budget (a host factor: the '
+            f'available RAM or the host SuperLU size limit), so the Automatic solver of the other studies runs instead '
+            f'(assign a solver node to choose)')
 
 
 def backend_memory(spec, estimate) -> MemoryEstimate:

@@ -639,8 +639,7 @@ SHEET_GPU_SELFTESTS = (
                     'perimeter is pinned on the CPU by nlfd_sheet_sites). measured = error = the worst normalised item, '
                     'tolerance 1. Pins the smoothed normals and lengths in a radiating model run.',
         specs=_disk_specs,
-        check=_check_disk,
-        heavy=True),
+        check=_check_disk),
     SelfTestCase(
         name='nlfd_sheet_nonlinearity',
         label='Nonlinear FDFD: 2D-material sheets vs the lattice Green function',

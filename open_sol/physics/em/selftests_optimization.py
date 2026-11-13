@@ -212,6 +212,5 @@ OPTIMIZATION_SELFTEST_CASES = (
                     'design_density field.',
         specs=lambda: cpu_specs({'gap': _gap_spec()}),
         check=_check_gap,
-        max_wall_time=900.0,
-        heavy=True),
+        max_wall_time=900.0),
 )

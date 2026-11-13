@@ -104,6 +104,5 @@ MATERIAL_FIT_SELFTEST_CASES = (
                     f'{_ROUND_TRIP_TOLERANCE}. Not yet run with the closed-form fit Jacobian.',
         specs=lambda: {},
         check=_check_nk_fit,
-        heavy=True,
     ),
 )

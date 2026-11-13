@@ -14,7 +14,7 @@ from ...model.definition_helpers import (CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATIO
                                          element_order, evaluates_to, face_conflicts, held_object_conflicts,
                                          linear_solver_direct, linear_solver_mixed, linear_solver_multigrid,
                                          linear_solver_precision, point_cells, reports_model_checks,
-                                         validate_points_inside)
+                                         single_precision_contrast_issues, validate_points_inside)
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
 from ...solvers.roles import resolved_precision
 from .definition_magnetostatics import (_ANDERSON_STATE_ARRAYS, _BH_CURVE, _CURVE_PROPOSAL_ARRAYS, _MU_DC_TIP,
@@ -296,7 +296,7 @@ def _single_precision_coil_issues(vctx, physics_spec, path):
 
 def _validate_magnetostatics_3d(vctx, physics_spec, settings_values):
     """At most one external field; CG limit / direct size, face and held-object conflicts, the coil precision
-    warning, the saturation rules."""
+    warning (else the single-precision mu contrast warning), the saturation rules."""
     path = ('physics', physics_spec.name)
     issues = []
     n_external = sum(1 for feature in physics_spec.features if feature.enabled and feature.type == 'external_field')
@@ -306,7 +306,9 @@ def _validate_magnetostatics_3d(vctx, physics_spec, settings_values):
     issues.extend(cg_solver_issues(vctx, physics_spec, path))
     issues.extend(face_conflicts(vctx, physics_spec, _FACE_FEATURES, path))
     issues.extend(held_object_conflicts(vctx, physics_spec, frozenset({'ideal_iron'}), frozenset({'coil'}), path))
-    issues.extend(_single_precision_coil_issues(vctx, physics_spec, path))
+    coil_issues = _single_precision_coil_issues(vctx, physics_spec, path)
+    issues.extend(coil_issues or single_precision_contrast_issues(vctx, physics_spec, path, _PERMEABILITY_NAMES,
+                                                                  'mu_dc'))
     issues.extend(_saturation_issues(vctx, physics_spec, settings_values))
     return issues
 
@@ -433,9 +435,11 @@ def _memory_estimate(settings_values, mesh, context):
                           _POST_PROCESSING_ARRAYS * value_bytes * window_cells),
                          ('energy and flux linkage', 'energy and flux linkage temporaries (window)',
                           _SCALAR_ARRAYS * FLOAT64_BYTES * window_cells)))
+    from ...model.schema import solver_backend   # where a multigrid setup aggregates
     parts = [own, diffusion_system_estimate(window_cells, precision, dimensions=3, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
-                                            direct=linear_solver_direct(context))]
+                                            direct=linear_solver_direct(context),
+                                            backend=solver_backend(context.spec))]
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 7 * window_cells, 3, cudss, input_copy=False,

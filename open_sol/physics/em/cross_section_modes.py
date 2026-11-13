@@ -41,7 +41,7 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from .boundaries import BCType, cpml_axis_profiles
-from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver, device_factor_matvec
+from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver, device_factor_matvec, guarded_start_vector
 from ...solvers.sparse_direct import size_issue
 from .operators import bloch_wrap_phases, pml_stretch, yee_operators
 from .slab_modes import _transverse_wavenumber, peak_cell
@@ -65,6 +65,23 @@ PML_ARPACK_TOLERANCE_FLOOR = 1e-12
 # Arnoldi basis per wanted eigenpair of such a solve (as em3d's ARNOLDI_BASIS_PER_WANTED, fem_bor): scipy's 2 k + 1
 # basis restarted ~85 applications per basis vector on the PML clusters (em_modes_cpu_gpu: 2479, the 300-restart cap)
 PML_ARNOLDI_BASIS_PER_WANTED = 5
+# Eigenpairs beyond n_modes of a solve whose default shift lies above the spectrum (default_shift_above_spectrum:
+# lossless positive eps / mu, no bend, default guess): the nearest eigenvalues are the highest-ranked, so 2 n + 10 only
+# widened the basis (analytic PEC guide: 41 -> 20) or, on CPML, made ARPACK converge the PML cluster it then drops
+# (em_modes_cpu_gpu heated strip, n 2: 1782 -> 411 applications, 9.8 -> 1.5 s, n_eff equal to 2e-15; n + 6: 442,
+# n + 8: 630). The margin keeps a degenerate partner at the cut; on CPML a solve whose dropped PML modes leave fewer than
+# n_modes candidates is redone at 2 n + 10
+ABOVE_SPECTRUM_EXTRA_EIGENPAIRS = 4
+# S3: the same narrow count for a solve that keeps its PML modes (EME, drop_pml_modes False): n + 6 (eme.md). Exact
+# without a PML stretch (every beta^2 real below the shift); with one, a PML mode beyond the converged disk can rank
+# above the n-th mode only with |Im beta^2| > sqrt(1 - f^2) x the disk radius, so the solve is redone at 2 n + 10 when
+# the n-th ranked mode's shift - Re beta^2 exceeds f = KEPT_PML_CUT_FRACTION x the largest |beta^2 - shift| returned
+KEPT_PML_EXTRA_EIGENPAIRS = 6
+KEPT_PML_CUT_FRACTION = 0.5
+# E3: ARPACK floor of em_modes' own solves (ModePhysics at the study wavelengths; no polish there): |d beta^2| <= floor
+# |beta^2 - shift| (n_eff ~1e-11; round-2 sweep: 1e-10 saved 20 % of eigs). Solves feeding the group-index difference
+# (mode_group_indices: error x 1 / (2 GROUP_RELATIVE_STEP)), detached, port, EME and CPU solves keep machine precision
+MODE_ARPACK_TOLERANCE_FLOOR = 1e-10
 LINE_BLOCK_BOTH_PERIODIC_TEXT = ('the line_block shifted solver cannot take two periodic axes (a periodic wrap along the '
                                  'line axis is not block-tridiagonal); use the sparse_direct solver (Automatic)')
 _SIZE_REMEDY = ('coarsen the mesh or shrink the cross-section (a symmetric / antisymmetric mirror face halves it per '
@@ -206,6 +223,10 @@ class CrossSectionProblem:
     guess: complex
     warnings: tuple
     assembly_seconds: float
+    # lossless positive eps / mu, no bend, default guess: the shift lies above the spectrum, so the nearest eigenvalues
+    # are the highest-ranked (exactly without PML; with PML up to the dropped or, kept, beyond-the-cut PML modes:
+    # mode_eigen_count, _kept_pml_near_cut)
+    default_shift_above_spectrum: bool = False
 
 
 def size_issue_for(nx, ny):
@@ -423,6 +444,22 @@ def _inverse_or_zero(values, zero_mask):
     return inverse
 
 
+def _row_scaled(matrix, values):
+    """Host CSR diag(values) @ matrix as entry products (own index copies; explicit zeros kept)."""
+    import scipy.sparse
+    matrix = matrix.tocsr()
+    data = matrix.data * np.repeat(values, np.diff(matrix.indptr))
+    return scipy.sparse.csr_matrix((data, matrix.indices.copy(), matrix.indptr.copy()), shape=matrix.shape)
+
+
+def _column_scaled(matrix, values):
+    """Host CSR matrix @ diag(values) as entry products (own index copies; explicit zeros kept)."""
+    import scipy.sparse
+    matrix = matrix.tocsr()
+    data = matrix.data * values[matrix.indices]
+    return scipy.sparse.csr_matrix((data, matrix.indices.copy(), matrix.indptr.copy()), shape=matrix.shape)
+
+
 def _wall_neutral_cuts(pec_cuts, layout):
     """Copies of the pec_cuts (link_x, link_y, area) with the links / dual cells crossing a wall plane or the grid end
     set to 1 (staircased there) and the links lying in a wall ghost row / column copied from its inner neighbour (the
@@ -478,18 +515,19 @@ def assemble_cross_section(cell_widths, boundary_config, pml_dx, materials, omeg
     inv_eyy = _inverse_or_zero(eps_y_faces, pec & face_partner(pec, 1, layout.y.periodic)).ravel()
     mu_x, mu_y, mu_z = (values.ravel() for values in (mu_x, mu_y, mu_z))
     k0 = float(omega) / C0
-
-    def diagonal(values):
-        return scipy.sparse.diags(values, 0, format='csr')
-
-    mu_x_matrix, mu_y_matrix, inv_mu_z = diagonal(mu_x), diagonal(mu_y), diagonal(1.0 / mu_z)
-    inv_ezz_matrix, inv_exx_matrix, inv_eyy_matrix = diagonal(inv_ezz), diagonal(inv_exx), diagonal(inv_eyy)
-    a_xx = (k0 ** 2 * mu_x_matrix + dy_h_centres @ inv_ezz_matrix @ dy_e
-            + inv_eyy_matrix @ dx_e @ inv_mu_z @ dx_h @ mu_x_matrix)
-    a_xy = -(dy_h_centres @ inv_ezz_matrix @ dx_e) + inv_eyy_matrix @ dx_e @ inv_mu_z @ dy_h @ mu_y_matrix
-    a_yx = -(dx_h_centres @ inv_ezz_matrix @ dy_e) + inv_exx_matrix @ dy_e @ inv_mu_z @ dx_h @ mu_x_matrix
-    a_yy = (k0 ** 2 * mu_y_matrix + dx_h_centres @ inv_ezz_matrix @ dx_e
-            + inv_exx_matrix @ dy_e @ inv_mu_z @ dy_h @ mu_y_matrix)
+    inv_mu_z = 1.0 / mu_z
+    # diagonal factors as entry products (same products in the same order as the diag SpGEMMs; their explicit zeros
+    # go with eliminate_zeros below) and each curl / divergence prefix formed once: 8 SpGEMMs instead of 24
+    curl_y = _column_scaled(dy_h_centres, inv_ezz)                           # Dy^h ezz^-1
+    curl_x = _column_scaled(dx_h_centres, inv_ezz)                           # Dx^h ezz^-1
+    divergence_x = _column_scaled(_row_scaled(dx_e, inv_eyy), inv_mu_z)      # eyy^-1 Dx^e mzz^-1
+    divergence_y = _column_scaled(_row_scaled(dy_e, inv_exx), inv_mu_z)      # exx^-1 Dy^e mzz^-1
+    mu_x_matrix = scipy.sparse.diags(mu_x, 0, format='csr')
+    mu_y_matrix = scipy.sparse.diags(mu_y, 0, format='csr')
+    a_xx = k0 ** 2 * mu_x_matrix + curl_y @ dy_e + _column_scaled(divergence_x @ dx_h, mu_x)
+    a_xy = -(curl_y @ dx_e) + _column_scaled(divergence_x @ dy_h, mu_y)
+    a_yx = -(curl_x @ dy_e) + _column_scaled(divergence_y @ dx_h, mu_x)
+    a_yy = k0 ** 2 * mu_y_matrix + curl_x @ dx_e + _column_scaled(divergence_y @ dy_h, mu_y)
     a_matrix = scipy.sparse.bmat([[a_xx, a_xy], [a_yx, a_yy]], format='csr')
     # a_xy / a_yx vanish exactly where eps_yy = eps_zz and mu is uniform (x / y differences commute on a tensor grid),
     # but with dx != dy the two products round apart: ~1e-16 residue couples h_x, h_y everywhere and inflates the
@@ -520,24 +558,36 @@ def _default_index(materials):
                for eps in (materials.eps_xx, materials.eps_yy, materials.eps_zz))
 
 
-def _start_vector(start_vector, active_index, shape):
+def _real_aligned(vector):
+    """Real part of a complex vector turned so that its largest entry is real positive (an eigenvector of a real
+    operator times a phase becomes real again; E1 start vectors)."""
+    vector = np.asarray(vector)
+    if not np.iscomplexobj(vector):
+        return np.asarray(vector, dtype=np.float64)
+    peak = vector.flat[int(np.argmax(np.abs(vector)))] if vector.size else 0.0
+    return np.real(vector * (abs(peak) / peak)) if peak != 0 else np.real(vector)
+
+
+def _start_vector(start_vector, active_index, shape, real=False):
     """ARPACK v0 on the active unknowns: None, a flat array of their count, or the summed eta0 [H_x; H_y] of a
-    CrossSectionMode / sequence of them (None when that sum vanishes)."""
+    CrossSectionMode / sequence of them (None when that sum vanishes); real: float64, each mode (or the array) turned
+    real by _real_aligned first."""
     if start_vector is None:
         return None
     if isinstance(start_vector, CrossSectionMode):
         start_vector = [start_vector]
     if isinstance(start_vector, (list, tuple)) and all(isinstance(mode, CrossSectionMode) for mode in start_vector):
-        total = np.zeros(active_index.size, dtype=np.complex128)
+        total = np.zeros(active_index.size, dtype=np.float64 if real else np.complex128)
         for mode in start_vector:
             if mode.hx.shape != shape:
                 raise ValueError(f"start_vector mode shape {mode.hx.shape} differs from the grid {shape}")
-            total += ETA0 * np.concatenate((mode.hx.ravel(), mode.hy.ravel()))[active_index]
+            vector = ETA0 * np.concatenate((mode.hx.ravel(), mode.hy.ravel()))[active_index]
+            total += _real_aligned(vector) if real else vector
         return total if np.any(total != 0) else None
     vector = np.asarray(start_vector, dtype=np.complex128).ravel()
     if vector.size != active_index.size:
         raise ValueError(f"start_vector needs {active_index.size} entries (info['n_unknowns']), got {vector.size}")
-    return vector
+    return _real_aligned(vector) if real else vector
 
 
 def fill_images(field, layout, x_centred, y_centred):
@@ -628,16 +678,16 @@ def _build_mode(system, layout, hx, hy, beta, omega):
 
 
 def solve_cross_section_modes(cell_widths, boundary_config, pml_dx, materials, omega, n_modes, n_eff_guess=None,
-                              bend=None, start_vector=None, eigen_solver=None, drop_pml_modes=True):
+                              bend=None, start_vector=None, eigen_solver=None, drop_pml_modes=True, warm_guard=False):
     """CrossSectionSolve of up to n_modes modes found by shift-invert near (k0 n_eff_guess)^2 (default max Re sqrt(eps
     mu)), ranked by descending Re beta^2, PML modes dropped unless drop_pml_modes is False (EME keeps them as
     radiation); cell_widths = (dx_cells, dy_cells) [m], pml_dx = CPML grading cell [m]; bend: None or (radius [m],
     reference_x [m], full-grid x edges, model in BEND_MODELS); eigen_solver: solvers.arpack_shift_invert runtime
-    (None = default settings)."""
+    (None = default settings); warm_guard as solve_prepared_modes."""
     problem = prepare_cross_section_modes(cell_widths, boundary_config, pml_dx, materials, omega,
                                           n_eff_guess=n_eff_guess, bend=bend)
     return solve_prepared_modes(problem, n_modes, start_vector=start_vector, eigen_solver=eigen_solver,
-                                drop_pml_modes=drop_pml_modes)
+                                drop_pml_modes=drop_pml_modes, warm_guard=warm_guard)
 
 
 def prepare_cross_section_modes(cell_widths, boundary_config, pml_dx, materials, omega, n_eff_guess=None, bend=None,
@@ -672,16 +722,56 @@ def prepare_cross_section_modes(cell_widths, boundary_config, pml_dx, materials,
     if not (np.isfinite(guess) and guess != 0):
         raise ValueError(f"n_eff_guess must be finite and non-zero, got {n_eff_guess!r}")
     shift = (system.k0 * guess) ** 2 * (1.0 + _SHIFT_RELATIVE_OFFSET)
+    above_spectrum = n_eff_guess is None and bend is None and _lossless_positive(system)
     return CrossSectionProblem(omega=omega, system=system, layout=layout, active_index=active_index, shape=shape,
                                operator=(a_active - shift * b_active).tocsr(), b_active=b_active, shift=shift,
-                               guess=guess, warnings=tuple(warnings), assembly_seconds=time.perf_counter() - started)
+                               guess=guess, warnings=tuple(warnings), assembly_seconds=time.perf_counter() - started,
+                               default_shift_above_spectrum=above_spectrum)
+
+
+def _lossless_positive(system):
+    """True when every eps^-1 of the operator is real >= 0 (0 on PEC) and every mu real > 0: beta^2 of the unstretched
+    operator real and at most k0^2 max(eps mu), below the default shift."""
+    return (all(not np.any(values.imag) and bool(np.all(values.real >= 0.0))
+                for values in (system.inv_exx, system.inv_eyy, system.inv_ezz))
+            and all(not np.any(values.imag) and bool(np.all(values.real > 0.0))
+                    for values in (system.mu_x, system.mu_y, system.mu_z)))
+
+
+def mode_eigen_count(n_modes, n_unknowns=None, narrow=False, keep_pml_modes=False):
+    """Eigenpairs one cross-section solve asks ARPACK for (CPU, also the estimators: wide, they cannot see the
+    materials): 2 n_modes + 10; narrow (default shift above the spectrum) n_modes + ABOVE_SPECTRUM_EXTRA_EIGENPAIRS, or
+    + KEPT_PML_EXTRA_EIGENPAIRS when the PML modes are kept (EME); at most n_unknowns - 2 (None: uncapped)."""
+    if narrow:
+        extra = KEPT_PML_EXTRA_EIGENPAIRS if keep_pml_modes else ABOVE_SPECTRUM_EXTRA_EIGENPAIRS
+    else:
+        extra = int(n_modes) + 10
+    count = int(n_modes) + extra
+    return count if n_unknowns is None else min(count, int(n_unknowns) - 2)
+
+
+def _rank_order(values, k0):
+    """Candidate order of descending Re beta^2 (ties to _RANK_DECIMALS of beta^2 / k0^2 by descending Im)."""
+    return np.lexsort((-values.imag, -np.round(values.real / k0 ** 2, _RANK_DECIMALS)))
+
+
+def _kept_pml_near_cut(candidates, shift, n_modes, k0):
+    """S3 guard of a narrow solve that keeps its PML modes on a stretched cross-section: True when fewer than n_modes
+    came back or the n_modes-th ranked one lies near the converged disk edge (KEPT_PML_CUT_FRACTION)."""
+    if len(candidates) < int(n_modes):
+        return True
+    values = np.array([candidate[0] for candidate in candidates], dtype=np.complex128)
+    radius = float(np.max(np.abs(values - shift)))
+    nth = values[_rank_order(values, k0)[int(n_modes) - 1]]
+    return float(np.real(shift) - nth.real) > KEPT_PML_CUT_FRACTION * radius
 
 
 def solve_prepared_modes(problem, n_modes, start_vector=None, eigen_solver=None, drop_pml_modes=True,
-                         factorization=None):
+                         factorization=None, tolerance_floor=0.0, warm_guard=False):
     """CrossSectionSolve of a CrossSectionProblem (solve_cross_section_modes' ranking and PML rule) on `factorization`
     of problem.operator (solve_host, host_bytes, description: e.g. a line-block factor; None = host SuperLU); ARPACK
-    at machine precision, PML_ARPACK_TOLERANCE_FLOOR when PML modes are dropped on a cross-section with CPML."""
+    at machine precision or tolerance_floor (E3: MODE_ARPACK_TOLERANCE_FLOOR), at least PML_ARPACK_TOLERANCE_FLOOR when
+    PML modes are dropped on a cross-section with CPML; warm_guard: a random share joins the start vector (E5)."""
     if isinstance(n_modes, bool) or not isinstance(n_modes, (int, np.integer)) or n_modes < 1:
         raise ValueError(f"n_modes must be an integer >= 1, got {n_modes!r}")
     started = time.perf_counter()
@@ -691,45 +781,72 @@ def solve_prepared_modes(problem, n_modes, start_vector=None, eigen_solver=None,
     n_unknowns = int(active_index.size)
     warnings = list(problem.warnings)
     own_factor = factorization is None
+    real_operator = False
     if own_factor:   # host SuperLU, or the eigen solver's cuDSS factorization (description)
-        factorization = eigen_solver.factorize_host(problem.operator)
+        # a real operator (walls, lossless, no PML stretch / Bloch phase, real shift): a float64 factor, ~1/4 of the
+        # LU multiply-adds and half its bytes; host ARPACK then runs real (E1: dnaupd, one real solve per application)
+        real_operator = not np.any(problem.operator.data.imag)
+        factorization = eigen_solver.factorize_host(problem.operator.real if real_operator else problem.operator,
+                                                    real=real_operator)
     factor_kind = getattr(factorization, 'description', 'SuperLU' if own_factor else 'external')
     factorized = time.perf_counter()
-    n_wanted = min(2 * int(n_modes) + 10, n_unknowns - 2)
-    initial = _start_vector(start_vector, active_index, shape)
+    initial = _start_vector(start_vector, active_index, shape, real=real_operator)
+    if initial is not None and warm_guard:
+        initial = guarded_start_vector(initial, _START_VECTOR_SEED, real=real_operator)
     if initial is None:   # deterministic (reproducible solves and run times), not ARPACK's process-wide random state
         random = np.random.default_rng(_START_VECTOR_SEED)
-        initial = random.standard_normal(n_unknowns) + 1j * random.standard_normal(n_unknowns)
-    pml_clusters = drop_pml_modes and bool(layout.stretched_hx.any() or layout.stretched_hy.any())
-    theta, vectors, applications, converged = eigen_solver.eigs(   # a gpu runtime: the device Krylov-Schur
-        lambda vector: factorization.solve_host(b_active @ vector), n_unknowns, n_wanted, initial,
-        tolerance_floor=PML_ARPACK_TOLERANCE_FLOOR if pml_clusters else 0.0,
-        default_basis=mode_default_basis(n_wanted, pml_clusters),
-        device_matvec=device_factor_matvec(factorization, b_active))
+        initial = (random.standard_normal(n_unknowns) if real_operator
+                   else random.standard_normal(n_unknowns) + 1j * random.standard_normal(n_unknowns))
+    stretched = bool(layout.stretched_hx.any() or layout.stretched_hy.any())
+    pml_clusters = drop_pml_modes and stretched
+    b_values = b_active.diagonal()   # B x as one elementwise product (same values as the diagonal CSR product)
+    if real_operator:
+        b_values = np.ascontiguousarray(b_values.real)   # B real when A - shift B is (shift real)
+    device_matvec = device_factor_matvec(factorization, b_active)
+    floor = max(float(tolerance_floor), PML_ARPACK_TOLERANCE_FLOOR if pml_clusters else 0.0)
+
+    def candidates_of(n_wanted):
+        """(candidates (beta^2, beta, hx, hy), PML modes dropped, applications, converged, eigenvalues found)."""
+        theta, vectors, applications, converged = eigen_solver.eigs(   # a gpu runtime: the device Krylov-Schur
+            lambda vector: factorization.solve_host(b_values * np.ravel(vector)), n_unknowns, n_wanted, initial,
+            tolerance_floor=floor, default_basis=mode_default_basis(n_wanted, pml_clusters),
+            device_matvec=device_matvec, real=real_operator)
+        theta = np.asarray(theta, dtype=np.complex128)
+        usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
+        beta_squared = shift + 1.0 / theta[usable]
+        beta = _transverse_wavenumber(beta_squared)
+        vectors = np.asarray(vectors)[:, usable]
+        found, n_dropped = [], 0
+        n_grid = shape[0] * shape[1]
+        for column in range(beta.size):
+            if beta[column] == 0:
+                continue
+            full = np.zeros(2 * n_grid, dtype=np.complex128)
+            full[active_index] = vectors[:, column]
+            hx, hy = full[:n_grid].reshape(shape), full[n_grid:].reshape(shape)
+            if drop_pml_modes and _pml_fraction(layout, hx, hy) > _PML_MODE_FRACTION:
+                n_dropped += 1
+                continue
+            found.append((beta_squared[column], beta[column], hx, hy))
+        return found, n_dropped, applications, converged, int(theta.size)
+
+    # narrow: the default shift above the spectrum (em_modes n + 4, EME keeping its PML modes n + 6; estimators: wide)
+    narrow = problem.default_shift_above_spectrum
+    n_wanted = mode_eigen_count(n_modes, n_unknowns, narrow, keep_pml_modes=not drop_pml_modes)
+    candidates, n_pml_dropped, applications, converged, n_converged = candidates_of(n_wanted)
+    wide = mode_eigen_count(n_modes, n_unknowns)
+    if n_wanted < wide and stretched and (
+            len(candidates) < int(n_modes) if drop_pml_modes   # PML modes took the narrow slots
+            else _kept_pml_near_cut(candidates, shift, n_modes, system.k0)):   # S3: a PML mode may lie beyond the cut
+        n_wanted = wide
+        candidates, n_pml_dropped, wide_applications, converged, n_converged = candidates_of(n_wanted)
+        applications += wide_applications
     if not converged:
-        warnings.append(f'ARPACK converged {np.size(theta)} of {n_wanted} eigenvalues near n_eff = {guess:.6g}; modes '
+        warnings.append(f'ARPACK converged {n_converged} of {n_wanted} eigenvalues near n_eff = {guess:.6g}; modes '
                         f'may be missing (set the effective index guess near the wanted mode)')
     eigen_done = time.perf_counter()
-    theta = np.asarray(theta, dtype=np.complex128)
-    usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
-    beta_squared = shift + 1.0 / theta[usable]
-    beta = _transverse_wavenumber(beta_squared)
-    vectors = np.asarray(vectors)[:, usable]
-    candidates = []
-    n_pml_dropped = 0
-    n_grid = shape[0] * shape[1]
-    for column in range(beta.size):
-        if beta[column] == 0:
-            continue
-        full = np.zeros(2 * n_grid, dtype=np.complex128)
-        full[active_index] = vectors[:, column]
-        hx, hy = full[:n_grid].reshape(shape), full[n_grid:].reshape(shape)
-        if drop_pml_modes and _pml_fraction(layout, hx, hy) > _PML_MODE_FRACTION:
-            n_pml_dropped += 1
-            continue
-        candidates.append((beta_squared[column], beta[column], hx, hy))
     values = np.array([candidate[0] for candidate in candidates], dtype=np.complex128)
-    order = np.lexsort((-values.imag, -np.round(values.real / system.k0 ** 2, _RANK_DECIMALS)))[:int(n_modes)]
+    order = _rank_order(values, system.k0)[:int(n_modes)]
     modes = [_build_mode(system, layout, candidates[index][2], candidates[index][3], candidates[index][1], omega)
              for index in order]
     finished = time.perf_counter()
@@ -737,7 +854,7 @@ def solve_prepared_modes(problem, n_modes, start_vector=None, eigen_solver=None,
             'assembly_seconds': problem.assembly_seconds, 'factor_seconds': factorized - started,
             'eigen_seconds': eigen_done - factorized, 'seconds': problem.assembly_seconds + finished - started,
             'operator_applications': applications, 'eigenvalues_requested': n_wanted,
-            'eigenvalues_converged': int(theta.size), 'pml_modes_dropped': n_pml_dropped,
+            'eigenvalues_converged': n_converged, 'pml_modes_dropped': n_pml_dropped,
             'shift_index': guess, 'factor_kind': factor_kind, 'arnoldi': eigen_solver.last_arnoldi,
             'warnings': warnings}
     return CrossSectionSolve(modes=modes, info=info)

@@ -370,6 +370,13 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
     def dt_limit(self) -> float:
         return math.inf
 
+    def reset_records(self) -> None:
+        """RerunSolver (reused sweep build): the next study run solves afresh on the kept channel factors (monitors keep
+        one value per omega, so the rerun overwrites them) from zero fields, as a fresh build: the same result per value
+        (no hysteresis branch) and, measured on the SHG sweep, fewer Newton products than a warm start."""
+        self.store.clear()
+        self._dirty = True
+
     def state(self) -> dict:
         """Selected channel's float32 <pol>_re / _im of both polarisations (zeros for the other one), q_abs, the
         permittivity arrays, sigma_e and 'q_accum': None (loss-protocol key)."""

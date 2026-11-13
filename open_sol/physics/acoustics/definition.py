@@ -26,7 +26,7 @@ from ...solvers.explicit_kernels import stepper_precision
 from .renderer import AcousticRenderer
 from .selftests import PHOTOACOUSTIC_DESCRIPTION, PHOTOACOUSTIC_SUMMARY, photoacoustic_disc_spec
 from .solver import (ACOUSTIC_PROPERTY_ARRAYS, ACOUSTIC_SCHEMA, BOUNDARY_TYPES, ELECTRIC_FIELD_SLOTS, HEATING_SLOT,
-                     MONOCLINIC_ARRAYS, OPTIONAL_ACOUSTIC_SCHEMA, PHOTOELASTIC_TENSOR_ARRAYS, PIEZO_ARRAYS,
+                     MONOCLINIC_ARRAYS, OPTIONAL_ACOUSTIC_SCHEMA, PHOTOELASTIC_TENSOR_ARRAYS, PIEZO_ARRAYS, STEP_GRAPHS,
                      AcousticPhysics)
 from .sources import PROBE_COMPONENTS, VELOCITY_COMPONENTS, HeatingPulse, make_waveform
 
@@ -964,16 +964,28 @@ def _create(ctx, physics_spec, values):
                            precision=stepper_precision(ctx.solvers(physics_spec.name)))
 
 
+_GRAPHED_TRACES = ('field_probe', 'resonance_monitor')                         # ProbeRecorder: inside the step graph
+_TABLED_SOURCES = ('force_source', 'volume_source', 'traction_line_source')   # pulse tables unless waveform cw
+
+
 def _time_estimate(settings_values, mesh, context):
     """Explicit velocity-stress engine: per acoustic step (the estimated dt; the build's may be smaller next to vacuum)
-    its arrays streamed once, ~6 kernels plus two per enabled feature."""
+    its arrays streamed once, ~6 kernels (gpu: one step graph, solver.STEP_GRAPHS; with the runner hand-off one graph
+    per STEP_GRAPH_TICKS steps, but the per-step host work left, the quiet check and probe stamp, still books one)
+    plus two per enabled feature (gpu: probes and pulsed sources replay inside the graph)."""
     piezo = any(context.material_sets(name) for name in PIEZO_ARRAYS)
     two_way = piezo and two_way_piezo(context.spec, context.physics_spec.name)
     dt = _time_step_estimate(context.spec, context.parameters, mesh, settings_values['courant'],
                              is_axisymmetric(settings_values), two_way)
-    features = sum(1 for feature in context.physics_spec.features if feature.enabled)
+    features = [feature for feature in context.physics_spec.features if feature.enabled]
+    step_graphs = context.backend == 'gpu' and STEP_GRAPHS
+    if step_graphs:
+        features = [feature for feature in features if not (
+            feature.type in _GRAPHED_TRACES
+            or (feature.type in _TABLED_SOURCES and feature.params.get('waveform', 'ricker') != 'cw'))]
+    field_launches = 1 if step_graphs else 6
     # cpu: the velocity / stress kernels (CPML fused in) have numba twins (kernels._FIELD_NUMBA_TWINS), the rest numpy
-    return explicit_step_estimate(context, 'velocity-stress', dt, launches=6 + 2 * features,
+    return explicit_step_estimate(context, 'velocity-stress', dt, launches=field_launches + 2 * len(features),
                                   numba_items=_numba_stepped, numba_launches=2)
 
 

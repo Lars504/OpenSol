@@ -13,10 +13,10 @@ from ..em.selftests_backend import PARITY_TOLERANCE, backend_parity_case
 from .selftests import ELASTIC_CASES
 
 
-def _acoustic_parity_case(name, label, case_names, covers, max_wall_time):
+def _acoustic_parity_case(name, label, case_names, covers, max_wall_time, heavy):
     """backend_parity_case over the named acoustics cases, its description naming the kernels they cover."""
     # ELASTIC_CASES incl. the cases run only inside these parities
-    case = backend_parity_case(name, label, cases_named(ELASTIC_CASES, *case_names), heavy=True,
+    case = backend_parity_case(name, label, cases_named(ELASTIC_CASES, *case_names), heavy=heavy,
                                max_wall_time=max_wall_time)
     return replace(case, description=(
         f"The analytic elastic_waves cases {', '.join(case_names)} run on solver_defaults.backend cpu (core.kernels "
@@ -128,7 +128,7 @@ _UPDATES_NUMBA_CASE = SelfTestCase(
                  f'relative to its peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both on a '
                  f'{_NUMBA_SPEED_SHAPE[0]} x {_NUMBA_SPEED_SHAPE[1]} grid. Without numba nothing is compared '
                  '(error 0).'),
-    specs=lambda: {}, check=_check_updates_numba, max_wall_time=600.0, heavy=True, backends=('cpu',))
+    specs=lambda: {}, check=_check_updates_numba, max_wall_time=600.0, backends=('cpu',))
 
 
 BACKEND_SELFTEST_CASES = (
@@ -138,11 +138,12 @@ BACKEND_SELFTEST_CASES = (
          'acoustic_plate_resonances'),
         'planar velocity / stress updates with the x and y CPML, coefficients and stability stiffness of isotropic, '
         'orthotropic and fluid media, traction / force scatters, thermoelastic stress, pressure probes, slip walls and '
-        'the resonance finder', 1800.0),
+        'the resonance finder', 1800.0, heavy=False),
     _acoustic_parity_case(
         'elastic_waves_cpu_gpu_variants', 'Elastic waves: CPU backend vs GPU (axisymmetric, monoclinic)',
         ('elastic_axisymmetric_cylinder', 'elastic_axisymmetric_hoop_stress', 'elastic_monoclinic_plane_waves'),
         'the axisymmetric velocity / stress updates with the hoop stress and axisymmetric pressure, the hoop '
-        'thermoelastic stress, the strain-accumulating monoclinic stress update and the c16 / c26 stress', 1800.0),
+        'thermoelastic stress, the strain-accumulating monoclinic stress update and the c16 / c26 stress', 1800.0,
+        heavy=True),
     _UPDATES_NUMBA_CASE,
 )

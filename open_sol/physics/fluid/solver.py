@@ -15,8 +15,8 @@ from ...core.monitors import FieldProbe
 from ...core.solver_base import PhysicsSolver
 from .lattice import (BLOCK_SIZE, FACE_KIND_NAMES, FACE_PERIODIC, FACE_PRESSURE, FACE_SLIP, FACE_VELOCITY, FACE_WALL,
                       MAGIC_LAMBDA, N_DIRECTIONS, POPULATION_DTYPES, POPULATION_SCALE, STORE_BOUNDARY, STORE_LATTICE,
-                      STORE_PUBLISHED, equilibrium_populations, force_to_lattice, step_kernel, store_populations,
-                      to_physical)
+                      STORE_PUBLISHED, VELOCITY_CHECK_BLOCKS, equilibrium_populations, force_to_lattice, step_kernel,
+                      store_populations, to_physical, velocity_check)
 from .bouzidi import wall_link_fractions
 from .renderer import FluidRenderer
 
@@ -34,8 +34,10 @@ FLOAT32_STALL_CHANGE = 1e-5  # relative velocity change per check interval that 
 MIN_CHECK_DECAY = 0.05       # decay exponent per steady check interval below which the interval doubles (the old
                              # fixed interval: 5 % of the slowest decay), so a check resolves the decay above the noise
 STEP_GRAPHS = True           # gpu: runs of steps without a host read replay from CUDA graphs (_fixed_block)
-GRAPH_STEPS = 32             # lattice steps per graph (even: the population buffers end where they started)
-_MAX_STEP_GRAPHS = 4         # graph keys kept (stale ones belong to replaced wall tables / relaxation / force args)
+GRAPH_STEPS = 32             # lattice steps of the largest graph; the rest of a run takes graphs of 16, 8, 4, 2 (all
+                             # even: the population buffers end where they started) and at most one single launch
+_MAX_STEP_GRAPHS = 16        # graph keys kept (5 sizes per argument set; stale ones belong to replaced wall tables /
+                             # relaxation / force args)
 _AXIS_FACES = {'x': ('x_lo', 'x_hi'), 'y': ('y_lo', 'y_hi')}
 _INWARD_NORMAL = {'x_lo': (1.0, 0.0), 'x_hi': (-1.0, 0.0), 'y_lo': (0.0, 1.0), 'y_hi': (0.0, -1.0)}
 
@@ -207,6 +209,9 @@ class FluidPhysics(PhysicsSolver):
         self._deviation = xp.zeros(self.window_shape, dtype=DTYPE)
         self._saved_x = xp.zeros(self.window_shape, dtype=DTYPE)
         self._saved_y = xp.zeros(self.window_shape, dtype=DTYPE)
+        # _velocity_change: uint32 bits of (max |du_x|, max |du_y|, max u^2) from one velocity_check launch
+        self._check_maxima = xp.zeros(3, dtype=np.uint32)
+        self._check_launch = ((min(VELOCITY_CHECK_BLOCKS, (wx * wy + BLOCK_SIZE - 1) // BLOCK_SIZE),), (BLOCK_SIZE,))
         self._fluid = xp.zeros(self.window_shape, dtype=np.bool_)
         self._mass_density = xp.zeros(self.window_shape, dtype=DTYPE)
         self._omega_plus = xp.ones(self.window_shape, dtype=DTYPE)
@@ -217,6 +222,10 @@ class FluidPhysics(PhysicsSolver):
         self._relaxation_stride = np.int32(1)
         self._force_lattice_x = xp.zeros(self.window_shape, dtype=DTYPE)
         self._force_lattice_y = xp.zeros(self.window_shape, dtype=DTYPE)
+        # gpu, no force or (steady) one lattice force on every fluid cell: the kernel reads these (force_stride 0)
+        self._uniform_force_x = xp.zeros(1, dtype=DTYPE)
+        self._uniform_force_y = xp.zeros(1, dtype=DTYPE)
+        self._force_stride = np.int32(1)
         self._face_kind = xp.zeros(len(FACES), dtype=np.int32)
         self._uploaded_face_kinds = None   # host tuple of _face_kind (skip the upload when a value of t keeps the kinds)
         self._face_values = xp.zeros((len(FACES), 3, self.face_length), dtype=DTYPE)
@@ -542,10 +551,34 @@ class FluidPhysics(PhysicsSolver):
             for coupled, applied, out in ((fields.body_force_x, fields.body_force_x_ext, self._force_lattice_x),
                                           (fields.body_force_y, fields.body_force_y_ext, self._force_lattice_y)):
                 force_to_lattice(coupled[window], applied[window], self._fluid, self._mass_density, scale, out)
+            self._force_stride = self._lattice_force_stride()
             self._force_dirty = False
         if self._faces_dirty:
             self._update_face_values(dt)
             self._faces_dirty = False
+
+    def _lattice_force_stride(self):
+        """0 on the gpu when the lattice force is absent or (steady: one host sync per force refresh, never per
+        transient step) one value on every fluid cell, then held in the 1-element forces (8 bytes per cell-step fewer);
+        else 1. The kernel reads the force on fluid cells only."""
+        xp = self.xp
+        if xp is np:
+            return np.int32(1)   # host twins: per-cell forces (one numba signature)
+        if not self._force_present:
+            self._uniform_force_x.fill(0.0)
+            self._uniform_force_y.fill(0.0)
+            return np.int32(0)
+        if self.time_mode != 'stationary':
+            return np.int32(1)
+        fluid = self._fluid
+        extremes = [float(value) for value in to_host(xp.stack([
+            reduction(xp.where(fluid, force, fill)) for force in (self._force_lattice_x, self._force_lattice_y)
+            for reduction, fill in ((xp.min, DTYPE(np.inf)), (xp.max, DTYPE(-np.inf)))]))]
+        if extremes[0] != extremes[1] or extremes[2] != extremes[3]:
+            return np.int32(1)
+        self._uniform_force_x.fill(DTYPE(extremes[0]))   # the float32 value itself (exact through float64)
+        self._uniform_force_y.fill(DTYPE(extremes[2]))
+        return np.int32(0)
 
     def _update_relaxation(self, dt):
         """TRT rates per cell: tau+ = 1/2 + 3 nu dt / dx^2, (tau+ - 1/2)(tau- - 1/2) = 3/16; one fluid viscosity on the
@@ -663,6 +696,7 @@ class FluidPhysics(PhysicsSolver):
         STORE_PUBLISHED, else 0: graph keys then do not follow dt)."""
         bouzidi = self._wall_row is not None
         uniform = not self._relaxation_stride
+        uniform_force = not self._force_stride
         if store_mode == STORE_PUBLISHED:
             velocity_scale = self.dx / self._lattice_dt
             scales = (DTYPE(velocity_scale), DTYPE(velocity_scale ** 2 / 3.0))
@@ -672,16 +706,19 @@ class FluidPhysics(PhysicsSolver):
         return (source, target, self._lattice_x, self._lattice_y, self._deviation, self._fluid,
                 self._uniform_omega_plus if uniform else self._omega_plus,
                 self._uniform_omega_minus if uniform else self._omega_minus,
-                self._force_lattice_x, self._force_lattice_y, self._face_kind, self._face_values, *self._grid_args,
+                self._uniform_force_x if uniform_force else self._force_lattice_x,
+                self._uniform_force_y if uniform_force else self._force_lattice_y,
+                self._face_kind, self._face_values, *self._grid_args,
                 self._wall_row if bouzidi else self._no_wall_row,
                 self._wall_fraction if bouzidi else self._no_wall_fraction,
-                self._relaxation_stride, np.int32(1 if self._force_present or self.xp is np else 0),
+                self._relaxation_stride, self._force_stride,
                 np.int32(store_mode), fields.u_x, fields.u_y, fields.u_abs, fields.pressure, self._mass_density,
                 *self._publish_grid, *scales)
 
     def _run_steps(self, n_steps, final_mode):
         """n_steps lattice steps: all but the last at STORE_BOUNDARY (nothing reads the interior macros in between;
-        on the gpu in CUDA graphs of GRAPH_STEPS launches), the last at final_mode (STORE_LATTICE / STORE_PUBLISHED)."""
+        on the gpu in CUDA graphs of GRAPH_STEPS, 16, 8, 4, 2 launches), the last at final_mode (STORE_LATTICE /
+        STORE_PUBLISHED)."""
         kernel = step_kernel(self.precision, self._wall_row is not None)
         launch = self._launch
         silent_steps = n_steps - 1
@@ -689,18 +726,24 @@ class FluidPhysics(PhysicsSolver):
             first, second = self._populations
             forward = self._step_arguments(first, second, STORE_BOUNDARY)
             backward = self._step_arguments(second, first, STORE_BOUNDARY)
-            if self.use_step_graphs and silent_steps >= GRAPH_STEPS:
-                def block():   # fixed arguments, no sync, no allocation, no timed profiler part
-                    for index in range(GRAPH_STEPS):
-                        kernel(*launch, backward if index % 2 else forward)
+            if self.use_step_graphs and silent_steps >= 2:
+                def block_of(count):
+                    def block():   # fixed arguments, no sync, no allocation, no timed profiler part
+                        for index in range(count):
+                            kernel(*launch, backward if index % 2 else forward)
+                    return block
                 # ids of the arrays (kept alive with the entry) and the scalar values: a replaced wall table, a new
                 # relaxation / force stride or reallocated populations make a new graph
-                key = (id(kernel), *(value.item() if isinstance(value, np.generic) else id(value)
-                                     for value in forward))
-                while silent_steps >= GRAPH_STEPS:
-                    self._fixed_block(key, (kernel, forward, backward), block)
-                    silent_steps -= GRAPH_STEPS
-                    self.total_steps += GRAPH_STEPS
+                argument_key = (id(kernel), *(value.item() if isinstance(value, np.generic) else id(value)
+                                              for value in forward))
+                graph_steps = GRAPH_STEPS
+                while graph_steps >= 2:   # binary split: the leftover of a check interval replays too
+                    while silent_steps >= graph_steps:
+                        self._fixed_block((graph_steps, *argument_key), (kernel, forward, backward),
+                                          block_of(graph_steps))
+                        silent_steps -= graph_steps
+                        self.total_steps += graph_steps
+                    graph_steps //= 2
             for index in range(silent_steps):
                 kernel(*launch, backward if index % 2 else forward)
                 self._populations.reverse()
@@ -750,18 +793,19 @@ class FluidPhysics(PhysicsSolver):
         return graph
 
     def _velocity_change(self):
-        """(max |u - u_saved| over both components, peak |u|) in lattice units, one host sync; saves u, checks NaN and
-        the lattice Mach number."""
-        xp = self.xp
-        change = xp.maximum(xp.abs(self._lattice_x - self._saved_x).max(), xp.abs(self._lattice_y - self._saved_y).max())
-        peak = xp.sqrt(self._lattice_x * self._lattice_x + self._lattice_y * self._lattice_y).max()
-        change, peak = (float(value) for value in to_host(xp.stack([change, peak])))
-        xp.copyto(self._saved_x, self._lattice_x)
-        xp.copyto(self._saved_y, self._lattice_y)
+        """(max |u - u_saved| over both components, peak |u|) in lattice units, one fused pass and one 12-byte host read;
+        saves u, checks NaN and the lattice Mach number."""
+        maxima = self._check_maxima
+        maxima.fill(0)
+        velocity_check(*self._check_launch, (self._lattice_x, self._lattice_y, self._saved_x, self._saved_y, maxima,
+                                             np.int32(self._lattice_x.size)))
+        change_x, change_y, speed_squared = (float(value) for value in np.asarray(to_host(maxima)).view(np.float32))
         self._last_check_step = self.total_steps
-        if not (math.isfinite(change) and math.isfinite(peak)):
+        if not (math.isfinite(change_x) and math.isfinite(change_y) and math.isfinite(speed_squared)):
             raise RuntimeError(f"laminar flow '{self.name}' diverged (NaN / inf velocity after {self.total_steps} "
                                'lattice steps): lower the inlet velocities, pressures or forces, or relaxation_time')
+        # float32 sqrt of the largest float32 u^2 = the largest float32 |u| (sqrt is monotone, correctly rounded)
+        change, peak = max(change_x, change_y), float(np.sqrt(np.float32(speed_squared)))
         mach = math.sqrt(3.0) * peak
         self.peak_mach = max(self.peak_mach, mach)
         if mach > MACH_LIMIT:

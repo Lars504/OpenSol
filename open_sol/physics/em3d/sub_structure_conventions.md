@@ -7,17 +7,34 @@ Params, Yee grid, faces and mirrors; eigenfrequency study only (host SuperLU 'ei
 subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 
 ## Engine (engine3d, kernels3d, boundaries3d)
-- CPML slab launches are cached per (slab, field set, ids of the material tables / subpixel face arrays, curl factor)
-  (`FDTDEngine3D._cpml_launch`): tables are replaced only by rebuild_materials and the scale only by set_field_scale,
-  which change the key; field / psi / coefficient arrays are rewritten in place, never reassigned.
-- Step graphs (gpu, `STEP_GRAPHS`): `advance` runs the fixed-argument launches as two blocks, H (Yee per set +
-  conformal faces + H CPML slabs) and E (Yee per set + E CPML slabs), through `_fixed_block`: one eager run per key,
+- CPML is fused into `update_h_3d` / `update_e_3d` (no CPML launch of its own): per axis and kind one
+  `boundaries3d.CPMLAxis3D` (lo and hi layers stacked along the axis, int32 row map grid row -> psi row, -1 outside),
+  passed as the kernels' 18 trailing arguments (`CPML_AXIS_PARAMS` x 3, `engine._cpml_args[set sign]`; placeholders
+  with 0 rows on axes without CPML). An edge / corner cell updates the psi of every layer it lies in, axes in x, y, z
+  order (the former slab-pass order: single precision unchanged up to FMA contraction). The psi difference is the Yee
+  curl's own one, so a layer row must never wrap (no CPML on a periodic axis; H rows <= n - 2, E rows >= 1). The
+  numpy twins keep the separate layer passes after the Yee update (`_cpml_h_rows` / `_cpml_e_rows`); the numba twins
+  fuse like the device. psi stays on the layers (never full-grid); every CPML array is fixed for the engine's life.
+- `kernels3d.launch(dims)` fits the block to thin extents (a TFSF z plane gets (1, n, m), a 10-row box (10, 12, 2)),
+  the bulk grid keeps `_BLOCK`. A 3D kernel indexes only through blockIdx * blockDim + threadIdx with the
+  bounds check, never assumes `_BLOCK` (no shared-memory tiles sized by it).
+- Step graphs (gpu, `STEP_GRAPHS`): `advance` runs the fixed-argument launches as two blocks, H (Yee with CPML per
+  set + conformal faces) and E (Yee with CPML per set), through `_fixed_block`: one eager run per key,
   then a captured CUDA graph replayed per step. The key holds the ids of the inputs that may be replaced (tables, face
   table, conformal arrays) and the curl factor, the entry keeps them alive. Valid only while fields, psi, material_id,
   face_id and the 1D arrays are rewritten in place: a new kernel argument that can be reassigned joins the key, a
   kernel with per-step scalars (sources, poles, mirrors, monitors) stays outside the blocks, and nothing inside them
   may sync or allocate (no timed profiler part inside). A failed capture warns and steps eagerly. The run-time recipe
   counts these kernels at weight 1 on the gpu (`_step_launches`).
+- Probes (gpu): the FieldProbes among the monitors are taken over at their first step (`_take_probe_launch`:
+  `core.monitors.FieldProbeRows` on the real set; float16 half_storage fields record their stored units through the
+  fp16 bits, value_scale as before) and sampled by one launch at the end of the E block (`_e_block`; the launch id
+  joins the 'e' key, the launch its kept inputs); `advance` stamps the row and skips their `record`. The E block ends
+  before the pole corrections, E sources and E mirror rows, so `_probes_need_resample` re-samples the row (one eager
+  launch) when an E component is probed and one of those may have written: any pole region or E mirror row, any
+  source except a DipoleSource3D at DTYPE(temporal(t_half)) == 0 (its add of +-0 leaves every value equal). A new
+  eager E writer after the block joins that check; H probes never re-sample. The recipe books no probe launches on
+  the gpu.
 - Contract members shared by the 3D EM physics live in physics3d (`EM3DSlots`: permittivity_arrays / inject_source;
   `StaticEM3DContract` for em_fdfd_3d; `complex_cell_materials`, `check_pole`); the Yee renderers subclass
   `renderer3d.YeeRenderer3D`; `mode_ports3d.AXIS_PERMITTIVITY` is the one E component -> permittivity array map;
@@ -77,8 +94,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   complex `far_field_amplitude` (amplitude_re / _im) for parity-sector combination. Self-tests `selftests_mirror3d`
   (em3d_mirror_dipole_pair, em3d_tfsf_mirror): half and full runs agree only to float32 round-off (FMA rounding), so a
   field compared after the pulse has left can miss 1e-4 by orders: compare mid-pulse snapshots.
-- CPML: psi slabs only inside the layers, kappa folded into the 1D curl arrays, psi correction with live db / cb after
-  the Yee kernel (as 2D). Sigma grading cell size per axis = the larger outermost width of that axis.
+- CPML: psi only inside the layers, kappa folded into the 1D curl arrays, psi correction with live db / cb after the
+  Yee term inside the same kernel (Engine bullet above). Sigma grading cell size per axis = the larger outermost
+  width of that axis.
 - Poles (`add_pole`): one `_PoleRegion` per material region (keyed by its cropped mask, kept alive by the physics) on
   the region box extended one cell lo-side; per component a face weight (membership share) and a live cb box (refreshed
   every rebuild). The last face follows `face_shares`: on a periodic axis a region starting at cell 0 gets a box
@@ -94,12 +112,12 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   'em3d.<kernel>.<precision>'; 2D DFT / TFSF aux / port / pole correction twins shared), every array from `engine.xp`
   (incl. CPML slabs `cpml_slabs(..., xp)`, monitor spectra `xp=`, port planes, harmonic accumulators); host reads via
   `to_host`; material_index3d / subpixel_smoothing3d follow their inputs (`array_module_of`). Host twins compute in
-  float32 (cpu refuses half_storage). Numba twins for update_h / update_e / cpml_h / cpml_e / ohmic_loss (CPU case
-  em3d_kernels_numba): the no-smoothing face id placeholder is (1, 1, 1) (numba types fid[i, j, k] even with use_face
-  0); they compile with `cache=True` (an uncached first cpu run compiles inside its study: 17x step-time miss; a
-  "Cannot cache" NumbaWarning = a closure value stopped pickling). The face helper and the cpml_e cb helper are the
-  module globals `_numba_face_scalar` / `_numba_cpml_component_cb`, never closure cells: as cells, their
-  per-process dispatcher uuids missed the cache in every process. The numpy twins cache per-step coefficients in
+  float32 (cpu refuses half_storage). Numba twins for update_h / update_e (CPML fused) / ohmic_loss (CPU case
+  em3d_kernels_numba): the no-smoothing face id placeholder is (1, 1, 1) and the no-CPML psi placeholders too (numba
+  types fid[i, j, k] / psi[r, j, k] even when unread); they compile with `cache=True` (an uncached first cpu run
+  compiles inside its study: 17x step-time miss; a "Cannot cache" NumbaWarning = a closure value stopped pickling).
+  The face helper is the module global `_numba_face_scalar`, never a closure cell: as a cell, its per-process
+  dispatcher uuid missed the cache in every process. The numpy twins cache per-step coefficients in
   `kernels3d._host_cached`, keyed by input array identity (weak refs; ~32 B/cell host, not estimated): valid only
   because material_id / tables / face_id change solely in `rebuild_materials`, which writes new table arrays, so a new
   writer must also replace the tables. A new kernel gets its numpy twin in the same edit; a new allocation takes
@@ -119,8 +137,8 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 - A polar `Domain3D` (x = r - radius_min, y = phi [rad]) is an (r, phi, z) sector; scripts only (EMPhysics3D lists
   'polar', the PhysicsType stays Cartesian). Components keep _x / _y names (= r / phi). The integral-form curls are
   per-i 1D factors of the update kernels from `core.metric.yee_radii` (kernels3d header); Cartesian passes ones
-  (exact), so a new curl kernel takes the same arrays (`engine._radial_h` / `_radial_e`, CPML `_cpml_weights[(axis,
-  kind)]`), never a Cartesian-only shortcut.
+  (exact), so a new curl kernel takes the same arrays (`engine._radial_h` / `_radial_e`; the fused r-axis CPML psi
+  reads them too), never a Cartesian-only shortcut.
 - dt: `Grid3D.use_polar_time_step` uses the innermost arc r_c[0] dphi_min as phi width (`stability_issue` the same).
   Annular only: radius_min > 0 (`_check_cylindrical`).
 - Faces: x_lo pec / pmc (no padding at r_lo), x_hi pec / pmc / cpml; pmc = tangential H 0 on the grid face, pec = the
@@ -140,7 +158,7 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   no override next to PEC), re-quantises the triples into a uint16 `face_id` (full grid, 2 B/cell) + `table` (0 entry =
   keep that component's mean); its deviation joins `quantisation_errors`.
 - `face_coefficients` takes FACE_PARAMS (fid, t_face, use_face) and replaces only eps when neither cell is PEC; every
-  caller (update_e_3d, cpml_e_3d, box_face_cb_3d -> pole cb, dipole weights, mode-port cb planes) passes
+  caller (update_e_3d incl. its CPML, box_face_cb_3d -> pole cb, dipole weights, mode-port cb planes) passes
   `engine._face_args()`. A new E coefficient consumer goes through these helpers, never its own face mean.
 - Mode ports: `port_materials` adds `_smoothing_deltas` as `CrossSectionMaterials.eps_point_deltas` so port modes see
   the stepped eps.
@@ -182,10 +200,18 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   models only: closed ones keep machine precision for Q = inf) and `ARNOLDI_BASIS_PER_WANTED` (5 k unless
   subspace_size) belong together (the floor alone was worse); memory / time estimates use the same basis.
 - Estimates: `CURL_CURL_LU_SCALE` (`SolverWork.factor_scale`: ~7x the 7-point curve, n^0.3 above 2.5e4) and with cpml
-  `applications_per_basis` 0.22 x cells along the box, both fitted on 18^3-26^3: expect drift far beyond. Size rule
-  `sparse_direct.vector_3d_size_issue`, `host_lu_bytes(n, dimensions=3)`: uncalibrated. Factorization cudss skips both
+  `applications_per_basis` 0.22 x cells along the box, both fitted on 18^3-26^3 at n = 3 x cells (the time recipe and
+  the size rule keep that n). Memory (A5): n = `live_unknowns_estimate(mesh, config)` (live_unknowns_3d's layer rules
+  without PEC objects, a product per component: a change of those rules changes both; 3 x cells read 11 % high on the
+  Mie example), and the factor = the counted box nested dissection of the whole grid (`_box_fill` ->
+  `sparse_direct.box_dissection_entries(shape, n / cells)`, cached): `host_counted_lu_bytes` for SuperLU (it factors in
+  that grid ND order) and MUMPS / PARDISO's scaled item, `FactorFill` for cuDSS (CUDSS_FILL_3D read 48 / 76 % low). No
+  driven em_fdfd_3d factor exists (eigenfrequency only). Size rule
+  `sparse_direct.vector_3d_size_issue`: uncalibrated. Factorization cudss skips both
   (`definition_helpers.eigen_factorization`, `eigen_solver.factorization`) and the ND ordering. `FDFDSystem3D.symmetrizer`
-  D makes D A complex symmetric (None with a Bloch phase) -> cuDSS LDL^T; the eigen role accepts cudss_mixed.
+  D makes D A complex symmetric (None with a Bloch phase) -> cuDSS LDL^T; the eigen role accepts cudss_mixed, and
+  Automatic is cudss_mixed on the gpu with nvmath (`auto_factorizations` tensor / tetrahedra; SuperLU factored the Mie
+  examples in 35-48 s), SuperLU on the cpu or after a cuDSS refusal (tetrahedra: bounded, see "Size rule" below).
   Factorization mumps / pardiso (+ _mixed; solvers.host_direct, opt-in, either backend): the same LDL^T of D A on the
   host, no ND ordering (`elimination_order` None for every `LDLT_FACTORIZATIONS` entry: the libraries order
   themselves), but SuperLU's `vector_3d_size_issue` still applies (uncalibrated for them) plus the library's own
@@ -238,7 +264,9 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   object when the selection touches a mirror face.
 - Formulation (fem3d header): unconjugated Galerkin, K and M complex symmetric with PML and loss
   (`solve_resonances(symmetric=True)`); B = -M sparse (`_PencilMass`). Equilibration (|diag K| + k_t^2 |diag M|)^-1/2,
-  never |diag A|.
+  never |diag A|. K, M, W share one pattern (element_blocks_csr, window + PML parts), so A = k_t^2 M - K is a
+  values-only sum (`_shifted_operator`; Bloch P^H A P falls back to pattern_combination); window W blocks are the M
+  blocks' real view when eps is real and >= 0 there.
 - PML = the mesh's node extent beyond `mesh.window` per face, must match the cpml faces exactly (`pml_shell_3d`
   raises); sigma_max at width / cpml_npml (cpml_npml only sets grading strength). PML element rules are 2 degrees higher.
 - Walls fix tangential dofs on the bounding-box side (`face_tags`); cpml faces: the shell's outer side. A mirror plane
@@ -248,7 +276,11 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   shell on a periodic axis). A_free = P^H A P; `symmetric` False with a complex phase -> cuDSS LU, no Rayleigh polish.
   A PEC element or wall on either side pins the master.
 - Size rule: host SuperLU (and MUMPS / PARDISO) under `vector_3d_size_issue(n x YEE_EQUIVALENT_UNKNOWNS)`
-  (uncalibrated).
+  (uncalibrated). A4: SuperLU (the cpu Automatic) also warns on a built mesh above `NEDELEC_SUPERLU_SLOW_BYTES` of
+  counted fill (`host_counted_lu_bytes`; tens of seconds: 44k unknowns took 47.5 s), and the gpu 'auto' runtime gets
+  `fallback_refusal` (`_nedelec_fallback_refusal`, counted on the TetrahedronMesh only when a cuDSS refusal would fall
+  back): above that fill the refusal raises with the remedy (gpu cudss_mixed, mumps / pardiso, coarser mesh, mirrors)
+  instead of a silent minutes-long SuperLU. Uncalibrated (the threshold is a guess between 0.2 and 0.6 GiB).
 - Self-tests `selftests_fem3d` (tolerances first estimates); Mie sphere example examples/em3d/fem_mie_sphere_resonance_3d
   (gpu).
 - Open: cudss_mixed refinements per caller (belongs in physics/em/eigenfrequency.py), periodic gmsh meshes, driven
@@ -301,9 +333,10 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   validation error.
 - Memory: fields 24 B (12 half_storage) + index 2 B per cell, CPML slabs (cpml faces only), pole boxes, q_accum 8
   B/cell when tracking; build extra 12 B/cell when every array is uniform (`_materials_vary` false), else 40 B/cell: the
-  ledger warns when a new index path changes these. `_time_estimate` counts launches (`_FIELD_LAUNCH_WEIGHT`, 2 per
-  CPML face, `_FEATURE_LAUNCHES`) and on cpu without numba `_NUMPY_FIELD_PASSES` / `_NUMPY_CPML_PASSES`: a new
-  per-step kernel or numpy twin pass updates these counts.
+  ledger warns when a new index path changes these. `_time_estimate` counts launches (`_FIELD_LAUNCH_WEIGHT`, 2 Yee
+  launches per field set, CPML fused in: none of its own, `_FEATURE_LAUNCHES`) and on cpu without numba
+  `_NUMPY_FIELD_PASSES` / `_NUMPY_CPML_PASSES` (the numpy twins' layer passes): a new per-step kernel or numpy twin
+  pass updates these counts.
 - Self-test helpers in `selftests.py`: `DEFAULT_COURANT`, `cubic_time_step`, `dipole_selftest_spec()`,
   `dipole_flux_errors`: a new 3D case reuses them. Durations sit just above the validation bound 2 t0 + diagonal x
   n_max / C0 (warning only); templates keep longer ones.

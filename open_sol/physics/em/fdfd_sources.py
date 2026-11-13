@@ -49,13 +49,19 @@ def _require_polarization(system, polarization, label):
 class PointCurrentPhasor:
     """E_z filament current I [A] in cell (ix, iy) (ez): rhs += -j omega mu0 I e^{j phase} / (dx_i dy_j), the cell
     area from yee_grid.grid_cell_widths."""
+    amplitude_params = ('current', 'phase')   # feature values of set_amplitude, in its argument order (sweep reuse)
 
     def __init__(self, ix, iy, current, phase, cell_area):
         self.ix = int(ix)
         self.iy = int(iy)
+        self._cell_area = float(cell_area)
+        self.set_amplitude(current, phase)
+
+    def set_amplitude(self, current, phase):
+        """New current [A] and phase [deg] in place (a reused sweep build)."""
         self.current = float(current)
         self.phase = float(phase)
-        self._current_density = self.current * phase_factor(phase, 'Point source') / float(cell_area)   # J [A/m^2]
+        self._current_density = self.current * phase_factor(phase, 'Point source') / self._cell_area   # J [A/m^2]
 
     def add_to_rhs(self, rhs, physics, system):
         _require_polarization(system, 'ez', 'PointCurrentPhasor')
@@ -65,14 +71,21 @@ class PointCurrentPhasor:
 class MagneticCurrentPhasor:
     """H_z magnetic line current K_m [V] in cell (ix, iy) (hz): rhs += -j omega eps0 K_m e^{j phase} / (dx_i dy_j), the
     cell area from yee_grid.grid_cell_widths."""
+    amplitude_params = ('magnetic_current', 'phase')   # as PointCurrentPhasor
 
     def __init__(self, ix, iy, magnetic_current, phase, cell_area):
         self.ix = int(ix)
         self.iy = int(iy)
+        self._cell_area = float(cell_area)
+        self.set_amplitude(magnetic_current, phase)
+
+    def set_amplitude(self, magnetic_current, phase):
+        """New magnetic current [V] and phase [deg] in place (a reused sweep build)."""
         self.magnetic_current = float(magnetic_current)
         self.phase = float(phase)
         # M [V/m^2]
-        self._current_density = self.magnetic_current * phase_factor(phase, 'Magnetic line current') / float(cell_area)
+        self._current_density = (self.magnetic_current * phase_factor(phase, 'Magnetic line current')
+                                 / self._cell_area)
 
     def add_to_rhs(self, rhs, physics, system):
         _require_polarization(system, 'hz', 'MagneticCurrentPhasor')
@@ -81,23 +94,36 @@ class MagneticCurrentPhasor:
 
 class ElectricDipolePhasor:
     """In-plane electric dipole of cell (ix, iy) (hz): `faces` = placement.electric_dipole_faces (('ex' | 'ey', i, j,
-    J [A/m^2], complex on a Bloch-wrapped face), ...) times e^{j phase}, through harmonic.face_current_rhs."""
+    J [A/m^2], complex on a Bloch-wrapped face), ...) times e^{j phase}, through harmonic.face_current_rhs; dipole_moment
+    [A] = the moment the faces were placed for (the faces scale linearly with it: set_amplitude)."""
+    amplitude_params = ('dipole_moment', 'phase')   # as PointCurrentPhasor
 
-    def __init__(self, ix, iy, faces, phase):
+    def __init__(self, ix, iy, faces, phase, dipole_moment=1.0):
         faces = tuple((component, int(i), int(j), complex(current_density))
                       for component, i, j, current_density in faces)
         if not faces or any(face[0] not in ('ex', 'ey') for face in faces):
             raise ValueError(f"ElectricDipolePhasor needs at least one ('ex' | 'ey', i, j, J) face, got {faces}")
         self.ix = int(ix)
         self.iy = int(iy)
-        self.faces = faces
+        self._placed_faces = faces
+        self._placed_moment = float(dipole_moment)
+        if not (math.isfinite(self._placed_moment) and self._placed_moment != 0.0):
+            raise ValueError(f"ElectricDipolePhasor dipole_moment must be finite and non-zero [A], got {dipole_moment!r}")
+        self.set_amplitude(dipole_moment, phase)
+
+    def set_amplitude(self, dipole_moment, phase):
+        """New dipole moment [A] and phase [deg] in place (a reused sweep build); the next solve uploads the currents."""
+        self.dipole_moment = float(dipole_moment)
         self.phase = float(phase)
+        scale = self.dipole_moment / self._placed_moment
+        self.faces = tuple((component, i, j, current_density * scale)
+                           for component, i, j, current_density in self._placed_faces)
         phasor = phase_factor(phase, 'Electric dipole')
         # component -> (face i, face j, complex J) host arrays, moved to the run backend at the first solve
         # (_device_currents): one scatter per component and solve.
         self._host_face_currents = {}
         for component in ('ex', 'ey'):
-            selected = [face for face in faces if face[0] == component]
+            selected = [face for face in self.faces if face[0] == component]
             if selected:
                 self._host_face_currents[component] = (
                     np.asarray([face[1] for face in selected], dtype=np.int64),
@@ -132,6 +158,7 @@ class SheetCurrentPhasor:
     """Sheet current radiating `amplitude` [V/m] to each side in the local medium (line source / gaussian beam): ez J_z
     through the line-cell centres, hz J_x (axis 'x') / J_y (axis 'y') on their hi faces (hi_face True); line_phase =
     host k.r [rad] per line cell under Bloch k != 0 (current times e^{-j k.r}: an oblique wave), None = 0."""
+    amplitude_params = ('amplitude', 'phase')   # as PointCurrentPhasor
 
     def __init__(self, axis, sheet_line, amplitude, phase, polarization, line_phase=None, label='Sheet current'):
         if axis not in ('x', 'y'):
@@ -145,22 +172,26 @@ class SheetCurrentPhasor:
         self.line = ((sheet_line.along, self.position) if axis == 'x' else (self.position, sheet_line.along))
         self.hi_face = polarization == 'hz'
         self.polarization = polarization
-        self.amplitude = float(amplitude)
-        self.phase = float(phase)
         # 2 amplitude shape e^{j phase} / (eta0 w_perp); times the complex sqrt(eps / mu) of the system at omega
         # (sigma_e, sigma_m and poles included) and the discrete cos(kappa/2) (yee_grid.sheet_launch_factor): eta(omega)
         # K / (2 cos(kappa/2)) = amplitude exactly; the FDTD calibrations use its modulus at the centre frequency.
-        peak_weight = 2.0 * self.amplitude * phase_factor(phase, 'Sheet current') / float(ETA0)
         self._normal_spacing = float(sheet_line.normal_width)
-        line_weight = peak_weight * sheet_line.transverse_shape / self._normal_spacing
+        unit_weight = 2.0 * sheet_line.transverse_shape / (float(ETA0) * self._normal_spacing)
         if line_phase is not None:
             line_phase = np.asarray(line_phase, dtype=np.float64)
-            if line_phase.shape != line_weight.shape:
+            if line_phase.shape != unit_weight.shape:
                 raise ValueError(f"SheetCurrentPhasor line_phase has {line_phase.size} cells, the line "
-                                 f"{line_weight.size}")
-            line_weight = line_weight * np.exp(-1j * line_phase)
-        self._host_line_weight = np.asarray(line_weight, dtype=np.complex128)
-        self._line_weight = None   # on the run backend from the first solve
+                                 f"{unit_weight.size}")
+            unit_weight = unit_weight * np.exp(-1j * line_phase)
+        self._unit_line_weight = np.asarray(unit_weight, dtype=np.complex128)   # per unit amplitude at phase 0
+        self.set_amplitude(amplitude, phase)
+
+    def set_amplitude(self, amplitude, phase):
+        """New amplitude [V/m] and phase [deg] in place (a reused sweep build); the next solve uploads the weights."""
+        self.amplitude = float(amplitude)
+        self.phase = float(phase)
+        self._host_line_weight = self._unit_line_weight * (self.amplitude * phase_factor(phase, 'Sheet current'))
+        self._line_weight = None   # on the run backend from the next solve
 
     def _line_currents(self, line_eps, line_mu, omega):
         """complex128 sheet current densities [A/m^2] of the line cells / faces with complex eps and mu at omega."""
@@ -198,6 +229,7 @@ class PlaneWavePhasor:
     (no y edges); bloch_ky [rad/m] != 0 tilts it to the oblique wave e^{-j (k_x x + ky y)} (uniform y cells only).
     open_faces: y sides opening onto an even mirror plane (no outline there; the pinned ghost row and the zero
     plane-face weight already leave them uncorrected)."""
+    amplitude_params = ('amplitude', 'phase')   # as PointCurrentPhasor
     # TFSF (spec section 0): the unknown u is the total field u_tot on the box Q and the scattered field u_tot - u_inc
     # outside. Substituting u = u_tot - (1 - Q) u_inc into A u_tot = b gives A u = b - A u_inc + A (Q u_inc).
     # A u_inc is kept on the total-field rows and dropped on the scattered-field rows:
@@ -239,14 +271,18 @@ class PlaneWavePhasor:
                              f"of a graded periodic y line; refine along x only, or set bloch_ky = 0")
         self.x0, self.x1, self.y0, self.y1 = x0, x1, y0, y1
         self.full_period_y = bool(full_period_y)
-        self.amplitude = float(amplitude)
-        self.phase = float(phase)
         self.polarization = polarization
         self._line_widths = dx_cells[x0 - 1:x1 + 1].copy()   # columns x0 - 1 .. x1 (the ones u_inc is read on)
         self._uniform_line = has_uniform_spacing(self._line_widths)
         self.row_spacing = float(dy_cells[0])   # lambda_y of an oblique wave (uniform y then)
         self._row_centres = np.cumsum(dy_cells) - 0.5 * dy_cells   # from the grid lo edge, as sources.bloch_line_phase
         self._line_weights = None   # (omega, w_e, w_h) of columns x0 - 1 .. x1 (axis_difference_weights)
+        self.set_amplitude(amplitude, phase)
+
+    def set_amplitude(self, amplitude, phase):
+        """New incident amplitude [V/m] and phase [deg] in place (a reused sweep build)."""
+        self.amplitude = float(amplitude)
+        self.phase = float(phase)
         self._incident_field = self.amplitude * phase_factor(phase, 'Plane wave')   # E_z (ez) / |E| (hz) [V/m]
 
     def _normal_wavenumber(self, normal_squared, spacing, background_wavenumber):

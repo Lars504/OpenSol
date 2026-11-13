@@ -1217,3 +1217,10 @@ class FusedBrickIteration:
         self.kernels.direction_product(self._grid, preconditioned, direction, next_direction, product, lame_lambda, mu,
                                        widths, free_dofs, rho, rho_next, self._rz_partials, self._pq_partials,
                                        restart=False)
+
+    def rescale(self, direction, product, factor):
+        """direction, product = A direction and its p . q partials x factor (pcg mixed residual replacement)."""
+        dtype = self._pq_partials.dtype.type
+        direction *= dtype(factor)
+        product *= dtype(factor)
+        self._pq_partials *= dtype(factor * factor)

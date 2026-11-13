@@ -275,7 +275,7 @@ LINE_CURRENT_HANKEL_CASE = SelfTestCase(
 # em/analytic_bloch_fresnel_brewster (T_s).
 SELFTEST_CASES = (
     plane_wave_case(_PHYSICS_TYPE, 'ez'),
-    fresnel_case(_PHYSICS_TYPE, 'ez', graded=True, heavy=True),
+    fresnel_case(_PHYSICS_TYPE, 'ez', graded=True),
     SelfTestCase(
         name='em_wall_reflection_phase',
         label='EM wall planes and mirror parities (FDTD)',
@@ -285,7 +285,6 @@ SELFTEST_CASES = (
                     '(ramp residual exp(-17/3) ~ 3.5e-3 at the window start after the ~2 period transit). Paired '
                     f'models and {_WALL_PERIODS} periods not yet confirmed by a run.',
         specs=_wall_specs,
-        check=_check_wall_reflection,
-        heavy=True),
+        check=_check_wall_reflection),
     mie_drude_cylinder_case(_PHYSICS_TYPE, 'ez'),
 )

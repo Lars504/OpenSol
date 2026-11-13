@@ -21,8 +21,9 @@ from ..em.slab_modes import DENSE_COMPLEX_MAX_CELLS
 from .adjoint import EME_OBJECTIVE_QUANTITIES, objective_result
 from .renderer import EME_FIELD_INFOS
 from .selftests import EME_TEMPLATES
-from .solver import (MODE_CACHE_BYTES, EME_PERMITTIVITY_ARRAYS, EME_PERMITTIVITY_SLOTS, EMEPhysics,
-                     length_sweep_result, periodic_result, ports_result, section_table_result)
+from .solver import (LENGTH_SWEEP_LIVE_BLOCKS, MODE_CACHE_BYTES, EME_PERMITTIVITY_ARRAYS, EME_PERMITTIVITY_SLOTS,
+                     EMEPhysics, length_sweep_chunk, length_sweep_result, periodic_result, ports_result,
+                     section_table_result)
 
 TYPE_NAME = 'em_eme'
 _STATIONARY_STUDY = 'stationary'
@@ -55,10 +56,13 @@ _SETTINGS = (
                'this axis: refine the mesh there to smooth it), and its lo / hi faces are the ports.',
           tip='Direction in which the light travels through the device; its two edges are the input and output.'),
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
+          follows_parameters=True,
           help='Vacuum wavelength lambda0 of a stationary solve (omega = 2 pi C0 / lambda0); a frequency_domain study '
                'solves its own wavelengths instead (one cold solve each). Materials enter at omega (sigma_e and '
                'Drude / Lorentz poles complex). The line modes need >= 10 cells per lambda0 / |n| along the line '
-               '(validation checks it). Typical 1.31e-6 or 1.55e-6 m.',
+               '(validation checks it at the build value only). A reused sweep build (sweep reuse_build) follows a '
+               'value of parameters only without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or '
+               '1.55e-6 m.',
           tip='Vacuum wavelength of the light in metres: 1.55e-6 for 1550 nm. A frequency domain study uses its own '
               'list instead.'),
     Param('n_modes', 'int', 20, label='Modes per section', min=0,
@@ -559,7 +563,16 @@ def _create(ctx, physics_spec, settings_values):
                         wavelength=first_solved_wavelength(ctx, settings_values), n_modes=settings_values['n_modes'],
                         section_tolerance=settings_values['section_tolerance'])
     write_dispersive_materials(ctx, physics_spec, solver, EME_PERMITTIVITY_ARRAYS)
+    follow_wavelength_setting(ctx, physics_spec, settings_values, solver)
     return solver
+
+
+def follow_wavelength_setting(ctx, physics_spec, settings_values, solver):
+    """A reused sweep build re-sets the wavelength setting (EMEBase.set_wavelength; a frequency_domain study solves
+    its own wavelengths, the setting is unused there). 2D and 3D create."""
+    if ctx.study_type != FREQUENCY_DOMAIN_STUDY:
+        ctx.follow_parameters(physics_spec.settings, settings_values, ('wavelength',), solver.set_wavelength, solver,
+                              f"physics '{physics_spec.name}' wavelength")
 
 
 def _port_mode_count(physics_spec):
@@ -588,6 +601,19 @@ SCALAR_OUTPUTS_HELP = (
 
 # device float64 temporaries of adjoint.sensitivity_density (cell areas, the gradient sum, the quotient) alive at once
 _SENSITIVITY_TEMPORARIES = 3
+
+
+def length_sweep_host_items(features, n_modes):
+    """Host item of the stacked length-sweep re-cascade (one chunk of stretch factors; the monitors record one after
+    another), () without an enabled eme_length_sweep (2D and 3D)."""
+    counts = [len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS
+              for values in (feature.params.get('stretch_factors') for feature in features
+                             if feature.type == 'eme_length_sweep' and isinstance(feature.params, dict))]
+    if not counts:
+        return ()
+    batch = min(max(counts), length_sweep_chunk(n_modes))
+    return ((f'length-sweep stacked star products ({LENGTH_SWEEP_LIVE_BLOCKS} N^2 per stretch factor of a chunk)',
+             batch * LENGTH_SWEEP_LIVE_BLOCKS * COMPLEX128_BYTES * n_modes ** 2),)
 
 
 def _memory_estimate(settings_values, mesh, context):
@@ -626,6 +652,7 @@ def _memory_estimate(settings_values, mesh, context):
     if adjoint and periods and isinstance(periods[0], int) and periods[0] > 1:
         host_items += (('periodic adjoint: partial cascades between the periods (2 N^2 each)',
                         2 * COMPLEX128_BYTES * n_modes ** 2 * periods[0]),)
+    host_items += length_sweep_host_items(features, n_modes)
     return MemoryEstimate.from_items((('EME fields and q_abs (6 x float32)', 6 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items)
 
@@ -640,7 +667,8 @@ SECTIONS_PER_SLICE_GUESS = 0.25
 COMPLEX_LINE_EIG_FLOPS = 50.0
 REAL_LINE_EIG_FLOPS = 10.0
 TRIDIAGONAL_EIG_FLOPS = 100.0
-STAR_COMPLEX_PRODUCTS = 19.0   # complex multiply-adds / N^3 of one Redheffer star (4 solves, 6 products)
+# complex multiply-adds / N^3 of one Redheffer star: 2 LUs (2/3 each) with 2 N right-hand columns (2 per N), 8 products
+STAR_COMPLEX_PRODUCTS = 2.0 * (2.0 / 3.0 + 4.0) + 8.0
 _MATERIAL_ROWS = 7             # read arrays, pole regions, PEC: as the memory estimate
 _DEFAULT_STRETCH_FACTORS = 4   # eme_length_sweep stretch_factors default length
 
@@ -715,15 +743,21 @@ def shared_time_estimate(context, slices, n_modes, transverse_points, solve_ops,
                 if feature.enabled and isinstance(feature.params, dict)]
     sweeps = [feature.params.get('stretch_factors') for feature in features if feature.type == 'eme_length_sweep']
     factors = sum(len(values) if isinstance(values, (list, tuple)) else _DEFAULT_STRETCH_FACTORS for values in sweeps)
+    periods = [feature.params.get('n_periods', 10) for feature in features if feature.type == 'eme_periodic']
+    periodic = bool(periods) and isinstance(periods[0], int)
+    # unit cell, star powers by squaring, link (assemble_total rebuilds it for every stretch factor too)
+    link_stars = 2 * math.ceil(math.log2(max(periods[0], 2))) + 2 if periodic else 0
     if factors:
         items.append(te.TimeItem('length-sweep re-cascades', 'section', sections * factors, 'guess', (star,),
                                  limit=None if section_limit is None else section_limit * factors,
                                  seconds_counter=seconds))
-    periods = [feature.params.get('n_periods', 10) for feature in features if feature.type == 'eme_periodic']
-    if periods and isinstance(periods[0], int):
-        stars = 2 * math.ceil(math.log2(max(periods[0], 2))) + 2   # unit cell, star powers by squaring, link
+        if link_stars:
+            items.append(te.TimeItem('length-sweep periodic links', 'solve', solves * factors, kind,
+                                     ((link_stars, star),), limit=None if limit is None else limit * factors,
+                                     seconds_counter=seconds))
+    if periodic:
         bloch = te.DenseFlops(3.0 * COMPLEX_LINE_EIG_FLOPS * (2.0 * n_modes) ** 3, host=True)   # generalised eig
-        items.append(te.TimeItem('periodic link and Bloch modes', 'solve', solves, kind, ((stars, star), bloch),
+        items.append(te.TimeItem('periodic link and Bloch modes', 'solve', solves, kind, ((link_stars, star), bloch),
                                  limit=limit, seconds_counter=seconds))
     mode_limit = None if section_limit is None else section_limit + resolve_limit
     return te.TimeEstimate(tuple(items)), (sections + resolves, mode_limit)

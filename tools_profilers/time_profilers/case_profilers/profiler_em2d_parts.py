@@ -44,13 +44,15 @@ EIGEN = (
 FDFD = 'open_sol.physics.em.solvers.fdfd_2d:FDFDPhysics'
 FDFD_TENSOR = parts('fdfd', FDFD, (
     'finalize', 'step', 'solve_harmonic', 'plan_harmonic_frequencies', 'solve_eigenfrequencies', 'select_resonance',
-    '_solve', '_refresh_system', '_assemble', '_solve_port_modes', '_refresh_state', '_add_sheet_losses',
-    '_fill_wall_rows', '_solve_linear', '_transposed_solve', '_symmetrizer', '_pin_outer_cells', '_conformal_arrays',
+    '_solve', '_refresh_system', '_assemble', '_solve_port_modes', '_refresh_state', '_refresh_pending_state',
+    '_add_sheet_losses', '_fill_wall_rows', '_solve_linear', '_transposed_solve', '_symmetrizer',
+    '_adjoint_symmetrizer', '_pin_outer_cells', '_conformal_arrays',
     'assembly_eps_xy', 'record_monitors', 'face_fields', 'face_curls', 'eps_sensitivity', 'solve_adjoint',
     '_check_solver_size', '_off_diagonal_line_warnings',
 )) + parts('em operators', 'open_sol.physics.em.operators', (
-    'yee_operators', 'helmholtz_operator', 'pin_image_cells', 'pin_cells', 'stretched_cell_areas',
-    'off_diagonal_face_couplings',
+    'yee_operators', 'KeptYeeOperators.at', 'KeptYeeOperators.helmholtz', '_HelmholtzPlan.__init__',
+    'helmholtz_operator', 'pin_image_cells', 'pin_cells',
+    'stretched_cell_areas', 'off_diagonal_face_couplings',
 )) + (
     ('open_sol.physics.em.fdfd_sources:PlaneWavePhasor.add_to_rhs', 'fdfd source: PlaneWavePhasor.add_to_rhs (TFSF)'),
     ('open_sol.physics.em.fdfd_sources:SheetCurrentPhasor.add_to_rhs', 'fdfd source: SheetCurrentPhasor.add_to_rhs'),

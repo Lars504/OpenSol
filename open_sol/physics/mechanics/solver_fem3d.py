@@ -284,7 +284,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         if initial is None:
             return None
         system = self.system
-        force = initial_stress_force_3d(system.full, initial, elements=self._solid)
+        force = self._initial_stress_force()
         largest = float(np.abs(force).max())
         if not largest > 0.0:
             return None
@@ -1295,12 +1295,17 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         sigma0 dV."""
         full = self.system.full
         load = self._external_load() if dead_loads else np.zeros(COMPONENTS * full.n_dofs)
-        initial = self._initial_stress()
-        if initial is not None:
-            load += initial_stress_force_3d(full, initial, elements=self._solid)
+        if self._initial_stress() is not None:
+            load += self._initial_stress_force()
         stress = self._thermal_stress() * self._temperature_change()[:, None]
         load += assemble_stress_load_3d(full, np.where(self._solid[:, None], stress, 0.0), elements=self._solid)
         return load
+
+    def _initial_stress_force(self):
+        """Host (3 n_dofs,) -int B^T sigma0 dV of the solid elements (call with an initial stress; cached read-only with
+        the host inputs: the finalize imbalance check and the static load share it)."""
+        return self._host_input('initial_stress_force', lambda: initial_stress_force_3d(
+            self.system.full, self._initial_stress(), elements=self._solid))
 
     def _external_load(self):
         """The dead-load part of _total_load (3 n_dofs): tractions on faces beside a solid element and the applied +

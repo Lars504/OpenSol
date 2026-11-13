@@ -7,15 +7,20 @@ import numpy as np
 from ....core.backend import cp, to_host
 
 from ....core.constants import DTYPE, MU0
+from ....core.monitors import FieldProbe, FieldProbeRows
 from ....core.solver_base import PhysicsSolver
+from ....core.sources import PointSource
 from ..materials import register_em_arrays
 from ..placement import PERMITTIVITY_SLOTS
+from ..sources import ElectricDipoleSource, MagneticLineCurrentSource
 from ..yee_grid import grid_cell_widths, yee_inverse_spacings
 from . import fdtd_ez_2d_kernels as _kernels
 
 # gpu: the fixed-argument launches of a step (H: Yee + conformal + H CPML + fused H rows of every field set; E: Yee +
-# E CPML + fused E rows per set) replay as CUDA graphs (as em3d engine3d); the wall re-pins after the sources, poles,
-# sources and monitors stay eager (and the row copies of a grid too small for the fused rows: a column-row copy
+# E CPML + fused E rows per set, with the pole updates / corrections when nothing eager sits between) replay as CUDA
+# graphs (as em3d engine3d), the FieldProbes' record (core.monitors.FieldProbeRows) at the end of the real set's E graph;
+# the wall re-pins after the sources (skipped when _walls_need_repin finds them no-ops), accumulating / media pole
+# paths, sources, the probe re-sample after them and the other monitors stay eager (and the row copies of a grid too small for the fused rows: a column-row copy
 # overlaps its source in cupy's bounds check, which copies the input: an allocation inside a capture)
 STEP_GRAPHS = True
 _MAX_STEP_GRAPHS = 8   # graph keys kept (stale ones belong to replaced conformal tables)
@@ -66,6 +71,17 @@ def _union_box(box_a, box_b):
     return tuple(slice(min(a.start, b.start), max(a.stop, b.stop)) for a, b in zip(box_a, box_b))
 
 
+def _point_source_cells(source):
+    """(i, j) cells / faces a point-like source writes (exactly PointSource, MagneticLineCurrentSource or
+    ElectricDipoleSource), None for any other source (lines, TFSF boxes, mode ports, Bloch lines, subclasses)."""
+    source_type = type(source)
+    if source_type is ElectricDipoleSource:
+        return [(i, j) for _, i, j, _ in source.faces]
+    if source_type is PointSource or source_type is MagneticLineCurrentSource:
+        return [(source.ix, source.iy)]
+    return None
+
+
 def _curl_spacings(cell_dx, cell_dy, cpml, xp, dtype=DTYPE):
     """Run-backend (inv_dx_e, inv_dx_h, inv_dy_e, inv_dy_h) of yee_inverse_spacings in the field `dtype`, CPML kappa
     folded in (cpml None: bulk only); *_e at cell centres, *_h at hi faces (last entry = periodic wrap)."""
@@ -106,6 +122,8 @@ class _YeeEngine2DBase(PhysicsSolver):
     # MaterialGrid arrays the E / H update coefficients depend on (materials_changed).
     _E_COEFFICIENT_MATERIALS = frozenset()
     _H_COEFFICIENT_MATERIALS = frozenset({'mu_r', 'sigma_m'})
+    # field components the E half of a step writes (the eager work after the E graph may change them: probe re-sample)
+    _E_COMPONENTS = frozenset()
 
     def __init__(self, grid, fields, materials, boundary_manager):
         # CPML psi signs are polarisation-specific: a manager of the other polarisation would amplify in the PML
@@ -202,6 +220,15 @@ class _YeeEngine2DBase(PhysicsSolver):
         self.use_step_graphs = STEP_GRAPHS and self.xp is not np
         self._step_graphs = {}
         self.n_step_graphs = 0
+        # (source tuple, whether its injections can reach a wall row) of the last source list (_walls_need_repin)
+        self._repin_check = None
+        # gpu: the FieldProbes among the monitors, sampled by one launch per step at the end of the real set's E graph
+        # (taken over at their first step; (id, length) of the monitor list last scanned); _step_probes = this step's
+        # launch until the E graph takes it, _probes_recorded = taken this step (stamp in _finish_step)
+        self._probe_rows = None
+        self._probe_scan = None
+        self._step_probes = None
+        self._probes_recorded = False
 
     # --- PhysicsSolver contract -----------------------------------------------
 
@@ -314,6 +341,26 @@ class _YeeEngine2DBase(PhysicsSolver):
         self._require_single('gain_medium')
         add_gain_region(self, mask, **params)
 
+    def _walls_need_repin(self, sources) -> bool:
+        """Whether the wall re-pin after injection can change a field: False only with no source array, pole, gain or
+        nonlinear medium (their writes after the fused rows may reach a row) and every source a point cell clear of the
+        pinned rows (BoundaryManager.clear_of_walls); the source check is kept per source list."""
+        if (self._out_of_plane_source is not None or self.drude_poles or self.lorentz_poles or self.gain_media
+                or self.nonlinear is not None):
+            return True
+        checked = self._repin_check
+        if (checked is None or len(checked[0]) != len(sources)
+                or any(kept is not source for kept, source in zip(checked[0], sources))):
+            needed = not all(self._source_clear_of_walls(source) for source in sources)
+            checked = self._repin_check = (tuple(sources), needed)
+        return checked[1]
+
+    def _source_clear_of_walls(self, source) -> bool:
+        """True for a point-like source whose every cell is clear of every field set's wall rows."""
+        cells = _point_source_cells(source)
+        return cells is not None and all(field_set.boundary_mgr.clear_of_walls(i, j)
+                                         for field_set in self._field_sets for i, j in cells)
+
     def _inject_imaginary_sources(self, sources, t_half) -> None:
         """Electric injection of the imaginary set (Bloch line sources, inject_electric_imaginary) at t_half."""
         if len(self._field_sets) > 1:
@@ -371,18 +418,86 @@ class _YeeEngine2DBase(PhysicsSolver):
 
     # --- time stepping --------------------------------------------------------
 
-    def _finish_step(self, t_full, monitors) -> None:
-        """End of advance: E^{n+1} loss half while accumulating, clock to t_full, then the monitors at t_full."""
+    def _finish_step(self, t_full, monitors, resample_probes=False) -> None:
+        """End of advance: E^{n+1} loss half while accumulating, clock to t_full, then the monitors at t_full (the
+        FieldProbeRows row recorded in the E graph: re-sampled first when resample_probes, then stamped)."""
         if self._enable_q_accum:
             self._accumulate_e_new_half()
         self.n_step += 1
         self.time = t_full
+        if self._probes_recorded:
+            self._probes_recorded = False
+            if resample_probes:
+                self._probe_rows.rewrite_last_row()
+            self._probe_rows.stamp(t_full)
         fields = self.fields
         for monitor in monitors:
             if not hasattr(monitor, 'update'):
-                monitor.record(fields, t_full)
+                if not getattr(monitor, 'recorded_by_rows', False):
+                    monitor.record(fields, t_full)
             elif self.n_step % monitor.sample_interval == 0:   # DFT monitors sample every sample_interval steps
                 monitor.update(fields, t_full)
+
+    def _take_probe_launch(self, monitors) -> None:
+        """Start of advance (gpu): this step's probe_rows launch over the FieldProbes among monitors (taken over at
+        their first step: float32 / float64 cupy fields of this engine), None without."""
+        self._step_probes = None
+        if self.xp is np:
+            return
+        scan = (id(monitors), len(monitors))
+        if scan != self._probe_scan:
+            self._probe_scan = scan
+            for monitor in monitors:
+                if isinstance(monitor, FieldProbe) and not monitor.recorded_by_rows:
+                    if self._probe_rows is None:
+                        self._probe_rows = FieldProbeRows(self.fields, self.dtype)
+                    if self._probe_rows.accepts(monitor):
+                        self._probe_rows.add(monitor)
+        if self._probe_rows is not None:
+            self._step_probes = self._probe_rows.next_launch()
+
+    def _e_graph(self, k, key, block) -> None:
+        """_fixed_block of field set k's E launches; the real set's (k 0) ends with this step's probe record (its
+        launch id in the key, the launch kept with the entry)."""
+        launch = self._step_probes if k == 0 else None
+        if launch is None:
+            self._fixed_block(key, (), block)
+            return
+        self._step_probes = None
+        self._probes_recorded = True
+        kernel, grid, threads, args = launch
+
+        def recorded_block():
+            block()
+            kernel(grid, threads, args)
+
+        self._fixed_block(key + (id(launch),), (launch,), recorded_block)
+
+    def _probes_need_resample(self, sources, t_half, repin_walls, source_array_writes_e) -> bool:
+        """Whether this step's probe record (inside the E graph) may be stale: a probe reads an E component and an
+        eager write after the graph may have changed one (wall re-pin, PEC keep, non-fused rows, poles with the loss
+        halves, media, a source array, or a source injection; an exact point source only while its float32 value at
+        t_half is non-zero, the value its injection skips at)."""
+        if not self._probes_recorded or self._probe_rows.components.isdisjoint(self._E_COMPONENTS):
+            return False
+        if (repin_walls or source_array_writes_e or self._pec_box is not None or self.gain_media
+                or self.nonlinear is not None or not self._field_sets[0].boundary_mgr.fused_walls
+                or ((self.drude_poles or self.lorentz_poles) and self._enable_q_accum)):
+            return True
+        return not all(self._e_injection_skipped(source, t_half) for source in sources)
+
+    def _e_injection_skipped(self, source, t) -> bool:
+        """True when the source's E-side injection at t writes nothing: no E-side injection (hz: no inject_electric),
+        or an exact PointSource (ez) / ElectricDipoleSource (hz) whose DTYPE(amplitude temporal(t)) is 0."""
+        source_type = type(source)
+        if self.polarization == 'hz':
+            if not hasattr(source, 'inject_electric'):
+                return True
+            if source_type is not ElectricDipoleSource:
+                return False
+        elif source_type is not PointSource:
+            return False
+        return DTYPE(source.amplitude * source.temporal(t)) == 0
 
     def _cpml_post(self, field_set, kind, *arrays):
         """CPML psi update + correction of one field set (BoundaryManager.apply_*_post without its outer-face rows):

@@ -145,7 +145,8 @@ class HeatPhysics(DiffusionPhysicsBase):
     def materials_changed(self, names) -> None:
         names = set(names)
         if _OPERATOR_MATERIALS & names:
-            self.system.operator_dirty = True
+            # values only (k(T)): the re-assembly tests the c > 0 pattern instead of the full anchor check
+            self.system.mark_coefficients_changed()
         if _CAPACITY_MATERIALS & names:
             self._capacity_stale = True
         if 'k_xy' in names:

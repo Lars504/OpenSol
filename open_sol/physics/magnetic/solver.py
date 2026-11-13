@@ -16,7 +16,7 @@ from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_s
 from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, SATURATION_ARRAY
 from .renderer import MagneticRenderer
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
-                         saturation_reluctivity, tabulated_reluctivity)
+                         Float32StallWatch, saturation_reluctivity, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'magnetic insulation face, held potential or external-field ring'
 _REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
@@ -25,8 +25,8 @@ _DERIVED_FIELDS = ('B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag')
 
 @dataclass(frozen=True, eq=False)
 class CoilRegion:
-    """Runtime object of a stranded coil: window cells, turns, current [A] (> 0 along +z / +phi), cross-section area
-    [m^2] (the r-z area when axisymmetric)."""
+    """Runtime object of a stranded coil: window cells, turns, build current [A] (> 0 along +z / +phi; the live one is
+    the solver's, set_coil_current), cross-section area [m^2] (the r-z area when axisymmetric)."""
     name: str
     mask_window: object     # bool window mask of the run backend
     turns: int
@@ -100,6 +100,7 @@ class MagneticPhysics(DiffusionPhysicsBase):
             insulation.x_lo = BCSide('dirichlet', value=0.0, conductance_factor=2.0)
         self._init_diffusion(domain, insulation, system)
         self.coils = []
+        self._coil_currents = {}        # CoilRegion -> live current [A] (set_coil_current: a reused sweep build)
         self._source_dirty = True
         self._remanence_stale = True
         self._remanence_rhs = None
@@ -231,6 +232,12 @@ class MagneticPhysics(DiffusionPhysicsBase):
     def renderer(self):
         return MagneticRenderer(self)
 
+    def reset_records(self) -> None:
+        """RerunSolver (reused sweep build): clear the probe series; the next run re-solves when a source changed (the
+        saturation loop starts from the last value's state)."""
+        for probe in self.probes:
+            probe.clear()
+
     def scalars(self) -> dict:
         """energy [J/m planar, J axisymmetric], per coil <name>_flux_linkage / <name>_inductance; {} before a solve."""
         if self.system.n_solves == 0:
@@ -289,7 +296,18 @@ class MagneticPhysics(DiffusionPhysicsBase):
         self._applied_source_window += xp.where(mask_window, DTYPE(coil.turns * coil.current / area), DTYPE(0.0))
         self._source_dirty = True
         self.coils.append(coil)
+        self._coil_currents[coil] = coil.current
         return coil
+
+    def set_coil_current(self, coil: CoilRegion, current: float) -> None:
+        """Change a coil's current [A] (J_applied by the difference; coil_results reports the new one)."""
+        change = float(current) - self._coil_currents[coil]
+        if change == 0.0:
+            return
+        self._applied_source_window += self.xp.where(coil.mask_window, DTYPE(coil.turns * change / coil.area),
+                                                     DTYPE(0.0))
+        self._coil_currents[coil] = float(current)
+        self._source_dirty = True
 
     def add_bh_curve(self, mask, rows) -> bool:
         """Tabulated anhysteretic B-H curve [(H [A/m], B [T]), ...] (saturation.bh_curve rules) on the window cells
@@ -321,8 +339,9 @@ class MagneticPhysics(DiffusionPhysicsBase):
         weight = 2.0 * math.pi if self._axisymmetric else 1.0
         integral = float(self.xp.sum(self.xp.where(coil.mask_window, system.unknown2d * system.cell_area, 0.0)))
         linkage = coil.turns * weight * integral / coil.area
-        inductance = linkage / coil.current if coil.current != 0.0 else float('nan')
-        return {'current': coil.current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance}
+        current = self._coil_currents.get(coil, coil.current)
+        inductance = linkage / current if current != 0.0 else float('nan')
+        return {'current': current, 'turns': coil.turns, 'flux_linkage': linkage, 'inductance': inductance}
 
     def field_energy(self) -> float:
         """Energy (1/2) u^T K u of the free cells [J/m planar, J axisymmetric (x 2 pi)]: every face touching a free cell
@@ -393,13 +412,15 @@ class MagneticPhysics(DiffusionPhysicsBase):
         self.system.assemble(c_xx, c_yy, self._zero_cross_term, self.bcs, 0.0, check_anchors=full)
         self._remanence_stale = True
 
-    def _solve_once(self):
-        """One linear solve on the assembled operator: rhs (sources, coils, remanence), CG, fields."""
+    def _solve_once(self, fields=True):
+        """One linear solve on the assembled operator: rhs (sources, coils, remanence), CG, fields (fields=False: the
+        saturation loop's iterations, which read only _saturating_flux_magnitude)."""
         system = self.system
         system.build_rhs(self._source_window, self._applied_source_window)
         self._add_remanence_rhs()
         system.solve()
-        self._update_fields()
+        if fields:
+            self._update_fields()
 
     def _refresh_saturation(self):
         """Window J_s of the saturating cells (None without J_s > 0) and whether the loop runs (J_s or a B-H curve);
@@ -457,23 +478,53 @@ class MagneticPhysics(DiffusionPhysicsBase):
             zeros = self.xp.zeros(self._nonlinear_flat.size, dtype=np.float64)
             self._log_reluctivity_state = self._saturated_log_reluctivity(zeros, zeros)
         state = self._log_reluctivity_state
+        stall = Float32StallWatch() if self.system.dtype == np.float32 else None
 
         def propose(log_reluctivity):   # the state itself, read by _coefficients through the attribute
             if isinstance(self.system.linear_solver, KeptPreconditionerSolver):   # later iterations may keep its build
                 self.system.linear_solver.offer_state(log_reluctivity, fresh=first[0])
             self._assemble(full=first[0])
             first[0] = False
-            self._solve_once()
-            flat = self._nonlinear_flat
-            flux_magnitude = self._flux_density_magnitude.reshape(-1)[flat].astype(np.float64)
+            self._solve_once(fields=False)
+            flux_magnitude = self._saturating_flux_magnitude()
             # |H| = nu |B| in the (isotropic) table cells: B = H / nu there (no remanence), read by the tables only
-            field_magnitude = (self._nu_xx.reshape(-1)[flat].astype(np.float64) * flux_magnitude if self._bh_curves
-                               else None)
-            return self._saturated_log_reluctivity(flux_magnitude, field_magnitude)
+            field_magnitude = (self._nu_xx.reshape(-1)[self._nonlinear_flat].astype(np.float64) * flux_magnitude
+                               if self._bh_curves else None)
+            proposal = self._saturated_log_reluctivity(flux_magnitude, field_magnitude)
+            if stall is not None and stall.check(proposal, log_reluctivity):
+                return log_reluctivity.copy()   # ends the run; counted unconverged below
+            return proposal
 
-        # the operator and fields stay those of the last iterate's solve; the state warm-starts the next loop
-        if not self.picard.run(state, propose, 1.0):
+        # the operator and fields are those of the last iterate's solve (fields once, after the loop); the state
+        # warm-starts the next loop
+        converged = self.picard.run(state, propose, 1.0)
+        self._update_fields()
+        if stall is not None and stall.stalled:
+            stall.record_stop(self.picard)
+            converged = False
+        if not converged:
             self.runtime_warnings.append(self.picard.last_warning)
+
+    def _saturating_flux_magnitude(self):
+        """float64 cell-centre |B| (k,) of the saturating cells from the latest solve, as _update_fields computes it
+        (saturating cells carry no remanence; a magnet neighbour's face terms enter their H)."""
+        system = self.system
+        xp = self.xp
+        flat = self._nonlinear_flat
+        flux_x, flux_y = system.flux_at_centres()   # -c grad u; held cells 0
+        flux_x = flux_x.reshape(-1)[flat]
+        flux_y = flux_y.reshape(-1)[flat]
+        if self._remanence_drives is not None:   # flux * length = operator part + face term
+            face_drive_x, face_drive_y = self._remanence_drives
+            free = ~system.fixed_user.reshape(-1)[flat]
+            flux_x = flux_x + xp.where(free, (0.5 * (face_drive_x[:-1, :] + face_drive_x[1:, :])
+                                              / system.dy_window_device[None, :]).reshape(-1)[flat], 0.0)
+            flux_y = flux_y + xp.where(free, (0.5 * (face_drive_y[:, :-1] + face_drive_y[:, 1:])
+                                              / system.dx_window_device[:, None]).reshape(-1)[flat], 0.0)
+        # |B| = hypot(H_x / nu_xx, H_y / nu_yy) with (H_x, H_y) = +-(-flux_y, flux_x): the signs drop out
+        B_x = flux_y / self._nu_xx.reshape(-1)[flat]
+        B_y = flux_x / self._nu_yy.reshape(-1)[flat]
+        return xp.hypot(B_x, B_y).astype(np.float64)
 
     def _saturated_log_reluctivity(self, flux_magnitude, field_magnitude):
         """ln (nu_xx, nu_yy) float64 (2, k) of the curves on the saturating cells at their float64 cell-centre |B| =
@@ -593,8 +644,7 @@ class MagneticPhysics(DiffusionPhysicsBase):
         fields.H_y[window] = H_y
         fields.B_x[window] = B_x
         fields.B_y[window] = B_y
-        self._flux_density_magnitude = xp.hypot(B_x, B_y)   # solve dtype: the saturation curve reads it
-        fields.B_abs[window] = self._flux_density_magnitude
+        fields.B_abs[window] = xp.hypot(B_x, B_y)
         fields.w_mag[window] = 0.5 * (self._nu_xx * B_x ** 2 + self._nu_yy * B_y ** 2)
         for destination, source in self._derived_pml_copies:
             xp.copyto(destination, source)

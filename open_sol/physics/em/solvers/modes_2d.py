@@ -15,7 +15,8 @@ from ....core.solver_base import PhysicsSolver
 from ....core.wavelengths import wavelength_label
 from ..boundaries import solver_boundary_config
 from ..cross_section_modes import (BEND_MODELS, GROUP_RELATIVE_STEP, LINE_BLOCK_BOTH_PERIODIC_TEXT,
-                                   CrossSectionMaterials, bloch_wrap_factors, centre_fields, line_block_layout,
+                                   MODE_ARPACK_TOLERANCE_FLOOR, CrossSectionMaterials, bloch_wrap_factors,
+                                   centre_fields, line_block_layout,
                                    mode_group_indices, mode_overlap, mode_point_materials,
                                    prepare_cross_section_modes, size_issue_for, solve_prepared_modes)
 from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
@@ -72,6 +73,7 @@ class _ModeStudyMixin:
     def _init_mode_study(self, wavelength, n_modes, mode_index, n_eff_guess, group_index):
         """Mode-study settings and the empty solve record."""
         self.omega = 2.0 * math.pi * C0 / _positive(wavelength, 'wavelength [m]')
+        self._setting_omega = self.omega   # omega of the wavelength setting (reset_records)
         self.n_modes = _positive_int(n_modes, 'n_modes')
         self.mode_index = _positive_int(mode_index, 'mode_index')
         self.n_eff_guess = None if n_eff_guess is None else _positive(n_eff_guess, 'n_eff_guess')
@@ -90,6 +92,15 @@ class _ModeStudyMixin:
         """Solve at the wavelength setting (mode_analysis study hook); the number of modes found."""
         self._solve()
         return len(self.modes)
+
+    def reset_records(self):
+        """RerunSolver (reused sweep build): omega back to the build's wavelength setting (a frequency_domain run left
+        its last one) and the per-wavelength records dropped; every study hook solves afresh anyway."""
+        self.omega = self._setting_omega
+        for monitor in self.monitors:
+            clear = getattr(monitor, 'clear', None)
+            if clear is not None:
+                clear()
 
     def solve_harmonic(self, omega):
         """Solve at `omega` [rad/s] (frequency_domain study hook) and select mode_index."""
@@ -422,8 +433,11 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
 
     def _solve_once(self, omega):
         """(modes, solve info, new warnings) of one solve at omega (group indices when enabled; a line-block batch whose
-        operators are all solved is released)."""
-        solve = self._solve_at(omega, self.n_modes)
+        operators are all solved is released). The main solve starts from the last solve's modes (E5: frequency scans,
+        re-solves; a random share guards missed modes) at MODE_ARPACK_TOLERANCE_FLOOR (E3); the group-index solves
+        start from this solve's modes at machine precision."""
+        solve = self._solve_at(omega, self.n_modes, start_vector=self.modes or None,
+                               tolerance_floor=MODE_ARPACK_TOLERANCE_FLOOR, warm_guard=True)
         modes = list(solve.modes)
         warnings = [warning for warning in solve.info['warnings'] if warning not in self.finalize_warnings]
         if self.group_index and modes:
@@ -437,21 +451,23 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
             self._release_batch()   # every operator of the batch solved
         return modes, solve.info, warnings
 
-    def _solve_at(self, omega, n_modes, start_vector=None):
+    def _solve_at(self, omega, n_modes, start_vector=None, tolerance_floor=0.0, warm_guard=False):
         """CrossSectionSolve at omega of the current materials: the eigen solver's factor (host SuperLU or cuDSS), or
-        the line-block batch entry of omega (a rejected solve: SuperLU on the same problem, run-log warning)."""
+        the line-block batch entry of omega (a rejected solve: SuperLU on the same problem, run-log warning);
+        tolerance_floor / warm_guard as solve_prepared_modes (defaults: mode_group_indices' solves)."""
+        options = {'start_vector': start_vector, 'eigen_solver': self.eigen_solver, 'tolerance_floor': tolerance_floor,
+                   'warm_guard': warm_guard}
         if self._line_block is None:
             problem = self._prepared(omega, self.n_eff_guess, self._bend, check_size=not self._on_device)
-            return solve_prepared_modes(problem, n_modes, start_vector=start_vector, eigen_solver=self.eigen_solver)
+            return solve_prepared_modes(problem, n_modes, **options)
         problem, factorization = self._batched_problem(omega)
         try:
-            return solve_prepared_modes(problem, n_modes, start_vector=start_vector, eigen_solver=self.eigen_solver,
-                                        factorization=factorization)
+            return solve_prepared_modes(problem, n_modes, factorization=factorization, **options)
         except RejectedLineBlockSolve as exc:
             self.n_line_block_fallbacks += 1
             self.runtime_warnings.append(f'{wavelength_label(2.0 * math.pi * C0 / omega)}: {exc}; shift-invert by host '
                                          'SuperLU instead')
-            return solve_prepared_modes(problem, n_modes, start_vector=start_vector, eigen_solver=self.eigen_solver)
+            return solve_prepared_modes(problem, n_modes, **options)
 
     def _problem_omegas(self, omega):
         """Omegas of the shift-invert operators one solve at omega needs: omega, then omega (1 +- step) with the group
@@ -630,6 +646,11 @@ class ModeDispersionMonitor:
         self.mode_number = _positive_int(mode_number, 'mode_dispersion mode_number')
         self._records = {}     # omega [rad/s] -> _mode_scalars + [overlap with the previously followed mode]
         self._followed = None  # CrossSectionMode of the last record
+
+    def clear(self):
+        """Drop every record (a rerun of a reused sweep build starts the dispersion afresh)."""
+        self._records = {}
+        self._followed = None
 
     def record(self, physics):
         modes = physics.modes

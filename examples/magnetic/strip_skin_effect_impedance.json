@@ -52,7 +52,7 @@
            "points_per_wavelength": 20.0, "refinements": []},
   "solvers": [],
   "study": {"type": "stationary", "settings": {}, "stored_fields": ["magnetic.J_total_abs", "magnetic.B_abs"],
-            "sweep": {"parameter": "f", "values": [1e4, 5e4, 2e5, 5e5, 1e6, 2e6, 5e6]}},
+            "sweep": {"parameter": "f", "values": [1e4, 5e4, 2e5, 5e5, 1e6, 2e6, 5e6], "reuse_build": true}},
   "derived_values": [
     {"name": "R_ratio", "expression": "magnetic_bar_resistance/R_dc", "selection": [], "operation": "mean",
      "reference": "R_ratio_ref", "tolerance": 2e-3},

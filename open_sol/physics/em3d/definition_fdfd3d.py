@@ -3,6 +3,7 @@ vocabulary, features (PEC, resonance table), validation and the memory / run-tim
 definition.register after em_fdtd_3d."""
 import math
 from dataclasses import replace
+from functools import lru_cache
 
 import numpy as np
 
@@ -67,6 +68,12 @@ APPLICATIONS_PER_BASIS_PER_AXIS_CELL = 0.22
 # eigenpairs doubled, the device decomposition resumed) is counted in: 4.0 on the Mie example (320 / 80, two passes),
 # 2.4 on its tetrahedral twin (192 / 80, two passes); a guess between, per basis of the first pass
 MIXED_APPLICATIONS_PER_BASIS = 3.0
+# A4: counted host SuperLU bytes (host_counted_lu_bytes of nedelec_factor_entries: the nested-dissection fill; SuperLU
+# orders by MMD, so its real factor is larger) of a tetrahedral Nedelec operator from which its host SuperLU factor
+# takes tens of seconds: the cpu default warns, and a gpu 'auto' runtime raises with the remedy instead of falling
+# back to SuperLU after a cuDSS refusal (em3d_fdfd_tetrahedra, 44k unknowns: gstrf 47.5 s; Mie examples 35-48 s).
+# Uncalibrated: compare the check's counted 'eigen SuperLU L + U factors' item with a measured @cpu factor time
+NEDELEC_SUPERLU_SLOW_BYTES = 256 * 2 ** 20
 
 # ---- settings ----
 _BC_HELP = ('Boundary of this face of the 3D box, the em_fdtd_3d faces on the same Yee grid: cpml = the complex '
@@ -140,6 +147,8 @@ def _create(ctx, physics_spec, settings_values):
         physics = FEMResonancePhysics3D(ctx.domain, _boundary_config(settings_values),
                                         wavelength=settings_values['wavelength'], eigen_solver=eigen_solver,
                                         element_order=element_order(settings_values))
+        if getattr(eigen_solver, 'fallback_factorization', None) is not None:   # A4: bound the SuperLU fallback
+            eigen_solver.fallback_refusal = _nedelec_fallback_refusal(ctx.domain.mesh, element_order(settings_values))
     else:
         physics = FDFDPhysics3D(ctx.domain, wavelength=settings_values['wavelength'], eigen_solver=eigen_solver)
     write_dispersive_regions_3d(ctx, physics)
@@ -218,18 +227,26 @@ def nedelec_unknowns(mesh, settings_values) -> int:
 
 def _size_issues(vctx, physics_spec, settings_values, path):
     """sparse_direct.vector_3d_size_issue of 3 E unknowns per grid cell (PML and ghosts included; PEC / mirror drops
-    make it an upper figure), on tetrahedra of the Nedelec unknowns x fem3d.YEE_EQUIVALENT_UNKNOWNS; none for a cudss
-    eigen factorization (checked on the device at run time)."""
+    make it an upper figure), on tetrahedra of the Nedelec unknowns x fem3d.YEE_EQUIVALENT_UNKNOWNS (+ a SuperLU warning
+    above NEDELEC_SUPERLU_SLOW_BYTES of counted fill on a built mesh); none for a cudss eigen factorization."""
     mesh = vctx.mesh
-    if mesh is None or eigen_factorization(vctx.solvers(physics_spec)) in CUDSS_FACTORIZATIONS:
+    factorization = eigen_factorization(vctx.solvers(physics_spec))
+    if mesh is None or factorization in CUDSS_FACTORIZATIONS:
         return []
     if mesh.kind == 'tetrahedra':
         order = element_order(settings_values)
         unknowns = nedelec_unknowns(mesh, settings_values)
         issue = vector_3d_size_issue(int(unknowns * YEE_EQUIVALENT_UNKNOWNS[order]))
-        return [] if issue is None else [Issue(issue[0], path, f'{issue[1]} (~{unknowns:,} Nedelec unknowns of '
-                                                               f'degree {order}, each counted as '
-                                                               f'{YEE_EQUIVALENT_UNKNOWNS[order]:g} Yee unknowns)')]
+        issues = [] if issue is None else [Issue(issue[0], path, f'{issue[1]} (~{unknowns:,} Nedelec unknowns of '
+                                                                 f'degree {order}, each counted as '
+                                                                 f'{YEE_EQUIVALENT_UNKNOWNS[order]:g} Yee unknowns)')]
+        # A4: SuperLU (the cpu Automatic) bounded by the counted fill of a built mesh
+        counted = nedelec_factor_entries(mesh, order, unknowns) if factorization in ('superlu', 'auto') else None
+        slow = '' if counted is None or (issue is not None and issue[0] == 'error') else _slow_superlu_text(
+            counted, unknowns)
+        if slow:
+            issues.append(Issue('warning', path, f'eigen factorization superlu: {slow}'))
+        return issues
     if mesh.kind != 'tensor':
         return []
     issue = vector_3d_size_issue(3 * int(mesh.n_cells))
@@ -295,18 +312,25 @@ def _memory_estimate(settings_values, mesh, context):
     if mesh.kind == 'tetrahedra':
         return _tetrahedra_memory_estimate(settings_values, mesh, context)
     n_cells = int(mesh.n_cells)
-    unknowns = 3 * n_cells
+    config = _boundary_config(settings_values)
+    unknowns = live_unknowns_estimate(mesh, config)   # A5: the live E faces, not 3 x cells (Mie example: 11 % high)
     n_resonances, n_wanted, n_basis = _arnoldi_sizes(context, unknowns)
     vector_bytes = COMPLEX128_BYTES * unknowns
     row_bytes = INT32_BYTES * unknowns   # CSR indptr per row
     factorization = eigen_factorization(context.solvers)
-    general = _boundary_config(settings_values).has_bloch_phase   # a Bloch phase: an LU of the whole matrix
-    # MUMPS / PARDISO: the LDL^T of D A (LU with a Bloch phase) at the SuperLU heuristic x superlu_bytes_scale
+    general = config.has_bloch_phase   # a Bloch phase: an LU of the whole matrix
+    # A5: counted fill of the box nested dissection (SuperLU factors in that order, operators3d
+    # nested_dissection_ordering; cuDSS's own ND as FactorFill) instead of the n^(4/3) growth laws; MUMPS / PARDISO:
+    # the LDL^T of D A (LU with a Bloch phase) at that SuperLU count x superlu_bytes_scale
+    counted = _box_fill((int(mesh.nx), int(mesh.ny), int(mesh.nz)), unknowns / max(n_cells, 1))
     factor_items = () if factorization in CUDSS_FACTORIZATIONS else tuple(host_factor_items(
-        factorization, 'eigen SuperLU L + U factors (3D curl-curl heuristic)', host_lu_bytes(unknowns, dimensions=3),
-        unknowns, _ROW_ENTRIES * unknowns, symmetric=not general, eigen=True))
+        factorization, 'eigen SuperLU L + U factors (3D curl-curl, counted box nested dissection)',
+        host_counted_lu_bytes(counted, unknowns), unknowns, _ROW_ENTRIES * unknowns, symmetric=not general,
+        eigen=True))
+    from ...solvers.cudss_factor import FactorFill
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
-                                                                     general, 'the curl-curl operator')
+                                                                     general, 'the curl-curl operator',
+                                                                     fill=FactorFill(counted))
     # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's device A copy
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
@@ -330,6 +354,41 @@ def _memory_estimate(settings_values, mesh, context):
                                                        COMPLEX64_BYTES * n_cells),) + cudss_items
                                      + tuple(search_transient),
                                      external_items=external_items, external_extra=external_extra)
+
+
+def live_unknowns_estimate(mesh, config) -> int:
+    """Live E unknowns of a tensor MeshEstimate (CPU): operators3d.live_unknowns_3d's layer rules without PEC objects
+    (an upper figure). Open hi faces, pec wall layers and mirror ghosts / planes drop whole layers per component and
+    axis, so the count is a product per component; a change of those rules changes both."""
+    from .boundaries3d import mirror_planes
+    shape = (int(mesh.nx), int(mesh.ny), int(mesh.nz))
+    window = tuple(slice(int(mesh.npml_sides.get(f'{name}_lo', 0)), count - int(mesh.npml_sides.get(f'{name}_hi', 0)))
+                   for name, count in zip(AXES, shape))
+    dropped = [[set() for _ in AXES] for _ in AXES]   # [component][axis] -> dropped layer indices
+    for axis, name in enumerate(AXES):
+        if not config.periodic(name):
+            dropped[axis][axis].add(shape[axis] - 1)   # the never-updated hi face
+        for side in ('lo', 'hi'):
+            if getattr(config, f'{name}_{side}') == 'pec':   # boundaries3d.pec_wall_layers: tangential E between
+                layer = window[axis].start if side == 'lo' else window[axis].stop - 1   # two PEC cells
+                for component in range(3):
+                    if component != axis:
+                        dropped[component][axis].add(layer)
+    for axis, kind, ghost, _inner, plane_face in mirror_planes(config, window):
+        for component in range(3):
+            if component != axis or kind == 'symmetric':
+                dropped[component][axis].add(ghost)
+        if kind == 'symmetric':
+            dropped[axis][axis].add(plane_face)
+    return sum(math.prod(count - len({index for index in dropped[component][axis] if 0 <= index < count})
+                         for axis, count in enumerate(shape)) for component in range(3))
+
+
+@lru_cache(maxsize=16)
+def _box_fill(shape, unknowns_per_cell):
+    """sparse_direct.box_dissection_entries of a grid shape (cached: a Python loop over the dissection boxes)."""
+    from ...solvers.sparse_direct import box_dissection_entries
+    return box_dissection_entries(shape, unknowns_per_cell)
 
 
 def _arnoldi_sizes(context, unknowns):
@@ -363,9 +422,36 @@ def nedelec_factor_entries(mesh, order, unknowns):
     dissection = getattr(mesh, 'dissection', None)
     if dissection is None:
         return None
+    return _counted_nedelec_entries(dissection, order, unknowns)
+
+
+def _counted_nedelec_entries(dissection, order, unknowns):
+    """nedelec_factor_entries of a fem.dissection.MeshDissection."""
     dofs_per_site = 2 if order == 2 else 1
     share = min(float(unknowns) / max(dofs_per_site * dissection.n_nedelec_sites(order), 1), 1.0)
     return dofs_per_site ** 2 * dissection.nedelec_pairs(order) * share
+
+
+def _slow_superlu_text(entries, unknowns):
+    """'' or the A4 text when the counted host SuperLU factor of `unknowns` Nedelec unknowns (counted triangle entries)
+    exceeds NEDELEC_SUPERLU_SLOW_BYTES."""
+    lu_bytes = host_counted_lu_bytes(entries, unknowns)
+    if lu_bytes <= NEDELEC_SUPERLU_SLOW_BYTES:
+        return ''
+    return (f'the host SuperLU factor of the {int(unknowns):,}-unknown Nedelec operator holds >= '
+            f'{lu_bytes / 2 ** 30:.2f} GiB (counted nested-dissection fill; SuperLU orders by MMD, more) and takes tens '
+            'of seconds to minutes (44k unknowns: 47.5 s); use the gpu backend (Automatic: cudss_mixed), an eigen '
+            f'solver node with factorization {HOST_DIRECT_NAMES} (host LDL^T), or coarsen the mesh / halve it by '
+            'mirror faces')
+
+
+def _nedelec_fallback_refusal(mesh, order):
+    """ArpackShiftInvertSolver.fallback_refusal of a tetrahedral em_fdfd_3d eigen runtime (A4): the counted fill of
+    the built TetrahedronMesh, counted only when a cuDSS refusal would fall back."""
+    def refusal(n_unknowns):
+        from ...fem.dissection import MeshDissection
+        return _slow_superlu_text(_counted_nedelec_entries(MeshDissection(mesh), order, n_unknowns), n_unknowns)
+    return refusal
 
 
 def _tetrahedra_memory_estimate(settings_values, mesh, context):
@@ -521,6 +607,9 @@ EM_FDFD_3D = PhysicsType(
     time_estimate=_time_estimate,
     dimensions=(3,),
     subpixel_smoothing=True,
-    solver_roles={'eigen': eigen_role((_EIGENFREQUENCY_STUDY,), mixed_factorization=True)},
+    # Automatic on the gpu: cudss_mixed, the examples' and self-tests' node (host SuperLU took 35-48 s to factor the Mie
+    # examples, against ~1 s); a cuDSS refusal falls back to SuperLU (B1b)
+    solver_roles={'eigen': eigen_role((_EIGENFREQUENCY_STUDY,), mixed_factorization=True,
+                                      auto_factorizations={'tensor': 'cudss_mixed', 'tetrahedra': 'cudss_mixed'})},
     backends=('gpu', 'cpu'),   # host assembly and solve; fields on the Domain's xp
 )

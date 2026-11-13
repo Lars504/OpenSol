@@ -192,10 +192,11 @@ class ModalPencil:
         self.shift_pencil = None   # the eigen solver's ShiftPencil (cuDSS: a DevicePencil), kept with the factor
         self.prolongation = None if prolongation is None else prolongation.tocsr()
         if self.prolongation is None:
-            self.free_dofs = np.flatnonzero(np.asarray(free, dtype=bool))
+            self._free_mask = np.asarray(free, dtype=bool).reshape(-1)
+            self.free_dofs = np.flatnonzero(self._free_mask)
             self.n_free = int(self.free_dofs.size)
         else:
-            self.free_dofs = None
+            self.free_dofs = self._free_mask = None
             self.n_free = int(self.prolongation.shape[1])
         self.size_warnings = []
         self.on_device = _check_size(self.n_free, self.eigen_solver, self.size_warnings)
@@ -221,8 +222,11 @@ class ModalPencil:
 
     def _reduced(self, matrix):
         """Host CSR of the free-dof block (or P^H A P); float64 except for a damped (complex) pencil."""
-        matrix = matrix.tocsr() if self.kind == 'damped' else matrix.tocsr().astype(np.float64)
+        from ...fem.fixed_pattern import free_restriction
+        matrix = matrix.tocsr() if self.kind == 'damped' else matrix.tocsr().astype(np.float64, copy=False)
         if self.prolongation is None:
+            if self._free_mask.size == matrix.shape[0] == matrix.shape[1]:   # R3: the restriction loop, kept per pattern
+                return free_restriction(matrix, self._free_mask)
             return matrix[self.free_dofs][:, self.free_dofs].tocsr()
         return (self.prolongation.conj().T.tocsr() @ matrix @ self.prolongation).tocsr()
 

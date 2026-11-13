@@ -136,12 +136,13 @@ performance set is `example_profilers/` below. Run from any folder:
 
 ```
 python tools_profilers/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
-python tools_profilers/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...] [--backend gpu cpu]
+python tools_profilers/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--cudss --cudss-mixed --scipy --pardiso --mumps | --all] [--backend gpu cpu]
     [--timeout S] [--new-first] [--plot-only]
 ```
 
 Common options (`profiler_harness.main`): `--case`, `--runs`, `--variant`, `--backend gpu|cpu`, `--repeat`,
-`--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`, `--compare NAME=v1,v2`; some scripts
+`--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`, `--compare NAME=v1,v2`,
+`--automatic-solvers` (every role on Automatic), `--precision single|double|mixed` (solver_defaults); some scripts
 add `--kind` / `--refine`. Output `out/<name>__<backend>[__<compare>[__only]][__<set>]/report.txt` + `profile.prof`
 (the settings are in the folder name, e.g. `membrane_film__gpu__back_end-pardiso__only`, so a pardiso profile never
 overwrites a cudss one): per part calls, inclusive / exclusive wall, cpu/wall (> 1 threaded BLAS; a blocking device sync spins a core, so a part waiting on the GPU shows ~1 too) and
@@ -181,26 +182,36 @@ run). After a change, `python profile_delta.py <report folder name>` (e.g. `soli
 lists per run the parts whose exclusive time moved by more than `--min-ms` (20) and `--min-percent` (30) between the
 two newest kept profiles of that folder (`--before` / `--after`: any two `runs.json`).
 
-**Solvers and backends.** Each solver flag runs every command once more:
-- `--auto` (the default when no flag is given) runs the cases' solvers as written.
-- `--cudss`, `--cudss-mixed`, `--scipy-splu`, `--pardiso`, `--pardiso-mixed`, `--mumps` and `--mumps-mixed` add
-  `--compare back_end=<value> --compare-only`.
-- `--multigrid` and `--jacobi` add `--compare preconditioner=<value> --compare-only`.
+**Solver groups and backends.** Every solver is in one of five groups (harness `solver_group`): a library back end by
+its package, every other solver (open_sol's own pcg with jacobi / multigrid, explicit kernels, line_block, ...) by
+array library and precision. One flag per group, `--all` runs the five in turn:
+- `--cudss`: cuDSS + cupy double, gpu backend: harness `--precision double --compare back_end=cudss`.
+- `--cudss-mixed`: cuDSS mixed + cupy single, gpu backend: `--precision single --compare back_end=cudss_mixed`.
+- `--scipy`: host SuperLU + numpy, cpu backend: `--compare back_end=scipy_splu`.
+- `--pardiso`, `--mumps`: their host library, cpu backend: `--compare back_end=<value> --compare-only`.
 
-A command profiles only the runs that have a role taking the value, and plots only those that completed (`status` in
-`runs.json`) and in which that solver factorised (a matrix-free eigen solve under `--pardiso` is a PCG profile, not a
-PARDISO one); the others are named in the log. With none, it gives no point, and when every run was such a run the
-solver's earlier points of that command are removed. Two runs that differ only by the node the value replaces run once.
+The backends above are each flag's default; `--backend gpu` (or `gpu cpu`) runs the host groups on those instead (a
+gpu model factorising on the host: `pardiso @gpu`, its own line). cudss / cudss_mixed run on the gpu only. No flag
+runs auto (default `gpu`): the cases' solvers as written, Automatic in
+`run_all_examples.py` (which adds `--automatic-solvers` to every variant, so a group flag changes only what the group
+sets). Its log line names the groups its runs used (`fluid [cudss_mixed+scipy @gpu]`). `--precision` sets
+`solver_defaults.precision`: a solver without that precision, or whose role refuses it, keeps its own, and its group
+says so. Older `scipy_splu @cpu` / `numpy @cpu` points load as `scipy @cpu`.
 
-Each solver has its backend:
-- `--cudss` and `--cudss-mixed` run on the gpu backend.
-- The host libraries (`--scipy-splu`, `--pardiso`, `--mumps` and their mixed flags) run on the cpu backend, so their
-  lines are the all-cpu profile.
-- `--auto`, `--multigrid` and `--jacobi` run on each backend of `--backend` (default `gpu`; `--backend gpu cpu`
-  gives both lines).
+A command (example group) holds several runs (tasks). The cudss, cudss_mixed and scipy groups profile every run.
+pardiso and mumps profile only the runs that have a role taking the value; the harness finds that from the specs
+before any build, and a command with none logs `skipped: no run takes this solver` (its earlier points of that
+command are removed). A point counts the runs that completed (`status` in `runs.json`) and in which the compared
+solver factorised (a matrix-free eigen solve under `--pardiso` is a PCG profile, not a PARDISO one); the others are
+named in the log. Two runs that differ only by the node the value replaces run once.
 
-`auto @gpu` is the gpu model with the solver Automatic picks. Some of those runs factorise on the host with SuperLU
-(e.g. the em_fdfd example group's dbr cavity, whose solver node asks for it).
+The points keep each counted run's wall and peaks (`run_walls`, `run_gpu_peaks`, `run_host_peaks`). When the solvers
+of a command measured different runs, the plot splits it into one column per set of runs the same solvers measured
+(`command: runA+runB`), so every column compares solvers on the same tasks; a solver that did not do a column's runs
+has no point there.
+
+The plot draws the auto pick and the five groups only (older variants and commands stay in `profile_points.json`,
+undrawn).
 
 **Timeout.** Each command stops after `--timeout` seconds (default 60; `0`: no limit), counted from its process
 start. The harness gets it as `--time-limit`: it interrupts the run going on (status `timed_out` in `runs.json`), skips
@@ -221,13 +232,15 @@ backend. Line style marks the profile:
 - `previous` (dashed) and `current` (solid): the command's last two points for that solver @backend. A run with
   `--only` or other solver flags moves only those points; a failed command keeps its old ones.
 
-The plot always shows every solver @backend in the file, not only the ones of this run. A black ring marks, per
-command, the current point of the solver Automatic picks on the gpu backend, whichever solvers were run (no `--auto`
-needed). The harness works that out for every run from the case's roles (`runs.json` `automatic`: the role's
-Automatic type and settings, back_end 'auto' resolved to cuDSS where the role lists it, else SuperLU). The ring sits
-on that solver's gpu line, else its own backend (a gpu model that picks SuperLU rings `scipy_splu @cpu`), when it has
-been profiled. A runtime fallback (cuDSS refusing an operator, then SuperLU) is not seen; `solvers` holds what the
-runs actually used.
+The plot shows the auto pick and the five groups in the file, not only the ones of this run. One black ring per
+column marks the current point of Automatic's gpu pick, whichever solvers were run. The harness works out the groups
+Automatic picks for every run from the case's roles (`runs.json` `automatic_groups`: the role's Automatic type and
+settings, back_end 'auto' resolved to cuDSS where the role lists it, else SuperLU; the point keeps them per run,
+`run_automatic`). When the column's runs need one group, the ring sits on that group's line; when their roles fall in
+several groups (a gpu model with a SuperLU role, pcg next to cuDSS) or that line was not run, it sits on the
+`auto @gpu` point, which ran that mix. A ring needs a line that measured the column's runs: an older point without
+per-run walls cannot carry one in a split column. A runtime fallback (cuDSS refusing an operator, then SuperLU) is not seen;
+`solvers` holds what the runs actually used.
 
 **Saving.** Each point is written as soon as its command finishes, through a temporary file and a replace, and a
 complete run sets each command's `first` point at the same moment. A failure never drops points: an unreadable file stops
@@ -236,6 +249,10 @@ the run (restore it from a `profile_points_before.json`), and a file in the firs
 
 `--plot-only` redraws the plot without running anything. `measure_cudss_reordering.py` times cuDSS
 reordering choices on synthetic matrices; `profiler_example_sin_square_membrane.py` profiles an example file.
+`../cudss_phase_profile.py` (gpu, script form) times cudss_factor's measure-first switches against the nvmath path on
+real CudssFactorization objects: REFACTORIZATION_PHASE refreshes, RAW_SOLVE solves, REORDERING_ALGORITHM 'AMD' on 2D
+operators, a parked-plan adoption (KEPT_PLANS) against a kept-ordering plan, and the library-load stamps; it writes
+`time_profilers/out/cudss_phase_profile/results.json`. Turn a switch on in cudss_factor only when it wins there.
 
 # Example profilers (`example_profilers/`)
 
@@ -246,7 +263,7 @@ all). Run from any folder:
 
 ```
 python tools_profilers/time_profilers/example_profilers/example_profiler.py GROUP [--runs STEM ...] [--warmup] [--compare back_end=cudss,cudss_mixed]
-python tools_profilers/time_profilers/example_profilers/run_all_examples.py [--only SUBSTRING ...] [--cudss --pardiso ...] [--backend gpu cpu]
+python tools_profilers/time_profilers/example_profilers/run_all_examples.py [--only SUBSTRING ...] [--cudss --cudss-mixed --scipy --pardiso --mumps | --all] [--backend gpu cpu]
 python tools_profilers/time_profilers/case_profilers/profile_delta.py em_fdtd__gpu --history tools_profilers/time_profilers/example_profilers/out/history
 ```
 

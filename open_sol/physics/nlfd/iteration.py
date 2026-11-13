@@ -130,12 +130,17 @@ def block_norms(vectors, blocks):
             for start in range(0, len(host), count)]
 
 
+def _relative_change(norms, differences):
+    """max over channels differences_k / norms_k of host block norms (0 for a channel staying 0)."""
+    ratios = [difference / size if size > 0.0 else (0.0 if difference == 0.0 else math.inf)
+              for size, difference in zip(norms, differences)]
+    return max(ratios) if ratios else 0.0
+
+
 def channel_residual(change, values, blocks):
     """(max over channels ||change_k|| / ||values_k|| (0 for a channel staying 0), [||values_k||]) (one host sync)."""
     norms, differences = block_norms((values, change), blocks)
-    ratios = [difference / size if size > 0.0 else (0.0 if difference == 0.0 else math.inf)
-              for size, difference in zip(norms, differences)]
-    return (max(ratios) if ratios else 0.0), norms
+    return _relative_change(norms, differences), norms
 
 
 def block_weights(norms):
@@ -294,12 +299,15 @@ def _real_dot(first, second):
     return float(_real_view(xp.ascontiguousarray(first)) @ _real_view(xp.ascontiguousarray(second)))
 
 
-def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterations=GMRES_MAX_ITERATIONS):
+def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterations=GMRES_MAX_ITERATIONS,
+               rhs_norm=None):
     """Restarted GMRES from 0 for a real-linear `apply` (complex128 vectors of the rhs' module, real inner product Re
-    <u, v> = dots of the float64 views, real Hessenberg; classical Gram-Schmidt twice, one host transfer per column) ->
-    (solution, products, relative residual estimate)."""
+    <u, v> = dots of the float64 views, real Hessenberg; classical Gram-Schmidt twice, one host transfer per column;
+    rhs_norm = sqrt Re <rhs, rhs> when the caller has it, else one sync) -> (solution, products, relative residual)."""
     xp = array_module_of(rhs)
-    rhs_norm = math.sqrt(max(_real_dot(rhs, rhs), 0.0))
+    if rhs_norm is None:
+        rhs_norm = math.sqrt(max(_real_dot(rhs, rhs), 0.0))
+    rhs_norm = float(rhs_norm)
     solution = xp.zeros_like(rhs)
     if rhs_norm == 0.0:
         return solution, 0, 0.0
@@ -307,7 +315,8 @@ def real_gmres(apply, rhs, relative_tolerance, restart=GMRES_RESTART, max_iterat
     basis_real = _real_view(basis)   # (restart + 1, 2 N): Re <v_i, w> = basis_real[i] . w_real
     residual_vector, products, relative = rhs, 0, 1.0
     while products < max_iterations:
-        beta = math.sqrt(max(_real_dot(residual_vector, residual_vector), 0.0))
+        # the first cycle starts from the rhs (its norm known); a restart measures its Arnoldi residual vector
+        beta = rhs_norm if residual_vector is rhs else math.sqrt(max(_real_dot(residual_vector, residual_vector), 0.0))
         xp.multiply(residual_vector, 1.0 / beta, out=basis[0])
         hessenberg = np.zeros((restart + 1, restart))
         columns, finished, least_squares = 0, False, np.zeros(0)
@@ -353,9 +362,9 @@ def _scale_blocks(vector, blocks, factors):
     return vector
 
 
-def _scaled_norm(vector, blocks, weights):
-    """sqrt(sum_k w_k^2 ||v_k||^2) (one host sync)."""
-    return math.sqrt(sum((weight * size) ** 2 for size, weight in zip(block_norms((vector,), blocks)[0], weights)))
+def _weighted_norm(sizes, weights):
+    """sqrt(sum_k w_k^2 ||v_k||^2) of host block norms ||v_k||."""
+    return math.sqrt(sum((weight * size) ** 2 for size, weight in zip(sizes, weights)))
 
 
 def _forcing(previous, norm, previous_norm, tolerance):
@@ -424,14 +433,14 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
             values = store.xp.empty_like(x)
             evaluate(x, values)
             update = values - x                                  # G_J(x) - x = -F(x)
-            residual, norms = channel_residual(update, values, blocks)
+            # one transfer per evaluation: the block norms of G_J(x) and of the update give the residual and ||F||
+            norms, update_norms = block_norms((values, update), blocks)
+            residual = _relative_change(norms, update_norms)
             weights = block_weights(norms)
             zero_channels = [size == 0.0 for size in norms]
-            norm, previous_norm, eta = _scaled_norm(update, blocks, weights), None, _FORCING_INITIAL
+            norm, previous_norm, eta = _weighted_norm(update_norms, weights), None, _FORCING_INITIAL
             converged = False
             for newton_step in range(1, settings.max_iterations + 1):
-                if newton_step > 1:
-                    residual, norms = channel_residual(update, values, blocks)
                 sweeps += 1
                 history.append(residual)
                 if after_sweep is not None:
@@ -449,7 +458,7 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
                     ratio = norm / previous_norm
                     weights = block_weights(norms)
                     zero_channels = [size == 0.0 for size in norms]
-                    norm = _scaled_norm(update, blocks, weights)
+                    norm = _weighted_norm(update_norms, weights)
                     previous_norm = norm / ratio
                 eta = _forcing(eta, norm, previous_norm, settings.tolerance)
                 inverse = [1.0 / weight for weight in weights]
@@ -459,7 +468,8 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
                                          weights)
 
                 scaled_step, step_products, _ = real_gmres(scaled_product,
-                                                           _scale_blocks(update.copy(), blocks, weights), eta)
+                                                           _scale_blocks(update.copy(), blocks, weights), eta,
+                                                           rhs_norm=norm)   # ||W update|| = the scaled ||F||
                 products += step_products
                 direction = _scale_blocks(scaled_step, blocks, inverse)
                 del scaled_step
@@ -468,7 +478,8 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
                     trial = x + length * direction
                     evaluate(trial, values)
                     trial_update = values - trial
-                    trial_norm = _scaled_norm(trial_update, blocks, weights)
+                    trial_norms, trial_update_norms = block_norms((values, trial_update), blocks)
+                    trial_norm = _weighted_norm(trial_update_norms, weights)
                     if trial_norm <= (1.0 - _ARMIJO * length) * norm or attempt == _MAX_BACKTRACKS:
                         break
                     backtracks += 1
@@ -476,6 +487,9 @@ def solve_newton_krylov(channel_physics, channels, order, store, linearization, 
                     del trial, trial_update
                 previous_norm, norm = norm, trial_norm
                 x, update = trial, trial_update
+                # the accepted evaluation's norms are the next step's residual (values holds G_J(trial))
+                norms, update_norms = trial_norms, trial_update_norms
+                residual = _relative_change(norms, update_norms)
                 del direction
             for index in order:   # the store takes G_J(x): every channel solution comes from the last evaluation
                 store.capture(index, channel_physics[index])

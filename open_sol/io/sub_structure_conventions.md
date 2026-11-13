@@ -2,7 +2,9 @@
 
 Sub file of the root `structure_conventions.md` (read that first). File formats and results IO. Current state, no changelog.
 
-- model_io: `save_model` / `write_json` / `save_results` write '<file>.partial' then replace; `load_model` reads
+- model_io: `save_model` / `write_json` / `_write_npz` write '<file>.partial' then replace (`atomic=False`: in place,
+  only inside `save_results`, which deletes the old summary.json first and replaces only summary.json, written last:
+  a summary.json present vouches for every file it lists); `load_model` reads
   'utf-8-sig' and re-raises ValueError as `ValueError(f'{path}: {exc}')`; OSError propagates. Model files are written
   with 'meshes'; a legacy 'mesh' object is read as meshes = [it] only by `ModelSpec.from_dict` (load_model, api.load and
   GUI undo snapshots share it). npz 'metadata' is a 0-d unicode JSON string. CSV starts with '# key: value' lines

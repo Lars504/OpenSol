@@ -611,8 +611,7 @@ def mie_drude_cylinder_case(physics_type, polarization, cell=_DRUDE_CELL):
                     + (' The budget assumes 2.5 nm cells.' if coarse else ' Small reference domain not yet confirmed '
                        'by a run.'),
         specs=lambda: _drude_specs(physics_type, cell),
-        check=lambda results_by_name: _check_drude_cylinder(results_by_name, e_along_axis),
-        heavy=True)
+        check=lambda results_by_name: _check_drude_cylinder(results_by_name, e_along_axis))
 
 
 def plane_wave_case(physics_type, polarization):
@@ -695,7 +694,7 @@ HZ_MIE_CYLINDER_CASE = SelfTestCase(
 # em/analytic_bloch_fresnel_brewster (T_p, R_p_excess) and is graded by selftests_backend em_fdtd_cpu_gpu.
 HZ_SELFTEST_CASES = (
     plane_wave_case(_PHYSICS_TYPE, 'hz'),
-    fresnel_case(_PHYSICS_TYPE, 'hz', graded=True, heavy=True),
+    fresnel_case(_PHYSICS_TYPE, 'hz', graded=True),
     SelfTestCase(
         name='em_hz_mie_cylinder_graded',
         label='EM H_z dielectric cylinder: Mie scattering on a graded mesh',
@@ -709,7 +708,6 @@ HZ_SELFTEST_CASES = (
                     f'check and tolerance; raises unless both builds reached dx_min <= {_GRADED_DX_MIN_FRACTION:g} x '
                     'the base cell. Not yet confirmed by a run.',
         specs=_graded_mie_specs,
-        check=lambda results_by_name: _check_mie_cylinder(require_graded(results_by_name, _MIE_CELL)),
-        heavy=True),
+        check=lambda results_by_name: _check_mie_cylinder(require_graded(results_by_name, _MIE_CELL))),
     mie_drude_cylinder_case(_PHYSICS_TYPE, 'hz'),
 )

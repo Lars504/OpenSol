@@ -131,6 +131,22 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         if set(names) & (PERMEABILITY_ARRAYS | CONDUCTIVITY_ARRAYS | {'mu_dc_loss'}):
             self._host_dirty = True
 
+    def set_frequency(self, frequency) -> None:
+        """New frequency [Hz] (a reused sweep build): the host system is rebuilt on the kept curl matrix and the
+        RecycledFactor solves by GMRES on the old factor or refactorises on its plan."""
+        frequency = float(frequency)
+        if not (math.isfinite(frequency) and frequency > 0.0):
+            raise ValueError(f'{self.type_label} needs a finite frequency > 0 Hz, got {frequency}')
+        if frequency != self.frequency:
+            self.frequency = frequency
+            self.omega = 2.0 * math.pi * frequency
+            self._host_dirty = True
+
+    def reset_records(self) -> None:
+        """RerunSolver (reused sweep build): clear the probe series; the next step re-solves when an input changed."""
+        for probe, _node in self.probes:
+            probe.clear()
+
     def step(self, t: float = 0.0, dt: float = math.inf) -> None:
         """Re-solve only when materials, constraints or a source changed (always at the first call); probes sample after
         a re-solve and at every dt = inf call."""

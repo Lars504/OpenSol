@@ -597,6 +597,5 @@ SUBPIXEL_SELFTEST_CASES = (
                     'closed-form errors are in the details. measured = error = the worst item in tolerance units, '
                     'tolerance 1. Needs scipy. Box size and resonance count not yet confirmed by a run.',
         specs=_disk_specs,
-        check=_check_disk,
-        heavy=True),
+        check=_check_disk),
 )

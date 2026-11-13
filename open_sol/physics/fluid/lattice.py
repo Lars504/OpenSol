@@ -42,7 +42,8 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # Bouzidi links run out of line (__noinline__, __constant__ tables) so their dynamic indexing never spills a bulk cell
 # to local memory; periodic wraps compare-and-add, no integer modulo. Same arithmetic as the numpy / numba twins.
 # Bytes per cell (the kernel is bandwidth-bound on large windows): relaxation_stride 0 reads omega_plus / _minus[0]
-# (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force: all zero); store_mode
+# (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force, or one force on every fluid
+# cell: a 1-element array; forces are read on fluid cells only); store_mode
 # (STORE_*) skips the interior macros between host reads and fuses lattice_to_physical into the last step of a call
 # (published_* full-grid (nx, field_ny) arrays at window origin (window_x0, window_y0); 0 in solid cells).
 _STEP_SOURCE = r'''
@@ -836,6 +837,55 @@ def _to_physical_host(lattice_x, lattice_y, deviation, fluid, mass_density, velo
 
 
 to_physical = twin('fluid.lattice_to_physical', _to_physical_gpu, _to_physical_host)
+
+# Steady / health check of FluidPhysics in one pass: maxima (uint32 bits of non-negative float32: their order is the
+# float order, NaN above inf, so atomicMax keeps a NaN) = (max |u_x - saved_x|, max |u_y - saved_y|, max u^2), then
+# saved = lattice velocity; maxima must be zero before the launch (grid-stride, warp shuffle, 3 atomics per warp).
+_VELOCITY_CHECK_SOURCE = r'''
+__device__ __forceinline__ unsigned int larger_bits(const unsigned int a, const unsigned int b) { return a > b ? a : b; }
+
+extern "C" __global__
+void lattice_velocity_check(const float* __restrict__ lattice_x, const float* __restrict__ lattice_y,
+                            float* __restrict__ saved_x, float* __restrict__ saved_y,
+                            unsigned int* __restrict__ maxima, const int n_cells)
+{
+    unsigned int change_x = 0u, change_y = 0u, speed_squared = 0u;
+    for (int cell = blockIdx.x * blockDim.x + threadIdx.x; cell < n_cells; cell += gridDim.x * blockDim.x) {
+        const float velocity_x = lattice_x[cell], velocity_y = lattice_y[cell];
+        change_x = larger_bits(change_x, __float_as_uint(fabsf(velocity_x - saved_x[cell])));
+        change_y = larger_bits(change_y, __float_as_uint(fabsf(velocity_y - saved_y[cell])));
+        speed_squared = larger_bits(speed_squared,
+                                    __float_as_uint(fabsf(velocity_x * velocity_x + velocity_y * velocity_y)));
+        saved_x[cell] = velocity_x;
+        saved_y[cell] = velocity_y;
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {   // every lane reaches this (no early return)
+        change_x = larger_bits(change_x, __shfl_down_sync(0xffffffffu, change_x, offset));
+        change_y = larger_bits(change_y, __shfl_down_sync(0xffffffffu, change_y, offset));
+        speed_squared = larger_bits(speed_squared, __shfl_down_sync(0xffffffffu, speed_squared, offset));
+    }
+    if ((threadIdx.x & 31) == 0) {
+        atomicMax(maxima, change_x);
+        atomicMax(maxima + 1, change_y);
+        atomicMax(maxima + 2, speed_squared);
+    }
+}
+'''
+VELOCITY_CHECK_BLOCKS = 64   # grid-stride blocks of BLOCK_SIZE threads (few atomics; the check runs per interval)
+
+
+def _velocity_check_host(lattice_x, lattice_y, saved_x, saved_y, maxima, n_cells):
+    """numpy twin of lattice_velocity_check: the three maxima as float32 into the uint32 maxima, saved = lattice."""
+    maxima_values = maxima.view(np.float32)
+    maxima_values[0] = np.abs(lattice_x - saved_x).max()
+    maxima_values[1] = np.abs(lattice_y - saved_y).max()
+    maxima_values[2] = np.abs(lattice_x * lattice_x + lattice_y * lattice_y).max()
+    saved_x[...] = lattice_x
+    saved_y[...] = lattice_y
+
+
+velocity_check = raw_twin('fluid.lattice_velocity_check',
+                          cp.RawKernel(_VELOCITY_CHECK_SOURCE, 'lattice_velocity_check'), _velocity_check_host)
 
 # SI force density [N/m^3] -> lattice force (acceleration dt^2 / dx): scale = dt^2 / dx; 0 in solid cells.
 _force_to_lattice_gpu = cp.ElementwiseKernel(

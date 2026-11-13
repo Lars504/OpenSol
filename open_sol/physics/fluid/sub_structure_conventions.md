@@ -23,15 +23,23 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   velocity; interior values stale), the last at STORE_LATTICE (march: the check reads them) or STORE_PUBLISHED
   (transient: lattice_to_physical fused in, zeros in solids; `_extend_into_ring` after). Host code reading
   `_lattice_x / _y / _deviation` does so only between calls. On the gpu, one fluid viscosity reads 1-element rates
-  (`relaxation_stride` 0, `_update_relaxation`) and a physics that never got a force (`_force_present`: add_body_force
-  with a non-zero value, inject_source) reads force element 0 (`force_stride` 0: all zero); the host twins take
-  stride 0 too (broadcast / np.full) but the solver passes stride 1 there (one numba signature). A new writer of
-  body_force_* sets `_force_present`.
-- Step graphs (gpu, `STEP_GRAPHS`): STORE_BOUNDARY runs of >= GRAPH_STEPS (32, even) steps replay CUDA graphs
-  (`_fixed_block`, as em3d: eager first, then capture; a failed capture warns and launches singly). The key holds
-  the argument ids (kept alive) and scalar values: populations, macros, rates, forces, face tables are rewritten in
+  (`relaxation_stride` 0, `_update_relaxation`), and the 1-element forces `_uniform_force_x / _y` (`force_stride` 0,
+  `_lattice_force_stride` per force refresh) when the physics never got a force (`_force_present`: add_body_force
+  with a non-zero value, inject_source; zeros) or, stationary only, the lattice force is one value on every fluid
+  cell (one min / max sync per refresh; transient keeps stride 1: no sync per step). The kernel reads forces on
+  fluid cells only. The host twins take stride 0 too (broadcast / np.full) but the solver passes stride 1 there (one
+  numba signature). A new writer of body_force_* sets `_force_present` and `_force_dirty`.
+- Step graphs (gpu, `STEP_GRAPHS`): STORE_BOUNDARY runs replay CUDA graphs of GRAPH_STEPS (32) launches, the rest
+  of the run graphs of 16, 8, 4, 2 (binary split, all even: buffers end where they started) and at most one single
+  launch, so a check interval's leftover and a transient call of >= 3 lattice steps replay too (`_fixed_block`, as
+  em3d: eager first, then capture; a failed capture warns and launches singly). The key holds the graph size, the
+  argument ids (kept alive) and scalar values: populations, macros, rates, forces, face tables are rewritten in
   place, never reassigned while a graph lives; a new reassignable kernel argument joins `_step_arguments` (so the
-  key). The run-time recipe counts one launch per march step.
+  key). `_MAX_STEP_GRAPHS` (16) holds 5 sizes per argument set: below 5 the keys would clear before any capture. The
+  run-time recipe counts one launch per march step.
+- Checks (`_velocity_change`, steady march and transient health): one `lattice.velocity_check` pass (max |du_x|,
+  max |du_y|, max u^2 as uint32 float bits by atomicMax: NaN wins; saved = u) and one 12-byte read, not a dozen cupy
+  launches; peak = float32 sqrt of the max u^2 (the old float32 max |u|).
 - Stepper precision (`FluidPhysics(precision=)`): half_storage stores g x POPULATION_SCALE (1024) as float16 via
   POP_LOAD / POP_STORE, everything else float32. Transient only (raises, validate errors). Host code writing
   populations goes through `_store_populations`; masking multiplies the uint16 bits (`stored = half_bits(array);

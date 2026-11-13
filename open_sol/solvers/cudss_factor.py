@@ -113,6 +113,27 @@ at module level."""
 # refinement apply E y = L y + L^T y - diag(L) y; double: it is also the matrix cuDSS reads) plus, mixed, its
 # factor_dtype copy; a general factor keeps the full E (+ the factor_dtype copy when mixed). operator_copy_bytes
 # estimates them for the memory estimators (+ mixed: the GMRES vectors of one full-accuracy solve).
+# Fused refresh (K2): refactorize_device_values on the reused plan without symmetrizer or symmetry check (pencils of
+# full-pattern values, Newton Jacobians, host operators on the planned pattern with symmetric_known) writes R (and a
+# symmetric kind's diagonal) by one row kernel and E (+ its factor-dtype copy) by one entry kernel straight into the
+# planned buffers; the check / symmetrizer routes and first plans keep the step-by-step device code.
+# Parked plans (K5): while remember_cudss_orderings is on, release() of an accepted factor parks its planned
+# DirectSolver (KEPT_PLANS, keyed by ordering key + kind + factor dtype; its operand references dropped, so its pool
+# arrays go with the factor; its outside-pool bytes stay in external_live_bytes); the next plan of that key by any
+# factor object attaches its own matrix / rhs to it (nvmath's pointer updates, no analysis; counted as a plan on a kept
+# ordering, last_plan_adopted) and is probed like a fresh plan (a rejection re-plans from scratch once). A plan of
+# another key frees the parked ones first (its memory check sees the device), so does every build start
+# (reset_external_high_water) and the end of the scope or of a run_study inside it (cudss_orderings_kept's exit); a
+# parked factor therefore outlives its phase only until the next plan, inside one build.
+# Ordering store (K6): remember_cudss_orderings(store=True) (the GUI worker's call, never run_study's
+# cudss_orderings_kept, so selftests never read it) with a folder in ORDERING_STORE_ENVIRONMENT also writes each fresh
+# plan's (permutation, tree) there (one .npz per key + cuDSS version, pruned by mtime to ORDERING_STORE_MAX_BYTES) and
+# reads a key missing from the in-process store; a bad file plans from scratch.
+# Raw cuDSS phases (K3 REFACTORIZATION_PHASE, K7 RAW_SOLVE; off until tools_profilers/time_profilers/
+# cudss_phase_profile.py shows a gain): cudss.execute on DirectSolver.handle / config_ptr / data_ptr / a_ptr / x_ptr /
+# b_ptr on cupy's current stream; any error uses the nvmath call from then on. The refactorization phase reuses the
+# first factorisation's pivot data (the probe / deferred check judges it like any refresh); the raw solve writes one kept
+# solution buffer without nvmath's sync (its seconds are launch time).
 # Errors: CudssSingularError (zero-pivot status) and CudssAccuracyError (probe missed: an ill-conditioned operator,
 # e.g. a drive on a nearly lossless resonance), both RuntimeError, so callers can word the cause.
 import collections
@@ -121,6 +142,8 @@ import hashlib
 import importlib.util
 import logging
 import math
+import os
+import sys
 import threading
 import time
 
@@ -146,6 +169,14 @@ KEPT_ORDERINGS = 8             # orderings remember_cudss_orderings keeps (oldes
 MIXED_STALL_ITERATIONS = 4     # mixed probe / deferred check: GMRES iterations before the stall test (module header)
 MIXED_STALL_MARGIN = 100.0     # stalled when the rate so far, extrapolated to MIXED_MAX_REFINEMENTS, misses the gate
                                # by more than this factor
+# Measure first (tools_profilers/time_profilers/cudss_phase_profile.py times each against the nvmath path on a real
+# factor); off until it shows a gain, every error falls back to the nvmath call (module header "Raw cuDSS phases")
+REFACTORIZATION_PHASE = False  # K3: a refresh of a plan factorised before runs cuDSS's REFACTORIZATION phase
+RAW_SOLVE = False              # K7: solves by cudss.execute on a kept solution buffer (no nvmath solve() / its sync)
+REORDERING_ALGORITHM = None    # K10: a cudss.ReorderingAlg name (e.g. 'AMD') for fresh plans; None = cuDSS's default
+KEPT_PLANS = 1                 # K5: planned solvers parked by release() for a new factor object of the same key (0: off)
+ORDERING_STORE_ENVIRONMENT = 'OPEN_SOL_CUDSS_ORDERING_CACHE'   # K6: folder of the on-disk ordering store; unset = off
+ORDERING_STORE_MAX_BYTES = 256 * 1024 ** 2   # oldest store files (by mtime) removed above this total
 _PROBE_SEED = 11
 _KIND_TEXTS = {'general': 'LU', 'symmetric': 'LDL^T', 'spd': 'Cholesky'}
 _LOGGER = logging.getLogger('open_sol.cudss')
@@ -178,6 +209,9 @@ def cudss_available() -> bool:
 
 
 _library_thread = None   # warm_cudss_library's host thread; _direct_solver joins it before the first cuDSS call
+# perf_counter stamps of the load thread (K9: what an earlier start would overlap is read from these first): started,
+# loaded (None until done), joined (the GPU thread's first join), join_wait (seconds that join waited)
+_library_timing = {'started': None, 'loaded': None, 'joined': None, 'join_wait': None}
 
 
 def warm_cudss_library() -> None:
@@ -186,8 +220,15 @@ def warm_cudss_library() -> None:
     global _library_thread
     if _library_thread is not None or not cudss_available():
         return
+    _library_timing['started'] = time.perf_counter()
     _library_thread = threading.Thread(target=_load_cudss_library, name='open_sol cuDSS load', daemon=True)
     _library_thread.start()
+
+
+def cudss_library_timing() -> dict:
+    """Copy of the load thread's perf_counter stamps (started / loaded / joined, None when not reached) and the
+    seconds the first join waited (K9: measure what the load overlaps before moving its start)."""
+    return dict(_library_timing)
 
 
 def _load_cudss_library():
@@ -198,12 +239,19 @@ def _load_cudss_library():
         cudss.get_property(0)   # libraryPropertyType MAJOR_VERSION: loads cuDSS and its dependencies
     except Exception:   # the first plan on the GPU-owning thread reports a broken install
         pass
+    _library_timing['loaded'] = time.perf_counter()
 
 
 def _join_library_thread():
     """Wait for warm_cudss_library's thread (cuDSS is not thread-safe: nothing of it runs while the GPU thread plans)."""
     if _library_thread is not None:
-        _library_thread.join()
+        if _library_timing['joined'] is None:
+            started = time.perf_counter()
+            _library_thread.join()
+            _library_timing['joined'] = time.perf_counter()
+            _library_timing['join_wait'] = _library_timing['joined'] - started
+        else:
+            _library_thread.join()
 
 
 def _thread_size_buffers():
@@ -217,15 +265,22 @@ def _thread_size_buffers():
 
 _kept_orderings = None   # ordering key -> (row permutation, partition tree) while remember_cudss_orderings is on
 _rejected_mixed = None   # (kind, real, n, nnz, digest) -> rejection text of a mixed factor, same lifetime (H4)
+_parked_plans = None     # (ordering key, kind, factor dtype) -> _ParkedPlan, same lifetime (K5, module header)
+_ordering_store = False  # K6: the on-disk store is read / written (remember_cudss_orderings(store=True) only)
 
 
-def remember_cudss_orderings(enabled=True) -> None:
+def remember_cudss_orderings(enabled=True, store=True) -> None:
     """Keep the orderings of the last KEPT_ORDERINGS planned patterns for re-plans by other factor objects (module
-    header "Ordering reuse") and the patterns whose mixed factor was rejected ("Rejected mixed factors"); off forgets
-    both."""
-    global _kept_orderings, _rejected_mixed
+    header "Ordering reuse"), the patterns whose mixed factor was rejected ("Rejected mixed factors") and up to
+    KEPT_PLANS released plans ("Parked plans"); store: also the on-disk ordering store (ORDERING_STORE_ENVIRONMENT names
+    its folder, unset = off; the GUI worker's call; run_study's cudss_orderings_kept passes False, so api / CLI runs
+    and selftests never read it). Off forgets all and frees the parked plans."""
+    global _kept_orderings, _rejected_mixed, _parked_plans, _ordering_store
+    drop_parked_plans()
     _kept_orderings = collections.OrderedDict() if enabled else None
     _rejected_mixed = collections.OrderedDict() if enabled else None
+    _parked_plans = collections.OrderedDict() if enabled else None
+    _ordering_store = bool(enabled and store)
 
 
 def remembers_cudss_orderings() -> bool:
@@ -234,7 +289,8 @@ def remembers_cudss_orderings() -> bool:
 
 
 def cudss_orderings_kept():
-    """Context manager: remember_cudss_orderings inside the block, the previous state restored after (run_study)."""
+    """Context manager: remember_cudss_orderings (without the on-disk store) inside the block, the previous state
+    restored after (run_study)."""
     return _KeptOrderings()
 
 
@@ -242,13 +298,149 @@ class _KeptOrderings:
     def __enter__(self):
         self._was_on = remembers_cudss_orderings()
         if not self._was_on:
-            remember_cudss_orderings()
+            remember_cudss_orderings(store=False)
         return self
 
     def __exit__(self, *exc_info):
-        if not self._was_on:   # forgets the kept orderings (host memory)
+        if not self._was_on:   # forgets the kept orderings (host memory) and frees the parked plans (device)
             remember_cudss_orderings(False)
+        else:   # inside the GUI worker's scope: the study's parked plans (device memory) end with the study
+            drop_parked_plans()
         return False
+
+
+class _ParkedPlan:
+    """A released factor's planned DirectSolver kept for the next factor object of its key (K5): its outside-pool
+    bytes stay booked in external_live_bytes; its operands are detached (the pool arrays freed with their factor)."""
+
+    __slots__ = ('solver', 'tracked_bytes', 'permanent_bytes', 'peak_bytes', 'ordering')
+
+    def __init__(self, solver, tracked_bytes, permanent_bytes, peak_bytes, ordering):
+        self.solver, self.tracked_bytes = solver, tracked_bytes
+        self.permanent_bytes, self.peak_bytes, self.ordering = permanent_bytes, peak_bytes, ordering
+
+    def free(self) -> None:
+        """Free the solver and take its bytes off external_live_bytes."""
+        try:
+            self.solver.free()
+        finally:
+            _external['live'] = max(_external['live'] - self.tracked_bytes, 0)
+            self.solver, self.tracked_bytes = None, 0
+
+
+def drop_parked_plans() -> None:
+    """Free every parked plan (K5): a plan of another key, the start of a build (reset_external_high_water), the end of
+    the remember_cudss_orderings scope."""
+    if not _parked_plans:
+        return
+    while _parked_plans:
+        _key, parked = _parked_plans.popitem(last=False)
+        try:
+            parked.free()
+        except Exception as error:   # interpreter shutdown: the CUDA context may already be gone
+            _LOGGER.info('cuDSS parked plan not freed (%s)', error)
+
+
+def _detach_operands(solver) -> None:
+    """Drop a planned DirectSolver's references to its operand arrays (cuDSS keeps their pointers but runs no phase
+    until _attach_operands re-points them; nvmath private attributes: an error keeps the solver from being parked)."""
+    holder = solver.a
+    for part in (holder._crow_indices, holder._col_indices, holder._values):
+        part.tensor = None
+    holder.tensor = None
+    solver.b.tensor = None
+
+
+def _attach_operands(solver, matrix, rhs) -> None:
+    """Point a parked DirectSolver at a new factor matrix of its planned pattern and kind and a new rhs buffer (nvmath's
+    own pointer updates, without its reset_operands, which drops the plan)."""
+    from nvmath.sparse._internal import cudss_utils
+    solver.a.reset_unchecked_keeping_shell(matrix)
+    cudss_utils.update_cudss_csr_ptr_wrapper(existing_ptrs=solver.resources_a_ptrs, lhs_ptr=solver.a_ptr,
+                                             batch_indices=solver.batch_indices, new_lhs=solver.a, stream_holder=None)
+    solver.b.tensor = rhs
+    cudss_utils.update_cudss_dense_ptr_wrapper(existing_ptrs=solver.resources_b_ptrs, rhs_ptr=solver.b_ptr,
+                                               batch_indices=solver.batch_indices, new_rhs=solver.b,
+                                               stream_holder=None)
+
+
+def _raw_execute(solver, phase_name) -> None:
+    """cudss.execute of one phase ('REFACTORIZATION', 'SOLVE') on a planned DirectSolver's handles, on cupy's current
+    stream (nvmath's own stream for cupy operands), no synchronisation (module header "Raw cuDSS phases")."""
+    import cupy as cp
+    from nvmath.bindings import cudss
+    cudss.set_stream(solver.handle, cp.cuda.get_current_stream().ptr)
+    cudss.execute(solver.handle, getattr(cudss.Phase, phase_name), solver.config_ptr, solver.data_ptr, solver.a_ptr,
+                  solver.x_ptr, solver.b_ptr)
+
+
+_library_version = None   # (major, minor, patch) of the loaded cuDSS (ordering store key)
+
+
+def _cudss_version():
+    """(major, minor, patch) of the loaded cuDSS library (libraryPropertyType 0 / 1 / 2), read once."""
+    global _library_version
+    if _library_version is None:
+        from nvmath.bindings import cudss
+        _library_version = tuple(int(cudss.get_property(part)) for part in range(3))
+    return _library_version
+
+
+def _ordering_store_path(key):
+    """File of an ordering key in the on-disk store (K6), None when the store is off: remember_cudss_orderings(store=
+    True) and a folder in ORDERING_STORE_ENVIRONMENT (read per call)."""
+    if not _ordering_store or _kept_orderings is None:
+        return None
+    folder = os.environ.get(ORDERING_STORE_ENVIRONMENT, '')
+    if not folder:
+        return None
+    name = hashlib.blake2b(repr((key, _cudss_version())).encode(), digest_size=16).hexdigest()
+    return os.path.join(os.path.abspath(folder), f'cudss_ordering_{name}.npz')
+
+
+def _stored_ordering(key):
+    """(permutation, tree) of an ordering key from the on-disk store, None when absent, off or not valid (a bad file
+    plans from scratch; the key holds n, the pattern digest and the cuDSS version)."""
+    path = _ordering_store_path(key)
+    if path is None or not os.path.isfile(path):
+        return None
+    try:
+        with np.load(path) as stored:
+            permutation, tree = stored['permutation'], stored['tree']
+        n_unknowns = int(key[1])
+        if (permutation.dtype != np.int32 or tree.dtype != np.int32 or permutation.shape != (n_unknowns,)
+                or not tree.size or permutation.min() < 0 or permutation.max() >= n_unknowns
+                or not np.all(np.bincount(permutation, minlength=n_unknowns) == 1)):
+            raise ValueError('not a permutation of the key or no partition tree')
+        os.utime(path)   # recently used: pruned last
+        return np.ascontiguousarray(permutation), np.ascontiguousarray(tree)
+    except Exception as error:
+        _LOGGER.info('cuDSS stored ordering not read (%s)', error)
+        return None
+
+
+def _store_ordering(key, ordering) -> None:
+    """Write a fresh plan's (permutation, tree) to the on-disk store (temporary file + rename), then prune the folder by
+    mtime to ORDERING_STORE_MAX_BYTES; failures are ignored (the store is optional)."""
+    path = _ordering_store_path(key)
+    if path is None:
+        return
+    try:
+        folder = os.path.dirname(path)
+        os.makedirs(folder, exist_ok=True)
+        temporary = f'{path}.{os.getpid()}.tmp.npz'
+        np.savez(temporary, permutation=ordering[0], tree=ordering[1])
+        os.replace(temporary, path)
+        stored = sorted((entry for entry in os.scandir(folder)
+                         if entry.name.startswith('cudss_ordering_') and entry.name.endswith('.npz')),
+                        key=lambda entry: entry.stat().st_mtime, reverse=True)
+        total = 0
+        for entry in stored:
+            total += entry.stat().st_size
+            if total > ORDERING_STORE_MAX_BYTES and entry.path != path:
+                os.remove(entry.path)
+    except Exception as error:
+        _LOGGER.info('cuDSS ordering not stored (%s)', error)
 
 
 def _read_ordering(solver):
@@ -296,6 +488,35 @@ def _pattern_key(indptr, indices):
     return int(indptr.size) - 1, int(indices.size), digest.hexdigest()
 
 
+SOURCE_DIGESTS = 8   # caller pattern arrays whose planned-pattern digest is remembered (K8)
+_source_digests = collections.OrderedDict()   # (id indptr, id indices) -> (weakref indptr, weakref indices, key)
+
+
+def _source_digest(source):
+    """The planned-pattern key remembered for these caller arrays (identity, alive), else None (K8: a new factor object
+    of a fixed pattern skips the hash; callers never modify those arrays in place, as _on_planned_pattern needs)."""
+    if source is None:
+        return None
+    found = _source_digests.get((id(source[0]), id(source[1])))
+    if found is None or found[0]() is not source[0] or found[1]() is not source[1]:
+        return None
+    return found[2]
+
+
+def _remember_source_digest(source, key) -> None:
+    """Remember a planned-pattern key for the caller arrays it was matched to (weak references; oldest dropped)."""
+    if source is None:
+        return
+    import weakref
+    try:
+        entry = (weakref.ref(source[0]), weakref.ref(source[1]), key)
+    except TypeError:   # not weak-referenceable: no reuse
+        return
+    _source_digests[(id(source[0]), id(source[1]))] = entry
+    while len(_source_digests) > SOURCE_DIGESTS:
+        _source_digests.popitem(last=False)
+
+
 _SCALED_LOWER_KERNELS = {}   # single_copy -> ElementwiseKernel (built on first use)
 
 
@@ -314,6 +535,47 @@ def _scaled_lower_kernel(single_copy):
             _SCALED_LOWER_KERNELS[False] = cp.ElementwiseKernel(inputs, 'T scaled', operation,
                                                                 'open_sol_cudss_scaled_lower')
     return _SCALED_LOWER_KERNELS[single_copy]
+
+
+_REFRESH_KERNELS = {}   # (name, variant flags) -> ElementwiseKernel of _fused_refresh (built on first use)
+
+
+def _scaled_take_kernel(single_copy):
+    """ElementwiseKernel E_l = a[take_l] r[row_l] r[column_l] over the stored lower-triangle entries of a full-pattern
+    value array (K2: no gathered temporary), with single_copy also the factor-dtype copy in the same pass."""
+    key = ('take', bool(single_copy))
+    if key not in _REFRESH_KERNELS:
+        import cupy as cp
+        inputs = 'raw T values, I take, int32 row, int32 column, raw float64 scale'
+        operation = 'scaled = values[take] * (scale[row] * scale[column]);'
+        if single_copy:
+            _REFRESH_KERNELS[key] = cp.ElementwiseKernel(inputs, 'T scaled, F single',
+                                                         operation + ' single = (F)scaled;',
+                                                         'open_sol_cudss_scaled_take_single')
+        else:
+            _REFRESH_KERNELS[key] = cp.ElementwiseKernel(inputs, 'T scaled', operation, 'open_sol_cudss_scaled_take')
+    return _REFRESH_KERNELS[key]
+
+
+def _row_scale_kernel(complex_values, derive, diagonal):
+    """ElementwiseKernel over the rows (K2): derive = R_i = |a_ii|^-1/2 from the diagonal slot (1 where a row has no
+    diagonal or a zero one: _checked_row_scale's rule), else R given as input; diagonal = also E_ii = a_ii R_i R_i
+    (0 without a diagonal entry) into the planned diagonal of a symmetric kind."""
+    key = ('scale', bool(complex_values), bool(derive), bool(diagonal))
+    if key not in _REFRESH_KERNELS:
+        import cupy as cp
+        magnitude = 'abs(a)' if complex_values else 'fabs((double)a)'
+        inputs = 'raw T values, int64 slot, bool has_diagonal' + ('' if derive else ', float64 scale')
+        outputs = ', '.join((['float64 scale'] if derive else []) + (['T diagonal'] if diagonal else []))
+        operation = 'const T a = has_diagonal ? values[slot] : T(0); '
+        if derive:
+            operation += f'const double m = {magnitude}; scale = 1.0 / sqrt(m > 0.0 ? m : 1.0); '
+        if diagonal:
+            operation += 'diagonal = has_diagonal ? a * (scale * scale) : T(0);'
+        name = (f"open_sol_cudss_row_scale_{'complex' if complex_values else 'real'}"
+                f"{'_derived' if derive else '_given'}{'_diagonal' if diagonal else ''}")
+        _REFRESH_KERNELS[key] = cp.ElementwiseKernel(inputs, outputs, operation, name)
+    return _REFRESH_KERNELS[key]
 
 
 _MAGNITUDE_SUM_KERNELS = {}   # (lower, complex_values) -> ElementwiseKernel (built on first use)
@@ -380,8 +642,10 @@ def operator_copy_bytes(n_unknowns, entries, value_bytes=16, symmetric=True, mix
 
 
 def solve_buffer_bytes(n_unknowns, value_bytes=16, mixed=False) -> int:
-    """Pool bytes a plan keeps beside its CSR copies: the factor-dtype rhs buffer cuDSS reads and the float64 row scale."""
-    return ((int(value_bytes) // 2 if mixed else int(value_bytes)) + 8) * int(n_unknowns)
+    """Pool bytes a plan keeps beside its CSR copies: the factor-dtype rhs buffer cuDSS reads (with RAW_SOLVE also the
+    kept solution buffer it writes) and the float64 row scale."""
+    buffers = 2 if RAW_SOLVE else 1
+    return (buffers * (int(value_bytes) // 2 if mixed else int(value_bytes)) + 8) * int(n_unknowns)
 
 
 def solve_peak_bytes(n_unknowns, value_bytes=16, mixed=False) -> int:
@@ -410,7 +674,9 @@ def index_map_bytes(n_unknowns, entries, symmetry_check=True, lower_only=False, 
 def refresh_peak_bytes(entries, value_bytes=16, symmetry_check=True, n_unknowns=0, mixed=False) -> int:
     """Transient pool bytes of one refresh on the planned pattern (uploaded and equilibrated values, the float64
     row-scale gathers; symmetry_check: the int64 keys of the transpose map), freed when it returns; n_unknowns: or the
-    uploaded and equilibrated values held through the factorisation's probe solve (solve_peak_bytes), if larger."""
+    uploaded and equilibrated values held through the factorisation's probe solve (solve_peak_bytes), if larger.
+    Without symmetry_check a refresh on the reused plan (K2, _fused_refresh) holds only the uploaded values: the count
+    is the first plan from device values (same item), which holds both."""
     value_bytes, entries = int(value_bytes), int(entries)
     refresh = (2 * value_bytes + 32 if symmetry_check else max(2 * value_bytes + 8, value_bytes + 24)) * entries
     probe = 2 * value_bytes * entries + solve_peak_bytes(n_unknowns, value_bytes, mixed) if n_unknowns else 0
@@ -439,6 +705,9 @@ def refresh_bytes(n_unknowns, entries, value_bytes=16, symmetry_check=True) -> i
 # prism layers has line separators (a 2D mesh of node columns) and fills far less (sin_square_membrane_modes_3d, 2
 # quadratic layers, 355,555 unknowns, 73 entries per row: 138.5e6 factor entries where the rule counts 369e6;
 # float64 LDL^T permanent bytes / factor entry 10.5).
+# CUDSS_FILL_3D reads the 3D tensor-grid factors 48 % (mixed) / 76 % (double) low (em3d_fdfd): a 3D tensor caller
+# passes FactorFill(sparse_direct.box_dissection_entries(window shape, unknowns per cell)) instead (A5: the box
+# nested-dissection count, no refit to measured entries); the law stays for callers without a grid shape.
 CUDSS_FILL_2D = 3.4                   # factor values per n log2 n at CUDSS_REFERENCE_ROWS[2] stored entries per row
 CUDSS_FILL_3D = 6.0                   # factor values per n^(4/3) at CUDSS_REFERENCE_ROWS[3] entries per row
 CUDSS_REFERENCE_ROWS = {2: 5.0, 3: 13.0}
@@ -503,7 +772,9 @@ def external_high_water_bytes() -> int:
 
 
 def reset_external_high_water() -> None:
-    """Restart the high-water mark at the bytes live now (study.build_session: one build and its run)."""
+    """Restart the high-water mark at the bytes live now (study.build_session: one build and its run); parked plans
+    (K5) are freed first, so a new build plans and measures its own factors."""
+    drop_parked_plans()
     _external['high_water'] = _external['live']
 
 
@@ -663,13 +934,77 @@ def canonical_csr(host_operator, dtype=None):
     return csr
 
 
-def _lower_triangle(csr):
+def _lower_triangle(csr, rows=None):
     """Lower triangle (diagonal included) of a canonical host CSR, explicit zeros kept: its pattern follows the
-    operator's pattern, never its values."""
-    rows = _row_indices(csr)
+    operator's pattern, never its values; rows: the row of every entry when the caller has it."""
+    rows = _row_indices(csr) if rows is None else rows
     keep = csr.indices <= rows
     indptr = np.concatenate([[0], np.cumsum(np.bincount(rows[keep], minlength=csr.shape[0]))])
     return _int32_csr(csr.data[keep], csr.indices[keep], indptr, csr.shape)
+
+
+EQUILIBRATE_NUMBA_MIN_ENTRIES = 200_000   # equilibrate_values runs its numba row loop from this many stored entries
+
+
+def _equilibrate_host(data, indptr, indices, rows, row_scale, symmetrizer, sums) -> None:
+    """numpy form of equilibrate_values: data x symmetrizer[row] (empty: none) x r[row] x r[column] in place by
+    gathers; sums[0] = max row sum of |E|, sums[1] (when sums has two) = max column sum."""
+    if symmetrizer.size:
+        data *= symmetrizer[rows]
+    data *= row_scale[rows] * row_scale[indices]
+    magnitudes = np.abs(data)
+    n_rows = indptr.size - 1
+    sums[0] = np.bincount(rows, magnitudes, minlength=n_rows).max()
+    if sums.size > 1:
+        sums[1] = np.bincount(indices, magnitudes, minlength=n_rows).max()
+
+
+def _equilibrate_numba(numba):
+    """numba form of equilibrate_values (K4): one prange pass over the rows scales in place and sums |E| per row (no
+    gathered temporaries), a serial pass the column sums when asked for."""
+    @numba.njit(parallel=True, cache=True)
+    def equilibrate(data, indptr, indices, rows, row_scale, symmetrizer, sums):
+        n_rows = indptr.size - 1
+        row_totals = np.zeros(n_rows)
+        with_symmetrizer = symmetrizer.size > 0
+        for prange_row in numba.prange(n_rows):
+            row = np.int64(prange_row)
+            scale = row_scale[row]
+            total = 0.0
+            for position in range(indptr[row], indptr[row + 1]):
+                value = data[position]
+                if with_symmetrizer:
+                    value = value * symmetrizer[row]
+                value = value * (scale * row_scale[indices[position]])
+                data[position] = value
+                total += abs(value)
+            row_totals[row] = total
+        sums[0] = row_totals.max()
+        if sums.size > 1:
+            column_totals = np.zeros(n_rows)
+            for position in range(indices.size):
+                column_totals[indices[position]] += abs(data[position])
+            sums[1] = column_totals.max()
+    return equilibrate
+
+
+def equilibrate_values(data, indptr, indices, rows, row_scale, symmetrizer, column_sums=True, numba=None) -> tuple:
+    """Scale host CSR values in place to E = R D A R (data x symmetrizer[row] x r[row] x r[column]; symmetrizer None:
+    1) and return (max row sum of |E|, max column sum or None without column_sums). numba None: the numba row loop
+    from EQUILIBRATE_NUMBA_MIN_ENTRIES once numba is imported (core.kernels.host_twin; never imports it), True /
+    False: forced."""
+    from ..core.kernels import host_twin
+    twin = host_twin('solvers.cudss_equilibrate', _equilibrate_host, _equilibrate_numba)
+    if numba and twin.host_kind != 'numba':
+        raise RuntimeError('cudss_factor.equilibrate_values(numba=True): the numba loop is not available')
+    if numba is None:
+        numba = data.size >= EQUILIBRATE_NUMBA_MIN_ENTRIES and 'numba' in sys.modules
+    if not numba:
+        twin = twin.cpu
+    sums = np.zeros(2 if column_sums else 1)
+    twin(data, indptr, indices, rows, row_scale, np.empty(0, dtype=data.dtype) if symmetrizer is None else symmetrizer,
+         sums)
+    return float(sums[0]), (float(sums[1]) if column_sums else None)
 
 
 class _DeviceIndexMaps:
@@ -714,12 +1049,19 @@ class _DeviceIndexMaps:
         """Free the host passes (a later first read of a key makes them again)."""
         self._host = None
 
-    def _host_passes(self) -> dict:
+    def seed_host(self, rows, lower) -> None:
+        """Take the row of every entry and the lower take of this pattern from a caller that made them (a
+        DevicePencil, R5) instead of a second pass; ignored once the host passes exist."""
+        if self._host is None and rows.size == self._indices.size:
+            self._host_passes(rows, lower)
+
+    def _host_passes(self, rows=None, lower=None) -> dict:
+        """rows (any int dtype; uploads are int32) / lower / diagonal_slots / has_diagonal of the pattern."""
         if self._host is None:
             indptr, indices = self._indptr, self._indices
             n_rows = indptr.size - 1
-            rows = csr_rows(indptr, np.int32)
-            lower = np.flatnonzero(indices <= rows)          # int64 full-pattern slots of the lower triangle
+            rows = csr_rows(indptr, np.int32) if rows is None else rows
+            lower = np.flatnonzero(indices <= rows) if lower is None else lower   # int64 lower-triangle slots
             on_diagonal = np.flatnonzero(indices == rows)
             diagonal_slots = np.zeros(n_rows, dtype=np.int64)
             has_diagonal = np.zeros(n_rows, dtype=bool)
@@ -731,7 +1073,7 @@ class _DeviceIndexMaps:
 
     def _lower_rows(self, host) -> np.ndarray:
         if 'lower_rows' not in host:
-            host['lower_rows'] = host['rows'][host['lower']]
+            host['lower_rows'] = host['rows'][host['lower']].astype(np.int32, copy=False)
         return host['lower_rows']
 
     def _uploaded(self, key):
@@ -741,7 +1083,9 @@ class _DeviceIndexMaps:
         if key == 'columns':
             return cp.asarray(self._indices.astype(np.int32, copy=False))
         host = self._host_passes()
-        if key in ('rows', 'diagonal_slots', 'has_diagonal'):
+        if key == 'rows':
+            return cp.asarray(host['rows'].astype(np.int32, copy=False))
+        if key in ('diagonal_slots', 'has_diagonal'):
             return cp.asarray(host[key])
         if key == 'lower':
             return cp.asarray(host['lower'].astype(self.take_dtype))
@@ -910,19 +1254,27 @@ class CudssFactorization(ProbedFactor):
         self._ordering = None           # (key, row permutation, partition tree) of the last plan (ordering reuse)
         self.last_ordering_reused = False   # the last plan took a kept ordering (no host reordering)
         self.n_reused_orderings = 0
+        self.last_plan_adopted = False  # K5: the last plan was a parked plan of another factor object (no analysis)
+        self.n_adopted_plans = 0
+        self._plan_adopted = False      # the planned solver is an adopted one not yet accepted (rejected: fresh plan)
+        self._parkable = False          # the planned solver held an accepted factor (release() may park it)
+        self._solver_factorized = False   # the planned solver has been factorised once (REFACTORIZATION_PHASE)
+        self._solution = None           # RAW_SOLVE: the kept factor-dtype solution buffer cuDSS writes
+        self._raw_failed = set()        # raw phases ('SOLVE', 'REFACTORIZATION') that failed once: nvmath from then on
         if host_operator is not None:   # None: from_device_values factorises next
             self.refactorize(host_operator, row_scale=row_scale, symmetrizer=symmetrizer,
                              symmetric_known=symmetric_known)
 
     @classmethod
     def from_device_values(cls, values, indptr, indices, real=False, symmetric=False, precision='double',
-                           row_scale=None, positive_definite=False, check_symmetry=False, lower=False):
+                           row_scale=None, positive_definite=False, check_symmetry=False, lower=False,
+                           host_passes=None):
         """A factor planned straight from device values (cupy (nnz,)) on a canonical host pattern (R7: no host CSR);
         check_symmetry as refactorize_device_values (else the caller vouches for symmetry whenever it asks for it);
-        lower: the values are the lower triangle only (refactorize_device_lower; symmetric request)."""
+        lower: the values are the lower triangle only (refactorize_device_lower with host_passes; symmetric request)."""
         factor = cls(None, real=real, symmetric=symmetric, precision=precision, positive_definite=positive_definite)
         if lower:
-            factor.refactorize_device_lower(values, indptr, indices, row_scale=row_scale)
+            factor.refactorize_device_lower(values, indptr, indices, row_scale=row_scale, host_passes=host_passes)
         else:
             factor.refactorize_device_values(values, indptr, indices, row_scale=row_scale,
                                              check_symmetry=check_symmetry)
@@ -955,33 +1307,39 @@ class CudssFactorization(ProbedFactor):
         counts = self._solver.factorization_info.inertia
         return int(counts[0]), int(counts[1])
 
-    def refactorize(self, host_operator, row_scale=None, symmetrizer=None, symmetric_known=False) -> bool:
+    def refactorize(self, host_operator, row_scale=None, symmetrizer=None, symmetric_known=False,
+                    defer_check=False) -> bool:
         """Factorise a new host operator of the same size (new row_scale / symmetrizer values allowed); True when the
         plan was reused (same pattern and matrix type: values in place + factorize), False after a fresh plan.
-        symmetric_known: a canonical CSR (sorted, no duplicates) known to be symmetric: no canonicalising copy and no
-        asymmetry check (fem.fixed_pattern reduced tangents). On the planned pattern only the values (and a
-        symmetrizer) go to the device and refactorize_device_values does the rest there (H1; asymmetry checked on the
-        device)."""
+        symmetric_known: a canonical CSR (sorted, no duplicates) known to be symmetric, its index arrays never modified
+        in place: no canonicalising copy, no asymmetry check, the pattern matched by identity first (fem.fixed_pattern
+        reduced tangents, BOR's C^T W C). On the planned pattern only the values (and a symmetrizer) go to the device and
+        refactorize_device_values does the rest there (H1; asymmetry checked on the device unless symmetric_known).
+        defer_check: a factor on the reused plan is checked by its first solve (module header "Deferred check"; the
+        caller catches CudssAccuracyError at solve)."""
         import cupy as cp
         if (self._solver is not None and (symmetrizer is not None) == self.has_symmetrizer
                 and host_operator.shape == (self.n_unknowns, self.n_unknowns)):
-            csr = canonical_csr(host_operator)
-            if np.array_equal(self._pattern[0], csr.indptr) and np.array_equal(self._pattern[1], csr.indices):
+            csr = host_operator.tocsr() if symmetric_known else canonical_csr(host_operator)
+            if (self._on_planned_pattern(csr.indptr, csr.indices) if symmetric_known else
+                    np.array_equal(self._pattern[0], csr.indptr) and np.array_equal(self._pattern[1], csr.indices)):
                 if self.real and np.iscomplexobj(csr.data):
                     raise ValueError('CudssFactorization(real=True) needs a real operator')
                 return self.refactorize_device_values(cp.asarray(csr.data, dtype=self.value_dtype), *self._pattern,
-                                                      row_scale=row_scale, check_symmetry=not symmetric_known,
-                                                      symmetrizer=symmetrizer)
+                                                      row_scale=row_scale, defer_check=defer_check,
+                                                      check_symmetry=not symmetric_known, symmetrizer=symmetrizer)
         started = time.perf_counter()
         mark = self._plan_mark()
-        host_csr, row_scale, symmetrizer = self._equilibrated(host_operator, row_scale, symmetrizer,
-                                                              canonical=symmetric_known)
+        host_csr, row_scale, symmetrizer, rows = self._equilibrated(host_operator, row_scale, symmetrizer,
+                                                                    canonical=symmetric_known)
+        source = (host_operator.indptr, host_operator.indices) if symmetric_known else None   # never modified (K8)
         if not self.symmetric_requested:
             self.asymmetry = None
         else:
             self.asymmetry = 0.0 if symmetric_known else relative_asymmetry(host_csr)
         symmetric = self.symmetric_requested and self.asymmetry <= SYMMETRY_TOLERANCE
-        factor_host = _lower_triangle(host_csr) if symmetric else host_csr
+        factor_host = _lower_triangle(host_csr, rows) if symmetric else host_csr
+        del rows
         same_pattern = (self._solver is not None and np.array_equal(self._pattern[0], host_csr.indptr)
                         and np.array_equal(self._pattern[1], host_csr.indices))
         kind, reuse = self._kind_and_reuse(symmetric, same_pattern, host_csr.indptr, host_csr.indices)
@@ -990,11 +1348,12 @@ class CudssFactorization(ProbedFactor):
         attempt_kind, retried = kind, False
         while True:
             if retried or not reuse:
-                self._plan(host_csr, factor_host, attempt_kind)
+                self._plan(host_csr, factor_host, attempt_kind, source)
             else:
                 self._upload_values(host_csr, factor_host)
-            try:
-                self._factorize_and_probe()
+            try:   # deferred only on a reused plan whose earlier probe passed (a new plan is always probed)
+                self._factorize_and_probe(defer=reuse and not retried and defer_check
+                                          and self.probe_residual is not None)
                 break
             except _FactorRejected as rejected:
                 attempt_kind = self._next_attempt(rejected, attempt_kind)
@@ -1008,6 +1367,7 @@ class CudssFactorization(ProbedFactor):
         """refactorize's bookkeeping once a factor was accepted (reused: on the kept plan); returns reused."""
         if self._device_maps is not None:   # the index maps this factorisation read are uploaded: free their host passes
             self._device_maps.drop_host()
+        self._parkable, self._plan_adopted = True, False   # an accepted factor: its plan may be parked (K5)
         self.last_plan_reused = reused
         if reused:
             self.plan_seconds = 0.0
@@ -1044,10 +1404,16 @@ class CudssFactorization(ProbedFactor):
         return True
 
     def _planned_pattern_key(self):
-        """_pattern_key of the planned pattern (an own copy, never changed in place), hashed once per plan."""
+        """_pattern_key of the planned pattern (an own copy, never changed in place), hashed once per plan; a pattern
+        whose caller arrays (_pattern_source: never modified in place) were hashed by another factor object takes that
+        digest (K8: _source_digests)."""
         kept = getattr(self, '_planned_digest', None)
         if kept is None or kept[0] is not self._pattern:
-            kept = self._planned_digest = (self._pattern, _pattern_key(*self._pattern))
+            key = _source_digest(self._pattern_source)
+            if key is None:
+                key = _pattern_key(*self._pattern)
+                _remember_source_digest(self._pattern_source, key)
+            kept = self._planned_digest = (self._pattern, key)
         return kept[1]
 
     def _kind_and_reuse(self, symmetric, same_pattern, indptr, indices):
@@ -1075,7 +1441,12 @@ class CudssFactorization(ProbedFactor):
     def _next_attempt(self, rejected, kind):
         """Matrix kind to re-plan after a rejected factor of `kind`: a Cholesky -> LDL^T, then a mixed factor -> the
         double one (a mixed SPD LDL^T -> the double Cholesky; both sticky for later refactorisations, the mixed
-        rejection also remembered for this pattern); None when nothing is left."""
+        rejection also remembered for this pattern); None when nothing is left. A rejected adopted plan (K5) is first
+        re-planned from scratch as the same kind (the parked plan is not trusted twice)."""
+        if self._plan_adopted:
+            self._plan_adopted = False
+            _LOGGER.info('cuDSS adopted plan rejected (%s): planned from scratch', rejected)
+            return kind
         if kind == 'spd':
             _LOGGER.info('cuDSS Cholesky rejected (%s): re-planned as LDL^T', rejected)
             self._cholesky_rejected = True
@@ -1128,6 +1499,13 @@ class CudssFactorization(ProbedFactor):
             self._set_pattern(indptr, indices)
         self.n_unknowns = n_rows
         maps = self._device_index_maps()
+        kind = reuse = None
+        if symmetrizer is None and not check_symmetry and same_pattern:   # K2: the fused refresh when the plan is reused
+            kind, reuse = self._kind_and_reuse(self.symmetric_requested, True, *self._pattern)
+            if reuse:
+                self._fused_refresh(values, row_scale, maps)
+                self.asymmetry = 0.0 if self.symmetric_requested else None
+                return self._factorize_with_fallbacks(True, kind, defer_check, started, mark)
         if symmetrizer is not None:   # D A row by row (the host route's _equilibrated order: D before R)
             symmetrizer = cp.asarray(symmetrizer, dtype=self.value_dtype).reshape(-1)
             if symmetrizer.shape != (n_rows,) or not bool(cp.all(cp.isfinite(symmetrizer) & (symmetrizer != 0))):
@@ -1140,7 +1518,8 @@ class CudssFactorization(ProbedFactor):
         else:   # of E, as the host route's relative_asymmetry
             self.asymmetry = self._device_asymmetry(scaled, maps) if check_symmetry else 0.0
         symmetric = self.symmetric_requested and self.asymmetry <= SYMMETRY_TOLERANCE
-        kind, reuse = self._kind_and_reuse(symmetric, same_pattern, *self._pattern)
+        if kind is None:   # (the K2 attempt above decided kind / reuse from the same request already)
+            kind, reuse = self._kind_and_reuse(symmetric, same_pattern, *self._pattern)
         if symmetric:   # the storage of a symmetric kind: lower triangle + diagonal
             stored = scaled[maps['lower']]
             diagonal = cp.where(maps['has_diagonal'], scaled[maps['diagonal_slots']], 0.0)
@@ -1152,11 +1531,13 @@ class CudssFactorization(ProbedFactor):
             self._device_plan(stored, diagonal, kind, started)
         return self._factorize_with_fallbacks(reuse, kind, defer_check, started, mark)
 
-    def refactorize_device_lower(self, lower_values, indptr, indices, row_scale=None, defer_check=False) -> bool:
+    def refactorize_device_lower(self, lower_values, indptr, indices, row_scale=None, defer_check=False,
+                                 host_passes=None) -> bool:
         """refactorize_device_values of an operator whose symmetry was requested and is vouched for, given by its
         lower-triangle values (cupy, in the CSR order of the pattern's lower take: a lower-stored DevicePencil, R4):
         R from the lower diagonal (or row_scale), E_lower and its factor-dtype copy by one kernel straight into the
-        planned buffers (else into a new plan), the operator norm left lazy. True = plan reused."""
+        planned buffers (else into a new plan), the operator norm left lazy. host_passes: (row of every entry, lower
+        take) of this pattern made by the caller (_DeviceIndexMaps.seed_host). True = plan reused."""
         import cupy as cp
         if self.has_symmetrizer or not self.symmetric_requested:
             raise ValueError('CudssFactorization.refactorize_device_lower needs a symmetric request without a '
@@ -1176,6 +1557,8 @@ class CudssFactorization(ProbedFactor):
             self._set_pattern(indptr, indices)
         self.n_unknowns = n_rows
         maps = self._device_index_maps()   # this route reads the lower triangle's arrays only
+        if host_passes is not None:
+            maps.seed_host(*host_passes)
         if lower_values.size != maps.n_lower:
             raise ValueError(f'CudssFactorization.refactorize_device_lower: {lower_values.size} values for a lower '
                              f'triangle of {maps.n_lower} entries')
@@ -1269,6 +1652,33 @@ class CudssFactorization(ProbedFactor):
     def operator_norm(self, value):
         self._operator_norm = value
 
+    def _fused_refresh(self, values, row_scale, maps) -> None:
+        """K2: refresh of full-pattern device values on the reused plan without symmetrizer or symmetry check: R (and a
+        symmetric kind's diagonal of E) by one row kernel, E = a r_i r_j (+ the factor-dtype copy) straight into the
+        planned buffers by one entry kernel (_device_equilibrated + lower take + _refresh_device_values were ~10
+        launches and value-sized temporaries); the operator norm left lazy."""
+        import cupy as cp
+        complex_values = values.dtype.kind == 'c'
+        symmetric = self._diagonal is not None
+        if row_scale is None:
+            scale = cp.empty(self.n_unknowns, dtype=cp.float64)
+            outputs = (scale, self._diagonal) if symmetric else (scale,)
+            _row_scale_kernel(complex_values, True, symmetric)(values, maps['diagonal_slots'], maps['has_diagonal'],
+                                                               *outputs)
+        else:
+            scale = self._checked_row_scale(None, row_scale, maps)
+            if symmetric:
+                _row_scale_kernel(complex_values, False, True)(values, maps['diagonal_slots'], maps['has_diagonal'],
+                                                               scale, self._diagonal)
+        single = () if self._factor_matrix is self._operator else (self._factor_matrix.data,)
+        if symmetric:
+            _scaled_take_kernel(bool(single))(values, maps['lower'], maps['lower_rows'], maps['lower_indices'], scale,
+                                              self._operator.data, *single)
+        else:
+            _scaled_lower_kernel(bool(single))(values, maps['rows'], maps['columns'], scale, self._operator.data,
+                                               *single)
+        self._row_scale, self._symmetrizer, self.operator_norm = scale, None, None
+
     def _refresh_device_values(self, stored, diagonal) -> None:
         """Equilibrated device values in the planned storage (lower triangle + diagonal of a symmetric kind, else the
         full E) written into the planned buffers in place (no re-plan)."""
@@ -1357,8 +1767,9 @@ class CudssFactorization(ProbedFactor):
         return self._device_maps
 
     def _equilibrated(self, host_operator, row_scale, symmetrizer, canonical=False):
-        """(canonical int32 host CSR of E = R D A R in value_dtype, R, D or None): a copy of the values, scaled entry by
-        entry (canonical: host_operator is a canonical CSR already, its index arrays are shared, never modified)."""
+        """(canonical int32 host CSR of E = R D A R in value_dtype, R, D or None, int32 row of every entry): a copy of
+        the values, scaled entry by entry (canonical: host_operator is a canonical CSR known to be symmetric, its index
+        arrays shared, never modified; the norm from its row sums alone)."""
         n_rows, n_columns = host_operator.shape
         if n_rows != n_columns:
             raise ValueError(f'CudssFactorization needs a square operator, got shape {host_operator.shape}')
@@ -1377,23 +1788,23 @@ class CudssFactorization(ProbedFactor):
             csr = host_operator.tocsr().astype(self.value_dtype)   # a copy: the caller's operator stays as it is
             csr.sum_duplicates()                                  # canonical (sorted, summed); explicit zeros kept
             host_csr = _int32_csr(csr.data, csr.indices, csr.indptr, csr.shape)
-        rows = _row_indices(host_csr)
+        rows = csr_rows(host_csr.indptr, np.int32)   # shared with _lower_triangle (one pass)
         if symmetrizer is not None:
             symmetrizer = np.asarray(symmetrizer, dtype=self.value_dtype)
             if symmetrizer.shape != (n_rows,) or not (np.isfinite(symmetrizer).all() and (symmetrizer != 0).all()):
                 raise ValueError(f'CudssFactorization symmetrizer must be ({n_rows},), finite and nonzero')
-            host_csr.data *= symmetrizer[rows]
-        if row_scale is None:
-            diagonal = np.abs(host_csr.diagonal())
+        if row_scale is None:   # from diag(D A) (D_i a_ii: the product the scaling pass forms)
+            diagonal = host_csr.diagonal()
+            diagonal = np.abs(diagonal if symmetrizer is None else diagonal * symmetrizer)
             row_scale = 1.0 / np.sqrt(np.where(diagonal > 0.0, diagonal, 1.0))
         row_scale = np.asarray(row_scale, dtype=np.float64)
         if row_scale.shape != (n_rows,) or not (np.isfinite(row_scale).all() and (row_scale > 0.0).all()):
             raise ValueError(f'CudssFactorization row_scale must be ({n_rows},), finite and > 0')
-        host_csr.data *= row_scale[rows] * row_scale[host_csr.indices]
-        magnitudes = np.abs(host_csr.data)
-        self.operator_norm = float(np.sqrt(np.bincount(rows, magnitudes, minlength=n_rows).max()
-                                           * np.bincount(host_csr.indices, magnitudes, minlength=n_rows).max()))
-        return host_csr, row_scale, symmetrizer
+        symmetric_sums = canonical and symmetrizer is None   # symmetric E: column sums = row sums
+        row_sums, column_sums = equilibrate_values(host_csr.data, host_csr.indptr, host_csr.indices, rows, row_scale,
+                                                   symmetrizer, column_sums=not symmetric_sums)
+        self.operator_norm = row_sums if symmetric_sums else math.sqrt(row_sums * column_sums)
+        return host_csr, row_scale, symmetrizer, rows
 
     def _factor_copy(self, factor_host):
         """Device CSR cuDSS factorises: _operator itself in double (the full E, or the lower triangle of a symmetric
@@ -1403,9 +1814,10 @@ class CudssFactorization(ProbedFactor):
             return self._operator
         return cupyx.scipy.sparse.csr_matrix(factor_host.astype(self._factor_dtype))
 
-    def _plan(self, host_csr, factor_host, kind):
+    def _plan(self, host_csr, factor_host, kind, source=None):
         """Upload, create and plan a DirectSolver of `kind` (freeing the previous one); ValueError when cuDSS's peak
-        estimate exceeds DEVICE_FRACTION of the free device memory."""
+        estimate exceeds DEVICE_FRACTION of the free device memory. source: the caller's (indptr, indices) of this
+        pattern when it never modifies them (symmetric_known: identity matches, K8 digest reuse)."""
         import cupy as cp
         import cupyx.scipy.sparse
         self._free_solver()
@@ -1421,7 +1833,7 @@ class CudssFactorization(ProbedFactor):
         self._operator_transpose = self._operator.T if symmetric else None   # a CSC view sharing the arrays
         self._factor_matrix = self._factor_copy(factor_host)   # cuDSS keeps its pointers
         self._pattern = (host_csr.indptr.copy(), host_csr.indices.copy())
-        self._pattern_source = None   # the caller arrays matched to it (_on_planned_pattern)
+        self._pattern_source = source   # the caller arrays matched to it (_on_planned_pattern)
         self._plan_solver(kind, started)
 
     def _plan_solver(self, kind, started):
@@ -1430,14 +1842,21 @@ class CudssFactorization(ProbedFactor):
         DEVICE_FRACTION of the free device memory."""
         import cupy as cp
         from ..core.gpu_memory import format_bytes
+        self._parkable = self._solver_factorized = False
         self._rhs = cp.zeros(self.n_unknowns, dtype=self._factor_dtype)       # cuDSS keeps this buffer's pointer
-        self._solver = _direct_solver(self._factor_matrix, self._rhs, kind)
         key = self._ordering_key(kind)
+        if self._adopted_plan(key, kind, started):
+            return
+        drop_parked_plans()   # a plan of another key: their device memory goes before this plan's memory check
+        self._solver = _direct_solver(self._factor_matrix, self._rhs, kind)
         known = self._known_ordering(key)
         self.last_ordering_reused = known is not None and _set_ordering(self._solver, known)
         if known is not None and not self.last_ordering_reused:   # never the permutation without its tree
             self._solver.free()
             self._solver = _direct_solver(self._factor_matrix, self._rhs, kind)
+        if REORDERING_ALGORITHM is not None:   # K10 experiment (key None: no ordering kept or reused)
+            from nvmath.bindings import cudss
+            self._solver.plan_config.reordering_algorithm = getattr(cudss.ReorderingAlg, REORDERING_ALGORITHM)
         self._solver.plan()
         if self.last_ordering_reused:
             self._ordering = (key, *known)   # kept alive while this solver may read them
@@ -1447,6 +1866,7 @@ class CudssFactorization(ProbedFactor):
             if ordering is not None:
                 self._remember_ordering(key, ordering)
         self.matrix_kind = kind
+        self.last_plan_adopted = False
         self.plan_seconds = time.perf_counter() - started   # upload + reordering (host) + symbolic factorisation
         self.total_plan_seconds += self.plan_seconds
         self.n_plans += 1
@@ -1463,15 +1883,68 @@ class CudssFactorization(ProbedFactor):
                              f'memory ({format_bytes(free_bytes)}): refused before it could overrun the device; '
                              f'{_TO_SUPERLU}, or coarsen the mesh')
 
+    def _adopted_plan(self, key, kind, started) -> bool:
+        """K5: take the parked plan of (key, kind, factor dtype) as this object's planned solver (pointed at its
+        _factor_matrix and _rhs; its outside-pool bytes stay booked; counted as a plan on a kept ordering, no memory
+        check: its factor is allocated already); False when none is parked or it cannot be attached (then freed)."""
+        if not _parked_plans or key is None:
+            return False
+        parked = _parked_plans.pop((key, kind, np.dtype(self._factor_dtype).str), None)
+        if parked is None:
+            return False
+        try:
+            _attach_operands(parked.solver, self._factor_matrix, self._rhs)
+            parked.solver.solution_config.ir_num_steps = 0   # a fresh plan's refinement setting
+        except Exception as error:
+            _LOGGER.info('cuDSS parked plan not adopted (%s)', error)
+            parked.free()
+            return False
+        self._solver, self._tracked_bytes = parked.solver, parked.tracked_bytes
+        self._permanent_bytes = self.permanent_bytes = parked.permanent_bytes
+        self.peak_bytes = parked.peak_bytes
+        self._ordering = (key, *parked.ordering)
+        self.matrix_kind = kind
+        self.last_ordering_reused = self.last_plan_adopted = self._plan_adopted = True
+        self.n_reused_orderings += 1
+        self.n_adopted_plans += 1
+        self.plan_seconds = time.perf_counter() - started
+        self.total_plan_seconds += self.plan_seconds
+        self.n_plans += 1
+        return True
+
+    def _park_solver(self) -> bool:
+        """K5: park the planned solver of an accepted factor while remember_cudss_orderings is on (KEPT_PLANS entries,
+        oldest freed); True when parked (this object no longer holds it)."""
+        if (KEPT_PLANS <= 0 or _parked_plans is None or self._solver is None or not self._parkable
+                or self._ordering is None):
+            return False
+        try:
+            _detach_operands(self._solver)
+        except Exception as error:   # an nvmath without these attributes: freed as before
+            _LOGGER.info('cuDSS plan not parked (%s)', error)
+            return False
+        key = (self._ordering[0], self.matrix_kind, np.dtype(self._factor_dtype).str)
+        replaced = _parked_plans.pop(key, None)
+        if replaced is not None:
+            replaced.free()
+        _parked_plans[key] = _ParkedPlan(self._solver, self._tracked_bytes, self.permanent_bytes, self.peak_bytes,
+                                         self._ordering[1:])
+        while len(_parked_plans) > KEPT_PLANS:
+            _parked_plans.popitem(last=False)[1].free()
+        self._solver, self._tracked_bytes, self._parkable = None, 0, False
+        return True
+
     def _ordering_key(self, kind):
-        """(ordering family of kind, n, nnz, digest of the planned pattern); None before a plan. Real and complex
-        operators of one pattern share the key."""
-        if self._pattern is None:
+        """(ordering family of kind, n, nnz, digest of the planned pattern); None before a plan and while the K10
+        REORDERING_ALGORITHM experiment is set (its orderings are neither kept nor reused). Real and complex operators
+        of one pattern share the key."""
+        if self._pattern is None or REORDERING_ALGORITHM is not None:
             return None
         return (ORDERING_FAMILIES[kind], *self._planned_pattern_key())
 
     def _known_ordering(self, key):
-        """(permutation, tree) kept for this key: this object's last plan, else the remember_cudss_orderings store."""
+        """(permutation, tree) kept for this key: this object's last plan, else the remember_cudss_orderings store,
+        else the on-disk store (K6; read into the in-process store)."""
         if key is None:
             return None
         if self._ordering is not None and self._ordering[0] == key:
@@ -1479,16 +1952,26 @@ class CudssFactorization(ProbedFactor):
         if _kept_orderings is not None and key in _kept_orderings:
             _kept_orderings.move_to_end(key)
             return _kept_orderings[key]
-        return None
+        stored = _stored_ordering(key)
+        if stored is not None:
+            self._keep_ordering(key, stored)
+        return stored
 
     def _remember_ordering(self, key, ordering) -> None:
-        """Keep a fresh plan's ordering on this object and, while remember_cudss_orderings is on, in the store."""
+        """Keep a fresh plan's ordering on this object and, while remember_cudss_orderings is on, in the store (and the
+        on-disk store when it is on, K6)."""
         self._ordering = (key, *ordering)
         if _kept_orderings is not None:
-            _kept_orderings[key] = ordering
-            _kept_orderings.move_to_end(key)
-            while len(_kept_orderings) > KEPT_ORDERINGS:
-                _kept_orderings.popitem(last=False)
+            self._keep_ordering(key, ordering)
+            _store_ordering(key, ordering)
+
+    @staticmethod
+    def _keep_ordering(key, ordering) -> None:
+        """Put an ordering into the in-process store (newest last, oldest dropped above KEPT_ORDERINGS)."""
+        _kept_orderings[key] = ordering
+        _kept_orderings.move_to_end(key)
+        while len(_kept_orderings) > KEPT_ORDERINGS:
+            _kept_orderings.popitem(last=False)
 
     def _upload_values(self, host_csr, factor_host):
         """New values of the planned pattern written into the planned device buffers in place (no re-plan)."""
@@ -1506,7 +1989,7 @@ class CudssFactorization(ProbedFactor):
         failed status or probe."""
         self._check_pending = False
         factorize_started = time.perf_counter()
-        info = self._solver.factorize()
+        info = self._numeric_factorization()
         self.factorize_seconds = time.perf_counter() - factorize_started
         status = int(info.info)
         kind_text = _KIND_TEXTS[self.matrix_kind]
@@ -1553,6 +2036,26 @@ class CudssFactorization(ProbedFactor):
             self.probe_residual, self.probe_backward_error = self._probe_errors(probe)
             if not self._probe_accepted(ACCEPT_RESIDUAL):
                 raise _FactorRejected(self._double_accuracy_error())
+
+    def _numeric_factorization(self):
+        """nvmath factorize(); with REFACTORIZATION_PHASE (K3) on a planned solver this object factorised before,
+        cuDSS's REFACTORIZATION phase by cudss.execute (synchronised, as nvmath's blocking call), the nvmath
+        factorize on any error (then for good) or a nonzero status. Returns the factorization info."""
+        if REFACTORIZATION_PHASE and self._solver_factorized and 'REFACTORIZATION' not in self._raw_failed:
+            try:
+                import cupy as cp
+                _raw_execute(self._solver, 'REFACTORIZATION')
+                cp.cuda.get_current_stream().synchronize()
+                info = self._solver.factorization_info
+                if int(info.info) == 0:
+                    return info
+                _LOGGER.info('cuDSS REFACTORIZATION status %s: factorised again', int(info.info))
+            except Exception as error:
+                self._raw_failed.add('REFACTORIZATION')
+                _LOGGER.info('cuDSS REFACTORIZATION phase not used (%s)', error)
+        info = self._solver.factorize()
+        self._solver_factorized = True
+        return info
 
     def _double_accuracy_error(self) -> CudssAccuracyError:
         """CudssAccuracyError of a double factor whose probe (or deferred check) missed the gate after refinement."""
@@ -1618,6 +2121,7 @@ class CudssFactorization(ProbedFactor):
                 break
             except _FactorRejected as error:
                 rejected = error
+        self._parkable, self._plan_adopted = True, False   # an accepted factor (K5)
         self.n_factorizations += 1
         self.factor_seconds = time.perf_counter() - started
         self.total_factor_seconds += self.factor_seconds
@@ -1645,12 +2149,32 @@ class CudssFactorization(ProbedFactor):
         return self._operator @ vector + self._operator_transpose @ vector - self._diagonal * vector
 
     def _cudss_solve(self):
-        """cuDSS solve of the rhs buffer, timed and counted."""
+        """cuDSS solve of the rhs buffer, timed and counted (RAW_SOLVE: the kept solution buffer, read before the next
+        solve by every caller here; its seconds are then the launch alone, no sync)."""
         started = time.perf_counter()
-        solution = self._solver.solve()
+        solution = self._raw_solve() if RAW_SOLVE and 'SOLVE' not in self._raw_failed else None
+        if solution is None:
+            solution = self._solver.solve()
         self.solve_seconds += time.perf_counter() - started
         self.n_solves += 1
         return solution
+
+    def _raw_solve(self):
+        """K7: cudss.execute(SOLVE) into the kept factor-dtype solution buffer (pointed at by x every call: nvmath's own
+        solve re-points x to a new array); None on any error (nvmath solve() from then on)."""
+        try:
+            import cupy as cp
+            from nvmath.bindings import cudss
+            buffer = self._solution
+            if buffer is None or buffer.size != self.n_unknowns or buffer.dtype != self._rhs.dtype:
+                self._solution = cp.empty(self.n_unknowns, dtype=self._rhs.dtype)
+            cudss.matrix_set_values(self._solver.x_ptr, int(self._solution.data.ptr))
+            _raw_execute(self._solver, 'SOLVE')
+            return self._solution
+        except Exception as error:
+            self._raw_failed.add('SOLVE')
+            _LOGGER.info('cuDSS raw solve not used (%s)', error)
+            return None
 
     def _single_solve(self, rhs):
         """value_dtype solution of E y = rhs by the low-precision factor (rhs scaled to unit norm: no float32 underflow;
@@ -1767,14 +2291,17 @@ class CudssFactorization(ProbedFactor):
         if self._solver is not None:
             self._solver.free()
         self._solver = None
+        self._parkable = self._plan_adopted = False
         _external['live'] = max(_external['live'] - self._tracked_bytes, 0)
         self._tracked_bytes = 0
 
     def release(self) -> None:
-        """Free the cuDSS factor and the device operator copies."""
-        self._free_solver()
+        """Free the cuDSS factor and the device operator copies (an accepted factor's plan is parked for the next
+        factor object of its pattern while remember_cudss_orderings is on: K5, module header "Parked plans")."""
+        if not self._park_solver():
+            self._free_solver()
         self._operator = self._factor_matrix = self._rhs = self._row_scale = self._symmetrizer = None
-        self._diagonal = self._operator_transpose = self._device_maps = None
+        self._diagonal = self._operator_transpose = self._device_maps = self._solution = None
 
     def __del__(self):
         try:

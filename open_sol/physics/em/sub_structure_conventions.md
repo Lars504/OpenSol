@@ -119,8 +119,10 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   em_conformal_drude_film (heavy).
 - FDTD step graphs (gpu, `fdtd_2d_base.STEP_GRAPHS`, as em3d `_fixed_block`): `update_h` runs Yee + conformal + H CPML
   + the post's H rows of every field set as one CUDA graph (`_h_block`), `_update_e_set` Yee + E CPML + E rows per set
-  (key ('e', set index)); the first step of a key runs eagerly, the second captures, later ones replay. The wall
-  re-pins after the sources, poles, gain / nonlinear media, sources, PEC keep and monitors stay eager between them, so
+  (key ('e', set index)); the first step of a key runs eagerly, the second captures, later ones replay. Drude /
+  Lorentz poles join the E graph (pole updates, E step, pole corrections; key ('e', set, n_drude, n_lorentz): poles are
+  only appended) unless loss accumulation, a gain / nonlinear medium or the eager row copies sit between them. The wall
+  re-pins after the sources, the other pole paths, gain / nonlinear media, PEC keep and monitors stay eager, so
   the engines call the CPML (`_cpml_post`) and `apply_*_walls` apart instead of `apply_*_post`. Outer-face rows are
   one fused launch per call (`boundaries` wall_centre_rows / wall_plane_rows: corners = s_x s_y x the inner corner
   cell, what the sequential row copies give), face types read once at BoundaryManager construction; with < 3 cells
@@ -129,8 +131,20 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   and the conformal arrays are rewritten in place only (a new `set_conformal_*` tuple changes the H key); a new
   replaceable input of a block joins its key. A failed capture warns and steps eagerly for good. The time recipe
   books 1 + n_sets graph launches on the gpu instead of the weighted Yee / CPML launches.
+- FDTD probes (gpu): the FieldProbes among the monitors are taken over at their first step (`_take_probe_launch`:
+  `core.monitors.FieldProbeRows`, float32 / float64 cupy fields of the engine) and sampled by one launch at the end of
+  the real set's E graph (`_e_graph`: the launch id joins the key); `_finish_step` stamps the row and skips their
+  `record`. The record precedes the eager tail, so `_probes_need_resample` re-samples the row (one eager launch) when
+  a probe reads an E component (`_E_COMPONENTS`) and the tail may have written one: wall re-pin, PEC keep, non-fused
+  rows, poles with the loss halves, media, an E-side source array (ez_source) or an E-side injection (only an exact
+  PointSource (ez) / ElectricDipoleSource (hz) at DTYPE(amplitude temporal(t_half)) == 0 counts as none, the value
+  its injection skips at). A new eager E-side writer after the E graph joins that check. H probes never re-sample.
+  The time recipe books no probe launches on the gpu.
 - Both engines re-pin walls after injection (new engines must too): a source on a pinned row / face does nothing (line
-  / point / mode sources warn). An E_z symmetric face next to the copied row is frozen, not re-zeroed, so an
+  / point / mode sources warn). The re-pin is skipped (`_walls_need_repin`, exact: the rows are idempotent) only when
+  every source is exactly a PointSource / MagneticLineCurrentSource / ElectricDipoleSource whose cells are >= 2 cells
+  inside every pinned axis (`BoundaryManager.clear_of_walls`) and no source array, pole, gain or nonlinear medium
+  writes after the fused rows; a new source type or post-wall writer re-pins until it is listed there. An E_z symmetric face next to the copied row is frozen, not re-zeroed, so an
   injection there accumulates. `engine.time`, `q_accum_time` are host float64.
 - H_z face values (eps, sigma_e, pole weights, PEC) are defined only by `yee_grid.face_average` (width-weighted dual
   mean; uniform = plain mean bit for bit), `face_pec` (either cell; not em_modes), `face_partner`; FDFD / slab modes /
@@ -253,6 +267,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   outer rows); Bloch phases the wrap entries (`bloch_wrap_phases`; then not complex symmetric, nothing relies on it).
   `yee_operators(xp=cupy)` assembles with scipy on the host and uploads each CSR once (the cupyx coo / kron chain was
   ~50 ms of launches per call); without scipy it assembles on the device (same canonical CSR, same values).
+  FDFDPhysics on a Cartesian grid takes them from `KeptYeeOperators` (kron patterns and entry maps kept per grid, a
+  new omega rebuilds only the four host 1D differences and gathers them; same pattern and values, the ops of every
+  omega share the kept index arrays: never modify ops in place); polar grids call `yee_operators` per omega.
+  `KeptYeeOperators.helmholtz` (FDFDPhysics._helmholtz) builds the Helmholtz sum on a kept term plan (`_HelmholtzPlan`:
+  per output entry its product terms, gathered and summed level by level, no SpGEMM / geam): one fixed canonical
+  pattern for every omega and weight set (zero weights stay explicit zeros, unlike `helmholtz_operator`, which drops
+  them), so a wavelength scan refreshes cuDSS on one plan; the operators share its indices / indptr: never
+  eliminate_zeros / sort them in place. eps_xy couplings are added after it; ops it did not make fall back.
   `helmholtz_operator`, `pin_cells` = D A D + (I - D), `pin_image_cells` (pinned image folded into its neighbour's
   diagonal). Never multiply by a sparse diagonal (`diags(...) @ A`): a cuSPARSE SpGEMM whose workspace grows with the
   rows (5e6 rows asked 6.5 GB); scale stored entries (`_column_scaled`, `_kept_entries`, `_entry_rows`) keeping the
@@ -263,7 +285,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   to backward. `dt` / `normal_spacing` give the FDTD's discrete omega / k. PML-localised modes dropped
   (`drop_pml_modes`; eme passes False), the rest by descending Re k_t^2 then Im k_t^2; fewer than n_modes may return.
   Normalised to +-1 W/m of discrete Yee flux (incl. cos(omega dt/2)), largest |u| real > 0 at `peak_cell` (lo-most
-  within 1e-6, so mirror peaks tie deterministically; compare asymmetric lines only after `align_phase`).
+  within 1e-6, so mirror peaks tie deterministically; compare asymmetric lines only after `align_phase`); every mode
+  of a solve is normalised in one pass (`_normalised_modes`: one row per mode, line arrays once; the profiles are row
+  views of one block), `_normalised_mode` is its 1-mode call (track_slab_mode).
   `mode_overlap` is unconjugated (0 between modes of one line); degenerate complex pairs are bilinear-orthogonalised
   (`_orthogonalise_degenerate`; selftest em_slab_degenerate_orthogonal). Complex lines > 600 cells shift-invert at
   (omega_t/C0)^2 max Re q (can miss modes far above). Plasmonic hz: selftest em_slab_spp_discrete.
@@ -418,7 +442,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `factorize_host(symmetric=True, row_scale=system.equilibration, previous=)` (SuperLU ignores the options). Selftest
   em_fdfd_cudss. B1a: Automatic is cuDSS on the gpu with nvmath-python when the role lists `auto_back_ends`
   (validation / estimators follow the resolved back end); an 'auto' runtime that cuDSS refuses falls back to SuperLU
-  (solvers sub file B1b) and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free `_cudss_previous`. Self-tests
+  (solvers sub file B1b) and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free `_cudss_previous`. A deferred
+  cuDSS check (a refreshed factor judged by its first solve) raises CudssAccuracyError from the solve: fdfd_2d
+  `_solve_linear` (driven and transposed) and host_fdfd `_checked_solve_host` (BOR / conical driven solves, BOR order
+  sums) catch it, `host_fdfd.fell_back_to_superlu` (this miss switched the 'auto' runtime, or an earlier one did: a
+  shared solver) and refactorise on SuperLU. Those paths refresh with `defer_check=True` (fdfd_2d driven + transposed
+  factorize, host_fdfd `_factorize_operator`); BOR's C^T W C - k0^2 M also passes `symmetric_by_construction` ->
+  canonicalised in place + `symmetric_known` (no asymmetry check), conical (D A) not. fdfd_2d_fem and every other
+  `factorize_host(previous=)` caller has no catch: its refreshes stay probed (defer_check False). Self-tests
   comparing with "SuperLU" (em_fdfd_cudss, selftests_fdfd line_block, em_bor_cudss_driven, em_fdfd_conical_cudss)
   must give the reference an explicit scipy_splu node, never Automatic.
 - MUMPS / PARDISO (solvers.host_direct; 'linear' back_end and 'eigen' factorization mumps / pardiso (+ _mixed), opt-in,
@@ -434,9 +465,13 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `fem_modes.host_solver_label` names the library), plus the library's own memory check after the analysis.
   Eigen: `_eigen_symmetrizer` returns D for every LDLT_FACTORIZATIONS entry; `solve_resonances` polishes every own
   mixed LDL^T (factor_precision 'mixed' and symmetric: cuDSS on the device, host `solve_host(refinement_steps=
-  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; and a double own LDL^T of a complex A when the caller passed a
+  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; every polished solve is refined (eigs on unrefined solves was tried
+  and removed: the Rayleigh move squared misses the 1 / gap of a near eigenvector, eigenfrequency header); and a double own LDL^T of a complex A when the caller passed a
   tolerance_floor > 0 (open models): ARPACK to MIXED_ARPACK_TOLERANCE + the quotients, no refinement steps (`refine`
-  is mixed only); a closed lossless model keeps its floor (Q = inf); an own host factor logs `_host_direct_factor_text`; elimination
+  is mixed only); a closed lossless model keeps its floor (Q = inf). E2: 2D FDFD passes `rayleigh_symmetrizer` =
+  `_adjoint_symmetrizer()` (D measured, None with a Bloch phase / eps_xy), so a complex A (PML, loss) is polished
+  the same way on any factor (SuperLU, the line-block factor, a double LDL^T); a real A keeps machine precision. An
+  own host factor logs `_host_direct_factor_text`; elimination
   orders (em3d) are skipped. Texts: solve_summary / direct_text / `HOST_DIRECT_KINDS` (em_modes factor_kind prefixes)
   name the description and the library's factor bytes. Estimates: `memory_estimates.host_factor_items` (the SuperLU
   heuristic x `superlu_bytes_scale`, LDL^T where D A / the pencil is symmetric, + `solver_host_bytes`; an eigen mixed
@@ -552,6 +587,12 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   False)`); sigma(omega) cached (graphene Kubo: scipy quad). Self-tests em_graphene_kubo_limits, em_fdfd_conducting_sheet.
 - `set_extra_permittivity(values, box)`: physics-private complex eps before face averaging, never in the MaterialGrid;
   sources, q_abs, adjoint see it, port modes do not. `_solve(record_monitors=False)` + `record_monitors()` later.
+  Such a solve defers q_abs and the float32 state arrays (`_refresh_pending_state`): `state()`, `take_absorbed_power`,
+  `record_monitors` and a reassembly (it needs the old system's face fields) write them first; the wall rows,
+  solution and solved_omega are current at once. New readers of `_q_abs` / `_field_re` / `_field_im` refresh first.
+- Phasor sources with `set_amplitude(*values of amplitude_params)` re-set in place (a reused sweep build: nlfd
+  `_FOLLOWING_SOURCE_PARAMS`): point / magnetic / dipole currents, sheet currents, TFSF plane wave, mode source
+  (rescales its solved incident phasors; power <= 0 raises at the run, not at validation).
 - NLFD-chi (physics/nlfd): one FDFDPhysics per harmonic channel; nonlinear terms are sources whose `add_to_rhs` /
   `face_currents` read other channels' solutions (nothing assumes the rhs constant beyond `_solution_dirty`). Its
   channel features wrap the FDFD FeatureTypes: renaming an FDFD feature param, or a validate resolving FDFD params
@@ -618,14 +659,35 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 - Mirror exactness needs mu uniform across the plane: H_y / H_z take mu of their lower cell (not mirror symmetric).
 - Solve: sigma = (k0 n_guess)^2 (1 + 1e-6) (keeps a TEM mode off the shift), n_guess default max Re sqrt(eps mu) of
   the straight structure; ARPACK on (A - sigma B)^-1 B (`eigen_solver=`: em_modes passes its 'eigen' role runtime), k =
-  min(2 n + 10, unknowns - 2). Ranked by descending Re beta^2 (ties by Im), as slab_modes (Re n_eff would let evanescent
+  `mode_eigen_count`: min(2 n + 10, unknowns - 2), but n + `ABOVE_SPECTRUM_EXTRA_EIGENPAIRS` (4) when
+  `CrossSectionProblem.default_shift_above_spectrum` (operator eps^-1 / mu real and positive, no bend, default guess)
+  and PML modes are dropped; n + `KEPT_PML_EXTRA_EIGENPAIRS` (6) when they are kept (EME, S3). Without PML every
+  beta^2 is real below sigma, so the k nearest are the k highest-ranked for any k >= n (exact); on CPML the nearest
+  non-PML modes are those of highest Re beta^2 up to strongly leaky ones, and a solve whose dropped PML modes leave
+  fewer than n candidates is redone at 2 n + 10 (same factor, applications summed); a solve keeping them is redone
+  there when the n-th ranked mode lies near the converged disk edge (`_kept_pml_near_cut`: sigma - Re beta^2 >
+  KEPT_PML_CUT_FRACTION 0.5 x the largest |beta^2 - sigma| returned; a PML mode beyond the disk outranks it only with
+  |Im beta^2| > 0.87 x the radius). 2 n + 10 made ARPACK converge the PML / cladding cluster it then dropped
+  (em_modes_cpu_gpu: 1782 -> 411 applications). A new way to put an eigenvalue above the default shift (gain, negative
+  eps, a mapped metric) must clear that flag. Estimators take the wide `mode_eigen_count(n, unknowns)` (upper figure;
+  they cannot see the materials). An own factor of an operator without imaginary part (walls, lossless, no PML / Bloch
+  phase) is float64 (`factorize_host(real=True)`) and host ARPACK then runs real (E1: `eigs(real=True)`, dnaupd, real
+  v0: start modes turned real by `_real_aligned`; the device Krylov-Schur stays complex, two real solves per vector).
+  Estimators test `memory_estimates.real_cross_section_operator(settings, context)` (no cpml, no Bloch phase, no
+  sigma_e / sigma_m / poles): the em_modes memory books the float64 SuperLU factor and host basis, the time recipe
+  value_bytes 8 (unless cuDSS, line_block or the device Krylov-Schur of a gpu run). Ranked by descending Re
+  beta^2 (ties by Im), as slab_modes (Re n_eff would let evanescent
   modes outrank weakly guided ones); PML modes (> half |h|^2 dA on stretched points) dropped unless
   `drop_pml_modes=False` (physics/eme), so fewer than asked may return. `size_issue_for` =
   `sparse_direct.size_issue(..., unknowns_per_cell=2)`. Non-convergence keeps converged pairs and warns in
   `info['warnings']`. Tolerance machine precision, `PML_ARPACK_TOLERANCE_FLOOR` (1e-12) when dropping PML modes on CPML,
   then also a `PML_ARNOLDI_BASIS_PER_WANTED` (5) x n_wanted basis (`mode_default_basis`; the em_modes memory and time
   estimates take it via `cpml_cross_section(settings)`; scipy's 2 k + 1 hit the 300-restart cap in em_modes_cpu_gpu,
-  2479 applications). EME (drop_pml_modes False) keeps scipy's basis and machine precision.
+  2479 applications). `solve_prepared_modes(tolerance_floor=)` raises it: ModePhysics' own solves pass
+  `MODE_ARPACK_TOLERANCE_FLOOR` (1e-10, E3), its group-index solves (the +- 1e-3 difference amplifies the error 500x),
+  detached solves, ports, EME and the CPU cases keep machine precision. EME (drop_pml_modes False) keeps scipy's basis.
+  `warm_guard=True` adds `arpack_shift_invert.guarded_start_vector`'s random share to a start from earlier modes (E5:
+  ModePhysics starts each solve from the last solve's modes, the em3d port source re-solve from its last modes).
 - Degenerate pairs (fibre HE11) come back as arbitrary non-orthogonal combinations; separate them with mirrors.
   `mode_overlap` = |c_ab c_ba| / |c_aa c_bb|; `mode_group_indices` re-solves at omega (1 +- 1e-3) with the modes as
   ARPACK v0, tracks by overlap (NaN + warning below 0.9): pass the solve's n_eff_guess.
@@ -797,7 +859,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   of two assemblies, no eigen-solve, no tracking); the Yee em_modes keeps the tracked `mode_group_indices`.
   ModePhysics and FEMModePhysics share `modes_2d._ModeStudyMixin` (study hooks, post-solve bookkeeping, labels,
   scalars, table / dispersion monitors): a solver gives `_solve_once(omega) -> (modes, info, warnings)` and
-  select_mode.
+  select_mode. Both are RerunSolvers (sweep reuse_build): `reset_records` sets omega back to the wavelength setting's
+  and calls `clear()` of every monitor that has one (ModeDispersionMonitor, ShgOverlapMonitor keep one row per solved
+  omega; a new accumulating monitor adds `clear`); no em_modes value follows (its `wavelength` Param is not flagged).
 - State: materials, state fields and eps slots are one value per element; `field_dofs(name)` = the P0 DofMap (contract
   of model/mesh_transfer). `fem_field`: materials P0, mode fields P1 / P2 nodal (`fem_modes.nodal_fields`: mean over
   the node's non-PEC elements, 0 at nodes of PEC elements only), cached per selected mode.
@@ -887,10 +951,11 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   E_z / mu points take ring-volume / length weighted means of their non-PEC cells (`_point_mean`: a conductor's surface
   E_r / H see the dielectric beside it); PEC points = every touching cell PEC. q_abs sums (-Im eps_c) |E_c|^2 per
   component.
-- Orders: `BORAssembly` (one omega and material state) keeps C = C0 + m C1 and builds K0, K1, K2 once per
-  `axis_class`; `system(m)` is a sparse sum, so an m sweep reads materials and assembles once. `assemble_bor` =
+- Orders: `BORAssembly` (one omega and material state) keeps C = C0 + m C1 and the active sets / curl columns per
+  `axis_class`; `system(m)` is one product C(m)^T W C(m) (`_curl_gram`; 3 x fewer host products than K0 + m K1 +
+  m^2 K2 for the usual one order per assembly), so an m sweep reads materials and assembles once. `assemble_bor` =
   BORAssembly(...).system(m); `order_family(class)` = (K0 - k0^2 M, (K1, K2), unknown_index), the line-block shift
-  family. Setting `azimuthal_orders`: the eigenfrequency study runs `solve_bor_resonances` per order on the one
+  family (built per call, equal to system(m) up to rounding). Setting `azimuthal_orders`: the eigenfrequency study runs `solve_bor_resonances` per order on the one
   assembly and `merge_order_solves` concatenates order by order; `BORResonance.azimuthal_order` (text
   'm = <m>, lambda = ...'); resonance numbers are global, so `select_resonance` rebuilds the order's system from
   `_eigen_assembly` when it changes; `bor_resonance_table_result` appends column azimuthal_order last (column positions
@@ -954,7 +1019,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   pec. A metal end is exact when the model's cells beyond it are PEC (metal radius = start - 1/2 cells); an inner end
   without model PEC counts in edge_field and warns. A flux_monitor line across a conductor surface should start on the
   axis (the surface E_r's dual is half in the PEC cell, which an annular line's span end drops). n_group: mass term
-  only (no material dispersion, PML frozen).
+  only (no material dispersion, PML frozen). Ports on identical lines (span, row width, line materials, mode count)
+  share one PortModes per (omega, order, assembly_count) (`BORPhysics.port_mode_solves`): PortModes / PortMode are
+  read-only, each port tracks and phase-aligns its own copy (`aligned_mode`), never mutate a shared one. A new solve
+  of a port line starts ARPACK from its last PortModes at the same order ([X; psi X] summed + the guarded random share,
+  E5; `solve_port_modes(previous=)`, only when the slice keys are equal), else from the seeded random vector.
+- `BORAssembly` builds C0 / C1 as one COO per matrix (`_block_csc`, the canonical CSC scipy's bmat of the kron blocks
+  gives: same pattern, same values); a new curl block goes in there as (offsets, sign) + `_identity_kron` /
+  `_kron_identity` entries, never as a scipy kron / bmat (their overhead was ~70 % of the assembly on small grids).
 - Backends ('gpu', 'cpu'): every solve, factor and port is host; only BORPhysics.fields, pec_cells / pole masks and the
   MaterialGrid live on `domain.xp` (material reads by `to_host`, masks checked with `xp=`). A line_block shifted node
   runs on the model's backend. Keep new paths xp-generic (em_bor_cpu_gpu).
@@ -1137,8 +1209,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   replaces the driven SuperLU host items by the shift-invert ones. Run phases (transient_items, the phase constants at
   the top of memory_estimates; em3d imports them): the kept system / solution / a kept driven cuDSS factor's pool
   copies, rhs buffer and row scale are run items (`kept_cudss_items`; its solve vectors CUDSS_SOLVE_PHASE, never
-  kept); ASSEMBLY_PHASE the FDFD assembly temporaries (`_FDFD_ASSEMBLY_CSR_ROWS`: helmholtz_operator's products at
-  its peak, profiled 2026-11); a single solve (no `later_factorisations`) assembles before its solution and factor
+  kept); ASSEMBLY_PHASE the FDFD assembly temporaries (`_FDFD_ASSEMBLY_BYTES`: the term plan's build sort, or a later
+  omega's term buffer; the plan itself is a run item, `_FDFD_PLAN_BYTES`); a single solve (no `later_factorisations`) assembles before its solution and factor
   exist, so that phase is booked net of them (`core.memory_estimate.phase_before_items`); SOLVE_PHASE a solve's
   material temporaries; EIGEN_PHASE everything solve_resonances / a mode solve allocates and drops
   (`cudss_own_factor_bytes`: its own cuDSS factor's copies and one solve's vectors, device

@@ -475,8 +475,7 @@ SOURCE_CASES = (
                      'correction sign, half-step phase, flux factor or overlap formula shows at >= 5e-2). Not yet run '
                      'with these cells, bandwidth and window.'),
         specs=lambda: {'run': waveguide_mode_spec()},
-        check=_check_waveguide,
-        heavy=True),
+        check=_check_waveguide),
     SelfTestCase(
         name='em3d_far_field_dipole',
         label='EM 3D: dipole radiated power and far-field pattern (flux box, near-to-far transform)',

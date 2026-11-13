@@ -730,8 +730,7 @@ FEM_CASES = (
                     'the last gpu run took 58 s, 29 s of it in the study; heavy flag to re-time). measured = error = the '
                     'worst deviation in tolerance units. Not yet run on the cpu backend.',
         specs=_kirsch_specs,
-        check=_check_kirsch,
-        heavy=True),
+        check=_check_kirsch),
     SelfTestCase(
         name='solid_fem_heated_cylinder',
         label='Solid mechanics on triangles: heated two-material cylinder',

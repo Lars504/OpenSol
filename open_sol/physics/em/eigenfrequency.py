@@ -51,12 +51,14 @@ _START_VECTOR_SEED = 6          # deterministic ARPACK start vector (no symmetry
 # A double LDL^T of D A takes the same ARPACK floor and polish when the caller floored ARPACK already (an open model)
 # and A is complex (PML / loss: Q finite, so the ~1e-12 imaginary round-off of a quotient is no lossless Q = inf): host
 # ARPACK to 1e-10 dominated the PARDISO Mie run (39 ms solves, two per application, ~660 applications)
+# E2: a caller that measured D A complex symmetric passes rayleigh_symmetrizer (2D FDFD, never with a Bloch phase): any
+# factor of a complex A (SuperLU, line-block too) then takes the same floor and polish (DBR: ~124 applications at eps)
 MIXED_EIGS_REFINEMENTS = 1
 MIXED_ARPACK_TOLERANCE = 1e-6
-# TEMPORARY measurement override (speedup brief 3.3, unrefined first stage): these environment variables replace the
-# two constants above inside solve_resonances only (fem_modes keeps the constants); the solve text shows the values used
-EIGS_REFINEMENTS_VARIABLE = 'OPEN_SOL_EIGS_REFINEMENTS'
-EIGS_ARPACK_TOLERANCE_VARIABLE = 'OPEN_SOL_EIGS_ARPACK_TOLERANCE'
+# Tried and removed (2026-11): eigs on unrefined complex64 solves (half the solves: Mie eigs 7.0 -> 4.8 s), accepted
+# when the ARPACK -> Rayleigh move d of k^2 had d^2 below the lambda / 1/Q bound, else refined Rayleigh-Ritz sweeps or
+# a refined rerun. d^2 underestimates the quotient error (~ d^2 / gap): em_bor_cudss came out 1.3e-7 off against 1e-9;
+# the sweeps lost a resonance (em_bor_fem_cudss), and a rerun from other start vectors missed em_conical_fem_cudss 1e-8
 # fewer than n_resonances left after the PML filter: eigs again with 2x the eigenpairs on the same factor, at most this
 # often (4x; PML modes crowd the target of an open model), and not after a doubling that found none. Each host ARPACK
 # pass costs ~ its eigenpairs squared on the host (basis 5 x wanted): nanobeam eighth, 4.2e5 unknowns, 30 -> 120
@@ -79,21 +81,6 @@ FILTER_BLOCK_COLUMNS = 16
 HOST_MASS_THREADS = 8
 HOST_MASS_THREAD_MIN_ENTRIES = 500_000
 _MASS_POOL = []   # the ThreadPoolExecutor of _mass_pool, made on first use
-
-
-def _mixed_eigs_settings(refinement_steps, polish_tolerance):
-    """(float64 steps per solve, ARPACK floor) of a polished solve: the arguments, else the temporary environment
-    override, else MIXED_EIGS_REFINEMENTS / MIXED_ARPACK_TOLERANCE."""
-    if refinement_steps is None:
-        text = os.environ.get(EIGS_REFINEMENTS_VARIABLE, '').strip()
-        refinement_steps = int(text) if text else MIXED_EIGS_REFINEMENTS
-    if polish_tolerance is None:
-        text = os.environ.get(EIGS_ARPACK_TOLERANCE_VARIABLE, '').strip()
-        polish_tolerance = float(text) if text else MIXED_ARPACK_TOLERANCE
-    if int(refinement_steps) < 0 or not float(polish_tolerance) > 0.0:
-        raise ValueError(f'solve_resonances needs refinement_steps >= 0 and an ARPACK floor > 0, got '
-                         f'{refinement_steps!r}, {polish_tolerance!r}')
-    return int(refinement_steps), float(polish_tolerance)
 
 
 def _mass_pool():
@@ -239,7 +226,7 @@ class _PencilMass:
 def solve_resonances(host_operator, mass, omega_target, energy_weights, in_window, n_resonances, field_of=None,
                      spectral_map='shift_invert', warnings=(), eigen_solver=None, factorization=None, ordering=None,
                      tolerance_floor=0.0, basis_per_wanted=0, symmetrizer=None, symmetric=False, equilibration=None,
-                     in_region=None, min_region_fraction=0.0, refinement_steps=None, polish_tolerance=None):
+                     in_region=None, min_region_fraction=0.0, rayleigh_symmetrizer=None):
     """EigenSolve of up to n_resonances resonances nearest omega_target [rad/s] of the host operator A assembled there
     (module header) on flat unknowns: mass = complex M diagonal (0 = pinned row) or scipy sparse M (FEM; a pinned row
     is all zero), energy_weights = (n,) |u|^2 weights or a sparse real energy matrix W (per-row share Re(conj(u) W u))
@@ -253,10 +240,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     symmetrizer (n,) diagonal D with D A complex symmetric: an own cuDSS / MUMPS / PARDISO factor is the LDL^T of D A
     (D B the mass); symmetric: A itself is complex symmetric (FEM, no symmetrizer: the same LDL^T); equilibration (n,)
     > 0: the row scale of such a factor (None = its |diag|^-1/2); in_region (n,) bool rows of a region (None: none)
-    and min_region_fraction in [0, 1] (module header); refinement_steps / polish_tolerance: float64 steps per solve
-    and ARPACK floor of a polished factor (None = _mixed_eigs_settings)."""
+    and min_region_fraction in [0, 1] (module header); rayleigh_symmetrizer (n,) D with D A complex symmetric, checked
+    by the caller: a complex A is polished (module header) on any factor, SuperLU and a given one too."""
     started = time.perf_counter()
-    refinement_steps, polish_tolerance = _mixed_eigs_settings(refinement_steps, polish_tolerance)
     eigen_solver = ArpackShiftInvertSolver() if eigen_solver is None else eigen_solver
     omega_target = float(omega_target)
     if not (math.isfinite(omega_target) and omega_target > 0.0):
@@ -285,8 +271,8 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         target_squared, shift = shift, shift * (1.0 + SHIFT_RELATIVE_OFFSET)
         host_operator = (host_operator - (shift - target_squared) * b_mass.sparse()).tocsr()
     on_device = False   # an own cuDSS factor: each application runs on the GPU, one vector transfer each way
-    polish = False      # LDL^T of D A: ARPACK to polish_tolerance, then the float64 Rayleigh quotient per vector
-    refine = False      # a mixed polished factor: refinement_steps float64 steps per solve
+    polish = False      # LDL^T of D A: ARPACK to MIXED_ARPACK_TOLERANCE, then the float64 Rayleigh quotient per vector
+    refine = False      # a mixed polished factor: MIXED_EIGS_REFINEMENTS float64 steps per solve
     scaled_b = b_mass   # (D A)^-1 (D B) = A^-1 B: same theta and vectors
     factor_operator = host_operator
     row_scale = None    # D of an own symmetrized factor (the Rayleigh quotients use D A and D B)
@@ -303,12 +289,17 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         # a mixed LDL^T: cuDSS on the device, MUMPS / PARDISO on the host (factor_precision 'double' after a fallback);
         # a double one of a complex A whose caller floored ARPACK (module constants)
         mixed = getattr(factorization, 'factor_precision', 'double') == 'mixed'
-        complex_operator = bool(np.any(host_operator.data.imag)) if np.iscomplexobj(host_operator.data) else False
         polish = bool(getattr(factorization, 'symmetric', False)) and (
-            mixed or (float(tolerance_floor) > 0.0 and complex_operator))
+            mixed or (float(tolerance_floor) > 0.0 and _is_complex(host_operator)))
         refine = polish and mixed
         if polish:
-            tolerance_floor = max(float(tolerance_floor), polish_tolerance)
+            tolerance_floor = max(float(tolerance_floor), MIXED_ARPACK_TOLERANCE)
+    if rayleigh_symmetrizer is not None and not polish and _is_complex(host_operator):
+        # E2: D A complex symmetric (the caller measured it): any factor of A (SuperLU, line-block, double LDL^T) takes
+        # ARPACK to MIXED_ARPACK_TOLERANCE and the float64 Rayleigh quotients of D A, D B; a real A keeps machine precision
+        polish = True
+        row_scale = np.asarray(rayleigh_symmetrizer, dtype=np.complex128).ravel()
+        tolerance_floor = max(float(tolerance_floor), MIXED_ARPACK_TOLERANCE)
     factorized = time.perf_counter()
     n_wanted = min(2 * n_resonances + 10, n_free - 2)
     random = np.random.default_rng(_START_VECTOR_SEED)
@@ -319,13 +310,13 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         b_times = scaled_b.device_times()
         solves_before = (factorization.n_solves, factorization.solve_seconds)
 
-        def solve(vector):   # cudss_mixed: refinement_steps steps when polished, else to full accuracy
-            return factorization.solve(vector, refinement_steps=refinement_steps if refine else None)
+        def solve(vector):   # cudss_mixed: MIXED_EIGS_REFINEMENTS steps when polished, else to full accuracy
+            return factorization.solve(vector, refinement_steps=MIXED_EIGS_REFINEMENTS if refine else None)
     else:
         b_times = scaled_b.times
-        if refine:   # host mixed LDL^T (mumps_mixed / pardiso_mixed): refinement_steps steps per solve
+        if refine:   # host mixed LDL^T (mumps_mixed / pardiso_mixed): MIXED_EIGS_REFINEMENTS steps per solve
             def solve(vector):
-                return factorization.solve_host(vector, refinement_steps=refinement_steps)
+                return factorization.solve_host(vector, refinement_steps=MIXED_EIGS_REFINEMENTS)
         else:
             solve = factorization.solve_host
     if spectral_map == 'shift_invert':
@@ -335,50 +326,62 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
         def apply_on_backend(vector):   # squared Cayley map (squared_cayley_roots): two solves per application
             scaled = shift * solve(b_times(vector))   # k_t^2 v / (k^2 - k_t^2)
             return scaled + shift * solve(b_times(scaled))
-    applications, widenings, previous_count, basis_kept = 0, 0, -1, False
-    kept_decomposition = None   # device Krylov-Schur: the last pass's decomposition, resumed by a widening (S5a)
     resonance_filter = _ResonanceFilter(host_operator, b_mass, energy_weights, in_window, in_region,
                                         row_scale if polish else None, on_gpu=on_device or eigen_solver.device_arnoldi,
                                         quotients=spectral_map != 'shift_invert' or polish)
-    while True:   # PML modes crowding the target: eigs again with twice the eigenpairs on the same factor
-        default_basis = int(basis_per_wanted) * n_wanted
-        basis = arnoldi_basis_size(n_wanted, n_unknowns, eigen_solver.subspace_size, default_basis)
-        # S5b: the device Krylov-Schur on an own cuDSS factor (no transfers), and around a host factor on a gpu runtime
-        # where eigs would run it too (device_arnoldi_fits): then a widening resumes the decomposition there as well
-        host_device = (not on_device and eigen_solver.device_arnoldi
-                       and device_arnoldi_fits(n_unknowns, basis, host_matvec=True))
-        reserve_basis = WIDENING_BASIS_RESERVE * basis if MAX_WIDENINGS and widenings == 0 else 0
-        eigs_host = getattr(eigen_solver, 'eigs_host', None)   # host Krylov-Schur: a host widening resumes too
-        if on_device or host_device:
-            basis_kept = basis_kept or kept_decomposition is not None
-            theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
-                apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
-                default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
-                reserve_basis=reserve_basis)
-        elif eigs_host is not None:
-            basis_kept = basis_kept or kept_decomposition is not None
-            theta, vectors, pass_applications, converged, kept_decomposition = eigs_host(
-                apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
-                default_basis=default_basis, resume=kept_decomposition, reserve_basis=reserve_basis)
-        else:
-            theta, vectors, pass_applications, converged = eigen_solver.eigs(
-                apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
-                default_basis=default_basis)
-            kept_decomposition = None
-        applications += pass_applications
-        theta = np.asarray(theta, dtype=np.complex128)
-        candidates, dropped, rayleigh_change = _filtered_candidates(
-            theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish, min_region_fraction)
-        # stop when enough, at the limit, or when the last doubling found no new resonance (only PML modes near)
-        if (len(candidates) >= n_resonances or len(candidates) == previous_count or widenings == MAX_WIDENINGS
-                or n_wanted >= n_free - 2):
-            break
-        previous_count = len(candidates)
-        n_wanted = min(2 * n_wanted, n_free - 2)
-        widenings += 1
-        if kept_decomposition is None:   # host ARPACK takes one start vector: the random one + the Ritz vectors (S5a)
-            start_vector = _widened_start(start_vector, vectors, free)
-    kept_decomposition = resonance_filter = None   # frees the device basis and copies before the fields are built
+
+    def eigen_passes(n_wanted, start_vector):
+        """_EigenPasses of eigs on the current solves from n_wanted eigenpairs, doubled while the PML filter leaves
+        fewer than n_resonances (MAX_WIDENINGS; a device / host Krylov-Schur widening resumes its decomposition)."""
+        applications, widenings, previous_count, basis_kept = 0, 0, -1, False
+        kept_decomposition = None   # device Krylov-Schur: the last pass's decomposition, resumed by a widening (S5a)
+        while True:   # PML modes crowding the target: eigs again with twice the eigenpairs on the same factor
+            default_basis = int(basis_per_wanted) * n_wanted
+            basis = arnoldi_basis_size(n_wanted, n_unknowns, eigen_solver.subspace_size, default_basis)
+            # S5b: the device Krylov-Schur on an own cuDSS factor (no transfers), and around a host factor on a gpu
+            # runtime where eigs would run it too (device_arnoldi_fits): then a widening resumes it there as well
+            host_device = (not on_device and eigen_solver.device_arnoldi
+                           and device_arnoldi_fits(n_unknowns, basis, host_matvec=True))
+            reserve_basis = WIDENING_BASIS_RESERVE * basis if MAX_WIDENINGS and widenings == 0 else 0
+            eigs_host = getattr(eigen_solver, 'eigs_host', None)   # host Krylov-Schur: a host widening resumes too
+            if on_device or host_device:
+                basis_kept = basis_kept or kept_decomposition is not None
+                theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
+                    apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
+                    default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
+                    reserve_basis=reserve_basis)
+            elif eigs_host is not None:
+                basis_kept = basis_kept or kept_decomposition is not None
+                theta, vectors, pass_applications, converged, kept_decomposition = eigs_host(
+                    apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
+                    default_basis=default_basis, resume=kept_decomposition, reserve_basis=reserve_basis)
+            else:
+                theta, vectors, pass_applications, converged = eigen_solver.eigs(
+                    apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
+                    default_basis=default_basis)
+                kept_decomposition = None
+            applications += pass_applications
+            theta = np.asarray(theta, dtype=np.complex128)
+            candidates, dropped, rayleigh_change = _filtered_candidates(
+                theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish, min_region_fraction)
+            # stop when enough, at the limit, or when the last doubling found no new resonance (only PML modes near)
+            if (len(candidates) >= n_resonances or len(candidates) == previous_count or widenings == MAX_WIDENINGS
+                    or n_wanted >= n_free - 2):
+                break
+            previous_count = len(candidates)
+            n_wanted = min(2 * n_wanted, n_free - 2)
+            widenings += 1
+            if kept_decomposition is None:   # host ARPACK takes one start vector: the random one + the Ritz vectors
+                start_vector = _widened_start(start_vector, vectors, free)
+        return _EigenPasses(theta=theta, vectors=np.asarray(vectors), candidates=candidates, dropped=dropped,
+                            rayleigh_change=rayleigh_change, applications=applications, widenings=widenings,
+                            n_wanted=n_wanted, converged=converged, basis_kept=basis_kept)
+
+    passes = eigen_passes(n_wanted, start_vector)   # the decomposition is freed on return
+    resonance_filter = None   # frees the device copies before the fields are built
+    theta, candidates, dropped, n_wanted = passes.theta, passes.candidates, passes.dropped, passes.n_wanted
+    converged, rayleigh_change, basis_kept = passes.converged, passes.rayleigh_change, passes.basis_kept
+    applications, widenings = passes.applications, passes.widenings
     arnoldi = eigen_solver.last_arnoldi
     if not converged:
         warnings.append(f'ARPACK converged {np.size(theta)} of {n_wanted} eigenvalues near lambda = '
@@ -386,11 +389,9 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     eigen_done = time.perf_counter()
     if on_device:
         factor_text = _cudss_factor_text(factorization, factorization.n_solves - solves_before[0],
-                                         factorization.solve_seconds - solves_before[1], polish, refinement_steps,
-                                        polish_tolerance)
+                                         factorization.solve_seconds - solves_before[1], polish)
     elif factor_text is None and is_host_direct_factor(factorization):   # an own MUMPS / PARDISO factor
-        factor_text = _host_direct_factor_text(factorization, factorized - started, polish, refinement_steps,
-                                               polish_tolerance)
+        factor_text = _host_direct_factor_text(factorization, factorized - started, polish)
     resonances = [_resonance(omega, pml_fraction, vector if field_of is None else field_of(vector), region_fraction)
                   for _, omega, pml_fraction, region_fraction, vector in candidates[:n_resonances]]
     if len(resonances) < n_resonances:
@@ -416,6 +417,27 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
     if rayleigh_change is not None:
         info['rayleigh_change'] = rayleigh_change
     return EigenSolve(resonances=resonances, info=info)
+
+
+def _is_complex(host_operator) -> bool:
+    """Whether a scipy sparse operator has a non-zero imaginary entry (PML, loss)."""
+    return bool(np.any(host_operator.data.imag)) if np.iscomplexobj(host_operator.data) else False
+
+
+@dataclass(frozen=True, eq=False)
+class _EigenPasses:
+    """The eigs passes of solve_resonances: the last pass's theta, host vectors, candidates (_filtered_candidates),
+    dropped counts and Rayleigh change; applications / widenings of all passes, final eigenpairs wanted, converged."""
+    theta: np.ndarray
+    vectors: np.ndarray
+    candidates: list
+    dropped: dict
+    rayleigh_change: object   # float or None
+    applications: int
+    widenings: int
+    n_wanted: int
+    converged: bool
+    basis_kept: bool
 
 
 def _widened_start(start_vector, vectors, free):
@@ -556,8 +578,8 @@ def resonance_filter_time_item(backend, unknowns, filter_entries, eigenpairs):
 def _filtered_candidates(theta, vectors, spectral_map, shift, resonance_filter, omega_target, polish,
                          min_region_fraction=0.0):
     """(candidates (|omega - omega_t|, omega, pml_fraction, region_fraction, vector) nearest first, dropped counts
-    {'pml', 'region'}, Rayleigh change or None) of one ARPACK pass, the per-column measures from resonance_filter (a
-    _ResonanceFilter); polish: the float64 Rayleigh quotients of D A, D B; min_region_fraction: the region filter."""
+    {'pml', 'region'}, largest relative k^2 move of the polish or None) of one ARPACK pass, measures from
+    resonance_filter (a _ResonanceFilter); polish: float64 Rayleigh quotients of D A, D B; min_region_fraction: region."""
     usable = np.isfinite(theta) & (np.abs(theta) > _THETA_FLOOR * float(np.max(np.abs(theta), initial=0.0)))
     vectors = np.asarray(vectors)[:, usable]
     measures = resonance_filter.measures(vectors)
@@ -598,19 +620,18 @@ def _filtered_candidates(theta, vectors, spectral_map, shift, resonance_filter, 
     return candidates, dropped, rayleigh_change
 
 
-def _cudss_factor_text(factor, n_solves, solve_seconds, polish, refinement_steps=MIXED_EIGS_REFINEMENTS,
-                       polish_tolerance=MIXED_ARPACK_TOLERANCE):
+def _cudss_factor_text(factor, n_solves, solve_seconds, polish):
     """Study-log text of an own cuDSS factor: plan / factorise times, device memory, refinement, the device solves
-    inside eigs (the rest of the eigs time is the device Krylov-Schur: orthogonalisation, restarts, host reads)."""
+    inside eigs (the rest of eigs: the device Krylov-Schur)."""
     if factor.factor_precision == 'mixed':
-        steps = (f'{refinement_steps} float64 refinement step(s) per solve, ARPACK to '
-                 f'{polish_tolerance:g}, Rayleigh quotients' if polish
+        steps = (f'{MIXED_EIGS_REFINEMENTS} float64 refinement step(s) per solve, ARPACK to '
+                 f'{MIXED_ARPACK_TOLERANCE:g}, Rayleigh quotients' if polish
                  else f'float64 refinement to {factor.refinement_steps} step(s) per solve')
         refinement = f', unrefined residual {factor.single_residual:.2g}, {steps}'
     else:
         refinement = f', {factor.refinement_steps} refinement steps per solve' if factor.refinement_steps else ''
         if polish:
-            refinement += f', ARPACK to {polish_tolerance:g}, Rayleigh quotients'
+            refinement += f', ARPACK to {MIXED_ARPACK_TOLERANCE:g}, Rayleigh quotients'
     kind = factor.description if factor.asymmetry is None else (
         f'{factor.description} (scaled operator asymmetry {factor.asymmetry:.2g})')
     return (f'{kind} on the GPU: plan {factor.plan_seconds:.3g} s + factorise {factor.factorize_seconds:.3g} s, '
@@ -618,20 +639,19 @@ def _cudss_factor_text(factor, n_solves, solve_seconds, polish, refinement_steps
             f'device solves {solve_seconds:.3g} s of the eigs time')
 
 
-def _host_direct_factor_text(factor, factor_seconds, polish, refinement_steps=MIXED_EIGS_REFINEMENTS,
-                             polish_tolerance=MIXED_ARPACK_TOLERANCE):
+def _host_direct_factor_text(factor, factor_seconds, polish):
     """Study-log text of an own MUMPS / PARDISO factor (solvers.host_direct): kind, factorise time (analysis
     included), the library's factor bytes of host memory, refinement."""
     if factor.factor_precision == 'mixed':
-        steps = (f'{refinement_steps} float64 refinement step(s) per solve, ARPACK to '
-                 f'{polish_tolerance:g}, Rayleigh quotients' if polish else 'float64 refinement per solve')
+        steps = (f'{MIXED_EIGS_REFINEMENTS} float64 refinement step(s) per solve, ARPACK to '
+                 f'{MIXED_ARPACK_TOLERANCE:g}, Rayleigh quotients' if polish else 'float64 refinement per solve')
         single = getattr(factor, 'single_residual', None)
         refinement = (f', unrefined residual {single:.2g}' if single is not None else '') + f', {steps}'
     else:   # a double factor whose probe missed: float64 GMRES on its own factor (refinement_steps: the probe's)
         steps = getattr(factor, 'refinement_steps', 0)
         refinement = f', refined solves (probe: {steps} float64 GMRES steps)' if steps else ''
         if polish:
-            refinement += f', ARPACK to {polish_tolerance:g}, Rayleigh quotients'
+            refinement += f', ARPACK to {MIXED_ARPACK_TOLERANCE:g}, Rayleigh quotients'
     asymmetry = getattr(factor, 'asymmetry', None)
     kind = factor.description if asymmetry is None else (
         f'{factor.description} (scaled operator asymmetry {asymmetry:.2g})')

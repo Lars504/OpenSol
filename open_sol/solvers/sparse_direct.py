@@ -200,15 +200,16 @@ def host_size_back_end(name) -> str:
     return 'scipy_splu' if name in (None, 'auto', 'superlu') else name
 
 
-def diffusion_size_issue(n_unknowns, dimensions=2, back_end='scipy_splu'):
-    """(level, text) for a real DiffusionSystem of n_unknowns window cells (3D: voxels) on host SuperLU (the
-    sparse_direct 'linear' solver of heat / potential / magnetostatics) near ('warning') or over ('error') its size
-    rule; None otherwise. A host direct back_end (MUMPS / PARDISO) has the same rule, its text naming the library.
-    CPU only."""
+def diffusion_size_issue(n_unknowns, dimensions=2, back_end='scipy_splu', unknowns_label=None):
+    """(level, text) for a real SPD system of n_unknowns window cells (3D: voxels; unknowns_label names other unknowns,
+    e.g. the 2D solid's 'displacement unknowns') on host SuperLU (the sparse_direct 'linear' solver of heat / potential
+    / magnetostatics / solid_mechanics) near ('warning') or over ('error') its size rule; None otherwise. A host direct
+    back_end (MUMPS / PARDISO) has the same rule, its text naming the library. CPU only."""
     n_unknowns = int(n_unknowns)
     warn, limit = ((SPLU_3D_WARN_UNKNOWNS, SPLU_3D_LIMIT_UNKNOWNS) if dimensions == 3
                    else (SPLU_WARN_UNKNOWNS, SPLU_LIMIT_UNKNOWNS))
-    cells = f"{n_unknowns:,} window {'voxels' if dimensions == 3 else 'cells'}"
+    unknowns_text = unknowns_label or f"window {'voxels' if dimensions == 3 else 'cells'}"
+    cells = f'{n_unknowns:,} {unknowns_text}'
     if back_end in HOST_DIRECT_BACK_ENDS:
         label = factor_label(back_end)
         solver, factors, practical = (f"(host {label}, back_end '{back_end}')", f'its {label} factors',
@@ -342,7 +343,8 @@ class Factorization:
 
     def solve_host(self, rhs, transpose=False):
         """numpy solution x (value_dtype) of A x = rhs (transpose: A^T, unconjugated) for a numpy (n,) rhs, all on the
-        host (scipy_splu only); a real factor solves a complex rhs as two real solves (complex128 solution)."""
+        host (scipy_splu only); a real factor solves a complex rhs as one solve of its (n, 2) real / imaginary columns
+        (H1: L and U read once; complex128 solution)."""
         if self._host_lu is None:
             raise ValueError("solve_host needs a 'scipy_splu' factorisation (cusolver_qr keeps no host factor)")
         rhs = np.asarray(rhs)
@@ -350,8 +352,10 @@ class Factorization:
             raise ValueError(f"rhs must be a flat ({self.n_unknowns},) array, got shape {rhs.shape}")
         trans = 'T' if transpose else 'N'
         if rhs.dtype.kind == 'c' and np.dtype(self.value_dtype).kind != 'c':   # a cast would drop the imaginary part
-            return self._lu_solve(np.ascontiguousarray(rhs.real), trans) + 1j * self._lu_solve(
-                np.ascontiguousarray(rhs.imag), trans)
+            columns = np.empty((self.n_unknowns, 2), dtype=self.value_dtype, order='F')   # SuperLU's column layout
+            columns[:, 0], columns[:, 1] = rhs.real, rhs.imag
+            solution = self._lu_solve(columns, trans)
+            return solution[:, 0] + 1j * solution[:, 1]
         return self._lu_solve(rhs.astype(self.value_dtype, copy=False), trans)
 
     def inertia(self):
@@ -429,13 +433,14 @@ def recycled_gmres(lu_solve, n_unknowns, host_operator, host_rhs, initial, trans
 
 
 def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None, symmetric=False,
-              symmetrizer=None, orderings=None):
+              symmetrizer=None, orderings=None, defer_check=False):
     """Factorization of a square cupyx CSR operator of an nx * ny grid (cast to complex128): scipy_splu factorises on
     the host now and keeps no device copy (orderings: a SuperLUOrdering reused / kept), cusolver_qr keeps the operator
     (in qr_band_order) and factorises per solve, cudss / cudss_mixed give a CudssFactorization (previous / symmetric /
-    symmetrizer: cudss_factorization; ignored by the others), the host direct back ends a
-    host_direct.HostDirectFactorization of a host copy (same options, host_arrays for a scipy operator). A scipy
-    operator (cpu backend: scipy_splu or a host direct back end) gives numpy solves (host_arrays)."""
+    symmetrizer: cudss_factorization; defer_check: a refresh of `previous` is checked by its first solve, K1; ignored
+    by the others), the host direct back ends a host_direct.HostDirectFactorization of a host copy (same options,
+    host_arrays for a scipy operator). A scipy operator (cpu backend: scipy_splu or a host direct back end) gives numpy
+    solves (host_arrays)."""
     if back_end not in BACK_ENDS:
         raise ValueError(f"back_end must be one of {', '.join(BACK_ENDS)} (resolve_back_end maps 'auto'), got "
                          f"{back_end!r}")
@@ -446,12 +451,12 @@ def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None,
         raise ValueError(f"factorize: operator of {n_rows} unknowns does not match the {nx} x {ny} grid")
     if back_end in CUDSS_BACK_ENDS:
         if not isinstance(operator.data, np.ndarray) and _refreshed_on_device(previous, operator, back_end, symmetric,
-                                                                               symmetrizer):
+                                                                               symmetrizer, defer_check):
             return previous
         # a first factor: cuDSS equilibrates and checks symmetry on a host copy
         host_operator = operator if isinstance(operator.data, np.ndarray) else operator.get()
         return cudss_factorization(host_operator, back_end, previous=previous, symmetric=symmetric,
-                                   symmetrizer=symmetrizer)
+                                   symmetrizer=symmetrizer, defer_check=defer_check)
     if back_end in HOST_DIRECT_BACK_ENDS:   # one device-to-host transfer of a cupyx operator, complex128 factor
         on_host = isinstance(operator.data, np.ndarray)
         factor = host_direct_factorization(operator if on_host else operator.get(), back_end, previous=previous,
@@ -478,10 +483,11 @@ def factorize(operator, back_end, nx, ny, periodic_x, periodic_y, previous=None,
     return _ordered_superlu(operator.get(), np.complex128, orderings)
 
 
-def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer) -> bool:
+def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer, defer_check=False) -> bool:
     """True when a valid cuDSS `previous` of the same options was refactorised from the device values of the cupyx
     `operator` (Sp3: rows x symmetrizer, equilibration, asymmetry check and lower take on the device; no host copy,
-    scipy transpose or lower-triangle take: ~250 of ~370 ms per FDFD frequency on the host route), else False."""
+    scipy transpose or lower-triangle take: ~250 of ~370 ms per FDFD frequency on the host route), else False;
+    defer_check: the refreshed factor's probe is its first solve (K1: a CudssAccuracyError then comes from solve)."""
     from .cudss_factor import CudssFactorization
     if not isinstance(previous, CudssFactorization) or previous.n_unknowns != operator.shape[0]:
         return False
@@ -492,7 +498,7 @@ def _refreshed_on_device(previous, operator, back_end, symmetric, symmetrizer) -
         operator = operator.copy()
         operator.sum_duplicates()
     previous.refactorize_device_values(operator.data, *previous.host_pattern_of(operator), check_symmetry=True,
-                                       symmetrizer=symmetrizer)
+                                       symmetrizer=symmetrizer, defer_check=defer_check)
     return True
 
 
@@ -524,6 +530,7 @@ class SuperLUOrdering:
     def __init__(self):
         self._pattern = None    # (indptr, indices) copies of the CSR the order belongs to
         self.ordering = None    # (n,) int64 elimination order (factorize_host ordering)
+        self._permuted = None   # H2: (CSC indices, CSC indptr, gather) of the permuted pattern; None with duplicates
         self.n_reused = 0
 
     def lookup(self, host_csr):
@@ -537,9 +544,42 @@ class SuperLUOrdering:
         return self.ordering
 
     def remember(self, host_csr, ordering) -> None:
-        """Keep `ordering` for host_csr's pattern (copied: callers may sort or reuse their index arrays)."""
+        """Keep `ordering` for host_csr's pattern (copied: callers may sort or reuse their index arrays) and the
+        permuted CSC pattern with the slot of every entry (H2: built once here instead of a COO -> CSC sort per
+        factor)."""
         self._pattern = (host_csr.indptr.copy(), host_csr.indices.copy())
         self.ordering = np.asarray(ordering, dtype=np.int64)
+        self._permuted = _permuted_pattern(host_csr.indptr, host_csr.indices, self.ordering)
+
+    def permuted(self, host_csr, value_dtype):
+        """Canonical CSC of A[ordering][:, ordering] of a host_csr that lookup matched, by one gather of its values
+        (H2; the same matrix symmetric_permutation builds); None when the pattern has duplicate entries."""
+        if self._permuted is None:
+            return None
+        import scipy.sparse
+        indices, indptr, gather = self._permuted
+        values = np.asarray(host_csr.data)[gather].astype(value_dtype, copy=False)
+        matrix = scipy.sparse.csc_matrix((values, indices, indptr), shape=host_csr.shape, copy=False)
+        matrix.has_canonical_format = True   # sorted, no duplicates: splu skips its sum_duplicates pass
+        return matrix
+
+
+def _permuted_pattern(indptr, indices, ordering):
+    """(CSC indices, CSC indptr, gather) of the symmetric permutation P A P^T of a CSR pattern (gather: the CSR entry
+    of every CSC slot, rows sorted within each column); None when the pattern holds a duplicate entry."""
+    n_rows = int(np.asarray(indptr).size) - 1
+    position = np.empty(n_rows, dtype=np.int64)
+    position[ordering] = np.arange(n_rows, dtype=np.int64)
+    new_rows = position[csr_rows(indptr)]
+    new_columns = position[np.asarray(indices)]
+    keys = new_columns * n_rows + new_rows   # column-major: the CSC order
+    gather = np.argsort(keys, kind='stable')
+    sorted_keys = keys[gather]
+    if sorted_keys.size > 1 and bool(np.any(sorted_keys[1:] == sorted_keys[:-1])):
+        return None
+    index_dtype = np.int32 if sorted_keys.size < 2 ** 31 else np.int64
+    csc_indptr = np.concatenate([[0], np.cumsum(np.bincount(new_columns, minlength=n_rows))]).astype(index_dtype)
+    return new_rows[gather].astype(index_dtype), csc_indptr, gather
 
 
 def superlu_elimination_order(host_lu):
@@ -565,20 +605,23 @@ def _ordered_superlu(host_operator, value_dtype, orderings=None) -> Factorizatio
         return _superlu_factorization(host_operator.tocsc().astype(value_dtype, copy=False), value_dtype=value_dtype)
     host_csr = host_operator.tocsr()
     ordering = orderings.lookup(host_csr)
-    if ordering is not None:
-        return _superlu_factorization(symmetric_permutation(host_csr, ordering).astype(value_dtype, copy=False),
-                                      value_dtype=value_dtype, ordering=ordering)
+    if ordering is not None:   # the kept permuted pattern (H2), else the COO relabelling
+        permuted = orderings.permuted(host_csr, value_dtype)
+        if permuted is None:
+            permuted = symmetric_permutation(host_csr, ordering).astype(value_dtype, copy=False)
+        return _superlu_factorization(permuted, value_dtype=value_dtype, ordering=ordering)
     factor = _superlu_factorization(host_csr.tocsc().astype(value_dtype, copy=False), value_dtype=value_dtype)
     orderings.remember(host_csr, superlu_elimination_order(factor._host_lu))
     return factor
 
 
 def cudss_factorization(host_operator, back_end, previous=None, real=False, symmetric=False, positive_definite=False,
-                        symmetrizer=None, row_scale=None, symmetric_known=False):
+                        symmetrizer=None, row_scale=None, symmetric_known=False, defer_check=False):
     """cudss_factor.CudssFactorization of a host scipy operator on back_end 'cudss' (double) / 'cudss_mixed'; a valid
-    `previous` CudssFactorization of the same options is refactorised in place (plan reused for an unchanged pattern),
-    one of other options released first (it is being replaced: its device memory lies outside the cupy pool).
-    symmetric_known: a canonical symmetric CSR (CudssFactorization.refactorize)."""
+    `previous` CudssFactorization of the same options is refactorised in place (plan reused for an unchanged pattern;
+    defer_check: checked by its first solve, K1), one of other options released first (it is being replaced: its
+    device memory lies outside the cupy pool). symmetric_known: a canonical symmetric CSR whose index arrays are never
+    modified in place (CudssFactorization.refactorize)."""
     from .cudss_factor import CudssFactorization
     if back_end not in CUDSS_BACK_ENDS:
         raise ValueError(f"cudss_factorization needs back_end {' or '.join(CUDSS_BACK_ENDS)}, got {back_end!r}")
@@ -587,7 +630,7 @@ def cudss_factorization(host_operator, back_end, previous=None, real=False, symm
         if previous.n_unknowns == host_operator.shape[0] and previous.can_refactorize(
                 real, precision, symmetric, positive_definite, symmetrizer):
             previous.refactorize(host_operator, row_scale=row_scale, symmetrizer=symmetrizer,
-                                 symmetric_known=symmetric_known)
+                                 symmetric_known=symmetric_known, defer_check=defer_check)
             return previous
         previous.release()
     return CudssFactorization(host_operator, real=real, symmetric=symmetric, precision=precision, row_scale=row_scale,
@@ -636,6 +679,7 @@ class DevicePencil:
             terms = [cp.asarray(term) for term in terms]
         self.symmetric = vouched or (bool(symmetric) and self._terms_symmetric(terms))
         self.lower_stored = self.symmetric
+        self._host_lower = None   # lower_stored: the host lower take until the first factor takes it (host_passes)
         if self.lower_stored:
             host_lower = np.flatnonzero(self.indices <= self._host_rows)
             device_lower = None
@@ -645,9 +689,16 @@ class DevicePencil:
                 else:
                     device_lower = cp.asarray(host_lower) if device_lower is None else device_lower
                     terms[index] = term[device_lower]
+            self._host_lower = host_lower
         self.stored_terms = terms
         self.device_bytes = sum(int(term.nbytes) for term in self.stored_terms)
         self._full_take = None   # lower_stored: device (nnz,) stored-layout position of every full-pattern entry (lazy)
+
+    def host_passes(self):
+        """(host row of every entry, lower take) for the factor's index maps (R5: no second pass over the pattern),
+        once: None afterwards and for a full-pattern pencil (the lower take is freed after this hand-over)."""
+        lower, self._host_lower = self._host_lower, None
+        return None if lower is None else (self._host_rows, lower)
 
     def _terms_symmetric(self, terms) -> bool:
         """Every term complex symmetric on a structurally symmetric pattern (one device sort of the transposed keys)."""
@@ -815,6 +866,37 @@ def grid_nested_dissection(shape, leaf_cells=ND_LEAF_CELLS):
     return np.concatenate(pieces)
 
 
+def box_dissection_entries(shape, unknowns_per_cell=1.0, leaf_cells=ND_LEAF_CELLS) -> float:
+    """Counted factor entries of one triangle (diagonal included, in unknowns) of a structured-grid operator of
+    +-1 cell coupling eliminated in grid_nested_dissection order (A5: cudss_factor.FactorFill for 3D tensor cuDSS
+    factors in place of CUDSS_FILL_3D's growth law): a box's separator plane S (or a leaf box) holds a dense
+    triangle plus a full coupling to the ancestor-separator cells on the box's faces, s (s + 1) / 2 + s b with
+    s = |S| and b = those face cells, each cell unknowns_per_cell unknowns (e.g. live Yee unknowns / cells)."""
+    shape = tuple(int(count) for count in shape)
+    per_cell = float(unknowns_per_cell)
+    total = 0.0
+    boxes = [tuple((0, count) for count in shape)]   # (start, stop) per axis; same splits as grid_nested_dissection
+    while boxes:
+        box = boxes.pop()
+        extents = [stop - start for start, stop in box]
+        boundary = 0   # cells just outside the box's faces (ancestor separators; none on the grid boundary)
+        for axis, (start, stop) in enumerate(box):
+            face = math.prod(extents[:axis] + extents[axis + 1:])
+            boundary += face * ((start > 0) + (stop < shape[axis]))
+        axis = int(np.argmax(extents))
+        if math.prod(extents) <= leaf_cells or extents[axis] < 3:
+            eliminated = math.prod(extents)
+        else:
+            eliminated = math.prod(extents[:axis] + extents[axis + 1:])   # the middle plane
+            start, stop = box[axis]
+            middle = start + extents[axis] // 2
+            for half in ((start, middle), (middle + 1, stop)):
+                boxes.append(box[:axis] + (half,) + box[axis + 1:])
+        unknowns = per_cell * eliminated
+        total += 0.5 * unknowns * (unknowns + 1.0) + unknowns * per_cell * boundary
+    return total
+
+
 def _column_major_operator(operator, nx, ny):
     """P A P^T of an i*ny + j indexed cupyx sparse operator on the column-major j*nx + i index (CSR)."""
     import cupy as cp
@@ -924,16 +1006,19 @@ class SparseDirectSolver:
         """check_solver_size of an nx * ny grid system on the resolved back end."""
         check_solver_size(self.back_end, nx, ny, periodic_x, periodic_y)
 
-    def factorize(self, operator, nx, ny, periodic_x, periodic_y, previous=None, symmetric=False, symmetrizer=None):
+    def factorize(self, operator, nx, ny, periodic_x, periodic_y, previous=None, symmetric=False, symmetrizer=None,
+                  defer_check=False):
         """Factorization of a square CSR grid operator of the backend (cupyx; scipy on the cpu) on the resolved back end
         (module factorize; previous / symmetric / symmetrizer reach the cuDSS and host direct back ends only),
-        counted."""
+        counted. defer_check (cuDSS, K1): a refresh of `previous` skips its probe and its first solve is the check, so
+        the caller catches CudssAccuracyError at solve (an 'auto' runtime: fall_back(error, n) and factorise again)."""
         require_backend_operator(self.label(), self.backend, operator)
         from .cudss_factor import CUDSS_REFUSALS
         start = time.perf_counter()
         try:
             factor = factorize(operator, self.back_end, nx, ny, periodic_x, periodic_y, previous=previous,
-                               symmetric=symmetric, symmetrizer=symmetrizer, orderings=self.orderings)
+                               symmetric=symmetric, symmetrizer=symmetrizer, orderings=self.orderings,
+                               defer_check=defer_check)
         except CUDSS_REFUSALS as error:
             if not self.fall_back(error, operator.shape[0]):
                 raise
@@ -941,11 +1026,13 @@ class SparseDirectSolver:
         return self._counted(factor, start)
 
     def factorize_host(self, matrix, real=False, symmetric=False, positive_definite=False, symmetrizer=None,
-                       row_scale=None, previous=None, symmetric_known=False):
+                       row_scale=None, previous=None, symmetric_known=False, defer_check=False):
         """Factorization (solve_host; float64 with real) of a host scipy sparse matrix, counted: cuDSS on the cuDSS back
         ends (cudss_factorization options; a refusal of an 'auto' runtime: SuperLU, fall_back), MUMPS / PARDISO on the
-        host direct back ends (host_direct_factorization, the same options; symmetric_known: a canonical symmetric
-        CSR, no asymmetry check; refusals raise), else host SuperLU whatever the back end (the options ignored)."""
+        host direct back ends (host_direct_factorization, the same options; refusals raise), else host SuperLU whatever
+        the back end (the options ignored). symmetric_known: a canonical symmetric CSR whose index arrays are never
+        modified in place (no canonical copy or asymmetry check; cuDSS matches the planned pattern by identity).
+        defer_check (cuDSS only, K1): as factorize."""
         from .cudss_factor import CUDSS_REFUSALS
         start = time.perf_counter()
         factor = None
@@ -958,7 +1045,8 @@ class SparseDirectSolver:
             try:
                 factor = cudss_factorization(matrix, self.back_end, previous=previous, real=real, symmetric=symmetric,
                                              positive_definite=positive_definite, symmetrizer=symmetrizer,
-                                             row_scale=row_scale)
+                                             row_scale=row_scale, symmetric_known=symmetric_known,
+                                             defer_check=defer_check)
             except CUDSS_REFUSALS as error:
                 if not self.fall_back(error, matrix.shape[0]):
                     raise
@@ -1024,15 +1112,20 @@ class SparseDirectSolver:
                 if isinstance(previous, CudssFactorization) and previous.valid:
                     if previous.n_unknowns == pencil.n_rows and previous.can_refactorize(real, precision,
                                                                                          symmetric=pencil.symmetric):
-                        refresh = (previous.refactorize_device_lower if pencil.lower_stored
-                                   else previous.refactorize_device_values)
-                        refresh(values, pencil.indptr, pencil.indices, row_scale=row_scale, defer_check=defer_check)
+                        if pencil.lower_stored:
+                            previous.refactorize_device_lower(values, pencil.indptr, pencil.indices,
+                                                              row_scale=row_scale, defer_check=defer_check,
+                                                              host_passes=pencil.host_passes())
+                        else:
+                            previous.refactorize_device_values(values, pencil.indptr, pencil.indices,
+                                                               row_scale=row_scale, defer_check=defer_check)
                         return self._counted(previous, start)
                     previous.release()
                 factor = CudssFactorization.from_device_values(values, pencil.indptr, pencil.indices, real=real,
                                                                symmetric=pencil.symmetric, precision=precision,
                                                                row_scale=row_scale,   # symmetric when requested
-                                                               lower=pencil.lower_stored)
+                                                               lower=pencil.lower_stored,
+                                                               host_passes=pencil.host_passes())
                 factor.fallback_listener = self._count_deferred_fallback
                 return self._counted(factor, start)
             except CUDSS_REFUSALS as error:

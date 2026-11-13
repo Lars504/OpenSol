@@ -101,11 +101,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `_bind_linear_solver` must call `release_block_graphs`). 'mixed' (Automatic on the gpu outside the study defaults):
   float32 copies of A_solve and the inverse blocks per assembly, products through `system._CsrApply` (pcg's CSR
   RawKernel: a cupyx SpMV cannot be captured), the float64 A_solve refreshes the outer residual.
-- sparse_direct (Automatic in stationary / time_dependent on the gpu, `study_defaults` + `study_default_backends`;
-  back_end 'auto' = cudss): `ElasticSystemBase` wraps the SparseDirectSolver in `DiffusionDirectSolver` (3D refuses
+- sparse_direct (Automatic in stationary / time_dependent on both backends, `study_defaults`; back_end 'auto' = cudss
+  on the gpu with nvmath, else host SuperLU; its size rule and the fit guard count 2 unknowns per node,
+  `direct_components=2`): `ElasticSystemBase` wraps the SparseDirectSolver in `DiffusionDirectSolver` (3D refuses
   it, `accepts_direct`); `_bind_linear_solver` only marks `_factor_stale`, and the next `solve` / `solve_homogeneous`
   factorises A_solve (cuDSS: `factorize_device_csr`, the kept factor refreshed on its plan), so piezoelectric and modal
-  solves never factorise it. Over the GPU budget the fit guard falls back to pcg mixed (estimator: no PCG workspace,
+  solves never factorise it. Over the GPU budget (host factor: the available RAM or 2e6 unknowns) the fit guard falls
+  back to pcg (gpu: mixed; estimator: no PCG workspace,
   `fem.diffusion.cudss_diffusion_estimate`; time recipe at `_Q1_FILL_SCALE`). A pcg node with no precision still takes
   'mixed' (`schema.with_node_precision`).
 - Reactions: `ElasticSystem.reaction(dof_mask)` = sum of K u - f (float64) over the held dofs (N/m); needs
@@ -391,7 +393,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   double node with multigrid; a double CG casts the residual in and `_cycle_out` back; float64 cycles were 19x slower
   on a GPU with slow float64). Coarse
   levels are rediscretised, not Galerkin (volume-mean Lame values, injected holds; lost holds become pseudo-inverse
-  null space). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
+  null space), except the coarsest dense operator: P^T A P of the level above, probed by the same 27 colours (nested
+  Q1 basis: 27-node stencil); rediscretised it over-stiffened a thin plate in void (solid_3d_multigrid_void fell back). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
   = the exact transpose (gather form), so pre / post Chebyshev + R = P^T keep the cycle symmetric for plain PCG.
   `_guarded_solve` (static and every Lanczos inner solve) caps max_iterations at `multigrid_budget()` (the block-Jacobi
   estimate CG_ITERATIONS_PER_AXIS_CELL x longest axis over CYCLE_COST_IN_JACOBI_ITERATIONS, within
@@ -421,7 +424,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Shared with tetrahedra: `solver_common.FEMSolidCommon` (records / Newton reporting, element masks and values, dT and
   rho reads, `_loads_dirty`, `_ensure_outputs` over the class's `_output_groups`) on `HostInputCache` (alpha, dT,
   sigma0, beta, rho host copies kept read-only until materials_changed / inject_source / an assembly / a temperature
-  feature: a new mutation of those inputs calls `_drop_host_inputs`).
+  feature: a new mutation of those inputs calls `_drop_host_inputs`). Tetrahedra also keep the sigma0 force
+  -int B^T sigma0 dV there (`_initial_stress_force`: the finalize imbalance check and the static load share it).
 - Outputs are lazy as on tetrahedra (`_OUTPUT_GROUPS` primary: u, u_abs, Im u; derived: strain, stress, energies);
   materials_changed and inject_source compute pending groups first.
 - solid_mechanics dispatches on the mesh kind: `_create_solid` builds SolidMechanicsFEMPhysics on a TriangleDomain.
@@ -681,7 +685,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `refreshed`), 'static state'
   (everything of the 'linear' factor in a modal / response study: `solve_static_state` ends with `release_factor`;
   tetrahedra book it for stress stiffening too, definition3d `_static_state_solved`, memory and time). Both come from
-  `linear_factor_items`: `DirectElasticSystem._solve_free` plans a cuDSS K_ff factor from the HOST CSR
+  `linear_factor_items`: `DirectElasticSystem._solve_free` (K_ff by `fem.fixed_pattern.free_restriction`, kept per
+  pattern, so `ModalPencil._reduced` of K + K_sigma on that pattern takes values only) plans a cuDSS K_ff factor from the HOST CSR
   (`factorize_host_operator(symmetric_known=True)`: equilibration and lower take on the host; MUMPS / PARDISO take the
   same call, so K_ff skips the host asymmetry check there too), so the pool holds
   `operator_copy_bytes` (lower-triangle CSR, diagonal; mixed: + the float32 copy) + rhs buffer / row scale + a

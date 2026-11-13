@@ -24,7 +24,7 @@ from .fields import (MAGNETIC_3D_CURRENT_NAMES, MAGNETIC_3D_FIELD_NAMES, MAGNETI
 from .materials import MAGNETIC_3D_SCHEMA, PERMEABILITY_3D_ARRAYS, REMANENCE_3D_ARRAYS, SATURATION_ARRAY
 from .renderer import MagneticRenderer3D
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
-                         saturation_permeability, tabulated_reluctivity)
+                         Float32StallWatch, saturation_permeability, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'symmetry face, ideal iron region, external-field ring or the corner anchor'
 _REMEDY_TEXT = 'Give every window cell mu_dc > 0.'
@@ -404,20 +404,44 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
             self._log_permeability_state = self._saturated_log_permeability(
                 xp.zeros(self._nonlinear_flat.size, dtype=np.float64))
         state = self._log_permeability_state
+        stall = Float32StallWatch() if self.system.dtype == np.float32 else None
 
         def propose(log_permeability):   # the state itself, read by _assemble through the attribute
             if isinstance(self.system.linear_solver, KeptPreconditionerSolver):   # later iterations may keep its build
                 self.system.linear_solver.offer_state(log_permeability, fresh=first[0])
             self._assemble(full=first[0])
             first[0] = False
-            self._solve_once()
-            flux_magnitude = self._flux_density_magnitude.ravel()[self._nonlinear_flat].astype(np.float64)
-            field_magnitude = flux_magnitude / (MU0 * xp.exp(log_permeability))
-            return self._saturated_log_permeability(field_magnitude)
+            self._solve_once(fields=False)
+            field_magnitude = self._saturating_flux_magnitude() / (MU0 * xp.exp(log_permeability))
+            proposal = self._saturated_log_permeability(field_magnitude)
+            if stall is not None and stall.check(proposal, log_permeability):
+                return log_permeability.copy()   # ends the run; counted unconverged below
+            return proposal
 
-        # the operator and fields stay those of the last iterate's solve; the state warm-starts the next loop
-        if not self.picard.run(state, propose, 1.0):
+        # the operator and fields are those of the last iterate's solve (fields once, after the loop); the state
+        # warm-starts the next loop
+        converged = self.picard.run(state, propose, 1.0)
+        self._update_fields()
+        if stall is not None and stall.stalled:
+            stall.record_stop(self.picard)
+            converged = False
+        if not converged:
             self.runtime_warnings.append(self.picard.last_warning)
+
+    def _saturating_flux_magnitude(self):
+        """float64 centre |B| (k,) of the saturating cells from the latest solve: operator flux plus the drive face
+        terms, as _update_fields computes B there."""
+        system = self.system
+        flat = self._nonlinear_flat
+        flux = system.flux_at_centres()   # -c grad u per axis [T]
+        if self._face_drives is not None:
+            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, ~system.fixed_user)
+            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
+        magnitude_squared = 0.0
+        for flux_density in flux:
+            component = flux_density.ravel()[flat].astype(np.float64)
+            magnitude_squared = magnitude_squared + component * component
+        return self.xp.sqrt(magnitude_squared)
 
     def _saturated_log_permeability(self, field_magnitude):
         """ln of the secant mu_r (float64 (k,)) of the curves on the saturating cells at their float64 centre |H| =
@@ -475,13 +499,15 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
                 mask[tuple(index)] = True
         return values, mask
 
-    def _solve_once(self):
-        """One linear solve on the assembled operator: rhs (coil and remanence face drives), CG, fields."""
+    def _solve_once(self, fields=True):
+        """One linear solve on the assembled operator: rhs (coil and remanence face drives), CG, fields (fields=False:
+        the saturation loop's iterations, which read only _saturating_flux_magnitude)."""
         system = self.system
         system.build_rhs(self._zero_source, self._zero_source)
         self._add_drive_rhs()
         system.solve()
-        self._update_fields()
+        if fields:
+            self._update_fields()
 
     def _add_drive_rhs(self):
         """Add the face drive's divergence to the rhs built by build_rhs (free rows) and to rhs_full; no-op without a
@@ -556,8 +582,7 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
 
     def _update_fields(self):
         """phi_m; B = operator face flux + drive face terms averaged to the centres (0 in held cells), H = (B - B_r) /
-        (mu0 c) with the assembled c (secant mu in saturating cells), B_abs (kept in the solve dtype for the saturation
-        proposal), w_mag = sum B_c^2 / (2 mu0 mu_c) (the energy scalar's density, as 2D), mu_eff = the mean of the
+        (mu0 c) with the assembled c (secant mu in saturating cells), B_abs, w_mag = sum B_c^2 / (2 mu0 mu_c) (the energy scalar's density, as 2D), mu_eff = the mean of the
         three c when allocated; edge-extended."""
         system = self.system
         xp = self.xp
@@ -584,7 +609,6 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         magnitude = xp.sqrt(magnitude_squared)
         fields.B_abs[window] = magnitude
         fields.w_mag[window] = 0.5 * energy
-        self._flux_density_magnitude = magnitude if self._nonlinear_cells is not None else None
         for destination, source in self._derived_pml_copies:
             xp.copyto(destination, source)
         if fields.has_effective_permeability:

@@ -33,7 +33,9 @@ ports, 'eigen' solver role).
 - 2D: each section line is a `PortLine` with `solve_slab_modes(..., drop_pml_modes=False)`. 3D: the layer's
   CrossSectionMaterials and `solve_cross_section_modes(..., drop_pml_modes=False)` on the kernel (float32) xy widths
   with the 2D view of the x / y faces (`solver3d.cross_section_boundary`); section lengths from float64
-  `Domain.cell_widths()`. PML modes stand for radiation and are needed for completeness.
+  `Domain.cell_widths()`. PML modes stand for radiation and are needed for completeness. A 3D section with the default
+  guess, no bend and lossless eps / mu asks n + 6 eigenpairs (S3, cross_section_modes `mode_eigen_count(...,
+  keep_pml_modes=True)`; exact with walls, on CPML redone at 2 n + 10 near the cut); estimators count the wide 2 n + 10.
 - Ranking: the solver's, then PML modes (> half their weight on stretched points) last (`ModeSet.pml`), so port mode k
   = the k-th mode mode ports / em_modes would find.
 - Cache: entries carry over between solves at an unchanged omega (a thermo-optic Picard loop re-solves only changed
@@ -62,7 +64,8 @@ ports, 'eigen' solver role).
 - Discrete propagation (`EMEPhysics(discrete_spacing=D)`, self-tests only): with a complete basis it solves the
   em_fdfd_ez and em_fdfd_hz lattices of the sectioned guide (eme_vs_fdfd_step_ez / _hz). A change of the FDFD hz face
   averaging (harmonic means, subpixel on) breaks the hz identity.
-- Cascade: Redheffer star products only (never transfer matrices); CascadeBuilder holds 8 N^2 complex per section at
+- Cascade: Redheffer star products only (never transfer matrices; one LU per side with both right-hand blocks side by
+  side, `_solve_blocks`); CascadeBuilder holds 8 N^2 complex per section at
   the peak. Its forward pass keeps only s21 / s22 (`_extend_left`), the backward pass only s11 / s12 (`_extend_right`),
   and the total comes from the end partials: half a star per interface and pass (time estimate 1 star per section). `section_amplitudes`: forward at a section's lo end, backward at its hi end, so every factor is exp(-j k d)
   with d >= 0 (stable with evanescent modes).
@@ -82,6 +85,11 @@ ports, 'eigen' solver role).
   supplies `_find_sections`, `_solve_section(section, omega, previous_entry)` (entry tuple ending with the ModeSet) and
   `_reconstruct`. step solves when dirty (read arrays, PEC, poles, excitation, omega, bends, periodic), solve_harmonic
   always. inject_source takes all three permittivity slots.
+- RerunSolver (sweep reuse_build, 2D and 3D): `reset_records` drops nothing (every monitor keeps only the last solve);
+  the `wavelength` setting follows outside frequency_domain (`follow_wavelength_setting` in both creates ->
+  `set_wavelength` = the omega setter: dirty, mode cache kept as the tracking start; poles are evaluated per solve);
+  not on an auto mesh sized by the wavelength (sweep_reuse refuses it). The resolution check runs at the build value
+  only.
 - Absorbed power (EM loss protocol): `q_abs` float32 full grid = `take_absorbed_power()` of the last solve (never
   reset, None before), `state()['q_accum']` None. q = 1/2 omega eps0 L <|E|^2> (sigma_m and PML stretch excluded, as
   FDFD), <> = 3-point Gauss-Legendre cell mean along the axis, so its integral is the exact absorbed power (1 - R - T).
@@ -104,7 +112,9 @@ ports, 'eigen' solver role).
   (one shared xy triangle mesh, prism mesh kind, FEM versions of reconstruction / absorption / adjoint / bends / PEC)
   is not done.
 - Length sweep (`add_length_sweep`): `_solve` keeps every interface and section k (`sweep_data`); the monitor
-  re-cascades with `assemble_total` through `port_fractions(smatrix)`. Attaching marks the physics dirty.
+  re-cascades with `assemble_total` through `port_fractions(smatrix)`, the stretch factors stacked on a leading axis
+  (star / append_phase / total_smatrix / smatrix_power / unit_cell broadcast leading batch axes; chunks of
+  `length_sweep_chunk`, booked by `length_sweep_host_items`). Attaching marks the physics dirty.
 - Excitation: `set_excitation` / eme_ports (one per physics); default mode 1 at 1 W/m (3D: 1 W) from lo. Scalars
   transmission_<k> (k <= n_port_modes of the first enabled eme_ports), transmission, reflection.
 - Memory estimates: every slice taken as a section (upper figure); host items dominate. Device transients are
