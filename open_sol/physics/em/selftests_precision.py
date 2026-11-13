@@ -131,6 +131,5 @@ PRECISION_SELFTEST_CASES = (
                     'the windows), so a silent single-precision fallback fails. Raises unless summary '
                     "'solvers' records the stepper precision double. 5 ps run not yet confirmed by a run.",
         specs=_cavity_specs,
-        check=_check_cavity_phase,
-        heavy=True),
+        check=_check_cavity_phase),
 )

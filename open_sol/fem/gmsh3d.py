@@ -15,8 +15,9 @@ linked or vendored, as fem.gmsh_io), the .msh 4.1 ASCII tetrahedra read back int
 # (linear transition outside: over (h_max - size) / (growth - 1), else `transition`), one MathEval field per box edge /
 # cylinder rim of a solid with an edge_size (edge_size + (growth - 1) x distance, clipped by MeshSizeMax; analytic
 # distances, so no Distance-field sampling option that changed name between gmsh versions), Mesh.MeshSizeFromCurvature
-# resolves curved surfaces (2 pi / curvature_factor elements per 2 pi, default CURVATURE_ELEMENTS), Netgen optimisation
-# removes slivers. Regions: centroid tags (centroids clamped into the window) of `region_of` (default
+# resolves curved surfaces (2 pi / curvature_factor elements per 2 pi, default CURVATURE_ELEMENTS), gmsh's own
+# Optimize pass removes slivers (Netgen optimisation off: it doubled the gmsh time for a 1 % quantile 0.17 -> 0.20
+# gain). Regions: centroid tags (centroids clamped into the window) of `region_of` (default
 # fem.mesh3d.region_tags of the solids); a gmsh volume entity whose tags agree on at least mesh3d.ENTITY_MAJORITY of
 # its elements takes that tag throughout (no misread faceting slivers at curved interfaces), others keep the
 # per-element tags (objects the caller tags but did not pass as solids); the mesh keeps the entities. The window box is its own fragment when a PML shell
@@ -32,9 +33,12 @@ linked or vendored, as fem.gmsh_io), the .msh 4.1 ASCII tetrahedra read back int
 # field), inverted tree) = size + slope x |distance to the region's surface| (CSG min / max of the primitives' analytic
 # distances: exact for one primitive, a bound near inner faces of a composite); SizedRegion.surface_sizes is the twin.
 # gmsh's Cylinder field is VIn where |(X - centre) . axis| < |axis|^2: its axis vector is the half length (_size_field).
-# Disk cache (D4): with OPEN_SOL_MESH_CACHE (a folder) the raw `read_msh_tetrahedra` arrays (normalised coordinates,
-# before clipping / snapping) are kept as .npz per sha256 of (format, gmsh path / size / mtime, .geo text).
+# Disk cache (D4): the raw `read_msh_tetrahedra` arrays (normalised coordinates, before clipping / snapping) are kept as
+# .npz per sha256 of (format, gmsh path / size / mtime, .geo text) in OPEN_SOL_MESH_CACHE ('' = off), unset = the
+# user's cache folder (default_mesh_cache_folder, at most MESH_CACHE_MAX_BYTES); off inside the self-tests
+# (default_disk_cache_off) and the profilers (they set OPEN_SOL_MESH_CACHE '').
 # The model geometry export is model.tetrahedral_meshing.
+import contextlib
 import hashlib
 import os
 import subprocess
@@ -63,7 +67,8 @@ _BOX_EDGE_AXES = ((0, 1, 2), (1, 0, 2), (2, 0, 1))   # (axis along the edge, the
 GEO_STRING_MAX = 1000     # characters per quoted .geo string (gmsh's lexer buffer is 1024: 'String too long')
 REGION_KINDS = ('solid', 'union', 'intersection', 'difference')
 _CLIP_RTOL = 1e-9         # x the base's longest side: a subtracted face this close to the base's box side is no hole face
-MESH_CACHE_ENVIRONMENT = 'OPEN_SOL_MESH_CACHE'   # folder of the on-disk gmsh cache; unset or empty = off
+MESH_CACHE_ENVIRONMENT = 'OPEN_SOL_MESH_CACHE'   # folder of the on-disk gmsh cache; '' = off, unset = the default
+                                                 # folder (default_mesh_cache_folder; off inside the self-tests)
 MESH_CACHE_MAX_BYTES = 2 * 1024 ** 3              # oldest cache files (by mtime) removed above this total
 _MESH_CACHE_FORMAT = 1    # bump when the cached arrays change meaning
 _MESH_CACHE_PREFIX = 'gmsh3d_'
@@ -308,7 +313,7 @@ def mesh_solids_with_gmsh(window, solids, h_max, pml_widths=None, h_min=None, tr
     surfaces meshed as images of the lo side; sized_faces (SizedFace), size_points ((n, 4) [x, y, z, h] [m], each
     growing like a sized solid) and sized_regions (SizedRegion: composites) refine near planes / points / inside
     composites, sized_surfaces (SizedRegion) near a region's surface only; disk_cache = cache folder ('' off, None:
-    OPEN_SOL_MESH_CACHE); timings (a dict) gets the seconds of 'gmsh' ('source' gmsh / disk / memory), 'region_tags',
+    mesh_cache_folder's default); timings (a dict) gets the seconds of 'gmsh' ('source' gmsh / disk / memory), 'region_tags',
     'mesh_tables'. RuntimeError when gmsh is missing or fails, ValueError for a shell on a periodic axis."""
     executable = executable or find_gmsh()
     if executable is None:
@@ -348,10 +353,46 @@ def mesh_solids_with_gmsh(window, solids, h_max, pml_widths=None, h_min=None, tr
 
 
 def mesh_cache_folder(disk_cache=None):
-    """Absolute folder of the on-disk gmsh cache: disk_cache when given ('' = off), else the environment variable
-    OPEN_SOL_MESH_CACHE (read per call; unset or empty = off); None when off."""
-    folder = os.environ.get(MESH_CACHE_ENVIRONMENT, '') if disk_cache is None else os.fspath(disk_cache)
+    """Absolute folder of the on-disk gmsh cache, None when off: disk_cache when given ('' = off); else off inside
+    default_disk_cache_off (the self-tests); else OPEN_SOL_MESH_CACHE (read per call; '' = off), unset = the user's
+    cache folder (default_mesh_cache_folder)."""
+    if disk_cache is not None:
+        folder = os.fspath(disk_cache)
+    elif _DEFAULT_CACHE_OFF[0]:
+        folder = ''
+    else:
+        folder = os.environ.get(MESH_CACHE_ENVIRONMENT)
+        if folder is None:
+            folder = default_mesh_cache_folder()
     return os.path.abspath(folder) if folder else None
+
+
+def default_mesh_cache_folder() -> str:
+    """The user's gmsh mesh cache folder: %LOCALAPPDATA%/open_sol/mesh_cache on Windows, ~/Library/Caches/open_sol/
+    mesh_cache on macOS, else $XDG_CACHE_HOME (default ~/.cache)/open_sol/mesh_cache."""
+    import sys
+    home = os.path.expanduser('~')
+    if os.name == 'nt':
+        base = os.environ.get('LOCALAPPDATA') or os.path.join(home, 'AppData', 'Local')
+    elif sys.platform == 'darwin':
+        base = os.path.join(home, 'Library', 'Caches')
+    else:
+        base = os.environ.get('XDG_CACHE_HOME') or os.path.join(home, '.cache')
+    return os.path.join(base, 'open_sol', 'mesh_cache')
+
+
+@contextlib.contextmanager
+def default_disk_cache_off():
+    """Inside (any thread): mesh_cache_folder(None) is off whatever OPEN_SOL_MESH_CACHE says (an explicit disk_cache
+    still applies). api.selftest / selftest_examples enter it before the dependency trace: a disk hit would hide the
+    mesher code from the selftest cache tracer."""
+    with _GMSH_CACHE_LOCK:
+        _DEFAULT_CACHE_OFF[0] += 1
+    try:
+        yield
+    finally:
+        with _GMSH_CACHE_LOCK:
+            _DEFAULT_CACHE_OFF[0] -= 1
 
 
 def gmsh_run_count() -> int:
@@ -511,6 +552,7 @@ def _clipped_mesh(unit_nodes, tets, entities, bounds, window, completed=None) ->
 _GMSH_CACHE = OrderedDict()
 _GMSH_CACHE_LOCK = threading.Lock()   # the build worker and the GUI mesh preview may mesh at the same time
 _GMSH_RUNS = [0]                      # gmsh_run_count
+_DEFAULT_CACHE_OFF = [0]              # open default_disk_cache_off contexts (self-tests)
 
 
 def _kept_mesh(unit_nodes, tets, entities, bounds, origin, scale) -> tuple:
@@ -591,7 +633,8 @@ def geo_text(bounds, window, solids, h_max, h_min, transition, growth=None,
             'SetFactory("OpenCASCADE");', 'Mesh.MeshSizeExtendFromBoundary = 0;', 'Mesh.MeshSizeFromPoints = 0;',
             f'Mesh.MeshSizeFromCurvature = {int(curvature_elements)};', f'Mesh.MeshSizeMax = {_numbers(h_max / scale)};',
             f'Mesh.MeshSizeMin = {_numbers(h_min / scale)};', 'Mesh.Algorithm = 6;', 'Mesh.Algorithm3D = 1;',
-            'Mesh.Optimize = 1;', 'Mesh.OptimizeNetgen = 1;', 'Mesh.ElementOrder = 1;', 'Mesh.SaveAll = 1;',
+            # Netgen off: gmsh 0.87 -> 0.47 s on a 10k-tet mesh, 9 % fewer tets, 1 % quality quantile 0.20 -> 0.17
+            'Mesh.Optimize = 1;', 'Mesh.OptimizeNetgen = 0;', 'Mesh.ElementOrder = 1;', 'Mesh.SaveAll = 1;',
             *PINNED_OUTPUT_OPTIONS,
             _box_command(1, outer_low, outer_high)]
     has_shell = tuple(window) != tuple(bounds)

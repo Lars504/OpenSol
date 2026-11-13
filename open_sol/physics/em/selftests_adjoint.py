@@ -208,8 +208,7 @@ ADJOINT_SELFTEST_CASES = (
                     'trans T); the box is all-CPML, so the wall-row fold of the adjoint source (pec / pmc / mirror '
                     'faces) and the pin_image_cells diagonal are not exercised here.',
         specs=lambda: cpu_specs(_adjoint_specs()),
-        check=_check_adjoint_gradient,
-        heavy=True),
+        check=_check_adjoint_gradient),
     SelfTestCase(
         name='em_fdfd_hz_eps_xy_adjoint_gradient',
         label='EM FDFD H_z adjoint sensitivity with eps_xy vs finite difference',
@@ -227,6 +226,5 @@ ADJOINT_SELFTEST_CASES = (
                     'transposed solve of the 9-point operator; the objective lines see no eps_xy, so the coupling '
                     'part of the adjoint source (a face-field objective in eps_xy cells) is not exercised.',
         specs=lambda: cpu_specs(_xy_adjoint_specs()),
-        check=_check_xy_adjoint_gradient,
-        heavy=True),
+        check=_check_xy_adjoint_gradient),
 )

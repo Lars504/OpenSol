@@ -32,7 +32,13 @@ coordinate rules stay in the root file.
   explicit-engine kernels and coupling-transform kernels are `core.kernels` twins (other transforms allocate on their
   input's / the Domain's xp); `FieldProbe` keeps its buffer on the first record's module. `FieldProbe.record` of a
   float32 / float64 cupy field is one `core.probe_store` launch (`trace[slot] = field[element offset]`, any strides);
-  numpy, float16 (em3d half_storage), complex or out-of-shape cells take the indexed `record_value`. A coupling runs on the cpu
+  numpy, float16 (em3d half_storage), complex or out-of-shape cells take the indexed `record_value`. Step-graph
+  recording: `ProbeRows` (host side of a (rows, columns) device table filled by ONE fixed-argument launch per step that
+  advances a device row counter; `next_launch(rows=)` grows first, `stamp` per step; acoustics' ProbeRecorder) and
+  `FieldProbeRows` (gpu only: a table of field pointers + element offsets, one dtype: float32 / float64, or float16
+  read as its bits (em3d half_storage, stored units); `add` takes a FieldProbe over,
+  whose `get_data` then reads its column and `record` raises; `rewrite_last_row` = the rewind variant, eager).
+  `replace_same_time` stays on the per-probe path (FDTD never uses it). A coupling runs on the cpu
   once both partner types declare it. gpu only: the half_storage steppers and the cusolver_qr back end (solver
   backend_misfit).
 - Memory estimates: `diffusion_system_estimate(direct=True)` (a host SuperLU sparse_direct linear solver, the cpu
@@ -53,7 +59,12 @@ coordinate rules stay in the root file.
   raise OutOfMemoryError instead of spilling. Recomputed before every job (worker: after `release_session`; `api.run`:
   at start); when it raises the job fails (Issue at ('model',)), never runs without a pool limit (Windows sysmem
   fallback is 10-100x slower). Pool counters are process-wide (`BuildSummary.session_gpu_bytes` is one build's share).
-  `memory_status()` is a driver query: <= ~1 Hz.
+  `memory_status()` is a driver query: <= ~1 Hz. `set_budget` keeps its memory query: `budget_device_info()` (the
+  run's device line, `api._log_device`) reuses it, so a run makes one memory query; device names are cached per process.
+- Code sizing a batch to the free memory at run time (line_block chunks) asks `pool_room_bytes(release_cached=True)`,
+  not budget - pool used: the budget never sees outside-pool memory (cuDSS factors of other physics), so pool + factors
+  could pass the device and spill. It returns the cached blocks while the device is the tighter bound; the run memory
+  measurement reads `pool_high_water_bytes()`, which keeps the reserved bytes such a release returned.
 - `Simulation.memory_report()` / `owned_bytes` count a shared array for its first owner (materials, physics,
   couplings); memory_report also lists host bytes of CPU factorisations (`host_owners`: FDFD `host_factor_bytes` = L +
   U of the last scipy_splu), which the model path reports only in the study log (`solve_summary`). Outside the cupy
@@ -70,8 +81,9 @@ coordinate rules stay in the root file.
 
 ## Accepted host syncs (the root rule: none per step in hot loops)
 - The build's Courant check; one `Device().synchronize()` per study chunk and one at the end of each study run
-  (`study_seconds`); heat / potential CG, one per `pcg.check_interval(preconditioner, backend)` iterations (gpu 16,
-  multigrid 2; the gpu anchor-code comparison of a re-assembly is read right before it); one per
+  (`study_seconds`); heat / potential CG, one at the start (||b|| and ||r0|| together) and one per check interval of
+  the bound preconditioner (pcg `_check_interval`: gpu 16, a multigrid V-cycle 2; the gpu anchor-code comparison of a
+  re-assembly is read right before it); one per
   `DiffusionSystem.refresh_diagonal` / `refresh_capacity` (pinned / anchor cells unchanged) and `refresh_held_values`
   (held count); one per radiation term
   and steady heat radiation re-linearisation (its convergence test); the FDFD solve
@@ -386,7 +398,8 @@ coordinate rules stay in the root file.
 - Its decimation is NOT the DFT `sample_interval`: the trace is mixed to the band centre, Kaiser-filtered (100 dB; pass
   |f| <= W, stop |f| >= rate - W) and decimated on the host; the FIR gain is divided out exactly per pole (polyval(taps,
   zeta)), and the first n_taps samples after the start are spent on the filter (low-Q modes decay there). Poles are
-  kept only when two pencil sizes (N/3, N/2) agree within 1e-2 |s| / omega. The result must never raise for a short
+  kept only when two pencil sizes (N/3, N/2) agree within 1e-2 |s| / omega (each pencil: QR (R only) of the stacked
+  Hankel, then the SVD of R: the same values and right vectors, no tall U). The result must never raise for a short
   run (the study end computes every table result, `_feature_results`): failures go to the 'note' extra with empty
   rows. Band 'wavelength' adds the 'wavelength' column (vacuum C0 / f); 'frequency' has none.
 - Memory: `analysis_host_bytes(n_steps, n_channels)` (host temporaries of one analysis); the growable probe traces are
@@ -401,7 +414,11 @@ coordinate rules stay in the root file.
   an op's launches stream distinct arrays, so an op's bytes are the distinct bytes all its launches move (a loop over
   the same small arrays is a count of single-launch ops, not launches). Spmv 'spmv', Reduction 'dot' (+ sync on
   read_back), Transfer 'transfer' and Sync only on the gpu, HostLU / HostSolve 'host_{lu,solve}_{2,3}d[_complex]' (no
-  complex curve: COMPLEX_LU_FACTOR x the real one), DenseFlops 'gemm' / 'host_gemm', HostStream 'host_stream',
+  complex curve: COMPLEX_LU_FACTOR x the real one), DenseFlops 'gemm' / 'host_gemm' (float64 products; `single`:
+  'gemm_single', complex64 products at 8 n^3 real flops: consumer GPUs run them far above the float64 rate),
+  BlockInverse = dense complex inverses, which do not follow the product rate (cuBLAS batched LU): one batched call on
+  'block_inverse[_single]_<b>' (seconds over the batch at BLOCK_INVERSE_SIZES, log-log interpolated in the block size)
+  or `looped` one matrix per call on 'matrix_inverse[_single]' (over MATRIX_INVERSE_SIZES), HostStream 'host_stream',
   PythonCalls 'python_call', DevicePlan / DeviceFactor / DeviceSolve 'cudss_{plan,factor,solve}_<d>d[_mixed]' (x
   scale; only 2D curves exist; DeviceFactor.device_values: 'cudss_factor_<d>d_device[_mixed]', the host curve on an
   older profile without it). A new op needs its curve in run_profile (or prices from an existing one); a profile
@@ -449,7 +466,7 @@ coordinate rules stay in the root file.
 
 ## Damped iteration (`damped_iteration`; plans_overview decision 7)
 - The one loop driver of nonlinear DiffusionSystem physics (electrostatics Poisson-Boltzmann Newton, magnetic B-H fixed
-  point); no solver role, its knobs are physics settings. Array-module agnostic, imports numpy only.
+  point); no solver role, its knobs are physics settings. Array-module agnostic (numpy + core.backend.array_module_of).
 - `DampingSettings(tolerance, max_iterations, relaxation, max_step, min_relaxation, anderson_depth=0)` (frozen,
   validated); `DampedIteration(settings, label).run(state, propose, scale) -> converged`: `proposal = propose(state)`
   must be a new array, never a view of state (the caller re-assembles / re-solves inside it); `change = max |proposal -
@@ -460,7 +477,9 @@ coordinate rules stay in the root file.
 - `anderson_depth` m > 0 (magnetic B-H default): Walker-Ni Anderson mixing instead of the halving, step = beta f - (dX +
   beta dF) gamma, gamma the least squares of f / scale on the last m differences, beta = relaxation fixed, max_step caps
   the mixed step (one extra sync when finite); history (3m + 3 state-sized arrays) lives for one `run`; one transfer of
-  the (m + 1) x m Gram products per iteration. The state must stay meaningful under linear combinations (magnetics
+  the (m + 1) x m Gram products per iteration; the step is two GEMVs of gamma over the ring rows (no per-row loop), and
+  only the newest weighted df row is rebuilt while `scale` is the same array object (or an equal number): a scale
+  array must not change in place during one run. The state must stay meaningful under linear combinations (magnetics
   mixes ln nu, not nu). `AndersonHistory` is also the stationary study's loop-back acceleration (model sub file).
 - Record: `n_runs`, `total_iterations`, `last_iterations`, `last_change`, `last_converged`, `n_unconverged`,
   `last_warning` (never cleared; an unconverged run returns False and keeps the damped state: the caller appends the
@@ -482,6 +501,16 @@ coordinate rules stay in the root file.
   `flux_jump_indicator(flux)` (S7.7 A2, `DiffusionPhysicsBase.error_indicator`) reads the same cache: a physics whose
   shown flux is not the system's (potential driven terminals, magnetic H with remanence, the AC phasor) passes it via
   `_indicator_flux`.
+- Fused re-assembly (`fv_diffusion_fused`; `FUSED_REASSEMBLY`, per system `fused_reassembly`): an assembly on the kept
+  plain 5 / 7-point pattern (no phi wrap, c_xy term, insulated cut-cell walls or held edges; window-shaped c and C/dt)
+  runs two grid-stride `real_raw_twin` kernels instead of build_laplacian + the elimination glue: entries (CSR values in
+  the `_SlotLayout` order, interior / outer-face conductances and rhs into one buffer each, held / pinned masks, fixed
+  values, rhs drive) and elimination (A_solve, Jacobi, rhs offset, fixed cells of the unknown); the anchor check sits
+  between them. Arithmetic order = build_laplacian's (geometry as packed 1D factors, unit factors exact), so it differs
+  only by FMA / summation rounding (selftest diffusion_fused_reassembly, cpu twins and gpu kernels vs build_laplacian).
+  The first assembly (no pattern) and every other case take the build_laplacian path. A new operator term either goes
+  into both paths or makes `_fused_reassembly_applies` refuse it; `_keep_assembly` stores what both paths keep.
+  Run-time estimate: `diffusion_time_estimate` prices re-assemblies at the fused launch count.
 - c_xy cross term (`build_anisotropic_laplacian`): per interior vertex, energy c_q/2 [(u_NE - u_SW)^2 - (u_NW -
   u_SE)^2], exact for linear u over the rectangle between the four centres on any widths; c_q = area-weighted mean c_xy
   of that rectangle, 0 unless all four conduct (c_xx, c_yy > 0) or are held; it adds +-c_q/2 to the diagonals, so every
@@ -513,7 +542,12 @@ coordinate rules stay in the root file.
   (magnetic axis: 2, the exact half cell of psi with c = nu / r).
 - Anchors: `require_anchors` (default True) gates `_check_anchors` in `assemble`; only heat in a thermal_noise study
   clears it. `assemble(check_anchors=False)` skips it for one assembly: only for a caller that changed coefficient
-  values but not which c are > 0, nor held cells or faces (the magnetic B-H iterations after a loop's first). The check
+  values but not which c are > 0, nor held cells or faces (the magnetic B-H iterations after a loop's first).
+  `mark_coefficients_changed()` (heat / potential `materials_changed` of the coefficient arrays: k(T), sigma(T)) dirties
+  the operator like `operator_dirty = True` but marks a coefficient-only change (cleared by every other dirtying, as
+  the diagonal-only mark): the next assembly then runs `positive_pattern_moved` (c > 0 per component and C/dt > 0
+  against the last assembly, one reduction) and the full check only when a cell moved (gpu + PCG: read at the next
+  solve, as `_pending_anchor_check`; not while an older check is still pending; `n_anchor_shortcuts`). The check
   computes a per-cell uint8 anchor code (`_anchor_code` twin: c_xx / c_yy / c_zz > 0, held, fixed, loss, C/dt > 0,
   outer face conductance > 0) and labels the link graph (`_label_anchors`, 2x resolution) only when it differs from
   `anchor_signature` (the first assembly always labels). On the gpu with a PCGSolver the comparison is

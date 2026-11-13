@@ -189,7 +189,42 @@ def _sign_violations(operators, boundaries, dispersion, materials, cell_widths):
         np.array([_LOSSY_EPS]), np.array([_LOSSY_SIGMA]), [(drude, None)], omega)
     checks.append(bool(np.all(permittivity.imag < 0.0)))
     checks.append(_even_wall_fold_residual(operators, boundaries, cell_widths) < 1e-12)
+    checks.extend(_kept_yee_matches(operators, boundaries, cell_widths, omega))
     return sum(1 for passed in checks if not passed)
+
+
+def _kept_yee_matches(operators, boundaries, cell_widths, omega):
+    """[bool] per (config, omega): KeptYeeOperators.at gives yee_operators' CSR bit for bit (CPML, periodic x, Bloch
+    x), and KeptYeeOperators.helmholtz helmholtz_operator's values (1e-14 relative; zero weights on some faces) on one
+    fixed canonical pattern, at two omegas in turn on one kept object (the FDFD wavelength scan path)."""
+    bloch = boundaries.BoundaryConfig('bloch', 'bloch', 'cpml', 'cpml')
+    bloch.cpml_npml = _GRADED_NPML
+    bloch.bloch_kx = 0.3 * math.pi / float(np.sum(cell_widths[0]))
+    shape = (len(cell_widths[0]), len(cell_widths[1]))
+    face_index = np.arange(shape[0] * shape[1], dtype=np.float64).reshape(shape)
+    weights = (1.0 + 0.3 * np.cos(face_index) - 0.2j * np.sin(face_index),
+               (0.7 + 0.1j) * (face_index % 7 != 3))   # hi-y: every 7th face 0 (PEC / even wall faces)
+    matches = []
+    for config in (boundaries.BoundaryConfig.all_pml(_GRADED_NPML),
+                   boundaries.BoundaryConfig.with_periodic_x(_GRADED_NPML), bloch):
+        kept = operators.KeptYeeOperators(cell_widths, config, _GRADED_BASE_CELL)
+        kept_patterns = []
+        for frequency in (omega, 1.37 * omega):
+            direct = operators.yee_operators(cell_widths, config, _GRADED_BASE_CELL, omega=frequency)
+            gathered = kept.at(frequency)
+            matches.append(all(
+                np.array_equal(first.indptr, second.indptr) and np.array_equal(first.indices, second.indices)
+                and np.array_equal(first.data, second.data) for first, second in
+                ((direct.dx_e, gathered.dx_e), (direct.dx_h, gathered.dx_h), (direct.dy_e, gathered.dy_e),
+                 (direct.dy_h, gathered.dy_h))))
+            cell_term = (frequency / C0) ** 2 * (2.0 - 0.1j + np.sin(0.3 * face_index))
+            reference = operators.helmholtz_operator(direct, *weights, cell_term)
+            planned = kept.helmholtz(gathered, *weights, cell_term)
+            difference = abs(planned - reference).max() / abs(reference).max()
+            kept_patterns.append((planned.indptr, planned.indices))
+            matches.append(bool(difference < 1e-14) and planned.has_canonical_format)
+        matches.append(kept_patterns[0][0] is kept_patterns[1][0] and kept_patterns[0][1] is kept_patterns[1][1])
+    return matches
 
 
 def _even_wall_fold_residual(operators, boundaries, cell_widths):

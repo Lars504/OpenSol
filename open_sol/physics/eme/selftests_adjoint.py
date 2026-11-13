@@ -431,8 +431,7 @@ EME_ADJOINT_SELFTEST_CASES = (
                     'mode solves.',
         specs=lambda: {},
         check=_check_gradient,
-        max_wall_time=300.0,
-        heavy=True),
+        max_wall_time=300.0),
     SelfTestCase(
         name='eme_3d_cascade_adjoint_gradient',
         label='EME 3D: cascade adjoint gradient',
@@ -454,8 +453,7 @@ EME_ADJOINT_SELFTEST_CASES = (
                     'relative deviation; tolerance 1e-4 (a first guess, as eme_cascade_adjoint_gradient).',
         specs=lambda: {},
         check=_check_gradient_3d,
-        max_wall_time=300.0,
-        heavy=True),
+        max_wall_time=300.0),
     SelfTestCase(
         name='eme_taper_optimization',
         label='EME: taper optimisation',
@@ -472,8 +470,7 @@ EME_ADJOINT_SELFTEST_CASES = (
                     'the history and design_density), not accuracy.',
         specs=lambda: {'taper': _taper_spec()},
         check=_check_taper,
-        max_wall_time=900.0,
-        heavy=True),
+        max_wall_time=900.0),
     SelfTestCase(
         name='eme_taper_optimization_hz',
         label='EME: taper optimisation (hz)',
@@ -485,6 +482,5 @@ EME_ADJOINT_SELFTEST_CASES = (
                     'loop (eps_xx / eps_yy writes, eps_sensitivity of both arrays, the history and design_density).',
         specs=lambda: {'taper': _taper_spec('hz')},
         check=_check_taper,
-        max_wall_time=900.0,
-        heavy=True),
+        max_wall_time=900.0),
 )

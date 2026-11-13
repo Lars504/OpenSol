@@ -324,9 +324,12 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   flagged `Param.time_dependent` (parameters and t only) may use it; both are re-evaluated before every step at its
   start time (the runner clock moves before the couplings apply; implicit steps see a one-step lag). A feature param
   only gets the flag together with an incremental setter in its apply (`BuildContext.follow_time`; model sub file
-  "Feature values of t"). Likewise `Param.follows_parameters` (SweepSpec.reuse_build) needs a
-  `BuildContext.follow_parameters` setter on every grid kind whose solver is a RerunSolver, else a reused build
-  silently keeps the build value; values are not range-checked per sweep value (model sub file "Reused sweep builds").
+  "Feature values of t"). Likewise `Param.follows_parameters` (SweepSpec.reuse_build; feature values and physics
+  settings) needs a `BuildContext.follow_parameters` setter on every grid kind whose solver is a RerunSolver, else a
+  reused build silently keeps the build value; values are not range-checked per sweep value unless the setter checks
+  them. Material values follow by a repaint + `materials_changed` when every type reading them is non-EM and flags
+  the property `state_dependent`, so that flag promises a full re-read of the array (model sub file "Reused sweep
+  builds").
 - GUI texts are separate: `Param.tip` (tooltip; '\n\n' between paragraphs, '- ' list lines), `Param.choice_labels`
   (drop-down texts; a `replace(param, choices=...)` that narrows the choices must narrow choice_labels too, else
   Param.__post_init__ raises) and `summary` on PhysicsType / FeatureType / CouplingType / StudyType / TemplateEntry /
@@ -385,8 +388,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   crystal_tensors code), or every case depends on that module. An in-process cache of expensive results (meshes,
   factors) kept across api runs hides code from the tracer (a case reusing another case's result never calls the
   code that made it): scope such caches to one `run_study`, as `meshing.element_meshes_kept` and
-  `cudss_factor.cudss_orderings_kept` (cuDSS re-plans of a known pattern, also the remembered rejected mixed factors:
-  solvers sub file "Ordering reuse").
+  `cudss_factor.cudss_orderings_kept` (cuDSS re-plans of a known pattern, also the remembered rejected mixed factors
+  and the parked plans; its on-disk ordering store is the GUI worker's only: solvers sub file "Ordering reuse"). A disk cache across processes is off inside the self-tests (the gmsh tetrahedron
+  cache, on by default otherwise: `gmsh3d.default_disk_cache_off`, entered before the trace; fem sub file).
 - Self-test modules never rebind a module-level constant later in the file (later cases silently read the new value).
 - Work counters: a new quasi-static solver adds `work_counters()` (not on the ABC; summary.json `solvers`, model sub
   file "Timing") with cumulative, machine-independent counts (iterations, factorisations) besides any seconds, on its
@@ -397,7 +401,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   shared one from definition_helpers when it fits); validate and estimators read the resolution
   (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting. Automatic = the role's default
   type at its defaults (per study, grid and backend: `SolverRole.automatic(backend, grid, study)`, every caller passes
-  the study; a study default (kept cuDSS factor) whose gpu estimate exceeds the budget resolves without the study:
+  the study; a study default (kept direct factor) whose gpu estimate exceeds the budget (cuDSS) or whose host estimate
+  exceeds the RAM / the host SuperLU size limit (host factor) resolves without the study:
   `meshing.fitted_memory_estimate` -> `plain_roles`, which validate, estimators, build and api.check share, solvers sub
   file; a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
   `SolverRole.auto_back_ends`, solvers sub file; the optional host MUMPS / PARDISO back ends of `solvers.host_direct`
@@ -446,7 +451,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 ### GPU memory and session lifetime
 - GPU functions only on the GPU-owning thread (the worker, or the `api.run` caller); `gpu_memory.format_bytes` is the
   only one the GUI thread calls. cupy's pool runs under a budget (core sub file "GPU memory"): overruns raise
-  OutOfMemoryError. `free_all_blocks` only between jobs / builds / sweep values, never in step loops.
+  OutOfMemoryError. `free_all_blocks` only between jobs / builds / sweep values and before sizing to the free device
+  memory (a cuDSS plan check, `gpu_memory.pool_room_bytes`), never in step loops.
 - A cuDSS factor (and the cusolver_qr workspace) lives outside the cupy pool, so the budget never sees it: code holding
   one (a ModalPencil, a harmonic system's factor) releases it (`release()`) before dropping or replacing it. Likewise
   a MUMPS / PARDISO factor (`host_direct.HostDirectFactorization`) holds host memory outside numpy: release it or pass
@@ -496,14 +502,18 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   of a pcg factorized with capture_blocks: solvers sub file "pcg"). Below ~1e6 unknowns a cupyx
   SpMV costs more host time (~60 us: descriptors, workspace, output allocation) than device time.
 - Launch-bound steppers replay their fixed-argument launches as CUDA graphs (gpu only; one eager run per key, then
-  capture, a failed capture warns and stays eager): em_fdtd_3d `engine3d._fixed_block`, em_fdtd_ez / _hz
-  `fdtd_2d_base._fixed_block`, laminar_flow `solver._run_steps`, the pcg CG blocks (capture_blocks: solid_mechanics
+  capture, a failed capture warns and stays eager): em_fdtd_3d `engine3d._fixed_block` (probes inside the E graph),
+  em_fdtd_ez / _hz
+  `fdtd_2d_base._fixed_block` (probes inside the E graph: `core.monitors.FieldProbeRows`), laminar_flow
+  `solver._run_steps`, elastic_waves `solver._run_fixed` (multi-step blocks behind the runner hand-off
+  `advance_ticks`: coupling sub file), the pcg CG blocks (capture_blocks: solid_mechanics
   2D / 3D, DiffusionSystem Jacobi and multigrid: a V-cycle launches its kernels into the CG block's capture, never a
   graph of its own inside it). A graph holds array pointers and scalar values of capture time: every array a
   block reads is rewritten in place, or its id is in the graph key and the entry keeps it alive; every scalar is fixed
   for the engine's life or in the key. Inside a block: no host sync, no allocation (also not cupy's copy of an input
   that overlaps the output, e.g. `a[:, 0] = a[:, 1]`), no kernel with per-step scalars (sources, poles, walls,
-  monitors stay outside), no timed profiler part. A new kernel argument of a captured launch follows these rules.
+  monitors stay outside, unless a device counter replaces the scalar: probe rows, pulse tables), no timed profiler
+  part. A new kernel argument of a captured launch follows these rules.
 - A per-frequency (or per-iteration) cuDSS refactorisation of a fixed-pattern pencil goes through
   `sparse_direct.DevicePencil` / `factorize_pencil` (or `refactorize_device_values`), never a host A(omega) into
   `factorize_host`: the host canonicalising, asymmetry check and lower-triangle take cost more than the cuDSS

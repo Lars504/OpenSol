@@ -586,7 +586,7 @@ FEM_3D_CASES = (
                      f'{_MODES_TOLERANCE:g} (discretisation error estimate, orthotropic run not yet run). Pins the '
                      'consistent mass, the target shift, the ranking and the 3D c_ij stiffness (c44 / c55 / c66 '
                      'separately) on tetrahedra.'),
-        specs=_modes_specs, check=_check_modes, max_wall_time=450.0),
+        specs=_modes_specs, check=_check_modes, max_wall_time=450.0, heavy=True),
     SelfTestCase(
         name='solid_fem3d_anisotropic_uniform_strain',
         label='Solid mechanics 3D on tetrahedra: anisotropic block, uniform strain and free expansion',

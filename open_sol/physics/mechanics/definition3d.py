@@ -1478,8 +1478,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
              _TET_ELECTRIC_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))])
     if settings_values.get('geometric_nonlinearity'):   # the Newton tangent replaces K in the 'linear' factor
         # TangentAssembler3D: rule gradients + weights (kept up to its cache limit), the int32 scatter map of every
-        # element-block entry, element vector dofs and the free-free restriction (indices, take) on the stiffness's
-        # kept block pattern; building the restriction: int64 rows of every entry and the gathered renumbering
+        # element-block entry, element vector dofs and the free-free restriction (int32 indices and take, written
+        # directly by the restriction loop) on the stiffness's kept block pattern; building the restriction (numpy
+        # twin): int64 rows of every entry and the gathered renumbering
         rule_points = _TANGENT_RULE_POINTS[order]
         gradient_bytes = 0 if device_tangent else min(FLOAT64_BYTES * elements * rule_points * (3 * local + 1),
                                                       TANGENT_GRADIENT_CACHE_BYTES)   # device: kept on the GPU
@@ -1488,7 +1489,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             6 * FLOAT64_BYTES * 3 * scalar_dofs),
                            ('Newton tangent assembler: rule gradients, scatter map, free restriction',
                             gradient_bytes + INT32_BYTES * coo_entries + _INT64_BYTES * 3 * local * elements
-                            + (INT32_BYTES + _INT64_BYTES) * entries),
+                            + 2 * INT32_BYTES * entries),
                            ('Newton tangent free restriction build (a run item)',
                             (2 * _INT64_BYTES + 3) * entries)])
         if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values

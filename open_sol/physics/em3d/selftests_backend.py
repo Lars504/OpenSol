@@ -46,8 +46,9 @@ def _first_flux_power(details):
 
 
 # numba vs numpy field kernel twins (kernels3d, single): random fields / material ids (the last id PEC) / tables on a
-# small grid, per periodic set (x, y, z), with Bloch wrap scalars, subpixel face overrides off and on, CPML slabs at
-# both ends of every axis and an ohmic box; ms per call of both on the speed grid (details only)
+# small grid, per periodic set (x, y, z), with Bloch wrap scalars, subpixel face overrides off and on, the fused CPML
+# with lo and hi layers on every axis (corners in 3 layers), on z only and off, and an ohmic box; ms per call of both
+# on the speed grid (details only)
 _NUMBA_SHAPE = (9, 8, 7)
 _NUMBA_PERIODIC_SETS = ((0, 0, 0), (1, 1, 1), (1, 0, 1))
 _NUMBA_SPEED_SHAPE = (32, 32, 32)
@@ -55,7 +56,8 @@ _NUMBA_TIMED_CALLS = (3, 5)           # numpy, numba calls per timing (details o
 _NUMBA_TOLERANCE = 1e-5    # relative to the peak output: float32 round-off of a different operation order
 _NUMBA_IDS = 6
 _NUMBA_CELL = 1e-8
-_NUMBA_SLAB_ROWS = 3
+_NUMBA_LAYER_ROWS = 2      # per CPML side: 2 sides + 2 unstretched rows fit the 7-cell z axis
+_NUMBA_CPML_SETS = {'cpml_xyz': (0, 1, 2), 'cpml_z': (2,), 'no_cpml': ()}
 _ETA0 = 376.73
 
 
@@ -76,12 +78,10 @@ class _RandomGrid:
         self.inverse = [(rng.uniform(0.8, 1.2, n) / _NUMBA_CELL).astype(np.float32) for n in shape]
         lower = [rng.uniform(0.3, 0.7, n).astype(np.float32) for n in shape]
         self.shares = [value for share in lower for value in (share, (1.0 - share).astype(np.float32))]
-        # cylindrical curl factors (kernels3d header): random radii-like rows along x, and CPML row weights per axis
+        # cylindrical curl factors (kernels3d header): random radii-like rows along x (the x CPML psi reads them too)
         radii = [rng.uniform(0.5, 2.0, shape[0]).astype(np.float32) for _ in range(3)]
         self.radial_h = (radii[0], (1.0 / radii[0]).astype(np.float32), (1.0 / radii[1]).astype(np.float32))
         self.radial_e = (radii[2], (1.0 / radii[2]).astype(np.float32), (1.0 / radii[0]).astype(np.float32))
-        self.row_weights = [(rng.uniform(0.5, 2.0, n).astype(np.float32), rng.uniform(0.5, 2.0, n).astype(np.float32))
-                            for n in shape]
 
     def table(self, lo, hi):
         return self.rng.uniform(lo, hi, _NUMBA_IDS).astype(np.float32)
@@ -101,36 +101,42 @@ class _RandomGrid:
         angles = self.rng.uniform(0.0, 2.0 * math.pi, 3)
         return tuple(DTYPE(value) for angle in angles for value in (math.cos(angle), math.sin(angle)))
 
-    def slab(self, axis, row0, n_rows):
-        """(psi_first, psi_second, b, a, inv) of a CPML slab."""
-        shape = list(self.shape)
-        shape[axis] = n_rows
-        psi = [(self.rng.standard_normal(shape) * 1e-2).astype(np.float32) for _ in range(2)]
-        decay = self.rng.uniform(0.5, 1.0, n_rows).astype(np.float32)
-        return (*psi, decay, (decay - 1.0).astype(np.float32), self.inverse[axis][row0:row0 + n_rows].copy())
+    def cpml(self, kind, axes):
+        """Trailing CPML arguments of update_h_3d / update_e_3d ('h' / 'e'): lo and hi layers of _NUMBA_LAYER_ROWS rows
+        (physics.em.boundaries.cpml_side_rows layout) on `axes`, the engine's placeholders (0 rows) elsewhere."""
+        from ..em.boundaries import cpml_side_rows
+        values = []
+        for axis, n in enumerate(self.shape):
+            if axis not in axes:
+                values += [np.full(1, -1, dtype=np.int32), np.zeros(1, dtype=np.float32),
+                           np.zeros(1, dtype=np.float32), *(np.zeros((1, 1, 1), dtype=np.float32) for _ in range(2)),
+                           np.int32(0)]
+                continue
+            sides = [cpml_side_rows(side, n, _NUMBA_LAYER_ROWS)[0 if kind == 'e' else 1] for side in ('lo', 'hi')]
+            row_map = np.full(n, -1, dtype=np.int32)
+            for index, rows in enumerate(sides):
+                row_map[rows] = np.arange(index * _NUMBA_LAYER_ROWS, (index + 1) * _NUMBA_LAYER_ROWS, dtype=np.int32)
+            n_rows = 2 * _NUMBA_LAYER_ROWS
+            shape = list(self.shape)
+            shape[axis] = n_rows
+            decay = self.rng.uniform(0.5, 1.0, n_rows).astype(np.float32)
+            inverse = np.concatenate([self.inverse[axis][rows] for rows in sides])
+            gain = ((decay - 1.0).astype(np.float32) * inverse).astype(np.float32)
+            values += [row_map, decay, gain, *((self.rng.standard_normal(shape) * 1e-2).astype(np.float32)
+                                               for _ in range(2)), np.int32(n_rows)]
+        return tuple(values)
 
-    def update_h(self):
+    def update_h(self, cpml_axes=(0, 1, 2)):
         """H reads the wraps on every axis (the engine zeroes ih[n-1] on non-periodic ones)."""
         return (*self.fields(1.0 / _ETA0), *self.fields(), *self.fields(), self.mat, self.t_mu, self.t_sm,
-                *self.inverse, *self.radial_h, *self.ints, self.dt, DTYPE(1.0), *self.wrap_args())
+                *self.inverse, *self.radial_h, *self.ints, self.dt, DTYPE(1.0), *self.wrap_args(),
+                *self.cpml('h', cpml_axes))
 
-    def update_e(self, periodic, use_face):
+    def update_e(self, periodic, use_face, cpml_axes=(0, 1, 2)):
         return (*self.fields(), *self.fields(1.0 / _ETA0), *self.fields(1.0 / _ETA0), self.mat, *self.t_eps,
                 self.t_sig, *self.face_args(use_face), *self.inverse, *self.radial_e, *self.shares, *self.ints,
-                *(np.int32(flag) for flag in periodic), self.dt, DTYPE(1.0), *self.wrap_args())
-
-    def cpml_h(self, axis, row0):
-        return (*self.fields(1.0 / _ETA0)[:2], *self.fields()[:2], *self.slab(axis, row0, _NUMBA_SLAB_ROWS),
-                *self.row_weights[axis], self.mat, self.t_mu, self.t_sm, np.int32(axis), np.int32(row0),
-                np.int32(_NUMBA_SLAB_ROWS), *self.ints, DTYPE(1.0), DTYPE(-1.0), self.dt, DTYPE(1.0))
-
-    def cpml_e(self, axis, row0, periodic, use_face):
-        first, second = (comp for comp in range(3) if comp != axis)
-        return (*self.fields()[:2], *self.fields(1.0 / _ETA0)[:2], *self.slab(axis, row0, _NUMBA_SLAB_ROWS),
-                *self.row_weights[axis], self.mat,
-                *self.t_eps, self.t_sig, *self.face_args(use_face), *self.shares, np.int32(first), np.int32(second),
-                np.int32(axis), np.int32(row0), np.int32(_NUMBA_SLAB_ROWS), *self.ints,
-                *(np.int32(flag) for flag in periodic), DTYPE(-1.0), DTYPE(1.0), self.dt, DTYPE(1.0))
+                *(np.int32(flag) for flag in periodic), self.dt, DTYPE(1.0), *self.wrap_args(),
+                *self.cpml('e', cpml_axes))
 
     def ohmic(self, periodic, origin, extents):
         q = (self.rng.random(self.shape) * 1e-12).astype(np.float32)
@@ -149,25 +155,20 @@ def _check_kernels_numba(results_by_name):
     twins = {name: (numpy_twin, factory(numba)) for name, (numpy_twin, factory) in kernels3d._FIELD_HOST_TWINS.items()
              if factory is not None}   # conformal_h_3d has no numba twin
     grid = _RandomGrid(np.random.default_rng(20261018), _NUMBA_SHAPE)
-    comparisons = {'update_h_3d': (*twins['update_h_3d'], grid.update_h())}   # no periodic flag: reads every wrap
+    comparisons = {}
+    for cpml_tag, cpml_axes in _NUMBA_CPML_SETS.items():   # no periodic flag: H reads every wrap
+        comparisons[f'update_h_3d:{cpml_tag}'] = (*twins['update_h_3d'], grid.update_h(cpml_axes))
+        comparisons[f'update_e_3d:000:face0:{cpml_tag}'] = (*twins['update_e_3d'], grid.update_e((0, 0, 0), 0,
+                                                                                                cpml_axes))
     for periodic in _NUMBA_PERIODIC_SETS:
         tag = ''.join(str(flag) for flag in periodic)
         comparisons[f'ohmic_loss_3d:{tag}'] = (*twins['ohmic_loss_3d'], grid.ohmic(periodic, (0, 1, 2), (9, 6, 4)))
-        for use_face in (0, 1):
-            comparisons[f'update_e_3d:{tag}:face{use_face}'] = (*twins['update_e_3d'],
-                                                                grid.update_e(periodic, use_face))
-            for axis in range(3):
-                n = _NUMBA_SHAPE[axis]
-                for row0 in (1, n - _NUMBA_SLAB_ROWS):   # E slabs read row0 - 1, H slabs row0 + n_rows
-                    comparisons[f'cpml_e_3d:{tag}:face{use_face}:axis{axis}:row{row0}'] = (
-                        *twins['cpml_e_3d'], grid.cpml_e(axis, row0, periodic, use_face))
-    for axis in range(3):
-        for row0 in (0, _NUMBA_SHAPE[axis] - 1 - _NUMBA_SLAB_ROWS):
-            comparisons[f'cpml_h_3d:axis{axis}:row{row0}'] = (*twins['cpml_h_3d'], grid.cpml_h(axis, row0))
+        for use_face in (0, 1):   # CPML layers on every axis (their rows never wrap, also on a periodic axis)
+            comparisons[f'update_e_3d:{tag}:face{use_face}:cpml_xyz'] = (*twins['update_e_3d'],
+                                                                         grid.update_e(periodic, use_face))
     speed = _RandomGrid(np.random.default_rng(1), _NUMBA_SPEED_SHAPE)
     periodic = (0, 0, 0)
     timed_arguments = {'update_h_3d': speed.update_h(), 'update_e_3d': speed.update_e(periodic, 0),
-                       'cpml_h_3d': speed.cpml_h(2, 0), 'cpml_e_3d': speed.cpml_e(2, 1, periodic, 0),
                        'ohmic_loss_3d': speed.ohmic(periodic, (0, 0, 0), _NUMBA_SPEED_SHAPE)}
     timings = {name: (*twins[name], arguments, *_NUMBA_TIMED_CALLS) for name, arguments in timed_arguments.items()}
     result = numba_twin_result(comparisons, timings, _NUMBA_TOLERANCE, numba)
@@ -179,15 +180,16 @@ def _check_kernels_numba(results_by_name):
 
 _KERNELS_NUMBA_CASE = SelfTestCase(
     name='em3d_kernels_numba', label='EM 3D FDTD: numba vs numpy field kernels (CPU)',
-    description=('The numba twins of the em_fdtd_3d single-precision field kernels (update_h_3d, update_e_3d, '
-                 'cpml_h_3d, cpml_e_3d, ohmic_loss_3d) against their numpy twins on random '
+    description=('The numba twins of the em_fdtd_3d single-precision field kernels (update_h_3d and update_e_3d with '
+                 'the fused CPML, ohmic_loss_3d) against their numpy twins on random '
                  f'{_NUMBA_SHAPE[0]} x {_NUMBA_SHAPE[1]} x {_NUMBA_SHAPE[2]} inputs with PEC ids, for periodic sets '
-                 'none / all / x and z (update_h_3d, which takes no periodic flag, once), Bloch wrap scalars, random cylindrical curl factors and CPML row weights, '
-                 'subpixel face overrides off and on, CPML slabs at both '
-                 'ends of every axis and an ohmic box; measured = error = the worst max |numba - numpy| over every '
+                 'none / all / x and z (update_h_3d, which takes no periodic flag, once per CPML set), Bloch wrap '
+                 'scalars, random cylindrical curl factors (also weighting the x CPML psi), subpixel face overrides '
+                 'off and on, CPML layers at both ends of every axis (edge and corner cells in 2 or 3 layers), on z '
+                 'only and off, and an ohmic box; measured = error = the worst max |numba - numpy| over every '
                  f'written array relative to its peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both '
                  f'on a {_NUMBA_SPEED_SHAPE[0]}^3 grid. Without numba nothing is compared (error 0).'),
-    specs=lambda: {}, check=_check_kernels_numba, max_wall_time=600.0, heavy=True, backends=('cpu',))
+    specs=lambda: {}, check=_check_kernels_numba, max_wall_time=600.0, backends=('cpu',))
 
 
 EM3D_BACKEND_SELFTEST_CASES = (
@@ -201,7 +203,7 @@ EM3D_BACKEND_SELFTEST_CASES = (
                lambda details: details['modes']['TM110']['frequency']),
          _case('em3d_bloch_empty_lattice',        # Bloch k != 0: imaginary field set, wrap mixing
                lambda details: details['bands']['kxyz_G000']['frequency'])),
-        heavy=True, max_wall_time=1800.0),
+        max_wall_time=1800.0),
     backend_parity_case(
         'em3d_fdtd_cpu_gpu_media', 'EM 3D FDTD: CPU backend vs GPU (mode ports, losses, mirrors, Bloch monitors)',
         (_case('em3d_mode_source_transmission'),  # mode source / monitors (host cross-section solves, cb planes)

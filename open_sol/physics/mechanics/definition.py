@@ -93,8 +93,10 @@ _FEM_STUDIES = ('stationary', 'time_dependent', EIGENFREQUENCY_STUDY,   # studie
 # on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double, thin-film K is badly
 # conditioned and its frequency response near resonance converges worst in float32). Stationary / time_dependent on a
 # tensor mesh, gpu backend: sparse_direct, a double cuDSS Cholesky of A_solve kept per assembly (speed review 3.1: the
-# 384^2 Kirsch plate took 8000 mixed block-Jacobi iterations, 4.6 s); over the GPU budget the fit guard
-# (meshing.fitted_memory_estimate) falls back to pcg mixed; the cpu keeps pcg (host SuperLU size rule)
+# 384^2 Kirsch plate took 8000 mixed block-Jacobi iterations, 4.6 s); the cpu backend (or a gpu without nvmath) the
+# same, on host SuperLU (Kirsch @cpu: 18.7 s of pcg); the fit guard (meshing.fitted_memory_estimate) falls back to pcg
+# when the factor exceeds the GPU budget (cuDSS), the host RAM or the host SuperLU size limit (host factor; the size
+# rule counts 2 unknowns per node: direct_components)
 SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mixed'),
                                setting_choices={'preconditioner': ('jacobi',), 'back_end': DIFFUSION_DIRECT_BACK_ENDS},
                                mixed_preconditioners=('jacobi',),
@@ -102,8 +104,7 @@ SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mi
                                grid_defaults={_TRIANGLES: ('sparse_direct', {})},
                                study_defaults={('stationary', 'tensor'): ('sparse_direct', {}),
                                                ('time_dependent', 'tensor'): ('sparse_direct', {})},
-                               study_default_backends=('gpu',),
-                               auto_back_ends={'tensor': 'cudss', _TRIANGLES: 'cudss'})
+                               auto_back_ends={'tensor': 'cudss', _TRIANGLES: 'cudss'}, direct_components=2)
 
 _DISCRETIZATION_PARAM = Param(
     'discretization', 'choice', 'quadratic', label='Discretization', choices=tuple(DISCRETIZATIONS),
@@ -1079,11 +1080,12 @@ def _fem_memory_estimate(settings_values, mesh, context):
                                6 * FLOAT64_BYTES * vector_dofs))
     if settings_values.get('geometric_nonlinearity'):   # the Newton tangent replaces K in the 'linear' factor
         # fem.elasticity.TangentAssembler: per element group the rule points / gradients / weights and C, the int32
-        # scatter map of every element-block entry, element vector dofs, the pattern and its free take
+        # scatter map of every element-block entry, element vector dofs, the pattern and its free restriction (int32
+        # indices and take)
         rule_points = 12 if is_axisymmetric(settings_values) else (6 if discretization == 'quadratic' else 3)
         assembler_bytes = (elements * (rule_points * (2 * local + 4) * FLOAT64_BYTES + 16 * FLOAT64_BYTES
                                        + components * local * _INT64_BYTES) + INT32_BYTES * coo_entries
-                           + (2 * INT32_BYTES + _INT64_BYTES) * entries)
+                           + 3 * INT32_BYTES * entries)
         host_items.extend([('Newton tangent K_T CSR and its free-dof copy', 2 * csr_entry_bytes * entries),
                            ('Newton vectors (state, internal force, residual, correction, proposal, load)',
                             6 * FLOAT64_BYTES * vector_dofs),

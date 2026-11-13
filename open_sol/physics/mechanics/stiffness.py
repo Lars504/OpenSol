@@ -118,10 +118,17 @@ def plane_stress_strain(stiffness, strain_xx, strain_yy, shear, thermal_stress_3
 
 def elastic_stress(stiffness, strain_xx, strain_yy, strain_zz, shear):
     """(T_xx, T_yy, T_zz, T_xy) [Pa] = c_IJ S_J of the strain (S_3 = strain_zz, S_6 = shear = 2 strain_xy), no thermal
-    or piezoelectric part."""
-    strains = (strain_xx, strain_yy, strain_zz, shear)
-    return tuple(sum(stiffness.entry(index, column) * strain for column, strain in zip('1236', strains))
-                 for index in '1236')
+    or piezoelectric part; a plain scalar 0 strain (plane strain S_3) adds no pass (launch-bound sweeps on the gpu)."""
+    strains = [(column, strain) for column, strain in zip('1236', (strain_xx, strain_yy, strain_zz, shear))
+               if not (np.isscalar(strain) and strain == 0)] or [('1', strain_xx)]
+    stresses = []
+    for index in '1236':
+        terms = [stiffness.entry(index, column) * strain for column, strain in strains]
+        total = terms[0]
+        for term in terms[1:]:
+            total = total + term
+        stresses.append(total)
+    return tuple(stresses)
 
 
 def _safe_divisor(values):

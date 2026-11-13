@@ -23,14 +23,18 @@ _CURVE_PLOT_KEYS = {'x_label': '', 'x_unit': '', 'y_label': '', 'series_units': 
                     'log_y': False}   # per-plot metadata of an export_curve_plots .npz (key: default)
 
 
-def save_model(spec, path):
-    """Write the spec as UTF-8 JSON (indent 2); the file is replaced only after the full text was written."""
+def save_model(spec, path, atomic=True):
+    """Write the spec as UTF-8 JSON (indent 2); the file is replaced only after the full text was written (atomic
+    False: written in place, for a results directory whose summary.json is written last)."""
     path = Path(path)
     try:
         text = json.dumps(spec.to_dict(), indent=2, ensure_ascii=False, allow_nan=False)
     except ValueError as exc:
         raise ValueError(f'cannot save the model to {path}: {exc}') from exc
-    _write_text_atomic(path, text + '\n')
+    if atomic:
+        _write_text_atomic(path, text + '\n')
+    else:
+        path.write_text(text + '\n', encoding='utf-8')
 
 
 def load_model(path):
@@ -557,25 +561,27 @@ def _csv_cell_text(value):
     return str(value)
 
 
-def _write_npz(path, arrays, metadata):
+def _write_npz(path, arrays, metadata, atomic=True):
     """np.savez of the arrays plus 'metadata' (0-d unicode JSON array, loads without pickle) to '<file>.partial',
-    then os.replace over exactly `path` (never a truncated archive); up to _NPZ_BUFFER_BYTES zipped in memory first."""
+    then os.replace over exactly `path` (never a truncated archive; atomic False: written in place, a results
+    directory's summary.json vouches for it); up to _NPZ_BUFFER_BYTES zipped in memory first."""
     if 'metadata' in arrays:
         raise ValueError("array key 'metadata' clashes with the .npz metadata entry")
     entries = dict(arrays, metadata=np.array(_to_json(metadata)))
     array_bytes = sum(int(getattr(value, 'nbytes', 0)) for value in entries.values())
-    partial_path = path.with_name(path.name + '.partial')
+    written_path = path.with_name(path.name + '.partial') if atomic else path
     try:
-        with open(partial_path, 'wb') as handle:   # a file object: numpy does not append '.npz' to the name
+        with open(written_path, 'wb') as handle:   # a file object: numpy does not append '.npz' to the name
             if array_bytes <= _NPZ_BUFFER_BYTES:
                 buffer = BytesIO()
                 np.savez(buffer, **entries)
                 handle.write(buffer.getbuffer())
             else:
                 np.savez(handle, **entries)
-        os.replace(partial_path, path)
+        if atomic:
+            os.replace(written_path, path)
     except BaseException:
-        partial_path.unlink(missing_ok=True)
+        written_path.unlink(missing_ok=True)
         raise
 
 

@@ -1,7 +1,7 @@
 """Fused kernels of the 3D Yee engine (layout and conventions: engine3d header): H and E updates with the
-material-index coefficient lookup, CPML psi updates on the layer slabs, the ohmic J.E loss and the sparse conformal-PEC
-H corrections (per stepper precision: field_kernels), face cb of a box and the weighted pole updates (float32 fields
-only). Each is a core.kernels twin
+material-index coefficient lookup and the CPML psi updates of the layer cells, the ohmic J.E loss and the sparse
+conformal-PEC H corrections (per stepper precision: field_kernels), face cb of a box and the weighted pole updates
+(float32 fields only). Each is a core.kernels twin
 (numpy twin of the same call below its cupy source, numba twins of the single-precision field kernels): a change to a
 cupy source changes its twins."""
 import weakref
@@ -16,6 +16,8 @@ from ...core.kernels import raw_twin, twin
 from .boundaries3d import along
 
 _BLOCK = (32, 4, 2)   # CUDA block (x, y, z) = threads along the grid's (z, y, x): z is the contiguous axis
+_BLOCK_THREADS = 256  # threads per block of launch(); a thin z extent widens the block along y and x instead
+_BLOCK_Z_MAX = 64     # CUDA limit of blockDim.z
 _EPS0_F32 = np.float32(EPS0)
 _MU0_F32 = np.float32(MU0)
 _ONE = np.float32(1.0)
@@ -292,14 +294,41 @@ def _publish_numba_face_scalar(numba):
 # of the cell centres), H_z's (r_c E_phi) radial difference and phi term x 1 / r_link (irl: the mean radius between
 # centres i and i + 1, i.e. the H_z face's exact mean radius). E: E_r's phi term x 1 / r_f[i + 1] (irfh), E_z's (r_f
 # H_phi) radial difference (rfh = r_f[i + 1], the hi face of cell i) and phi term x 1 / r_c (irce). The CPML psi of the
-# second component along an axis takes the same weights (sw source weight per grid row, of out factor per row; 1 off
-# the r axis): the stretched-coordinate PML of d/dr only (no complex-r stretch of the 1 / r factors: approximate).
+# r axis' second component takes the same weighted difference and factor (H_z: r_c E_phi, x 1 / r_link; E_z: r_f
+# H_phi, x 1 / r_c): the stretched-coordinate PML of d/dr only (no complex-r stretch of the 1 / r factors: approximate).
+# CPML (fused into both Yee kernels, as the 2D CPMLSided rows): per axis and kind a row map grid row -> psi row (-1
+# outside the layers; boundaries3d.CPMLAxis3D, lo and hi layers stacked along the axis), so a cell in up to three
+# layers (edges, corners) updates the psi of each: psi = b psi + gain dF with the curl's own difference dF (bulk spacing
+# in gain = a / dx; kappa sits in the curl rows), then field += sign x (live db or cb) x psi after the Yee term, axes in
+# x, y, z order: the former separate slab passes, bit-identical in single precision up to FMA contraction (under
+# half_storage one fp16 rounding fewer). psi holds differences of the stored fields (float32). Layer rows never wrap: a
+# periodic axis has no CPML, H rows end at n - 2, E rows start at 1.
 _WRAP_LOAD = r"""
 __device__ __forceinline__ float wrap_load(const field_t* __restrict__ f, const field_t* __restrict__ partner, idx_t o,
                                            bool wrapped, float c, float s)
 {
     float value = FLOAD(f[o]);
     return wrapped ? c * value + s * FLOAD(partner[o]) : value;
+}
+
+// CPML of one axis and kind: row map, recursion b and gain = a / dx per psi row, psi of the axis' first and second
+// component, psi rows (0 = no CPML on that axis: nothing else of the axis is read)
+#define CPML_AXIS_PARAMS(x) const int* __restrict__ rm_##x, const float* __restrict__ b_##x, \
+    const float* __restrict__ g_##x, float* __restrict__ pf_##x, float* __restrict__ ps_##x, int nr_##x
+
+__device__ __forceinline__ float psi_step(float* __restrict__ psi, idx_t p, float b, float g, float difference)
+{
+    float value = b * psi[p] + g * difference;
+    psi[p] = value;
+    return value;
+}
+
+__device__ __forceinline__ float psi_step_scaled(float* __restrict__ psi, idx_t p, float b, float g,
+                                                 float difference, float factor)
+{
+    float value = b * psi[p] + g * difference * factor;
+    psi[p] = value;
+    return value;
 }
 """
 
@@ -313,7 +342,8 @@ void update_h_3d(
     const float* __restrict__ ihx, const float* __restrict__ ihy, const float* __restrict__ ihz,
     const float* __restrict__ rce, const float* __restrict__ irce, const float* __restrict__ irl,
     int nx, int ny, int nz, float dt, float e_to_h,
-    float wcx, float wsx, float wcy, float wsy, float wcz, float wsz)
+    float wcx, float wsx, float wcy, float wsy, float wcz, float wsz,
+    CPML_AXIS_PARAMS(x), CPML_AXIS_PARAMS(y), CPML_AXIS_PARAMS(z))
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -330,17 +360,87 @@ void update_h_3d(
     edge_coefficients(mat, t_mu, t_sm, idx, dt, &da, &db);
     db *= e_to_h;
     float ex0 = FLOAD(ex[idx]), ey0 = FLOAD(ey[idx]), ez0 = FLOAD(ez[idx]);
-    hx[idx] = FSTORE(da * FLOAD(hx[idx])
-                     - db * ((wrap_load(ez, pez, idx + dyp, wy, wcy, wsy) - ez0) * ihy[j] * irce[i]
-                             - (wrap_load(ey, pey, idx + dzp, wz, wcz, wsz) - ey0) * ihz[k]));
-    hy[idx] = FSTORE(da * FLOAD(hy[idx])
-                     - db * ((wrap_load(ex, pex, idx + dzp, wz, wcz, wsz) - ex0) * ihz[k]
-                             - (wrap_load(ez, pez, idx + dxp, wx, wcx, wsx) - ez0) * ihx[i]));
-    hz[idx] = FSTORE(da * FLOAD(hz[idx])
-                     - db * ((rce[ip] * wrap_load(ey, pey, idx + dxp, wx, wcx, wsx) - rce[i] * ey0) * ihx[i]
-                             - (wrap_load(ex, pex, idx + dyp, wy, wcy, wsy) - ex0) * ihy[j]) * irl[i]);
+    float dez_y = wrap_load(ez, pez, idx + dyp, wy, wcy, wsy) - ez0;
+    float dey_z = wrap_load(ey, pey, idx + dzp, wz, wcz, wsz) - ey0;
+    float dex_z = wrap_load(ex, pex, idx + dzp, wz, wcz, wsz) - ex0;
+    float dez_x = wrap_load(ez, pez, idx + dxp, wx, wcx, wsx) - ez0;
+    float dey_x = rce[ip] * wrap_load(ey, pey, idx + dxp, wx, wcx, wsx) - rce[i] * ey0;
+    float dex_y = wrap_load(ex, pex, idx + dyp, wy, wcy, wsy) - ex0;
+    float vx = da * FLOAD(hx[idx]) - db * (dez_y * ihy[j] * irce[i] - dey_z * ihz[k]);
+    float vy = da * FLOAD(hy[idx]) - db * (dex_z * ihz[k] - dez_x * ihx[i]);
+    float vz = da * FLOAD(hz[idx]) - db * (dey_x * ihx[i] - dex_y * ihy[j]) * irl[i];
+    int r;
+    if (nr_x && (r = rm_x[i]) >= 0) {   // x layers: H_y from E_z (+), H_z from r_c E_y (-)
+        idx_t p = ((idx_t)r * ny + j) * nz + k;
+        vy += db * psi_step(pf_x, p, b_x[r], g_x[r], dez_x);
+        vz -= db * psi_step_scaled(ps_x, p, b_x[r], g_x[r], dey_x, irl[i]);
+    }
+    if (nr_y && (r = rm_y[j]) >= 0) {   // y layers: H_x from E_z (-), H_z from E_x (+)
+        idx_t p = ((idx_t)i * nr_y + r) * nz + k;
+        vx -= db * psi_step(pf_y, p, b_y[r], g_y[r], dez_y);
+        vz += db * psi_step(ps_y, p, b_y[r], g_y[r], dex_y);
+    }
+    if (nr_z && (r = rm_z[k]) >= 0) {   // z layers: H_x from E_y (+), H_y from E_x (-)
+        idx_t p = ((idx_t)i * ny + j) * nr_z + r;
+        vx += db * psi_step(pf_z, p, b_z[r], g_z[r], dey_z);
+        vy -= db * psi_step(ps_z, p, b_z[r], g_z[r], dex_z);
+    }
+    hx[idx] = FSTORE(vx);
+    hy[idx] = FSTORE(vy);
+    hz[idx] = FSTORE(vz);
 }
 """
+
+# CPML rows of the fused kernels per axis: ((first component, its source component, correction sign), (second ...)),
+# components 0 / 1 / 2 = x / y / z; the r axis' (axis 0) second component takes the cylindrical weights
+_CPML_H_ROWS = {0: ((1, 2, 1.0), (2, 1, -1.0)), 1: ((0, 2, -1.0), (2, 0, 1.0)), 2: ((0, 1, 1.0), (1, 0, -1.0))}
+_CPML_E_ROWS = {0: ((1, 2, -1.0), (2, 1, 1.0)), 1: ((0, 2, 1.0), (2, 0, -1.0)), 2: ((0, 1, -1.0), (1, 0, 1.0))}
+CPML_ARGUMENTS_PER_AXIS = 6   # row map, b, gain, psi first, psi second, int32 psi rows (CPML_AXIS_PARAMS)
+
+
+def _cpml_axes(cpml):
+    """[(axis, row map, b, gain, psi first, psi second)] of the axes with CPML among the trailing kernel arguments."""
+    per_axis = CPML_ARGUMENTS_PER_AXIS
+    return [(axis, *cpml[per_axis * axis:per_axis * axis + 5]) for axis in range(3)
+            if int(cpml[per_axis * axis + 5])]
+
+
+def _layer_runs(row_map):
+    """[(grid row0, psi row0, rows)] of the contiguous layers of a CPML row map (host cached)."""
+    def compute():
+        rows = np.flatnonzero(row_map >= 0)
+        runs = np.split(rows, np.flatnonzero(np.diff(rows) != 1) + 1)
+        return [(int(run[0]), int(row_map[run[0]]), int(run.size)) for run in runs if run.size]
+    return _host_cached((row_map,), ('runs',), compute)
+
+
+def _layer_keys(axis, row0, psi0, n_rows):
+    """(grid rows, psi rows) index tuples of one layer along axis."""
+    return along(axis, slice(row0, row0 + n_rows)), along(axis, slice(psi0, psi0 + n_rows))
+
+
+def _cpml_h_rows(h_fields, e_fields, cpml, weights, mat, t_mu, t_sm, dt, e_to_h):
+    """numpy CPML of update_h_3d on the Yee-updated H (the former slab pass): per layer psi = b psi + gain dE (the r
+    axis' second component (sw[g + 1] E[g + 1] - sw[g] E[g]) of[g], weights = (sw, of)), H += sign db psi."""
+    for axis, row_map, decay_rows, gain_rows, psi_first, psi_second in _cpml_axes(cpml):
+        for row0, psi0, n_rows in _layer_runs(row_map):
+            rows, psi_rows = _layer_keys(axis, row0, psi0, n_rows)
+            upper = along(axis, slice(row0 + 1, row0 + n_rows + 1))
+            decay = _axis_row(decay_rows[psi0:psi0 + n_rows], axis)
+            gain = _axis_row(gain_rows[psi0:psi0 + n_rows], axis)
+            db = _cached_edge_coefficients(mat, t_mu, t_sm, dt, e_to_h, rows)[1]
+            for (target, source, sign), psi, weighted in zip(_CPML_H_ROWS[axis], (psi_first, psi_second),
+                                                              (False, axis == 0)):
+                field = e_fields[source]
+                if weighted:
+                    weight, factor = weights
+                    increment = gain * (_axis_row(weight[row0 + 1:row0 + n_rows + 1], axis) * field[upper]
+                                        - _axis_row(weight[row0:row0 + n_rows], axis) * field[rows]) \
+                        * _axis_row(factor[row0:row0 + n_rows], axis)
+                else:
+                    increment = gain * (field[upper] - field[rows])
+                psi[psi_rows] = decay * psi[psi_rows] + increment
+                h_fields[target][rows] += sign * db * psi[psi_rows]
 
 
 def _axis_row(values, axis):
@@ -349,8 +449,9 @@ def _axis_row(values, axis):
 
 
 def _update_h_host(hx, hy, hz, ex, ey, ez, pex, pey, pez, mat, t_mu, t_sm, ihx, ihy, ihz, rce, irce, irl,
-                   nx, ny, nz, dt, e_to_h, wcx, wsx, wcy, wsy, wcz, wsz):
+                   nx, ny, nz, dt, e_to_h, wcx, wsx, wcy, wsy, wcz, wsz, *cpml):
     da, db = _cached_edge_coefficients(mat, t_mu, t_sm, dt, e_to_h)
+    radial_weights = (rce, irl)
     ihx, ihy, ihz = ihx[:, None, None], ihy[None, :, None], ihz[None, None, :]
     rce, irce, irl = (_row_factor(values, 0) for values in (rce, irce, irl))
     hx[...] = da * hx - db * (_times(_hi_difference(ez, pez, 1, wcy, wsy) * ihy, irce)
@@ -359,6 +460,7 @@ def _update_h_host(hx, hy, hz, ex, ey, ez, pex, pey, pez, mat, t_mu, t_sm, ihx, 
     ey_r = _times(ey, rce)
     hz[...] = da * hz - db * _times(_hi_difference(ey_r, ey_r if pey is ey else _times(pey, rce), 0, wcx, wsx) * ihx
                                     - _hi_difference(ex, pex, 1, wcy, wsy) * ihy, irl)
+    _cpml_h_rows((hx, hy, hz), (ex, ey, ez), cpml, radial_weights, mat, t_mu, t_sm, dt, e_to_h)
 
 
 def _update_h_numba(numba):
@@ -366,7 +468,8 @@ def _update_h_numba(numba):
 
     @numba.njit(parallel=True, cache=True)
     def kernel(hx, hy, hz, ex, ey, ez, pex, pey, pez, mat, t_mu, t_sm, ihx, ihy, ihz, rce, irce, irl, nx, ny, nz, dt,
-               e_to_h, wcx, wsx, wcy, wsy, wcz, wsz):
+               e_to_h, wcx, wsx, wcy, wsy, wcz, wsz, rm_x, b_x, g_x, pf_x, ps_x, nr_x, rm_y, b_y, g_y, pf_y, ps_y,
+               nr_y, rm_z, b_z, g_z, pf_z, ps_z, nr_z):
         # per-material float64 da / db once per call: the cell loop only gathers them (no divisions per cell)
         table_da = np.empty(t_mu.shape[0], dtype=np.float64)
         table_db = np.empty(t_mu.shape[0], dtype=np.float64)
@@ -379,12 +482,15 @@ def _update_h_numba(numba):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             wx = i + 1 == nx
             ip = 0 if wx else i + 1
+            rx = np.int64(rm_x[i]) if nr_x > 0 else np.int64(-1)
             for j in range(ny):
                 wy = j + 1 == ny
                 jp = 0 if wy else j + 1
+                ry = np.int64(rm_y[j]) if nr_y > 0 else np.int64(-1)
                 for k in range(nz):
                     wz = k + 1 == nz
                     kp = 0 if wz else k + 1
+                    rz = np.int64(rm_z[k]) if nr_z > 0 else np.int64(-1)
                     m = mat[i, j, k]
                     da = table_da[m]
                     db = table_db[m]
@@ -395,10 +501,35 @@ def _update_h_numba(numba):
                     ey_z = (wcz * ey[i, j, kp] + wsz * pey[i, j, kp]) if wz else ey[i, j, kp]
                     ez_x = (wcx * ez[ip, j, k] + wsx * pez[ip, j, k]) if wx else ez[ip, j, k]
                     ez_y = (wcy * ez[i, jp, k] + wsy * pez[i, jp, k]) if wy else ez[i, jp, k]
-                    hx[i, j, k] = da * hx[i, j, k] - db * ((ez_y - ez0) * ihy[j] * irce[i] - (ey_z - ey0) * ihz[k])
-                    hy[i, j, k] = da * hy[i, j, k] - db * ((ex_z - ex0) * ihz[k] - (ez_x - ez0) * ihx[i])
-                    hz[i, j, k] = da * hz[i, j, k] - db * ((rce[ip] * ey_x - rce[i] * ey0) * ihx[i]
-                                                           - (ex_y - ex0) * ihy[j]) * irl[i]
+                    dez_y, dey_z, dex_z, dez_x = ez_y - ez0, ey_z - ey0, ex_z - ex0, ez_x - ez0
+                    dey_x, dex_y = rce[ip] * ey_x - rce[i] * ey0, ex_y - ex0
+                    value_x = da * hx[i, j, k] - db * (dez_y * ihy[j] * irce[i] - dey_z * ihz[k])
+                    value_y = da * hy[i, j, k] - db * (dex_z * ihz[k] - dez_x * ihx[i])
+                    value_z = da * hz[i, j, k] - db * (dey_x * ihx[i] - dex_y * ihy[j]) * irl[i]
+                    if rx >= 0:   # x layers: H_y from E_z (+), H_z from r_c E_y (-)
+                        psi = b_x[rx] * pf_x[rx, j, k] + g_x[rx] * dez_x
+                        pf_x[rx, j, k] = psi
+                        value_y += db * psi
+                        psi = b_x[rx] * ps_x[rx, j, k] + g_x[rx] * dey_x * irl[i]
+                        ps_x[rx, j, k] = psi
+                        value_z -= db * psi
+                    if ry >= 0:   # y layers: H_x from E_z (-), H_z from E_x (+)
+                        psi = b_y[ry] * pf_y[i, ry, k] + g_y[ry] * dez_y
+                        pf_y[i, ry, k] = psi
+                        value_x -= db * psi
+                        psi = b_y[ry] * ps_y[i, ry, k] + g_y[ry] * dex_y
+                        ps_y[i, ry, k] = psi
+                        value_z += db * psi
+                    if rz >= 0:   # z layers: H_x from E_y (+), H_y from E_x (-)
+                        psi = b_z[rz] * pf_z[i, j, rz] + g_z[rz] * dey_z
+                        pf_z[i, j, rz] = psi
+                        value_x += db * psi
+                        psi = b_z[rz] * ps_z[i, j, rz] + g_z[rz] * dex_z
+                        ps_z[i, j, rz] = psi
+                        value_y -= db * psi
+                    hx[i, j, k] = value_x
+                    hy[i, j, k] = value_y
+                    hz[i, j, k] = value_z
     return kernel
 
 
@@ -418,7 +549,8 @@ void update_e_3d(
     const float* __restrict__ wly, const float* __restrict__ wuy,
     const float* __restrict__ wlz, const float* __restrict__ wuz,
     int nx, int ny, int nz, int px, int py, int pz, float dt, float h_to_e,
-    float wcx, float wsx, float wcy, float wsy, float wcz, float wsz)
+    float wcx, float wsx, float wcy, float wsy, float wcz, float wsz,
+    CPML_AXIS_PARAMS(x), CPML_AXIS_PARAMS(y), CPML_AXIS_PARAMS(z))
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -435,36 +567,83 @@ void update_e_3d(
     float ly = (j > 0 || py) ? 1.0f : 0.0f;
     float lz = (k > 0 || pz) ? 1.0f : 0.0f;
     float hx0 = FLOAD(hx[idx]), hy0 = FLOAD(hy[idx]), hz0 = FLOAD(hz[idx]);
+    float dhz_y = hz0 - ly * wrap_load(hz, phz, idx + dym, wy, wcy, wsy);
+    float dhy_z = hy0 - lz * wrap_load(hy, phy, idx + dzm, wz, wcz, wsz);
+    float dhx_z = hx0 - lz * wrap_load(hx, phx, idx + dzm, wz, wcz, wsz);
+    float dhz_x = hz0 - lx * wrap_load(hz, phz, idx + dxm, wx, wcx, wsx);
+    float dhy_x = rfh[i] * hy0 - lx * rfh[im] * wrap_load(hy, phy, idx + dxm, wx, wcx, wsx);
+    float dhx_y = hx0 - ly * wrap_load(hx, phx, idx + dym, wy, wcy, wsy);
     float ca, cb;
     face_coefficients(mat, t_ex, t_sig, FACE_ARGS, 0, idx, idx + hi_offset(i, nx, px, sx), wlx[i], wux[i], dt, &ca,
                       &cb);
-    ex[idx] = FSTORE(ca * FLOAD(ex[idx]) + cb * h_to_e * ((hz0 - ly * wrap_load(hz, phz, idx + dym, wy, wcy, wsy))
-                                                          * iey[j] * irfh[i]
-                                                          - (hy0 - lz * wrap_load(hy, phy, idx + dzm, wz, wcz, wsz))
-                                                          * iez[k]));
+    float cbx = cb * h_to_e;
+    float vx = ca * FLOAD(ex[idx]) + cbx * (dhz_y * iey[j] * irfh[i] - dhy_z * iez[k]);
     face_coefficients(mat, t_ey, t_sig, FACE_ARGS, 1, idx, idx + hi_offset(j, ny, py, sy), wly[j], wuy[j], dt, &ca,
                       &cb);
-    ey[idx] = FSTORE(ca * FLOAD(ey[idx]) + cb * h_to_e * ((hx0 - lz * wrap_load(hx, phx, idx + dzm, wz, wcz, wsz))
-                                                          * iez[k]
-                                                          - (hz0 - lx * wrap_load(hz, phz, idx + dxm, wx, wcx, wsx))
-                                                          * iex[i]));
+    float cby = cb * h_to_e;
+    float vy = ca * FLOAD(ey[idx]) + cby * (dhx_z * iez[k] - dhz_x * iex[i]);
     face_coefficients(mat, t_ez, t_sig, FACE_ARGS, 2, idx, idx + hi_offset(k, nz, pz, (idx_t)1), wlz[k], wuz[k], dt,
                       &ca, &cb);
-    ez[idx] = FSTORE(ca * FLOAD(ez[idx]) + cb * h_to_e * ((rfh[i] * hy0
-                                                           - lx * rfh[im] * wrap_load(hy, phy, idx + dxm, wx, wcx, wsx))
-                                                          * iex[i]
-                                                          - (hx0 - ly * wrap_load(hx, phx, idx + dym, wy, wcy, wsy))
-                                                          * iey[j]) * irce[i]);
+    float cbz = cb * h_to_e;
+    float vz = ca * FLOAD(ez[idx]) + cbz * (dhy_x * iex[i] - dhx_y * iey[j]) * irce[i];
+    int r;
+    if (nr_x && (r = rm_x[i]) >= 0) {   // x layers: E_y from H_z (-), E_z from r_f H_y (+)
+        idx_t p = ((idx_t)r * ny + j) * nz + k;
+        vy -= cby * psi_step(pf_x, p, b_x[r], g_x[r], dhz_x);
+        vz += cbz * psi_step_scaled(ps_x, p, b_x[r], g_x[r], dhy_x, irce[i]);
+    }
+    if (nr_y && (r = rm_y[j]) >= 0) {   // y layers: E_x from H_z (+), E_z from H_x (-)
+        idx_t p = ((idx_t)i * nr_y + r) * nz + k;
+        vx += cbx * psi_step(pf_y, p, b_y[r], g_y[r], dhz_y);
+        vz -= cbz * psi_step(ps_y, p, b_y[r], g_y[r], dhx_y);
+    }
+    if (nr_z && (r = rm_z[k]) >= 0) {   // z layers: E_x from H_y (-), E_y from H_x (+)
+        idx_t p = ((idx_t)i * ny + j) * nr_z + r;
+        vx -= cbx * psi_step(pf_z, p, b_z[r], g_z[r], dhy_z);
+        vy += cby * psi_step(ps_z, p, b_z[r], g_z[r], dhx_z);
+    }
+    ex[idx] = FSTORE(vx);
+    ey[idx] = FSTORE(vy);
+    ez[idx] = FSTORE(vz);
 }
 """
 
 
+def _cpml_e_rows(e_fields, h_fields, cpml, weights, mat, tables, t_sig, fid, t_face, use_face, shares, periodic, dt,
+                 h_to_e):
+    """numpy CPML of update_e_3d on the Yee-updated E (the former slab pass): per layer psi = b psi + gain dH (the r
+    axis' second component (sw[g] H[g] - sw[g - 1] H[g - 1]) of[g], weights = (sw, of)), E += sign cb psi."""
+    for axis, row_map, decay_rows, gain_rows, psi_first, psi_second in _cpml_axes(cpml):
+        for row0, psi0, n_rows in _layer_runs(row_map):
+            rows, psi_rows = _layer_keys(axis, row0, psi0, n_rows)
+            lower = along(axis, slice(row0 - 1, row0 + n_rows - 1))
+            decay = _axis_row(decay_rows[psi0:psi0 + n_rows], axis)
+            gain = _axis_row(gain_rows[psi0:psi0 + n_rows], axis)
+            origin, extents = [0, 0, 0], list(mat.shape)
+            origin[axis], extents[axis] = row0, n_rows
+            for (target, source, sign), psi, weighted in zip(_CPML_E_ROWS[axis], (psi_first, psi_second),
+                                                              (False, axis == 0)):
+                field = h_fields[source]
+                if weighted:
+                    weight, factor = weights
+                    increment = gain * (_axis_row(weight[row0:row0 + n_rows], axis) * field[rows]
+                                        - _axis_row(weight[row0 - 1:row0 + n_rows - 1], axis) * field[lower]) \
+                        * _axis_row(factor[row0:row0 + n_rows], axis)
+                else:
+                    increment = gain * (field[rows] - field[lower])
+                psi[psi_rows] = decay * psi[psi_rows] + increment
+                _, cb = _cached_face_coefficients(mat, tables[target], t_sig, fid, t_face, use_face, target, origin,
+                                                  extents, *shares[target], periodic[target], dt)
+                e_fields[target][rows] += sign * cb * h_to_e * psi[psi_rows]
+
+
 def _update_e_host(ex, ey, ez, hx, hy, hz, phx, phy, phz, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face,
                    iex, iey, iez, rfh, irfh, irce, wlx, wux, wly, wuy, wlz, wuz, nx, ny, nz, px, py, pz, dt, h_to_e,
-                   wcx, wsx, wcy, wsy, wcz, wsz):
+                   wcx, wsx, wcy, wsy, wcz, wsz, *cpml):
     shares = ((wlx, wux), (wly, wuy), (wlz, wuz))
     periodic = (px, py, pz)
     tables = (t_ex, t_ey, t_ez)
+    radial_weights = (rfh, irce)
     iex, iey, iez = iex[:, None, None], iey[None, :, None], iez[None, None, :]
     rfh, irfh, irce = (_row_factor(values, 0) for values in (rfh, irfh, irce))
 
@@ -478,6 +657,8 @@ def _update_e_host(ex, ey, ez, hx, hy, hz, phx, phy, phz, mat, t_ex, t_ey, t_ez,
     hy_r = _times(hy, rfh)
     update(2, ez, _times(_lo_difference(hy_r, hy_r if phy is hy else _times(phy, rfh), 0, px, wcx, wsx) * iex
                          - _lo_difference(hx, phx, 1, py, wcy, wsy) * iey, irce))
+    _cpml_e_rows((ex, ey, ez), (hx, hy, hz), cpml, radial_weights, mat, tables, t_sig, fid, t_face, use_face, shares,
+                 periodic, dt, h_to_e)
 
 
 def _update_e_numba(numba):
@@ -487,20 +668,24 @@ def _update_e_numba(numba):
     @numba.njit(parallel=True, cache=True)
     def kernel(ex, ey, ez, hx, hy, hz, phx, phy, phz, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face,
                iex, iey, iez, rfh, irfh, irce, wlx, wux, wly, wuy, wlz, wuz, nx, ny, nz, px, py, pz, dt, h_to_e,
-               wcx, wsx, wcy, wsy, wcz, wsz):
+               wcx, wsx, wcy, wsy, wcz, wsz, rm_x, b_x, g_x, pf_x, ps_x, nr_x, rm_y, b_y, g_y, pf_y, ps_y, nr_y,
+               rm_z, b_z, g_z, pf_z, ps_z, nr_z):
         for prange_i in numba.prange(nx):
             i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
             im = nx - 1 if i == 0 else i - 1
             ip = i + 1 if i + 1 < nx else (0 if px != 0 else i)
             lx = 1.0 if (i > 0 or px != 0) else 0.0
+            rx = np.int64(rm_x[i]) if nr_x > 0 else np.int64(-1)
             for j in range(ny):
                 jm = ny - 1 if j == 0 else j - 1
                 jp = j + 1 if j + 1 < ny else (0 if py != 0 else j)
                 ly = 1.0 if (j > 0 or py != 0) else 0.0
+                ry = np.int64(rm_y[j]) if nr_y > 0 else np.int64(-1)
                 for k in range(nz):
                     km = nz - 1 if k == 0 else k - 1
                     kp = k + 1 if k + 1 < nz else (0 if pz != 0 else k)
                     lz = 1.0 if (k > 0 or pz != 0) else 0.0
+                    rz = np.int64(rm_z[k]) if nr_z > 0 else np.int64(-1)
                     m = mat[i, j, k]
                     hx0, hy0, hz0 = hx[i, j, k], hy[i, j, k], hz[i, j, k]
                     hx_y = (wcy * hx[i, jm, k] + wsy * phx[i, jm, k]) if j == 0 else hx[i, jm, k]
@@ -513,248 +698,45 @@ def _update_e_numba(numba):
                     smoothed_x = t_face[face_index] if face_index != 0 else 0.0
                     smoothed_y = t_face[face_index + 1] if face_index != 0 else 0.0
                     smoothed_z = t_face[face_index + 2] if face_index != 0 else 0.0
+                    dhz_y, dhy_z, dhx_z = hz0 - ly * hz_y, hy0 - lz * hy_z, hx0 - lz * hx_z
+                    dhz_x, dhx_y = hz0 - lx * hz_x, hx0 - ly * hx_y
+                    dhy_x = rfh[i] * hy0 - lx * rfh[im] * hy_x
                     ca, cb = _numba_face_scalar(t_ex[m], t_ex[mat[ip, j, k]], t_sig[m], t_sig[mat[ip, j, k]], wlx[i],
                                                 wux[i], dt, eps0, smoothed_x)
-                    ex[i, j, k] = ca * ex[i, j, k] + cb * h_to_e * ((hz0 - ly * hz_y) * iey[j] * irfh[i]
-                                                                    - (hy0 - lz * hy_z) * iez[k])
+                    cb_x = cb * h_to_e
+                    value_x = ca * ex[i, j, k] + cb_x * (dhz_y * iey[j] * irfh[i] - dhy_z * iez[k])
                     ca, cb = _numba_face_scalar(t_ey[m], t_ey[mat[i, jp, k]], t_sig[m], t_sig[mat[i, jp, k]], wly[j],
                                                 wuy[j], dt, eps0, smoothed_y)
-                    ey[i, j, k] = ca * ey[i, j, k] + cb * h_to_e * ((hx0 - lz * hx_z) * iez[k]
-                                                                    - (hz0 - lx * hz_x) * iex[i])
+                    cb_y = cb * h_to_e
+                    value_y = ca * ey[i, j, k] + cb_y * (dhx_z * iez[k] - dhz_x * iex[i])
                     ca, cb = _numba_face_scalar(t_ez[m], t_ez[mat[i, j, kp]], t_sig[m], t_sig[mat[i, j, kp]], wlz[k],
                                                 wuz[k], dt, eps0, smoothed_z)
-                    ez[i, j, k] = ca * ez[i, j, k] + cb * h_to_e * ((rfh[i] * hy0 - lx * rfh[im] * hy_x) * iex[i]
-                                                                    - (hx0 - ly * hx_y) * iey[j]) * irce[i]
-    return kernel
-
-
-# CPML on one layer slab (axis dimension = n_rows, first grid row row0): psi = b psi + a dF (bulk spacing), then
-# field += sign * coefficient * psi, run after the Yee kernel (which never writes its own curl inputs). H rows (hi
-# faces) difference F[row + 1] - F[row], E rows (centres) F[row] - F[row - 1]; the coefficient is the live db / cb
-# (times e_to_h / h_to_e: psi holds differences of the stored fields, float32). The second component's difference is
-# weighted, (sw[g + 1] F[g + 1] - sw[g] F[g]) of[g] at grid row g (E: sw[g] F[g] - sw[g - 1] F[g - 1]): the cylindrical
-# r factors on the r axis (update header), all 1 elsewhere.
-_CPML_H_SOURCE = r"""
-extern "C" __global__
-void cpml_h_3d(
-    field_t* __restrict__ h_first, field_t* __restrict__ h_second,
-    const field_t* __restrict__ e_first, const field_t* __restrict__ e_second,
-    float* __restrict__ psi_first, float* __restrict__ psi_second,
-    const float* __restrict__ b, const float* __restrict__ a, const float* __restrict__ inv,
-    const float* __restrict__ sw, const float* __restrict__ of,
-    const mat_t* __restrict__ mat, const float* __restrict__ t_mu, const float* __restrict__ t_sm,
-    int axis, int row0, int n_rows, int nx, int ny, int nz, float sign_first, float sign_second, float dt,
-    float e_to_h)
-{
-    int d0 = (axis == 0) ? n_rows : nx, d1 = (axis == 1) ? n_rows : ny, d2 = (axis == 2) ? n_rows : nz;
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = blockIdx.z * blockDim.z + threadIdx.z;
-    if (i >= d0 || j >= d1 || k >= d2) return;
-    idx_t p = ((idx_t)i * d1 + j) * d2 + k;
-    int r = (axis == 0) ? i : (axis == 1) ? j : k;
-    int gi = i + ((axis == 0) ? row0 : 0), gj = j + ((axis == 1) ? row0 : 0), gk = k + ((axis == 2) ? row0 : 0);
-    int g = r + row0;
-    idx_t sy = nz, sx = (idx_t)ny * nz;
-    idx_t idx = (idx_t)gi * sx + (idx_t)gj * sy + gk;
-    idx_t stride = (axis == 0) ? sx : (axis == 1) ? sy : (idx_t)1;
-    float da, db;
-    edge_coefficients(mat, t_mu, t_sm, idx, dt, &da, &db);
-    db *= e_to_h;
-    float br = b[r], ar = a[r] * inv[r];
-    float pf = br * psi_first[p] + ar * (FLOAD(e_first[idx + stride]) - FLOAD(e_first[idx]));
-    psi_first[p] = pf;
-    h_first[idx] = FSTORE(FLOAD(h_first[idx]) + sign_first * db * pf);
-    float ps = br * psi_second[p]
-               + ar * (sw[g + 1] * FLOAD(e_second[idx + stride]) - sw[g] * FLOAD(e_second[idx])) * of[g];
-    psi_second[p] = ps;
-    h_second[idx] = FSTORE(FLOAD(h_second[idx]) + sign_second * db * ps);
-}
-"""
-
-
-def _slab_terms(b, a, inv, axis):
-    """(b, a inv) of a slab's rows broadcast along axis."""
-    return b.reshape(_row_shape(axis)), (a * inv).reshape(_row_shape(axis))
-
-
-def _cpml_h_host(h_first, h_second, e_first, e_second, psi_first, psi_second, b, a, inv, sw, of, mat, t_mu, t_sm,
-                 axis, row0, n_rows, nx, ny, nz, sign_first, sign_second, dt, e_to_h):
-    axis, row0, n_rows = int(axis), int(row0), int(n_rows)
-    rows = along(axis, slice(row0, row0 + n_rows))
-    upper = along(axis, slice(row0 + 1, row0 + n_rows + 1))
-    decay, gain = _slab_terms(b, a, inv, axis)
-    db = _cached_edge_coefficients(mat, t_mu, t_sm, dt, e_to_h, rows)[1]
-    psi_first[...] = decay * psi_first + gain * (e_first[upper] - e_first[rows])
-    h_first[rows] += sign_first * db * psi_first
-    weight_upper = _axis_row(sw[row0 + 1:row0 + n_rows + 1], axis)
-    weight_rows, factor = _axis_row(sw[row0:row0 + n_rows], axis), _axis_row(of[row0:row0 + n_rows], axis)
-    psi_second[...] = (decay * psi_second
-                       + gain * (weight_upper * e_second[upper] - weight_rows * e_second[rows]) * factor)
-    h_second[rows] += sign_second * db * psi_second
-
-
-def _cpml_h_numba(numba):
-    mu0 = float(MU0)
-
-    @numba.njit(parallel=True, cache=True)
-    def kernel(h_first, h_second, e_first, e_second, psi_first, psi_second, b, a, inv, sw, of, mat, t_mu, t_sm, axis,
-               row0, n_rows, nx, ny, nz, sign_first, sign_second, dt, e_to_h):
-        d0 = n_rows if axis == 0 else nx
-        d1 = n_rows if axis == 1 else ny
-        d2 = n_rows if axis == 2 else nz
-        step_x = 1 if axis == 0 else 0
-        step_y = 1 if axis == 1 else 0
-        step_z = 1 if axis == 2 else 0
-        for prange_i in numba.prange(d0):
-            i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
-            gi = i + np.int64(row0) * step_x
-            for j in range(d1):
-                gj = j + np.int64(row0) * step_y
-                for k in range(d2):
-                    gk = k + np.int64(row0) * step_z
-                    r = i if axis == 0 else (j if axis == 1 else k)
-                    m = mat[gi, gj, gk]
-                    mu = t_mu[m] * mu0
-                    db = (dt / mu) / (1.0 + t_sm[m] * dt / (2.0 * mu)) * e_to_h
-                    decay = b[r]
-                    gain = a[r] * inv[r]
-                    hi_i, hi_j, hi_k = gi + step_x, gj + step_y, gk + step_z
-                    g = r + np.int64(row0)
-                    psi = decay * psi_first[i, j, k] + gain * (e_first[hi_i, hi_j, hi_k] - e_first[gi, gj, gk])
-                    psi_first[i, j, k] = psi
-                    h_first[gi, gj, gk] += sign_first * db * psi
-                    psi = decay * psi_second[i, j, k] + gain * (sw[g + 1] * e_second[hi_i, hi_j, hi_k]
-                                                                - sw[g] * e_second[gi, gj, gk]) * of[g]
-                    psi_second[i, j, k] = psi
-                    h_second[gi, gj, gk] += sign_second * db * psi
-    return kernel
-
-
-_CPML_E_SOURCE = r"""
-extern "C" __global__
-void cpml_e_3d(
-    field_t* __restrict__ e_first, field_t* __restrict__ e_second,
-    const field_t* __restrict__ h_first, const field_t* __restrict__ h_second,
-    float* __restrict__ psi_first, float* __restrict__ psi_second,
-    const float* __restrict__ b, const float* __restrict__ a, const float* __restrict__ inv,
-    const float* __restrict__ sw, const float* __restrict__ of,
-    const mat_t* __restrict__ mat, const float* __restrict__ t_ex, const float* __restrict__ t_ey,
-    const float* __restrict__ t_ez, const float* __restrict__ t_sig, FACE_PARAMS,
-    const float* __restrict__ wlx, const float* __restrict__ wux,
-    const float* __restrict__ wly, const float* __restrict__ wuy,
-    const float* __restrict__ wlz, const float* __restrict__ wuz,
-    int comp_first, int comp_second, int axis, int row0, int n_rows, int nx, int ny, int nz,
-    int px, int py, int pz, float sign_first, float sign_second, float dt, float h_to_e)
-{
-    int d0 = (axis == 0) ? n_rows : nx, d1 = (axis == 1) ? n_rows : ny, d2 = (axis == 2) ? n_rows : nz;
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
-    int j = blockIdx.y * blockDim.y + threadIdx.y;
-    int i = blockIdx.z * blockDim.z + threadIdx.z;
-    if (i >= d0 || j >= d1 || k >= d2) return;
-    idx_t p = ((idx_t)i * d1 + j) * d2 + k;
-    int r = (axis == 0) ? i : (axis == 1) ? j : k;
-    int g = r + row0;
-    int gi = i + ((axis == 0) ? row0 : 0), gj = j + ((axis == 1) ? row0 : 0), gk = k + ((axis == 2) ? row0 : 0);
-    idx_t sy = nz, sx = (idx_t)ny * nz;
-    idx_t idx = (idx_t)gi * sx + (idx_t)gj * sy + gk;
-    idx_t stride = (axis == 0) ? sx : (axis == 1) ? sy : (idx_t)1;
-    float br = b[r], ar = a[r] * inv[r];
-    float ca, cb;
-    float pf = br * psi_first[p] + ar * (FLOAD(h_first[idx]) - FLOAD(h_first[idx - stride]));
-    psi_first[p] = pf;
-    component_coefficients(comp_first, gi, gj, gk, idx, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig,
-                           FACE_ARGS, wlx, wux, wly, wuy, wlz, wuz, dt, &ca, &cb);
-    e_first[idx] = FSTORE(FLOAD(e_first[idx]) + sign_first * cb * h_to_e * pf);
-    float ps = br * psi_second[p]
-               + ar * (sw[g] * FLOAD(h_second[idx]) - sw[g - 1] * FLOAD(h_second[idx - stride])) * of[g];
-    psi_second[p] = ps;
-    component_coefficients(comp_second, gi, gj, gk, idx, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig,
-                           FACE_ARGS, wlx, wux, wly, wuy, wlz, wuz, dt, &ca, &cb);
-    e_second[idx] = FSTORE(FLOAD(e_second[idx]) + sign_second * cb * h_to_e * ps);
-}
-"""
-
-
-def _cpml_e_host(e_first, e_second, h_first, h_second, psi_first, psi_second, b, a, inv, sw, of, mat, t_ex, t_ey,
-                 t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, comp_first, comp_second, axis, row0,
-                 n_rows, nx, ny, nz, px, py, pz, sign_first, sign_second, dt, h_to_e):
-    axis, row0, n_rows = int(axis), int(row0), int(n_rows)
-    rows = along(axis, slice(row0, row0 + n_rows))
-    lower = along(axis, slice(row0 - 1, row0 + n_rows - 1))
-    decay, gain = _slab_terms(b, a, inv, axis)
-    origin, extents = [0, 0, 0], list(mat.shape)
-    origin[axis], extents[axis] = row0, n_rows
-    tables, shares, periodic = (t_ex, t_ey, t_ez), ((wlx, wux), (wly, wuy), (wlz, wuz)), (px, py, pz)
-    weight_rows, factor = _axis_row(sw[row0:row0 + n_rows], axis), _axis_row(of[row0:row0 + n_rows], axis)
-    weight_lower = _axis_row(sw[row0 - 1:row0 + n_rows - 1], axis)
-    for e, h, psi, sign, comp, weighted in ((e_first, h_first, psi_first, sign_first, int(comp_first), False),
-                                            (e_second, h_second, psi_second, sign_second, int(comp_second), True)):
-        difference = ((weight_rows * h[rows] - weight_lower * h[lower]) * factor if weighted
-                      else h[rows] - h[lower])
-        psi[...] = decay * psi + gain * difference
-        _, cb = _cached_face_coefficients(mat, tables[comp], t_sig, fid, t_face, use_face, comp, origin, extents,
-                                          *shares[comp], periodic[comp], dt)
-        e[rows] += sign * cb * h_to_e * psi
-
-
-def _cpml_e_numba(numba):
-    eps0 = float(EPS0)
-    _publish_numba_face_scalar(numba)
-
-    @numba.njit(cache=True)
-    def component_cb(comp, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey, t_ez, t_sig, fid, t_face, use_face,
-                     wlx, wux, wly, wuy, wlz, wuz, dt):
-        """cb of E component comp at cell (gi, gj, gk) (component_coefficients)."""
-        m = mat[gi, gj, gk]
-        if comp == 0:
-            partner = mat[gi + 1 if gi + 1 < nx else (0 if px != 0 else gi), gj, gk]
-            eps_a, eps_b, weight_a, weight_b = t_ex[m], t_ex[partner], wlx[gi], wux[gi]
-        elif comp == 1:
-            partner = mat[gi, gj + 1 if gj + 1 < ny else (0 if py != 0 else gj), gk]
-            eps_a, eps_b, weight_a, weight_b = t_ey[m], t_ey[partner], wly[gj], wuy[gj]
-        else:
-            partner = mat[gi, gj, gk + 1 if gk + 1 < nz else (0 if pz != 0 else gk)]
-            eps_a, eps_b, weight_a, weight_b = t_ez[m], t_ez[partner], wlz[gk], wuz[gk]
-        face_index = 3 * fid[gi, gj, gk] if use_face != 0 else 0
-        smoothed = t_face[face_index + comp] if face_index != 0 else 0.0
-        return _numba_face_scalar(eps_a, eps_b, t_sig[m], t_sig[partner], weight_a, weight_b, dt, eps0, smoothed)[1]
-
-    globals()['_numba_cpml_component_cb'] = component_cb   # a global for the kernel, not a closure cell
-
-    @numba.njit(parallel=True, cache=True)
-    def kernel(e_first, e_second, h_first, h_second, psi_first, psi_second, b, a, inv, sw, of, mat, t_ex, t_ey, t_ez,
-               t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, comp_first, comp_second, axis, row0, n_rows,
-               nx, ny, nz, px, py, pz, sign_first, sign_second, dt, h_to_e):
-        d0 = n_rows if axis == 0 else nx
-        d1 = n_rows if axis == 1 else ny
-        d2 = n_rows if axis == 2 else nz
-        step_x = 1 if axis == 0 else 0
-        step_y = 1 if axis == 1 else 0
-        step_z = 1 if axis == 2 else 0
-        for prange_i in numba.prange(d0):
-            i = np.int64(prange_i)   # the parfor gufunc types the prange index uint64: mixed with int64 -> float64
-            gi = i + np.int64(row0) * step_x
-            for j in range(d1):
-                gj = j + np.int64(row0) * step_y
-                for k in range(d2):
-                    gk = k + np.int64(row0) * step_z
-                    r = i if axis == 0 else (j if axis == 1 else k)
-                    decay = b[r]
-                    gain = a[r] * inv[r]
-                    lo_i, lo_j, lo_k = gi - step_x, gj - step_y, gk - step_z
-                    psi = decay * psi_first[i, j, k] + gain * (h_first[gi, gj, gk] - h_first[lo_i, lo_j, lo_k])
-                    psi_first[i, j, k] = psi
-                    cb = _numba_cpml_component_cb(comp_first, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey,
-                                                  t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
-                    e_first[gi, gj, gk] += sign_first * cb * h_to_e * psi
-                    g = r + np.int64(row0)
-                    psi = decay * psi_second[i, j, k] + gain * (sw[g] * h_second[gi, gj, gk]
-                                                                - sw[g - 1] * h_second[lo_i, lo_j, lo_k]) * of[g]
-                    psi_second[i, j, k] = psi
-                    cb = _numba_cpml_component_cb(comp_second, gi, gj, gk, nx, ny, nz, px, py, pz, mat, t_ex, t_ey,
-                                                  t_ez, t_sig, fid, t_face, use_face, wlx, wux, wly, wuy, wlz, wuz, dt)
-                    e_second[gi, gj, gk] += sign_second * cb * h_to_e * psi
+                    cb_z = cb * h_to_e
+                    value_z = ca * ez[i, j, k] + cb_z * (dhy_x * iex[i] - dhx_y * iey[j]) * irce[i]
+                    if rx >= 0:   # x layers: E_y from H_z (-), E_z from r_f H_y (+)
+                        psi = b_x[rx] * pf_x[rx, j, k] + g_x[rx] * dhz_x
+                        pf_x[rx, j, k] = psi
+                        value_y -= cb_y * psi
+                        psi = b_x[rx] * ps_x[rx, j, k] + g_x[rx] * dhy_x * irce[i]
+                        ps_x[rx, j, k] = psi
+                        value_z += cb_z * psi
+                    if ry >= 0:   # y layers: E_x from H_z (+), E_z from H_x (-)
+                        psi = b_y[ry] * pf_y[i, ry, k] + g_y[ry] * dhz_y
+                        pf_y[i, ry, k] = psi
+                        value_x += cb_x * psi
+                        psi = b_y[ry] * ps_y[i, ry, k] + g_y[ry] * dhx_y
+                        ps_y[i, ry, k] = psi
+                        value_z -= cb_z * psi
+                    if rz >= 0:   # z layers: E_x from H_y (-), E_y from H_x (+)
+                        psi = b_z[rz] * pf_z[i, j, rz] + g_z[rz] * dhy_z
+                        pf_z[i, j, rz] = psi
+                        value_x -= cb_x * psi
+                        psi = b_z[rz] * ps_z[i, j, rz] + g_z[rz] * dhx_z
+                        ps_z[i, j, rz] = psi
+                        value_y += cb_y * psi
+                    ex[i, j, k] = value_x
+                    ey[i, j, k] = value_y
+                    ez[i, j, k] = value_z
     return kernel
 
 
@@ -953,14 +935,12 @@ def _conformal_h_host(hx, hy, hz, ex, ey, ez, mat, t_mu, t_sm, ihx, ihy, ihz, fa
         np.subtract.at(h_fields[component].reshape(-1), cells, db * curl)
 
 
-_FIELD_SOURCES = {'update_h_3d': _UPDATE_H_SOURCE, 'update_e_3d': _UPDATE_E_SOURCE, 'cpml_h_3d': _CPML_H_SOURCE,
-                  'cpml_e_3d': _CPML_E_SOURCE, 'ohmic_loss_3d': _OHMIC_LOSS_SOURCE,
-                  'conformal_h_3d': _CONFORMAL_H_SOURCE}
+_FIELD_SOURCES = {'update_h_3d': _UPDATE_H_SOURCE, 'update_e_3d': _UPDATE_E_SOURCE,
+                  'ohmic_loss_3d': _OHMIC_LOSS_SOURCE, 'conformal_h_3d': _CONFORMAL_H_SOURCE}
 # name -> (numpy twin, numba factory or None); the host twins compute in float32 (the cpu backend refuses
 # half_storage, solvers.explicit_kernels backend_misfit), numba only in single precision (the sparse conformal
 # correction has none: a few faces)
 _FIELD_HOST_TWINS = {'update_h_3d': (_update_h_host, _update_h_numba), 'update_e_3d': (_update_e_host, _update_e_numba),
-                     'cpml_h_3d': (_cpml_h_host, _cpml_h_numba), 'cpml_e_3d': (_cpml_e_host, _cpml_e_numba),
                      'ohmic_loss_3d': (_ohmic_loss_host, _ohmic_loss_numba),
                      'conformal_h_3d': (_conformal_h_host, None)}
 _FIELD_KERNELS = {}
@@ -1024,7 +1004,11 @@ pole_work_half = twin('em3d.pole_work_half', cp.ElementwiseKernel(
 
 
 def launch(dims):
-    """(grid, block) of a kernel over (d0, d1, d2) = (x, y, z) extents (threads along z fastest)."""
-    threads_z, threads_y, threads_x = _BLOCK
-    return ((int(dims[2]) + threads_z - 1) // threads_z, (int(dims[1]) + threads_y - 1) // threads_y,
-            (int(dims[0]) + threads_x - 1) // threads_x), _BLOCK
+    """(grid, block) of a kernel over (d0, d1, d2) = (x, y, z) extents (threads along z fastest): _BLOCK on a bulk grid;
+    a thin extent (CPML z slab, TFSF plane) gets a block that fits it, so warps do not idle on its tail."""
+    extent_x, extent_y, extent_z = (max(1, int(value)) for value in dims)
+    threads_z = min(_BLOCK[0], extent_z)
+    threads_y = min(extent_y, max(_BLOCK[1], _BLOCK_THREADS // (2 * threads_z)))
+    threads_x = min(extent_x, _BLOCK_Z_MAX, max(1, _BLOCK_THREADS // (threads_z * threads_y)))
+    return (((extent_z + threads_z - 1) // threads_z, (extent_y + threads_y - 1) // threads_y,
+             (extent_x + threads_x - 1) // threads_x), (threads_z, threads_y, threads_x))

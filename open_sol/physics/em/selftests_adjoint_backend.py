@@ -126,5 +126,5 @@ ADJOINT_BACKEND_SELFTEST_CASES = (
                      f'optimisation ({_OPTIMIZATION_TOLERANCE:g}: L-BFGS-B follows the round-off of the gradient). '
                      'measured = error = the worst item, tolerance 1. The check raises unless every cpu role solver '
                      'records backend cpu. Not yet confirmed by a run.'),
-        specs=_backend_runs, check=_check_backends, max_wall_time=900.0, heavy=True),
+        specs=_backend_runs, check=_check_backends, max_wall_time=900.0),
 )

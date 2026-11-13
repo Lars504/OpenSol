@@ -158,18 +158,18 @@ class _Validator:
         self.empty_object_messages = {}   # (mesh name, domain object) -> warning when it selects no cell, else None
 
     def _plain_roles(self, given):
-        """given, else meshing.fitted_memory_estimate's roles against memory_budget (the fitted estimate replaces
-        memory_estimate then); frozenset() when the meshes or the estimate fail (reported by their checks)."""
+        """given, else meshing.fitted_memory_estimate's roles against memory_budget / host_budget (the fitted estimate
+        replaces memory_estimate then); frozenset() when the meshes or the estimate fail (reported by their checks)."""
         if given is not None:
             return frozenset(given)
         meshes = self.vctx.meshes
-        if not self.memory_budget or not meshes or any(mesh is None for mesh in meshes.values()):
+        if not meshes or any(mesh is None for mesh in meshes.values()):
             return frozenset()
         parts = {} if self.memory_parts is not None else None
         try:
             estimate, roles = fitted_memory_estimate(self.spec, self.vctx.parameters, self.registry, meshes,
                                                      self.memory_budget, estimate=self.memory_estimate, by_mesh=parts,
-                                                     shapes=self.vctx.shapes)
+                                                     shapes=self.vctx.shapes, host_budget=self.host_budget)
         except Exception:   # check_memory estimates again and reports the failure
             return frozenset()
         if self.memory_estimate is None or roles:
@@ -2040,7 +2040,8 @@ class _Validator:
             return None
         try:
             estimate = backend_memory(self.spec, fitted_memory_estimate(self.spec, parameters, self.registry, meshes,
-                                                                        gpu_budget, shapes=shapes)[0])
+                                                                        gpu_budget, shapes=shapes,
+                                                                        host_budget=self.host_budget)[0])
         except MESH_ESTIMATE_ERRORS as exc:
             return f'memory estimate failed: {error_message(exc)}', 'error'
         level = memory_check_level(self.spec)

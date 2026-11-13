@@ -68,6 +68,10 @@ class FEMDriftDiffusionSystem(DriftDiffusionCore):
         """Add N_D - N_A [1/m^3] per mesh element (0 outside the feature)."""
         self.element_doping += np.asarray(net_doping, dtype=np.float64)
 
+    def clear_doping(self):
+        """Net doping 0 everywhere (DriftDiffusionPhysics.set_doping adds every feature again)."""
+        self.element_doping[...] = 0.0
+
     def set_auger(self, mask, electron_coefficient, hole_coefficient):
         """Auger coefficients C_n, C_p [m^6/s] on the masked mesh elements (a later feature takes shared elements)."""
         self.element_auger[:, np.asarray(mask, dtype=bool)] = np.array([[electron_coefficient], [hole_coefficient]],

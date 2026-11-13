@@ -95,7 +95,8 @@ def nedelec_blocks_3d(dofs, curl_coefficient=None, mass_coefficient=None, elemen
     rule_degree = 2 * dofs.order if degree is None else int(degree)
     rule = tetrahedron_rule(rule_degree)
     needs_points = callable(curl_coefficient) or callable(mass_coefficient)
-    curl_blocks, mass_blocks = [], []
+    curl_blocks = mass_blocks = None   # (m, n, n) stacks filled chunk by chunk (no list + concatenated copy)
+    start = 0
     for chunk, geometry in element_chunks_3d(mesh, elements):
         absolute = np.abs(geometry.determinant)
         points = geometry.points(rule.points) if needs_points else None
@@ -103,18 +104,32 @@ def nedelec_blocks_3d(dofs, curl_coefficient=None, mass_coefficient=None, elemen
         context = (chunk, mesh.n_elements, points, weights, absolute, dofs.order, rule_degree)
         if curl_coefficient is not None:
             curl_maps = geometry.jacobian / geometry.determinant[:, None, None]   # physical curl = P reference curl
-            curl_blocks.append(_mapped_blocks(curl_coefficient, curl_maps, 'curl', *context))
+            curl_blocks = _stored(curl_blocks, _mapped_blocks(curl_coefficient, curl_maps, 'curl', *context), start,
+                                  len(elements))
         if mass_coefficient is not None:
             mass_maps = geometry.inverse.swapaxes(1, 2)   # physical vector = J^-T reference vector
-            mass_blocks.append(_mapped_blocks(mass_coefficient, mass_maps, 'mass', *context))
+            mass_blocks = _stored(mass_blocks, _mapped_blocks(mass_coefficient, mass_maps, 'mass', *context), start,
+                                  len(elements))
+        start += len(chunk)
     n_local = dofs.n_local
 
     def stacked(blocks, coefficient):
         if coefficient is None:
             return None
-        return np.concatenate(blocks) if blocks else np.zeros((0, n_local, n_local))
+        return np.zeros((0, n_local, n_local)) if blocks is None else blocks
 
     return elements, stacked(curl_blocks, curl_coefficient), stacked(mass_blocks, mass_coefficient)
+
+
+def _stored(stack, blocks, start, count) -> np.ndarray:
+    """The (count, n, n) stack with a chunk's blocks written at start: allocated on the first chunk, widened to complex
+    when a later chunk is complex."""
+    if stack is None:
+        stack = np.empty((count,) + blocks.shape[1:], dtype=blocks.dtype)
+    elif np.iscomplexobj(blocks) and not np.iscomplexobj(stack):
+        stack = stack.astype(np.complex128)
+    stack[start:start + len(blocks)] = blocks
+    return stack
 
 
 # symmetric component pairs (a, b), a <= b, of T_ab = sum_c P_ca nu_c P_cb: T is symmetric, so the 9 products W_i[a]
@@ -173,46 +188,78 @@ def _nedelec_pair_products(order, degree, kind) -> np.ndarray:
 
 
 def element_blocks_csr(n_dofs, element_dofs, block_arrays, free=None) -> tuple:
-    """Canonical CSRs (explicit zeros kept) of square element blocks (m, n, n) over element_dofs (m, n), one per array of
-    block_arrays (None stays None), all from one COO -> CSR slot map; free (sorted dof indices): only their rows /
-    columns, renumbered (the free-free restriction of every matrix at once)."""
+    """Canonical CSRs (explicit zeros kept) of square element blocks (m, n, n) over element_dofs (m, n), one per entry of
+    block_arrays (None stays None; a list = parts in element order, summed without a concatenated copy), all from one
+    COO -> CSR slot map; free (sorted dof indices): only their rows / columns, renumbered (free-free restriction)."""
     import scipy.sparse
     element_dofs = np.asarray(element_dofs)
     count, n_local = element_dofs.shape
     n_entries = count * n_local * n_local
     index_dtype = np.int32 if max(int(n_dofs), n_entries) < 2 ** 31 else np.int64
     element_dofs = element_dofs.astype(index_dtype, copy=False)
-    rows = np.repeat(element_dofs, n_local, axis=1).ravel()   # block entry (e, i, j): row dof i, column dof j
-    columns = np.tile(element_dofs, (1, n_local)).ravel()
-    take, n_rows = None, int(n_dofs)
-    if free is not None:
+    n_rows = int(n_dofs)
+    if free is not None:   # renumber the (m, n) element dofs, not the (m n n) COO entries: -1 outside free
         free = np.asarray(free)
         renumber = np.full(int(n_dofs), -1, dtype=index_dtype)
         renumber[free] = np.arange(free.size, dtype=index_dtype)
-        rows, columns = renumber[rows], renumber[columns]
+        element_dofs, n_rows = renumber[element_dofs], int(free.size)
+    rows = np.repeat(element_dofs, n_local, axis=1).ravel()   # block entry (e, i, j): row dof i, column dof j
+    columns = np.tile(element_dofs, (1, n_local)).ravel()
+    take = None
+    if free is not None:
         take = np.flatnonzero((rows >= 0) & (columns >= 0))
-        rows, columns, n_rows = rows[take], columns[take], int(free.size)
+        rows, columns = rows[take], columns[take]
     shape = (n_rows, n_rows)
     slots, indptr, indices = _coo_slots(rows, columns, shape, index_dtype)
     del rows, columns
     matrices = []
+    interleaved = None   # (2 s, 2 s + 1) of every slot: built at the first complex part, shared by every matrix
     for blocks in block_arrays:
         if blocks is None:
             matrices.append(None)
             continue
-        values = np.asarray(blocks).reshape(-1)
-        if values.size != n_entries:
-            raise ValueError(f'element_blocks_csr: {values.size} block values for {count} elements of {n_local} dofs')
-        if take is not None:
-            values = values[take]
-        data = np.bincount(slots, weights=np.ascontiguousarray(values.real, dtype=np.float64), minlength=indices.size)
-        if np.iscomplexobj(values):
-            data = data + 1j * np.bincount(slots, weights=np.ascontiguousarray(values.imag, dtype=np.float64),
-                                           minlength=indices.size)
+        parts = [np.asarray(part) for part in blocks] if isinstance(blocks, (list, tuple)) else [np.asarray(blocks)]
+        if sum(part.size for part in parts) != n_entries:
+            raise ValueError(f'element_blocks_csr: {sum(part.size for part in parts)} block values for {count} '
+                             f'elements of {n_local} dofs')
+        data, start = None, 0
+        for part in parts:
+            values, stop = part.reshape(-1), start + part.size
+            low, high = start, stop
+            if take is not None:   # take is ascending: this part's kept entries are one run of it
+                low, high = np.searchsorted(take, (start, stop))
+                values = values[take[low:high] - start]
+            part_interleaved = None
+            if np.iscomplexobj(values):
+                if interleaved is None:
+                    interleaved = _interleaved_slots(slots)
+                part_interleaved = interleaved[2 * low:2 * high]
+            summed = _slot_sums(slots[low:high], values, indices.size, part_interleaved)
+            data = summed if data is None else data + summed
+            start = stop
         matrix = scipy.sparse.csr_matrix((data, indices.copy(), indptr.copy()), shape=shape)
         matrix.has_canonical_format = True
         matrices.append(matrix)
     return tuple(matrices)
+
+
+def _slot_sums(slots, values, n_slots, interleaved=None) -> np.ndarray:
+    """(n_slots,) float64 / complex128 sums of values per slot: one bincount; complex values as their float64 view over
+    the interleaved slots (2 s, 2 s + 1; given, else built here), bit-identical to one bincount per part."""
+    if not np.iscomplexobj(values):
+        return np.bincount(slots, weights=np.ascontiguousarray(values, dtype=np.float64), minlength=n_slots)
+    if interleaved is None:
+        interleaved = _interleaved_slots(slots)
+    parts = np.ascontiguousarray(values, dtype=np.complex128).reshape(-1).view(np.float64)   # re, im per entry
+    return np.bincount(interleaved, weights=parts, minlength=2 * n_slots).view(np.complex128)
+
+
+def _interleaved_slots(slots) -> np.ndarray:
+    """Int64 (2 k,) slots 2 s, 2 s + 1 of the real / imaginary part of each entry (16 B per entry, a build temporary)."""
+    pairs = np.empty((len(slots), 2), dtype=np.int64)
+    np.multiply(slots, 2, out=pairs[:, 0])
+    np.add(pairs[:, 0], 1, out=pairs[:, 1])
+    return pairs.reshape(-1)
 
 
 def _coo_slots(rows, columns, shape, index_dtype) -> tuple:
@@ -314,9 +361,10 @@ def _reference_products(order, degree, kind) -> np.ndarray:
     return products
 
 
-def _assemble_lagrange(dofs, elements, parts):
+def _assemble_lagrange(dofs, elements, parts, kept=None):
     """CSR (n_dofs, n_dofs) of element blocks over the listed elements: parts = [(selected: bool over the element list
-    or None = all, block(chunk) -> (m, n, n))]; summed on the kept slot map of the element set
+    or None = all, block(chunk) -> (m, n, n))]; summed on the scalar pattern of `kept` (a FixedPatternCsr built from
+    exactly these elements' dofs, e.g. K's block pattern: no slot check), else on the kept slot map of the element set
     (assembly.blocks_csr), else by COO -> CSR. Either way canonical, explicit zeros kept (the pattern never depends on
     the values)."""
     import scipy.sparse
@@ -336,6 +384,8 @@ def _assemble_lagrange(dofs, elements, parts):
         ordered = np.empty_like(blocks)
         ordered[np.concatenate(order)] = blocks
         blocks = ordered
+    if kept is not None:
+        return kept.scalar_csr(dofs.element_dofs[elements], blocks, check=False)
     return blocks_csr(dofs, elements, blocks)
 
 
@@ -392,9 +442,10 @@ def assemble_lagrange_stiffness_3d(dofs, coefficient=1.0, elements=None, degree=
     return _assemble_lagrange(dofs, elements, _coefficient_parts(coefficient, elements, affine, quadrature))
 
 
-def assemble_lagrange_mass_3d(dofs, coefficient=1.0, elements=None, degree=None):
+def assemble_lagrange_mass_3d(dofs, coefficient=1.0, elements=None, degree=None, kept=None):
     """CSR (n_dofs, n_dofs) of int c phi_i phi_j dV over `elements` (P0 / P1 / P2; c scalar, a callable or a
-    SplitCoefficient); rule degree default 2 x order. Element-constant c: c |det J| x the reference mass."""
+    SplitCoefficient); rule degree default 2 x order. Element-constant c: c |det J| x the reference mass. kept: a
+    FixedPatternCsr of exactly these elements' dofs whose scalar pattern takes the sum (_assemble_lagrange)."""
     _require_lagrange(dofs, 'assemble_lagrange_mass_3d', (0, 1, 2))
     mesh, n_local = dofs.mesh, dofs.n_local
     elements = _element_list(mesh, elements)
@@ -421,7 +472,7 @@ def assemble_lagrange_mass_3d(dofs, coefficient=1.0, elements=None, degree=None)
             scale = scalar_coefficient_at(function, points, chunk, mesh.n_elements, len(rule.weights))
             return ((scale * _volume_weights(geometry, rule)) @ products).reshape(len(chunk), n_local, n_local)
         return block
-    return _assemble_lagrange(dofs, elements, _coefficient_parts(coefficient, elements, affine, quadrature))
+    return _assemble_lagrange(dofs, elements, _coefficient_parts(coefficient, elements, affine, quadrature), kept)
 
 
 def assemble_lagrange_load_3d(dofs, source=1.0, elements=None, degree=None) -> np.ndarray:

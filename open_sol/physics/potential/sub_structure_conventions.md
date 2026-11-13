@@ -34,8 +34,15 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
   `add_fixed_potential`; rhs: `inject_source`, `add_source`, `add_boundary_flux`) or at the first call; probes sample
   after a re-solve and at every `step(t, inf)` (a stationary iteration still records; flush gives the end-of-run
   sample), never on an unchanged finite-dt tick (every = 1 would store one copy per EM step).
-- RerunSolver (sweep reuse_build; FV and FEM 2D / 3D): `reset_records` clears the probe series; no feature value
-  follows yet (a live voltage / terminal / source value rebuilds per sweep value).
+- RerunSolver (sweep reuse_build; FV and FEM 2D / 3D): `reset_records` clears the probe series. voltage / terminal
+  `voltage` follow (`set_held_voltage(region, voltage, hold, outline)` on every grid kind; HeldRegion / FEMHeldRegion
+  / FEMHeldRegion3D are not frozen, their voltage is re-set so results and `_face_held_by` read the live value): faces
+  still held by the region take `set_face_value` first (update_face_value), then the tensor held cells `set_fixed`
+  (the hold index of `add_fixed_potential`; later holds set again over shared cells), and the next linear step
+  re-eliminates them by `refresh_held_values` (no anchor check, no factorisation; a full assemble when it refuses).
+  Element meshes: the outline handle (`add_edge_potential` / `add_surface_potential`) and `set_fixed_value` (held
+  values only, the factor is kept). Driven: the bases are dropped and re-solved. current_source density does not
+  follow; material values follow by repaint (model sub file).
 - E = axis flux / c at the centres (`axis_flux_at_centres`; 0 in non-conducting and held cells); J / D add
   `cross_flux_at_centres`; q_joule = `DiffusionSystem.dissipation_density` (each interior face's g (du)^2 split by
   half-cell resistance, `fv_diffusion_3d.face_lower_shares`, so a metal contact gets ~0; outer Dirichlet / Robin faces whole to

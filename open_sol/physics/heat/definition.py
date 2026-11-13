@@ -1,13 +1,14 @@
 """Model-layer definition of the 'heat' physics type (settings, features, material vocabulary, factory, validation)
 plus its template and selftests. Loaded lazily by the registry (physics/heat/__init__.py must not import it)."""
 import math
+from dataclasses import replace
 
 from ...core.backend import to_host
 from ...core.constants import N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, host_lu_bytes, window_cell_count)
 from ...core.renderer import FieldInfo
-from ...core.time_estimate import (HeldValues, TimeEstimate, TimeItem, combine as combine_time,
+from ...core.time_estimate import (HeldValues, HostStream, TimeEstimate, TimeItem, Transfer, combine as combine_time,
                                    diffusion_time_estimate)
 from ...fem.diffusion import (cudss_back_end, cudss_diffusion_estimate, fem_diffusion_estimate, fem_solve_host_ops,
                               fem_time_system, painted_fraction)
@@ -19,7 +20,7 @@ from ...model.definition_helpers import (
     geometry_param, held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric, linear_solver_direct,
     linear_solver_mixed, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe,
     mapped_domain_issues, material_follows_state, mirror_face_issues, on_tetrahedra, on_triangles,
-    optional_material_param, outline_full_grid, outline_pieces_of, perimeter_flux_weights, point_cells,
+    optional_material_param, outline_full_grid, outline_pieces_of, perimeter_flux_weights, plain_number, point_cells,
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
@@ -946,9 +947,11 @@ def _memory_estimate(settings_values, mesh, context):
                          active_fraction=_active_fraction(context, mesh, transient))
     fields = MemoryEstimate.from_items((('T, Q, Q_ext (3 x float32)', 3 * FLOAT32_BYTES * int(mesh.n_cells)),))
     precision = linear_solver_precision(context)
-    # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve
+    # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve; backend: where a multigrid
+    # setup aggregates
+    from ...model.schema import solver_backend
     solver_options = dict(mixed=linear_solver_mixed(context), multigrid=linear_solver_multigrid(context),
-                          direct=linear_solver_direct(context), flux=True)
+                          direct=linear_solver_direct(context), flux=True, backend=solver_backend(context.spec))
     wrap = mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none'   # phi wrap: 2 more build slots
     cross_term = not context.spec.is_3d and context.material_sets('k_xy')
     if context.spec.is_3d:
@@ -978,9 +981,9 @@ _HELD_TEMPERATURE = HeldValues(feature_types=frozenset({'temperature', 'fixed_te
 def _time_estimate(settings_values, mesh, context):
     """The DiffusionSystem recipe on the window (transient: time_step per step); triangles / tetrahedra: the 2D / 3D
     recipe at the Lagrange unknowns with their CSR entries per row (fem.diffusion.fem_time_system, uncalibrated) plus
-    the host work per solve (fem_solve_host_ops); the thermal noise spectra are not estimated yet."""
+    the host work per solve (fem_solve_host_ops); a thermal_noise study: _noise_time_estimate."""
     if context.study.type == THERMAL_NOISE_STUDY:
-        return TimeEstimate(not_estimated=('thermal noise spectra',))
+        return _noise_time_estimate(mesh, context)
     transient = context.time_dependent and settings_values['time_mode'] == 'transient'
     held = None if transient else _HELD_TEMPERATURE   # implicit steps: the capacity term is not in the estimate
     # the operator is re-assembled only when k changes (a coupling writing Q leaves the build's factorisation)
@@ -1015,9 +1018,88 @@ def _count_or(value, default):
         return default
 
 
+def _noise_shifts(feature, parameters, n_frequencies) -> tuple:
+    """(collected-mode channels, shifts per channel) of a noise feature: one shift per (frequency, axial sample), the
+    Gauss-Hermite samples paired up at q0 = 0 (an expression's zero axial_wavenumber, a mode scattered forward into
+    itself) as thermal_noise.axial_samples merges them."""
+    params = feature.params if isinstance(feature.params, dict) else {}
+    weighting = params.get('weighting', 'illumination' if feature.type == 'particle_noise' else 'mode_pair')
+    channels = 2 if weighting != 'expression' and params.get('collected_selection') == 'te_and_tm' else 1
+    samples = 1
+    if params.get('axial_profile') == 'gaussian':
+        samples = max(int(plain_number(params.get('axial_points', 8), parameters) or 8), 1)
+        if weighting == 'expression':
+            zero_wavenumber = plain_number(params.get('axial_wavenumber', 0.0), parameters) == 0.0
+        else:
+            zero_wavenumber = (weighting == 'mode_pair'
+                               and params.get('incident_selection', 'collected') == 'collected'
+                               and params.get('incident_direction', 'forward')
+                               == params.get('collected_direction', 'backward'))
+        if zero_wavenumber:
+            samples = (samples + 1) // 2
+    return channels, n_frequencies * samples
+
+
+def _noise_time_estimate(mesh, context):
+    """Thermal noise spectra on the 'shifted' role: per noise feature and collected mode one shift per (frequency,
+    axial sample), its contribution parts the right-hand sides; a line_block solver factors a channel in chunks of up
+    to MAX_CHUNK_SHIFTS (a memory-bound chunk is not counted) on the heat window, a particle_noise feature on the
+    window cells of its selection's bounding box. Not counted: rejected shifts (host SuperLU), operator set-up."""
+    noise_features = [feature for feature in context.physics_spec.features
+                      if feature.enabled and feature.type in _NOISE_FEATURE_TYPES]
+    if not noise_features:
+        return TimeEstimate()
+    shifted = context.solvers.get('shifted')
+    if mesh.kind != 'tensor' or shifted is None:
+        return TimeEstimate(not_estimated=('thermal noise spectra',))
+    line_block = shifted.solver_type.name == 'line_block'
+    study_values = context.study.values
+    n_frequencies = len(study_values.get('frequencies') or ()) or max(int(study_values.get('n_frequencies') or 1), 1)
+    window = tuple(int(count) for count in mesh.window_axis_cells[:2])
+    entries_per_row = 9 if context.material_sets('k_xy') else 5
+    n_materials = len(context.spec.materials)
+    operators = {}   # (cells along x, cells along y, right-hand sides per shift) -> [shifts, line_block chunks]
+    for feature in noise_features:
+        if feature.type == 'particle_noise':
+            key = (*context.selection_window_cells(feature.selection), 1)
+        else:   # the materials under the selection as contribution parts when there are several
+            key = (*window, n_materials if n_materials > 1 else 1)
+        channels, channel_shifts = _noise_shifts(feature, context.parameters, n_frequencies)
+        entry = operators.setdefault(key, [0, 0])
+        entry[0] += channels * channel_shifts
+        entry[1] += channels * math.ceil(channel_shifts / MAX_CHUNK_SHIFTS)
+    total_shifts = sum(shifts for shifts, _ in operators.values())
+    role_counters = ('solvers', context.name, 'roles', 'shifted', 'counters')
+    parts = []
+    for (cells_x, cells_y, n_rhs), (shifts, chunks) in operators.items():
+        unknowns = float(cells_x * cells_y)
+        work = dict(unknowns=unknowns, nnz=entries_per_row * unknowns, value_bytes=COMPLEX128_BYTES, dimensions=2,
+                    solves=float(shifts), factorizations=float(shifts), rhs=float(n_rhs))
+        if line_block:   # blocks along the shorter axis (LineBlockLayout.from_grid_cells: the cheaper n_blocks b^3)
+            solver = context.solver_work('shifted', block_size=min(cells_x, cells_y), batch_shifts=shifts / chunks,
+                                         **work)
+            transfer = TimeItem('line-block solutions to the host', 'shift', float(shifts), 'exact',
+                                (Transfer(COMPLEX128_BYTES * unknowns * n_rhs),))
+            # the chunks are timed as a whole (LineBlockSolver 'shift_seconds')
+            solver = TimeEstimate(tuple(replace(item, seconds_counter=role_counters + ('shift_seconds',))
+                                        for item in solver.items + (transfer,)), solver.not_estimated)
+        else:   # a host factorisation per shift whatever the run backend (HarmonicHeatOperator.spectral_densities)
+            solver = context.solver_work('shifted', backend='cpu', **work)
+        # one role runtime serves every operator: each counted item is its share of the role's counter
+        share = shifts / total_shifts
+        solver = replace(solver, items=tuple(replace(item, counter_scale=share) if item.counter else item
+                                             for item in solver.items))
+        # per shift and part: conj(drive) x response summed, the parts' sum and its product (host complex128 passes)
+        sums = TimeItem('host sums', 'shift', float(shifts), 'exact',
+                        (HostStream(5.0 * COMPLEX128_BYTES * unknowns * n_rhs),))
+        parts.append(combine_time((solver, TimeEstimate((sums,)))).labelled(
+            f'noise spectra on {cells_x} x {cells_y} cells'))
+    return combine_time(parts)
+
+
 def _line_block_noise_estimate(mesh, context):
     """Run items of a line_block shifted solver (thermal_noise study): operator caches over the whole window (lines
-    along the longer axis) and one chunk of the largest channel (n_frequencies x axial samples, capped)."""
+    along the longer axis) and one shift of a chunk (chunk_size fits the rest to MEMORY_FRACTION of the free budget)."""
     study = context.spec.study
     noise_features = [feature for feature in context.physics_spec.features
                       if feature.enabled and feature.type in _NOISE_FEATURE_TYPES]
@@ -1038,12 +1120,16 @@ def _line_block_noise_estimate(mesh, context):
     n_rhs = len(context.spec.materials) + 1   # contribution parts + 'other' at most
     precision = shifted.values['precision']
     entries =(9 if context.material_sets('k_xy') else 5) * cells
+    # LineBlockSolver.chunk_size takes min(shifts, MAX_CHUNK_SHIFTS, MEMORY_FRACTION x pool room / per shift) (room:
+    # budget - pool used, at most the free device memory), so a chunk never outgrows the budget: one shift is what must
+    # fit (as the FDFD wavelength batch books one)
     chunk = min(MAX_CHUNK_SHIFTS, max(n_frequencies * samples, 1))
     return MemoryEstimate.from_items(
         run_items=(('thermal noise line_block operator', line_block_operator_bytes(n_blocks, block_size, cells, entries,
                                                                                    2, precision)),),
-        transient_items=(('thermal noise chunk', f'thermal noise line_block chunk ({chunk} shifts)',
-                          chunk * line_block_shift_bytes(n_blocks, block_size, cells, n_rhs, precision)),))
+        transient_items=(('thermal noise chunk', f'thermal noise line_block chunk (1 of up to {chunk} shifts, sized to '
+                          'the free memory at run time)',
+                          line_block_shift_bytes(n_blocks, block_size, cells, n_rhs, precision)),))
 
 
 _MODE_PAIR = (('weighting', ('mode_pair',)),)

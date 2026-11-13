@@ -76,11 +76,13 @@ class DirectElasticSystem:
     def _solve_free(self, rhs) -> np.ndarray:
         """Host float64 K_ff^-1 rhs (free-dof vector), factorising K_ff on the run backend first when needed (the
         'linear' runtime counts it; also after a Newton tangent took the factor)."""
+        from ...fem.fixed_pattern import free_restriction
         from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_DIRECT_BACK_ENDS
         xp = array_module(self.backend)
         if self._solution is None or not self._factor_holds_operator:
             free = np.flatnonzero(self.free)
-            reduced = self.operator[free][:, free].tocsr()
+            # canonical, by the restriction loop; kept, so the modal pencil's K (+ K_sigma) of this pattern takes it (R3)
+            reduced = free_restriction(self.operator, self.free)
             if self.runtime.back_end in CUDSS_BACK_ENDS + HOST_DIRECT_BACK_ENDS:
                 # K_ff is symmetric by construction: planned from the host CSR, only its equilibrated lower triangle
                 # goes to the device (no device CSR, index maps or symmetry check: ~60 B per entry of pool); a later

@@ -1028,12 +1028,14 @@ _ORDERING_AXIS = 160   # cells per axis of the ordering-reuse operator (25,600 u
 
 def _ordering_reuse_checks(failed, errors, details):
     """cuDSS ordering reuse (cudss_factor "Ordering reuse"): inside cudss_orderings_kept a second factor object of the
-    same pattern plans on the first one's permutation + partition tree (same lu_nnz, solution right, counted); the store
-    is off outside the block, where a fresh factor plans from scratch; a real Cholesky's ordering serves a complex
-    LDL^T of the same pattern (same fill as fresh), an LU between them plans fresh (its own family)."""
+    same pattern plans on the first one's permutation + partition tree (same lu_nnz, solution right, counted), and once
+    both are released a third object adopts the parked plan (K5: same lu_nnz, solution right, external_live_bytes
+    unchanged); the store is off outside the block, where a fresh factor plans from scratch; a real Cholesky's
+    ordering serves a complex LDL^T of the same pattern (same fill as fresh), an LU between them plans fresh (its own
+    family)."""
     import scipy.sparse
     import scipy.sparse.linalg
-    from .cudss_factor import cudss_orderings_kept, remembers_cudss_orderings
+    from .cudss_factor import KEPT_PLANS, cudss_orderings_kept, external_live_bytes, remembers_cudss_orderings
     from .sparse_direct import SparseDirectSolver
     n_unknowns = _ORDERING_AXIS * _ORDERING_AXIS
     operator = (_laplacian(_ORDERING_AXIS, _ORDERING_AXIS) * (1.0 + 1j * _PENCIL_LOSS)
@@ -1066,6 +1068,16 @@ def _ordering_reuse_checks(failed, errors, details):
             failed.append('ordering_reuse_counted')
         first.release()
         second.release()
+        if KEPT_PLANS > 0:   # K5: the released plan is parked and a new factor object of the pattern adopts it
+            parked_bytes = external_live_bytes()
+            adopted = runtime.factorize_host(1.5 * operator, symmetric=True)
+            errors['parked_plan_adopted'] = norm_relative_error(adopted.solve_host(rhs), reference / 1.5)
+            details['parked_plan'] = {'adopted': adopted.last_plan_adopted, 'lu_entries': adopted.lu_entries,
+                                      'external_live_bytes': (parked_bytes, external_live_bytes())}
+            if (not adopted.last_plan_adopted or adopted.lu_entries != first.lu_entries
+                    or external_live_bytes() != parked_bytes):
+                failed.append('parked_plan_adopted')
+            adopted.release()
     if remembers_cudss_orderings():
         failed.append('ordering_store_on_after_block')
     fresh = SparseDirectSolver(back_end='cudss', backend='gpu').factorize_host(operator, symmetric=True)
@@ -1121,8 +1133,8 @@ _PRECISION_CASES = (
      ('pcg', 'single', False)),
     ('solid_node_takes_automatic_mixed', 'solid_mechanics', 'linear', 'stationary', 'auto',
      ('pcg', {'tolerance': 1e-10}), 'gpu', ('pcg', 'mixed', False)),
-    ('solid_auto_cpu_double', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu',
-     ('pcg', 'double', False)),
+    ('solid_auto_cpu_direct', 'solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu',
+     ('sparse_direct', 'double', False)),
     ('solid_default_double_wins', 'solid_mechanics', 'linear', 'eigenfrequency', 'double', None, 'gpu',
      ('pcg', 'double', False)),
     ('solid_3d_mixed', 'solid_mechanics_3d', 'linear', 'stationary', 'mixed', None, 'gpu', ('pcg', 'mixed', False)),
@@ -1195,7 +1207,7 @@ def _check_default_precision(results_by_name):
 
 def _check_study_default_fit(results_by_name):
     """D1 4b fit guard (CPU): a tight budget moves the 2D gpu heat transient off its kept cuDSS factor, a roomy one
-    keeps it, a node is never a candidate."""
+    keeps it, a node is never a candidate; the host branch on the cpu 2D solid (_host_fit_checks)."""
     from ..model.meshing import estimate_memory, estimate_meshes, fitted_memory_estimate
     from ..model.schema import get_registry, resolved_solvers, study_default_roles
     from ..model.validate import validate
@@ -1212,7 +1224,7 @@ def _check_study_default_fit(results_by_name):
     _, roomy_roles = fitted_memory_estimate(spec, {}, registry, meshes, 2 * factor_estimate.device_peak)
     resolved = resolved_solvers(spec, registry, spec.physics[0], 'time_dependent', {}, tight_roles)['linear']
     infos = [issue.message for issue in validate(spec, registry, mesh_estimate=meshes, memory_budget=tight_budget)
-             if issue.level == 'info' and issue.path == ('physics', 'p') and 'GPU budget' in issue.message]
+             if issue.level == 'info' and issue.path == ('physics', 'p') and 'kept direct factor' in issue.message]
     node_spec = _precision_spec('heat', 'linear', 'time_dependent', 'auto', ('sparse_direct', {}), 'gpu')
     checks = {
         'candidates': study_default_roles(spec, registry, {}) == expected_roles,
@@ -1237,12 +1249,63 @@ def _check_study_default_fit(results_by_name):
         'solid_tight_switches': solid_tight == expected_roles,
         'solid_tight_resolves_pcg': solid_resolved.solver_type.name == ('pcg' if switched else 'sparse_direct'),
     })
+    host_details = _host_fit_checks(registry, checks)
     failed = [name for name, passed in checks.items() if not passed]
     return {'measured': len(failed), 'expected': 0, 'error': float(len(failed)), 'tolerance': 0.0,
             'details': {'failed': failed, 'cudss_available': switched,
                         'factor_device_peak': int(factor_estimate.device_peak),
                         'plain_device_peak': int(plain_estimate.device_peak),
-                        'resolved_type': resolved.solver_type.name, 'infos': infos}}
+                        'resolved_type': resolved.solver_type.name, 'infos': infos, **host_details}}
+
+
+_HOST_FIT_CELLS = 1000   # cells per axis of the size-limit model: 2 x 1001^2 solid unknowns > SPLU_LIMIT_UNKNOWNS,
+                         # while its 1e6 window cells pass the 1-unknown-per-cell rule
+
+
+def _host_fit_checks(registry, checks):
+    """Host branch of the fit guard (M1, cpu backend): the 2D solid's stationary SuperLU default resolves pcg when its
+    host estimate exceeds host_budget (not with twice it) or its 2 unknowns per node exceed SPLU_LIMIT_UNKNOWNS (A1;
+    a sparse_direct node keeps the factor and gets the size error); a cpu heat transient is no candidate (sparse_direct
+    either way). Adds to checks, returns details."""
+    from ..model.meshing import backend_memory, estimate_memory, estimate_meshes, fitted_memory_estimate
+    from ..model.schema import resolved_solvers, study_default_roles
+    from ..model.spec import MeshSpec
+    from ..model.validate import validate
+    roles = frozenset({('p', 'linear')})
+    spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu')
+    meshes = estimate_meshes(spec, {}, registry)
+    factor_host = backend_memory(spec, estimate_memory(spec, {}, registry, meshes)).host
+    plain_host = backend_memory(spec, estimate_memory(spec, {}, registry, meshes, plain_roles=roles)).host
+    _, tight = fitted_memory_estimate(spec, {}, registry, meshes, None, host_budget=factor_host - 1)
+    _, roomy = fitted_memory_estimate(spec, {}, registry, meshes, None, host_budget=2 * factor_host)
+    resolved = resolved_solvers(spec, registry, spec.physics[0], 'stationary', {}, tight)['linear']
+    untight = resolved_solvers(spec, registry, spec.physics[0], 'stationary', {})['linear']
+    infos = [issue.message for issue in validate(spec, registry, mesh_estimate=meshes, host_budget=factor_host - 1)
+             if issue.level == 'info' and issue.path == ('physics', 'p') and 'kept direct factor' in issue.message]
+    large_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu')
+    large_spec.domain.meshes = [MeshSpec(mode='uniform', dx=float(large_spec.domain.size_x) / _HOST_FIT_CELLS)]
+    large_meshes = estimate_meshes(large_spec, {}, registry)
+    _, oversize = fitted_memory_estimate(large_spec, {}, registry, large_meshes, None, host_budget=1 << 62)
+    node_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', ('sparse_direct', {}), 'cpu')
+    node_spec.domain.meshes = large_spec.domain.meshes
+    size_errors = [issue.message for issue in validate(node_spec, registry, host_budget=1 << 62)
+                   if issue.level == 'error' and issue.path == ('physics', 'p') and 'per node' in issue.message]
+    heat_spec = _precision_spec('heat', 'linear', 'time_dependent', 'auto', None, 'cpu')
+    checks.update({
+        'host_default_direct': untight.solver_type.name == 'sparse_direct',
+        'host_candidates': study_default_roles(spec, registry, {}, host=True) == roles,
+        'host_no_cudss_candidate': study_default_roles(spec, registry, {}) == frozenset(),
+        'host_factor_dominates': plain_host < factor_host,
+        'host_tight_switches': tight == roles,
+        'host_roomy_keeps_factor': roomy == frozenset(),
+        'host_tight_resolves_pcg': resolved.solver_type.name == 'pcg',
+        'host_validate_info_line': len(infos) == 1,
+        'host_size_limit_switches': oversize == roles,
+        'host_node_size_error_2_per_node': len(size_errors) == 1,
+        'host_heat_transient_no_candidate': study_default_roles(heat_spec, registry, {}, host=True) == frozenset(),
+    })
+    return {'host_factor_bytes': int(factor_host), 'host_plain_bytes': int(plain_host), 'host_infos': infos,
+            'host_size_errors': size_errors}
 
 
 # --- Automatic multigrid of the diffusion types (mesh plan M0 / D16) ------------------------------------------------
@@ -1552,17 +1615,21 @@ def _quiet_openblas_checks(failed, details):
 
 def _host_direct_spd_checks(back_end, spd, changed, rhs, failed, errors, details):
     """DiffusionDirectSolver (cpu) on a host direct back end: real SPD factor (PARDISO double: Cholesky, else LDL^T),
-    a value-only change on the kept analysis (one analysis), inertia (n, 0), solves against spsolve, release."""
+    value-only changes on the kept analysis (one analysis; two after a one-thread PARDISO solve: the thread rule),
+    inertia (n, 0), solves against spsolve, release."""
     import scipy.sparse.linalg
     from .sparse_direct import DiffusionDirectSolver, SparseDirectSolver
     runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
     direct = DiffusionDirectSolver(runtime)
-    for name, matrix in (('spd', spd), ('values', changed)):
+    serial_first = False
+    for name, matrix in (('spd', spd), ('values', changed), ('values_again', spd)):
         direct.factorize(matrix)
         solution = np.zeros(matrix.shape[0])
         direct.solve(rhs, solution)
         errors[f'{back_end}_{name}'] = norm_relative_error(solution,
                                                            scipy.sparse.linalg.spsolve(matrix.tocsc(), rhs))
+        if name == 'spd':
+            serial_first = bool(getattr(direct._factor._library, 'solved_serially', False))
     factor = direct._factor
     mixed = back_end.endswith('_mixed')
     expected_kind = 'spd' if back_end == 'pardiso' else 'symmetric'
@@ -1571,53 +1638,117 @@ def _host_direct_spd_checks(back_end, spd, changed, rhs, failed, errors, details
     if not factor.last_plan_reused:
         failed.append(f'{back_end}_values_on_kept_analysis')
     counters = runtime.work_counters()
-    if counters.get('host_direct_analyses') != 1 or counters.get('host_direct_reused_analyses') != 1:
+    analyses = 1 + int(serial_first)   # a one-thread first solve: the first value change analyses anew (keep_threads)
+    if (counters.get('host_direct_analyses') != analyses
+            or counters.get('host_direct_reused_analyses') != 3 - analyses):
         failed.append(f'{back_end}_one_analysis')
     inertia = factor.inertia()
     if inertia is not None and tuple(inertia) != (spd.shape[0], 0):
         failed.append(f'{back_end}_spd_inertia')
     details[f'{back_end}_spd'] = {'description': factor.description, 'inertia': inertia, 'counters': counters,
-                                  'probe_residual': factor.probe_residual, 'single_residual': factor.single_residual}
+                                  'serial_first_solve': serial_first, 'probe_residual': factor.probe_residual,
+                                  'single_residual': factor.single_residual}
     direct.release_factor()
     if factor.valid:
         failed.append(f'{back_end}_released')
 
 
-def _host_direct_kept_checks(back_end, spd, changed, rhs, failed, errors, details):
-    """host_analyses_kept: a factor released inside the block is parked and a new factor object of that pattern adopts
-    it (no analysis, a reused one; solve against spsolve); another pattern misses (one analysis, the parked ones
-    released first); the block's end releases what is parked; outside it release() parks nothing."""
+_KEPT_SWEEP_VALUES = 3   # value sets per pattern in the kept-analysis sweeps
+
+
+def _kept_sweep_variants(matrix):
+    """_KEPT_SWEEP_VALUES operators on matrix's pattern (diagonal shifts; the diagonal is stored), symmetry kept."""
+    import scipy.sparse
+    n_unknowns = matrix.shape[0]
+    shifts = np.linspace(1.0, 2.0, n_unknowns)
+    return [(matrix + scipy.sparse.diags((0.1 + 0.05j) * step * shifts)).tocsr() for step in range(_KEPT_SWEEP_VALUES)]
+
+
+def _kept_value_sweep(back_end, label, variants, symmetric, rhs, errors):
+    """One sweep inside host_analyses_kept: a new factor object per value set, solved against spsolve and released
+    (the em fdfd / modes wavelength pattern); per step (analyses, adopted, parkable at release, parked after)."""
+    import scipy.sparse.linalg
+    from . import host_direct
+    from .host_direct import host_direct_factorization
+    steps = []
+    for index, matrix in enumerate(variants):
+        factor = host_direct_factorization(matrix, back_end, symmetric=symmetric)
+        solution = factor.solve_host(rhs)
+        errors[f'{back_end}_{label}_{index}'] = norm_relative_error(
+            solution, scipy.sparse.linalg.spsolve(matrix.tocsc(), rhs))
+        parkable = bool(factor._library.refactorable)
+        steps.append((factor.n_analyses, factor.last_analysis_kept, parkable))
+        factor.release()
+        steps[-1] += (len(host_direct._kept_analyses),)
+    return steps
+
+
+def _kept_sweep_consistent(steps) -> bool:
+    """Each step adopts exactly when the step before parked (a parkable factor: 0 analyses, adopted), else analyses."""
+    parked = False
+    for analyses, adopted, parkable, n_parked in steps:
+        if (analyses, adopted) != ((0, True) if parked else (1, False)) or n_parked != int(parkable):
+            return False
+        parked = parkable
+    return True
+
+
+def _host_direct_kept_checks(back_end, general, symmetric, rhs, failed, errors, details):
+    """host_analyses_kept on value sweeps of one pattern (complex LU and LDL^T, a new factor object per value: the em
+    wavelength pattern) at the module's PARDISO thread rule and with every solve on all threads (adoption forced):
+    solves against spsolve, adoption exactly after a parkable factor; in-place refactorize sweeps; a mesh-sweep miss
+    releases the parked ones; the block's end releases the rest; outside it release() parks nothing."""
     import scipy.sparse.linalg
     from . import host_direct
     from .host_direct import host_analyses_kept, host_direct_factorization, kept_analysis_bytes
     if host_direct._kept_analyses is not None:
         failed.append(f'{back_end}_kept_block_open_before_check')
         return
-    smaller = spd[:-1, :-1].tocsr()   # another pattern
+    sweeps = (('lu', general, False), ('ldlt', symmetric, True))
     record = {}
-    with host_analyses_kept():
-        first = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
-        first.release()
-        record['parked'] = (len(host_direct._kept_analyses), kept_analysis_bytes())
-        second = host_direct_factorization(changed, back_end, real=True, positive_definite=True)
-        solution = second.solve_host(rhs)
-        errors[f'{back_end}_kept'] = norm_relative_error(solution, scipy.sparse.linalg.spsolve(changed.tocsc(), rhs))
-        record['adopted'] = (second.n_analyses, second.last_analysis_kept, second.last_plan_reused,
-                             len(host_direct._kept_analyses))
-        second.release()
-        other = host_direct_factorization(smaller, back_end, real=True, positive_definite=True)
-        record['missed'] = (other.n_analyses, other.last_analysis_kept, len(host_direct._kept_analyses))
-        other.release()
+    serial_threshold = host_direct._PARDISO_SERIAL_SOLVE_LU_ENTRIES
+    for rule, threshold in (('rule', serial_threshold), ('all_threads', 0)):
+        host_direct._PARDISO_SERIAL_SOLVE_LU_ENTRIES = threshold
+        try:
+            with host_analyses_kept():
+                for label, matrix, symmetric_request in sweeps:
+                    steps = _kept_value_sweep(back_end, f'kept_{rule}_{label}', _kept_sweep_variants(matrix),
+                                              symmetric_request, rhs, errors)
+                    record[f'{rule}_{label}'] = steps
+                    if not _kept_sweep_consistent(steps):
+                        failed.append(f'{back_end}_kept_{rule}_{label}_sweep')
+                    if rule == 'all_threads' and not any(adopted for _, adopted, _, _ in steps):
+                        failed.append(f'{back_end}_kept_{rule}_{label}_adopts')
+                # mesh sweep: another pattern misses (one analysis, every parked factor released first)
+                parked_before = len(host_direct._kept_analyses)
+                record[f'{rule}_parked_bytes'] = kept_analysis_bytes()
+                smaller = symmetric[:-1, :-1].tocsr()
+                other = host_direct_factorization(smaller, back_end, symmetric=True)
+                missed = (other.n_analyses, other.last_analysis_kept, len(host_direct._kept_analyses))
+                errors[f'{back_end}_kept_{rule}_mesh'] = norm_relative_error(
+                    other.solve_host(rhs[:-1]), scipy.sparse.linalg.spsolve(smaller.tocsc(), rhs[:-1]))
+                other.release()
+                record[f'{rule}_missed'] = (parked_before,) + missed
+                if missed != (1, False, 0):
+                    failed.append(f'{back_end}_kept_{rule}_miss_releases')
+        finally:
+            host_direct._PARDISO_SERIAL_SOLVE_LU_ENTRIES = serial_threshold
+    # in place: one object refactorised over the sweep (Newton / pencil pattern; the thread rule re-analyses once)
+    for label, matrix, symmetric_request in sweeps:
+        variants = _kept_sweep_variants(matrix)
+        factor = None
+        for index, variant in enumerate(variants):
+            factor = host_direct_factorization(variant, back_end, previous=factor, symmetric=symmetric_request)
+            errors[f'{back_end}_in_place_{label}_{index}'] = norm_relative_error(
+                factor.solve_host(rhs), scipy.sparse.linalg.spsolve(variant.tocsc(), rhs))
+        record[f'in_place_{label}'] = (factor.n_analyses, factor.n_factorizations, factor.last_plan_reused)
+        if not factor.last_plan_reused or factor.n_analyses > 2:
+            failed.append(f'{back_end}_in_place_{label}_reuse')
+        factor.release()
     record['after_block'] = host_direct._kept_analyses is None
-    outside = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+    outside = host_direct_factorization(symmetric, back_end, symmetric=True)
     outside.release()
     record['outside'] = (host_direct._kept_analyses is None, outside.valid)
-    if record['parked'][0] != 1 or record['parked'][1] <= 0:
-        failed.append(f'{back_end}_kept_parks')
-    if record['adopted'] != (0, True, True, 0):
-        failed.append(f'{back_end}_kept_adopts')
-    if record['missed'] != (1, False, 0):
-        failed.append(f'{back_end}_kept_miss_releases')
     if not record['after_block'] or record['outside'] != (True, False):
         failed.append(f'{back_end}_kept_scoped')
     details[f'{back_end}_kept'] = record
@@ -1830,7 +1961,7 @@ def _check_host_direct(results_by_name):
         if library_of(back_end) not in libraries:
             continue
         _host_direct_spd_checks(back_end, spd, changed, real_rhs, failed, errors, details)
-        _host_direct_kept_checks(back_end, spd, changed, real_rhs, failed, errors, details)
+        _host_direct_kept_checks(back_end, general, symmetric, complex_rhs, failed, errors, details)
         _host_direct_general_checks(back_end, operators, complex_rhs, failed, errors, details)
         _host_direct_pencil_checks(back_end, spd, complex_rhs, failed, errors, details)
         _host_direct_inertia_checks(back_end, failed, details)
@@ -1880,6 +2011,47 @@ def _check_host_scale_numba(_):
         out = np.zeros(values.size * (2 if np.dtype(dtype).kind == 'c' else 1))
         comparisons[label] = (*twins(symmetrizer, dtype), (values, out))
     timings['real'] = (*twins(None, np.float64), (real_values, np.zeros(real_values.size)), *_SCALE_CALLS)
+    result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
+    result['details']['stored_entries'] = int(indices.size)
+    return result
+
+
+def _check_cudss_equilibrate_numba(_):
+    """numba vs numpy cudss_factor.equilibrate_values (K4): real with row and column sums, real symmetric sums only,
+    complex values with a complex symmetrizer."""
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
+    from .cudss_factor import csr_rows, equilibrate_values
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': _SCALE_TOLERANCE,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    import numba
+    rng = np.random.default_rng(_SEED + 7)
+    indptr = (np.arange(_SCALE_ROWS + 1) * _SCALE_PER_ROW).astype(np.int32)
+    indices = np.sort(rng.integers(0, _SCALE_ROWS, (_SCALE_ROWS, _SCALE_PER_ROW)), axis=1).astype(np.int32).ravel()
+    rows = csr_rows(indptr, np.int32)
+    row_scale = rng.random(_SCALE_ROWS) + 0.5
+    real_values = rng.standard_normal(indices.size)
+    complex_values = real_values + 1j * rng.standard_normal(indices.size)
+
+    def twins(values, symmetrizer, column_sums):   # scaled values (complex as float64 pairs) + the two sums compared
+        def run(numba_flag):
+            def call(out):
+                data = values.copy()
+                row_sum, column_sum = equilibrate_values(data, indptr, indices, rows, row_scale, symmetrizer,
+                                                         column_sums=column_sums, numba=numba_flag)
+                out[:-2] = data.view(np.float64)
+                out[-2:] = (row_sum, column_sum or 0.0)
+            return call
+        return run(False), run(True)
+    variants = {'real, column sums': (real_values, None, True),
+                'real, row sums only': (real_values, None, False),
+                'complex symmetrizer': (complex_values, rng.standard_normal(_SCALE_ROWS)
+                                        + 1j * rng.standard_normal(_SCALE_ROWS), True)}
+    comparisons = {label: (*twins(*variant), (np.zeros(variant[0].view(np.float64).size + 2),))
+                   for label, variant in variants.items()}
+    timings = {'real, column sums': (*twins(*variants['real, column sums']),
+                                     (np.zeros(real_values.size + 2),), *_SCALE_CALLS)}
     result = numba_twin_result(comparisons, timings, _SCALE_TOLERANCE, numba)
     result['details']['stored_entries'] = int(indices.size)
     return result
@@ -2033,7 +2205,7 @@ SOLVER_SELFTEST_CASES = (
                     'GMRES on the factor of a 1e-3-perturbed operator, each against scipy spsolve (relative error <= '
                     f'{_PARITY_TOLERANCE:g}; the recycled solve stops at a 1e-10 residual); the CPU backend refuses '
                     'cusolver_qr.',
-        specs=lambda: {}, check=_check_sparse_direct, max_wall_time=120.0, backends=('cpu', 'gpu'), heavy=True),
+        specs=lambda: {}, check=_check_sparse_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(
         name='solver_line_block_cpu_gpu',
         label='Line-block solver: processor and graphics card agree',
@@ -2151,7 +2323,7 @@ SOLVER_SELFTEST_CASES = (
                     'sparse_direct (double only); solid_mechanics and solid_mechanics_3d linear single and mixed (their '
                     'roles accept mixed), their Automatic (gpu: mixed, cpu: double; '
                     'solver_defaults.precision double wins over the gpu Automatic mixed; solid_mechanics stationary on '
-                    'the gpu: the sparse_direct study default, single / mixed ignored, rows in an eigenfrequency study '
+                    'either backend: the sparse_direct study default, single / mixed ignored, rows in an eigenfrequency study '
                     'keep pcg, a pcg node without a precision still takes mixed); '
                     'em_fdtd_ez stepper double and half_storage (its role refuses half_storage)): resolved solver type, '
                     'precision and whether the default is reported ignored; node settings are never written; '
@@ -2176,8 +2348,13 @@ SOLVER_SELFTEST_CASES = (
                     'role without the study (pcg multigrid) in fitted_memory_estimate, resolved_solvers and validate '
                     '(one info line at the physics); a budget of twice the estimate keeps the factor; a sparse_direct '
                     'node is never a candidate. The same for a 2D solid_mechanics stationary model (its gpu default: '
-                    'the cuDSS factor of A_solve; tight budget: pcg). Without nvmath-python no role is a candidate. '
-                    'error = number of failed checks, tolerance 0.',
+                    'the cuDSS factor of A_solve; tight budget: pcg). Without nvmath-python no role is a cuDSS '
+                    'candidate. Host branch (cpu backend): the 2D solid stationary Automatic is the host SuperLU '
+                    'study default, a host candidate (no cuDSS one); a host budget 1 byte below its host estimate '
+                    'resolves pcg (one validate info line), twice it keeps the factor; on a 1000 x 1000-cell window '
+                    '(2 unknowns per node > SPLU_LIMIT_UNKNOWNS, 1e6 cells below it) it resolves pcg at any budget, '
+                    'and a sparse_direct node gets the size error counted per node; a cpu heat transient (sparse_direct '
+                    'either way) is no candidate. error = number of failed checks, tolerance 0.',
         specs=lambda: {}, check=_check_study_default_fit, max_wall_time=60.0),
     SelfTestCase(
         name='eigen_inertia_count',
@@ -2209,11 +2386,14 @@ SOLVER_SELFTEST_CASES = (
         description='sparse_direct back ends mumps / mumps_mixed / pardiso / pardiso_mixed (python-mumps, pydiso; each '
                     'installed library, both precisions) against scipy spsolve (relative error <= '
                     f'{_PARITY_TOLERANCE:g}) on 30 x 20 grid operators: DiffusionDirectSolver on the 5-point Laplacian '
-                    '+ a random diagonal (real SPD: PARDISO double Cholesky, MUMPS and mixed LDL^T), then a value-only '
-                    'change on the kept analysis (one analysis), inertia (n, 0), release; inside host_analyses_kept '
-                    'a released factor is parked and a new factor object of its pattern adopts the analysis (none '
-                    'of its own, solve against spsolve), another pattern misses (the parked ones released), nothing '
-                    'stays parked after the block or outside it; the complex non-symmetric '
+                    '+ a random diagonal (real SPD: PARDISO double Cholesky, MUMPS and mixed LDL^T), then value-only '
+                    'changes on the kept analysis (one analysis; two after a one-thread PARDISO solve), inertia '
+                    '(n, 0), release; inside host_analyses_kept complex LU and LDL^T value sweeps of one pattern, a '
+                    'new factor object per value (the em wavelength pattern), at the PARDISO thread rule and with '
+                    'every solve on all threads: each solve against spsolve, adoption exactly after a parkable factor '
+                    '(none after a one-thread solve), in-place refactorize sweeps reusing the analysis, a mesh-sweep '
+                    'miss releasing the parked ones, nothing parked after the block or outside it; the complex '
+                    'non-symmetric '
                     'operator of solver_sparse_direct_cpu_gpu by factorize on the cpu (LU, solve, transposed solve, '
                     'GMRES on the factor of a 1e-3-perturbed operator); D^-1 S with S complex symmetric and the '
                     'symmetrizer D (LDL^T of D A, solve and transposed solve); a real non-symmetric operator by '
@@ -2254,6 +2434,17 @@ SOLVER_SELFTEST_CASES = (
                     f'the peak, tolerance {_SCALE_TOLERANCE:g}. Details: ms per call of both. Without numba nothing '
                     'is compared. Not yet run.',
         specs=lambda: {}, check=_check_host_scale_numba, max_wall_time=120.0, backends=('cpu',)),
+    SelfTestCase(
+        name='solver_cudss_equilibrate_numba',
+        label='cuDSS host equilibration: numba row loop vs numpy (CPU)',
+        description='cudss_factor.equilibrate_values (E = R D A R in place and the row / column sums of |E|, the first '
+                    'host plan of every cuDSS factor) with numba=True against numba=False on a random CSR of '
+                    f'{_SCALE_ROWS} rows and {_SCALE_PER_ROW} entries per row: real with column sums, real with row '
+                    'sums only (the symmetric norm), complex values with a complex symmetrizer; measured = error = '
+                    'the worst max |numba - numpy| relative to the peak (scaled values and both sums), tolerance '
+                    f'{_SCALE_TOLERANCE:g}. Details: ms per call of both. Without numba nothing is compared. Not yet '
+                    'run.',
+        specs=lambda: {}, check=_check_cudss_equilibrate_numba, max_wall_time=120.0, backends=('cpu',)),
     SelfTestCase(
         name='solver_pattern_merge_numba',
         label='Shift pencil pattern merge and mass product: numba row loops vs numpy (CPU)',

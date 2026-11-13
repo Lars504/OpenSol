@@ -308,8 +308,9 @@ class BuildContext:
                                                      every=runner.strides[solver.name]))
 
     def follow_parameters(self, raw_params, values, names, setter, solver, label) -> bool:
-        """Feature values `names` (Param.follows_parameters) on a reused sweep build: when the raw spec value of one
-        (raw_params: the feature spec's params; a missing name = its default) names a live sweep parameter and solver
+        """Feature values / physics settings `names` (Param.follows_parameters) on a reused sweep build: when the raw
+        spec value of one (raw_params: the feature spec's params or physics spec's settings; a missing name = its
+        default) names a live sweep parameter and solver
         is a RerunSolver, registers a sweep_reuse.ParameterFollower whose setter(*values of names) Session.set_sweep_value
         calls when one changed (the others pass their resolved `values` object unchanged; incremental: the apply set
         the build values itself, keeping host data only, never build caches). True when registered."""
@@ -533,8 +534,13 @@ def _build(spec, registry, log, live_parameters):
         budget = max(budget - gpu_memory.pool_used_bytes(), 0)
     host_budget = host_memory.available_bytes()
     # refuse a model that does not fit; the available RAM already excludes what live sessions hold on the host.
-    # One mesh / memory estimate serves validate and the ledger check (None: validate estimates and reports).
-    mesh_estimate, memory_estimate, cached_shapes = _cached_estimates(spec, registry)
+    # One parameter evaluation and one mesh / memory estimate serve validate, the ledger check and the time / build
+    # estimates (None: validate estimates and reports; parameters None: reported at their node below).
+    try:
+        parameters = evaluate_parameters(spec.parameters)
+    except Exception:
+        parameters = None
+    mesh_estimate, memory_estimate, cached_shapes, memory_by_physics = _cached_estimates(spec, registry, parameters)
     meshing_seconds = 0.0
     if (memory_estimate is not None and mesh_estimate
             and all(estimate is not None for estimate in mesh_estimate.values())
@@ -545,21 +551,26 @@ def _build(spec, registry, log, live_parameters):
         # no second mesher run) and the memory judgement and ledger check are on their counts
         _raise_errors(validate(spec, registry, mesh_estimate=mesh_estimate, memory_estimate=memory_estimate))
         meshing_start = time.perf_counter()
-        mesh_estimate, memory_estimate = _built_estimates(spec, registry, mesh_estimate, cached_shapes, log)
+        mesh_estimate, memory_estimate, memory_by_physics = _built_estimates(spec, registry, mesh_estimate,
+                                                                             cached_shapes, log, parameters)
         meshing_seconds = time.perf_counter() - meshing_start
-    # D1 4b: a study default (kept cuDSS factor) over the budget resolves as the other studies' Automatic
+    unfitted_estimate = memory_estimate   # the build-time estimate prices the study's own solvers
+    # D1 4b: a study default (kept direct factor) over the GPU / host budget resolves as the other studies' Automatic
     memory_estimate, plain_roles = _fitted_estimate(spec, registry, mesh_estimate, memory_estimate, budget,
-                                                    cached_shapes)
+                                                    cached_shapes, parameters, host_budget)
     issues = validate(spec, registry, mesh_estimate=mesh_estimate, memory_budget=budget,
                       memory_estimate=memory_estimate, host_budget=host_budget, plain_roles=plain_roles)
     plain_roles = plain_roles or frozenset()
+    if plain_roles:   # the time recipes read the fitted solvers' parts
+        memory_by_physics = None
     _raise_errors(issues)
     for issue in issues:
         log(issue.level, f'{node_label(issue.path)}: {issue.message}')
     validated = time.perf_counter()
 
-    with _issue_at(('parameters',)):
-        parameters = evaluate_parameters(spec.parameters)
+    if parameters is None:
+        with _issue_at(('parameters',)):
+            parameters = evaluate_parameters(spec.parameters)
     geometry_errors = {}
     shapes = (cached_shapes if cached_shapes is not None   # the same parameters, resolved without errors
               else resolve_geometry(spec, parameters, errors=geometry_errors))
@@ -584,12 +595,14 @@ def _build(spec, registry, log, live_parameters):
         ledger.stop()
     session.build_memory = _memory_record(ledger, estimate, compare=True)
     log('info', gpu_memory.ledger_time_text(session.build_memory))
-    _log_build_estimate(spec, parameters, registry, mesh_estimate, session.build_memory, kept_mesh_keys, log, shapes)
+    _log_build_estimate(spec, parameters, registry, mesh_estimate, session.build_memory, kept_mesh_keys, log, shapes,
+                        unfitted_estimate)
     check_message = _estimate_check_message(session.build_memory)
     if check_message:
         log('warning', check_message)
         session.warnings.append(check_message)
-    session.time_estimate = _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes, plain_roles)
+    session.time_estimate = _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes, plain_roles,
+                                           memory_by_physics)
     return session
 
 
@@ -615,26 +628,29 @@ def _warm_cudss(spec, registry):
         warm_cudss_library()
 
 
-def _fitted_estimate(spec, registry, mesh_estimate, memory_estimate, budget, shapes):
-    """(memory estimate, plain_roles) of meshing.fitted_memory_estimate against the build budget; (memory_estimate,
-    None) when it cannot be judged here (validate then fits and reports)."""
+def _fitted_estimate(spec, registry, mesh_estimate, memory_estimate, budget, shapes, parameters, host_budget):
+    """(memory estimate, plain_roles) of meshing.fitted_memory_estimate against the build's GPU and host budgets;
+    (memory_estimate, None) when it cannot be judged here (validate then fits and reports)."""
     from . import meshing
-    if memory_estimate is None or not mesh_estimate or any(mesh is None for mesh in mesh_estimate.values()):
+    if (memory_estimate is None or parameters is None or not mesh_estimate
+            or any(mesh is None for mesh in mesh_estimate.values())):
         return memory_estimate, None
     try:
-        return meshing.fitted_memory_estimate(spec, evaluate_parameters(spec.parameters), registry, mesh_estimate,
-                                              budget, estimate=memory_estimate, shapes=shapes)
+        return meshing.fitted_memory_estimate(spec, parameters, registry, mesh_estimate, budget,
+                                              estimate=memory_estimate, shapes=shapes, host_budget=host_budget)
     except Exception:
         return memory_estimate, None
 
 
-def _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes=None, plain_roles=frozenset()):
+def _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes=None, plain_roles=frozenset(),
+                   memory_parts=None):
     """model.time_estimate of one study run (CPU, priced on the stored machine profile), logged; None without a
-    profile; a failing estimate is logged as a warning (a recipe bug), never stops the build."""
+    profile; a failing estimate is logged as a warning (a recipe bug), never stops the build. memory_parts: the
+    build's by_physics memory estimate on these meshes and solvers (None: estimated again)."""
     from .time_estimate import estimate_time
     try:
         estimate, message = estimate_time(spec, parameters, registry, mesh_estimate, per_run=True, shapes=shapes,
-                                          plain_roles=plain_roles)
+                                          plain_roles=plain_roles, memory_parts=memory_parts)
     except Exception as exc:
         log('warning', f'run-time estimate failed (no time check for this run): {_exception_message(exc)}')
         return None
@@ -642,13 +658,15 @@ def _time_estimate(spec, parameters, registry, mesh_estimate, log, shapes=None, 
     return estimate
 
 
-def _log_build_estimate(spec, parameters, registry, mesh_estimate, build_memory, kept_mesh_keys, log, shapes=None):
+def _log_build_estimate(spec, parameters, registry, mesh_estimate, build_memory, kept_mesh_keys, log, shapes=None,
+                        memory=None):
     """Log the build-time estimate of this run (time_estimate.estimate_overheads per_run, the mesher left out for a
-    kept mesh) against the ledger's stage seconds; nothing without a machine profile, a failure as a warning."""
+    kept mesh; memory: the build's memory estimate on these meshes, None = estimated again) against the ledger's stage
+    seconds; nothing without a machine profile, a failure as a warning."""
     from .time_estimate import build_time_text, estimate_overheads
     try:
         build_part = estimate_overheads(spec, parameters, registry, mesh_estimate, per_run=True,
-                                        kept_mesh_keys=kept_mesh_keys, shapes=shapes).get('build')
+                                        kept_mesh_keys=kept_mesh_keys, shapes=shapes, memory=memory).get('build')
         if build_part is None:
             return
         names = [mesh_spec.name for mesh_spec in spec.used_meshes()]
@@ -838,7 +856,32 @@ def _apply_static_materials(ctx, present_types):
                                                                        bounds_param=param))
                 for array in owned_arrays:
                     materials.assign(array, region.mask, value)
+                _follow_material(ctx, region, name, owned_arrays, raw_value)
     return deferred
+
+
+def _follow_material(ctx, region, name, owned_arrays, raw_value):
+    """Reused sweep build (sweep_reuse._material_follows): a uniform material value of a live parameter repaints its
+    owned arrays under the region mask (regions never overlap) and calls materials_changed of every solver on this
+    mesh; it keeps its own reference to the bool mask (as a dynamic material update; release_caches drops the
+    region's)."""
+    live = ctx._shared.live_parameters
+    names = value_names(raw_value)
+    if not live or names.isdisjoint(live) or not names.isdisjoint(FIELD_COORDINATE_NAMES):
+        return
+    materials, domain, shared, mask = ctx.domain.materials, ctx.domain, ctx._shared, region.mask
+    changed = frozenset(owned_arrays)
+
+    def repaint(value):
+        for array in owned_arrays:
+            materials.assign(array, mask, value)
+        sim = shared.sim
+        for physics_name, solver in sim.runner.physics.items():
+            if sim.domain_of(physics_name) is domain:
+                solver.materials_changed(changed)
+
+    shared.parameter_followers.append(ParameterFollower(f"material '{region.name}' {name}", [raw_value], [None],
+                                                        repaint, ctx.parameters))
 
 
 def _is_dynamic(expression, state_names):
@@ -1137,23 +1180,28 @@ def _named_evaluation(label, evaluate):
 
 
 # ---- GPU memory: estimate and ledger ----
-def _cached_estimates(spec, registry):
-    """({used mesh name: estimate}, MemoryEstimate, resolved geometry) of the spec for validate, the ledger check and
-    the build (geometry resolved once), None where one fails (validate then estimates again and reports the failure at
-    its node; the geometry is None unless it resolved without errors)."""
+def _cached_estimates(spec, registry, parameters):
+    """({used mesh name: estimate}, MemoryEstimate, resolved geometry, {physics: its MemoryEstimate} for the time
+    recipes) of the spec on its evaluated parameters for validate, the ledger check and the build (geometry resolved
+    once), None where one fails (validate then estimates again and reports the failure at its node; the geometry is
+    None unless it resolved without errors)."""
     from . import meshing
+    if parameters is None:
+        return None, None, None, None
     try:
-        parameters = evaluate_parameters(spec.parameters)
         geometry_errors = {}
         shapes = resolve_geometry(spec, parameters, errors=geometry_errors)
         shapes = None if geometry_errors else shapes
         mesh_estimate = meshing.estimate_meshes(spec, parameters, registry, shapes)
     except Exception:
-        return None, None, None
+        return None, None, None, None
+    by_physics = {}
     try:
-        return mesh_estimate, meshing.estimate_memory(spec, parameters, registry, mesh_estimate, shapes=shapes), shapes
+        memory = meshing.estimate_memory(spec, parameters, registry, mesh_estimate, by_physics=by_physics,
+                                         shapes=shapes)
     except Exception:
-        return mesh_estimate, None, shapes
+        return mesh_estimate, None, shapes, None
+    return mesh_estimate, memory, shapes, by_physics
 
 
 def _raise_errors(issues):
@@ -1163,13 +1211,11 @@ def _raise_errors(issues):
         raise ModelError(errors)
 
 
-def _built_estimates(spec, registry, mesh_estimate, shapes, log):
+def _built_estimates(spec, registry, mesh_estimate, shapes, log, parameters):
     """({mesh name: estimate with its element mesh built and counted}, their MemoryEstimate or None when it fails:
-    validate reports why): the numbers the memory judgement and the build ledger check are on; the meshes stay kept
-    for the domain stage."""
+    validate reports why, its {physics: MemoryEstimate} or None): the numbers the memory judgement, the build ledger
+    check and the time recipes are on; the meshes stay kept for the domain stage."""
     from . import meshing
-    with _issue_at(('parameters',)):
-        parameters = evaluate_parameters(spec.parameters)
     with _issue_at(('geometry',)):
         shapes = resolve_geometry(spec, parameters) if shapes is None else shapes
     built = {}
@@ -1179,10 +1225,12 @@ def _built_estimates(spec, registry, mesh_estimate, shapes, log):
         if built[name] is not estimate and meshing.has_estimated_counts(estimate):
             log('info', f"mesh '{name}': {built[name].n_elements:,} {estimate.kind} built before the memory check (the "
                         f'sizes gave an estimate of {estimate.n_elements:,})')
+    by_physics = {}
     try:
-        return built, meshing.estimate_memory(spec, parameters, registry, built, shapes=shapes)
+        return built, meshing.estimate_memory(spec, parameters, registry, built, by_physics=by_physics,
+                                              shapes=shapes), by_physics
     except Exception:
-        return built, None
+        return built, None, None
 
 
 def _memory_estimate(spec, parameters, registry, log, estimate=None):

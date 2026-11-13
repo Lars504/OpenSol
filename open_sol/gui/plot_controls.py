@@ -452,6 +452,7 @@ class _ArticleAxis(pg.AxisItem):
         self.show_minor_ticks = True
         self.drawn_ticks = None   # [(view values, label texts '' = unlabelled)] per tick level of the last paint
         self._painted_levels = []   # tick levels of the paint in progress
+        self._tick_text_px = 0.0   # widest drawn tick label of the last paint (left axis label hugs it)
 
     def tickSpacing(self, minVal, maxVal, size):
         """pyqtgraph's spacing, automatic steps raised until labels do not overlap; a fixed tick step giving more than
@@ -514,7 +515,26 @@ class _ArticleAxis(pg.AxisItem):
             for spacing, values in self._painted_levels:
                 texts = self.tickStrings(values, self.autoSIPrefixScale * self.scale, spacing)
                 self.drawn_ticks.append((list(values), [text if text in drawn_texts else '' for text in texts]))
+            self._tick_text_px = max((rect.width() for rect, _flags, _text in specs[2]), default=0.0)
+            self._place_left_label()
         return specs
+
+    def resizeEvent(self, ev=None):
+        super().resizeEvent(ev)
+        self._place_left_label()
+
+    def _place_left_label(self):
+        """Left axis label just beside the widest drawn tick label, not at the far edge of a fixed axis width."""
+        if self.orientation != 'left' or self.label is None or not self.label.isVisible():
+            return
+        nudge, gap_px = 5, 2   # pyqtgraph's label nudge (text item padding)
+        tick_px = max(0, self.style['tickLength']) + (self.style['tickTextOffset'][0] if self.style['showValues'] else 0)
+        label_px = self.label.boundingRect().height()   # rotated: its thickness across the axis
+        label_x = self.size().width() - tick_px - self._tick_text_px - gap_px - label_px + nudge
+        position = self.label.pos()
+        label_x = max(float(round(label_x)), -float(nudge))
+        if abs(position.x() - label_x) > 0.5:
+            self.label.setPos(QtCore.QPointF(label_x, position.y()))
 
     def logTickStrings(self, values, scale, spacing):
         return log_tick_strings(values, scale)

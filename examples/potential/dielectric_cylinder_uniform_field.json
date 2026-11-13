@@ -43,10 +43,10 @@
   "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
            "points_per_wavelength": 20.0, "refinements": []},
   "solvers": [
-    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 30000}}
+    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 30000, "preconditioner": "multigrid"}}
   ],
   "study": {"type": "stationary", "settings": {}, "stored_fields": [],
-            "sweep": {"parameter": "eps_cyl", "values": [2.0, 4.0, 10.0, 100.0]}},
+            "sweep": {"parameter": "eps_cyl", "values": [2.0, 4.0, 10.0, 100.0], "reuse_build": true}},
   "derived_values": [
     {"name": "E_in", "expression": "E_x/E0", "selection": ["cylinder"], "operation": "mean",
      "reference": "2/(eps_cyl + 1)/(1 - f_area*K_pol)", "tolerance": 0.012},

@@ -9,11 +9,34 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   each (forces at t_n, volume / heat-pulse thermoelastic at t_n + dt/2); the coupled heating slot's -gruneisen q is
   fused into the stress kernel (args gruneisen, heating, thermal_scale = dt x envelope at t_n + dt/2 / stress_scale; 0 =
   none: dummies, never read; the numpy / numba twins likewise); probes record stresses at t_n+1, velocities stamped
-  t_n+1/2, all probes of a physics in one 'probe_record' field kernel per step (`sources.ProbeRecorder`: a (rows,
-  probes) stored-unit buffer, host times; a probe added after steps starts at the next row).
-- Per-step launch arguments are built once per (dt, configuration) (`_launch_arguments`, dropped by `_configure`, the
-  storage scales and `materials_changed`): every array in them must stay persistent (rewritten in place, never
-  reassigned); a new argument that changes per step goes outside the cache (as the thermal triple).
+  t_n+1/2, all probes of a physics in one 'probe_record' field kernel per step (`sources.ProbeRecorder`, a
+  `core.monitors.ProbeRows`: a (rows, probes) stored-unit buffer, host times; a probe added after steps starts at the
+  next row). The row is a device counter the kernel advances (one block, `PROBE_RECORD_LAUNCH`); host `n_rows` mirrors
+  it (`stamp` after each step), so nothing else may write sample rows or the counter.
+- Per-step launch arguments are built once per (dt, configuration) (`_launch_arguments` -> `_StepLaunches` of
+  (kernel, grid, block, args) tuples, dropped by `_configure`, the storage scales and `materials_changed`): every array
+  in them must stay persistent (rewritten in place, never reassigned); a new argument that changes per step goes
+  outside the cache (as the thermal triple).
+- Step graphs (gpu, `STEP_GRAPHS`): `advance` collects the fixed launches (velocity, stress without the heating slot,
+  monoclinic, probe record) and `_run_fixed` replays each run between active sources as a CUDA graph keyed by the
+  tuples' ids (first use eager, second captures; a quiet step = one graph). Sources whose `amplitude` is 0 (|value| <=
+  `sources.NEGLIGIBLE_AMPLITUDE`: a pulse's tail; outside `sources.active_window` of a gaussian / ricker / heating
+  pulse the waveform is not even evaluated) inject nothing; an active source or the heating slot splits the run
+  and launches eagerly (per-step scalars). A new per-step launch either has fixed persistent arguments (into the run)
+  or splits it.
+- Pulse tables (gpu, with the step graphs): a force / traction / volume source whose `active_window` ends within
+  `PULSE_TABLE_MAX_STEPS` steps gets the float32 kernel values of every window step on the device
+  (`table_launches`: the 'scatter_table' / 'volume_scatter_table' variants (VALUE_TABLE) read `table[counter - start]`,
+  write nothing outside it or at 0, the steps the eager path skips); its launches join the fixed run, then
+  'step_count' advances the device step counter (= n_step). `_step_tables` builds them for the clock t_n+1 = t_n + dt
+  from (n_step, t) (the runner's) and rebuilds when a step does not continue it (`_table_clock`), off for good after
+  `_MAX_TABLE_REBUILDS` (a strided runner); cw waveforms (unbounded) and the heat pulse stay eager. Kernel values are
+  computed exactly as the eager injection does (value / velocity_scale, dt value / stress_scale).
+- Runner hand-off `advance_ticks` (coupling sub file "Runner hand-off"): the runner's tick loop in the solver;
+  `_quiet_steps` counts the coming steps with fixed launches only (no eager source value, no heating envelope), and
+  `STEP_GRAPH_TICKS` of them replay as one graph of the step's launch list repeated (`_advance_block`, `_run_fixed`
+  repeats: key (ids, repeats)); the probe table makes room for the block first (`next_launch(rows=)`), the host clock
+  / stamps / n_step follow per step as `advance`. Other steps run `advance` one by one.
 - Non-periodic outer faces are slip walls (v_n = 0, shear 0) by construction (missing lo neighbour reads 0, hi face /
   corner pinned by zero coefficients). 'absorbing' = that wall behind a CPML in the outermost `pml_cells` cells
   (`cpml.py`, kappa 1, alpha 0; reflects ~exp(-0.45 (c dt / L) ln(1/R)^2): 7 % at R = 0.01, 80 cells, courant 0.9).

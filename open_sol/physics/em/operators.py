@@ -210,21 +210,13 @@ def yee_operators(cell_widths, boundary_config, pml_dx, omega=None, xp=np, spars
         return YeeOperators2D(nx=host.nx, ny=host.ny, omega=omega, dx_e=upload(host.dx_e), dx_h=upload(host.dx_h),
                               dy_e=upload(host.dy_e), dy_h=upload(host.dy_h))
     dx_cells, dy_cells = cell_widths
-    spacings = yee_inverse_spacings(dx_cells, dy_cells)
-    nx, ny = spacings.inv_dx_e.size, spacings.inv_dy_e.size
-    stretch_x_e, stretch_x_h = axis_stretch(cpml_axis_profiles(boundary_config, nx, 'x', pml_dx), omega)
-    stretch_y_e, stretch_y_h = axis_stretch(cpml_axis_profiles(boundary_config, ny, 'y', pml_dx), omega)
-    periodic_x, periodic_y = boundary_config.periodic_x, boundary_config.periodic_y
-    phase_x, phase_y = bloch_wrap_phases(cell_widths, boundary_config)
-
-    d1x_e = difference_matrix_1d(spacings.inv_dx_e, 'e', periodic_x, stretch_x_e, xp, sparse, phase_x)
-    d1x_h = difference_matrix_1d(spacings.inv_dx_h, 'h', periodic_x, stretch_x_h, xp, sparse, phase_x)
-    d1y_e = difference_matrix_1d(spacings.inv_dy_e, 'e', periodic_y, stretch_y_e, xp, sparse, phase_y)
-    d1y_h = difference_matrix_1d(spacings.inv_dy_h, 'h', periodic_y, stretch_y_h, xp, sparse, phase_y)
+    d1x_e, d1x_h, d1y_e, d1y_h, stretch_x_e = _difference_matrices_1d(cell_widths, boundary_config, pml_dx, omega, xp,
+                                                                      sparse)
+    nx, ny = d1x_e.shape[0], d1y_e.shape[0]
     dx_e, dx_h = _kron_identity(d1x_e, ny, False, xp, sparse), _kron_identity(d1x_h, ny, False, xp, sparse)
     dy_e, dy_h = _kron_identity(d1y_e, nx, True, xp, sparse), _kron_identity(d1y_h, nx, True, xp, sparse)
     if polar_radius_min is not None:
-        if periodic_x:
+        if boundary_config.periodic_x:
             raise ValueError('a polar grid has no periodic r axis')
         radius_faces, radius_centres = stretched_radii(dx_cells, stretch_x_e, polar_radius_min)
         inverse_centre_radii = np.repeat(1.0 / radius_centres, ny)   # flat i*ny + j: every cell row of column i
@@ -232,6 +224,158 @@ def yee_operators(cell_widths, boundary_config, pml_dx, omega=None, xp=np, spars
         dy_e = _scaled(dy_e, inverse_centre_radii, None, xp, sparse)
         dy_h = _scaled(dy_h, inverse_centre_radii, None, xp, sparse)
     return YeeOperators2D(nx=nx, ny=ny, omega=omega, dx_e=dx_e, dx_h=dx_h, dy_e=dy_e, dy_h=dy_h)
+
+
+def _difference_matrices_1d(cell_widths, boundary_config, pml_dx, omega, xp=np, sparse=True):
+    """(d1x_e, d1x_h, d1y_e, d1y_h, stretch_x_e) of yee_operators: the four 1D Yee differences at omega (None = kappa)
+    and the x centre stretch (polar radii)."""
+    spacings = yee_inverse_spacings(*cell_widths)
+    nx, ny = spacings.inv_dx_e.size, spacings.inv_dy_e.size
+    stretch_x_e, stretch_x_h = axis_stretch(cpml_axis_profiles(boundary_config, nx, 'x', pml_dx), omega)
+    stretch_y_e, stretch_y_h = axis_stretch(cpml_axis_profiles(boundary_config, ny, 'y', pml_dx), omega)
+    periodic_x, periodic_y = boundary_config.periodic_x, boundary_config.periodic_y
+    phase_x, phase_y = bloch_wrap_phases(cell_widths, boundary_config)
+    return (difference_matrix_1d(spacings.inv_dx_e, 'e', periodic_x, stretch_x_e, xp, sparse, phase_x),
+            difference_matrix_1d(spacings.inv_dx_h, 'h', periodic_x, stretch_x_h, xp, sparse, phase_x),
+            difference_matrix_1d(spacings.inv_dy_e, 'e', periodic_y, stretch_y_e, xp, sparse, phase_y),
+            difference_matrix_1d(spacings.inv_dy_h, 'h', periodic_y, stretch_y_h, xp, sparse, phase_y),
+            stretch_x_e)
+
+
+class KeptYeeOperators:
+    """Cartesian yee_operators of one grid at any omega on kept kron patterns: per omega only the four host 1D
+    differences are rebuilt and gathered into the kept 2D CSR (same pattern and values as yee_operators, no kron)."""
+    # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern, the xp int32 map 2D entry -> 1D
+    # entry, and the xp 2D indices / indptr, shared by the ops of every omega (never modified in place: consumers copy).
+
+    def __init__(self, cell_widths, boundary_config, pml_dx, xp=np):
+        self.cell_widths = tuple(cell_widths)   # as given: yee_operators' inverse spacings follow their dtype
+        self.boundary_config = boundary_config
+        self.pml_dx = float(pml_dx)
+        self.xp = xp
+        self.nx, self.ny = (len(widths) for widths in self.cell_widths)
+        self._parts = None
+        self._helmholtz_plan = None   # _HelmholtzPlan of the current parts (first helmholtz call)
+
+    def at(self, omega):
+        """YeeOperators2D at omega [rad/s] > 0 (the kept patterns rebuilt when a 1D pattern differs)."""
+        omega = float(omega)
+        if not _host_sparse_available():   # gpu without scipy: yee_operators' device assembly
+            return yee_operators(self.cell_widths, self.boundary_config, self.pml_dx, omega, self.xp)
+        differences = _difference_matrices_1d(self.cell_widths, self.boundary_config, self.pml_dx, omega)[:4]
+        if self._parts is None or not all(np.array_equal(matrix.indptr, part[0][0])
+                                          and np.array_equal(matrix.indices, part[0][1])
+                                          for matrix, part in zip(differences, self._parts)):
+            self._parts = self._helmholtz_plan = None   # free the old maps and term plan first
+            self._parts = tuple(self._kron_part(matrix, identity_first) for matrix, identity_first in
+                                zip(differences, (False, False, True, True)))
+        n_unknowns = self.nx * self.ny
+        csr_matrix = _sparse_module(self.xp).csr_matrix
+        ops = [csr_matrix((self.xp.asarray(matrix.data)[entry_map], indices, indptr), shape=(n_unknowns, n_unknowns))
+               for matrix, (_, entry_map, indices, indptr) in zip(differences, self._parts)]
+        return YeeOperators2D(self.nx, self.ny, omega, *ops)
+
+    def helmholtz(self, ops, weight_hi_x_faces, weight_hi_y_faces, cell_term):
+        """helmholtz_operator of ops from `at` on a kept term plan (one fixed pattern per grid, zero weights kept as
+        explicit zeros, no sparse products); ops of another source: helmholtz_operator itself."""
+        parts = self._parts
+        if parts is None or not all(matrix.indices is part[2] for matrix, part in
+                                    zip((ops.dx_e, ops.dx_h, ops.dy_e, ops.dy_h), parts)):
+            return helmholtz_operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term, xp=self.xp)
+        if self._helmholtz_plan is None or self._helmholtz_plan.parts is not parts:
+            self._helmholtz_plan = None   # free the old plan first
+            self._helmholtz_plan = _HelmholtzPlan(ops, parts, self.xp)
+        return self._helmholtz_plan.operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
+
+    def _kron_part(self, matrix_1d, identity_first):
+        """(1D host pattern, xp entry map, xp indices, xp indptr) of kron(I, D) / kron(D, I): the kron of D's entry
+        numbers + 1 (never 0, so no entry drops) gives the 2D pattern and which D entry each 2D entry copies."""
+        import scipy.sparse
+        numbered = scipy.sparse.csr_matrix((np.arange(1, matrix_1d.nnz + 1, dtype=np.float64), matrix_1d.indices,
+                                            matrix_1d.indptr), shape=matrix_1d.shape)
+        kron = _kron_identity(numbered, self.nx if identity_first else self.ny, identity_first, np, True)
+        entry_map = (kron.data - 1.0).astype(np.int32)
+        xp = self.xp
+        return ((matrix_1d.indptr.copy(), matrix_1d.indices.copy()), xp.asarray(entry_map),
+                xp.asarray(kron.indices.astype(np.int32)), xp.asarray(kron.indptr.astype(np.int32)))
+
+
+def _product_terms(left, right, xp):
+    """(rows, columns, left entries, faces, right entries) int32 of every term L_ij w_j R_jk of left diag(w) right
+    (CSR of int32 indices), in left-entry (so row) order."""
+    faces_of_left = left.indices
+    counts = right.indptr[faces_of_left + 1] - right.indptr[faces_of_left]
+    ends = xp.cumsum(counts, dtype=xp.int64)
+    term_index = xp.arange(int(ends[-1]), dtype=xp.int64)
+    left_entries = xp.searchsorted(ends, term_index, side='right')
+    faces = faces_of_left[left_entries]
+    right_entries = right.indptr[faces] + (term_index - ends[left_entries] + counts[left_entries])
+    rows = _entry_rows(left, xp)[left_entries]
+    return (rows.astype(xp.int32), right.indices[right_entries].astype(xp.int32, copy=False),
+            left_entries.astype(xp.int32), faces.astype(xp.int32, copy=False), right_entries.astype(xp.int32))
+
+
+class _HelmholtzPlan:
+    """Fixed CSR pattern of dx_e W_x dx_h + dy_e W_y dy_h + diag(c) on kept Yee patterns: every product term (left
+    entry, face, right entry) and the output entry it sums into, built once on the xp backend."""
+    # Terms in one flat buffer [x terms, y terms, cell terms]; sorted stably by (row, column), an output entry's terms
+    # keep that order: level 0 gathers each entry's first term, level r adds its r-th (unique entries per level:
+    # deterministic, no atomics). Kept int32: 3 per term (4 + 4 per cell) + 2 per term after the first + the pattern.
+
+    def __init__(self, ops, parts, xp):
+        self.parts = parts   # the KeptYeeOperators parts it was built on
+        self.xp = xp
+        self.n_unknowns = n_unknowns = ops.nx * ops.ny
+        x_rows, x_columns, *x_terms = _product_terms(ops.dx_e, ops.dx_h, xp)
+        y_rows, y_columns, *y_terms = _product_terms(ops.dy_e, ops.dy_h, xp)
+        self.x_terms, self.y_terms = tuple(x_terms), tuple(y_terms)
+        cells = xp.arange(n_unknowns, dtype=xp.int32)
+        rows, columns = xp.concatenate((x_rows, y_rows, cells)), xp.concatenate((x_columns, y_columns, cells))
+        del x_rows, x_columns, y_rows, y_columns, x_terms, y_terms
+        order = xp.argsort(columns, kind='stable')   # LSD on int32 keys: by column, then stably by row
+        order = order[xp.argsort(rows[order], kind='stable')]
+        sorted_rows, sorted_columns = rows[order], columns[order]
+        del rows, columns
+        first = xp.ones(order.size, dtype=xp.bool_)
+        first[1:] = (sorted_rows[1:] != sorted_rows[:-1]) | (sorted_columns[1:] != sorted_columns[:-1])
+        entry_of_term = xp.cumsum(first, dtype=xp.int32) - 1   # output entry of each sorted term
+        self.indices = sorted_columns[first]
+        self.indptr = xp.searchsorted(sorted_rows[first], xp.arange(n_unknowns + 1, dtype=xp.int32)).astype(xp.int32)
+        del sorted_rows, sorted_columns
+        rank = xp.arange(order.size, dtype=xp.int32) - xp.flatnonzero(first).astype(xp.int32)[entry_of_term]
+        self.first_terms = order[first].astype(xp.int32)
+        self.levels = []   # (output entries, terms) of the 2nd, 3rd, ... term of the entries that have one
+        for level in range(1, int(rank.max()) + 1):
+            at_level = rank == level
+            self.levels.append((entry_of_term[at_level], order[at_level].astype(xp.int32)))
+
+    def operator(self, ops, weight_hi_x_faces, weight_hi_y_faces, cell_term):
+        """CSR (scipy / cupyx) of helmholtz_operator's sum at these ops and weights, canonical on the kept pattern."""
+        xp = self.xp
+        n_unknowns = self.n_unknowns
+        weight_x = _flat_values(weight_hi_x_faces, n_unknowns, xp, 'helmholtz_operator weight_hi_x_faces')
+        weight_y = _flat_values(weight_hi_y_faces, n_unknowns, xp, 'helmholtz_operator weight_hi_y_faces')
+        cell_term = _flat_values(cell_term, n_unknowns, xp, 'helmholtz_operator cell_term')
+        dtype = np.result_type(ops.dx_e.dtype, ops.dx_h.dtype, ops.dy_e.dtype, ops.dy_h.dtype, weight_x.dtype,
+                               weight_y.dtype, cell_term.dtype)
+        n_product_terms = self.x_terms[0].size + self.y_terms[0].size
+        terms = xp.empty(n_product_terms + n_unknowns, dtype=dtype)
+        start = 0
+        for left, right, weight, (left_entries, faces, right_entries) in (
+                (ops.dx_e, ops.dx_h, weight_x, self.x_terms), (ops.dy_e, ops.dy_h, weight_y, self.y_terms)):
+            part = terms[start:start + left_entries.size]   # (L_ij w_j) R_jk: helmholtz_operator's product order
+            xp.take(left.data.astype(dtype, copy=False), left_entries, out=part)
+            part *= weight[faces]
+            part *= right.data[right_entries]
+            start += left_entries.size
+        terms[n_product_terms:] = cell_term
+        data = terms[self.first_terms]
+        for entries, level_terms in self.levels:
+            data[entries] += terms[level_terms]
+        del terms
+        operator = _sparse_module(xp).csr_matrix((data, self.indices, self.indptr), shape=(n_unknowns, n_unknowns))
+        operator.has_canonical_format = True
+        return operator
 
 
 def scalar_laplacian(ops):

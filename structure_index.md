@@ -5,30 +5,30 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 ## Contents
 
 - open_sol/: lines 33-38
-- open_sol/core/: lines 40-75
-- open_sol/coupling/: lines 77-103
-- open_sol/fem/: lines 105-170
-- open_sol/gui/: lines 172-192
-- open_sol/io/: lines 194-198
-- open_sol/materials/: lines 200-215
-- open_sol/mesh_study/: lines 217-227
-- open_sol/model/: lines 229-297
-- open_sol/physics/: lines 299-301
-- open_sol/physics/acoustics/: lines 303-321
-- open_sol/physics/em/: lines 323-435
-- open_sol/physics/em/solvers/: lines 437-459
-- open_sol/physics/em3d/: lines 461-497
-- open_sol/physics/eme/: lines 499-516
-- open_sol/physics/fluid/: lines 518-529
-- open_sol/physics/heat/: lines 531-556
-- open_sol/physics/magnetic/: lines 558-588
-- open_sol/physics/mechanics/: lines 590-669
-- open_sol/physics/membrane/: lines 671-689
-- open_sol/physics/nlfd/: lines 691-710
-- open_sol/physics/potential/: lines 712-729
-- open_sol/physics/semiconductor/: lines 731-744
-- open_sol/solvers/: lines 746-760
-- open_sol/viz/: lines 762-769
+- open_sol/core/: lines 40-76
+- open_sol/coupling/: lines 78-104
+- open_sol/fem/: lines 106-171
+- open_sol/gui/: lines 173-193
+- open_sol/io/: lines 195-199
+- open_sol/materials/: lines 201-216
+- open_sol/mesh_study/: lines 218-228
+- open_sol/model/: lines 230-298
+- open_sol/physics/: lines 300-302
+- open_sol/physics/acoustics/: lines 304-322
+- open_sol/physics/em/: lines 324-436
+- open_sol/physics/em/solvers/: lines 438-460
+- open_sol/physics/em3d/: lines 462-498
+- open_sol/physics/eme/: lines 500-517
+- open_sol/physics/fluid/: lines 519-530
+- open_sol/physics/heat/: lines 532-557
+- open_sol/physics/magnetic/: lines 559-589
+- open_sol/physics/mechanics/: lines 591-670
+- open_sol/physics/membrane/: lines 672-690
+- open_sol/physics/nlfd/: lines 692-711
+- open_sol/physics/potential/: lines 713-730
+- open_sol/physics/semiconductor/: lines 732-745
+- open_sol/solvers/: lines 747-761
+- open_sol/viz/: lines 763-770
 
 ## open_sol/
 
@@ -50,6 +50,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `error_indicators.py`: Mesh error indicators of the S7.7 refinement levels (host numpy, no cupy): the default interpolation-error indicator eta^2 = sum_axis (h_axis^2 d2u / d axis^2)^2 V on graded tensor cells, split per axis; the A2 physics indicators: Kelly ...
 - `fv_diffusion.py`: Finite-volume scalar diffusion on the physical window: -div(c grad u) = s with Dirichlet / Neumann / Robin outer faces, fixed cells eliminated, Jacobi-PCG (solvers.pcg)
 - `fv_diffusion_3d.py`: Finite-volume diffusion operator on a 2D or 3D window from separable face factors (B3): slot-layout CSR pattern, series face conductances and lower-cell shares, outer-face terms, the anchor link graph, face flows / centre fluxes, and (3D) ...
+- `fv_diffusion_fused.py`: Fused DiffusionSystem re-assembly on a kept 5 / 7-point pattern (no phi wrap, c_xy term or cut cells): one kernel from the coefficients to the CSR values, face conductances, outer-face terms and the fixed-cell masks, one for the ...
 - `gpu_memory.py`: GPU memory of the cupy pool and the device: budget, status, release, out-of-memory detection and per-object accounting
 - `grid.py`: Grid2D (uniform square cells, EM Courant time step) and the courant_time_step / cell-count / cell-edge helpers.
 - `grid3d.py`: 3D rectilinear grid (B1): per-axis float32 cell widths, PML included; dt from the 3D CFL limit.
@@ -64,7 +65,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `mesh.py`: Physics-neutral non-uniform meshing with geometry-aware refinement (cell spacings for any solver).
 - `metric.py`: Coordinate metric of the 2D window (symmetry plan 2.16; numpy only, GUI-thread safe): the Domain's in-plane grid (Coordinates: Cartesian or polar) times the solve's out-of-plane reduction (planar or axisymmetric) gives exact, separable ...
 - `mirror.py`: Mirror planes on the window edge (symmetry 2.5): the model's mirror faces, the image sign of a field component, the total factor of a selection touching a plane, TFSF boxes opening onto a plane, the unfolded copy of a field and the ...
-- `monitors.py`: FieldProbe: time trace of one field component at one grid cell, buffered on the field's backend, and its probe_result dict.
+- `monitors.py`: FieldProbe: time trace of one field component at one grid cell, buffered on the field's backend, its probe_result dict, and the step-graph sample tables (ProbeRows; FieldProbeRows: every FieldProbe of an engine in one launch).
 - `renderer.py`: FieldInfo (label, unit, colormap, mirror parity of one field component), polar relabelling and the PhysicsRenderer ABC that maps a solver's state to fields over the physical window.
 - `resonance.py`: Harmonic inversion of time-stepped probe signals (the resonance_monitor of every time-stepped physics), host numpy only: mix the band down, Kaiser anti-alias FIR, decimate, matrix pencil -> frequency, decay rate, Q, amplitude and phase per ...
 - `selftests_harmonic_probe.py`: Self-test check of core.harmonic_probe (CPU, no model run): record / replace / keep-both / series round trip; the SelfTestCase that runs it lives in model.selftests_analytic, which passes its SubChecks.add (core imports no model).
@@ -286,7 +287,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `study_sectors.py`: Parity-sector runs of one study (symmetry 2.6, study setting parity_sectors): one build and run per symmetric / antisymmetric combination of the model's mirror faces (per sweep value with a parameter sweep), merged into one summary and one ...
 - `study_thermal_noise.py`: The 'thermal_noise' StudyType: background physics to a stationary fixed point, the mode solve of every em_modes physics, then the thermorefractive noise spectra of every heat physics (thermorefractive_noise features) on a log- or linearly ...
 - `subpixel_geometry.py`: Subpixel smoothing geometry (igor 1.5), computed once at build: supersampled rasters of the material regions, one x strip at a time, give every E_z cell / E_x (hi-y) face / E_y (hi-x) face whose averaging volume two materials share its ...
-- `sweep_reuse.py`: Reused sweep builds (SweepSpec.reuse_build): the spec values a swept parameter reaches (what refuses the reuse) and the ParameterFollower that re-sets a following feature value on the kept build per sweep value.
+- `sweep_reuse.py`: Reused sweep builds (SweepSpec.reuse_build): the spec values a swept parameter reaches (what refuses the reuse) and the ParameterFollower that re-sets a following feature value, physics setting or material value on the kept build per sweep ...
 - `swept_meshing.py`: Swept prism-layer tetrahedra of 'tetrahedra' MeshSpecs with sweep_axis 'z' (experiment plan D5): the xy footprint meshed by the 2D triangle mesher, extruded through graded z layers and split into tetrahedra (fem.prism_layers); the sizing ...
 - `symmetry_check.py`: Symmetry check of mirror and axisymmetric models (symmetry 2.7; CPU, numpy, GUI-thread safe): geometry drawn beyond a mirror plane or the (r, z) axis must be the mirror image of the half the run solves, else one warning per plane.
 - `templates.py`: Ready-made example models ('New from template'): the built-in ones plus those definition modules register; every template validates without errors.
@@ -471,7 +472,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `fem3d.py`: FEMPhysics3D: 3D EM resonances on a TetrahedronMesh (igor3d_plan section 7): Nedelec first kind degree 1 / 2, materials and a Cartesian PML shell frozen at the target omega, resonances by the em_fdfd_3d eigen layer ...
 - `fem_solver3d.py`: FEMResonancePhysics3D: em_fdfd_3d on a 'tetrahedra' mesh (igor3d_plan T4b): the PhysicsSolver around fem3d.FEMPhysics3D with per-element materials read from the TetrahedronDomain's MaterialGrid at every assembly, the eigenfrequency study ...
 - `harmonic3d.py`: Harmonic FDTD (A4a) of em_fdtd_3d: running DFT of E_x, E_y, E_z over the physical window at the frequency_domain study wavelengths (complex64, 24 B per window cell and wavelength), normalised by the shared source spectrum.
-- `kernels3d.py`: Fused kernels of the 3D Yee engine (layout and conventions: engine3d header): H and E updates with the material-index coefficient lookup, CPML psi updates on the layer slabs, the ohmic J.E loss and the sparse conformal-PEC H corrections ...
+- `kernels3d.py`: Fused kernels of the 3D Yee engine (layout and conventions: engine3d header): H and E updates with the material-index coefficient lookup and the CPML psi updates of the layer cells, the ohmic J.E loss and the sparse conformal-PEC H ...
 - `material_index3d.py`: uint16 material index of em_fdtd_3d: per MaterialGrid array a set of value levels (its exact distinct values, or bins of a continuous array re-quantised to a level budget, representative = member mean), the joint level combinations ranked ...
 - `mode_ports3d.py`: Mode ports of em_fdtd_3d on a plane normal to x, y or z: A5 cross-section modes (physics.em.cross_section_modes) of one cell layer, the one-sided TFSF ModeSource3D, the ModeMonitor3D decomposition and their result dicts.
 - `monitors3d.py`: Monitors of em_fdtd_3d: point probe, spectral Poynting flux through a cell-edge plane or a closed box, and a DFT field map on a z layer; their result dicts (flux_spectrum / dft_fields / timeseries kinds of the 2D monitors).

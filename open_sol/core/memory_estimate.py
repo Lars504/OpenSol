@@ -267,13 +267,15 @@ _FACTORIZE_ALIVE_MASKS = 3
 
 def diffusion_system_estimate(window_cells, precision, cross_term=False, transient=False,
                               dimensions=2, mixed=False, multigrid=False, direct=False,
-                              azimuthal=False, wrap=False, flux=False, dissipation=False) -> MemoryEstimate:
+                              azimuthal=False, wrap=False, flux=False, dissipation=False,
+                              backend=None) -> MemoryEstimate:
     """DiffusionSystem (core.fv_diffusion) on window_cells (3D: all window voxels, dimensions=3): prepare buffers, CSR
     pattern, assembled operators and vectors (steady; azimuthal: the kept azimuthal diagonal of an (r, z) order
     m != 0); build extra: the larger of the pattern build + anchor check and (multigrid) the setup while assemble's
     locals live; mixed
     (a 'mixed' pcg, precision 'float64'): its float32 operator copy and refinement vectors; multigrid (the pcg
-    multigrid preconditioner): its hierarchy, setup products and host aggregation; direct (a host SuperLU
+    multigrid preconditioner): its hierarchy, setup products and the host aggregation (not on backend 'gpu', which
+    aggregates on the device inside the setup's transients; None: booked); direct (a host SuperLU
     sparse_direct linear solver, the 2D cpu Automatic: True or 'scipy_splu'): the host factor and its float64 CSC input
     copy; a host direct back end name (MUMPS / PARDISO, solvers.host_direct.HOST_DIRECT_BACK_ENDS): its heuristic
     factor (host_direct.factor_host_bytes, uncalibrated) and the arrays the factor object keeps beside it
@@ -327,7 +329,8 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
                       amg.hierarchy_bytes(cells, value_bytes, entries_per_row)))
         alive = (_FACTORIZE_ALIVE_VALUE_ARRAYS * value_bytes + _FACTORIZE_ALIVE_MASKS * BOOL_BYTES) * cells
         build_extra = max(build_extra, alive + amg.setup_extra_bytes(cells, value_bytes, entries_per_row))
-        host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
+        if not (backend == 'gpu' and amg.DEVICE_AGGREGATION):   # the device twin holds no host copy of the CSR
+            host_items.append(('multigrid aggregation (transient)', amg.aggregation_host_bytes(cells, entries_per_row)))
     if direct:   # solvers.sparse_direct.DiffusionDirectSolver: one factor per assembly, the previous one dropped
         from ..solvers import host_direct   # numpy only (a function-level exception of the core rule)
         if direct in host_direct.HOST_DIRECT_BACK_ENDS:   # real SPD: PARDISO Cholesky / MUMPS LDL^T

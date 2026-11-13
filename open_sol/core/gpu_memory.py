@@ -18,7 +18,7 @@ from .backend import cp, cupy_installed
 
 __all__ = [
     'LEAK_TOLERANCE_BYTES', 'DEFAULT_BUDGET_FRACTION', 'DEFAULT_HEADROOM_BYTES', 'DeviceInfo', 'MemoryStatus',
-    'device_info', 'memory_status', 'cpu_device_info', 'cpu_memory_status', 'pool_used_bytes', 'pool_reserved_bytes', 'set_budget', 'budget_bytes', 'release_all',
+    'device_info', 'budget_device_info', 'memory_status', 'cpu_device_info', 'cpu_memory_status', 'pool_used_bytes', 'pool_reserved_bytes', 'set_budget', 'budget_bytes', 'pool_room_bytes', 'pool_high_water_bytes', 'release_all',
     'is_out_of_memory', 'out_of_memory_message', 'drop_exception_frames', 'owned_bytes', 'format_bytes',
     'MemoryLedger', 'ledger_text',
 ]
@@ -39,6 +39,9 @@ _LEAF_TYPES = (str, bytes, bytearray, int, float, complex, type(None), range, me
 
 _budget = None             # pool limit [bytes] applied by set_budget in this process
 _budget_settings = None    # (fraction, headroom_bytes) of that set_budget call
+_budget_query = None       # (device id, free, total) [bytes] of that set_budget call's driver query
+_device_names = {}         # device id -> name (fixed for the process: queried once)
+_released = {'high_water': 0}   # largest pool reserved bytes pool_room_bytes released since the last release_all
 
 
 @dataclass(frozen=True)
@@ -78,14 +81,30 @@ class MemoryStatus:
                 'kind': self.kind}
 
 
+def _device_name(device_id) -> str:
+    """Name of a CUDA device (device properties queried once per process)."""
+    device_id = int(device_id)
+    if device_id not in _device_names:
+        name = cp.cuda.runtime.getDeviceProperties(device_id)['name']
+        if isinstance(name, bytes):
+            name = name.decode('utf-8', errors='replace')
+        _device_names[device_id] = str(name)
+    return _device_names[device_id]
+
+
 def device_info() -> DeviceInfo:
-    """Id, name and free / total memory of the current device (driver query)."""
+    """Id, name and free / total memory of the current device (driver memory query; the name cached per process)."""
     device = cp.cuda.Device()
-    name = cp.cuda.runtime.getDeviceProperties(device.id)['name']
-    if isinstance(name, bytes):
-        name = name.decode('utf-8', errors='replace')
     free_bytes, total_bytes = device.mem_info
-    return DeviceInfo(int(device.id), str(name), int(total_bytes), int(free_bytes))
+    return DeviceInfo(int(device.id), _device_name(device.id), int(total_bytes), int(free_bytes))
+
+
+def budget_device_info() -> DeviceInfo:
+    """DeviceInfo from the memory numbers of the last set_budget call (no memory query); device_info() before any."""
+    if _budget_query is None:
+        return device_info()
+    device_id, free_bytes, total_bytes = _budget_query
+    return DeviceInfo(device_id, _device_name(device_id), total_bytes, free_bytes)
 
 
 def cpu_device_info() -> DeviceInfo:
@@ -158,13 +177,15 @@ def pool_reserved_bytes() -> int:
 def set_budget(fraction=DEFAULT_BUDGET_FRACTION, headroom_bytes=DEFAULT_HEADROOM_BYTES) -> int:
     """Limit the default pool to min(fraction * device total, free + pool reserved - headroom) bytes, so an
     over-sized model raises OutOfMemoryError instead of spilling into shared system memory; returns the limit."""
-    global _budget, _budget_settings
+    global _budget, _budget_settings, _budget_query
     if not 0.0 < fraction <= 1.0:
         raise ValueError(f'fraction must be in (0, 1], got {fraction}')
     if not headroom_bytes >= 0:
         raise ValueError(f'headroom_bytes must be >= 0, got {headroom_bytes}')
     pool = cp.get_default_memory_pool()
-    free_bytes, total_bytes = cp.cuda.Device().mem_info
+    device = cp.cuda.Device()
+    free_bytes, total_bytes = device.mem_info
+    _budget_query = (int(device.id), int(free_bytes), int(total_bytes))
     reserved_bytes = int(pool.total_bytes())   # the pool's cached blocks are available to it
     budget = int(min(fraction * total_bytes, free_bytes + reserved_bytes - headroom_bytes))
     if budget <= 0:   # set_limit(size=0) would mean 'unlimited'
@@ -181,11 +202,35 @@ def budget_bytes() -> int | None:
     return _budget
 
 
+def pool_room_bytes(release_cached=False) -> int | None:
+    """Bytes new pool arrays can take now: budget - pool used, at most the free device memory plus the pool's cached
+    blocks (a cuDSS factor or another program holds device memory the budget of set_budget never saw). release_cached:
+    while the device is the tighter bound, the cached blocks go back to it first (blocks of other sizes would stay
+    reserved beside the new arrays; their high-water mark is kept for pool_high_water_bytes). None before set_budget;
+    one driver memory query."""
+    if _budget is None:
+        return None
+    pool = cp.get_default_memory_pool()
+    used_bytes, reserved_bytes = int(pool.used_bytes()), int(pool.total_bytes())
+    device_room = int(cp.cuda.Device().mem_info[0]) + reserved_bytes - used_bytes
+    if release_cached and device_room < _budget - used_bytes and reserved_bytes > used_bytes:
+        _released['high_water'] = max(_released['high_water'], reserved_bytes)
+        pool.free_all_blocks()
+    return max(min(_budget - used_bytes, device_room), 0)
+
+
+def pool_high_water_bytes() -> int:
+    """pool_reserved_bytes, or the larger reserved bytes a pool_room_bytes release returned since the last release_all
+    (the run memory measurement: a release mid-run would hide the earlier peak)."""
+    return max(pool_reserved_bytes(), _released['high_water'])
+
+
 def release_all(collect_garbage=True) -> None:
     """Collect garbage (cycles may hold arrays), clear the cuFFT plan cache when it holds plans (their work areas live
     in the pool), then return the cached blocks of the default and pinned pools to the device (without cupy: gc only)."""
     if collect_garbage:
         gc.collect()
+    _released['high_water'] = 0
     if not cupy_installed():
         return
     from cupy.fft import config as fft_config

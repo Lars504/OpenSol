@@ -196,6 +196,11 @@ def _point_mean(values, keep, axes):
     `keep` (non-PEC) holds; over all of a point's cells when it holds on none."""
     values = np.asarray(values)
     weights = np.asarray(keep, dtype=np.float64)
+    if np.all(keep):   # no PEC cell: the kept and plain means are the same sums
+        plain_sum, plain_weight = values, weights
+        for axis, layout in axes:
+            plain_sum, plain_weight = _edge_sum(plain_sum, axis, layout), _edge_sum(plain_weight, axis, layout)
+        return plain_sum / plain_weight
     kept_sum, kept_weight, plain_sum, plain_weight = values * weights, weights, values, np.ones(values.shape)
     for axis, layout in axes:
         kept_sum, kept_weight = _edge_sum(kept_sum, axis, layout), _edge_sum(kept_weight, axis, layout)
@@ -212,12 +217,43 @@ def _edge_all(mask, axis):
 
 
 def _difference(n_cells, column_factors, denominators):
-    """(n + 1, n) CSR: row k = (c_k f_k - c_{k-1} f_{k-1}) / den_k, f beyond the ends = 0."""
-    import scipy.sparse
+    """(rows, columns, complex128 values, n_rows, n_columns) of the (n + 1, n) difference: row k = (c_k f_k - c_{k-1}
+    f_{k-1}) / den_k, f beyond the ends = 0."""
     rows = np.concatenate((np.arange(n_cells), np.arange(1, n_cells + 1)))
     columns = np.concatenate((np.arange(n_cells), np.arange(n_cells)))
     data = np.concatenate((column_factors / denominators[:-1], -column_factors / denominators[1:]))
-    return scipy.sparse.csr_matrix((data.astype(np.complex128), (rows, columns)), shape=(n_cells + 1, n_cells))
+    return rows, columns, data.astype(np.complex128), n_cells + 1, n_cells
+
+
+def _diagonal(values):
+    """_difference-style entries of diag(values) (complex128)."""
+    index = np.arange(values.size)
+    return index, index, np.asarray(values).astype(np.complex128), values.size, values.size
+
+
+def _identity_kron(n_blocks, entries):
+    """(rows, columns, values) of kron(I_n_blocks, D) for _difference-style entries of D."""
+    rows, columns, values, n_rows, n_columns = entries
+    blocks = np.arange(n_blocks)[:, None]
+    return (blocks * n_rows + rows).ravel(), (blocks * n_columns + columns).ravel(), np.tile(values, n_blocks)
+
+
+def _kron_identity(entries, n_identity):
+    """(rows, columns, values) of kron(D, I_n_identity) for _difference-style entries of D."""
+    rows, columns, values, _, _ = entries
+    within = np.arange(n_identity)
+    return ((rows[:, None] * n_identity + within).ravel(), (columns[:, None] * n_identity + within).ravel(),
+            np.repeat(values, n_identity))
+
+
+def _block_csc(shape, blocks):
+    """scipy CSC complex128 of `shape` from blocks ((row offset, column offset, sign), (rows, columns, values)): the
+    canonical matrix scipy.sparse.bmat of the kron blocks gives (same pattern and values), without its overhead."""
+    import scipy.sparse
+    rows = np.concatenate([part[0] + offsets[0] for offsets, part in blocks])
+    columns = np.concatenate([part[1] + offsets[1] for offsets, part in blocks])
+    values = np.concatenate([part[2] if offsets[2] > 0 else -part[2] for offsets, part in blocks])
+    return scipy.sparse.coo_matrix((values, (rows, columns)), shape=shape).tocsc()
 
 
 def _wall_kind(face_type, face):
@@ -270,28 +306,31 @@ def _regular_axis(azimuthal_order) -> bool:
 
 @dataclass(frozen=True, eq=False)
 class _ClassOperators:
-    """Active sets and order-polynomial parts of one axis class (0: m = 0, 1: |m| >= 1): A(m) = k0_part + m k1_part +
-    m^2 k2_part - k0^2 M, curl(m) = curl_static + m curl_order (k1 / k2 None for class 0)."""
+    """Active sets and active-column curl parts of one axis class (0: m = 0, 1: |m| >= 1): curl(m) = curl_static +
+    m curl_order (None for class 0); a_weights = ring volume / mu on the active a points (0 elsewhere)."""
     unknown_index: np.ndarray
     a_active: np.ndarray
     a_weights: np.ndarray
     curl_static: object
     curl_order: object
-    k0_part: object
-    k1_part: object
-    k2_part: object
+
+
+def _curl_gram(left, right, a_weights):
+    """left^T diag(a_weights) right of CSR curls (scipy CSC complex128; diag @ right as a row scale of its data)."""
+    weighted = right.copy()
+    weighted.data *= np.repeat(a_weights, np.diff(right.indptr))
+    return left.T @ weighted
 
 
 class BORAssembly:
     """m-independent parts of the BOR operator at one omega (axes, point materials, ring volumes, curl split C0 + m C1);
-    system(m) returns the BORSystem of any azimuthal order, the K parts built once per axis class (module header)."""
+    system(m) returns the BORSystem of any azimuthal order as one C(m)^T W C(m) product (module header)."""
 
     def __init__(self, cell_widths, boundary_config, pml_dx, materials, omega, window=None):
         """cell_widths = (dr_cells, dz_cells) [m] (x = r from the x_lo grid edge, which is the axis), the r_hi / z faces
         of boundary_config (pml_dx = CPML grading cell [m]), BORMaterials, omega [rad/s] (None: the real, unstretched
         metric of the time-domain twin fdtd_bor, whose CPML stretches its derivatives itself; system() and
         order_family() then refuse); window = (slice_r, slice_z) of the physical window (None: the whole grid)."""
-        import scipy.sparse
         if omega is not None:
             omega = float(omega)
             if not (math.isfinite(omega) and omega > 0.0):
@@ -347,27 +386,22 @@ class BORAssembly:
                                               np.outer(r_axis.window_centres, z_axis.window_edges).ravel()))
 
         # curl C = C0 + m C1: rows a_r (nr, nz+1), a_z (nr+1, nz), a_phi (nr+1, nz+1); columns E_r (nr+1, nz), u (nr,
-        # nz), E_z (nr, nz+1); C1 holds the m / r entries at m = 1
-        identity, kron, diags = scipy.sparse.identity, scipy.sparse.kron, scipy.sparse.diags
+        # nz), E_z (nr, nz+1); C1 holds the m / r entries at m = 1. The kron blocks are written as one COO each
+        # (_block_csc: the bmat of scipy kron / identity blocks, same canonical CSC, ~10 x less host time)
         n_er, n_u, n_ez = _full_offsets(shape)
         n_ar, n_az, n_aphi = nr * (nz + 1), (nr + 1) * nz, (nr + 1) * (nz + 1)
-
-        def zeros(n_rows, n_columns):
-            return scipy.sparse.csr_matrix((n_rows, n_columns), dtype=np.complex128)
-
+        curl_shape = (n_ar + n_az + n_aphi, n_er + n_u + n_ez)
         gradient_z = _difference(nz, np.ones(nz), z_axis.edge_lengths)
         gradient_r = _difference(nr, np.ones(nr), r_axis.edge_lengths)
         metric_gradient_r = _difference(nr, r_axis.centres, r_axis.edge_means * r_axis.edge_lengths)
-        self._curl_static = scipy.sparse.bmat([
-            [zeros(n_ar, n_er), kron(identity(nr), gradient_z), zeros(n_ar, n_ez)],
-            [zeros(n_az, n_er), kron(metric_gradient_r, identity(nz)), zeros(n_az, n_ez)],
-            [kron(identity(nr + 1), gradient_z), zeros(n_aphi, n_u), -kron(gradient_r, identity(nz + 1))],
-        ], format='csc')
-        self._curl_order = scipy.sparse.bmat([
-            [zeros(n_ar, n_er), zeros(n_ar, n_u), kron(diags(1.0 / r_axis.centres), identity(nz + 1))],
-            [kron(diags(1.0 / r_axis.edge_means), identity(nz)), zeros(n_az, n_u), zeros(n_az, n_ez)],
-            [zeros(n_aphi, n_er), zeros(n_aphi, n_u), zeros(n_aphi, n_ez)],
-        ], format='csc')
+        self._curl_static = _block_csc(curl_shape, (
+            ((0, n_er, 1), _identity_kron(nr, gradient_z)),
+            ((n_ar, n_er, 1), _kron_identity(metric_gradient_r, nz)),
+            ((n_ar + n_az, 0, 1), _identity_kron(nr + 1, gradient_z)),
+            ((n_ar + n_az, n_er + n_u, -1), _kron_identity(gradient_r, nz + 1))))
+        self._curl_order = _block_csc(curl_shape, (
+            ((0, n_er + n_u, 1), _kron_identity(_diagonal(1.0 / r_axis.centres), nz + 1)),
+            ((n_ar, 0, 1), _kron_identity(_diagonal(1.0 / r_axis.edge_means), nz))))
         self._classes = {}
 
     def e_point_means(self, r_values, phi_values, z_values):
@@ -405,7 +439,6 @@ class BORAssembly:
 
     def _class_operators(self, class_index):
         """_ClassOperators of axis class 0 | 1, built on first use."""
-        import scipy.sparse
         if class_index in self._classes:
             return self._classes[class_index]
         nr, nz = self.shape
@@ -428,25 +461,15 @@ class BORAssembly:
                                    np.outer(aphi_r_edges, z_edges).ravel()))
         unknown_index = np.flatnonzero(active_e)
         a_weights = self.a_volumes / self.a_mu * a_active
-        weights = scipy.sparse.diags(a_weights)
         curl_static = self._curl_static[:, unknown_index].tocsr()
-        weighted_static = weights @ curl_static
-        k0_part = (curl_static.T @ weighted_static).tocsr()
-        curl_order = k1_part = k2_part = None
-        if class_index > 0:
-            curl_order = self._curl_order[:, unknown_index].tocsr()
-            weighted_order = weights @ curl_order
-            cross = curl_static.T @ weighted_order
-            k1_part = (cross + cross.T).tocsr()
-            k2_part = (curl_order.T @ weighted_order).tocsr()
+        curl_order = self._curl_order[:, unknown_index].tocsr() if class_index > 0 else None
         operators = _ClassOperators(unknown_index=unknown_index, a_active=a_active, a_weights=a_weights,
-                                    curl_static=curl_static, curl_order=curl_order, k0_part=k0_part,
-                                    k1_part=k1_part, k2_part=k2_part)
+                                    curl_static=curl_static, curl_order=curl_order)
         self._classes[class_index] = operators
         return operators
 
     def system(self, azimuthal_order) -> 'BORSystem':
-        """BORSystem of an integer azimuthal order: K0 + m K1 + m^2 K2 - k0^2 M of its axis class."""
+        """BORSystem of an integer azimuthal order: C(m)^T W C(m) - k0^2 M on the active set of its axis class."""
         import scipy.sparse
         self._require_omega()
         class_index = axis_class(azimuthal_order)
@@ -454,10 +477,9 @@ class BORAssembly:
         parts = self._class_operators(class_index)
         unknown_index = parts.unknown_index
         mass = self.full_mass[unknown_index]
-        stiffness, curl = parts.k0_part, parts.curl_static
-        if order != 0:
-            stiffness = parts.k0_part + order * parts.k1_part + order ** 2 * parts.k2_part
-            curl = (parts.curl_static + order * parts.curl_order).tocsr()
+        curl = parts.curl_static if order == 0 else (parts.curl_static + order * parts.curl_order).tocsr()
+        # one product per order (= K0 + m K1 + m^2 K2 of order_family up to rounding), ~3 x fewer host products
+        stiffness = _curl_gram(curl, curl, parts.a_weights)
         operator = (stiffness - (self.omega / C0) ** 2 * scipy.sparse.diags(mass)).tocsr()
         return BORSystem(omega=self.omega, azimuthal_order=order, shape=self.shape, operator=operator, mass=mass,
                          curl=curl, a_active=parts.a_active, a_mu=self.a_mu, a_weights=parts.a_weights,
@@ -474,8 +496,12 @@ class BORAssembly:
         self._require_omega()
         parts = self._class_operators(class_index)
         mass = self.full_mass[parts.unknown_index]
-        base =(parts.k0_part - (self.omega / C0) ** 2 * scipy.sparse.diags(mass)).tocsr()
-        terms = () if class_index == 0 else (parts.k1_part, parts.k2_part)
+        static, order_part, a_weights = parts.curl_static, parts.curl_order, parts.a_weights
+        base = (_curl_gram(static, static, a_weights) - (self.omega / C0) ** 2 * scipy.sparse.diags(mass)).tocsr()
+        terms = ()
+        if class_index > 0:
+            cross = _curl_gram(static, order_part, a_weights)
+            terms = ((cross + cross.T).tocsr(), _curl_gram(order_part, order_part, a_weights).tocsr())
         return base, terms, parts.unknown_index
 
 

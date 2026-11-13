@@ -143,9 +143,9 @@ class Param:
     # float may reference time t [s] (with parameters only, no x / y): the feature re-evaluates it at the start of
     # every runner step of a time_dependent study (t = 0 elsewhere); state_dependent material properties always may
     time_dependent: bool = False
-    # feature float re-set in place per value of a reused sweep build (SweepSpec.reuse_build): its apply wires a
-    # setter through BuildContext.follow_parameters (model.sweep_reuse); unflagged values naming the swept parameter
-    # block the reuse
+    # feature float or physics setting re-set in place per value of a reused sweep build (SweepSpec.reuse_build): its
+    # apply / create wires a setter through BuildContext.follow_parameters (model.sweep_reuse); unflagged values
+    # naming the swept parameter block the reuse
     follows_parameters: bool = False
     visible_if: tuple = ()           # ((param, (values...)), ...): visible when ANY pair matches; () = always
     expands_to: tuple = ()           # material properties: MaterialGrid arrays written
@@ -1242,11 +1242,13 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters, plain_role
     return resolved
 
 
-def study_default_roles(spec, registry, parameters) -> frozenset:
+def study_default_roles(spec, registry, parameters, host=False) -> frozenset:
     """{(physics name, role)} of the Automatic roles whose solver comes from SolverRole.study_defaults on a cuDSS back
-    end (a factor outside the pool), the roles meshing.fitted_memory_estimate may resolve without the study."""
+    end (a factor outside the pool), the roles meshing.fitted_memory_estimate may resolve without the study; host: those
+    on a host factor instead (cpu backend, or a gpu without nvmath-python) whose Automatic without the study is another
+    solver type (cpu heat transients: sparse_direct either way, so none)."""
     from ..solvers.sparse_direct import AUTO_BACK_END_KEY   # numpy only at module level
-    study = spec.study.type
+    study, backend = spec.study.type, solver_backend(spec)
     roles = set()
     for physics_spec, physics_type in known_physics(spec, registry):
         grid = solver_grid(spec, physics_spec)
@@ -1259,8 +1261,17 @@ def study_default_roles(spec, registry, parameters) -> frozenset:
             resolved = resolved_solvers(spec, registry, physics_spec, study, parameters)
         except ValueError:   # reported by validate
             continue
-        roles.update((physics_spec.name, role) for role in candidates
-                     if role in resolved and resolved[role].values.get(AUTO_BACK_END_KEY))
+        for role in candidates:
+            if role not in resolved:
+                continue
+            on_cudss = bool(resolved[role].values.get(AUTO_BACK_END_KEY))
+            if not host:
+                keep = on_cudss
+            else:
+                plain_type, _ = physics_type.solver_roles[role].automatic(backend, grid, None)
+                keep = not on_cudss and plain_type != resolved[role].solver_type.name
+            if keep:
+                roles.add((physics_spec.name, role))
     return frozenset(roles)
 
 

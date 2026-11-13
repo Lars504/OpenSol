@@ -57,12 +57,16 @@ def json_safe(value):
     raise TypeError(f'{type(value).__name__} is not JSON serialisable')
 
 
-def write_json(path, data):
-    """Write json_safe(data) as ASCII JSON (indent 2) through '<file>.partial'; creates the parent directory."""
+def write_json(path, data, atomic=True):
+    """Write json_safe(data) as ASCII JSON (indent 2) through '<file>.partial' (atomic False: in place); creates the
+    parent directory."""
     path = Path(path)
     text = json.dumps(json_safe(data), indent=2, ensure_ascii=True, allow_nan=False)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_text_atomic(path, text + '\n')
+    if atomic:
+        _write_text_atomic(path, text + '\n')
+    else:
+        path.write_text(text + '\n', encoding='utf-8')
 
 
 def read_json(path):
@@ -218,28 +222,30 @@ def save_results(directory, data, save_arrays=True, written_files=None):
     """Write results.npz and meshes.npz (when save_arrays; meshes.npz only with data.meshes), log.txt, model.json (when
     data.spec) and, last, summary.json after setting data.summary['files']; creates the directory and returns that
     files dict. written_files (dict) receives 'arrays' / 'meshes' / 'model' -> file name once that file is written (a
-    failure or interrupt leaves the rest out)."""
+    failure or interrupt leaves the rest out). An old summary.json is deleted first and only summary.json goes
+    through '.partial' + replace: a directory with a summary lists complete files only, with one rename per save."""
     directory = Path(directory)
     written_files = {} if written_files is None else written_files
     directory.mkdir(parents=True, exist_ok=True)
+    (directory / SUMMARY_FILE).unlink(missing_ok=True)   # until the new one lands, no summary vouches for the files
     files = {'summary': SUMMARY_FILE, 'log': LOG_FILE, 'arrays': _ARRAYS_FILE if save_arrays else None,
              'meshes': _MESHES_FILE if save_arrays and data.meshes else None,
              'model': _MODEL_FILE if data.spec is not None else None, 'figures': list(data.figure_files)}
     if isinstance(data.summary.get('convergence'), dict):   # S7.7 mesh refinement report, also in summary.json
-        write_json(directory / _CONVERGENCE_FILE, data.summary['convergence'])
+        write_json(directory / _CONVERGENCE_FILE, data.summary['convergence'], atomic=False)
         files['convergence'] = _CONVERGENCE_FILE
     data.summary['files'] = files
     if save_arrays:
         arrays, metadata = _results_arrays(data)
-        _write_npz(directory / _ARRAYS_FILE, arrays, json_safe(metadata))
+        _write_npz(directory / _ARRAYS_FILE, arrays, json_safe(metadata), atomic=False)
         written_files['arrays'] = _ARRAYS_FILE
     if files['meshes']:
-        _write_npz(directory / _MESHES_FILE, *_mesh_arrays(data.meshes))
+        _write_npz(directory / _MESHES_FILE, *_mesh_arrays(data.meshes), atomic=False)
         written_files['meshes'] = _MESHES_FILE
     (directory / LOG_FILE).write_text(''.join(f'{line}\n' for line in data.log_lines), encoding='utf-8',
                                        newline='\n')
     if data.spec is not None:
-        save_model(data.spec, directory / _MODEL_FILE)
+        save_model(data.spec, directory / _MODEL_FILE, atomic=False)
         written_files['model'] = _MODEL_FILE
     write_json(directory / SUMMARY_FILE, data.summary)
     return files

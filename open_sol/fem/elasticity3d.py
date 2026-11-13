@@ -11,7 +11,8 @@ elements; host numpy, scipy / core.backend inside functions."""
 # empty, callers restrict to their free dofs (as fem.assembly3d). The elastic stiffness sums its blocks into the block
 # pattern of fem.fixed_pattern.kept_pattern (scalar pattern x dense 3 x 3 blocks, kept per mesh and element set; slots
 # searched per chunk, no kept slot map), the same base TangentAssembler3D groups; the geometric stiffness sums its
-# scalar blocks x I3 into that pattern too while it is kept (the pencil K + K_sigma is then a same-pattern sum); the other
+# scalar blocks x I3 into that pattern too while it is kept (the pencil K + K_sigma is then a same-pattern sum), and the
+# mass its scalar blocks into the kept pattern's scalar pattern (then component_identity_csr: M stays compact); the other
 # matrices sum COO into CSR in batches (fem.assembly.CsrAccumulator) so the assembly peak stays bounded (P2: 900
 # entries per element). Symmetric
 # element products (B^T C B, the tangent) multiply only the column groups on and below the diagonal
@@ -222,12 +223,39 @@ def assemble_piezo_coupling_3d(dofs, piezo, elements=None, degree=None, stretch=
     return accumulator.result()
 
 
-def assemble_elastic_mass_3d(dofs, density, elements=None):
-    """CSR (3 n, 3 n) consistent mass int rho N_a N_b dV, the same block for every component (density per mesh element
-    or a number)."""
-    from scipy.sparse import identity, kron
+def assemble_elastic_mass_3d(dofs, density, elements=None, degree=None):
+    """CSR (3 n, 3 n) consistent mass int rho N_a N_b dV, the same block for every component (density per mesh element,
+    a number or a callable as assemble_lagrange_mass_3d, e.g. a PML-stretched density). The scalar mass sums into the
+    scalar pattern of K's kept block pattern of the same elements when one is kept (no COO -> CSR), then x I3."""
     _require_vector(dofs, 'assemble_elastic_mass_3d')
-    return kron(assemble_lagrange_mass_3d(dofs, density, elements=elements), identity(COMPONENTS), format='csr')
+    elements = _element_list(dofs.mesh, elements)
+    kept = (kept_pattern_if_any(dofs.mesh, COMPONENTS * dofs.n_dofs, dofs.element_dofs[elements], block=COMPONENTS)
+            if len(elements) else None)
+    return component_identity_csr(assemble_lagrange_mass_3d(dofs, density, elements=elements, degree=degree,
+                                                            kept=kept))
+
+
+def component_identity_csr(scalar):
+    """Canonical CSR kron(scalar, I3) of a scalar CSR (n, n), built directly (R6: no COO / sort): row 3 i + c holds
+    scalar row i at columns 3 j + c; every stored entry kept (explicit zeros too)."""
+    import scipy.sparse
+    scalar = scalar.tocsr()
+    if not scalar.has_canonical_format:
+        scalar = scalar.copy()
+        scalar.sum_duplicates()
+    n_rows, n_columns = scalar.shape
+    counts = np.repeat(np.diff(scalar.indptr).astype(np.int64), COMPONENTS)   # entries per vector row
+    index_dtype = np.int32 if max(COMPONENTS * max(n_rows, n_columns), int(counts.sum())) < 2 ** 31 else np.int64
+    indptr = np.zeros(COMPONENTS * n_rows + 1, dtype=np.int64)
+    np.cumsum(counts, out=indptr[1:])
+    shift = np.repeat(scalar.indptr[:-1].astype(np.int64), COMPONENTS) - indptr[:-1]   # scalar slot - vector slot
+    slots = np.arange(indptr[-1], dtype=np.int64)
+    slots += np.repeat(shift, counts)
+    indices = scalar.indices[slots].astype(index_dtype)
+    indices *= COMPONENTS
+    indices += np.repeat(np.tile(np.arange(COMPONENTS, dtype=index_dtype), n_rows), counts)
+    return scipy.sparse.csr_matrix((scalar.data[slots], indices, indptr.astype(index_dtype)),
+                                   shape=(COMPONENTS * n_rows, COMPONENTS * n_columns))
 
 
 # ---- loads ----
@@ -474,7 +502,6 @@ def assemble_geometric_stiffness_3d(dofs, stress, elements=None, degree=None, st
     StressField or its prescribed forms; PML stretch as assemble_elastic_stiffness_3d (complex symmetric, rule + 2).
     On the kept pattern of a K of the same elements (assemble_elastic_stiffness_3d before) K_sigma takes K's pattern
     (explicit zeros off the component diagonal), so K + K_sigma (pattern_sum) sums values only."""
-    from scipy.sparse import identity, kron
     _require_vector(dofs, 'assemble_geometric_stiffness_3d')
     field = as_stress_field(stress)
     mesh = dofs.mesh
@@ -498,7 +525,7 @@ def assemble_geometric_stiffness_3d(dofs, stress, elements=None, degree=None, st
             pattern.add_elements(data, dofs.element_dofs[chunk], _component_identity_blocks(blocks), check=False)
     if pattern is not None:
         return pattern.full(data, copy_pattern=True)
-    return kron(accumulator.result(), identity(COMPONENTS), format='csr')
+    return component_identity_csr(accumulator.result())
 
 
 def _component_identity_blocks(blocks) -> np.ndarray:

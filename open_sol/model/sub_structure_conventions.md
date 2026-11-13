@@ -540,7 +540,10 @@ templates, describe. Current state, no changelog.
   baseline_bytes)`: on_session(None), `close()`, `release_all` (gc, cuFFT cache, `free_all_blocks`); with emit, pool
   use above `pool_baseline_bytes` + 1 MiB logs a 'GPU memory leak' warning (process-wide counters: a later live
   session gives a false leak; api checks only when no later live Results exists). The run-start release in
-  `_run_single` skips the gc.collect when neither the pool nor cuDSS holds live bytes (the last close collected).
+  `_run_single` skips the gc.collect when neither the pool nor cuDSS holds live bytes (the last close collected); a
+  sweep's per-value release (`collect_garbage=COLLECT_WHEN_LIVE`) collects only when pool used or cuDSS external
+  bytes after the close exceed what the last collect left (a cycle still holding device memory; refcount frees the
+  rest), and the first value's release always collects (before `freeze_collect_baseline`).
 - GPU OOM = cupy OutOfMemoryError or a CUDA / library error naming an allocation failure (host MemoryError is
   ordinary): Issue at the failing step's node (outside any step ('model',)), memory released before BuildFailed /
   StudyFailed (`out_of_memory=True`), run_study closes the run's session, a derived value gives NaN.
@@ -746,19 +749,29 @@ templates, describe. Current state, no changelog.
   target-'sweep' analytic curves (api / GUI evaluate those on the full spec).
 - Reused sweep builds (`SweepSpec.reuse_build`, `sweep_reuse.py`): `reuse_issues(spec, registry)` = what refuses it
   (time_dependent / optimization studies, parity_sectors, adaptation, and every spec value reaching a live parameter =
-  the swept one + its dependents (`live_parameter_names`), except feature Params flagged `follows_parameters` with
-  parameter-only values (no x / y / z / t), derived values / curves / references and study settings); validate
+  the swept one + its dependents (`live_parameter_names`), except feature Params and physics settings flagged
+  `follows_parameters` with parameter-only values (no x / y / z / t; a setting of a type with `shortest_wavelength` on
+  an auto mesh without wavelength_min never follows: the mesh is sized by it), material values `_material_follows`
+  accepts, derived values / curves / references and study settings); validate
   `_check_sweep` reports them at their node paths, `_run_sweep` sends a refused spec through `_fail_sweep_setup`. The
   first build gets `live_parameters` (build_session -> builder.build keyword; a custom build callback must accept and
-  pass `**options`, as api's `_BuildRecorder`); a flagged param's apply sets its build value, then calls
-  `BuildContext.follow_parameters` (mechanics `follow_load` / `follow_held_values`), which registers a
-  `ParameterFollower` only for a live raw value on a `solver_hooks.RerunSolver`. When every physics is a RerunSolver
+  pass `**options`, as api's `_BuildRecorder`); a flagged param's apply (a setting's: the create) sets its build value,
+  then calls `BuildContext.follow_parameters` (mechanics `follow_load` / `follow_held_values`), which registers a
+  `ParameterFollower` only for a live raw value on a `solver_hooks.RerunSolver`. Material values: a uniform value of
+  parameters, no state field, no 3D tensor mesh, and every type reading the property non-EM with the property Param
+  `state_dependent` (the "materials_changed of an array it reads re-solves" contract, coupling sub file); EM types
+  are refused because index references, dispersive backgrounds and subpixel averages come from the build's eps.
+  `builder._follow_material` then repaints the owned arrays under the region mask (index-painted regions never
+  overlap; the follower keeps its own mask reference) and calls `materials_changed` of every solver on that mesh.
+  When every physics is a RerunSolver
   (`non_rerun_physics`, else an info line and one build per value) the session is kept: per later value
   `Session.set_sweep_value` (spec parameter and parameters dict changed IN PLACE: contexts and mesh views share them;
   followers re-set changed values incrementally) + `reset_run_records` (snapshots cleared in place, runner t / tick 0,
   every `reset_records()`), then `_run_built`; kept snapshots are taken before that reset; a run failure drops the
-  kept session; table `builds` counts builds. Followers keep host data only. Not range-checked per value: flag only
-  unbounded params. `estimate_overheads` prices the one build, `estimate_time` still every value's run.
+  kept session; table `builds` counts builds. Followers keep host data only (a material follower: also its region's
+  bool mask, as a dynamic material update). Not range-checked per value: flag only unbounded params, or check the
+  bounds in the setter (EME wavelength, AC frequency > 0, doping >= 0: a ValueError fails that value, the next one
+  builds anew); material values are never range-checked per value. `estimate_overheads` prices the one build, `estimate_time` still every value's run.
 - Study catalogue: `time_dependent` (em_fdfd_* too: stroboscopic re-solves every k steps beside a time-stepped physics,
   never beside em_fdtd_*), `stationary`, `frequency_domain`, `mode_analysis`, `eigenfrequency` (em_fdfd_* incl.
   em_fdfd_3d, solid_mechanics, solid_mechanics_3d, membrane), `frequency_response` (solid_mechanics,
@@ -993,7 +1006,9 @@ templates, describe. Current state, no changelog.
   estimation repeats the whole (and `estimate_overheads`' build items) `estimation_runs(spec)` = max_evaluations + 1
   times (an upper bound: exact counts become 'bounded'). per_run (the post-run check) stays one run.
 - Run-time estimate (`time_estimate.py`; ops in the core sub file): `estimate_time` runs
-  `meshing.estimate_memory(by_physics=)` first, so a recipe's `context.memory` is its own part. Per-step totals
+  `meshing.estimate_memory(by_physics=)` first, so a recipe's `context.memory` is its own part (per_run: the builder
+  hands its own estimate's by_physics in as `memory_parts` and its estimate to `estimate_overheads(memory=)`, so a
+  build runs estimate_memory once; with fitted plain_roles the parts are estimated again). Per-step totals
   (`_with_study_steps`): time_dependent ticks = round(duration / dt_sync), dt_sync = min dt_limit, a physics with
   `every` n runs ticks // n steps; frequency_domain with a finite dt_limit (harmonic FDTD) a guess of
   HARMONIC_PULSE_FRACTION_GUESS x max_duration / dt; other studies 0 steps. A recipe raising ValueError / KeyError /
@@ -1002,8 +1017,11 @@ templates, describe. Current state, no changelog.
   mesh_estimate is not used), labels '<parameter> = <value>: ...', clears the counters; the builder estimates
   per_run=True for the post-run `_time_check` (None without a profile or for a non-completed run). A run whose mesh
   signature (`_mesh_signature`) and parity sector an earlier run of the same estimate had gets
-  `TimeContext.ordering_kept` -> `SolverWork.ordering_kept` (kept cuDSS orderings: `cudss_plan_fraction`); the
-  per_run check never sets it. Stored-field snapshots on triangle meshes are study work (`snapshot_read_items`, whose
+  `TimeContext.ordering_kept` -> `SolverWork.ordering_kept` (kept cuDSS orderings: `cudss_plan_fraction`); a later
+  run of a reuse_build sweep (same sector) or of a warm_start study with ordering_kept gets
+  `TimeContext.continues_previous` (the solver state continues: drift_diffusion prices one continuation step) and,
+  with reuse_build, `TimeContext.live_parameters` (a recipe whose followed setter cold-starts checks it); the
+  per_run check sets none of them. Stored-field snapshots on triangle meshes are study work (`snapshot_read_items`, whose
   locate counts follow fem.sampling's PointLocator: a change there updates them). A quasi-static physics on or downstream of a cycle of enabled couplings
   (`fixed_point_physics`, TimeContext.fixed_point; a self-coupling is a cycle, so is a coupling whose type reads its
   target, `CouplingType.reads_target`) solves FIXED_POINT_ITERATIONS_GUESS times (`static_solves`), every other

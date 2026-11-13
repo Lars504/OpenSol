@@ -405,6 +405,9 @@ class BoundaryManager:
         self.fused_walls = all(n_cells >= 3 for n_cells, pins in ((nx, centre_pins[:2] + plane_pins[:2]),
                                                                   (ny, centre_pins[2:] + plane_pins[2:])) if any(pins))
         self._has_centre_rows, self._has_plane_rows = any(centre_pins), any(plane_pins)
+        # per axis: cell count when a face pins a row there (rows 0, 1, n-2, n-1 are written or read), else None
+        self._pinned_axis_cells = tuple(n_cells if any(pins) else None for n_cells, pins in (
+            (nx, centre_pins[:2] + plane_pins[:2]), (ny, centre_pins[2:] + plane_pins[2:])))
         self._wall_launch = ((-(-(nx + ny) // _WALL_THREADS),), (_WALL_THREADS,))
         self._centre_scalars = (int32(nx), int32(ny),
                                 *(real(centre_signs.get(face_type, 0.0)) for face_type in face_types),
@@ -422,6 +425,11 @@ class BoundaryManager:
         if self._has_plane_rows:
             grid, block = self._wall_launch
             _wall_plane_rows(grid, block, (x_face_field, y_face_field, *self._plane_scalars))
+
+    def clear_of_walls(self, i, j) -> bool:
+        """True when cell / face (i, j) lies >= 2 cells inside every pinned axis: no wall row writes or reads it."""
+        return all(n_cells is None or 2 <= index <= n_cells - 3
+                   for index, n_cells in zip((i, j), self._pinned_axis_cells))
 
     @property
     def cpml(self):

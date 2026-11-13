@@ -113,12 +113,22 @@ class FEMDiffusionSystemCommon:
         self.face_conditions[face] = (condition, sequence)
         self._note_change(previous, condition)
 
-    def add_held(self, element_mask, value) -> None:
-        """Fix u = value on every dof of the masked elements (held cells: a terminal / reservoir)."""
+    def add_held(self, element_mask, value) -> int:
+        """Fix u = value on every dof of the masked elements (held cells: a terminal / reservoir); returns its index
+        for set_held_value."""
         mask = np.asarray(element_mask, dtype=bool).copy()
         self.held.append((mask, float(value), self._next_sequence()))
         self.set_element_values(mask, value)
         self.operator_dirty = True
+        return len(self.held) - 1
+
+    def set_held_value(self, index, value) -> None:
+        """New value of an add_held region (same dofs and order): the lift and loads are refreshed at the next solve,
+        the factor is kept."""
+        mask, _, sequence = self.held[index]
+        self.held[index] = (mask, float(value), sequence)
+        self.set_element_values(mask, value)
+        self._constants_stale = True
 
     def add_loss(self, element_mask, coefficient, external) -> None:
         """Add a volumetric loss a (u - external) on the masked elements (a, external numbers or per element)."""
@@ -763,10 +773,18 @@ class FEMDiffusionPhysicsCommon(PhysicsSolver):
             raise ValueError(f'element mask has shape {mask.shape}, expected ({self.system.mesh.n_elements},)')
         return mask
 
-    def add_fixed_value(self, mask, value) -> None:
-        """Hold the field at `value` (a number) on every dof of the masked elements."""
-        self.system.add_held(self.element_mask(mask), float(value) - self.reference_value)
+    def add_fixed_value(self, mask, value) -> int:
+        """Hold the field at `value` (a number) on every dof of the masked elements; returns the hold index for
+        set_fixed_value."""
+        hold = self.system.add_held(self.element_mask(mask), float(value) - self.reference_value)
         self._values_changed()
+        return hold
+
+    def set_fixed_value(self, hold, value) -> None:
+        """New value (a number) of an add_fixed_value hold (a reused sweep build); the factor is kept."""
+        self.system.set_held_value(hold, float(value) - self.reference_value)
+        self._values_changed()
+        self._rhs_changed()
 
     def set_initial_value(self, mask, value) -> None:
         """Write the field `value` (a number) on the dofs of the masked elements."""

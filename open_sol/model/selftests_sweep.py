@@ -230,10 +230,10 @@ def _check_reuse_parity(results_by_name):
 
 
 def _check_reuse_blockers(_results_by_name):
-    """CPU: sweep_reuse.reuse_issues lists a swept parameter (or one depending on it) in a material, a physics setting,
-    a mesh size, an x-dependent following load and a time_dependent study at their node paths, and nothing for loads,
-    held values and derived values of parameters only; live_parameter_names follows dependencies transitively; validate
-    reports the issues as errors."""
+    """CPU: sweep_reuse.reuse_issues lists a swept parameter (or one depending on it) in an x-dependent material value,
+    an unflagged physics setting, a mesh size, an x-dependent following load and a time_dependent study at their node
+    paths, and nothing for loads, held values, a uniform (repainted) material value and derived values of parameters
+    only; live_parameter_names follows dependencies transitively; validate reports the issues as errors."""
     from .schema import get_registry
     from .sweep_reuse import live_parameter_names, reuse_issues
     from .validate import validate
@@ -252,8 +252,11 @@ def _check_reuse_blockers(_results_by_name):
 
     cases = {
         'loads only': (None, set()),
-        'material': (lambda spec: spec.materials[0].properties.__setitem__('youngs_modulus', '250e9 + 0*pull'),
+        'material': (lambda spec: spec.materials[0].properties.__setitem__('youngs_modulus',
+                                                                            '250e9 + 0*pull*x'),
                      {('material', 'string')}),
+        'uniform material': (lambda spec: spec.materials[0].properties.__setitem__('youngs_modulus',
+                                                                                    '250e9 + 0*pull'), set()),
         'physics setting': (lambda spec: spec.physics_by_name('solid').settings.__setitem__(
             'nonlinear_tolerance', '1e-10 + 0*q_top'), {('physics', 'solid')}),
         'mesh size': (lambda spec: setattr(spec.meshes[0], 'dx', f'{_STRING_SIZE[1]!r} + 0*q0'),
@@ -384,7 +387,7 @@ SWEEP_SELFTEST_CASES = (
                     'the mode-monitor phase difference (mode_down - mode_up) must agree to float32 noise: error = the '
                     'largest relative difference (rad for the phase) / 1e-5 + the number of failed checks (one '
                     'converged wavelength_fixed_points record, equal fixed-point iteration counts), tolerance 1.',
-        specs=_feedback_specs, check=_check_feedback, heavy=True),
+        specs=_feedback_specs, check=_check_feedback),
     SelfTestCase(
         name='sweep_power_strip',
         label='Parameter sweep: two source powers of the coupled strip (derived series, kept fields)',
@@ -422,10 +425,11 @@ SWEEP_SELFTEST_CASES = (
     SelfTestCase(
         name='sweep_reuse_blockers',
         label='Reused sweep builds: what the swept parameter may reach (CPU)',
-        description='sweep_reuse.reuse_issues on the reuse_build string: loads, held values and derived values of '
-                    'the swept q0 and of parameters depending on it give no issue; q0 or a dependent in a material '
-                    'property, a physics setting, the mesh size, an x-dependent body force and a time_dependent study '
-                    'give one issue at the node path (material, physics, mesh, feature, study); a parameter not '
+        description='sweep_reuse.reuse_issues on the reuse_build string: loads, held values, a uniform Young\'s '
+                    'modulus (repainted) and derived values of the swept q0 and of parameters depending on it give no '
+                    'issue; q0 or a dependent in an x-dependent material property, an unflagged physics setting, the '
+                    'mesh size, an x-dependent body force and a time_dependent study give one issue at the node path '
+                    '(material, physics, mesh, feature, study); a parameter not '
                     'depending on q0 gives none; live_parameter_names = {q0, pull, q_top}; validate reports the '
                     'material case as an error. error = the number of failed checks, tolerance 0.',
         specs=lambda: {}, check=_check_reuse_blockers),

@@ -548,12 +548,18 @@ def _fdtd_physics_type(polarization):
 # launch also slices ~5 views per call); the flat 8 + 2 per feature priced 0.087 ms vs 0.33-0.41 ms per gpu step
 _FIELD_LAUNCH_WEIGHT = 3
 # boundaries.BoundaryManager outer-face rows, one fused launch per kind for every face, applied twice per step (in
-# the post, inside the step graphs on the gpu, and again after the sources): ez H rows on pmc faces, E_z rows on pec
+# the post, inside the step graphs on the gpu, and again after the sources unless _REPIN_SOURCE_FEATURES / poles are
+# absent): ez H rows on pmc faces, E_z rows on pec
 # / pmc / mirror faces; hz H_z rows on pec / pmc / mirror faces, E rows on pec / antisymmetric faces
 _WALL_ROW_FACES = {'ez': (('pmc',), ('pec', 'pmc', 'symmetric', 'antisymmetric')),
                    'hz': (('pec', 'pmc', 'symmetric', 'antisymmetric'), ('pec', 'antisymmetric'))}
+# source features whose writes may reach a wall row: the re-pin after injection runs (fdtd_2d_base._walls_need_repin
+# skips it for point sources inside the window and no poles)
+_REPIN_SOURCE_FEATURES = frozenset({'line_source', 'gaussian_beam', 'plane_wave_tfsf', 'mode_source'})
+_POST_WALL_MEDIA = frozenset({'nonlinear_medium', 'gain_medium'})   # eager after the E step: poles stay eager too
 _PEC_KEEP_LAUNCHES = {'ez': 1, 'hz': 2}   # per field set: ez[pec_box] *= keep / ex, ey on their keeps (advance)
-_POLE_LAUNCHES = {'ez': 2, 'hz': 4}       # per field set and pole: J / P update + E correction (hz: x and y faces)
+# per field set and pole: J / P update + E correction (hz: x and y faces); inside the E step graph on the gpu
+_POLE_LAUNCHES = {'ez': 2, 'hz': 4}
 
 
 def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
@@ -561,7 +567,7 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
     / hz): per Courant step (mesh dt) its arrays and its features' (DFT monitors, poles, CPML) streamed once; per field
     set (Bloch k != 0: two) the H / E kernels plus an H and an E launch per CPML side (x their host overhead weight;
     gpu: replayed as 1 + n_sets step graphs), the outer-face rows, the PEC keep, conformal faces and pole kernels; two
-    per enabled feature (sources, probes, monitors); cpu: numba Yee twins, numpy for the rest."""
+    per enabled feature (sources, monitors; field probes on the cpu only); cpu: numba Yee twins, numpy for the rest."""
     features = [feature for feature in context.physics_spec.features if feature.enabled]
     faces = [settings_values.get(f'bc_{face}') for face in FACES]
     cpml_sides = faces.count('cpml')
@@ -569,19 +575,29 @@ def fdtd_time_step_estimate(polarization, settings_values, mesh, context):
     from .solvers.fdtd_2d_base import STEP_GRAPHS
     h_rows, e_rows = _WALL_ROW_FACES[polarization]
     wall_kinds = int(any(face in h_rows for face in faces)) + int(any(face in e_rows for face in faces))
-    wall_rows = wall_kinds * (1 if context.backend == 'gpu' and STEP_GRAPHS else 2)   # gpu: only the re-pins eager
     pec = any(feature.type == 'pec_domain' for feature in features)
     conformal = pec and context.spec.solver_defaults.conformal_boundaries is True
     memory_items = context.memory.items if context.memory is not None else ()
     poles = any(label.endswith('dispersive poles') and size > 0 for label, size in memory_items)
+    media = any(feature.type in _POST_WALL_MEDIA for feature in features)
+    repin = poles or media or any(feature.type in _REPIN_SOURCE_FEATURES for feature in features)
+    step_graphs = context.backend == 'gpu' and STEP_GRAPHS
+    # the post's rows (inside the step graphs on the gpu) + the re-pin after the sources
+    wall_rows = wall_kinds * ((0 if step_graphs else 1) + int(repin))
+    # poles replay inside the E step graph unless loss accumulation or a nonlinear / gain medium runs between
+    eager_poles = poles and not (step_graphs and not media and not settings_values.get('track_absorption'))
     per_set = (wall_rows + (_PEC_KEEP_LAUNCHES[polarization] if pec else 0)
-               + (_POLE_LAUNCHES[polarization] if poles else 0))
+               + (_POLE_LAUNCHES[polarization] if eager_poles else 0))
     numba_launches = _FIELD_LAUNCH_WEIGHT * n_sets * 2
     if context.backend == 'gpu' and STEP_GRAPHS:   # one H graph of every set + one E graph per set (fdtd_2d_base)
         field_launches = 1 + n_sets
     else:
         field_launches = numba_launches + n_sets * (_FIELD_LAUNCH_WEIGHT * 2 * cpml_sides + (1 if conformal else 0))
-    launches = field_launches + n_sets * per_set + 2 * len(features)
+    # gpu: the field probes are recorded inside the E step graph (FieldProbeRows; the eager re-sample after an active
+    # source is not booked)
+    eager_features = [feature for feature in features
+                      if not (feature.type == 'field_probe' and context.backend == 'gpu')]
+    launches = field_launches + n_sets * per_set + 2 * len(eager_features)
     # cpu: only the H / E Yee kernels have numba twins (fdtd_*_2d_kernels); CPML psi, poles, gain, loss and monitors
     # run numpy twins
     return explicit_step_estimate(context, 'Yee', mesh.dt, launches=launches, numba_items=_numba_stepped,

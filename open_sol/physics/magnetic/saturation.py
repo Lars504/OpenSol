@@ -18,6 +18,40 @@ TENSOR_NONLINEAR_METHODS = ('anderson', 'picard')
 TRIANGLE_NONLINEAR_METHODS = ('newton',)
 ANDERSON_DEPTH = 5                           # iterates mixed by 'anderson'
 _LOG_SERIES_LIMIT = 1e-3                     # x below which x - ln(1 + x) is summed as its series (no cancellation)
+# float32 tensor loop: proposals in a row that do not halve the smallest change so far before the loop ends unconverged
+FLOAT32_STALL_ITERATIONS = 20
+
+
+class Float32StallWatch:
+    """Ends a single-precision saturation loop whose change stopped falling: the float32 CG stalls near a relative
+    residual of ~1e-6, which leaves |B| of high-permeability cells jumping by ~1e-2 per solve (bh example)."""
+
+    def __init__(self):
+        self.smallest_change = math.inf
+        self.iterations_since = 0
+        self.last_change = math.nan
+        self.stalled = False
+
+    def check(self, proposal, state) -> bool:
+        """True once FLOAT32_STALL_ITERATIONS proposals in a row missed half the smallest change (one sync)."""
+        change = float(abs(proposal - state).max())
+        self.last_change = change
+        if change <= 0.5 * self.smallest_change:
+            self.smallest_change, self.iterations_since = change, 0
+        else:
+            self.iterations_since += 1
+        self.stalled = self.iterations_since >= FLOAT32_STALL_ITERATIONS
+        return self.stalled
+
+    def record_stop(self, picard) -> None:
+        """Count the stopped loop as unconverged on picard (its run returned converged on the repeated state)."""
+        picard.n_unconverged += 1
+        picard.last_converged = False
+        picard.last_warning = (
+            f'{picard.label()}: stopped after {picard.last_iterations} iterations at single precision: the change '
+            f'({self.last_change:.2e}, tolerance {picard.settings.tolerance:.1e}) did not halve in '
+            f'{FLOAT32_STALL_ITERATIONS} iterations; the float32 CG stalls near a relative residual of ~1e-6, which '
+            'leaves B in high-permeability cells off by up to percents: use a double or mixed linear solver')
 
 
 def saturation_reluctivity(flux_density, relative_permeability, saturation_polarization, xp):

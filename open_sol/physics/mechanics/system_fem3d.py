@@ -10,7 +10,6 @@ import numpy as np
 
 from ...fem.dofs3d import lagrange_dofs_3d
 from ...fem.assembly import pattern_sum
-from ...fem.assembly3d import assemble_lagrange_mass_3d
 from ...fem.elasticity3d import COMPONENTS, assemble_elastic_mass_3d, assemble_elastic_stiffness_3d
 from ...fem.mesh3d import window_faces
 from .pml3d import ring_only_dofs
@@ -187,17 +186,16 @@ class ElasticFEMSystem3D(DirectElasticSystem):
         part weighted by the stretch Jacobian s_x s_y s_z (complex)."""
         if self.pml is None:
             return assemble_elastic_mass_3d(self.full, density, elements=self.solid)
-        from scipy.sparse import identity, kron
         window = self.mesh.window_elements()
         density = np.asarray(density, dtype=np.float64)
 
         def stretched_density(points, elements):
             return density[elements][:, None] * self.pml.jacobian(points)
 
-        shell = assemble_lagrange_mass_3d(self.full, stretched_density, elements=self.solid & ~window,
-                                          degree=2 * self.order + 2)
-        return pattern_sum([assemble_elastic_mass_3d(self.full, density, elements=self.solid & window),
-                            kron(shell, identity(COMPONENTS), format='csr')])
+        # each part on the scalar pattern of its own kept K block pattern (window, stretched shell), then x I3
+        shell = assemble_elastic_mass_3d(self.full, stretched_density, elements=self.solid & ~window,
+                                         degree=2 * self.order + 2)
+        return pattern_sum([assemble_elastic_mass_3d(self.full, density, elements=self.solid & window), shell])
 
     def shell_only_dofs(self) -> np.ndarray:
         """Host bool over the vector dofs: dofs of shell elements that no window element touches (the PML share of a

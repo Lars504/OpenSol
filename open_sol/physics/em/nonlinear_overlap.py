@@ -162,6 +162,10 @@ class ShgOverlapMonitor:
         self._records = {}     # pump omega [rad/s] -> self.series values
         self.n_harmonic_solves = 0
 
+    def clear(self):
+        """Drop every row (a rerun of a reused sweep build starts afresh)."""
+        self._records = {}
+
     def record(self, physics):
         """Solve the 2 omega modes of physics' current materials, then the row of the selected pair (NaN when a mode
         is missing, with a runtime warning); ValueError for a fixed ring crystal without a bend."""

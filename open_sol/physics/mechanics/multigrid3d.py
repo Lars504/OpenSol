@@ -5,7 +5,9 @@ and a dense coarsest pseudo-inverse; every launch a core.kernels twin, no host s
 # the widths per axis (an odd count keeps its last cell single), volume-mean Lame values (void children count 0, so a
 # half-void coarse cell is half as stiff; void only when every child is), held dofs by injection at coincident nodes
 # (holds at other fine nodes are lost there; the prolonged correction is masked by the fine free dofs, and a coarse
-# rigid motion that results falls into the pseudo-inverse's dropped null space). Pre- and post-smoothing are the same
+# rigid motion that results falls into the pseudo-inverse's dropped null space). The coarsest dense operator alone is
+# Galerkin (P^T A P of the level above, probed): a rediscretised one over-stiffened thin plates in void (bending ~ t^3
+# of the averaged thickness) and multigrid fell back on solid_3d_multigrid_void. Pre- and post-smoothing are the same
 # Chebyshev polynomial in B^-1 A and R = P^T, so the cycle is symmetric (plain PCG).
 import itertools
 import time
@@ -444,9 +446,25 @@ class BrickMultigrid:
             rho = rho_next
         return tuple(coefficients)
 
+    def _coarsest_product(self, level, probe):
+        """Host float64 image of a coarsest probe: Galerkin P^T A P through the level above (exact fine-cell energy, so
+        thin solids in void keep their bending stiffness), or the level's own operator when it is the only one."""
+        xp = self.xp
+        if len(self.levels) == 1:
+            level.direction[...] = xp.asarray(probe, dtype=self.dtype)
+            level.product_of(level.direction, level.product)
+            return np.asarray(to_host(level.product), dtype=np.float64)
+        fine = self.levels[-2]
+        level.solution[...] = xp.asarray(probe, dtype=self.dtype)
+        self._prolong(fine, level)                          # fine.direction = P probe (fixed fine dofs zeroed)
+        fine.product_of(fine.direction, fine.residual)      # A P probe into the restriction's input
+        self._restrict(fine, level)                         # level.residual = P^T A P probe (fixed coarse dofs zeroed)
+        return np.asarray(to_host(level.residual), dtype=np.float64)
+
     def _dense_inverse(self, level):
-        """Pseudo-inverse (cycle dtype, on the backend) of the coarsest masked operator, probed with 27 node colours x 3
-        components (colour nodes 3 apart: their 27-node stencils never overlap), eigh of the free block on the host."""
+        """Pseudo-inverse (cycle dtype, on the backend) of the coarsest masked Galerkin operator, probed with 27 node
+        colours x 3 components (colour nodes 3 apart: the nested Q1 coarse basis keeps 27-node stencils, never
+        overlapping), eigh of the free block on the host."""
         xp = self.xp
         n0, n1, n2 = level.node_shape
         n = level.n_dofs
@@ -465,9 +483,7 @@ class BrickMultigrid:
                     continue
                 probe = np.zeros(n)
                 probe[columns] = 1.0
-                level.direction[...] = xp.asarray(probe, dtype=self.dtype)
-                level.product_of(level.direction, level.product)
-                image = np.asarray(to_host(level.product), dtype=np.float64)
+                image = self._coarsest_product(level, probe)
                 owner = columns // 3   # every stencil node (27 offsets) x component of every probed column at once
                 mi = node_i[owner][:, None] + offsets[:, 0]
                 mj = node_j[owner][:, None] + offsets[:, 1]

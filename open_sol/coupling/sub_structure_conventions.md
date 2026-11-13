@@ -13,6 +13,11 @@ Sub file of the root `structure_conventions.md`. Runner and coupling gotchas.
   steps; time-dependent values read it there (`material_update.py`: a DynamicMaterialUpdate of t = every the smallest
   stride, no after_source_step, rewritten on every cadenced tick; TimeDependentUpdate = a feature value of t, `target`
   its physics, every its stride, setter(value_at(runner.t)) when the clock moved).
+- Runner hand-off: with one solver at stride 1 and an empty coupling schedule (time updates and dynamic materials are
+  couplings, so nothing else runs per tick) a solver with `advance_ticks(n_ticks, t, dt_sync, stop_time) -> (ticks
+  run, t)` takes the whole `advance` chunk (`prepare` sets `_hand_off`). It must run exactly the tick loop: step(t,
+  dt_sync) while fewer than n_ticks ran and t < stop_time, t = t + dt_sync per tick, so outputs and stop times land on
+  the same ticks. Only elastic_waves has it (multi-step graphs: physics/acoustics sub file).
 - `prepare` raises when dt_limit < every * dt_sync (EM `every > 1` raises; transient heat needs every * dt_sync <=
   time_step) or a coupling names an unattached physics; resolves a CouplingTerm / CouplingGroup every=None (script
   default) to the largest stride of its source / target (the model's null every); sets

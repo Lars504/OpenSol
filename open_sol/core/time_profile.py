@@ -16,6 +16,10 @@ PROFILE_FOLDER = 'time_profiles'                # next to the open_sol package (
 PROFILE_VERSION = 1
 QUICK_SCALE = 0.1          # --quick: largest benchmark sizes x this (curves still span their decades)
 CUDSS_DISTRIBUTIONS = ('nvidia-cudss-cu13', 'nvidia-cudss-cu12')   # cuDSS wheels nvmath loads (profile versions)
+# block sizes of the dense inverse curves (time_estimate.BlockInverse): batched stacks 'block_inverse[_single]_<b>' over
+# the batch, single matrices 'matrix_inverse[_single]' over the block size (line_block inverts per matrix above 128)
+BLOCK_INVERSE_SIZES = (32, 64, 128)
+MATRIX_INVERSE_SIZES = (128, 256, 512)
 CUDSS_AXES = (64, 128, 256, 512)   # cells per axis of the 2D 5-point cuDSS benchmarks (quick: the first three; larger
                                    # sizes extrapolate along the 256 -> 512 slope, at least linear)
 
@@ -94,20 +98,41 @@ def profile_path(backend) -> str:
 _TIMED_SOURCES = (os.path.join('..', 'solvers', 'sparse_direct.py'), os.path.join('..', 'solvers', 'cudss_factor.py'))
 
 
+_CODE_HASHES = {}        # {((path, mtime_ns, size) of every hashed source): hash}: one stat per call, not a re-read
+_LIBRARY_VERSIONS = {}   # {backend: library_versions}: imported module versions cannot change within a process
+_PROFILE_DATA = {}       # {path: ((path, mtime_ns, size), parsed profile file)} of load_profile (read-only data)
+
+
+def _file_key(path) -> tuple:
+    """(path, mtime_ns, size) of a file: the cache key of its content (OSError when it is missing)."""
+    status = os.stat(path)
+    return path, status.st_mtime_ns, status.st_size
+
+
 def code_hash() -> str:
     """Hash of this module's source and of the solver sources its curves time (_TIMED_SOURCES): a changed benchmark or
-    timed solver invalidates stored profiles."""
-    digest = hashlib.sha1()
+    timed solver invalidates stored profiles (cached per process while the files' mtime / size hold)."""
     here = os.path.dirname(os.path.abspath(__file__))
-    for path in (os.path.abspath(__file__), *(os.path.normpath(os.path.join(here, name)) for name in _TIMED_SOURCES)):
+    paths = (os.path.abspath(__file__), *(os.path.normpath(os.path.join(here, name)) for name in _TIMED_SOURCES))
+    key = tuple(_file_key(path) for path in paths)
+    cached = _CODE_HASHES.get(key)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha1()
+    for path in paths:
         with open(path, 'rb') as source:
             digest.update(source.read())
-    return digest.hexdigest()[:12]
+    _CODE_HASHES.clear()
+    _CODE_HASHES[key] = digest.hexdigest()[:12]
+    return _CODE_HASHES[key]
 
 
 def library_versions(backend) -> dict:
     """numpy / scipy versions + numba on the cpu (its twins run only there, 'fused_numba') / cupy, nvmath and the cuDSS
-    wheel on the gpu (the cudss_* curves); no driver call."""
+    wheel on the gpu (the cudss_* curves); no driver call; read once per process and backend (a copy returned)."""
+    cached = _LIBRARY_VERSIONS.get(backend)
+    if cached is not None:
+        return dict(cached)
     import numpy
     versions = {'python': platform.python_version(), 'numpy': numpy.__version__}
     for name in ('scipy',) + (('cupy', 'nvmath') if backend == 'gpu' else ('numba',)):
@@ -117,6 +142,7 @@ def library_versions(backend) -> dict:
             versions[name] = None
     if backend == 'gpu':
         versions['cudss'] = _cudss_wheel_version()
+    _LIBRARY_VERSIONS[backend] = dict(versions)
     return versions
 
 
@@ -139,8 +165,12 @@ def load_profile(backend):
     if not os.path.exists(path):
         return None, f'no machine profile for the {backend} backend'
     try:
-        with open(path, encoding='utf-8') as handle:
-            data = json.load(handle)
+        key = _file_key(path)
+        kept_key, data = _PROFILE_DATA.get(path, (None, None))
+        if kept_key != key:
+            with open(path, encoding='utf-8') as handle:
+                data = json.load(handle)
+            _PROFILE_DATA[path] = (key, data)
         if data.get('version') != PROFILE_VERSION or data.get('code_hash') != code_hash():
             return None, f'the {backend} machine profile is out of date (measured by other benchmark code)'
         stored, installed = data.get('versions') or {}, library_versions(backend)
@@ -413,6 +443,33 @@ def run_profile(backend, quick=False, progress=None, save=True) -> MachineProfil
     report('dense matrix products')
     curves['host_gemm'] = gemm_curve(np, lambda: None)
     curves['gemm'] = gemm_curve(xp, synchronize) if backend == 'gpu' else curves['host_gemm']
+    # complex64 products of the mixed-precision block solvers (4 real products each: 8 n^3 real flops)
+    points = []
+    for batch in (1, 8, 64, 512) if not quick else (1, 16, 128):
+        blocks = xp.ones((batch, 64, 64), dtype=np.complex64)
+        points.append((8.0 * batch * 64 ** 3, _best_seconds(lambda: xp.matmul(blocks, blocks), synchronize)))
+        del blocks
+    curves['gemm_single'] = tuple(points)
+
+    def dominant_blocks(shape, dtype):
+        """Diagonally dominant complex blocks (no pivot swaps: a well-conditioned line-block diagonal block)."""
+        return xp.ones(shape, dtype=dtype) + shape[-1] * xp.eye(shape[-1], dtype=dtype)
+
+    report('dense block inverses')
+    for suffix, dtype in (('', np.complex128), ('_single', np.complex64)):
+        for block in BLOCK_INVERSE_SIZES:   # one batched call (gpu: cuBLAS getrf / getri Batched), per batch size
+            points = []
+            for batch in (1, 8, 64) if not quick else (1, 16):
+                blocks = dominant_blocks((batch, block, block), dtype)
+                points.append((float(batch), _best_seconds(lambda: xp.linalg.inv(blocks), synchronize)))
+                del blocks
+            curves[f'block_inverse{suffix}_{block}'] = tuple(points)
+        points = []
+        for block in MATRIX_INVERSE_SIZES[:2] if quick else MATRIX_INVERSE_SIZES:   # one matrix per call, per block size
+            matrix = dominant_blocks((block, block), dtype)
+            points.append((float(block), _best_seconds(lambda: xp.linalg.inv(matrix), synchronize)))
+            del matrix
+        curves[f'matrix_inverse{suffix}'] = tuple(points)
 
     report('host stream')
     points = []

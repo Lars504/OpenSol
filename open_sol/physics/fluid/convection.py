@@ -114,7 +114,8 @@ class AdvectiveHeatSource:
         window_x, window_y = fluid.window
         if (window_x, window_y) != tuple(system.window):
             raise ValueError(f"coupling '{self.name}': the fluid and heat physics solve on different windows")
-        key = tuple((heat.bcs.sides()[face].kind == 'dirichlet', heat.bcs.sides()[face].value) for face in FACES)
+        sides = heat.bcs.sides()   # one dict per tick (was built twice per face)
+        key = tuple((sides[face].kind == 'dirichlet', sides[face].value) for face in FACES)
         if key != self._face_key or self._face_rise is None or self._face_rise.dtype != system.dtype:
             self._face_dirichlet = xp.asarray([int(dirichlet) for dirichlet, _ in key], dtype=np.int32)
             self._face_rise = xp.asarray([value - heat.T0 if dirichlet else 0.0 for dirichlet, value in key],

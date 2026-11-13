@@ -326,7 +326,7 @@ def _check_strip_heater(results):
     levels); measured = error = the worse item in its own tolerance units, tolerance 1."""
     items = {'uniform_order': _check_uniform_richardson(results), 'adaptive_gain': _strip_gain_check(results)}
     normalized = {name: item['error'] / item['tolerance'] for name, item in items.items()}
-    return normalized_result(normalized, dict(items), normalized=normalized)
+    return normalized_result(normalized, dict(items), normalized_errors=normalized)
 
 
 def _cpu_heat(widths_x, widths_y, conductivity, source=0.0, x_lo_temperature=1.0):
@@ -657,7 +657,7 @@ ADAPTATION_SELFTEST_CASES = (
                        'adaptive': _disc_heater_spec(AdaptationSpec('heater_mean_rise', method='adaptive',
                                                                     tolerance=1e-4, max_levels=8, growth=2.0,
                                                                     max_cells=_DISC_ADAPTIVE_MAX_CELLS))},
-        check=_adaptive_gain_check(_ADAPTIVE_ERROR, _ADAPTIVE_GAIN), heavy=True, max_wall_time=1800.0),
+        check=_adaptive_gain_check(_ADAPTIVE_ERROR, _ADAPTIVE_GAIN), max_wall_time=1800.0),
     SelfTestCase(
         name='adaptation_rib_modes',
         label='Mesh refinement levels: energy-weighted adaptive bands on a rib waveguide mode',
@@ -707,7 +707,7 @@ ADAPTATION_SELFTEST_CASES = (
                        'adaptive': _lshape_spec(AdaptationSpec('I_top', method='adaptive', tolerance=1e-8,
                                                                max_levels=10, growth=2.0,
                                                                max_cells=_LSHAPE_ADAPTIVE_MAX_CELLS))},
-        check=_adaptive_gain_check(_LSHAPE_ERROR, _LSHAPE_GAIN), heavy=True, max_wall_time=1800.0),
+        check=_adaptive_gain_check(_LSHAPE_ERROR, _LSHAPE_GAIN), max_wall_time=1800.0),
     SelfTestCase(
         name='adaptation_fem_rib',
         label='Mesh refinement levels on triangles: adaptive rib waveguide mode',

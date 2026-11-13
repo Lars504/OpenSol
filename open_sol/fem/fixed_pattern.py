@@ -211,28 +211,34 @@ def _expand_numba(numba):
     return expand
 
 
-def _restrict_host(indptr, indices, free, renumber, n_free) -> tuple:
-    """(row starts, take of the data slots, renumbered columns), int64, of the free rows / columns of a pattern."""
+def _restrict_host(indptr, indices, free, renumber, n_free, index_like) -> tuple:
+    """(row starts, take of the data slots, renumbered columns) in index_like's dtype (an empty array: int32 below 2^31
+    entries), of the free rows / columns of a pattern."""
+    index = index_like.dtype
     rows_of_slots = np.repeat(np.arange(free.size, dtype=np.int64), np.diff(indptr))
     kept = free[rows_of_slots] & free[indices]
     counts = np.bincount(renumber[rows_of_slots[kept]], minlength=n_free)
-    return np.concatenate([[0], np.cumsum(counts)]), np.flatnonzero(kept), renumber[indices[kept]]
+    reduced_indptr = np.zeros(int(n_free) + 1, dtype=index)
+    np.cumsum(counts, dtype=index, out=reduced_indptr[1:])
+    return reduced_indptr, np.flatnonzero(kept).astype(index), renumber[indices[kept]].astype(index)
 
 
 def _restrict_numba(numba):
+    """Restriction loop writing its three arrays in index_like's dtype (no int64 outputs and casts afterwards)."""
     @numba.njit(cache=True)
-    def restrict(indptr, indices, free, renumber, n_free):
-        counts = np.zeros(n_free + 1, dtype=np.int64)
+    def restrict(indptr, indices, free, renumber, n_free, index_like):
+        reduced_indptr = np.zeros(n_free + 1, dtype=index_like.dtype)
         for row in range(indptr.size - 1):
             if free[row]:
                 kept = 0
                 for slot in range(indptr[row], indptr[row + 1]):
                     if free[indices[slot]]:
                         kept += 1
-                counts[renumber[row] + 1] = kept
-        reduced_indptr = np.cumsum(counts)
-        take = np.empty(reduced_indptr[-1], dtype=np.int64)
-        reduced_indices = np.empty(reduced_indptr[-1], dtype=np.int64)
+                reduced_indptr[renumber[row] + 1] = kept
+        for row in range(n_free):
+            reduced_indptr[row + 1] += reduced_indptr[row]
+        take = np.empty(reduced_indptr[n_free], dtype=index_like.dtype)
+        reduced_indices = np.empty(reduced_indptr[n_free], dtype=index_like.dtype)
         position = 0
         for row in range(indptr.size - 1):
             if free[row]:
@@ -433,11 +439,9 @@ class FixedPatternCsr:
         self.free = free
         renumber = np.cumsum(free) - 1
         self.n_free = int(free.sum())
-        reduced_indptr, self.reduced_take, reduced_indices = _pattern_loop('restrict', self.nnz)(
-            self.indptr, self.indices, free, renumber, np.int64(self.n_free))
-        reduced_index = self._index_dtype if max(self.n_free, self.reduced_take.size) < 2 ** 31 else np.int64
-        self.reduced_indices = reduced_indices.astype(reduced_index)
-        self.reduced_indptr = reduced_indptr.astype(reduced_index)
+        # written in the pattern's index dtype (int32 below 2^31 rows / entries, which bounds the slots too)
+        self.reduced_indptr, self.reduced_take, self.reduced_indices = _pattern_loop('restrict', self.nnz)(
+            self.indptr, self.indices, free, renumber, np.int64(self.n_free), np.empty(0, dtype=self._index_dtype))
 
     def with_groups(self, group_dofs, free=None):
         """Copy sharing this pattern's index arrays with the slot maps of other groups (scalar element dofs (m, r) each,
@@ -544,6 +548,32 @@ class FixedPatternCsr:
         if missing:
             raise ValueError('FixedPatternCsr: element dofs couple entries outside the pattern')
 
+    def scalar_csr(self, element_dofs, blocks, check=True):
+        """Host canonical CSR (n / block, n / block) of scalar element blocks (m, r, r) over scalar element dofs (m, r)
+        summed on this pattern's scalar pattern (add_elements of a block-1 view: no COO -> CSR, explicit zeros kept;
+        complex blocks give complex data; check as add_elements)."""
+        blocks = np.asarray(blocks)
+        view = self if self.block == 1 else self._scalar_view()
+        data = np.zeros(view.nnz, dtype=np.complex128 if np.iscomplexobj(blocks) else np.float64)
+        view.add_elements(data, element_dofs, blocks, check=check)
+        matrix = view.full(data, copy_pattern=view is self)
+        matrix.has_canonical_format = True
+        return matrix
+
+    def _scalar_view(self):
+        """Slot-free block-1 FixedPatternCsr of the scalar pattern of a block pattern (shares its scalar row starts and
+        keys; own int32 / int64 indptr and indices, built per call and never kept)."""
+        n_scalar = self.n // self.block
+        view = object.__new__(FixedPatternCsr)
+        view.n, view.block = n_scalar, 1
+        view.nnz = int(self._scalar_indptr[-1])
+        view._index_dtype = np.int32 if max(n_scalar, view.nnz) < 2 ** 31 else np.int64
+        view.indptr = self._scalar_indptr.astype(view._index_dtype)
+        view.indices = (self._keys % n_scalar).astype(view._index_dtype)
+        view._scalar_indptr, view._keys = self._scalar_indptr, self._keys
+        view._scatter, view._row_orders, view.free = [], {}, None
+        return view
+
     def summed(self, group, blocks) -> np.ndarray:
         """Data (nnz,) of the element blocks (m, r, r) of group index `group` alone, float64 or complex128 as blocks
         (real and imaginary parts by one bincount each)."""
@@ -624,6 +654,52 @@ def kept_pattern_if_any(owner, n, element_dofs, block=1):
     if state is None:
         return None
     return state[0].get(_digest(np.array([n, block], dtype=np.int64), np.asarray(element_dofs, dtype=np.int64)))
+
+
+KEPT_FREE_RESTRICTIONS = 2   # latest free restrictions kept (free_restriction: K_ff, then the pencil's K and M)
+_FREE_RESTRICTIONS = []      # [(weakref indptr, weakref indices, free mask, (indptr, take, indices, n_free))]
+
+
+def _kept_restriction(indptr, indices, free):
+    """The kept restriction of an equal pattern (the very arrays first, else np.array_equal) and mask, else None;
+    entries whose pattern arrays are gone are dropped."""
+    _FREE_RESTRICTIONS[:] = [entry for entry in _FREE_RESTRICTIONS if entry[0]() is not None and entry[1]() is not None]
+    for kept_indptr, kept_indices, kept_free, restriction in reversed(_FREE_RESTRICTIONS):
+        kept_indptr, kept_indices = kept_indptr(), kept_indices()
+        if kept_free.shape != free.shape or kept_indices.size != indices.size or not np.array_equal(kept_free, free):
+            continue
+        if (indptr is kept_indptr and indices is kept_indices) or (np.array_equal(indptr, kept_indptr)
+                                                                   and np.array_equal(indices, kept_indices)):
+            return restriction
+    return None
+
+
+def free_restriction(matrix, free):
+    """Host canonical CSR of the free rows / columns (bool mask (n,)) of a square sparse matrix by the restriction
+    loop (R3: no scipy fancy indexing and re-sort); an equal pattern and mask (K_ff, then K + K_sigma) only take values."""
+    import scipy.sparse
+    matrix = matrix.tocsr()
+    if not matrix.has_canonical_format:
+        matrix = matrix.copy()
+        matrix.sum_duplicates()
+    free = np.asarray(free, dtype=bool).reshape(-1)
+    if matrix.shape != (free.size, free.size):
+        raise ValueError(f'free_restriction: a mask of {free.size} entries for a matrix of shape {matrix.shape}')
+    restriction = _kept_restriction(matrix.indptr, matrix.indices, free)
+    if restriction is None:
+        renumber = np.cumsum(free) - 1
+        n_free = int(free.sum())
+        index = np.int32 if max(n_free, matrix.nnz) < 2 ** 31 else np.int64
+        reduced_indptr, take, reduced_indices = _pattern_loop('restrict', matrix.nnz)(
+            matrix.indptr, matrix.indices, free, renumber, np.int64(n_free), np.empty(0, dtype=index))
+        restriction = (reduced_indptr, take, reduced_indices, n_free)
+        _FREE_RESTRICTIONS.append((weakref.ref(matrix.indptr), weakref.ref(matrix.indices), free.copy(), restriction))
+        del _FREE_RESTRICTIONS[:-KEPT_FREE_RESTRICTIONS]
+    reduced_indptr, take, reduced_indices, n_free = restriction
+    # the kept index arrays are shared (callers never modify a pattern in place: factors match patterns by identity)
+    reduced = scipy.sparse.csr_matrix((matrix.data[take], reduced_indices, reduced_indptr), shape=(n_free, n_free))
+    reduced.has_canonical_format = True   # a canonical pattern's rows / columns kept in order
+    return reduced
 
 
 class DevicePatternCsr:

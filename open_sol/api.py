@@ -201,7 +201,8 @@ def check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=N
         if memory is not None and not mesh_errors:
             try:
                 memory, plain_roles = fitted_memory_estimate(model_spec, parameter_values, registry, meshes,
-                                                             memory_budget, estimate=memory, by_mesh=by_mesh)
+                                                             memory_budget, estimate=memory, by_mesh=by_mesh,
+                                                             host_budget=host_budget)
             except Exception:   # model errors and crashing estimators: validate reports them
                 plain_roles = None
         issues = override_issues + validate(model_spec, registry, mesh_estimate=meshes, mesh_error=mesh_errors,
@@ -713,7 +714,7 @@ def _log_device(collector, backend='gpu'):
         collector.add_line('error', budget_error)
         return budget_error
     try:
-        info = gpu_memory.device_info()
+        info = gpu_memory.budget_device_info()   # set_budget's memory numbers: one driver memory query per run
     except Exception as exc:   # informational line; the build reports a real GPU problem itself
         collector.add_line('warning', f'GPU query failed: {_error_text(exc)}')
         return None
@@ -1870,7 +1871,8 @@ def selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) 
                                           save_arrays=out_dir is not None)
             plan.start(before)
             case_start = time.perf_counter()
-            with DependencyTrace() as trace:
+            from .fem.gmsh3d import default_disk_cache_off   # entered before the trace: no gmsh disk hit hides code
+            with default_disk_cache_off(), DependencyTrace() as trace:
                 record = _registered_case(case, out_dir, available_backends, registry)
             if record is not None:
                 run_records = [*record['runs'].values(), *(run for variant in (record.get('variants') or {}).values()
@@ -2648,7 +2650,8 @@ def _run_examples(out_dir, examples_plan, plan, cache, start):
             else:
                 before = _specs_time_estimate([entry['spec'].copy()], get_registry(), save_arrays=False)
                 plan.start(before)
-                with DependencyTrace() as trace:
+                from .fem.gmsh3d import default_disk_cache_off   # entered before the trace (no gmsh disk hits)
+                with default_disk_cache_off(), DependencyTrace() as trace:
                     record = _example_run_record(entry['path'], entry['relative_path'], entry['spec'], out_dir,
                                                  time.perf_counter())
                 record['time_estimate'] = _time_estimate_after(before, [record], record['wall_time'])

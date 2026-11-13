@@ -8,6 +8,7 @@ from ....core.constants import C0, DTYPE
 from ....core.gpu_memory import format_bytes
 from ....core.wavelengths import wavelength_label
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
+from ....solvers.cudss_factor import CudssAccuracyError
 from ....solvers.host_direct import is_host_direct_factor
 from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, SparseDirectSolver,
                                        scipy_available)
@@ -24,6 +25,14 @@ SYSTEM_MATERIALS = frozenset({'eps_r', 'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 's
 def is_cudss(factorization) -> bool:
     """Whether a factor is a cudss_factor.CudssFactorization (both precisions: back_end 'cudss')."""
     return getattr(factorization, 'back_end', None) == 'cudss'
+
+
+def fell_back_to_superlu(linear_solver, error, n_unknowns) -> bool:
+    """Whether a cuDSS CudssAccuracyError of a deferred check is redone on SuperLU: this miss switched an 'auto'
+    runtime (fall_back), or it switched earlier (a factor of a physics sharing the solver, made before the switch)."""
+    if linear_solver.fall_back(error, n_unknowns):
+        return True
+    return linear_solver.auto_fallback is not None and linear_solver.back_end not in CUDSS_BACK_ENDS
 
 
 def direct_text(factorization):
@@ -255,18 +264,23 @@ class HostFDFDBase:
         else:
             self._retire_factorization()
 
-    def _factorize_operator(self, operator, cudss_options):
+    def _factorize_operator(self, operator, cudss_options, symmetric_by_construction=False):
         """Factorization of a host operator by the 'linear' solver: cuDSS (LDL^T with cudss_options() refactorising
-        _cudss_previous), MUMPS / PARDISO (LDL^T with the same options; the kept cuDSS factor freed) or host SuperLU
-        (the kept cuDSS factor freed; also after an 'auto' runtime fell back); host_factor_bytes (None on cuDSS) and
-        last_factor_seconds."""
+        _cudss_previous; deferred check: _checked_solve_host), MUMPS / PARDISO (LDL^T with the same options; the kept
+        cuDSS factor freed) or host SuperLU (the kept cuDSS factor freed; also after an 'auto' runtime fell back);
+        symmetric_by_construction (BOR C^T W C - k0^2 M): canonicalised in place, no asymmetry check;
+        host_factor_bytes (None on cuDSS) and last_factor_seconds."""
         linear = self.linear_solver
         if self._linear_symmetric_options:
             previous, self._cudss_previous = self._cudss_previous, None
             if not self._linear_on_cudss and previous is not None:   # host back end: no cuDSS plan to refactorise
                 previous.release()
                 previous = None
-            factorization = linear.factorize_host(operator, symmetric=True, previous=previous, **cudss_options())
+            if symmetric_by_construction and not operator.has_canonical_format:
+                operator.sum_duplicates()   # sorted, no duplicates: what symmetric_known vouches for (same matrix)
+            # K1: every solve of this factor is inside _checked_solve_host, so a refresh skips its probe
+            factorization = linear.factorize_host(operator, symmetric=True, previous=previous, defer_check=True,
+                                                  symmetric_known=symmetric_by_construction, **cudss_options())
         else:
             self._release_kept_cudss()
             factorization = linear.factorize_host(operator)
@@ -288,7 +302,21 @@ class HostFDFDBase:
         if self._factorization is None:
             self._factorization = factorize()
             self._factorization_current = True
-        return self._factorization.solve_host(rhs)
+        solution, self._factorization = self._checked_solve_host(self._factorization, rhs, factorize)
+        return solution
+
+    def _checked_solve_host(self, factorization, rhs, factorize):
+        """(factorization.solve_host(rhs), factor used): a deferred cuDSS check missed at this first solve -> an 'auto'
+        runtime falls back to SuperLU (fell_back_to_superlu), refactorises by factorize() and solves again, else raises."""
+        try:
+            return factorization.solve_host(rhs), factorization
+        except CudssAccuracyError as error:
+            if not fell_back_to_superlu(self.linear_solver, error, rhs.shape[0]):
+                raise
+            factorization.release()   # idempotent: the failed check released it already
+            self._release_kept_cudss()
+            factorization = factorize()
+            return factorization.solve_host(rhs), factorization
 
     def _show_fields(self, host_fields, phasors, omega):
         """Write the display fields (float32, one host-to-device copy each) and keep the centre phasors."""

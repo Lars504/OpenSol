@@ -1081,8 +1081,7 @@ FDFD_SELFTEST_CASES = (
                     'identity of the solved system (complex64 fields, solver round-off). This pins the pole assembly '
                     '(harmonic.cell_permittivity), the FDFD TFSF plane wave and the H_z q_abs.',
         specs=lambda: cpu_specs(_drude_specs()),
-        check=_check_drude_cylinder,
-        heavy=True),
+        check=_check_drude_cylinder),
     SelfTestCase(
         name='em_fdfd_tfsf_graded_leakage',
         label='EM FDFD TFSF plane wave: empty box on graded meshes',
@@ -1120,7 +1119,7 @@ FDFD_SELFTEST_CASES = (
                     'host SuperLU and would hide the line-block result). measured = error = the worst item in '
                     'tolerance units, tolerance 1. Not yet confirmed by a run with the smaller models.',
         specs=_line_block_specs,
-        check=_check_line_block, heavy=True),
+        check=_check_line_block),
     SelfTestCase(
         name='em_fdfd_line_block_wavelengths',
         label='EM FDFD line-block wavelength batches vs sparse direct',
@@ -1139,7 +1138,7 @@ FDFD_SELFTEST_CASES = (
                     'fewer than all of them) and rejected_factor_solves 0. measured = error = the worst item in '
                     'tolerance units, tolerance 1. Not yet confirmed by a run.',
         specs=_line_block_wavelength_specs,
-        check=_check_line_block_wavelengths, heavy=True),
+        check=_check_line_block_wavelengths),
     SelfTestCase(
         name='em_fdfd_cudss',
         label="EM FDFD cuDSS 'linear' back ends vs SuperLU",
@@ -1183,5 +1182,5 @@ FDFD_SELFTEST_CASES = (
                     'libraries. Not yet confirmed by a run (heavy by estimate: 5 runs per back end plus 4 references; '
                     'record the wall time).',
         specs=_host_direct_specs,
-        check=_check_host_direct, heavy=True),
+        check=_check_host_direct),
 )

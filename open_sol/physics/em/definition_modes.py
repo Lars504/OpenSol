@@ -15,7 +15,7 @@ from .definition_common import (BOTH_GRIDS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EM
                                 scipy_issues, shortest_solved_wavelength, source_slot_docs, unused_wavelength_issues,
                                 write_dispersive_materials)
 from .cross_section_modes import (BEND_MODELS, LINE_BLOCK_BOTH_PERIODIC_TEXT, cpml_cross_section, line_block_axis,
-                                  mode_default_basis, size_issue_for)
+                                  mode_default_basis, mode_eigen_count, size_issue_for)
 from .definition_bloch import bloch_active_axes, bloch_params, fdfd_bloch_issues, fdfd_domain_requirements
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
 from .materials import EM_MATERIAL_SCHEMAS
@@ -69,7 +69,9 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
               'needs at least 10 cells per wavelength inside every material.'),
     Param('n_modes', 'int', 4, label='Number of modes', min=1, max=100,
           help='Modes kept per solve: the eigen-solve finds the 2 n_modes + 10 eigenvalues beta^2 nearest the target '
-               '(k0 n_eff_guess)^2, drops the modes with more than half of their |H|^2 in PML cells, ranks the rest by '
+               '(k0 n_eff_guess)^2 (n_modes + 4 on a lossless cross-section without bend or n_eff_guess: the target '
+               'lies above every beta^2 there, so the nearest are the highest-ranked; with PML again at 2 n_modes + 10 '
+               'when the PML modes leave fewer than n_modes), drops the modes with more than half of their |H|^2 in PML cells, ranks the rest by '
                'descending Re(beta^2), ties by descending Im(beta^2) (= descending Re n_eff for low-loss guided modes; '
                'evanescent modes, Re(beta^2) < 0, come last) and keeps up to n_modes (fewer may come back, e.g. near '
                'cutoff or when most candidates are PML modes). More modes cost more eigensolver work; 2-10 typical.',
@@ -683,7 +685,8 @@ FEM_MODE_ASSEMBLY_CALLS = 400
 
 def _time_estimate(settings_values, mesh, context):
     """Per mode solve (one, or one per frequency_domain wavelength) the cross-section assemblies and shift-invert
-    eigen-solves of the 'eigen' role (2 n_modes + 10 eigenpairs): the main one, two more with group_index, one per
+    eigen-solves of the 'eigen' role (cross_section_modes.mode_eigen_count wide 2 n_modes + 10, an upper figure:
+    lossless solves ask fewer; a real operator priced as real ARPACK, E1): the main one, two more with group_index, one per
     shg_overlap / bend_overlap; a line_block 'shifted' node factors the main operators and serves all applications
     (the detached ones are SuperLU: factorised, applications priced alike); triangle meshes: _triangle_time_estimate."""
     if mesh.kind == 'triangles':
@@ -698,13 +701,25 @@ def _time_estimate(settings_values, mesh, context):
     solves = te.TimeEstimate((te.TimeItem('cross-section assemblies', 'solve', points, 'exact',
                                           tuple((main + detached, op) for op in assembly),
                                           counter=physics_counter(context, 'solves')),))
-    eigenpairs = 2 * int(settings_values['n_modes']) + 10
+    eigenpairs = max(mode_eigen_count(int(settings_values['n_modes']), int(unknowns)), 1)   # wide: an upper figure
+    default_basis = mode_default_basis(eigenpairs, cpml_cross_section(settings_values))
     common = dict(unknowns=unknowns, nnz=nnz, value_bytes=16, solves=points * (main + detached),
                   eigenpairs=eigenpairs, factor_scale=MODE_LU_SCALE, solve_scale=MODE_SOLVE_SCALE,
-                  default_basis=mode_default_basis(eigenpairs, cpml_cross_section(settings_values)))
+                  default_basis=default_basis)
     # the line_block path prices its own product_ops
     shifted = context.solvers.get('shifted')
     if shifted is None or shifted.solver_type.name != 'line_block':
+        # E1: a real operator's own host factor is float64 and host ARPACK runs real (one real solve per application,
+        # float64 basis: value_bytes 8 prices exactly that route); a cuDSS factor (device matvec) or the device
+        # Krylov-Schur around the host solve (gpu run, large basis) stay complex
+        from ...model.definition_helpers import eigen_subspace_size
+        from ...solvers.arpack_shift_invert import arnoldi_basis_size, device_arnoldi_fits
+        from .memory_estimates import real_cross_section_operator
+        basis = arnoldi_basis_size(eigenpairs, int(unknowns), eigen_subspace_size(context.solvers), default_basis)
+        device_krylov = context.backend == 'gpu' and device_arnoldi_fits(unknowns, basis, host_matvec=True)
+        if (eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS and not device_krylov
+                and real_cross_section_operator(settings_values, context)):
+            common['value_bytes'] = 8
         return te.combine((solves, context.solver_work('eigen', factorizations=points * (main + detached),
                                                        backend='cpu', **common)))   # host SuperLU shift-invert
     nx, ny = int(mesh.nx), int(mesh.ny)
@@ -737,7 +752,7 @@ def _triangle_time_estimate(settings_values, mesh, context):
     host = eigen_backend_kwargs(context)
     return te.combine((solves, context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16,
                                                    solves=points, factorizations=points,
-                                                   eigenpairs=2 * int(settings_values['n_modes']) + 10,
+                                                   eigenpairs=mode_eigen_count(int(settings_values['n_modes'])),
                                                    factor_scale=FEM_LU_FILL_FACTOR, solve_scale=FEM_LU_FILL_FACTOR,
                                                    **host)))
 

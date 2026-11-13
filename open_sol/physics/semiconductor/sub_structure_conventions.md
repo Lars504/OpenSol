@@ -68,8 +68,11 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   design not heat's T0 293.15 K; selftests pass it explicitly.
 - RerunSolver (sweep reuse_build): `reset_records` only marks dirty (the converged state stays the continuation
   start); ohmic_contact / gate `voltage` follow live parameters (`set_contact_voltage` / `set_gate_voltage` write the
-  core's voltage lists; the table results read them, never the frozen region's build value). Doping, generation and
-  materials are not followed (a spec with them live is rebuilt per value).
+  core's voltage lists; the table results read them, never the frozen region's build value). Uniform doping
+  `donors` / `acceptors` follow (`set_doping`: the host parts of every add_doping are kept, `clear_doping` + all parts
+  added again in feature order, exactly the build's sum; then `forget_converged_state`, so that value starts cold from
+  equilibrium as a fresh build does: no continuation reaches a moved equilibrium); a fixed x / y doping keeps its build
+  array. Generation is not followed; material values follow by repaint (model sub file) and `materials_changed`.
 - `prepare` constructs a new system, dropping doping / contacts / gates while `self.contacts` keeps their indices:
   only `__init__` calls it; a re-prepare would need the features re-applied.
 - Every input change (features, `materials_changed` of a schema array, `inject_source('generation')`) marks dirty;
@@ -108,9 +111,11 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
 ## cuDSS and MUMPS / PARDISO 'linear' back ends
 - Role `CUDSS_LINEAR_ROLE` (shared with em_fdfd_bor / _conical), tensor and triangles (size rules return None on
   cuDSS). `_linear_solve`: equilibrated layout values on the canonical `_PinnedPattern` -> on the kept-factor back
-  ends `factorize_values(data, pattern.indptr, pattern.indices, real=True, previous=, defer_check=False)` (values only:
+  ends `factorize_values(data, pattern.indptr, pattern.indices, real=True, previous=, defer_check=True)` (values only:
   no host CSR canonicalising or asymmetry check per Newton step; the pattern arrays are matched by identity, never
-  modified), SuperLU `factorize_host` of the host CSR: real LU (nonsymmetric Jacobian). `_kept_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n) on
+  modified; a refactorisation on the kept plan / analysis skips its probe solve: the Newton solve right after is the
+  check, so an accuracy refusal comes from `solve_host` inside the same `_linear_solve` try, with the same B1b fallback
+  / ValueError; a chord solve that judges a still-pending check (zero rhs before) and misses factorises again), SuperLU `factorize_host` of the host CSR: real LU (nonsymmetric Jacobian). `_kept_factors` keeps the last factor per unknown count (Poisson n, coupled 3 n) on
   `drift_diffusion.KEPT_FACTOR_BACK_ENDS` (CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS: cuDSS and the opt-in
   MUMPS / PARDISO back ends; any other back end falls through to the cusolver_qr grid path, so a new kept-factor back
   end joins that tuple): the pattern is fixed while the pinned set is, so later iterations refactorise on the kept plan
@@ -137,5 +142,8 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   (`solve_peak_bytes`); only the coupled factor external (`factor_device_bytes`, value_bytes 8, dimensions 2;
   photodiode measured the coupled one alone outside the pool); CSR entries per cell derived from the stencil (29:
   Poisson row 5 + n + p, each continuity row 5 + 5 V + the other carrier)); time on the
-  cuDSS 2D curves at value_bytes 8. time_check: each plan item is measured by the role's cudss_plans x 1 /
-  `_PLANNED_SYSTEMS`, never by newton_iterations.
+  cuDSS 2D curves at value_bytes 8 with `device_values=True` (the device refresh curve + R3 deferred-check items). time_check: each plan item is measured by the role's cudss_plans x 1 /
+  `_PLANNED_SYSTEMS`, never by newton_iterations. A later sweep value that continues the previous one
+  (`TimeContext.continues_previous`: warm_start on one mesh, or a reuse_build sweep's kept session) is priced as one
+  continuation step, no equilibrium part, unless a doping value reads a live parameter of the reused build
+  (`TimeContext.live_parameters`, `_doping_follows_live`: set_doping cold-starts).

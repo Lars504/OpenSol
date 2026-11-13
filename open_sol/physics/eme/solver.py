@@ -34,7 +34,7 @@ from ..em.solvers.fdtd_2d_base import _check_cell_array, add_pec_cells, record_d
 from ..em.yee_grid import grid_cell_widths
 from .adjoint import (EMEObjective, PeriodicAdjointFields, face_gradient_to_cells, objective_cotangents,
                       section_gradient)
-from .cascade import (PORT_FACES, CascadeBuilder, bloch_modes, cell_cascade, forward_bloch, repeated_link,
+from .cascade import (PORT_FACES, CascadeBuilder, SMatrix, bloch_modes, cell_cascade, forward_bloch, repeated_link,
                       total_smatrix, unit_cell)
 from .interfaces import interface_defects, interface_smatrix
 from .mode_sets import INPUT_POWER_FLOOR, bent_line, gauss_mean, gauss_positions, mode_set, section_fields
@@ -50,6 +50,13 @@ _READ_ARRAYS = {'ez': ('eps_r', 'sigma_e', 'mu_r', 'sigma_m'), 'hz': ('eps_xx', 
 # hz permittivity arrays per propagation axis: (cells of the line, eps_t; faces along the line, eps_l) = PortLine rows
 _HZ_LINE_ARRAYS = {'x': ('eps_yy', 'eps_xx'), 'y': ('eps_xx', 'eps_yy')}
 MODE_CACHE_BYTES = 1 << 30       # mode sets kept per solve; the rest are re-solved for the field reconstruction
+LENGTH_SWEEP_BATCH_BYTES = 1 << 26   # host complex blocks of the stretch factors re-cascaded together (one chunk)
+LENGTH_SWEEP_LIVE_BLOCKS = 16        # (N, N) complex128 blocks per stretch factor alive inside a stacked star product
+
+
+def length_sweep_chunk(n_modes):
+    """Stretch factors the length sweep re-cascades together at n_modes modes per section (>= 1)."""
+    return max(1, int(LENGTH_SWEEP_BATCH_BYTES // (LENGTH_SWEEP_LIVE_BLOCKS * 16 * max(int(n_modes), 1) ** 2)))
 _RECIPROCITY_WARN = 1e-3         # interface |s12 - s21^T| / |s21| above which a runtime warning asks for more modes
 # Wall cell outside the line solve range = sign x its inner neighbour (out-of-plane field): em.boundaries.WALL_SIGNS
 SECTION_TABLE_COLUMNS = ('section', 'start', 'length', 'n_slices', 'n_modes', 'n_eff_1', 'n_eff_2', 'power_defect',
@@ -146,6 +153,15 @@ class EMEBase(PhysicsSolver):
         if omega != self._omega:
             self._omega = omega
             self._dirty = True
+
+    def set_wavelength(self, wavelength):
+        """Vacuum wavelength [m] of the next stationary solve (a reused sweep build); the mode cache is kept (3D
+        solves start from the previous wavelength's modes)."""
+        self.omega = positive_wavelength_omega(wavelength, type(self).__name__)
+
+    def reset_records(self):
+        """RerunSolver (reused sweep build): nothing to drop (every monitor keeps only the last solve); the next step
+        solves when the wavelength or another input changed."""
 
     # --- PhysicsSolver contract ---
 
@@ -907,14 +923,23 @@ class EMELengthSweepMonitor:
                                             f'[{self.start:.6g}, {self.stop:.6g}] m: every stretch gives the same '
                                             f'result')
         base_length = sum(section.length for section, flag in zip(physics.sections, inside) if flag)
-        series = {}
-        for factor in self.stretch_factors:
-            phases = [np.exp(-1j * k * section.length * (factor if flag else 1.0))
+        names = [f'transmission_{number}' for number in range(1, physics.n_port_modes + 1)]
+        series = {name: [] for name in (*names, 'transmission', 'reflection')}
+        factors = np.asarray(self.stretch_factors, dtype=np.float64)
+        # stretch factors re-cascaded together (stacked star products), chunked so a chunk's blocks stay small
+        chunk = length_sweep_chunk(max(int(np.asarray(k).size) for k in wavenumbers))
+        for begin in range(0, factors.size, chunk):
+            stretch = factors[begin:begin + chunk]
+            unstretched = np.ones_like(stretch)
+            phases = [np.exp((-1j * k * section.length)[None, :] * (stretch if flag else unstretched)[:, None])
                       for k, section, flag in zip(wavenumbers, physics.sections, inside)]
-            fractions = physics.port_fractions(physics.assemble_total(phases))
-            names = [f'transmission_{number}' for number in range(1, physics.n_port_modes + 1)]
-            for name in (*names, 'transmission', 'reflection'):
-                series.setdefault(name, []).append(fractions.get(name, math.nan))
+            total = physics.assemble_total(phases)
+            blocks = [np.broadcast_to(block, (stretch.size,) + block.shape[-2:])
+                      for block in (total.s11, total.s12, total.s21, total.s22)]
+            for index in range(stretch.size):
+                fractions = physics.port_fractions(SMatrix(*(block[index] for block in blocks)))
+                for name, values in series.items():
+                    values.append(fractions.get(name, math.nan))
         self.record_data = {'omega': physics.solved_omega, 'lengths': [factor * base_length
                                                                         for factor in self.stretch_factors],
                             'series': series, 'n_stretched': int(sum(inside))}

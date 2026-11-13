@@ -58,8 +58,17 @@ all but drift_diffusion.
   the base by `add_elements` (slots searched per chunk, no kept slot map; `check=False` there, since its chunks are
   rows of the element dofs the base was built from: any other caller keeps the check) and TangentAssembler3D takes its grouped
   copy of the same base. `assemble_geometric_stiffness_3d` sums its scalar blocks x I3 into that base when one is kept
-  for its elements (`kept_pattern_if_any`: never builds one; else COO + kron), so `pattern_sum` of K and K_sigma (canonical
-  CSRs on one pattern) adds values only. Kept objects are shared: never write into their index arrays. Symmetric element products
+  for its elements (`kept_pattern_if_any`: never builds one; else COO + `component_identity_csr`), so `pattern_sum` of
+  K and K_sigma (canonical CSRs on one pattern) adds values only. `component_identity_csr` (scalar CSR x I3 by index
+  arithmetic, no COO / sort) is also the vector mass: `assemble_elastic_mass_3d` sums its scalar blocks into the SCALAR
+  pattern of that kept base when one is kept for its elements (`FixedPatternCsr.scalar_csr`, a block-1 view built per
+  call; `assemble_lagrange_mass_3d(kept=)`), else COO -> CSR, so M stays compact (no 3 x 3 blocks: 3 x fewer entries
+  than K's pattern; the pencil merges the two patterns). The PML shell's stretched mass takes the shell's own kept
+  base. `free_restriction(matrix, free)` is the free-free block of any square CSR through the same restriction loop
+  (both twins write indptr, take and indices in the index dtype of an `index_like` empty array: int32 below 2^31,
+  no int64 outputs cast afterwards; `FixedPatternCsr.reduced_take` is int32 too); the latest `KEPT_FREE_RESTRICTIONS` (pattern held weakly, mask copied)
+  are kept, so an equal pattern and mask (K_ff, then the modal pencil's K + K_sigma) takes values only. Its results
+  share the kept index arrays. Kept objects are shared: never write into their index arrays. Symmetric element products
   (elastic stiffness, the batched tangent) go through `_symmetric_operator_blocks` (column groups on and below the diagonal
   multiplied, the rest mirrored; `SYMMETRIC_COLUMN_GROUPS`); a non-symmetric C would need `_operator_blocks`. The scalar
   pattern of a FixedPatternCsr comes from `scalar_pattern` (numba: node -> element lists and a prange of per-row sorts,
@@ -165,7 +174,9 @@ all but drift_diffusion.
   (largest circumradius first, spacing 0.5 R; `_spaced` vectorised, same set as plain greedy). MAX_ROUNDS (400) without
   convergence raises RuntimeError.
 - Smoothing keeps connectivity, moves only free nodes, and keeps a move only when the smallest angle of the node's
-  elements grows (compared as sine: 2 area / two longer edges), so the global minimum angle never drops. PSLG vertices
+  elements grows (compared as sine: 2 area / two longer edges), so the global minimum angle never drops; a trial after
+  dropping nodes re-evaluates only the triangles of the dropped nodes (per-row sines: bit-identical, same digests;
+  a speed change to the mesher must keep every digest: no stored-digest self-test catches a change). PSLG vertices
   get their exact input coordinates back; nodes within the tolerance of a window side snap onto it (the ring matches
   window-edge nodes by exact coordinates).
 - SizeField: min(h_max, region sizes inside, h_k + (growth - 1) d over sampled sources: outlines, lines, points,
@@ -227,10 +238,15 @@ all but drift_diffusion.
   |det J| and |det J| J^-1 eps J^-T against 6 symmetric-pair products), lru-cached per (order, degree), equal to the
   quadrature at that rule up to rounding. Curved elements, axisymmetric weights and callables keep the quadrature path;
   a Nedelec callable (PML) takes the same T = P^T nu P per rule point against cached per-point pair products, one
-  (m, 6 q) @ (6 q, n n) real GEMM per chunk (`nedelec_blocks_3d`), never physical basis values.
+  (m, 6 q) @ (6 q, n n) real GEMM per chunk (`nedelec_blocks_3d`, chunks written into one preallocated stack: no
+  list + concatenated copy), never physical basis values.
 - `element_blocks_csr` (assembly3d): several block arrays over one element dof list -> CSRs from one slot map
-  (`_coo_slots`: COO -> CSR of the entry numbers with duplicates kept, a row sort, a bincount per matrix) and an
-  optional free restriction at COO level; FEMPhysics3D sums K, M, W this way (window then PML elements, one order).
+  (`_coo_slots`: COO -> CSR of the entry numbers with duplicates kept, a row sort, a bincount per matrix: complex
+  values as one bincount of their float64 view over interleaved slots 2 s, 2 s + 1, built once per call and shared by
+  the matrices, `_slot_sums` / `_interleaved_slots`) and an
+  optional free restriction (element dofs renumbered, then entries outside dropped); an entry may be a list of parts
+  in element order (one bincount per part, no concatenated copy: few parts only, each bincount spans every slot);
+  FEMPhysics3D sums K, M, W this way (window then PML parts, one order).
 - Square assemblies (`_assemble` with test is trial, assembly3d `_assemble_lagrange`) go through `blocks_csr`: after
   PATTERN_REUSE_CALLS calls on one element row list of a dof map (`kept_block_pattern`, weak per map) the blocks are
   summed into the kept FixedPatternCsr slots, else COO -> CSR. `_to_csr` converts with int32 indices below 2^31; tocsr
@@ -428,7 +444,12 @@ all but drift_diffusion.
 - gmsh3d result caches: in process the last GMSH_CACHE_SIZE (4) clipped results per (executable, .geo text, box)
   (copies handed out, failures never cached; tags and object faces rebuilt from current geometry): anything gmsh's
   output depends on must be in the .geo text (the key); a gmsh binary replaced at the same path needs a new process. On
-  disk (`OPEN_SOL_MESH_CACHE`, `mesh_solids_with_gmsh(disk_cache=)`, '' off): the RAW `read_msh_tetrahedra` arrays
+  disk (`mesh_cache_folder`: `mesh_solids_with_gmsh(disk_cache=)` first ('' off), then off inside
+  `default_disk_cache_off` (api.selftest / selftest_examples enter it BEFORE the DependencyTrace: a disk hit would hide
+  the mesher code from the selftest cache tracer, and entering it inside the trace would make every case depend on
+  gmsh3d), then `OPEN_SOL_MESH_CACHE` ('' off), unset = `default_mesh_cache_folder()` (the user's cache folder: on by
+  default for api.run / CLI / GUI); the profilers set `OPEN_SOL_MESH_CACHE` '' (tools_profilers `__init__` and
+  profiler_harness), so they time gmsh, never a disk read): the RAW `read_msh_tetrahedra` arrays
   (before `_clipped_mesh`, so clipping changes are never stale), `.npz` keyed by sha256 of (`_MESH_CACHE_FORMAT`, gmsh
   path, size, mtime, .geo text): bump the format when cached arrays change meaning. Temp file + `os.replace`; a bad file
   is re-meshed; LRU by mtime above MESH_CACHE_MAX_BYTES. Self-tests clearing the memory cache count `gmsh_run_count()`.
@@ -452,7 +473,9 @@ all but drift_diffusion.
   mostly inside the box (`_inside_fragments`). Never select inside gmsh (BooleanIntersection per solid and `Volume In
   BoundingBox` both left outside parts in the mesh). A kept mesh beyond the box or not filling it exactly raises; any
   Error line fails the run. Sizes: Ball / Box fields ramp over Thickness (h_max - size) / (growth - 1); the Cylinder
-  field has no Thickness (jumps to h_max at its surface); + MeshSizeFromCurvature (2 pi / curvature_factor), Netgen;
+  field has no Thickness (jumps to h_max at its surface); + MeshSizeFromCurvature (2 pi / curvature_factor), Optimize 1, OptimizeNetgen 0 (Netgen
+  doubled the gmsh time of a 10k-tet mesh for a 1 % quality quantile of 0.20 instead of 0.17; a mesh-dependent
+  tolerance or sliver warning that needs it back changes every gmsh tet mesh);
   needs gmsh >= 4.8. `periodic_axes`: `_periodic_rows` pairs hi / lo surfaces of the same translated box (`Periodic
   Surface ... Translate`); a periodic axis must carry no PML shell (ValueError). `Solid.edge_size` (electrode edges,
   RefinementSpec.where 'edges'): one MathEval per box edge / cylinder rim (only arithmetic and Sqrt; max(a, 0) as (a +

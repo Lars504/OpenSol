@@ -437,8 +437,7 @@ CROSS_SECTION_CPU_SELFTESTS = (
                     '50 nm cells.',
         specs=lambda: {},
         check=_check_mirrors,
-        max_wall_time=120.0,
-        heavy=True),
+        max_wall_time=120.0),
     SelfTestCase(
         name='em_cross_section_fibre',
         label='EM cross-section modes: step-index fibre',

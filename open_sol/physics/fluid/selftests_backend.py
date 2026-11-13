@@ -198,12 +198,12 @@ _STEP_NUMBA_CASE = SelfTestCase(
                  'registered twins; error inf when a numba twin fell back to numpy). Details: '
                  f'ms per step of both on a {_SPEED_WINDOW[0]} x {_SPEED_WINDOW[1]} channel. Without numba nothing is '
                  'compared (error 0).'),
-    specs=lambda: {}, check=_check_step_numba, max_wall_time=600.0, heavy=True, backends=('cpu',))
+    specs=lambda: {}, check=_check_step_numba, max_wall_time=600.0, backends=('cpu',))
 
 
 def _fluid_parity_case(name, label, wrapped_cases, max_wall_time):
     """backend_parity_case of the fluid cases, with a description of the twinned fluid kernels."""
-    case = backend_parity_case(name, label, wrapped_cases, heavy=True, max_wall_time=max_wall_time)
+    case = backend_parity_case(name, label, wrapped_cases, max_wall_time=max_wall_time)
     case_names = ', '.join(wrapped.name for wrapped in wrapped_cases)
     return dataclasses.replace(case, description=(
         f'The analytic laminar_flow cases {case_names} run on solver_defaults.backend cpu (core.kernels twins of '

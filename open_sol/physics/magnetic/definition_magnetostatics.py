@@ -14,7 +14,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CG_DIFFUSI
                                          is_axisymmetric, linear_solver_direct, linear_solver_mixed,
                                          linear_solver_multigrid, linear_solver_precision, make_point_probe,
                                          on_triangles, reports_model_checks, selected_material_data,
-                                         validate_points_inside)
+                                         single_precision_contrast_issues, validate_points_inside)
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
 from .materials import (BH_CURVE_PROPERTY, MAGNETIC_PROPERTY_ARRAYS, MAGNETIC_SCHEMA, OPTIONAL_MAGNETIC_SCHEMA,
@@ -49,7 +49,8 @@ _NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration;
           help=f'Stop of the saturation loop of {_SATURATION_TEXT}. Tensor mesh: converged when one proposal changes '
                'ln of the secant reluctivity nu = H / B of every cell by at most this value (a relative change); each '
                'iteration is one assembly and one CG solve warm-started at the previous A, so keep it above the CG '
-               'accuracy. Triangle mesh (Newton): converged when the last step changes A by at most this fraction of '
+               'accuracy; at single precision a loop whose change stops falling ends unconverged after 20 '
+               'iterations (the float32 CG stalls, B of iron cells off by up to percents). Triangle mesh (Newton): converged when the last step changes A by at most this fraction of '
                'max |A| and the largest free residual of the weak form is at most this fraction of the largest load '
                'or internal force. Ignored without a saturating material.',
           tip='How accurately the saturation of magnetic materials is converged, as a relative change.\n\nKeep '
@@ -287,13 +288,30 @@ def _apply_fixed_potential(ctx, solver, feature_spec, values, selection):
 
 
 def _apply_current_source(ctx, solver, feature_spec, values, selection):
+    """J added to J_applied on the selected cells; a parameter-only density follows a reused sweep build by the
+    difference to the applied value (tensor meshes: the RerunSolver)."""
     source_mask = ctx.domain_mask(selection.entities)
-    solver.add_source(source_mask, ctx.eval_field(values['density'], mask=source_mask))
+    density = values['density']
+    solver.add_source(source_mask, ctx.eval_field(density, mask=source_mask))
+    applied = [density]   # a parameter-only number when it follows a reused sweep build
+
+    def set_density(value):
+        if value != applied[0]:
+            solver.add_source(source_mask, value - applied[0])
+            applied[0] = value
+
+    ctx.follow_parameters(feature_spec.params, values, ('density',), set_density, solver,
+                          f"feature '{feature_spec.name}'")
     return None
 
 
 def _apply_coil(ctx, solver, feature_spec, values, selection):
-    return solver.add_coil(feature_spec.name, ctx.domain_mask(selection.entities), values['turns'], values['current'])
+    """Stranded coil; its current follows a reused sweep build (tensor meshes: the RerunSolver)."""
+    coil = solver.add_coil(feature_spec.name, ctx.domain_mask(selection.entities), values['turns'], values['current'])
+    ctx.follow_parameters(feature_spec.params, values, ('current',),
+                          lambda current: solver.set_coil_current(coil, current), solver,
+                          f"feature '{feature_spec.name}'")
+    return coil
 
 
 def _coil_result(session, solver, coil, feature_spec, options):
@@ -433,9 +451,12 @@ def _saturation_issues(vctx, physics_spec):
 
 
 def _validate_magnetostatics(vctx, physics_spec, settings_values):
-    """validate_magnetic_common plus the saturation material rule and the mesh-kind rules of nonlinear_method."""
+    """validate_magnetic_common plus the saturation material rule, the mesh-kind rules of nonlinear_method and the
+    single-precision mu contrast warning."""
     return (validate_magnetic_common(vctx, physics_spec, settings_values, 'magnetostatics')
-            + _saturation_issues(vctx, physics_spec) + _mesh_kind_issues(vctx, physics_spec, settings_values))
+            + _saturation_issues(vctx, physics_spec) + _mesh_kind_issues(vctx, physics_spec, settings_values)
+            + single_precision_contrast_issues(vctx, physics_spec, ('physics', physics_spec.name),
+                                               ('mu_dc', 'mu_dc_xx', 'mu_dc_yy'), 'mu_dc'))
 
 
 def _selected_material_properties(spec):
@@ -626,9 +647,11 @@ def _memory_estimate(settings_values, mesh, context):
                     saturation_arrays * FLOAT64_BYTES * window_cells * int(saturation)),
                    ('kept preconditioner of the saturation loop',
                     kept_preconditioner_bytes(window_cells, 5, value_bytes, context, saturation))))
+    from ...model.schema import solver_backend   # where a multigrid setup aggregates
     parts = [own, diffusion_system_estimate(window_cells, precision, mixed=linear_solver_mixed(context),
                                             multigrid=linear_solver_multigrid(context),
-                                            direct=linear_solver_direct(context))]
+                                            direct=linear_solver_direct(context),
+                                            backend=solver_backend(context.spec))]
     cudss = cudss_back_end(context.solvers)
     if cudss:   # DiffusionDirectSolver on the kept A_solve, refactorised per saturation iteration
         parts.append(cudss_diffusion_estimate(window_cells, 5 * window_cells, 2, cudss, input_copy=False,
@@ -749,15 +772,20 @@ _FEATURES = (
                 description=_FIXED_POTENTIAL_DESCRIPTION, apply=_apply_fixed_potential, grids=_BOTH_GRIDS),
     FeatureType('current_source', 'Current density', 'domain_condition', 'domain',
                 params=(Param('density', 'float', 1e6, label='Current density', unit='A/m^2', field_dependent=True,
+                              follows_parameters=True,
                               help='J_z (planar, > 0 along +z) or J_phi (axisymmetric, > 0 counter-clockwise seen '
-                                   'from +z); may depend on x and y; must be finite on the selected cells.',
+                                   'from +z); may depend on x and y; must be finite on the selected cells. A value of '
+                                   'parameters only is followed by a reused sweep build (sweep reuse_build) without '
+                                   'rebuilding (tensor meshes).',
                               tip='Current per area flowing out of the drawing (in axisymmetric models: around the '
                                   'axis).'),),
                 summary='Drives a given current per area through the selected domains.',
                 description=_CURRENT_SOURCE_DESCRIPTION, apply=_apply_current_source, grids=_BOTH_GRIDS),
     FeatureType('coil', 'Coil', 'domain_condition', 'domain', result_kind='table',
-                params=(Param('current', 'float', 1.0, label='Current', unit='A',
-                              help='Current per turn, > 0 along +z (axisymmetric: counter-clockwise seen from +z).',
+                params=(Param('current', 'float', 1.0, label='Current', unit='A', follows_parameters=True,
+                              help='Current per turn, > 0 along +z (axisymmetric: counter-clockwise seen from +z); a '
+                                   'reused sweep build (sweep reuse_build) follows it without rebuilding (tensor '
+                                   'meshes).',
                               tip='Current in each turn of the coil; the sign sets the direction.'),
                         Param('turns', 'int', 1, label='Turns', unit='1', min=1,
                               help='Number of turns spread over the selected cross-section (stranded winding).',

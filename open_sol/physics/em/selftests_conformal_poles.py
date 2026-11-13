@@ -187,6 +187,5 @@ CONFORMAL_POLE_SELFTEST_CASES = (
                     'second-order cut-cell error at dx / skin depth ~0.23, the 5-point dispersion in the metal ~0.5 '
                     '%). error = the worst relative error. The 1.6 um strip and 50 fs not yet confirmed by a run.',
         specs=_film_specs,
-        check=_check_film,
-        heavy=True),
+        check=_check_film),
 )

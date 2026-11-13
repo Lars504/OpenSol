@@ -91,7 +91,7 @@
   "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
            "points_per_wavelength": 20.0, "refinements": []},
   "study": {"type": "stationary",
-            "settings": {"max_iterations": 30, "tolerance": 2e-6, "relaxation": 1.0, "warm_start": false},
+            "settings": {"max_iterations": 30, "tolerance": 2e-6, "relaxation": 1.0, "warm_start": true},
             "stored_fields": ["em.ez_abs", "em.absorbed_power", "semiconductor.generation", "semiconductor.V",
                               "semiconductor.N", "semiconductor.P"],
             "sweep": {"parameter": "alpha_nom", "values": [2.5e5, 5e5, 1e6, 2e6]}},

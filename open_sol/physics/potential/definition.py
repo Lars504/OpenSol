@@ -514,7 +514,9 @@ def _electrolyte_memory_estimate(values, n_selected_cells, mesh):
 
 
 def _voltage_param(help_text, tip):
-    return Param('voltage', 'float', 1.0, label='Voltage', unit='V', help=help_text, tip=tip)
+    return Param('voltage', 'float', 1.0, label='Voltage', unit='V', follows_parameters=True,
+                 help=f'{help_text} A reused sweep build (sweep reuse_build) follows a value of parameters only in '
+                      'place (held values re-eliminated on the kept operator).', tip=tip)
 
 
 # ---- driven terminals (electrostatics, piezoelectric plan decision 4) ----
@@ -634,7 +636,8 @@ def _driven_waveform_count(physics_spec):
 # ---- feature apply / result callbacks (worker thread, GPU) ----
 def _apply_voltage(ctx, solver, feature_spec, values, selection):
     """Dirichlet on outer faces (Robin behind a Stern layer); object perimeters hold their boundary cells (times the
-    waveform when driven), triangles their outline edges, tetrahedra their interface faces; returns the held region."""
+    waveform when driven), triangles their outline edges, tetrahedra their interface faces; returns the held region.
+    A parameter voltage follows a reused sweep build (set_held_voltage on every grid kind)."""
     voltage = values['voltage']
     waveform = _terminal_waveform(values)
     stern = _stern_capacitance(values)
@@ -643,25 +646,31 @@ def _apply_voltage(ctx, solver, feature_spec, values, selection):
             solver.set_face_bc(face, held_face_bc(voltage, stern))
         else:
             solver.set_driven_face_voltage(face, voltage, waveform, stern)
+    hold = outline = None
     if ctx.domain.grid_kind == 'triangles':   # outlines: Dirichlet on their edges (no waveform: validation)
         edges = ctx.boundary_edges(selection.objects) if selection.objects else None
         if edges is not None:
-            solver.add_edge_potential(edges, voltage)
-        return solver.add_held_region(FEMHeldRegion(feature_spec.name, float(voltage), tuple(selection.outer_faces),
-                                                    edges=edges, stern_capacitance=stern))
-    if ctx.domain.grid_kind == 'tetrahedra':   # interfaces: Dirichlet on their faces (no waveform / Stern: validation)
+            outline = solver.add_edge_potential(edges, voltage)
+        region = solver.add_held_region(FEMHeldRegion(feature_spec.name, float(voltage), tuple(selection.outer_faces),
+                                                      edges=edges, stern_capacitance=stern))
+    elif ctx.domain.grid_kind == 'tetrahedra':   # interfaces: Dirichlet on their faces (no waveform / Stern)
         surfaces = ctx.boundary_faces(selection.objects) if selection.objects else None
         if surfaces is not None:
-            solver.add_surface_potential(surfaces, voltage)
-        return solver.add_held_region(FEMHeldRegion3D(feature_spec.name, float(voltage),
-                                                      tuple(selection.outer_faces), surfaces=surfaces))
-    mask_window = None
-    if selection.objects:
-        held_mask = ctx.perimeter_mask(selection.objects)
-        solver.add_fixed_potential(held_mask, voltage, waveform, **_held_outline(solver, selection.objects))
-        mask_window = held_mask[solver.window].copy()
-    return solver.add_held_region(HeldRegion(feature_spec.name, float(voltage), tuple(selection.outer_faces),
-                                             mask_window, waveform, stern))
+            outline = solver.add_surface_potential(surfaces, voltage)
+        region = solver.add_held_region(FEMHeldRegion3D(feature_spec.name, float(voltage),
+                                                        tuple(selection.outer_faces), surfaces=surfaces))
+    else:
+        mask_window = None
+        if selection.objects:
+            held_mask = ctx.perimeter_mask(selection.objects)
+            hold = solver.add_fixed_potential(held_mask, voltage, waveform, **_held_outline(solver, selection.objects))
+            mask_window = held_mask[solver.window].copy()
+        region = solver.add_held_region(HeldRegion(feature_spec.name, float(voltage), tuple(selection.outer_faces),
+                                                   mask_window, waveform, stern))
+    ctx.follow_parameters(feature_spec.params, values, ('voltage',),
+                          lambda value: solver.set_held_voltage(region, value, hold=hold, outline=outline), solver,
+                          f"feature '{feature_spec.name}'")
+    return region
 
 
 def _held_outline(solver, entities):
@@ -671,19 +680,25 @@ def _held_outline(solver, entities):
 
 
 def _apply_terminal(ctx, solver, feature_spec, values, selection):
-    """Every selected cell held at the voltage (times the waveform when driven); returns the HeldRegion."""
+    """Every selected cell held at the voltage (times the waveform when driven); returns the HeldRegion. A parameter
+    voltage follows a reused sweep build (set_held_voltage on every grid kind)."""
     voltage = values['voltage']
     waveform = _terminal_waveform(values)
     held_mask = ctx.domain_mask(selection.entities)
-    solver.add_fixed_potential(held_mask, voltage, waveform, **_held_outline(solver, selection.entities))
+    hold = solver.add_fixed_potential(held_mask, voltage, waveform, **_held_outline(solver, selection.entities))
     if ctx.domain.grid_kind == 'triangles':
-        return solver.add_held_region(FEMHeldRegion(feature_spec.name, float(voltage), (),
-                                                    elements=solver.element_mask(held_mask)))
-    if ctx.domain.grid_kind == 'tetrahedra':
-        return solver.add_held_region(FEMHeldRegion3D(feature_spec.name, float(voltage), (),
+        region = solver.add_held_region(FEMHeldRegion(feature_spec.name, float(voltage), (),
                                                       elements=solver.element_mask(held_mask)))
-    return solver.add_held_region(HeldRegion(feature_spec.name, float(voltage), (),
-                                             held_mask[solver.window].copy(), waveform))
+    elif ctx.domain.grid_kind == 'tetrahedra':
+        region = solver.add_held_region(FEMHeldRegion3D(feature_spec.name, float(voltage), (),
+                                                        elements=solver.element_mask(held_mask)))
+    else:
+        region = solver.add_held_region(HeldRegion(feature_spec.name, float(voltage), (),
+                                                   held_mask[solver.window].copy(), waveform))
+    ctx.follow_parameters(feature_spec.params, values, ('voltage',),
+                          lambda value: solver.set_held_voltage(region, value, hold=hold), solver,
+                          f"feature '{feature_spec.name}'")
+    return region
 
 
 def _apply_source(ctx, solver, feature_spec, values, selection):
@@ -936,13 +951,15 @@ def _make_memory_estimate(kind):
             ((f'fields ({n_fields} x float32)', n_fields * FLOAT32_BYTES * int(mesh.n_cells)),),
             run_items=((f'driven terminal bases ({n_waveforms} waveforms + DC, superposition)', driven_bytes),))
         cross_term = context.material_sets(spec.coefficient_arrays[2])
+        from ...model.schema import solver_backend   # where a multigrid setup aggregates
         system = diffusion_system_estimate(window_cells, linear_solver_precision(context), cross_term=cross_term,
                                            mixed=linear_solver_mixed(context),
                                            multigrid=linear_solver_multigrid(context),
                                            direct=linear_solver_direct(context),
                                            azimuthal=azimuthal_order_of(settings_values) != 0,
                                            wrap=mesh.domain_map is not None and mesh.domain_map.angle_wrap != 'none',
-                                           flux=True, dissipation=spec.with_joule)   # _update_derived_fields per solve
+                                           flux=True, dissipation=spec.with_joule,   # _update_derived_fields per solve
+                                           backend=solver_backend(context.spec))
         parts = [fields, system]
         if cudss:   # DiffusionDirectSolver factorises the kept A_solve
             parts.append(cudss_diffusion_estimate(window_cells, (9 if cross_term else 5) * window_cells, 2, cudss,

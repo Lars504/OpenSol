@@ -282,6 +282,6 @@ FEM_SELFTEST_CASES = (
                      'with nvmath-python, else SuperLU via cupyx) and with an exact pcg node '
                      '(device CSR, double, tolerance 1e-12): relative probe-rise differences. Tolerance '
                      f'{_BACKEND_TOLERANCE:g} (float32 probes). Without a usable GPU the cpu run is checked against '
-                     'the closed form instead. Not yet run at h = a / 5 (heavy flag to re-time).'),
-        specs=_backend_runs, check=_check_backends, backends=('cpu', 'gpu'), heavy=True),
+                     'the closed form instead.'),
+        specs=_backend_runs, check=_check_backends, backends=('cpu', 'gpu')),
 )

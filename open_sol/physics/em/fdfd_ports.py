@@ -57,6 +57,7 @@ class ModeSourcePhasor:
     # u_inc the incident mode on the line cells c and their upstream neighbours c' (c - 1 'positive', c + 1 'negative')
     # only, so b is non-zero on those two rows: b[c] = -A[c, c'] u_inc[c'], b[c'] = +A[c', c] u_inc[c]. The mode varies
     # as e^{-j k s} toward its direction: u_inc[c'] = u_inc[c] e^{+j k D_f}, D_f = the dual spacing between c' and c.
+    amplitude_params = ('power', 'phase')   # feature values of set_amplitude, in its argument order (sweep reuse)
 
     def __init__(self, physics, axis, line_cell, span_cells, power, mode_number, direction, phase, label):
         if direction not in _DIRECTIONS:
@@ -67,11 +68,9 @@ class ModeSourcePhasor:
         self.axis = axis
         self.position = port.line_cell
         self.span = port.solve_range
-        self.power = float(power)
         self.mode_number = _check_mode_number(mode_number)
         self.direction = direction
-        self.phase = float(phase)
-        self.incident_amplitude = math.sqrt(self.power) * phase_factor(phase, label)   # sqrt(P) e^{j phase}
+        self.set_amplitude(power, phase)
         self.warnings = []
         self.modes = None          # SlabModes of the last solve; mode = the selected one
         self.mode = None
@@ -111,12 +110,29 @@ class ModeSourcePhasor:
         omega = float(omega)
         line, modes = port.solve_modes(physics, omega, self.mode_number, None, self._normal_spacing)
         mode, self.warnings = port.select(line, modes, self.mode_number, self.interface_face, 'source')
+        self.modes, self.mode, self.solved_omega = modes, mode, omega
+        self._store_incident()
+        self._table = None
+
+    def set_amplitude(self, power, phase):
+        """New power [W/m] (finite, > 0: ValueError otherwise, also for a swept value) and phase [deg] in place (a
+        reused sweep build); a solved mode's incident line phasors are rescaled at once."""
+        power = float(power)
+        if not (math.isfinite(power) and power > 0.0):
+            raise ValueError(f"{self.port.label} power must be finite and > 0 [W/m], got {power!r}")
+        self.power = power
+        self.phase = float(phase)
+        self.incident_amplitude = math.sqrt(power) * phase_factor(phase, self.port.label)   # sqrt(P) e^{j phase}
+        if getattr(self, 'mode', None) is not None:
+            self._store_incident()
+
+    def _store_incident(self):
+        """Incident line phasors (run backend) of the selected mode at incident_amplitude: line and upstream cells."""
+        mode = self.mode
         line_incident = self.incident_amplitude * np.asarray(mode.profile, dtype=np.complex128)
         self._line_incident = self._xp.asarray(line_incident)
         self._upstream_incident = self._xp.asarray(line_incident * (cmath.exp(1j * complex(mode.k) * self._normal_spacing)
                                                               * self._upstream_wrap))
-        self.modes, self.mode, self.solved_omega = modes, mode, omega
-        self._table = None
 
     def add_to_rhs(self, rhs, physics, system):
         omega = float(system.omega)

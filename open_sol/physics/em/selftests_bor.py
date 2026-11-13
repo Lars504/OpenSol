@@ -644,7 +644,7 @@ BOR_SELFTEST_CASES = (
             'normalisation (current through the ring cross-section), the m = 0 axis and the radial PML.'),
         specs=lambda: {},
         check=_check_radiation,
-        max_wall_time=120.0, heavy=True),
+        max_wall_time=120.0),
     SelfTestCase(
         name='em_bor_order_sweep',
         label='EM body of revolution: order polynomial and factor recycling',
@@ -663,7 +663,7 @@ BOR_SELFTEST_CASES = (
             'recycling.'),
         specs=lambda: {},
         check=_check_order_sweep,
-        max_wall_time=120.0, heavy=True),
+        max_wall_time=120.0),
     SelfTestCase(
         name='em_bor_coax_ports',
         label='EM body of revolution: annular ports of a coaxial guide',

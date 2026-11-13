@@ -465,16 +465,18 @@ _SPEC_FIELD_HELP = {
                              'kept (a warning). false: only the last value keeps its snapshots, earlier values keep '
                              'their derived values and results only.',
     'SweepSpec.reuse_build': 'true: build once and run every value on that build: the swept parameter (and the '
-                             'parameters depending on it) may reach only feature values that follow a reused build '
-                             '(solid_mechanics on triangles / solid_mechanics_3d on tetrahedra: body_force, '
-                             'boundary_load, segment_load, displacement and prescribed_displacement_domain values of '
-                             'parameters only, no x / y / z), derived values, analytic / derived curves and study '
-                             'settings; any other use (geometry, mesh, materials, physics / solver / coupling settings, '
-                             'stored cuts) is a validation error, as are the time_dependent and optimization studies '
-                             'and parity_sectors. Each value then re-sets those loads and reruns the study from the '
-                             'previous state (nonlinear solids start Newton from it; summary sweep builds = 1). A '
-                             'model with a physics that cannot rerun (any other type) is rebuilt per value (an info '
-                             'line). false (default): one build per value.',
+                             'parameters depending on it) may reach only values that follow a reused build, with '
+                             'parameters only (no x / y / z / t): feature values and physics settings whose help says '
+                             'so (loads, held values, voltages, doping, em_eme wavelength, magnetic_fields_ac '
+                             'frequency, ...), material property values read by no EM type (repainted, then every '
+                             'solver of the mesh re-reads them; not on 3D tensor meshes), derived values, analytic / '
+                             'derived curves and study settings; any other use (geometry, mesh, other material values, '
+                             'dispersion, physics / solver / coupling settings, stored cuts) is a validation error, as '
+                             'are the time_dependent and optimization studies and parity_sectors. Each value then '
+                             're-sets those values and reruns the study from the previous state (nonlinear solids start '
+                             'Newton from it; summary sweep builds = 1); followed values are not range-checked per '
+                             'value. A model with a physics that cannot rerun (no reset_records) is rebuilt per value '
+                             '(an info line). false (default): one build per value.',
     'DerivedValueSpec.name': 'Identifier, unique among derived values; its key in summary.json derived.',
     'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D models: z), t and output '
                                    'fields (<physics>_<field>, or <field> when one physics alone provides it); over '

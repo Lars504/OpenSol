@@ -64,7 +64,7 @@
            "points_per_wavelength": 20.0, "refinements": []},
   "study": {"type": "nonlinear_frequency_domain", "settings": {},
             "stored_fields": ["nl.e_abs"],
-            "sweep": {"parameter": "gamma_L", "values": [0.25, 0.5, 1.0, 1.5, 2.0]}},
+            "sweep": {"parameter": "gamma_L", "values": [0.25, 0.5, 1.0, 1.5, 2.0], "reuse_build": true}},
   "derived_values": [
     {"name": "A_sh", "expression": "abs", "selection": [], "operation": "mean", "source": "nl.sh_forward",
      "at": null, "reference": "A_sh_ref", "tolerance": 0.02},

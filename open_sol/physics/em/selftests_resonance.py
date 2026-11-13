@@ -317,6 +317,5 @@ RESONANCE_SELFTEST_CASES = (
                     'ratio nodal / other must stay below 1e-3 (float32 rounding leaves ~1e-7; scaled onto the 1e-3 '
                     'tolerance). error = the worst entry. 40 nm cells and 0.6 ps not yet confirmed by a run.',
         specs=_nodal_specs,
-        check=_check_nodal_line,
-        heavy=True),
+        check=_check_nodal_line),
 )

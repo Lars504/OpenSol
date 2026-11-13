@@ -344,6 +344,38 @@ DEVICE_ARNOLDI_MIN_RATIO = 4
 HOST_MATVEC_DEVICE_MIN_ENTRIES = 1_500_000
 _BREAKDOWN_SEED = 17   # a random direction after an invariant Krylov subspace (deterministic)
 KRYLOV_CHUNK_BYTES = 8 * 2 ** 20   # device scratch of one column chunk of the restart / Ritz products (_column_chunks)
+# E6: BLAS threads of a host Arnoldi run (host ARPACK, host Krylov-Schur) on at most HOST_ARPACK_BLAS_MAX_UNKNOWNS
+# unknowns; 0 = the libraries' default (off). Threaded BLAS on ~1e4-long vectors may spin more than it computes
+# (em_modes ArpackShiftInvertSolver.eigs exclusive 0.98 s at cpu / wall 1.71 on 9.4e3 unknowns). Unmeasured: set 1 only
+# if the MKL_NUM_THREADS=1 example_profiler runs of em_modes and em3d_fdtd (--no-cprofile) beat the default runs
+HOST_ARPACK_BLAS_THREADS = 0
+HOST_ARPACK_BLAS_MAX_UNKNOWNS = 200_000
+# E5: share (by norm) of a seeded random vector added to a warm ARPACK start (earlier modes as v0), so an eigenvector
+# the warm start lacks still has a component (missed-mode guard)
+WARM_START_RANDOM_SHARE = 0.1
+
+
+def host_blas_limit(n_unknowns):
+    """Context of a host Arnoldi run on n_unknowns (E6): every BLAS pool at HOST_ARPACK_BLAS_THREADS while that is > 0
+    and n_unknowns <= HOST_ARPACK_BLAS_MAX_UNKNOWNS (host_direct.limited_blas_threads), else nothing changes."""
+    from .host_direct import limited_blas_threads
+    threads = HOST_ARPACK_BLAS_THREADS if int(n_unknowns) <= HOST_ARPACK_BLAS_MAX_UNKNOWNS else 0
+    return limited_blas_threads(threads)
+
+
+def guarded_start_vector(warm, seed, real=False):
+    """ARPACK v0 of a warm start (E5): warm + WARM_START_RANDOM_SHARE ||warm|| r / ||r|| (r seeded normal, float64 when
+    real, else complex128); None for a None or vanishing warm vector."""
+    if warm is None:
+        return None
+    warm = np.asarray(warm)
+    norm = float(np.linalg.norm(warm))
+    if not norm > 0.0:
+        return None
+    random = np.random.default_rng(seed)
+    noise = (random.standard_normal(warm.size) if real
+             else random.standard_normal(warm.size) + 1j * random.standard_normal(warm.size))
+    return warm.ravel() + (WARM_START_RANDOM_SHARE * norm / float(np.linalg.norm(noise))) * noise
 
 
 def device_arnoldi_fits(n_unknowns, basis_size, host_matvec=False) -> bool:
@@ -355,13 +387,13 @@ def device_arnoldi_fits(n_unknowns, basis_size, host_matvec=False) -> bool:
     return not host_matvec or float(n_unknowns) * rows >= HOST_MATVEC_DEVICE_MIN_ENTRIES
 
 
-def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False):
+def arnoldi_basis_bytes(n_unknowns, basis_size, backend, device_matvec=False, real=False):
     """(on_device, bytes) of an eigs caller's Arnoldi basis (memory estimators): the device Krylov-Schur's (basis + 1)
     complex128 rows + its product and packed-read vectors on the gpu backend when device_arnoldi_fits (device_matvec: a
-    cuDSS solve), else ARPACK's host basis."""
+    cuDSS solve), else ARPACK's host basis (real: float64, eigs(real=True))."""
     on_device = backend == 'gpu' and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=not device_matvec)
     rows = int(basis_size) + (3 if on_device else 0)
-    return on_device, rows * 16 * int(n_unknowns)
+    return on_device, rows * (8 if real and not on_device else 16) * int(n_unknowns)
 
 
 def device_factor_matvec(factorization, mass, **solve_options):
@@ -414,6 +446,9 @@ class ArpackShiftInvertSolver:
         self.fallback_factorization = fallback_factorization
         self.n_auto_fallbacks = 0   # B1b: a cuDSS factorization resolved from 'auto' switched to SuperLU (0 / 1)
         self.auto_fallback = ''     # its warning text
+        # A4: None, or a caller's hook n_unknowns -> '' (fall back) or the reason the SuperLU fallback is refused (e.g.
+        # em_fdfd_3d tetrahedra: the counted Nedelec fill); asked only when a fallback would happen
+        self.fallback_refusal = None
         self.label = label if label is not None else (lambda: 'arpack_shift_invert')
         self.n_factorizations = 0
         self.n_eigen_solves = 0
@@ -438,7 +473,7 @@ class ArpackShiftInvertSolver:
         self.device_pencil_min_entries = DEVICE_PENCIL_MIN_ENTRIES
         self.mixed_min_unknowns = int(mixed_min_unknowns)   # S5c: cudss_mixed below this factors in double
         self.device_arnoldi = bool(device_arnoldi)
-        self.last_arnoldi = ''   # 'ARPACK', 'device Krylov-Schur' or 'host Krylov-Schur' of the last run (log texts)
+        self.last_arnoldi = ''   # 'ARPACK' ('ARPACK (real)'), 'device Krylov-Schur' or 'host Krylov-Schur' (log texts)
 
     def factorization_for(self, n_unknowns) -> str:
         """The factorization used for an operator of n_unknowns: cudss for a cudss_mixed request below
@@ -464,13 +499,18 @@ class ArpackShiftInvertSolver:
         """B1b: switch a runtime resolved from 'auto' (fallback_factorization set) from cuDSS to host SuperLU for good
         after a cuDSS refusal (cudss_factor.CUDSS_REFUSALS: zero pivot, accuracy, device memory) of an operator within
         SPLU_LIMIT_UNKNOWNS; warned, counted, the pencil's DevicePencil dropped. True when it switched (the caller redoes
-        its factorisation / shift on SuperLU), else False (re-raise)."""
+        its factorisation / shift on SuperLU), else False (re-raise). RuntimeError (the remedy, from the refusal) when
+        the fallback_refusal hook refuses SuperLU for this operator (A4)."""
         import warnings
         from .sparse_direct import SPLU_LIMIT_UNKNOWNS
         if (self.fallback_factorization is None or self.factorization not in CUDSS_FACTORIZATIONS
                 or not isinstance(error, CUDSS_REFUSALS) or int(n_unknowns) > SPLU_LIMIT_UNKNOWNS):
             return False
-        self.auto_fallback = (f"{self.label()}: factorization 'auto' resolved to '{self.factorization}', which refused "
+        refusal = '' if self.fallback_refusal is None else self.fallback_refusal(int(n_unknowns))
+        if refusal:
+            raise RuntimeError(f"{self.label()}: factorization 'auto' resolved to '{self.factorization}', which refused "
+                               f'the shifted operator ({error}); no host SuperLU fallback: {refusal}') from error
+        self.auto_fallback =(f"{self.label()}: factorization 'auto' resolved to '{self.factorization}', which refused "
                               f"the shifted operator ({error}); host SuperLU ('{self.fallback_factorization}') from "
                               'now on')
         warnings.warn(self.auto_fallback, RuntimeWarning, stacklevel=2)
@@ -726,12 +766,14 @@ class ArpackShiftInvertSolver:
         return eigenvalues, vectors, applications, converged, factor
 
     def eigs(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0, max_restarts=MAX_RESTARTS,
-             default_basis=0, device_matvec=None):
+             default_basis=0, device_matvec=None, real=False):
         """(theta, host vectors, operator applications, converged) of the n_wanted largest-|theta| eigenpairs of the
         linear map `matvec` (numpy complex128, n_unknowns), tolerance = max(node, tolerance_floor), at most max_restarts
         restarts, basis = the node's subspace_size, else default_basis, else scipy's; without convergence the converged
         part. The device Krylov-Schur (eigs_device) instead of host ARPACK when device_arnoldi_fits: on device_matvec
-        (cupy -> cupy, e.g. device_factor_matvec), else on a device_arnoldi runtime around matvec."""
+        (cupy -> cupy, e.g. device_factor_matvec), else on a device_arnoldi runtime around matvec. real (E1): a real map
+        (matvec real -> real, start_vector real): host ARPACK runs the real dnaupd (one real solve per application
+        instead of two); the Krylov-Schur paths stay complex (matvec then gets complex vectors)."""
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
         if ((device_matvec is not None or self.device_arnoldi)
                 and device_arnoldi_fits(n_unknowns, basis_size, host_matvec=device_matvec is None)):
@@ -741,25 +783,31 @@ class ArpackShiftInvertSolver:
                 matvec_on_host=device_matvec is None)
             return theta, vectors, applications, converged
         return self._host_eigs(matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts,
-                               default_basis)
+                               default_basis, real=real)
 
-    def _host_eigs(self, matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts, default_basis):
-        """eigs by scipy ARPACK (host basis), counted."""
+    def _host_eigs(self, matvec, n_unknowns, n_wanted, start_vector, tolerance_floor, max_restarts, default_basis,
+                   real=False):
+        """eigs by scipy ARPACK (host basis; real: float64 operator and v0, dnaupd), counted."""
         import scipy.sparse.linalg
-        self.last_arnoldi = 'ARPACK'
+        self.last_arnoldi = 'ARPACK (real)' if real else 'ARPACK'
         applications = [0]
 
         def counted(vector):
             applications[0] += 1
             return matvec(vector)
 
-        operator = scipy.sparse.linalg.LinearOperator((n_unknowns, n_unknowns), matvec=counted, dtype=np.complex128)
+        dtype = np.float64 if real else np.complex128
+        operator = scipy.sparse.linalg.LinearOperator((n_unknowns, n_unknowns), matvec=counted, dtype=dtype)
+        if real and start_vector is not None:
+            start_vector = np.ascontiguousarray(np.real(start_vector), dtype=np.float64)
+        # dnaupd needs ncv >= k + 2 (arnoldi_basis_size keeps it; scipy's own default too)
         ncv = (arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
                if self.subspace_size or default_basis else None)
         start = time.perf_counter()
         converged = True
         try:
-            with quiet_openblas(self.factorization):   # ARPACK's BLAS between the PARDISO solves (host_direct header)
+            # ARPACK's BLAS between the PARDISO solves (host_direct header); E6 thread limit on small runs
+            with quiet_openblas(self.factorization), host_blas_limit(n_unknowns):
                 theta, vectors = scipy.sparse.linalg.eigs(operator, k=n_wanted, which='LM', v0=start_vector,
                                                           tol=max(self.tolerance, float(tolerance_floor)), ncv=ncv,
                                                           maxiter=max_restarts)
@@ -818,7 +866,8 @@ class ArpackShiftInvertSolver:
         search = _HostKrylovSchur(matvec, int(n_unknowns), int(n_wanted), basis_size, tolerance, start_vector, resume,
                                   capacity=min(int(reserve_basis), int(n_unknowns) // DEVICE_ARNOLDI_MIN_RATIO - 1))
         try:
-            with quiet_openblas(self.factorization):   # its gemv between the PARDISO solves (host_direct header)
+            # its gemv between the PARDISO solves (host_direct header); E6 thread limit on small runs
+            with quiet_openblas(self.factorization), host_blas_limit(n_unknowns):
                 theta, vectors, converged = search.run(int(max_restarts))
         finally:
             self.total_eigen_seconds += time.perf_counter() - start
@@ -947,6 +996,13 @@ class _KrylovSchur:
         self._packed_real = self._packed.view(np.float64)
         self._host_packed = cupyx.empty_pinned((packed_size,), dtype=np.complex128)
         self._host_row = None   # matvec_on_host: (basis row, its host copy in the pinned buffer) of the next application
+        # E4, device matvec: the H columns of an expansion and their |w|^2 stay on the device (row j = column j:
+        # coefficients in slots 0..j, |w|^2 in the real part of slot m + 1), one read per expansion into a pinned twin
+        self._columns = self._columns_real = self._host_columns = None
+        if not self.matvec_on_host:
+            self._columns = cp.zeros((basis_size, basis_size + 2), dtype=np.complex128)
+            self._columns_real = self._columns.reshape(-1).view(np.float64)
+            self._host_columns = cupyx.empty_pinned((basis_size, basis_size + 2), dtype=np.complex128)
         self.n_unknowns = n_unknowns
         self.n_wanted = n_wanted
         self.basis_size = basis_size   # m: Arnoldi vectors before each restart (V holds m + 1 rows)
@@ -1003,13 +1059,15 @@ class _KrylovSchur:
             restarts += 1
 
     def _expand(self):
-        """Arnoldi steps from column p to m (one operator application and one packed host read each)."""
+        """Arnoldi steps from column p to m (one operator application and one packed host read each; a device matvec:
+        _expand_device)."""
+        if not self.matvec_on_host:
+            self._expand_device()
+            return
         for column in range(self.size, self.basis_size):
-            if self.matvec_on_host:   # the next row came with the previous read (else one transfer: restarts, resume)
-                product = self.matvec(self._host_vector(column))
-                self._product.set(np.ascontiguousarray(product, dtype=np.complex128))
-            else:
-                self._product[...] = self.matvec(self.basis[column])
+            # the next row came with the previous read (else one transfer: restarts, resume)
+            product = self.matvec(self._host_vector(column))
+            self._product.set(np.ascontiguousarray(product, dtype=np.complex128))
             self.applications += 1
             coefficients, norm = self._orthogonalized(column + 1)
             self.hessenberg[:column + 1, column] = coefficients
@@ -1019,6 +1077,39 @@ class _KrylovSchur:
             else:
                 self.hessenberg[column + 1, column] = norm
         self.size = self.basis_size
+
+    def _expand_device(self):
+        """Arnoldi steps from column p to m on a device matvec (E4): CGS2, |w|^2 and the next unit row on the device per
+        step, the H columns read once afterwards; a breakdown found in that read gets a fresh direction and the steps
+        after it are redone (they were built on a round-off row)."""
+        from .pcg import device_vector_dot
+        row_slots = self.basis_size + 2
+        while self.size < self.basis_size:
+            first = self.size
+            for column in range(first, self.basis_size):
+                self._product[...] = self.matvec(self.basis[column])
+                self.applications += 1
+                rows = column + 1
+                _gram_schmidt(self.basis[:rows], self._product, self._columns[column, :rows],
+                              self._correction[:rows])
+                flat = self._product.view(np.float64)
+                squared_slot = 2 * (column * row_slots + self._norm_slot)   # real part, float64 view of the rows
+                device_vector_dot(flat, flat, out=self._columns_real[squared_slot])
+                _unit_row_kernel()(self._product, self._columns_real, np.int64(squared_slot), self.basis[rows])
+            host = self._host_columns[first:self.basis_size]
+            self._columns[first:self.basis_size].get(out=host)
+            self.size = self.basis_size
+            for column in range(first, self.basis_size):
+                line = host[column - first]
+                coefficients = line[:column + 1]
+                norm = math.sqrt(max(float(line[self._norm_slot].real), 0.0))
+                self.hessenberg[:column + 1, column] = coefficients
+                if norm <= 1e-12 * math.sqrt(float(np.sum(np.abs(coefficients) ** 2)) + norm ** 2):
+                    self.hessenberg[column + 1, column] = 0.0   # invariant subspace
+                    self.basis[column + 1] = self._fresh_direction(column + 1)
+                    self.size = column + 1
+                    break
+                self.hessenberg[column + 1, column] = norm
 
     def _orthogonalized(self, rows):
         """CGS2 of the product against the first `rows` rows, basis[rows] = its unit vector (normalised on the device),
@@ -1266,9 +1357,13 @@ def time_estimate(values, work):
     if device_arnoldi:
         # eigs_device (S5b): CGS2 reads ~3 x the complex128 basis per application (4 gemv over rows 0..j, j ~ 0.75 m
         # between restarts), the restart product V Q amortised over the applications, ~9 launches, one packed host
-        # read; around a host SuperLU solve a complex128 vector each way (a cuDSS solve_host curve holds its own)
+        # read (E4, a device matvec: one read per expansion of m - keep steps); around a host SuperLU solve a
+        # complex128 vector each way (a cuDSS solve_host curve holds its own)
+        wanted = max(int(work.eigenpairs), 1)
+        keep = min(basis - 1, max(wanted + (basis - wanted) // 2, wanted + 1))
+        reads = 1.0 / max(basis - keep, 1) if device_matvec else 1.0
         arnoldi = (te.Elementwise(3.0 * 16.0 * n_unknowns * basis, 3.0 * 16.0 * n_unknowns, launches=9),
-                   te.DenseFlops(4.0 * complex_factor * n_unknowns * basis), te.Sync(1))
+                   te.DenseFlops(4.0 * complex_factor * n_unknowns * basis), te.Sync(reads))
         if not on_device:
             arnoldi += ((2.0, te.Transfer(16.0 * n_unknowns)),)
     else:   # host ARPACK: the n x basis vectors streamed ~twice per application (Gram-Schmidt and update; memory-bound,

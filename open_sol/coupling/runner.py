@@ -25,6 +25,7 @@ class MultiphysicsRunner:
         self._dt_sync = math.inf
         self._schedule = ()
         self._coupling_schedule = ()
+        self._hand_off = None   # the one solver advance hands whole chunks to (advance_ticks), None = tick loop
         self.prepare_warnings = []
 
     def add(self, name: str, solver, every: int = 1):
@@ -96,6 +97,11 @@ class MultiphysicsRunner:
         self._coupling_schedule = tuple(
             (coupling, int(coupling.every), int(bool(getattr(coupling, 'after_source_step', False))))
             for coupling in self.couplings)
+        # one solver at stride 1 and no coupling (time updates and dynamic materials are couplings too): no per-tick
+        # work besides its step, so a solver with advance_ticks takes whole chunks (the same ticks and clock)
+        solver, stride, _ = self._schedule[0] if len(self._schedule) == 1 else (None, 0, 0)
+        self._hand_off = (solver if stride == 1 and not self._coupling_schedule
+                          and callable(getattr(solver, 'advance_ticks', None)) else None)
         self._prepared = True
         return self.prepare_warnings
 
@@ -177,6 +183,10 @@ class MultiphysicsRunner:
             raise ValueError("nothing steps in time (every physics has an infinite dt_limit); "
                              "use a stationary study")
         stop_time = math.inf if t_end is None else t_end - 0.5 * dt_sync
+        if self._hand_off is not None:   # the solver runs the tick loop below itself: t += dt_sync per tick
+            n_done, self.t = self._hand_off.advance_ticks(int(n_ticks), self.t, dt_sync, stop_time)
+            self.tick += n_done
+            return n_done
         schedule = self._schedule
         coupling_schedule = self._coupling_schedule
         physics = self.physics
@@ -217,5 +227,6 @@ class MultiphysicsRunner:
         self.couplings.clear()
         self._schedule = ()
         self._coupling_schedule = ()
+        self._hand_off = None
         self._prepared = False
         self._dt_sync = math.inf

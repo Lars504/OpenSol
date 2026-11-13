@@ -13,6 +13,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   imported inside functions (problems / runners / catalog), so the parent stays light until it enumerates.
 - Run from the repository root: the child is started with cwd = the repository root (`REPO_ROOT`) so `-m` finds both
   packages; the script form inserts the root into sys.path.
+- open_sol keeps gmsh tetrahedron meshes in a disk cache by default: `tools_profilers/__init__.py` (every `-m` run and
+  its children) and `case_profilers/profiler_harness.py` (script runs, example_profilers too) set
+  `OPEN_SOL_MESH_CACHE` '' so a profile times gmsh; a new entry point outside both sets it too.
 
 ## Rules
 - Solver choices come from the code, never a hand list: a new SolverType, back end or choice value shows up through
@@ -70,19 +73,37 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   multigrid phases by name: a new solver module or library adapter needs its phases added there. A script that also lists one of its
   targets gets "already timed" in the unresolved section (drop it from the script). A renamed private method drops
   out the same way, so check that section after a cuDSS refactor.
-- The harness output folder is `output_name(...)`: the profile name + backend + `--compare` (+ `only`) + `--set`, so
+- The harness output folder is `output_name(...)`: the profile name + backend (+ `automatic` for
+  `--automatic-solvers`) + `--compare` (+ `only`) + `--set`, so
   profiles of different solvers never share a report / runs.json; a new result-changing option belongs in that name.
 - `run_all_profilers.py` reads each command's points from the `runs.json` next to the report it printed, and only
   when that file is newer than the command's start. `profile_points.json` is the only record of first / previous /
   current: `load_points` never drops what it cannot read (it raises; the old one-solver layout maps to 'auto @gpu'),
   `save_points` replaces the file whole, and every run first copies it to its history folder. A layout change needs
   a mapping in `load_points`, never a fresh start. The Automatic ring reads `runs.json` `automatic` (`_automatic_choices`:
-  per role used, `SolverRole.automatic('gpu', grid)` over the type's param defaults, back_end / factorization 'auto'
-  through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores the
-  spec's nodes and a runtime cuDSS fallback. A back end name that is not a SOLVERS key (or a renamed
-  `back_end` / `factorization` / `preconditioner` param) silently drops the rings. A changed `runs.json` key (`wall_seconds`, `gpu_peak_bytes`,
-  `host_peak_bytes`) silently empties that panel; the log line of an auto command names the solvers its runs used
-  (`used_solvers`: `solvers[]` back_end, else preconditioner, else type), and falls back to 'auto' without them; its
+  per role used, `SolverRole.automatic('gpu', grid, study)` over the type's param defaults, back_end / factorization
+  'auto' through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores
+  the spec's nodes and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
+  runs.json `groups` / `automatic_groups`), and a group name is its SOLVERS key, so the ring needs no mapping. The
+  plot draws only `plotted_variants` (auto per backend + the five groups on their backend) and only COMMANDS entries:
+  other variants / commands stay in profile_points.json, undrawn; a renamed flag needs RENAMED_VARIANTS to stay drawn. A new library back end needs a `LIBRARY_GROUPS` entry, else it is grouped
+  by array library and precision; a renamed variant needs a RENAMED_VARIANTS entry so `load_points` keeps its points.
+  One ring per column (`auto_picks`): the column's runs' `run_automatic` groups; exactly one -> that group's line,
+  several or the line not run -> auto @gpu when its `chosen` holds them. Ringing every picked group gave two rings.
+  SOLVERS `backends` is a flag's default backend, `runs_on` what an explicit `--backend` may pick (and the lines
+  `plotted_variants` draws); a single-group ring looks for the gpu line first. The groups come from ONE point, auto @gpu first, the --precision groups last: `automatic` is worked out on the
+  variant's spec, so a forced precision changes it, and a union over variants (or old back end names next to group
+  names, hence LEGACY_GROUPS on both sides) failed the subset test and left most columns without a ring. In a split
+  column the source is the first point whose `run_automatic` covers the column's runs (then one that measured them),
+  and the ringed line must hold `run_walls` for them: an auto @gpu point from before per-run fields read first left
+  split commands (heat, mechanics_3d) ringless.
+  Split columns (`plot_columns`) match runs across variants by `base_run` (the run name without the harness's
+  ' SETTING=value' compare suffix): a new suffix format in `setting_variants` must keep that parse, else every compared
+  run becomes its own column. The 'skipped' log line keys on the harness's NOTHING_PROFILED text. The example
+  suite adds `--automatic-solvers` to every variant (nodes dropped); the case suite's auto runs as written.
+  A renamed `back_end` / `factorization` / `precision` param silently regroups. A changed `runs.json` key (`wall_seconds`, `gpu_peak_bytes`,
+  `host_peak_bytes`) silently empties that panel; the log line of an auto command names the groups its runs used
+  (`used_solvers`), and falls back to 'auto' without a runs.json; its
   bracketed time is the `command_seconds` of the variant's current point before the run replaces it (the whole command,
   not the plotted `run_seconds`). On the cpu backend summary.json `build.gpu_peak_bytes` is the
   MemoryLedger's tracemalloc peak (host bytes), so `_run_memory` writes null there instead of reading it, and the plot skips `@cpu` variants in the GPU panel
@@ -95,7 +116,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   counted): a matrix-free eigen solve or a line_block run under `back_end=pardiso` measures another solver. A command
   whose every run of the solver is such a run loses that solver's points of the command (the one case where points
   are dropped; `profile_points_before.json` of the run keeps them). A renamed counter makes every run count again. A timed-out command counts as profiling unless its partial stdout holds the
-  harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. `--compare` leaves out the roles
+  harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. Likewise `PLANNED_GROUPS`:
+  profile_runs prints the groups the runs' roles take (spec nodes, else Automatic) before the build, and run_all
+  (streaming stdout, `run_command`) prints the auto variant's '>>>' line from it. `--compare` leaves out the roles
   that refuse the value (setting_choices, opt-in values, validation: below), so no run fails for the value itself. The plot is saved to a timestamped sibling
   and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
   `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
@@ -125,7 +148,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   existing one.
 - `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
   `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
-  main and its helpers read those globals at call time, never bind them at import.
+  main and its helpers read those globals at call time, never bind them at import. `SOLVER_EXCLUDED_COMMANDS`
+  {group: entries} skips a variant whose answer is wrong and drops its points (examples: cudss_mixed's single
+  precision on 'magnetic', ~8 % off with iron).
 - Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
   callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
   every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).

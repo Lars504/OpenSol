@@ -112,16 +112,16 @@ CHAIN_BACKEND_CASES = (
          CURRENTS_CASE,         # electric_currents + heat + em_fdfd_ez: currents_heat_joule
          HZ_CASE,               # em_fdfd_hz: eps_xx / eps_yy index slots with expansion, field_transfer
          SUPERPOSITION_CASE),   # two 'sum' contributors on volumetric_power
-        heavy=True, max_wall_time=1800.0),
+        max_wall_time=1800.0),
     coupling_backend_case(
         'coupling_fdtd_cpu_gpu', 'Couplings: FDTD + transient heat, CPU backend vs GPU',
         (FDTD_CASE,),           # em_fdtd_hz windowed Joule power, FDTD thermo-optic slots
-        heavy=True, max_wall_time=3600.0),
+        max_wall_time=3600.0),
 )
 
 # registered by definitions_pockels.register (electrostatics + em_fdfd_hz)
 POCKELS_BACKEND_CASES = (
     coupling_backend_case(
         'pockels_cpu_gpu', 'Couplings: Pockels and the thermo-optic + Pockels index sum, CPU backend vs GPU',
-        (POCKELS_INDEX_SUM_CASE,), heavy=True, max_wall_time=1800.0),   # 3 runs per backend (shared reference)
+        (POCKELS_INDEX_SUM_CASE,), max_wall_time=1800.0),   # 3 runs per backend (shared reference)
 )

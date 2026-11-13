@@ -446,6 +446,5 @@ FDTD_BOR_MEDIA_SELFTEST_CASES = (
             'mode solve, the time-domain TFSF injections, the DFT reciprocity decomposition and the model features.'),
         specs=_pipe_ports_specs,
         check=_check_pipe_ports,
-        heavy=True,
         max_wall_time=900.0),
 )

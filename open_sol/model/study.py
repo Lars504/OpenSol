@@ -366,18 +366,23 @@ def build_session(spec, emit, on_session=None, build=None, registry=None, live_p
 
 
 _COLLECTED_LIVE = {'bytes': None}   # (pool used, cuDSS external) bytes right after the last collecting release_session
+COLLECT_WHEN_LIVE = 'when_live'     # release_session collect_garbage: only when the close left more than the last collect
 
 
 def release_session(on_session=None, session=None, emit=None, baseline_bytes=None, collect_garbage=True):
-    """on_session(None), session.close(), then free cupy's pools (GPU thread; collect_garbage: gc.collect first); with
-    emit, pool use above the baseline (baseline_bytes, else session.pool_baseline_bytes) is logged as a leak. Returns
-    the pool's used bytes after."""
+    """on_session(None), session.close(), then free cupy's pools (GPU thread; collect_garbage: gc.collect first;
+    COLLECT_WHEN_LIVE: only when pool used or cuDSS external bytes after the close exceed what the last collect left,
+    i.e. a reference cycle still holds device memory); with emit, pool use above the baseline (baseline_bytes, else
+    session.pool_baseline_bytes) is logged as a leak. Returns the pool's used bytes after."""
     if baseline_bytes is None and session is not None:
         baseline_bytes = session.pool_baseline_bytes
     if on_session is not None:
         on_session(None)
     if session is not None:
         session.close()
+    if collect_garbage == COLLECT_WHEN_LIVE:
+        live, collected = (gpu_memory.pool_used_bytes(), cudss_factor.external_live_bytes()), _COLLECTED_LIVE['bytes']
+        collect_garbage = live != (0, 0) and (collected is None or live[0] > collected[0] or live[1] > collected[1])
     gpu_memory.release_all(collect_garbage=collect_garbage)
     used_bytes = gpu_memory.pool_used_bytes()
     if collect_garbage:   # what stays live after a collect (_run_single skips the next one while it is unchanged)
@@ -490,8 +495,8 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
             if index == 0:
                 release_session(on_session)
                 gpu_memory.freeze_collect_baseline()   # after that full collect: only sweep-made objects scanned
-            else:
-                release_session(on_session, previous_session, emit)
+            else:   # the close frees by refcount; gc.collect only for a cycle that still holds device memory
+                release_session(on_session, previous_session, emit, collect_garbage=COLLECT_WHEN_LIVE)
                 previous_session = None
             session, failure = build_session(value_spec, emit, on_session, build=build, registry=registry,
                                              live_parameters=live_parameters)
@@ -706,7 +711,7 @@ def _run_built(session, spec, registry, emit, control, service):
     unmeasured = session.pool_baseline_bytes is None or session.domain.backend.name == 'cpu'
     run_memory, run_memory_message = (None, '') if unmeasured else run_memory_record(
         session.build_memory,
-        max(gpu_memory.pool_reserved_bytes() - session.pool_baseline_bytes - session.pool_baseline_free_bytes,
+        max(gpu_memory.pool_high_water_bytes() - session.pool_baseline_bytes - session.pool_baseline_free_bytes,
             gpu_memory.pool_used_bytes() - session.pool_baseline_bytes),
         unseen_bytes=session.pool_baseline_free_bytes)
     if run_memory_message:

@@ -194,8 +194,9 @@ class KeptPreconditionerSolver:
 
 
 def _bind_callback(pcg, operator, precondition) -> None:
-    """pcg.factorize of a CSR with a precondition callback (accepted under the 'jacobi' setting), then the 'multigrid'
-    setting: the check interval of an expensive preconditioner (a residual read every 1 - 2 iterations)."""
+    """pcg.factorize of a CSR with a precondition callback (accepted under the 'jacobi' setting, so the pcg's own
+    hierarchy, Jacobi binds and lagged setups stay out), then the 'multigrid' setting: pcg reads a callback bound under
+    it at the multigrid check interval (a residual read every 1 - 2 iterations)."""
     pcg.preconditioner = 'jacobi'
     try:
         pcg.factorize(operator, precondition)

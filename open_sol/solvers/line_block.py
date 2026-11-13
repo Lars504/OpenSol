@@ -16,7 +16,7 @@ REFINEMENT_TOLERANCE = 1e-9     # refine while some shift has ||r|| / ||b|| abov
 ACCEPT_TOLERANCE = 1e-6         # a shift above this is rejected (the consumer re-solves it); keep above the fp32 floor
 MAX_REFINEMENTS = 8
 STALL_RATIO = 0.7               # stop refining once no open shift lowers its residual below this x the previous one
-MEMORY_FRACTION = 0.6           # share of the free pool budget one chunk of shifts may take
+MEMORY_FRACTION = 0.6           # share of the free pool room (gpu_memory.pool_room_bytes) one chunk of shifts may take
 MAX_CHUNK_SHIFTS = 64           # shifts factored together (keeps the run memory estimate bounded)
 UNBUDGETED_CHUNK_BYTES = 1 << 30   # chunk bytes without a budget (gpu: set_budget never called; cpu: RAM unknown)
 # block size up to which cp.linalg.inv runs batched; above it a loop of 2D inverses (cuBLAS *Batched is ~200x slower at
@@ -48,17 +48,17 @@ KEPT_SWEEP_THREADS = 256
 
 def time_estimate(values, work):
     """Run-time recipe of a line_block role (core.time_estimate.SolverWork, solves = shifts, rhs per shift): per shift
-    a block Thomas factorisation (~ 4 n_blocks b^3 complex flops), one sweep + refinement sweeps (b^2 per block and
-    rhs) with their complex128 residual products; small blocks pay a per-call floor per block."""
+    a block Thomas factorisation (two block products and one block inverse per block, the inverse on the profile's
+    own curves), one sweep + refinement sweeps (b^2 per block and rhs) with their complex128 residual products; small
+    blocks pay a per-call floor per block, shared by the work.batch_shifts shifts of a solve_shifted chunk."""
     from ..core import time_estimate as te
     n_unknowns = float(work.unknowns)
     block = float(work.block_size or max(math.isqrt(int(n_unknowns)), 1))
     n_blocks = n_unknowns / block
-    complex_flops = 4.0
-    factor = ((FACTOR_DENSE_CALLS_PER_BLOCK * n_blocks,
-               te.DenseFlops(complex_flops * 4.0 * block ** 3 / FACTOR_DENSE_CALLS_PER_BLOCK)),
-              te.elementwise(n_blocks * block * block, 6, 3, 16, launches=int(FACTOR_LAUNCHES_PER_BLOCK * n_blocks)))
-    sweep = _sweep_ops(n_unknowns, block, work.nnz, work.rhs)
+    batch = max(float(work.batch_shifts), 1.0)
+    single = (values.get('precision') or 'mixed') == 'mixed'   # complex64 blocks
+    factor = _per_shift(_factor_ops(n_blocks, block, batch, single), batch)
+    sweep = _per_shift(_sweep_ops(n_unknowns, block, work.nnz, work.rhs, batch, single), batch)
     shifts = float(work.solves)
     sweeps = 1.0 + _refinement_sweeps(values.get('precision'))
     return te.TimeEstimate((
@@ -73,16 +73,37 @@ def _refinement_sweeps(precision):
     return REFINEMENT_SWEEPS_GUESS.get(precision, REFINEMENT_SWEEPS_GUESS['mixed'])
 
 
-def _sweep_ops(n_unknowns, block, nnz, rhs):
-    """Ops of one block Thomas sweep: per block SWEEP_PRODUCTS_PER_BLOCK (b, b) x (b, rhs) products (one call each) and
-    SWEEP_LAUNCHES_PER_BLOCK small launches, the complex128 residual product and read-back."""
+def _per_shift(ops, batch):
+    """Ops of one shift of a chunk: the chunk's ops (entries an op or (multiplicity, op)) over its `batch` shifts."""
+    pairs = (entry if isinstance(entry, tuple) else (1.0, entry) for entry in ops)
+    return tuple((multiplicity / batch, op) for multiplicity, op in pairs)
+
+
+def _factor_ops(n_blocks, block, batch, single):
+    """Ops of the block Thomas factorisation of a chunk of `batch` shifts: per block two batched complex products (8 b^3
+    real flops per shift each), the block inverses (one batched call; above BATCHED_INVERSE_MAX_BLOCK per matrix:
+    _invert's gpu loop, LAPACK on the cpu) and FACTOR_LAUNCHES_PER_BLOCK small launches; single: complex64 blocks."""
+    from ..core import time_estimate as te
+    products = ((FACTOR_DENSE_CALLS_PER_BLOCK - 1) * n_blocks,
+                te.DenseFlops(batch * 8.0 * block ** 3, single=single))
+    inverses = (n_blocks, te.BlockInverse(block, batch, single, looped=block > BATCHED_INVERSE_MAX_BLOCK))
+    return (products, inverses, te.elementwise(batch * n_blocks * block * block, 6, 3, 8 if single else 16,
+                                               launches=int(FACTOR_LAUNCHES_PER_BLOCK * n_blocks)))
+
+
+def _sweep_ops(n_unknowns, block, nnz, rhs, batch=1.0, single=False):
+    """Ops of one block Thomas sweep of a chunk of `batch` shifts: per block SWEEP_PRODUCTS_PER_BLOCK (b, b) x (b, rhs)
+    products (one call each over the chunk) and SWEEP_LAUNCHES_PER_BLOCK small launches (single: complex64), the
+    complex128 residual product of every shift and the read-back."""
     from ..core import time_estimate as te
     n_blocks = n_unknowns / block
     launches = int(SWEEP_LAUNCHES_PER_BLOCK * n_blocks + SWEEP_FIXED_LAUNCHES)
-    return ((max(SWEEP_PRODUCTS_PER_BLOCK * n_blocks - 3.0, 1.0), te.DenseFlops(8.0 * block ** 2 * rhs)),
-            te.elementwise(launches * block * rhs, 2, 1, 16, launches=launches),
-            te.Spmv(n_unknowns, max(nnz, 5.0 * n_unknowns), 16), te.Reduction(n_unknowns, 16, read_back=True),
-            te.PythonCalls(4 * n_blocks))
+    columns = batch * rhs
+    return ((max(SWEEP_PRODUCTS_PER_BLOCK * n_blocks - 3.0, 1.0),
+             te.DenseFlops(8.0 * block ** 2 * columns, single=single)),
+            te.elementwise(launches * block * columns, 2, 1, 8 if single else 16, launches=launches),
+            te.Spmv(batch * n_unknowns, batch * max(nnz, 5.0 * n_unknowns), 16),
+            te.Reduction(batch * n_unknowns, 16, read_back=True), te.PythonCalls(4 * n_blocks))
 
 
 def factor_solve_ops(n_unknowns, block_size=0, nnz=0.0, precision='mixed') -> tuple:
@@ -337,6 +358,7 @@ class LineBlockSolver:
         self.layout = None
         self.n_batches = 0
         self.n_shifts = 0
+        self.total_shift_seconds = 0.0   # wall time of the solve_shifted chunks (factor, sweeps, solutions to the host)
         self.n_refinement_sweeps = 0
         self.n_rejected = 0
         self.n_kept_factors = 0
@@ -483,7 +505,9 @@ class LineBlockSolver:
 
     def chunk_size(self, n_shifts, n_rhs, layout=None, extra_shift_bytes=0, kept=False) -> int:
         """Shifts per chunk (or per kept factor: kept=True, its coupling stacks counted): all, at most max_chunk_shifts
-        and what MEMORY_FRACTION of the free memory holds (gpu: pool budget - pool used; cpu: the available RAM);
+        and what MEMORY_FRACTION of the free memory holds (gpu: gpu_memory.pool_room_bytes, the pool budget left and at
+        most the free device memory: cuDSS factors of other physics lie outside the pool, and cached blocks of other
+        chunk sizes are then returned first; cpu: the available RAM);
         layout + extra_shift_bytes (operator_shift_bytes): a factorize_operators batch, else the bound operator family."""
         if layout is None:
             layout, matrix_terms = self.layout, bool(self._matrix_device)
@@ -497,8 +521,10 @@ class LineBlockSolver:
             free = UNBUDGETED_CHUNK_BYTES if available is None else available
         else:
             from ..core import gpu_memory
-            budget = gpu_memory.budget_bytes()
-            free = UNBUDGETED_CHUNK_BYTES if budget is None else max(budget - gpu_memory.pool_used_bytes(), 0)
+            # the budget alone over-sizes a chunk beside outside-pool memory (two FDFD cuDSS factors before a thermal
+            # noise solve): pool + factors then pass the device and Windows spills into shared memory (10-100x slower)
+            room = gpu_memory.pool_room_bytes(release_cached=True)
+            free = UNBUDGETED_CHUNK_BYTES if room is None else room
         return max(1, min(int(n_shifts), self.max_chunk_shifts, int(MEMORY_FRACTION * free // per_shift)))
 
     def batch_size(self, n_operators, layout, n_entries) -> int:
@@ -531,6 +557,7 @@ class LineBlockSolver:
         rhs_norms = self._rhs_norms(rhs3)
         chunk = self.chunk_size(coefficients.shape[0], rhs.shape[0])
         for start in range(0, coefficients.shape[0], chunk):
+            start_time = time.perf_counter()
             solutions, relative = self._solve_chunk(cp.asarray(coefficients[start:start + chunk]), rhs3, rhs_norms)
             accepted = np.isfinite(relative) & (relative <= self.accept_tolerance)
             self.n_batches += 1
@@ -538,8 +565,9 @@ class LineBlockSolver:
             self.n_rejected += int(np.count_nonzero(~accepted))
             if accepted.any():
                 self.worst_accepted_residual = max(self.worst_accepted_residual, float(relative[accepted].max()))
-            host_solutions = to_host(solutions)
+            host_solutions = to_host(solutions)   # the copy waits for the device: the chunk's wall time is complete
             del solutions   # release the chunk's device arrays before the next chunk
+            self.total_shift_seconds += time.perf_counter() - start_time
             yield start, host_solutions, relative, accepted
 
     def factorize(self, coefficients) -> LineBlockFactor:
@@ -554,8 +582,10 @@ class LineBlockSolver:
         return LineBlockFactor(self, chunk, coefficients.shape[0])
 
     def work_counters(self) -> dict:
-        """Machine-independent work so far (summary 'solvers' record of its (physics, role))."""
-        return {'batches': self.n_batches, 'shifts': self.n_shifts, 'refinement_sweeps': self.n_refinement_sweeps,
+        """Work so far (summary 'solvers' record of its (physics, role)); shift_seconds is the wall time of the
+        solve_shifted chunks."""
+        return {'batches': self.n_batches, 'shifts': self.n_shifts, 'shift_seconds': self.total_shift_seconds,
+                'refinement_sweeps': self.n_refinement_sweeps,
                 'rejected_shifts': self.n_rejected, 'kept_factors': self.n_kept_factors,
                 'factor_solves': self.n_factor_solves, 'rejected_factor_solves': self.n_rejected_solves,
                 'batched_operators': self.n_batched_operators,

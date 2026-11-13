@@ -1,6 +1,6 @@
 """Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver (solver_plan S7.0) on
 assembled SPD CSR operators (DiffusionSystem), one symmetric V(1,1)-cycle per application, hierarchy in float32.
-Aggregation on the host (numpy), Galerkin products on the backend (cupy / cupyx or numpy / scipy); gpu cycles by
+Aggregation on the host (numpy; on the gpu its device twin, same aggregates), Galerkin products on the backend (cupy / cupyx or numpy / scipy); gpu cycles by
 fused RawKernels replayed as CUDA graphs, cpu cycles by scipy's CSR kernel into level vectors."""
 import time
 import warnings
@@ -109,6 +109,10 @@ COARSENING_RATIO_GUESS = 0.2
 OPERATOR_COMPLEXITY_GUESS = 1.8
 AGGREGATION_HOST_PASSES = 7
 SETUP_DEVICE_PASSES = 20
+# gpu aggregation (device_aggregate_strong_links): diagonal, strength, union (csrgeam) and the two joins over the
+# entries, then per Luby round the hop / decide kernels over the strong edges and one sync (rounds: a guess, O(log n))
+AGGREGATION_DEVICE_PASSES = 5
+LUBY_ROUNDS_GUESS = 8
 
 
 def level_count_guess(n_unknowns) -> int:
@@ -137,17 +141,25 @@ def v_cycle_ops(n_unknowns, nnz, value_bytes, backend='gpu') -> tuple:
                        te.PythonCalls(10 * levels))
 
 
-def setup_ops(n_unknowns, nnz, value_bytes) -> tuple:
-    """Ops of one setup: host aggregation of the fine pattern (a reused pattern skips it: counted as if not),
-    transfers, Galerkin products on the backend, the coarsest dense inverse (Cholesky; n^3 / 3 potrf + 2 n^3 / 3
-    potri)."""
+def setup_ops(n_unknowns, nnz, value_bytes, backend='gpu') -> tuple:
+    """Ops of one setup: aggregation of the fine pattern (a reused pattern skips it: counted as if not; host numpy on
+    the cpu, the device twin on the gpu), transfers, Galerkin products on the backend, the coarsest dense inverse
+    (Cholesky; n^3 / 3 potrf + 2 n^3 / 3 potri)."""
     from ..core import time_estimate as te
-    entries_per_row = nnz / max(n_unknowns, 1.0)
-    host_bytes = aggregation_host_bytes(n_unknowns, max(int(round(entries_per_row)), 1))
-    return (te.HostStream(AGGREGATION_HOST_PASSES * host_bytes), te.Transfer(nnz * (value_bytes + 4)),
-            te.Elementwise(SETUP_DEVICE_PASSES * SETUP_ENTRIES_PER_UNKNOWN * n_unknowns * (HIERARCHY_VALUE_BYTES + 4),
-                           0.0, launches=50 * level_count_guess(n_unknowns)),
-            te.DenseFlops(float(COARSEST_UNKNOWNS) ** 3 * 1.0, host=True))
+    if backend == 'gpu' and DEVICE_AGGREGATION:   # no host copy of the CSR: only the aggregates come back
+        entry_bytes = nnz * (value_bytes + 4) + 8 * n_unknowns
+        aggregation = (te.Elementwise(AGGREGATION_DEVICE_PASSES * entry_bytes, 0.0, launches=AGGREGATION_DEVICE_PASSES),
+                       te.Elementwise(LUBY_ROUNDS_GUESS * 2 * (4 * nnz + 9 * n_unknowns), 0.0,
+                                      launches=2 * LUBY_ROUNDS_GUESS),
+                       te.Sync(LUBY_ROUNDS_GUESS + 2), te.Transfer(8 * n_unknowns))
+    else:
+        entries_per_row = nnz / max(n_unknowns, 1.0)
+        host_bytes = aggregation_host_bytes(n_unknowns, max(int(round(entries_per_row)), 1))
+        aggregation = (te.HostStream(AGGREGATION_HOST_PASSES * host_bytes), te.Transfer(nnz * (value_bytes + 4)))
+    return aggregation + (
+        te.Elementwise(SETUP_DEVICE_PASSES * SETUP_ENTRIES_PER_UNKNOWN * n_unknowns * (HIERARCHY_VALUE_BYTES + 4),
+                       0.0, launches=50 * level_count_guess(n_unknowns)),
+        te.DenseFlops(float(COARSEST_UNKNOWNS) ** 3 * 1.0, host=True))
 
 
 # --- host aggregation (numpy) ---------------------------------------------------------------------------------------
@@ -258,6 +270,201 @@ def aggregate_strong_links(indptr, indices, data, n_unknowns):
     leftover = (aggregate < 0) & ~isolated                  # none after a complete independent set
     aggregate[leftover] = n_aggregates + np.arange(np.count_nonzero(leftover), dtype=np.int64)
     return aggregate, n_aggregates + int(np.count_nonzero(leftover))
+
+
+# --- device aggregation (gpu twin of aggregate_strong_links) -----------------------------------------------------------
+
+# gpu setups aggregate on the device (device_aggregate_strong_links): the same aggregates bit for bit (float64 strength
+# per row in CSR order, the same Luby keys and rounds, max-only joins), no host copy of the level's CSR; the numpy rounds
+# were 0.79 of 1.16 s multigrid setup in a 2D sweep to 6.4e5 cells (heat example multigrid_square_plate_poisson)
+DEVICE_AGGREGATION = True
+_AGGREGATION_SOURCE = r'''
+#define ROW_THREAD \
+    const int row = (int)(blockIdx.x * (long long)blockDim.x + threadIdx.x); \
+    if (row >= n) return;
+
+// diagonal = per row the sum of its (row, row) entries in CSR order, in float64 (strong_links' bincount)
+template<typename T>
+__global__ void agg_diagonal(int n, const int* indptr, const int* indices, const T* data, double* diagonal) {
+    ROW_THREAD
+    double sum = 0.0;
+    for (int k = indptr[row]; k < indptr[row + 1]; ++k)
+        if (indices[k] == row) sum += (double)data[k];
+    diagonal[row] = sum;
+}
+
+// one-way strong entries of strong_links: candidates a_ij < 0 (j != i), coupling -a_ij where a_ii a_jj > 0 (else 0);
+// strong when coupling > 0 and >= threshold sqrt(a_ii a_jj), or the row's largest coupling of a row whose couplings sum
+// to >= floor_ratio a_ii; strong[k] 0 / 1, row_counts = strong entries per row
+template<typename T>
+__global__ void agg_strength(int n, const int* indptr, const int* indices, const T* data, const double* diagonal,
+                             double threshold, double floor_ratio, unsigned char* strong, int* row_counts) {
+    ROW_THREAD
+    const double own = diagonal[row];
+    const int start = indptr[row], stop = indptr[row + 1];
+    double spread = 0.0, largest = 0.0;
+    bool any = false;
+    for (int k = start; k < stop; ++k) {
+        const int column = indices[k];
+        const double value = (double)data[k];
+        if (column == row || !(value < 0.0)) continue;
+        const double scale = own * diagonal[column];
+        const double coupling = scale > 0.0 ? -value : 0.0;
+        spread += coupling;
+        if (!any || coupling > largest) largest = coupling;
+        any = true;
+    }
+    const bool floored = spread >= floor_ratio * own;
+    int count = 0;
+    for (int k = start; k < stop; ++k) {
+        const int column = indices[k];
+        const double value = (double)data[k];
+        unsigned char is_strong = 0;
+        if (column != row && value < 0.0) {
+            const double scale = own * diagonal[column];
+            const double coupling = scale > 0.0 ? -value : 0.0;
+            const bool above = coupling > 0.0 && coupling >= threshold * sqrt(scale > 0.0 ? scale : 0.0);
+            const bool floor_link = coupling > 0.0 && coupling >= largest && floored;
+            is_strong = (above || floor_link) ? 1 : 0;
+        }
+        strong[k] = is_strong;
+        count += is_strong;
+    }
+    row_counts[row] = count;
+}
+
+// Luby hop 1 (every row): the largest key (state + 1) n + rank of the row and its strong neighbours
+__global__ void agg_hop_one(int n, const int* indptr, const int* columns, const signed char* state,
+                            const long long* rank, long long* hop_one) {
+    ROW_THREAD
+    const long long n_keys = n;
+    long long best = ((long long)state[row] + 1) * n_keys + rank[row];
+    for (int k = indptr[row]; k < indptr[row + 1]; ++k) {
+        const int column = columns[k];
+        const long long key = ((long long)state[column] + 1) * n_keys + rank[column];
+        if (key > best) best = key;
+    }
+    hop_one[row] = best;
+}
+
+// Luby hop 2 (undecided rows only; reads hop_one, writes only its own state): root when its key is the largest within
+// distance 2, out when a root is, else still undecided (remaining = 1)
+__global__ void agg_decide(int n, const int* indptr, const int* columns, const long long* hop_one,
+                           const long long* rank, signed char* state, int* remaining) {
+    ROW_THREAD
+    if (state[row] != 0) return;
+    const long long n_keys = n;
+    const long long key = n_keys + rank[row];
+    long long best = hop_one[row];
+    for (int k = indptr[row]; k < indptr[row + 1]; ++k) {
+        const long long value = hop_one[columns[k]];
+        if (value > best) best = value;
+    }
+    if (best == key) state[row] = 1;
+    else if (best >= 2 * n_keys) state[row] = -1;
+    else *remaining = 1;
+}
+
+// a row without an aggregate joins the largest aggregate offered by its strong neighbours (roots_only: by roots only)
+__global__ void agg_join(int n, const int* indptr, const int* columns, const long long* aggregate, const bool* roots,
+                         int roots_only, long long* joined) {
+    ROW_THREAD
+    const long long own = aggregate[row];
+    long long candidate = -1;
+    if (own < 0)
+        for (int k = indptr[row]; k < indptr[row + 1]; ++k) {
+            const int column = columns[k];
+            if (roots_only && !roots[column]) continue;
+            if (aggregate[column] > candidate) candidate = aggregate[column];
+        }
+    joined[row] = (own < 0 && candidate >= 0) ? candidate : own;
+}
+'''
+
+
+def _aggregation_functions() -> dict:
+    """{name expression: function} of the device aggregation kernels (one module per device, compiled on first use)."""
+    from .pcg import device_template_functions
+    names = [f'agg_{name}<{t}>' for name in ('diagonal', 'strength') for t in ('float', 'double')]
+    names += ['agg_hop_one', 'agg_decide', 'agg_join']
+    return device_template_functions('multigrid_aggregation', _AGGREGATION_SOURCE, names)
+
+
+def device_aggregate_strong_links(indptr, indices, data, n_unknowns):
+    """aggregate_strong_links of a cupy CSR (int32 indptr / indices, float32 / float64 data) on the device: the same
+    (host aggregate index per unknown, aggregate count); syncs once per Luby round, only the aggregates come back."""
+    import cupy as cp
+    from ..core.backend import sparse_module, to_host
+    from .pcg import CSR_THREADS, type_name
+    if indptr.dtype != np.int32 or indices.dtype != np.int32:
+        raise TypeError(f'multigrid: device aggregation needs int32 indices, got {indptr.dtype} / {indices.dtype}')
+    functions = _aggregation_functions()
+    n = int(n_unknowns)
+    n_rows = np.int32(n)
+    grid, block = (max(1, -(-n // CSR_THREADS)),), (CSR_THREADS,)
+    t = type_name(data.dtype)
+    diagonal = cp.empty(n, dtype=np.float64)
+    functions[f'agg_diagonal<{t}>'](grid, block, (n_rows, indptr, indices, data, diagonal))
+    one_way = cp.empty(indices.size, dtype=np.uint8)
+    row_counts = cp.empty(n, dtype=np.int32)
+    functions[f'agg_strength<{t}>'](grid, block, (n_rows, indptr, indices, data, diagonal,
+                                                  np.float64(STRENGTH_THRESHOLD), np.float64(FLOOR_ROW_SUM_RATIO),
+                                                  one_way, row_counts))
+    del diagonal
+    one_way_indptr = cp.zeros(n + 1, dtype=np.int32)
+    one_way_indptr[1:] = cp.cumsum(row_counts, dtype=np.int32)   # strong entries <= the operator's int32 nnz
+    del row_counts
+    n_one_way = int(one_way_indptr[-1])
+    if n_one_way == 0:   # no strong link: every row isolated, no aggregate (as the host path)
+        return np.full(n, -1, dtype=np.int64), 0
+    # symmetric union S + S^T (cuSPARSE csrgeam of float32 ones: no sum cancels); the joins and rounds below take maxima
+    # over a row's links only, so neither their order nor the canonical form changes a result
+    sparse = sparse_module('gpu')
+    strong = sparse.csr_matrix((cp.ones(n_one_way, dtype=np.float32), indices[one_way.view(np.bool_)],
+                                one_way_indptr), shape=(n, n))
+    del one_way
+    union = (strong + strong.T).tocsr()
+    del strong
+    strong_indptr, strong_columns = union.indptr, union.indices
+    if strong_indptr.dtype != np.int32 or strong_columns.dtype != np.int32:
+        strong_indptr, strong_columns = strong_indptr.astype(np.int32), strong_columns.astype(np.int32)
+    isolated = strong_indptr[1:] == strong_indptr[:-1]
+    state = cp.where(isolated, -1, 0).astype(np.int8)      # 0 undecided, 1 root, -1 out
+    rank = cp.asarray(np.random.default_rng(AGGREGATION_SEED).permutation(n).astype(np.int64))
+    hop_one = cp.empty(n, dtype=np.int64)
+    remaining = cp.zeros(1, dtype=np.int32)
+    undecided = bool((state == 0).any())
+    for _ in range(MIS_MAX_ROUNDS):
+        if not undecided:
+            break
+        remaining.fill(0)
+        functions['agg_hop_one'](grid, block, (n_rows, strong_indptr, strong_columns, state, rank, hop_one))
+        functions['agg_decide'](grid, block, (n_rows, strong_indptr, strong_columns, hop_one, rank, state, remaining))
+        undecided = bool(int(remaining[0]))
+    del hop_one, rank
+    roots = state >= 0                                       # undecided after MIS_MAX_ROUNDS: roots too
+    n_aggregates = int(cp.count_nonzero(roots))
+    aggregate = cp.where(roots, cp.cumsum(roots, dtype=np.int64) - 1, -1)
+    joined = cp.empty_like(aggregate)
+    for roots_only in (1, 0):   # out of place: a pass offers the aggregates of its start
+        functions['agg_join'](grid, block, (n_rows, strong_indptr, strong_columns, aggregate, roots,
+                                            np.int32(roots_only), joined))
+        aggregate, joined = joined, aggregate
+    leftover = (aggregate < 0) & ~isolated                  # none after a complete independent set
+    n_leftover = int(cp.count_nonzero(leftover))
+    if n_leftover:
+        aggregate = cp.where(leftover, n_aggregates + cp.cumsum(leftover, dtype=np.int64) - 1, aggregate)
+    return np.asarray(to_host(aggregate), dtype=np.int64), n_aggregates + n_leftover
+
+
+def _host_dense(operator):
+    """float64 dense array of a small backend CSR, densified on the host (its three arrays downloaded, scipy toarray):
+    cupyx toarray always copies, coosorts and runs sparseToDense, and downloads n^2 values; same values."""
+    from scipy.sparse import csr_matrix
+    from ..core.backend import to_host
+    host = csr_matrix((to_host(operator.data), to_host(operator.indices), to_host(operator.indptr)),
+                      shape=operator.shape)
+    return np.asarray(host.toarray(), dtype=np.float64)
 
 
 def _cholesky_inverse(dense) -> tuple:
@@ -620,6 +827,8 @@ class MultigridPreconditioner:
         self.n_setups = 0
         self.n_aggregations = 0
         self.n_coarsest_eigh = 0     # coarsest levels not positive definite to PSEUDO_INVERSE_CUTOFF (eigh, not Cholesky)
+        self.n_rebinds = 0           # rebind: a new fine operator on the kept hierarchy (pcg lagged setups)
+        self.no_strong_links = False # last setup: the fine level had no strong link (the hierarchy is its smoother)
         self.inside_capture = False  # set by pcg around a CG block capture: the cycle launches eagerly into it
         self.device_bytes = 0                # last setup's hierarchy, the fine operator excluded (_record_size)
         self.entries_per_unknown = 0.0       # stored T, P, R and coarse-operator entries per fine unknown
@@ -630,6 +839,36 @@ class MultigridPreconditioner:
     def n_levels(self) -> int:
         """Levels of the current hierarchy, the coarsest included (1: no coarsening)."""
         return len(self._levels) + 1
+
+    @property
+    def smoother_only(self) -> bool:
+        """The last setup found no strong link on a fine level above COARSEST_DENSE_LIMIT: its V-cycle is
+        COARSEST_SMOOTHING_SWEEPS l1-Jacobi sweeps of the full operator (diagonally dominant rows: Jacobi suffices)."""
+        return self.no_strong_links and self._coarsest is not None and self._coarsest[0] == 'smooth'
+
+    def can_rebind(self, operator) -> bool:
+        """Whether rebind can take `operator`: a hierarchy with a coarse level whose fine operator has its dtype and
+        CSR pattern (indptr / indices identical or equal)."""
+        if not self._levels:
+            return False
+        fine = self._levels[0].operator
+        if fine.shape != operator.shape or fine.dtype != operator.dtype:
+            return False
+        xp = self._xp
+        return all(kept is current or (kept.shape == current.shape and bool(xp.array_equal(kept, current)))
+                   for kept, current in ((fine.indptr, operator.indptr), (fine.indices, operator.indices)))
+
+    def rebind(self, operator) -> None:
+        """Keep the hierarchy for a new fine operator of the same pattern (can_rebind): level 0 takes it and its l1
+        smoother weights, so the V-cycle stays SPD (SPD coarse levels, a smoother convergent on the new operator)."""
+        level = self._levels[0]
+        replaced = level.operator is not operator
+        self._xp.copyto(level.weights, self._smoother_weights(operator))   # in place: plans / graphs keep the pointer
+        level.operator = operator
+        if replaced and self._device_cycle is not None:   # its plans hold the old operator's arrays
+            self.n_cycle_graphs += self._device_cycle.n_graphs
+            self._device_cycle = _DeviceCycle(self._levels, self._coarsest, self._scaled_residual)
+        self.n_rebinds += 1
 
     def setup(self, operator) -> None:
         """Build the hierarchy of a square backend CSR operator; re-aggregates only when its nonzero pattern changed."""
@@ -642,11 +881,17 @@ class MultigridPreconditioner:
             self._device_cycle = None
         nonzero = operator.data != 0
         reuse = self._pattern_matches(operator, nonzero)
+        # an empty fine-level aggregation is re-tested on every setup: a value-only setup reusing it stayed smoother-only
+        # after the operator turned Laplacian-like (a larger dt, a steady solve on the same pattern); on the gpu a
+        # strength pass without strong links returns after one sync
+        if reuse and not self._aggregates and operator.shape[0] > COARSEST_UNKNOWNS:
+            reuse = False
         if not reuse:
             self._aggregates, self._tentatives = [], []
             self._pattern = (operator.indptr, operator.indices, nonzero)
             self.n_aggregations += 1
         self._levels = []                  # drop the old hierarchy before building the new one
+        self.no_strong_links = False
         current, depth = operator, 0
         while True:
             n_unknowns = current.shape[0]
@@ -657,10 +902,15 @@ class MultigridPreconditioner:
                 if n_unknowns <= COARSEST_UNKNOWNS or depth + 1 >= MAX_LEVELS:
                     break
                 started = time.perf_counter()
-                aggregate, n_aggregates = aggregate_strong_links(
-                    to_host(current.indptr), to_host(current.indices), to_host(current.data), n_unknowns)
+                if self.backend == 'gpu' and DEVICE_AGGREGATION:
+                    aggregate, n_aggregates = device_aggregate_strong_links(
+                        current.indptr, current.indices, current.data, n_unknowns)
+                else:
+                    aggregate, n_aggregates = aggregate_strong_links(
+                        to_host(current.indptr), to_host(current.indices), to_host(current.data), n_unknowns)
                 seconds['aggregation'] += time.perf_counter() - started
                 if n_aggregates == 0 or n_aggregates > MIN_COARSENING * n_unknowns:
+                    self.no_strong_links = depth == 0 and n_aggregates == 0
                     break
                 self._aggregates.append((aggregate, n_aggregates))
             started = time.perf_counter()
@@ -919,8 +1169,7 @@ class MultigridPreconditioner:
         xp = self._xp
         n_unknowns = operator.shape[0]
         if n_unknowns <= COARSEST_DENSE_LIMIT:
-            from ..core.backend import to_host
-            dense = np.asarray(to_host(operator.toarray()), dtype=np.float64)
+            dense = _host_dense(operator)
             dense = 0.5 * (dense + dense.T)
             inverse = np.zeros_like(dense)
             largest = 0.0   # largest coarsest eigenvalue (Cholesky: the largest squared pivot, its lower bound)
@@ -999,7 +1248,7 @@ class MultigridPreconditioner:
     def work_counters(self) -> dict:
         """Setups, host aggregations and the current level count (merged into the pcg counters)."""
         return {'multigrid_setups': self.n_setups, 'multigrid_aggregations': self.n_aggregations,
-                'multigrid_coarsest_eigh': self.n_coarsest_eigh,
+                'multigrid_coarsest_eigh': self.n_coarsest_eigh, 'multigrid_lagged_binds': self.n_rebinds,
                 'multigrid_levels': self.n_levels, 'multigrid_device_bytes': self.device_bytes,
                 'multigrid_entries_per_unknown': round(self.entries_per_unknown, 2),
                 'multigrid_operator_complexity': round(self.operator_complexity, 3),

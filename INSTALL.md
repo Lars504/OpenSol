@@ -170,8 +170,10 @@ None of these is ever chosen on its own: install one when a model or solver node
 
 - `gmsh`: the external mesher for triangle / tetrahedron meshes, used when a mesh selects it (open_sol calls the
   `gmsh` executable; set `OPEN_SOL_GMSH` to its path if it is not on the PATH). The built-in mesher needs nothing
-  extra. Set `OPEN_SOL_MESH_CACHE` to a folder to keep gmsh tetrahedron meshes on disk across runs (a re-run with the
-  same geometry and sizes skips gmsh; at most 2 GB, the least recently used files go first).
+  extra. gmsh tetrahedron meshes are kept on disk across runs (a re-run with the same geometry and sizes skips gmsh;
+  at most 2 GB, the least recently used files go first) in `%LOCALAPPDATA%\open_sol\mesh_cache` (Windows),
+  `~/Library/Caches/open_sol/mesh_cache` (macOS) or `~/.cache/open_sol/mesh_cache` (elsewhere); set
+  `OPEN_SOL_MESH_CACHE` to another folder, or to an empty value to turn the cache off. Self-tests never use it.
 - `psutil`: the available RAM for the memory estimates and host factor checks. Without it open_sol asks Windows /
   Linux directly, so it matters only on other systems.
 

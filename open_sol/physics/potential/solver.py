@@ -124,10 +124,11 @@ def _temporal(waveform):
     return ContinuousWave(waveform.frequency)
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(eq=False)
 class HeldRegion:
     """Runtime object of a voltage / terminal feature: held outer faces and / or held window cells at one voltage
-    (times its waveform when driven), the faces behind a Stern layer when stern_capacitance > 0."""
+    (times its waveform when driven), the faces behind a Stern layer when stern_capacitance > 0; not frozen:
+    set_held_voltage re-sets voltage (a reused sweep build)."""
     name: str
     voltage: float
     faces: tuple            # outer faces held by a Dirichlet (Stern layer: Robin) condition
@@ -265,7 +266,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
 
     def materials_changed(self, names) -> None:
         if set(self.spec.coefficient_arrays) & set(names):
-            self.system.operator_dirty = True
+            # values only (sigma(T)): the re-assembly tests the c > 0 pattern instead of the full anchor check
+            self.system.mark_coefficients_changed()
         if self.spec.coefficient_arrays[2] in names:   # the xy array: kxy_active re-decided at the next assembly
             self.system.cross_term_dirty = True
 
@@ -283,7 +285,8 @@ class PotentialPhysics(DiffusionPhysicsBase):
             if self.nonlinear:
                 self._solve_nonlinear()
             else:
-                if system.operator_dirty:
+                # held values alone changed (set_held_voltage): re-eliminated on the last assembly, no factorisation
+                if system.operator_dirty and not system.refresh_held_values():
                     self._assemble()
                 system.build_rhs(self._source_window, self._applied_source_window)
                 system.solve()
@@ -335,10 +338,10 @@ class PotentialPhysics(DiffusionPhysicsBase):
 
     # --- potential-specific API (shared settings, set_face_bc, add_boundary_flux, probes: DiffusionPhysicsBase) ---
 
-    def add_fixed_potential(self, mask, V, waveform=None, inside=None) -> None:
+    def add_fixed_potential(self, mask, V, waveform=None, inside=None) -> int:
         """Hold V [V] (scalar or full-grid array) on window cells under mask, times a TerminalWaveform s(t) when given
         (driven); also writes V. inside(x, y) -> bool (host, the drawn held region; 2D): held edge at its drawn
-        position (core.cut_cells cut cells)."""
+        position (core.cut_cells cut cells). Returns the hold index for set_held_voltage."""
         system = self.system
         mask_window = system.window_mask(mask, 'fixed potential').copy()
         potential = system.window_values(V, 'fixed potential', system.dtype)
@@ -348,6 +351,35 @@ class PotentialPhysics(DiffusionPhysicsBase):
         self._cell_holds.append((waveform, mask_window, potential))
         self.xp.copyto(self._V_window, potential, where=mask_window)
         self._extend_into_pml()
+        return len(self._cell_holds) - 1
+
+    def set_held_voltage(self, region: HeldRegion, voltage, hold=None, outline=None) -> None:
+        """New voltage [V] of a voltage / terminal region (a reused sweep build): its faces still holding its BC take
+        it in place (update_face_value), then its held cells (hold: add_fixed_potential's index; later holds are set
+        again over shared cells); the next step re-eliminates them on the last assembly (refresh_held_values) or
+        assembles. Driven: every basis is re-solved. outline: unused (element meshes' outline handle)."""
+        voltage = float(voltage)
+        for face in region.faces:
+            bc = getattr(self.bcs, face)
+            if not _face_held_by(bc, region):
+                continue   # a later feature took the face
+            driven = self._driven_faces.get(face)
+            if driven is not None and driven[1] is bc:
+                self.set_driven_face_voltage(face, voltage, driven[0], region.stern_capacitance)
+            else:
+                self.set_face_value(face, held_face_bc(voltage, region.stern_capacitance))
+        if hold is not None:
+            system = self.system
+            waveform, mask_window, _ = self._cell_holds[hold]
+            self._cell_holds[hold] = (waveform, mask_window,
+                                      system.window_values(voltage, 'fixed potential', system.dtype))
+            for _, later_mask, later_potential in self._cell_holds[hold:]:   # later holds win shared cells
+                system.set_fixed(later_mask, later_potential)
+                self.xp.copyto(self._V_window, later_potential, where=later_mask)
+            self._extend_into_pml()
+        region.voltage = voltage
+        if self.waveforms:
+            self._bases = None
 
     def set_driven_face_voltage(self, face: str, voltage: float, waveform, stern_capacitance: float = 0.0) -> None:
         """V = voltage s(t) on an outer face (a TerminalWaveform s; behind a Stern layer of C_S [F/m^2] when > 0; a

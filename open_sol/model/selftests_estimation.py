@@ -216,5 +216,5 @@ ESTIMATION_SELFTEST_CASES = (
                     'most 60 runs). measured = |k_fit / 2.3 - 1|; tolerance 1e-3. Run count and wall time not yet '
                     'confirmed by a run.',
         specs=lambda: {'fit': _slab_spec(_conductivity_estimation('nelder_mead', 60, 1e-6))},
-        check=_fit_check({'k_fit': _K_TRUE}, _SIMPLEX_TOLERANCE), heavy=True),
+        check=_fit_check({'k_fit': _K_TRUE}, _SIMPLEX_TOLERANCE)),
 )

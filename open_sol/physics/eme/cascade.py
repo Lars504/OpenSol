@@ -27,40 +27,58 @@ def identity_smatrix(n_modes):
     return SMatrix(zeros, eye, eye.copy(), zeros.copy())
 
 
+def _solve_blocks(matrix, first, second):
+    """(matrix^-1 first, matrix^-1 second) from one LU: the right-hand blocks side by side, leading batch axes
+    broadcast."""
+    batch = np.broadcast_shapes(matrix.shape[:-2], first.shape[:-2], second.shape[:-2])
+    solved = np.linalg.solve(matrix, np.concatenate((np.broadcast_to(first, batch + first.shape[-2:]),
+                                                     np.broadcast_to(second, batch + second.shape[-2:])), axis=-1))
+    n_first = first.shape[-1]
+    return solved[..., :n_first], solved[..., n_first:]
+
+
 def star(left, right):
-    """Redheffer star product: left (ports 1, 2) followed by right (ports 2, 3) -> ports 1, 3."""
-    n_middle = left.s22.shape[0]
-    if right.s11.shape[0] != n_middle:
-        raise ValueError(f'star: {n_middle} modes on the left of the junction, {right.s11.shape[0]} on the right')
+    """Redheffer star product: left (ports 1, 2) followed by right (ports 2, 3) -> ports 1, 3; blocks may carry
+    leading batch axes (broadcast; the length sweep stacks its stretch factors)."""
+    n_middle = left.s22.shape[-1]
+    if right.s11.shape[-2] != n_middle:
+        raise ValueError(f'star: {n_middle} modes on the left of the junction, {right.s11.shape[-2]} on the right')
     eye = np.eye(n_middle, dtype=np.complex128)
     toward_left = eye - right.s11 @ left.s22    # (I - B11 A22)
     toward_right = eye - left.s22 @ right.s11   # (I - A22 B11)
-    return SMatrix(s11=left.s11 + left.s12 @ np.linalg.solve(toward_left, right.s11 @ left.s21),
-                   s12=left.s12 @ np.linalg.solve(toward_left, right.s12),
-                   s21=right.s21 @ np.linalg.solve(toward_right, left.s21),
-                   s22=right.s22 + right.s21 @ np.linalg.solve(toward_right, left.s22 @ right.s12))
+    reflected, passed_left = _solve_blocks(toward_left, right.s11 @ left.s21, right.s12)
+    passed_right, returned = _solve_blocks(toward_right, left.s21, left.s22 @ right.s12)
+    return SMatrix(s11=left.s11 + left.s12 @ reflected, s12=left.s12 @ passed_left,
+                   s21=right.s21 @ passed_right, s22=right.s22 + right.s21 @ returned)
 
 
 def append_phase(smatrix, phase):
-    """smatrix followed by a section of propagation factors phase (N,) = exp(-j k L)."""
-    return SMatrix(smatrix.s11, smatrix.s12 * phase[None, :], phase[:, None] * smatrix.s21,
-                   phase[:, None] * smatrix.s22 * phase[None, :])
+    """smatrix followed by a section of propagation factors phase (..., N) = exp(-j k L)."""
+    return SMatrix(smatrix.s11, smatrix.s12 * phase[..., None, :], phase[..., :, None] * smatrix.s21,
+                   phase[..., :, None] * smatrix.s22 * phase[..., None, :])
+
+
+def _prepend_phase(phase, smatrix):
+    """A section of propagation factors phase (..., N) followed by smatrix (the star product with a zero-reflection
+    section, written out)."""
+    return SMatrix(phase[..., :, None] * smatrix.s11 * phase[..., None, :], phase[..., :, None] * smatrix.s12,
+                   smatrix.s21 * phase[..., None, :], smatrix.s22)
 
 
 def smatrix_power(smatrix, count):
     """smatrix cascaded `count` (>= 0) times with itself (star products by repeated squaring); equal port mode counts."""
     count = int(count)
-    if count < 0 or smatrix.s11.shape != smatrix.s22.shape:
+    if count < 0 or smatrix.s11.shape[-2:] != smatrix.s22.shape[-2:]:
         raise ValueError(f'smatrix_power needs count >= 0 and equal port mode counts, got {count}, '
-                         f'{smatrix.s11.shape[0]} / {smatrix.s22.shape[0]} modes')
-    result, square = identity_smatrix(smatrix.s11.shape[0]), smatrix
+                         f'{smatrix.s11.shape[-1]} / {smatrix.s22.shape[-1]} modes')
+    result, square = None, smatrix
     while count:
         if count & 1:
-            result = star(result, square)
+            result = square if result is None else star(result, square)
         count >>= 1
         if count:
             square = star(square, square)
-    return result
+    return identity_smatrix(smatrix.s11.shape[-1]) if result is None else result
 
 
 def unit_cell(phases, interfaces, first, last, junction):
@@ -104,13 +122,15 @@ def forward_bloch(multipliers, forward, backward, power, tolerance=1e-8):
 
 
 def total_smatrix(phases, interfaces):
-    """Total SMatrix of sections with propagation factors phases[k] (N_k,) and the interfaces between them (no partial
-    cascades: the length-sweep re-cascade)."""
+    """Total SMatrix of sections with propagation factors phases[k] (..., N_k) and the interfaces between them (no
+    partial cascades: the length-sweep re-cascade, batched over leading axes)."""
     if len(interfaces) != len(phases) - 1:
         raise ValueError(f'total_smatrix: {len(phases)} sections need {len(phases) - 1} interfaces, got '
                          f'{len(interfaces)}')
-    total = append_phase(identity_smatrix(phases[0].size), phases[0])
-    for interface, phase in zip(interfaces, phases[1:]):
+    if not interfaces:
+        return append_phase(identity_smatrix(phases[0].shape[-1]), phases[0])
+    total = append_phase(_prepend_phase(phases[0], interfaces[0]), phases[1])
+    for interface, phase in zip(interfaces[1:], phases[2:]):
         total = append_phase(star(total, interface), phase)
     return total
 

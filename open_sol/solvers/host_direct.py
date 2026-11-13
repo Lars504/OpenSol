@@ -32,6 +32,10 @@ helpers here are GUI-thread safe."""
 # checks only the nnz): numeric factorisation only, counted as a reused analysis. A miss releases every parked one
 # before it analyses (a changed mesh never holds a stale factor beside the new one), at most KEPT_ANALYSES are parked
 # (oldest released first), and the block's end releases the rest. A failed factorisation never parks.
+# PARDISO thread rule: a handle whose solve ran on one thread (_PARDISO_SERIAL_SOLVE_LU_ENTRIES) is never refactorised
+# (phase 22 after such a phase 33 gave residuals ~1e20 - 1e125 and access violations on oneMKL; factors that solved on
+# all threads refactor fine): it is neither reused nor parked, and a factor refactorising in place analyses anew once
+# with keep_threads (all phases on the library thread count), so its later refactors reuse that analysis.
 # Value refreshes (refactorize_values, the sparse_direct.HostPencil route of frequency sweeps): values of a canonical
 # pattern the caller never modifies in place, matched by identity first (no canonicalising copy, no array compare);
 # the per-entry rows and diagonal positions are kept per pattern, ||E|| is lazy (built only when a residual misses
@@ -342,6 +346,37 @@ def quiet_openblas(name, refresh=False):
         yield len(pools.lib_controllers)
 
 
+_BLAS_POOLS = {}   # limited_blas_threads: 'pools' = threadpoolctl controller of every loaded BLAS pool (None: none), 'marker'
+
+
+@contextlib.contextmanager
+def limited_blas_threads(threads):
+    """Context holding every loaded BLAS pool (MKL, OpenBLAS; threadpoolctl) at `threads` threads, restored on exit
+    (arpack_shift_invert.host_blas_limit, E6); nothing for threads <= 0 or without threadpoolctl. Looked up again only
+    when a scipy BLAS module was imported since (_SCIPY_BLAS_MODULES). Process-wide while held."""
+    if int(threads) <= 0:
+        yield
+        return
+    marker = _blas_marker()
+    if 'pools' not in _BLAS_POOLS or marker != _BLAS_POOLS.get('marker'):
+        _BLAS_POOLS['marker'] = marker
+        pools = None
+        try:
+            import threadpoolctl
+            found = threadpoolctl.ThreadpoolController().select(user_api='blas')
+            if found.lib_controllers:
+                pools = found
+        except Exception:   # not installed, or a library it cannot read: no limit
+            pools = None
+        _BLAS_POOLS['pools'] = pools
+    pools = _BLAS_POOLS['pools']
+    if pools is None:
+        yield
+        return
+    with pools.limit(limits=int(threads)):
+        yield
+
+
 def _openblas_quiet(method):
     """HostDirectFactorization method run inside quiet_openblas of its library."""
     @functools.wraps(method)
@@ -466,6 +501,7 @@ class HostDirectFactorization(ProbedFactor):
         self._double_refined = False      # a double factor that missed its probe: GMRES-refined solves
         self._factor_dtype = self._wanted_factor_dtype()
         self._library = None              # _MumpsFactor / _PardisoFactor of the analysed pattern
+        self._keep_library_threads = False   # refactored in place once: new handles keep their threads (thread rule)
         self._operator = self._operator_transpose = self._row_scale = self._symmetrizer = None
         self._pattern = None              # (indptr, indices) copies of the analysed canonical pattern
         self._pattern_source = None       # (indptr, indices) of the refactorize_values caller, matched by identity
@@ -563,7 +599,10 @@ class HostDirectFactorization(ProbedFactor):
             self.asymmetry = 0.0 if symmetric_known else relative_asymmetry(operator)
         symmetric = self.symmetric_requested and self.asymmetry <= SYMMETRY_TOLERANCE
         kind = self._requested_kind() if symmetric else 'general'
-        reuse = (self._library is not None and same_pattern and kind == self.matrix_kind
+        refactorable = self._library is not None and self._library.refactorable
+        if same_pattern and self._library is not None and not refactorable:
+            self._keep_library_threads = True   # refactors in place: its next handle keeps the threads (thread rule)
+        reuse = (refactorable and same_pattern and kind == self.matrix_kind
                  and self._factor_dtype == self._wanted_factor_dtype())
         self.last_double_fallback = False
         self.last_analysis_kept = False
@@ -716,6 +755,7 @@ class HostDirectFactorization(ProbedFactor):
                 else:
                     started = time.perf_counter()
                     self._library = _ADAPTERS[self.back_end](matrix, kind, self.real)
+                    self._library.keep_threads = self._keep_library_threads
                     self.matrix_kind = kind
                     self.analysis_seconds = time.perf_counter() - started
                     self.n_analyses += 1
@@ -1022,7 +1062,7 @@ class HostDirectFactorization(ProbedFactor):
         """Free the library factor (inside host_analyses_kept: parked for a later factor of its pattern) and the
         operator copies (idempotent)."""
         library = self._library
-        if (library is not None and self._pattern is not None and self.matrix_kind is not None
+        if (library is not None and library.refactorable and self._pattern is not None and self.matrix_kind is not None
                 and _park_analysis(_KeptAnalysis(library, self.back_end, self.matrix_kind, self.real,
                                                  self._factor_dtype, self._pattern))):
             self._library = None
@@ -1126,6 +1166,8 @@ def _environment_threads(name):
 class _MumpsFactor:
     """One python-mumps Context: analysed at construction (one triangle for a symmetric kind)."""
 
+    refactorable = True   # no thread switching (the PARDISO thread rule)
+
     def __init__(self, matrix, kind, real):
         import mumps
         self._error_type = mumps.MUMPSError
@@ -1217,7 +1259,8 @@ def _ordered_pardiso_class(base):
             super()._analyze()
     return OrderedPardisoSolver
 # below this many factor entries (iparm[17]) a solve (phase 33, ~4 flops per entry) is ms-scale work that the per-level
-# OpenMP barriers of a many-thread solve dominate (fluid heat transient, 57 000 entries on 16 threads: 0.88 ms per solve)
+# OpenMP barriers of a many-thread solve dominate (fluid heat transient, 57 000 entries on 16 threads: 0.88 ms per solve);
+# such a handle is not refactorised afterwards (module header "PARDISO thread rule")
 _PARDISO_SERIAL_SOLVE_LU_ENTRIES = 1_000_000
 # TEMPORARY measurement override: an int here is written to iparm[24] (parallel forward / backward solve control) of
 # every PARDISO handle before its first solve; unset = MKL's default. The solve text names the value used
@@ -1296,7 +1339,10 @@ class _PardisoFactor:
         self._call(lambda: self._solver.refactor(self._matrix), 'factorisation')
 
     def refactor(self, matrix) -> None:
-        """Phase 22 of a matrix on the analysed (padded) pattern (the caller compared patterns)."""
+        """Phase 22 of a matrix on the analysed (padded) pattern (the caller compared patterns and refactorable)."""
+        if self.solved_serially:
+            raise RuntimeError('PARDISO refactor of a handle that solved on one thread (unsafe in MKL): the caller '
+                               'must analyse anew (HostDirectFactorization checks refactorable)')
         self._matrix = matrix
         self.factor()
 
@@ -1305,10 +1351,20 @@ class _PardisoFactor:
     library_solves = 0
     library_refinement_steps = 0
     _solve_parallel = None   # iparm[24] written to the handle (None: MKL's default kept)
+    # thread rule (_PARDISO_SERIAL_SOLVE_LU_ENTRIES): keep_threads (set by the owner of a factor that refactors in place)
+    # keeps every phase on the library thread count; solved_serially: a phase 33 ran on one thread, so this handle is
+    # never refactorised again (phase 22 after it gave garbage factors and access violations)
+    keep_threads = False
+    solved_serially = False
+
+    @property
+    def refactorable(self) -> bool:
+        """False once a solve ran on one thread: phase 22 on this handle is unsafe (a new analysis instead)."""
+        return not self.solved_serially
 
     def solve(self, rhs, transpose=False):
-        """Phase 33; a factor below _PARDISO_SERIAL_SOLVE_LU_ENTRIES solves on one MKL thread (restored after);
-        counts MKL's own refinement steps (iparm[6])."""
+        """Phase 33; a factor below _PARDISO_SERIAL_SOLVE_LU_ENTRIES solves on one MKL thread (restored after; not
+        with keep_threads, and the handle is then not refactorable); counts MKL's own refinement steps (iparm[6])."""
         if self._solve_parallel is None:
             self._set_solve_parallel()
 
@@ -1317,11 +1373,12 @@ class _PardisoFactor:
             self.library_solves += 1
             self.library_refinement_steps += int(self._solver.iparm[6])
             return solution
-        if self.lu_entries() >= _PARDISO_SERIAL_SOLVE_LU_ENTRIES:
+        if self.keep_threads or self.lu_entries() >= _PARDISO_SERIAL_SOLVE_LU_ENTRIES:
             return self._call(run, 'solve')
         library_threads = int(self._module.get_mkl_pardiso_max_threads())
         if library_threads <= 1:
             return self._call(run, 'solve')
+        self.solved_serially = True
         self._module.set_mkl_pardiso_threads(1)
         try:
             return self._call(run, 'solve')

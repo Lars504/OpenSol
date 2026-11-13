@@ -226,9 +226,10 @@ def _materials_digest(materials) -> bytes:
     return digest.digest()
 
 
-def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=None):
+def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=None, warm_guard=False):
     """CrossSectionSolve of the layer at the FDTD numerical frequency of omega (materials at omega); within one
-    calibration round (physics.port_mode_solves) ports whose layers hold equal materials share one solve per omega."""
+    calibration round (physics.port_mode_solves) ports whose layers hold equal materials share one solve per omega;
+    warm_guard: a random share joins start_vector (cross_section_modes.solve_prepared_modes, E5)."""
     engine = physics.engine
     u, v = port_axes(normal_axis)
     widths = (engine.widths[u], engine.widths[v])
@@ -244,7 +245,8 @@ def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=N
     # no 'eigen' role (em3d sub file): a private host SuperLU runtime, its Arnoldi on the device on the gpu backend
     eigen_solver = ArpackShiftInvertSolver(device_arnoldi=engine.xp is not np)
     solve = solve_cross_section_modes(widths, port_boundary(engine.config, normal_axis), pml_dx, materials,
-                                      numerical_omega, n_modes, start_vector=start_vector, eigen_solver=eigen_solver)
+                                      numerical_omega, n_modes, start_vector=start_vector, eigen_solver=eigen_solver,
+                                      warm_guard=warm_guard)
     if solves is not None:
         solves[key] = solve
     return solve
@@ -335,7 +337,9 @@ class ModeSource3D:
     def _solve(self, engine):
         d = self.normal_axis
         u, v = port_axes(d)
-        solve = solve_port_modes(self.physics, d, self.cell, self._omega, max(self.mode_number + 2, 4))
+        # E5: a re-solve (a later run's first step) starts from the last solve's modes (random share: missed modes)
+        solve = solve_port_modes(self.physics, d, self.cell, self._omega, max(self.mode_number + 2, 4),
+                                 start_vector=self.modes or None, warm_guard=bool(self.modes))
         if len(solve.modes) < self.mode_number:
             raise ValueError(f'{self.label}: the port plane has {len(solve.modes)} modes, mode_number '
                              f'{self.mode_number} does not exist (enlarge the plane or pick a lower mode)')

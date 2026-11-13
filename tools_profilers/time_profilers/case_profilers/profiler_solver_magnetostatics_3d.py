@@ -16,7 +16,7 @@ TENSOR_3D_PARTS = methods('open_sol.physics.magnetic.solver3d:MagneticPhysics3D'
     'prepare', 'finalize', 'step', '_assemble', '_read_permeability', '_refresh_saturation', '_solve_saturated',
     '_saturated_log_permeability', '_update_corner_anchor', '_external_ring', '_solve_once', '_add_drive_rhs',
     '_drive_terms', '_total_face_flows', '_write_current_density', '_write_potential_field', '_update_fields',
-    'scalars', 'coil_results', 'field_energy',
+    '_saturating_flux_magnitude', 'scalars', 'coil_results', 'field_energy',
 ), 'magnetostatics_3d tensor') + functions('open_sol.core.fv_diffusion_3d', (
     'face_drive_integrals_3d', 'face_drive_terms_3d', 'centre_gradient_3d', 'face_drive_divergence_3d',
     'face_terms_at_centres_3d', 'face_flow_energy_3d',

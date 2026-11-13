@@ -190,26 +190,26 @@ def axis_cpml_profile(config, axis, n_cells, pml_cell_size):
 
 
 @dataclass(frozen=True, eq=False)
-class CPMLSlab3D:
-    """One CPML side and Yee kind ('e' rows at centres, 'h' rows at hi faces): first row, row count, float32 recursion
-    b / a, bulk inverse spacing of the rows and the two psi slabs (the axis dimension = row count), on the run
-    backend's array module."""
+class CPMLAxis3D:
+    """The CPML layers of one axis and Yee kind ('e' rows at centres, 'h' rows at hi faces), lo and hi side stacked
+    along the axis (psi row = lo rows first): int32 row map (grid row -> psi row, -1 outside the layers), float32
+    recursion b and gain = a x bulk inverse spacing per psi row, the two psi arrays (axis dimension = n_rows), on the
+    run backend's array module; the fused Yee kernels read them (kernels3d CPML_AXIS_PARAMS)."""
     axis: int
     kind: str
-    row0: int
     n_rows: int
+    row_map: object
     b: object
-    a: object
-    inv_spacing: object
+    gain: object
     psi_first: object
     psi_second: object
 
 
 def cpml_slabs(config, shape, bulk_inverse_spacings, pml_cell_sizes, dt, xp):
-    """(slabs, kappa_e, kappa_h): CPMLSlab3D per active side and kind (psi only inside the layer: npml x the other
-    two axes; arrays of module xp) plus per-axis float64 kappa rows to fold into the curl spacings; pml_cell_sizes =
-    sigma grading cell size [m] per axis."""
-    slabs, kappa_e, kappa_h = [], [], []
+    """(layers, kappa_e, kappa_h): CPMLAxis3D per axis with a CPML side and kind (psi only inside the layers: rows x
+    the other two axes; arrays of module xp) plus per-axis float64 kappa rows to fold into the curl spacings;
+    pml_cell_sizes = sigma grading cell size [m] per axis."""
+    layers, kappa_e, kappa_h = [], [], []
     npml = int(config.cpml_npml)
     for axis_index, axis in enumerate(AXES):
         n = shape[axis_index]
@@ -217,22 +217,28 @@ def cpml_slabs(config, shape, bulk_inverse_spacings, pml_cell_sizes, dt, xp):
         kappa_e.append(profile.kappa_e)
         kappa_h.append(profile.kappa_h)
         inverse_e, inverse_h = bulk_inverse_spacings[axis_index]
-        for side in ('lo', 'hi'):
-            if not config.cpml_sides[f'{axis}_{side}']:
-                continue
-            # the cpml_axis_profiles rows (mirror-symmetric layout: outermost E rows 0 and n-1 unstretched)
-            for kind, selected in zip(('e', 'h'), cpml_side_rows(side, n, npml)):
-                row0, n_rows = selected.start, npml
+        # the cpml_axis_profiles rows (mirror-symmetric layout: outermost E rows 0 and n-1 unstretched)
+        sides = [cpml_side_rows(side, n, npml) for side in ('lo', 'hi') if config.cpml_sides[f'{axis}_{side}']]
+        if not sides:
+            continue
+        for kind_index, kind in enumerate(('e', 'h')):
+            row_map = np.full(n, -1, dtype=np.int32)
+            decays, gains = [], []
+            for selected in (rows[kind_index] for rows in sides):
+                row_map[selected] = np.arange(len(decays) * npml, (len(decays) + 1) * npml, dtype=np.int32)
                 sigma, kappa, alpha = (getattr(profile, f'{name}_{kind}')[selected]
                                        for name in ('sigma', 'kappa', 'alpha'))
                 a, b = _cpml_recursion(sigma, kappa, alpha, dt, np)   # float32 host rows
-                inverse = (inverse_e if kind == 'e' else inverse_h)[selected]
-                psi_shape = list(shape)
-                psi_shape[axis_index] = n_rows
-                slabs.append(CPMLSlab3D(axis_index, kind, row0, n_rows, xp.asarray(b), xp.asarray(a),
-                                        xp.asarray(inverse.astype(np.float32)),
-                                        xp.zeros(psi_shape, dtype=DTYPE), xp.zeros(psi_shape, dtype=DTYPE)))
-    return slabs, kappa_e, kappa_h
+                inverse = (inverse_e if kind == 'e' else inverse_h)[selected].astype(np.float32)
+                decays.append(b)
+                gains.append(a * inverse)   # float32 product: the former in-kernel a[r] * inv[r]
+            n_rows = npml * len(sides)
+            psi_shape = list(shape)
+            psi_shape[axis_index] = n_rows
+            layers.append(CPMLAxis3D(axis_index, kind, n_rows, xp.asarray(row_map),
+                                     xp.asarray(np.concatenate(decays)), xp.asarray(np.concatenate(gains)),
+                                     xp.zeros(psi_shape, dtype=DTYPE), xp.zeros(psi_shape, dtype=DTYPE)))
+    return layers, kappa_e, kappa_h
 
 
 def cpml_psi_bytes(npml_sides, shape):

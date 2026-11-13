@@ -222,7 +222,9 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   (mesh store keeps `_KEPT_PREVIEWS` per mesh, the counts go to the document's shared `_element_counts`). View only:
   validation, Compute, forms and the 3D preview stay the document's.
 - Canvas layout: the plot never changes size with the mode or the text (colour bar stays in the layout, opacity 0
-  without a field; fixed tick-axis widths; the title sets no minimum width; `_place_plot` puts the widget at the top of
+  without a field, its bar aligned to the view box by `_align_colorbar` margins on either view box's sigResized; fixed
+  tick-axis widths (`_ArticleAxis` moves the left label beside the widest drawn tick label each paint); the title sets
+  no minimum width; `_place_plot` puts the widget at the top of
   the layout-free `_PlotArea` at the last fit's aspect, each view side at least `_MIN_FRAME_FRACTION` of its largest).
   The aspect is never locked: equal x / y scales only where the fitted frame allows (a thin geometry gets unequal
   ones), a wheel over an axis zooms that axis alone (pyqtgraph AxisItem), so code needing a pixel size takes both

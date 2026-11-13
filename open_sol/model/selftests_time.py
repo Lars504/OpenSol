@@ -15,8 +15,10 @@ _SECONDS_PER_UNKNOWN = 1e-7
 _DEVICE_FACTOR_RATIO = 0.25               # synthetic cudss_factor_2d_device[_mixed] over the host refactorisation curve
 _SCALARS = {'launch': 1e-6, 'sync': 1e-5, 'python_call': 1e-7}
 _PRICE_RTOL = 1e-9
-_EXPECTED_CURVES = ('fused', 'dot', 'spmv', 'gemm', 'host_gemm', 'host_stream', 'host_lu_2d', 'host_solve_2d',
-                    'host_lu_2d_complex', 'host_solve_2d_complex', 'host_lu_3d', 'host_solve_3d')
+_EXPECTED_CURVES = ('fused', 'dot', 'spmv', 'gemm', 'host_gemm', 'gemm_single', 'host_stream', 'host_lu_2d',
+                    'host_solve_2d', 'host_lu_2d_complex', 'host_solve_2d_complex', 'host_lu_3d', 'host_solve_3d',
+                    'block_inverse_32', 'block_inverse_128', 'block_inverse_single_32', 'block_inverse_single_128',
+                    'matrix_inverse', 'matrix_inverse_single')
 _BANDWIDTH_RANGE = (0.1e9, 1e12)          # B/s: a fused-kernel bandwidth outside it is a broken benchmark
 _SIZE = (4e-6, 4e-6)                      # m
 _DX = 50e-9                               # m
@@ -39,7 +41,12 @@ def _synthetic_profile():
         return (1.0, rate), (1e15, rate * 1e15)
     curves = {name: line(_SECONDS_PER_BYTE) for name in ('fused', 'fused_numba', 'spmv', 'dot', 'transfer',
                                                          'host_stream')}
-    curves.update({name: line(_SECONDS_PER_FLOP) for name in ('gemm', 'host_gemm')})
+    curves.update({name: line(_SECONDS_PER_FLOP) for name in ('gemm', 'host_gemm', 'gemm_single')})
+    for suffix in ('', '_single'):   # dense inverses at 8 b^3 flops per matrix: batched over the batch, single over b
+        for block in (32, 128):
+            curves[f'block_inverse{suffix}_{block}'] = line(_SECONDS_PER_FLOP * 8.0 * block ** 3)
+        curves[f'matrix_inverse{suffix}'] = tuple((float(block), _SECONDS_PER_FLOP * 8.0 * block ** 3)
+                                                  for block in (128, 512))
     curves.update({f'arith_float{bits}': line(rate) for bits, rate in _SECONDS_PER_KERNEL_FLOP.items()})
     for dimensions in (2, 3):
         for kind in ('lu', 'solve'):

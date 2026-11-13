@@ -79,7 +79,7 @@ def _field_differences(cpu_results, gpu_results, field_names):
     return differences
 
 
-def solid_parity_case(name, label, wrapped, heavy=True, max_wall_time=1800.0, field_tolerance=FIELD_TOLERANCE,
+def solid_parity_case(name, label, wrapped, heavy=False, max_wall_time=1800.0, field_tolerance=FIELD_TOLERANCE,
                       backends=BACKENDS):
     """SelfTestCase running every wrapped (case, solid field names) on `backends` (cpu, optionally gpu): error = the
     worst of (cpu check error / its tolerance) and (cpu vs gpu field difference / field_tolerance), tolerance 1; raises
@@ -255,13 +255,12 @@ _PRODUCT_NUMBA_CASE = SelfTestCase(
                  'measured = error = the worst max |numba - numpy| relative to the peak of each output, tolerance '
                  f'{_NUMBA_TOLERANCE:g}. Details: ms per call of both on {_NUMBA_SPEED_ELEMENTS[0]}^3 elements '
                  f'({_NUMBA_SPEED_CALLS[0]} numpy / {_NUMBA_SPEED_CALLS[1]} numba calls after one numba warm-up; '
-                 'was 48^3 with 3 / 20). Without numba nothing is compared (error 0). Not yet run with the smaller '
-                 'timing (heavy flag to re-time).'),
-    specs=lambda: {}, check=_check_product_numba, max_wall_time=600.0, heavy=True, backends=('cpu',))
+                 'was 48^3 with 3 / 20). Without numba nothing is compared (error 0).'),
+    specs=lambda: {}, check=_check_product_numba, max_wall_time=600.0, backends=('cpu',))
 
 
 def backend_cases(em_types):
-    """The 2D and 3D cpu cases (heavy: re-time them), the numba product case, plus the optics cpu vs gpu chains (strain
+    """The 2D and 3D cpu cases, the numba product case, plus the optics cpu vs gpu chains (strain
     optic, optical force with em_fdfd_ez: wrapped here only, their gpu half is the examples; the em_modes
     optomechanics chains with em_modes)."""
     cases = [   # cpu only; guided modes / piezo modes are host solves on either backend, so they are not wrapped

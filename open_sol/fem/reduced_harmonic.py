@@ -34,6 +34,9 @@ SKETCH_ROWS = 512
 SKETCH_NONZEROS = 8
 EXACT_SKETCH_LIMIT = 2048     # up to this many unknowns the residual is exact (identity sketch)
 VARYING_LOAD_CACHE_BYTES = 512 * 2 ** 20   # full non-polynomial load vectors kept per frequency up to this total
+# a term with max |A - A^H| below this x max |A| is Hermitian: its new reduced row is the conjugate of the new column
+# (v^H A V = conj(V^H A v)), saving one sparse product and one (n, k) product per basis vector (real K / M / C)
+HERMITIAN_RTOL = 1e-13
 OMEGA_CHUNK = 64              # frequencies per batched reduced solve
 SWEEP_METHODS = ('adaptive', 'modal')
 _SKETCH_SEED = 11
@@ -107,6 +110,15 @@ class _Sketch:
         return np.asarray(self.matrix @ vector, dtype=np.complex128)
 
 
+def _hermitian(matrix) -> bool:
+    """True when a scipy sparse matrix equals its conjugate transpose to HERMITIAN_RTOL of its largest entry."""
+    largest = float(abs(matrix).max()) if matrix.nnz else 0.0
+    if largest == 0.0:
+        return True
+    difference = (matrix - matrix.conj().T).tocsr()
+    return not difference.nnz or float(abs(difference).max()) <= HERMITIAN_RTOL * largest
+
+
 def _checked_omegas(omegas) -> np.ndarray:
     omegas = np.atleast_1d(np.asarray(omegas, dtype=np.float64)).ravel()
     if not omegas.size:
@@ -134,6 +146,7 @@ class ReducedHarmonicModel:
         self.label = label
         self.factorize = factorize
         self.terms = [HarmonicTerm(term.matrix.tocsr(), term.coefficient) for term in terms]
+        self._hermitian_terms = [_hermitian(term.matrix) for term in self.terms]   # row = conj(column) in _append
         self.loads = []
         for load in loads:
             if load.vector_of is None:
@@ -200,8 +213,12 @@ class ReducedHarmonicModel:
             image = term.matrix @ vector
             reduced = np.zeros((size + 1, size + 1), dtype=np.complex128)
             reduced[:size, :size] = self._reduced_terms[index]
-            reduced[:, size] = np.conj(np.conj(image) @ basis)                          # V^H A_s v
-            reduced[size, :size] = (term.matrix.T @ np.conj(vector)) @ old            # v^H A_s V_old (A^T: a CSC view)
+            column = np.conj(np.conj(image) @ basis)                                    # V^H A_s v
+            reduced[:, size] = column
+            if self._hermitian_terms[index]:                                            # v^H A_s V_old = conj(V_old^H A_s v)
+                reduced[size, :size] = np.conj(column[:size])
+            else:
+                reduced[size, :size] = (term.matrix.T @ np.conj(vector)) @ old        # v^H A_s V_old (A^T: a CSC view)
             self._reduced_terms[index] = reduced
             self._sketched_terms[index] = np.column_stack((self._sketched_terms[index], self._sketch(image)))
         for index in self._fixed_loads:

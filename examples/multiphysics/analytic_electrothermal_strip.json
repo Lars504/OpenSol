@@ -72,7 +72,7 @@
             "settings": {"max_iterations": 200, "tolerance": 2e-6, "relaxation": 1.0, "anderson_depth": 3,
                          "warm_start": true},
             "stored_fields": ["heat.T", "currents.V", "currents.q_joule"],
-            "sweep": {"parameter": "V0", "values": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3]}},
+            "sweep": {"parameter": "V0", "values": [0.05, 0.1, 0.15, 0.2, 0.25, 0.3], "reuse_build": true}},
   "derived_values": [
     {"name": "T_max", "expression": "heat_T", "selection": [], "operation": "max", "reference": "T0 + dT_ref",
      "tolerance": 3e-4},

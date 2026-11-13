@@ -738,6 +738,8 @@ class ModelCanvas(QtWidgets.QWidget):
             log_tick_strings(values, scale) if colorbar_axis.logMode else _uniform_tick_strings(values, scale, spacing))
         self._graphics.addItem(self._colorbar, row=0, col=1)
         self._colorbar.setOpacity(0.0)
+        self._view_box.sigResized.connect(self._align_colorbar)
+        self._colorbar.vb.sigResized.connect(self._align_colorbar)
         # Axes / Labels / Exports of the figure (shown in the Results Field tab); it replaces the plot's axes
         self.plot_panel = PlotPanel(self._graphics, title='Figure', settings_key='canvas_plot_style',
                                     plot_item=self._plot, embed_plot=False, curves_tab=False, log_axes=False,
@@ -1645,6 +1647,18 @@ class ModelCanvas(QtWidgets.QWidget):
 
     def _set_colorbar_visible(self, visible):
         self._colorbar.setOpacity(1.0 if visible else 0.0)
+
+    def _align_colorbar(self, *_):
+        """Colour bar margins so its bar spans exactly the view box (not the title row / bottom axis beside it)."""
+        view_rect = self._view_box.sceneBoundingRect()
+        bar_rect = self._colorbar.vb.sceneBoundingRect()
+        if view_rect.height() <= 1 or bar_rect.height() <= 1:
+            return
+        left, top, right, bottom = self._colorbar.layout.getContentsMargins()
+        aligned_top = max(top + view_rect.top() - bar_rect.top(), 0.0)
+        aligned_bottom = max(bottom + bar_rect.bottom() - view_rect.bottom(), 0.0)
+        if abs(aligned_top - top) > 0.5 or abs(aligned_bottom - bottom) > 0.5:   # converges: no resize loop
+            self._colorbar.layout.setContentsMargins(left, aligned_top, right, aligned_bottom)
 
     def _draw_materials(self, model):
         """Categorical material image; returns legend lines."""

@@ -810,8 +810,7 @@ FDFD_3D_CASES = (
                     f'{_RING_TOLERANCE:g} (the same E faces, face means and walls; at least two FDTD modes). Not '
                     'yet run.',
         specs=_ring_specs,
-        check=_check_ring,
-        heavy=True),
+        check=_check_ring),
     SelfTestCase(
         name='em3d_fdfd_factor_ordering',
         label='EM 3D FDFD host factor: minimum degree vs nested dissection',

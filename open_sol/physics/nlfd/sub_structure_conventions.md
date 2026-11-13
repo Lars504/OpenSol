@@ -60,6 +60,17 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   product) and mode lines crossing a chi3 medium; free_carriers undepleted: ignored (warning). visible_if is ANY, so
   relaxation / anderson_depth stay visible for newton (help says 'picard only'). The nonlinear settings are own Params
   appended after the FDFD settings.
+- Reused sweep builds (model sub file "Reused sweep builds"): NonlinearHarmonicPhysics is a RerunSolver
+  (`reset_records`: dirty + `ChannelFieldStore.clear`, a cold start from zero fields with versions bumped, never
+  reset to 0, or version-keyed caches such as the power scalars could match a stale entry; channel monitors keep one
+  value per omega, so a rerun overwrites them; channel factors stay). Cold, not warm: each value gives the result of
+  its own build (no Kerr hysteresis branch picked by the sweep order), and on the SHG example sweep the warm start
+  took 226 instead of 204 channel solves. Only `_FOLLOWING_SOURCE_PARAMS` follow (line_source / gaussian_beam /
+  plane_wave_tfsf amplitude, point_source current / magnetic_current / dipole_moment, mode_source power, and phase;
+  re-set by the built source's `set_amplitude(*values of its amplitude_params)`: the flags are the union, the apply
+  follows the names its phasor declares); any other swept value (geometry, media, wavelengths) refuses the reuse. A new
+  following param needs an in-place setter on its FDFD source object, never a rebuilt source (the channel's source
+  list and the nonlinear phasors hold the object).
 - Per-process chi3 (`thg_scale`, `fwm_scale`) rides on `MediumTensor.process_scales`, so validation and the guard see
   it; Miller's rule needs chi1 at each channel frequency and applies only at build (`_miller_table`): validation lists
   unscaled factors, the run log scaled ones.
@@ -196,7 +207,9 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
   `DensityPhasor` for one solve (restored in `finally`; never reassembled). `real_gmres` in Re <u, v>; `block_weights`
   give a zero channel the largest weight, never 1 (fields ~1e8 V/m: weight 1 lets a generated channel dominate the
   Armijo norm and every step backtracks the pump to 0). After the loop the store captures G_J(x). Memory
-  (GMRES_RESTART + 1 + NEWTON_BUFFERS) store vectors (definition imports the constants).
+  (GMRES_RESTART + 1 + NEWTON_BUFFERS) store vectors (definition imports the constants). One block_norms transfer per
+  evaluation gives both the residual and the scaled ||F|| (the accepted trial's norms are the next step's), and
+  `real_gmres(rhs_norm=)` takes that ||F||, so a Newton step syncs once per GMRES column and once per trial.
 
 ## cuDSS (agent_help batch; verdict, what is wired)
 - Wiring: channels factorise through the shared 'linear' runtime, so a cuDSS back end reaches them without nlfd
@@ -214,12 +227,18 @@ its channel features wrap the em_fdfd_ez / _hz FeatureTypes, so a change there c
 - Verdict: candidate, strongest for pump_depleted newton and the depleted adjoint; LDL^T of D A (Bloch / eps_xy: LU),
   'mixed' once the 2D Yee single_residual is below the 1e-3 gate, else double. Picard Kerr / carriers refactor per
   sweep unless plan reuse is used.
-- Missing opt-in: DIRECT_LINEAR_ROLE (shared with other types) does not list cudss / cudss_mixed in
-  setting_choices['back_end'], and nlfd's time items ('Kerr re-solves', 'recycled GMRES') assume SuperLU recycling.
-  The em_fdfd adjoint has the same transposed-solve gap; moving the symmetrizer route into FDFDPhysics.solve_adjoint
-  would make `transposed_channel_solve` a plain call.
-- To measure: factor_seconds vs SuperLU, device_bytes, single_residual / refinement steps, solves per nonlinear solve,
-  transposed-solve residual, wall time vs scipy_splu.
+- Why 'auto' is scipy_splu on the gpu: DIRECT_LINEAR_ROLE has no `auto_back_ends` (by design). Right for the strip examples
+  (~1e4 unknowns per channel: gstrf ~2 ms, a SuperLU solve ~0.2 ms, below cuDSS's per-solve host overhead and its
+  ~15 ms plan per channel build); a device factor pays from ~1e5-1e6 cells, where SuperLU solves cost 10-100 ms and a
+  Newton run takes 50-200 of them.
+- Opt-in: DIRECT_LINEAR_ROLE (em_fdfd_nonlinear only) lists the FDFD back ends (cudss / cudss_mixed included) but no
+  `auto_back_ends`. The time recipe prices a back end without GMRES recycling (cuDSS, cusolver_qr) as one
+  refactorisation + solve per picard Kerr re-solve ('Kerr re-solves (reassembly, refactorisation)'), no recycled GMRES
+  items. The em_fdfd adjoint has the same transposed-solve gap; moving the symmetrizer route into
+  FDFDPhysics.solve_adjoint would make `transposed_channel_solve` a plain call.
+- Unmeasured on the opt-in: factor_seconds vs SuperLU, device_bytes, single_residual / refinement steps, solves per
+  nonlinear solve, transposed-solve residual, wall time vs scipy_splu on a >= 1e5-cell grid; the cuDSS path has no
+  nlfd self-test.
 
 ## Triangles: decision / plan (agent_help batch; nothing implemented)
 - Gate: channels would inherit the em_fdfd_ez / _hz triangle path, which first needs a driven dof-vector solve,

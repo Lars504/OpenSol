@@ -13,6 +13,7 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
 
     polarization = 'ez'
     _E_COEFFICIENT_MATERIALS = frozenset({'eps_r', 'sigma_e'})
+    _E_COMPONENTS = frozenset({'ez'})
     subpixel_smoothing = None   # physics/em/subpixel_smoothing.SubpixelSmoothing (EMPhysics.set_subpixel_smoothing)
     _conformal_faces = None     # (face cell, axis, extra device arrays, launch) of set_conformal_faces, None = off
 
@@ -76,6 +77,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         t_start = float(self.time)
         t_half = t_start + 0.5 * float(self.dt)
         t_full = t_start + float(self.dt)
+        # point sources clear of the pinned rows, no poles / media: the re-pins below would rewrite equal values
+        repin_walls = self._walls_need_repin(sources)
+        self._take_probe_launch(monitors)   # recorded at the end of the real set's E graph
         self.update_h()
         for source in sources:
             if hasattr(source, 'inject_h'):
@@ -83,8 +87,9 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
             elif hasattr(source, 'inject_magnetic'):
                 source.inject_magnetic(fields, t_start)
         # The pmc H rows are pinned again after the magnetic injections (as H_z does).
-        for field_set in self._field_sets:
-            field_set.boundary_mgr.apply_h_walls(field_set.fields.hx, field_set.fields.hy)
+        if repin_walls:
+            for field_set in self._field_sets:
+                field_set.boundary_mgr.apply_h_walls(field_set.fields.hx, field_set.fields.hy)
 
         self.update_e()
 
@@ -105,11 +110,13 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         pec_box = self._pec_box
         for field_set in self._field_sets:
             ez = field_set.fields.ez
-            field_set.boundary_mgr.apply_ez_walls(ez)
+            if repin_walls:
+                field_set.boundary_mgr.apply_ez_walls(ez)
             if pec_box is not None:   # in place on the view (no setitem copy back)
                 pinned = ez[pec_box]
                 self.xp.multiply(pinned, self._pec_keep[pec_box], out=pinned)
-        self._finish_step(t_full, monitors)
+        self._finish_step(t_full, monitors, self._probes_need_resample(
+            sources, t_half, repin_walls, self._out_of_plane_source is not None))
 
     # --- EM-specific API ------------------------------------------------------
 
@@ -261,14 +268,60 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
         jz_total = self._jz_totals[k]
         accumulate = self.enable_q_accum   # never with two field sets (enable_q_accum refuses Bloch k != 0)
         nonlinear = self.nonlinear   # never with two field sets either (add_nonlinear refuses Bloch k != 0)
+        boundary_mgr = field_set.boundary_mgr
+        # Poles alone (no loss halves, gain, nonlinear media or eager row copies between them and the Yee E step): the
+        # pole updates, the E step and the pole corrections replay as one step graph, in the same order.
+        poles_in_graph = (bool(self.drude_poles or self.lorentz_poles) and not accumulate and nonlinear is None
+                          and not self.gain_media and boundary_mgr.fused_walls)
         if nonlinear is not None:
             nonlinear.store_previous()
+        if not poles_in_graph:
+            self._pole_updates(k, ez, jz_total, accumulate)
+            for gain in self.gain_media:   # four-level gain: a Lorentz pole driven by N1 - N2 (fdtd_gain)
+                gain.update_polarization()
 
-        # Both poles are stepped from the pre-update E^n on their boxes (kernel notes in fdtd_ez_2d_kernels): Drude
-        # leap-frog J^{n+1/2} = J^{n-1/2} + damping J^{n-1/2} + drive E^n summed into jz_total on _drude_box (mask and
-        # PEC keep folded into drive, so cells outside the metal keep J = 0); Lorentz in velocity form, dp = P^{n+1} -
-        # P^n from (dp, p, E^n), then p = P^{n+1}. While accumulating, the E^n half of each time-centred pole work is
-        # added here (the E^{n+1} half at the end of advance, after every correction, injection and wall re-pin).
+        def e_block():   # Yee E + E CPML (+ the fused E_z rows): fixed arguments only (_fixed_block)
+            _kernels.update_e_kernel(
+                self._k_grid, self._k_block,
+                (ez, hx, hy, self.ca, self.cb,
+                 self._inv_dx_e_1d, self._inv_dy_e_1d,
+                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
+                 partner.hx, partner.hy, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y,
+                 field_set.wrap_sin_y))
+            self._cpml_post(field_set, 'e', hx, hy, ez, self.cb)
+            if boundary_mgr.fused_walls:
+                boundary_mgr.apply_ez_walls(ez)
+
+        if poles_in_graph:
+            def pole_block():   # pole updates from E^n, Yee E (+ CPML, fused rows), pole corrections (_fixed_block)
+                self._pole_updates(k, ez, jz_total, False)
+                e_block()
+                self._pole_corrections(k, ez, jz_total)
+
+            # poles are only appended (their arrays rewritten in place): the counts name the launch set
+            self._e_graph(k, ('e', k, len(self.drude_poles), len(self.lorentz_poles)), pole_block)
+            return
+        self._e_graph(k, ('e', k), e_block)
+        if not boundary_mgr.fused_walls:
+            boundary_mgr.apply_ez_walls(ez)   # apply_e_post's outer-face rows (row copies: eager)
+        self._pole_corrections(k, ez, jz_total)
+        for gain in self.gain_media:
+            gain.correct_field()
+
+        # Kerr / TPA / free carriers last: implicit in E^{n+1} on top of every linear correction (fdtd_nonlinear);
+        # then the gain populations see the final E^{n+1} of the update.
+        if nonlinear is not None:
+            nonlinear.correct(accumulate)
+        for gain in self.gain_media:
+            gain.update_populations()
+
+    def _pole_updates(self, k, ez, jz_total, accumulate):
+        """Drude J / Lorentz P of field set k from the pre-update E^n on their boxes (+ the E^n loss halves)."""
+        # Kernel notes in fdtd_ez_2d_kernels: Drude leap-frog J^{n+1/2} = J^{n-1/2} + damping J^{n-1/2} + drive E^n
+        # summed into jz_total on _drude_box (mask and PEC keep folded into drive, so cells outside the metal keep J =
+        # 0); Lorentz in velocity form, dp = P^{n+1} - P^n from (dp, p, E^n), then p = P^{n+1}. While accumulating, the
+        # E^n half of each time-centred pole work is added here (the E^{n+1} half at the end of advance, after every
+        # correction, injection and wall re-pin).
         drude_box = self._drude_box
         if drude_box is not None:
             if len(self.drude_poles) == 1:
@@ -290,46 +343,19 @@ class FDTDEngine2D_Ez(_YeeEngine2DBase):
                                       lorentz['p'][k], lorentz['dp'][k])
             if accumulate:
                 _kernels.q_accum_lorentz_half(lorentz['dp'][k], ez[box], self.q_accum[box])
-        for gain in self.gain_media:   # four-level gain: a Lorentz pole driven by N1 - N2 (fdtd_gain)
-            gain.update_polarization()
 
-        boundary_mgr = field_set.boundary_mgr
-
-        def e_block():   # Yee E + E CPML (+ the fused E_z rows): fixed arguments only (_fixed_block)
-            _kernels.update_e_kernel(
-                self._k_grid, self._k_block,
-                (ez, hx, hy, self.ca, self.cb,
-                 self._inv_dx_e_1d, self._inv_dy_e_1d,
-                 self._nx_i32, self._ny_i32, self._periodic_x_i32, self._periodic_y_i32,
-                 partner.hx, partner.hy, self._wrap_cos_x, field_set.wrap_sin_x, self._wrap_cos_y,
-                 field_set.wrap_sin_y))
-            self._cpml_post(field_set, 'e', hx, hy, ez, self.cb)
-            if boundary_mgr.fused_walls:
-                boundary_mgr.apply_ez_walls(ez)
-
-        self._fixed_block(('e', k), (), e_block)
-        if not boundary_mgr.fused_walls:
-            boundary_mgr.apply_ez_walls(ez)   # apply_e_post's outer-face rows (row copies: eager)
-
-        # Drude E correction E^{n+1} = E_pred - cb J^{n+1/2} (cb carries the semi-implicit sigma_e factor of the Yee
-        # update, so conduction and a pole on one cell stay consistent).
+    def _pole_corrections(self, k, ez, jz_total):
+        """Drude and Lorentz E corrections of field set k after the Yee E step (and its outer-face rows)."""
+        # Drude E^{n+1} = E_pred - cb J^{n+1/2} (cb carries the semi-implicit sigma_e factor of the Yee update, so
+        # conduction and a pole on one cell stay consistent).
+        drude_box = self._drude_box
         if drude_box is not None:
             _kernels.drude_e_correction(jz_total[drude_box], self.cb[drude_box], ez[drude_box])
-
-        # Lorentz E correction (cb / dt) (P^{n+1} - P^n) (D = eps0 eps_inf E + P bookkeeping; cb carries the sigma_e
-        # factor as for Drude); P^{n+1} - P^n is the dp buffer.
+        # Lorentz (cb / dt) (P^{n+1} - P^n) (D = eps0 eps_inf E + P bookkeeping; cb carries the sigma_e factor as for
+        # Drude); P^{n+1} - P^n is the dp buffer.
         for lorentz in self.lorentz_poles:
             box = lorentz['box']
             _kernels.lorentz_e_correction(lorentz['dp'][k], self.cb[box], self._inv_dt_real, ez[box])
-        for gain in self.gain_media:
-            gain.correct_field()
-
-        # Kerr / TPA / free carriers last: implicit in E^{n+1} on top of every linear correction (fdtd_nonlinear);
-        # then the gain populations see the final E^{n+1} of the update.
-        if nonlinear is not None:
-            nonlinear.correct(accumulate)
-        for gain in self.gain_media:
-            gain.update_populations()
 
     def _nonlinear_components(self):
         """The E component the C5 media (nonlinear, gain) act on: E_z at the cell centres, n0^2 = eps_r."""
