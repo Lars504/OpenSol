@@ -862,9 +862,18 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   physics' (physics.em.time_filter_eigen: solvers never import physics). Opt-in through `eigen_role(time_filter=True)`
   (opt_in_types, precisions + 'single' = the FDTD stepper precision): em_fdfd_ez / em_fdfd_hz, grids tensor; the FDFD
   physics dispatches on `isinstance(eigen_solver, TimeFilterEigenSolver)` before any factor is made.
-- ritz_pairs: pinned rows (mass 0) zeroed, QR + SVD rank cut (RANK_TOLERANCE), bilinear projection (D Q)^T A Q with a
-  symmetrizer (the stationary quotient of a complex symmetric pencil), else Galerkin; polish steps append the
-  mass-scaled residuals of the wanted pairs (Gram-Schmidt twice, columns already in the span dropped). Non-finite mu
+- ritz_pairs memory rule: ONE n x columns block, the basis, as rows (capacity, n) (a vector per row: the caller
+  allocates `basis_columns` rows, fills the sampled ones, passes `columns=`; it is overwritten by Q and the polish
+  rows go into the spare rows). Everything else is RITZ_CHUNK vectors at a time or m x m on the host: no kept A Q
+  (products are redone per projection, so `applications` > columns), no `Q.conj()` (Q^H X = conj(Q^T conj(X)) on the
+  chunk), Ritz vectors only for the pairs `keep(mu)` selects (returned as rows). A new step must not allocate an
+  n x columns temporary (cupy: `.conj()`, `norm(axis=)` of the whole block, matmul on a non-contiguous column slice
+  all copy). `apply_operator` gets (n, k <= RITZ_CHUNK) F-ordered views.
+- ritz_pairs steps: pinned unknowns (mass 0) zeroed, in-place orthonormalisation by the Gram matrix + host eigh,
+  twice (rank cut RANK_TOLERANCE = 1e-7 of the largest singular value: the Gram route cannot resolve the 1e-10 of
+  the former QR + SVD), bilinear projection (D Q)^T A Q with a symmetrizer (the stationary quotient of a complex
+  symmetric pencil), else Galerkin; polish steps append the mass-scaled residuals of the wanted pairs (Gram-Schmidt
+  twice, directions already in the span dropped). Non-finite mu
   (directions with a singular projected mass) are dropped. Eigenvalue accuracy is the projection's: residuals are
   reported per resonance and warned above RESIDUAL_WARNING (no machine-precision guarantee as ARPACK's).
 - Counters: eigen_solves, time_steps, sampled_frequencies, basis_columns, operator_applications, step_seconds,

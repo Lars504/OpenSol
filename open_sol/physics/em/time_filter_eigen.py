@@ -15,6 +15,8 @@ import time
 import numpy as np
 
 from ...core.backend import to_host
+
+BAND_MARGIN = 1.25   # Ritz vectors are formed within this x the sampled band (the Rayleigh polish moves a value a little)
 from ...solvers.time_filter import wanted_pairs
 from .eigenfrequency import (EigenSolve, _energy_weights, _filtered_candidates, _PencilMass, _resonance,
                              _ResonanceFilter, region_filter)
@@ -70,7 +72,8 @@ def run_steps(target_frequency, dt, bandwidth, periods=0.0) -> tuple:
 
 
 def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
-    """(basis (n, m) complex128 of the run backend, details) of one FDTD run: seeded point sources (ez: filament
+    """(basis (capacity, n) complex128 rows of the run backend: the m sampled fields in its first rows, the rest
+    spare rows for ritz_pairs' polish steps (basis_columns), details) of one FDTD run: seeded point sources (ez: filament
     currents, hz: magnetic line currents) with a Gaussian pulse centred on the target, the DFT of every cell at the
     sampled frequencies accumulated from step 0 over run_periods target periods (+ the pulse); pinned = xp bool (nx,
     ny) cells of the FDFD identity rows; target_omega [rad/s] = the system's."""
@@ -116,8 +119,10 @@ def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
     for _ in range(steps):
         fdtd.step()
     spectra = monitor.ez_dft if polarization == 'ez' else monitor.hz_dft
-    # one complex128 (n, m) copy beside the accumulators (no complex64 C-order intermediate)
-    basis = spectra.reshape(count, -1).T.astype(np.complex128, order='C')
+    # the one complex128 block of the projection, a field per row (the accumulators' own layout: no transpose)
+    capacity = tf.basis_columns(n_resonances, solver.sampled_frequencies, solver.polish_steps)
+    basis = xp.empty((capacity, int(pinned.size)), dtype=np.complex128)
+    basis[:count] = spectra.reshape(count, -1)
     to_host(basis[:1, :1])   # wait for the device: the stepping time is complete
     step_seconds = time.perf_counter() - stepping
     solver.count_run(steps, count, step_seconds)
@@ -145,11 +150,18 @@ def solve_time_filter_resonances(physics, system, solver, n_resonances, pinned, 
     basis, run = filtered_fields(physics, solver, pinned, n_resonances, system.omega)
     device_symmetrizer = None if symmetrizer is None else xp.asarray(np.asarray(symmetrizer, dtype=np.complex128))
     wanted = wanted_pairs(n_resonances)
+    band = BAND_MARGIN * solver.bandwidth
+
+    def near_band(values):   # only these Ritz vectors are formed (mu = k_t^2 - k^2); the exact band test is below
+        relative = np.sqrt((k_target_squared - values).astype(np.complex128) / k_target_squared)
+        return np.abs(relative.real - 1.0) <= band
     pairs = solver.ritz_pairs(lambda block: operator @ block, mass, basis, wanted, 0.0,
-                              symmetrizer=device_symmetrizer, xp=xp)
+                              symmetrizer=device_symmetrizer, xp=xp, columns=run['sampled'], keep=near_band)
     del basis
     mu = pairs['mu']
-    vectors = np.asarray(to_host(pairs.pop('vectors')))   # the device copy is freed before the filter's
+    # host (n, r) columns for the filter (a view of the rows: no second host copy); the device rows are freed
+    # before the filter's copies
+    vectors = np.asarray(to_host(pairs.pop('vectors'))).T
     nonzero = np.abs(mu) > 0.0
     theta = np.zeros(mu.shape, dtype=np.complex128)
     theta[nonzero] = -1.0 / mu[nonzero]

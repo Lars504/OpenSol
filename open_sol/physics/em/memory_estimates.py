@@ -39,10 +39,11 @@ EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: o
 REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern (a later frequency / order / iteration)
 ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-solve temporaries and the gradients
 TIME_FILTER_RUN_PHASE = 'time-filter FDTD run'   # time_filter eigen node: the EMPhysics run (freed before the projection)
-# time_filter projection (solvers.time_filter.ritz_pairs at its largest basis): Q, A Q, then the Ritz vectors, their
-# products, the M-scaled vectors, mu x those and the residuals (complex128 n x columns each) at the residual step
-_RITZ_BASIS_BLOCKS = 2
-_RITZ_TEMPORARY_BLOCKS = 5
+# time_filter projection (solvers.time_filter.ritz_pairs): the one basis block (sampled + polish rows, made in the run
+# phase and orthonormalised in place), the kept Ritz vectors (at most as many) and chunk temporaries: the block, its
+# product, M x it, the residuals and a product temporary of RITZ_CHUNK vectors, the in-place rotation's copy of
+# 1 / ORTHONORMAL_CHUNKS of the basis
+_RITZ_CHUNK_BLOCKS = 5
 # _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
 # temporary; + D v with a row scale)
 _FILTER_BLOCKS = 5
@@ -584,8 +585,9 @@ def _time_filter_items(polarization, settings_values, mesh, context, values, spa
     """(host items, transient items) of a time_filter eigen node (physics/em/time_filter_eigen, solvers.time_filter):
     no factor. TIME_FILTER_RUN_PHASE: the EMPhysics on the FDFD domain at the node's precision (fdtd_engine_items, the
     PEC keeps of a pec_domain), the whole-grid DFTMonitor (ez: E_z, hz: H_z + E_x + E_y complex64 per sampled frequency)
-    and the complex128 basis made from it; EIGEN_PHASE: that basis (held through the projection) + ritz_pairs at its
-    largest basis (sampled + polish_steps x wanted columns: Q, A Q and the residual-step temporaries); on the gpu the
+    and the complex128 basis block made from it (sampled + polish_steps x wanted rows); EIGEN_PHASE: that block
+    (orthonormalised in place), the kept Ritz vectors (bounded by the basis rank) and ritz_pairs' chunk temporaries;
+    on the gpu the
     resonance filter's device copies as their own phase (after the projection); host: the Ritz vectors, the host
     operator copy (gpu), the resonance fields and solve vectors."""
     from ...solvers import time_filter as tf
@@ -606,13 +608,15 @@ def _time_filter_items(polarization, settings_values, mesh, context, values, spa
     n_spectra = _DFT_SPECTRA[polarization]
     run += [(TIME_FILTER_RUN_PHASE, f'time-filter DFT accumulators ({n_spectra} x {sampled} frequencies x complex64)',
              n_spectra * sampled * COMPLEX64_BYTES * n_cells),
-            (TIME_FILTER_RUN_PHASE, f'time-filter search basis ({sampled} x complex128)', sampled * vector_bytes)]
-    projection = [(EIGEN_PHASE, f'time-filter search basis ({sampled} x complex128, held through the projection)',
-                   sampled * vector_bytes),
-                  (EIGEN_PHASE, f'Rayleigh-Ritz basis Q and A Q ({_RITZ_BASIS_BLOCKS} x {columns} x complex128)',
-                   _RITZ_BASIS_BLOCKS * columns * vector_bytes),
-                  (EIGEN_PHASE, f'Ritz vectors, products and residual temporaries ({_RITZ_TEMPORARY_BLOCKS} x '
-                                f'{columns} x complex128)', _RITZ_TEMPORARY_BLOCKS * columns * vector_bytes)]
+            (TIME_FILTER_RUN_PHASE, f'time-filter search basis ({columns} x complex128)', columns * vector_bytes)]
+    chunk = min(tf.RITZ_CHUNK, columns)
+    projection = [(EIGEN_PHASE, f'Rayleigh-Ritz basis ({columns} x complex128, orthonormalised in place)',
+                   columns * vector_bytes),
+                  (EIGEN_PHASE, f'kept Ritz vectors (at most {columns} x complex128)', columns * vector_bytes),
+                  (EIGEN_PHASE, f'Rayleigh-Ritz chunk temporaries ({_RITZ_CHUNK_BLOCKS} x {chunk} x complex128 and '
+                                f'1 / {tf.ORTHONORMAL_CHUNKS} of the basis)',
+                   _RITZ_CHUNK_BLOCKS * chunk * vector_bytes
+                   + columns * COMPLEX128_BYTES * max(tf.MIN_ROTATE_UNKNOWNS, -(-n_cells // tf.ORTHONORMAL_CHUNKS)))]
     operator_copy = (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells
     gpu = solver_backend(context.spec) == 'gpu'
     if gpu:   # _ResonanceFilter on the device: A copy (complex128 CSR), B / W / window columns, column blocks (+ D v)

@@ -2841,11 +2841,12 @@ def _check_time_filter(results_by_name):
                 run = f"{backend}_{'bilinear' if symmetrized else 'galerkin'}_polish{polish_steps}"
                 solver = TimeFilterEigenSolver(polish_steps=polish_steps, backend=backend)
                 result = solver.ritz_pairs(lambda block: device_operator @ block, _device(backend, mass),
-                                           _device(backend, host_basis.copy()), _TIME_FILTER_WANTED, 0.0,
+                                           _device(backend, np.ascontiguousarray(host_basis.T)),   # a vector per row
+                                           _TIME_FILTER_WANTED, 0.0,
                                            symmetrizer=_device(backend, symmetrizer.astype(np.complex128))
                                            if symmetrized else None, xp=xp)
                 mu = np.asarray(result['mu'])
-                vectors = np.asarray(_host_of(result['vectors']))
+                vectors = np.asarray(_host_of(result['vectors'])).T
                 errors = [float(np.min(np.abs(mu - value)) / max(abs(value), 1.0)) if mu.size else float('inf')
                           for value in wanted_reference]
                 details[run] = {'errors': errors, 'columns': result['columns'],

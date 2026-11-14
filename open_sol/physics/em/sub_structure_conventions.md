@@ -567,7 +567,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   dispatches before any factor; an EMPhysics on the FDFD Domain itself (it reads the same MaterialGrid: never write
   materials there), PEC cells and dispersive regions copied (a region's box None = everywhere: a full mask), seeded
   point sources inside the window off pinned cells, a whole-grid DFTMonitor (its (nx, ny) box flattened i * ny + j =
-  the FDFD unknown order; pinned rows zeroed), then `ritz_pairs` on A = L + k_t^2 M and the shared candidate filter
+  the FDFD unknown order; pinned unknowns zeroed; the basis is one (basis_columns, n) row block, Ritz vectors formed
+  only within BAND_MARGIN x the sampled band), then `ritz_pairs` on A = L + k_t^2 M and the shared candidate filter
   (theta = -1 / mu). D is `_adjoint_symmetrizer()` (measured complex symmetric), so the polish is the same Rayleigh
   quotient as the shift-invert path. Anything the FDTD would model differently from the FDFD operator is refused by
   `unsupported_reason` (Bloch, polar, subpixel smoothing, conformal PEC, conducting sheets): a new FDFD operator term
