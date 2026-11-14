@@ -572,7 +572,10 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   quotient as the shift-invert path. Anything the FDTD would model differently from the FDFD operator is refused by
   `unsupported_reason` (Bloch, polar, subpixel smoothing, conformal PEC, conducting sheets): a new FDFD operator term
   must either be copied into that FDTD or added there (also a runtime set_extra_permittivity, which validation cannot
-  see). info carries factor_text (the run), residuals per resonance. Candidates: in the sampled band only, nearest
+  see). info carries factor_text (the run), residuals per resonance (`_relative_residual`: ||L u + k^2 M u|| / (||L u||
+  + |k^2| ||M u||), the unshifted pencil's scale; the shifted ||A u|| + |mu| ||M u|| of `ritz_pairs` and the solver
+  profiler vanishes at the target, so as a gate it would drop the resonance nearest the wavelength setting).
+  Candidates: in the sampled band only, nearest
   first, an O(1)-residual Ritz value (above time_filter.SPURIOUS_RESIDUAL) dropped. Known gaps: hz with eps_xy runs
   the FDTD without it (approximate basis, polish only, not refused); EMPhysics.finalize checks the Courant limit, so
   strong Drude poles can raise on an FDFD model (it has no courant setting); the hz DFTMonitor also allocates Ex / Ey

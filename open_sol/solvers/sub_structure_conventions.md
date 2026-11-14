@@ -885,8 +885,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   mixed_rejection). No low-precision Cholesky (as cuDSS), no remembered rejections per pattern (cuDSS H4).
 - Compressed (mumps_blr, `HOST_DIRECT_COMPRESSED_BACK_ENDS`; module header): a double MUMPS factor with ICNTL(35) =
   BLR_ICNTL (set between set_matrix and analyze: the analysis needs it) and CNTL(7) = BLR_TOLERANCE (re-set before
-  every factor: python-mumps keeps one instance per dtype). Fronts below MUMPS's BLR block size stay full rank, so a
-  small factor may pass its probe unrefined (the description names GMRES refinement only when the probe missed); a
+  every factor: python-mumps keeps one instance per dtype). Every solve of a compressed factor is GMRES-refined
+  (`_probe_factor` skips the unrefined acceptance: one probe vector within ACCEPT_RESIDUAL does not vouch for the
+  dropped blocks; single_residual = the unrefined probe residual, ~1e-16 when MUMPS compressed nothing: fronts below
+  its BLR block size stay full rank and such solves pass the first residual check at one product each); a
   compressed factor always probes (never defer_check: a deferred miss could not fall back), and a GMRES miss or a zero
   pivot refactors full rank once (`_next_attempt`, sticky `_compression_rejected`, last_compression_fallback /
   compression_rejection; counters host_direct_compression_fallbacks / eigen_compression_fallbacks, compressed names

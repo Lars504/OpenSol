@@ -284,7 +284,6 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         cell_areas = np.outer(*(np.asarray(factor, dtype=np.float64) for factor in area_factors))
         in_window = np.zeros(shape, dtype=bool)
         in_window[self.domain.physical_window()] = True
-        arguments = (_host_sparse(system.operator), mass, system.omega, cell_areas, in_window, n_resonances)
         # E2: D A measured complex symmetric (none with a Bloch phase or eps_xy): ARPACK to 1e-6 + float64 Rayleigh
         # quotients on any factor when A is complex (PML / loss)
         options = {'field_of': lambda vector: vector.reshape(shape), 'eigen_solver': self.eigen_solver,
@@ -299,6 +298,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                 symmetrizer=self._adjoint_symmetrizer(),
                 in_region=options.get('in_region'), min_region_fraction=options.get('min_region_fraction', 0.0))
             return self.eigen_solve
+        arguments = (_host_sparse(system.operator), mass, system.omega, cell_areas, in_window, n_resonances)
         kept = self._system_line_factor() if self._line_block is not None else None
         factorization = (None if kept is None else
                          LineBlockFactorization(kept[0], kept[1], f'{self._line_block.label()} (shift-invert)'))

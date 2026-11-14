@@ -57,9 +57,10 @@ helpers here are GUI-thread safe."""
 # Compressed factors (mumps_blr, the double-precision block low-rank MUMPS factor): ICNTL(35) = 2 (BLR factorisation
 # and solve on the compressed factors, set before the analysis), CNTL(7) = BLR_TOLERANCE (the dropping threshold, set
 # before every factorisation): about half the factor memory and flops on large 3D fronts (2D gains little), at the
-# price of a backward error ~BLR_TOLERANCE, so its probe usually misses ACCEPT_RESIDUAL and every solve runs float64
-# GMRES-IR on the compressed factor (the double-refined path above: ~2 - 4 compressed solves per solve; MUMPS leaves
-# fronts below its BLR block size full rank, so a small factor may pass unrefined). A compressed factor always probes
+# price of a backward error ~BLR_TOLERANCE, so every solve runs float64 GMRES-IR on the compressed factor whatever its
+# unrefined probe shows (the double-refined path above: ~2 - 4 compressed solves per solve; single_residual = the
+# unrefined probe residual; MUMPS leaves fronts below its BLR block size full rank: such a factor's solves pass the
+# first residual check, one product each). A compressed factor always probes
 # (no defer_check: a miss found by a later solve could not refactor full rank). A compressed factor that still misses
 # is refactored full rank once (sticky, last_compression_fallback / compression_rejection; counters
 # host_direct_compression_fallbacks / eigen_compression_fallbacks) before anything raises. Analyses are kept / adopted
@@ -579,7 +580,7 @@ class HostDirectFactorization(ProbedFactor):
         self.refinement_steps = 0         # refinement iterations of the last probe (0: unrefined double solves)
         self.probe_residual = None
         self.probe_backward_error = None
-        self.single_residual = None       # mixed: unrefined probe residual of the low-precision factor
+        self.single_residual = None       # mixed / compressed: unrefined probe residual of the approximate factor
         self.last_double_fallback = False   # the last refactorize replaced a rejected mixed factor by a double one
         self.mixed_rejection = None
         self.refactorize(host_operator, row_scale=row_scale, symmetrizer=symmetrizer, symmetric_known=symmetric_known)
@@ -885,9 +886,9 @@ class HostDirectFactorization(ProbedFactor):
     def _describe(self) -> None:
         kind_text = _KIND_TEXTS[self.matrix_kind]
         refinement = ('float32' if self.real else 'complex64') + ' + float64 GMRES refinement'
-        if self.compressed_factor:   # refined only when its probe missed (small fronts stay full rank: may pass)
-            self.description = (f'{self.label} block low-rank {kind_text} (CNTL(7) {BLR_TOLERANCE:g})'
-                                + (' + float64 GMRES refinement' if self._double_refined else ''))
+        if self.compressed_factor:   # every solve refined (_probe_factor)
+            self.description = (f'{self.label} block low-rank {kind_text} (CNTL(7) {BLR_TOLERANCE:g}) + float64 '
+                                'GMRES refinement')
         elif self.mixed_factor:
             self.description = f'{self.label} {kind_text} {refinement}'
         elif self._mixed_rejected:
@@ -922,12 +923,17 @@ class HostDirectFactorization(ProbedFactor):
             return
         self.single_residual = None
         self.refinement_steps = 0
-        if self._solve_accepted(probe, self._solve_equilibrated(probe, stall_test=True)):
+        # a compressed factor never solves unrefined: one probe vector within ACCEPT_RESIDUAL does not vouch for the
+        # dropped blocks on every later rhs (a factor MUMPS left full rank passes the first residual check: one product)
+        if not self.compressed_factor and self._solve_accepted(probe,
+                                                               self._solve_equilibrated(probe, stall_test=True)):
             self._probe_clean = True   # a later value refresh may defer its probe (refactorize_values)
             return
         self._double_refined = True   # GMRES-IR on this double factor from now on (every solve)
         solution = self._solve_equilibrated(probe, stall_test=True)
         self.refinement_steps = self.last_refinements
+        if self.compressed_factor:
+            self.single_residual = self._last_solve_errors[2]   # the compressed factor alone
         if not self._solve_accepted(probe, solution):
             raise _FactorRejected(self._double_accuracy_error())
 

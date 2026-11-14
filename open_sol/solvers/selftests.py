@@ -2141,11 +2141,12 @@ def _relative_residual(operator, rhs, solution) -> float:
 
 def _host_direct_compressed_checks(back_end, spd, changed, general, real_rhs, complex_rhs, failed, errors, details):
     """A compressed (block low-rank, mumps_blr) back end, once in double: a real 3D SPD solve and a complex 2D LU solve
-    and transposed solve within _BLR_SOLVE_TOLERANCE (relative residual), 'block low-rank' in the description and
-    GMRES-refined exactly when its probe missed (MUMPS leaves small fronts full rank, so a probe may pass), or a
-    recorded full-rank fallback; a forced miss (identity compressed solves) refactors full rank once (a second
-    analysis, sticky over a value change on the kept analysis, host_direct_compression_fallbacks 1); kept analyses and
-    previous= are keyed per compression (a full-rank one is never adopted or refactorised by a compressed request)."""
+    and transposed solve within _BLR_SOLVE_TOLERANCE (relative residual), 'block low-rank' and its GMRES refinement
+    in the description (every compressed factor refines; the unrefined probe residual is recorded: ~1e-16 when MUMPS
+    left every front full rank), or a recorded full-rank fallback; a forced miss (identity compressed solves) refactors
+    full rank once (a second analysis, sticky over a value change on the kept analysis,
+    host_direct_compression_fallbacks 1); kept analyses and previous= are keyed per compression (a full-rank one is
+    never adopted or refactorised by a compressed request)."""
     import scipy.sparse
     import scipy.sparse.linalg
     from . import host_direct
@@ -2162,12 +2163,12 @@ def _host_direct_compressed_checks(back_end, spd, changed, general, real_rhs, co
     record['3d'] = {'description': factor.description, 'refinement_steps': factor.refinement_steps,
                     'probe_residual': factor.probe_residual, 'compression_fallback': factor.last_compression_fallback,
                     'lu_entries': factor.lu_entries, 'host_bytes': factor.host_bytes, 'peak_bytes': factor.peak_bytes,
-                    'residual': residual}
+                    'unrefined_residual': factor.single_residual, 'residual': residual}
     if residual > _BLR_SOLVE_TOLERANCE:
         failed.append(f'{back_end}_3d_solve')
     if factor.compressed_factor:
-        if ('block low-rank' not in factor.description
-                or factor._double_refined != ('GMRES refinement' in factor.description)):
+        if ('block low-rank' not in factor.description or not factor._double_refined
+                or 'GMRES refinement' not in factor.description):
             failed.append(f'{back_end}_3d_description')
     elif not (factor.last_compression_fallback and 'full rank' in factor.description):
         failed.append(f'{back_end}_3d_compressed_or_fallback')
@@ -2936,7 +2937,7 @@ SOLVER_SELFTEST_CASES = (
                     'applied as a CSR product per row on float32 / float64 copies: (1) the 7-point Dirichlet '
                     'Laplacian of unit spacing on a '
                     f"{' x '.join(str(n) for n in _BLOCK_EIGEN_GRID)} grid (n + 1 = "
-                    f"{', '.join(str(n + 1) for n in _BLOCK_EIGEN_GRID)} pairwise coprime: no degenerate pair) with M = {_BLOCK_EIGEN_MASS:g} I, its {_BLOCK_EIGEN_WANTED} lowest eigenvalues '
+                    f"{', '.join(str(n + 1) for n in _BLOCK_EIGEN_GRID)} pairwise coprime: no degenerate pair) with M = {_BLOCK_EIGEN_MASS:g} I, its {_BLOCK_EIGEN_WANTED} lowest eigenvalues "
                     'against the exact (1 / 2) sum_a 4 sin^2(k_a pi / (2 (n_a + 1))); (2) the same + a random '
                     'diagonal in [0, 1] with a random mass diagonal in [0.5, 2] and a mask fixing the x_lo plane and '
                     f'every {_BLOCK_EIGEN_FIXED_STRIDE}th unknown, against scipy eigh of the dense free pencil, the '
@@ -3171,7 +3172,7 @@ SOLVER_SELFTEST_CASES = (
                     '(cupy solves, transposed too) and DiffusionDirectSolver on cupyx operators. mumps_blr (block '
                     'low-rank, double) instead: a real 20 x 20 x 20 SPD Laplacian solve and the complex LU (solve, '
                     f'transposed solve) within a relative residual of {_BLR_SOLVE_TOLERANCE:g}, \'block low-rank\' in '
-                    'the description (GMRES refinement named exactly when its probe missed) or a recorded full-rank '
+                    'the description with its GMRES refinement (every compressed factor) or a recorded full-rank '
                     'fallback; identity compressed solves force the full-rank refactor (two analyses, sticky over a '
                     'value change on the kept analysis, host_direct_compression_fallbacks 1); kept analyses and '
                     'previous= keyed per compression; the HostPencil route probing every factor. Always (no wrapper '
