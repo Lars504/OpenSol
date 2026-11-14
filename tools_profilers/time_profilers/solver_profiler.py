@@ -42,9 +42,8 @@ def _parse_args(argv):
         prog='python -m tools_profilers.time_profilers.solver_profiler',
         description='Compare every solver open_sol offers (sparse direct SuperLU / MUMPS / PARDISO / cuDSS incl. mixed '
                     'precision, pcg, banded, line_block, shift-invert eigen factorizations, block_eigen) on problems '
-                    'assembled by '
-                    'open_sol and on whole model files: wall time per phase, peak RSS, accuracy; one child process per '
-                    'case.')
+                    'assembled by open_sol and on whole model files: wall time per phase, peak RSS, accuracy; one '
+                    'child process per case.')
     parser.add_argument('--problems', nargs='+', choices=sorted(PROBLEMS), metavar='PROBLEM',
                         help=f"synthetic problem classes (default: all, none with --models): {', '.join(PROBLEMS)}")
     parser.add_argument('--sizes', nargs='+', metavar='SIZES',
