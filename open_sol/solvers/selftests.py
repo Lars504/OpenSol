@@ -1,13 +1,13 @@
 """CPU vs GPU parity self-tests of the solver runtimes (solver_plan S6 / stage B): pcg, sparse_direct and line_block on
 small synthetic 2D grid operators, each backend against a scipy reference, the cuDSS eigen factorization against
 SuperLU and the cuDSS sparse_direct back ends against scipy. No model run; the gpu half is skipped without a usable GPU.
-Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
+The block_eigen LOBPCG on 3D grid pencils against their exact / dense eigenvalues, on both backends. Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
 of eigsh_shifted with its shift on an eigenvalue. The MUMPS / PARDISO host direct back ends and eigen factorizations
 against scipy (skipped without their wrappers)."""
 import numpy as np
 
 from ..model.schema import SelfTestCase
-from ..model.selftest_helpers import norm_relative_error, skip_without_cudss
+from ..model.selftest_helpers import SubChecks, norm_relative_error, skip_without_cudss
 
 _GRID = (30, 20)                  # nx, ny of the synthetic operators (i * ny + j unknown order)
 _SEED = 20261017
@@ -1158,6 +1158,31 @@ _PRECISION_CASES = (
     ('fdtd_half_storage_refused_by_role', 'em_fdtd_ez', 'stepper', 'time_dependent', 'half_storage', None, 'gpu',
      ('explicit_kernels', 'single', True)),
 )
+# the 'eigen' role in an eigenfrequency study: solid_mechanics_3d (3D tensor model) offers the opt-in block_eigen
+# (precisions double / mixed, its mixed default with the multigrid preconditioner), Automatic stays arpack_shift_invert
+# (double only); the 2D solid's eigen role does not offer block_eigen.
+# (check name, physics type, default precision, node (type, settings) or None, backend,
+#  expected (resolved type, resolved precision, resolved preconditioner (None: not compared), listed by
+#  default_precision_ignored, fits (solver_misfit '' on the model's grid)))
+_EIGEN_ROLE_CASES = (
+    ('solid_3d_auto', 'solid_mechanics_3d', 'auto', None, 'gpu', ('arpack_shift_invert', 'double', None, False, True)),
+    ('solid_3d_mixed_automatic_ignored', 'solid_mechanics_3d', 'mixed', None, 'gpu',
+     ('arpack_shift_invert', 'double', None, True, True)),
+    ('solid_3d_block_node', 'solid_mechanics_3d', 'auto', ('block_eigen', {}), 'gpu',
+     ('block_eigen', 'mixed', 'multigrid', False, True)),
+    ('solid_3d_block_node_cpu', 'solid_mechanics_3d', 'auto', ('block_eigen', {}), 'cpu',
+     ('block_eigen', 'mixed', 'multigrid', False, True)),
+    ('solid_3d_block_default_double', 'solid_mechanics_3d', 'double', ('block_eigen', {}), 'gpu',
+     ('block_eigen', 'double', 'multigrid', False, True)),
+    ('solid_3d_block_default_single_ignored', 'solid_mechanics_3d', 'single', ('block_eigen', {}), 'gpu',
+     ('block_eigen', 'mixed', 'multigrid', True, True)),
+    ('solid_3d_block_node_jacobi_double', 'solid_mechanics_3d', 'auto',
+     ('block_eigen', {'precision': 'double', 'preconditioner': 'jacobi'}), 'gpu',
+     ('block_eigen', 'double', 'jacobi', False, True)),
+    ('solid_2d_block_node_misfit', 'solid_mechanics', 'auto', ('block_eigen', {}), 'gpu',
+     ('block_eigen', 'mixed', None, False, False)),
+)
+_EIGEN_ROLE_STUDY = 'eigenfrequency'
 
 
 def _precision_spec(physics_type, role, study, precision, node, backend, size_z=None):
@@ -1200,7 +1225,9 @@ def _check_default_precision(results_by_name):
         if got != expected:
             mismatches.append(f'with_default_precision_{name}')
     _multigrid_resolution_checks(registry, mismatches, outcomes)
-    n_checks = len(_PRECISION_CASES) + len(direct) + len(_MULTIGRID_CASES) + len(_MULTIGRID_3D_CASES)
+    _eigen_role_checks(registry, mismatches, outcomes)
+    n_checks = (len(_PRECISION_CASES) + len(direct) + len(_MULTIGRID_CASES) + len(_MULTIGRID_3D_CASES)
+                + len(_EIGEN_ROLE_CASES))
     return {'measured': len(mismatches), 'expected': 0, 'error': float(len(mismatches)), 'tolerance': 0.0,
             'details': {'n_checks': n_checks, 'mismatches': mismatches, 'outcomes': outcomes}}
 
@@ -1360,6 +1387,31 @@ def _multigrid_resolution_checks(registry, mismatches, outcomes):
         outcomes[name] = {'got': list(got), 'expected': list(expected), 'validate_errors': errors,
                           'estimator_multigrid': estimator_multigrid}
         if got != expected or errors or estimator_multigrid != (expected[2] == 'multigrid'):
+            mismatches.append(name)
+        if node is not None and spec.solvers[0].settings != node[1]:
+            mismatches.append(f'{name}_node_settings_unchanged')
+
+
+def _eigen_role_checks(registry, mismatches, outcomes):
+    """'eigen' role resolution against _EIGEN_ROLE_CASES (solid_mechanics_3d rows in a 3D model, grid tensor_3d),
+    appended as 'eigen_<name>': resolved type, precision, preconditioner (rows naming one), the
+    default_precision_ignored listing and solver_misfit on the model's grid; node settings never written."""
+    from ..model.schema import (default_precision_ignored, resolved_precision, resolved_solvers, solver_grid,
+                                solver_misfit)
+    study = _EIGEN_ROLE_STUDY
+    for row_name, physics_type, precision, node, backend, expected in _EIGEN_ROLE_CASES:
+        name = f'eigen_{row_name}'
+        size_z = _MULTIGRID_3D_SIZE_Z if physics_type == 'solid_mechanics_3d' else None
+        spec = _precision_spec(physics_type, 'eigen', study, precision, node, backend, size_z)
+        resolved = resolved_solvers(spec, registry, spec.physics[0], study, {})['eigen']
+        solver_type, values = resolved.solver_type, resolved.values
+        ignored = any(entry[:2] == ('p', 'eigen') for entry in default_precision_ignored(spec, registry, study))
+        misfit = solver_misfit(solver_type, values, registry.physics_type(physics_type), 'eigen', study, backend,
+                               solver_grid(spec, spec.physics[0]))
+        got = (solver_type.name, resolved_precision(solver_type, values),
+               None if expected[2] is None else values.get('preconditioner'), ignored, not misfit)
+        outcomes[name] = {'got': list(got), 'expected': list(expected), 'misfit': misfit}
+        if got != expected:
             mismatches.append(name)
         if node is not None and spec.solvers[0].settings != node[1]:
             mismatches.append(f'{name}_node_settings_unchanged')
@@ -2184,6 +2236,213 @@ def _check_arpack_host_direct(results_by_name):
     return _outcome(errors, failed, {'libraries': list(libraries), 'outcomes': outcomes})
 
 
+# --- block_eigen (factor-free LOBPCG of the lowest eigenpairs on block callbacks) -----------------------------------
+# K = the 7-point Dirichlet Laplacian of unit spacing on an n_x x n_y x n_z grid ((i n_y + j) n_z + k order), n_a + 1
+# pairwise coprime (11, 7, 5: no two axes share a phase k pi / (n_a + 1), so the lowest modes are no degenerate pairs),
+# M = 2 I: lambda = (1 / 2) sum_a 4 sin^2(k_a pi / (2 (n_a + 1))), k_a = 1 .. n_a. Masked pencil: K + a random diagonal
+# in [0, 1], a random mass diagonal in [0.5, 2], the x_lo plane (i = 0) and every _BLOCK_EIGEN_FIXED_STRIDE-th unknown
+# fixed, against the dense eigh of the free pencil. Dense path: a 3 x 2 x 4 grid (n_a + 1 = 4, 3, 5; 24 unknowns, below
+# DENSE_MAX_RATIO x the block of 3 wanted + 2 guard rows = 30).
+_BLOCK_EIGEN_GRID = (10, 6, 4)
+_BLOCK_EIGEN_DENSE_GRID = (3, 2, 4)
+_BLOCK_EIGEN_WANTED = 6
+_BLOCK_EIGEN_DENSE_WANTED = 3
+_BLOCK_EIGEN_MASS = 2.0              # M = 2 I of the Laplacian pencils
+_BLOCK_EIGEN_FIXED_STRIDE = 11
+_BLOCK_EIGEN_VALUE_TOLERANCE = 1e-10   # relative eigenvalue error (a 1e-8 relative residual gives ~1e-15)
+_BLOCK_EIGEN_ORTHONORMALITY = 1e-6     # max |V^T M V - I| (Rayleigh-Ritz on a nearly dependent [X W P] basis)
+_BLOCK_EIGEN_RESIDUAL_FACTOR = 10.0    # host-recomputed relative residual <= this x the runtime tolerance
+
+
+def _laplacian_3d(shape):
+    """7-point Dirichlet Laplacian of unit spacing on the (i n_y + j) n_z + k order (scipy CSR, SPD)."""
+    import scipy.sparse as sparse
+    total = None
+    for axis, n in enumerate(shape):
+        ones = np.ones(n)
+        factors = [sparse.identity(m) for m in shape]
+        factors[axis] = sparse.diags([-ones[:-1], 2.0 * ones, -ones[:-1]], [-1, 0, 1])
+        term = sparse.kron(sparse.kron(factors[0], factors[1]), factors[2])
+        total = term if total is None else total + term
+    return total.tocsr()
+
+
+def _laplacian_3d_eigenvalues(shape, count):
+    """The `count` lowest exact eigenvalues of _laplacian_3d(shape) with M = _BLOCK_EIGEN_MASS I, ascending."""
+    lines = [4.0 * np.sin(np.arange(1, n + 1) * np.pi / (2.0 * (n + 1))) ** 2 for n in shape]
+    sums = lines[0][:, None, None] + lines[1][None, :, None] + lines[2][None, None, :]
+    return np.sort(sums.ravel())[:count] / _BLOCK_EIGEN_MASS
+
+
+class _BlockPencil:
+    """Block callbacks (rows_in, rows_out) of a host pencil (K CSR, diagonal M, optional bool mask of the free unknowns)
+    on one backend: K by a CSR product per row on a float32 / float64 copy, M and the Jacobi preconditioner diag(K)^-1
+    by diagonals, every output 0 off the mask. Records the (callback, dtype) pairs it was called with and the callbacks
+    that got arrays of another module / dtype / shape or non-C-contiguous rows."""
+
+    def __init__(self, backend, stiffness, mass_diagonal, mask=None):
+        from ..core.backend import array_module
+        self.xp = xp = array_module(backend)
+        self.n_unknowns = stiffness.shape[0]
+        keep = np.ones(self.n_unknowns) if mask is None else mask.astype(np.float64)
+        self.mask = None if mask is None else xp.asarray(mask)
+        self.typed = {np.dtype(dtype): (_device_matrix(backend, stiffness.astype(dtype)),
+                                        xp.asarray(mass_diagonal * keep, dtype=dtype),
+                                        xp.asarray(keep / stiffness.diagonal(), dtype=dtype),
+                                        xp.asarray(keep, dtype=dtype))
+                      for dtype in (np.float32, np.float64)}
+        self.calls = set()
+        self.bad_calls = set()
+
+    def _typed(self, name, rows_in, rows_out):
+        xp = self.xp
+        self.calls.add((name, rows_in.dtype.name))
+        if (not isinstance(rows_in, xp.ndarray) or not isinstance(rows_out, xp.ndarray)
+                or rows_in.dtype != rows_out.dtype or rows_in.shape != rows_out.shape
+                or rows_in.ndim != 2 or rows_in.shape[1] != self.n_unknowns
+                or not rows_in.flags.c_contiguous or not rows_out.flags.c_contiguous):
+            self.bad_calls.add(name)
+        return self.typed[np.dtype(rows_in.dtype)]
+
+    def stiffness(self, rows_in, rows_out):
+        operator, _mass, _inverse, keep = self._typed('stiffness', rows_in, rows_out)
+        for row in range(rows_in.shape[0]):
+            rows_out[row] = operator @ rows_in[row]
+        self.xp.multiply(rows_out, keep, out=rows_out)
+
+    def mass(self, rows_in, rows_out):
+        _operator, mass, _inverse, _keep = self._typed('mass', rows_in, rows_out)
+        self.xp.multiply(rows_in, mass, out=rows_out)
+
+    def precondition(self, rows_in, rows_out):
+        _operator, _mass, inverse, _keep = self._typed('precondition', rows_in, rows_out)
+        self.xp.multiply(rows_in, inverse, out=rows_out)
+
+
+def _block_eigen_pair_errors(result, stiffness, mass_diagonal, mask):
+    """(worst host-recomputed relative residual ||K v - lambda M v|| / (|lambda| ||M v||) on the free rows, max |V^T M
+    V - I|, max |V| off the mask (0 without one)) of a BlockEigenResult."""
+    vectors = np.asarray(result.vectors, dtype=np.float64)
+    values = np.asarray(result.eigenvalues, dtype=np.float64)
+    free = np.ones(vectors.shape[0], dtype=bool) if mask is None else mask
+    massed = mass_diagonal[:, None] * vectors
+    residual = (stiffness @ vectors - massed * values[None, :])[free]
+    relative = np.linalg.norm(residual, axis=0) / np.maximum(np.abs(values) * np.linalg.norm(massed[free], axis=0),
+                                                              1e-300)
+    gram = vectors.T @ massed
+    off_mask = float(np.max(np.abs(vectors[~free]))) if (~free).any() else 0.0
+    return float(np.max(relative)), float(np.max(np.abs(gram - np.eye(values.size)))), off_mask
+
+
+def _block_eigen_pencils(rng):
+    """{name: (stiffness, mass diagonal, mask or None, reference eigenvalues, wanted)} of the case (module notes)."""
+    import scipy.linalg
+    import scipy.sparse
+    from .block_eigen import DENSE_MAX_RATIO, block_size
+    n_unknowns = int(np.prod(_BLOCK_EIGEN_GRID))
+    laplacian = _laplacian_3d(_BLOCK_EIGEN_GRID)
+    shifted = (laplacian + scipy.sparse.diags(rng.uniform(0.0, 1.0, n_unknowns))).tocsr()
+    mass_diagonal = rng.uniform(0.5, 2.0, n_unknowns)
+    mask = np.ones(n_unknowns, dtype=bool)
+    mask[:_BLOCK_EIGEN_GRID[1] * _BLOCK_EIGEN_GRID[2]] = False   # the x_lo plane i = 0
+    mask[::_BLOCK_EIGEN_FIXED_STRIDE] = False
+    free = np.flatnonzero(mask)
+    masked_reference = scipy.linalg.eigh(shifted[free][:, free].toarray(), np.diag(mass_diagonal[free]),
+                                         eigvals_only=True, subset_by_index=(0, _BLOCK_EIGEN_WANTED - 1))
+    n_dense = int(np.prod(_BLOCK_EIGEN_DENSE_GRID))
+    if (free.size < DENSE_MAX_RATIO * block_size(_BLOCK_EIGEN_WANTED)
+            or n_dense >= DENSE_MAX_RATIO * block_size(_BLOCK_EIGEN_DENSE_WANTED)):
+        raise ValueError('block_eigen self-test grids no longer select LOBPCG / the dense path (DENSE_MAX_RATIO or '
+                         'the guard rule changed): resize _BLOCK_EIGEN_GRID / _BLOCK_EIGEN_DENSE_GRID')
+    return {'laplacian': (laplacian, np.full(n_unknowns, _BLOCK_EIGEN_MASS), None,
+                          _laplacian_3d_eigenvalues(_BLOCK_EIGEN_GRID, _BLOCK_EIGEN_WANTED), _BLOCK_EIGEN_WANTED),
+            'masked': (shifted, mass_diagonal, mask, masked_reference, _BLOCK_EIGEN_WANTED),
+            'dense': (_laplacian_3d(_BLOCK_EIGEN_DENSE_GRID), np.full(n_dense, _BLOCK_EIGEN_MASS), None,
+                      _laplacian_3d_eigenvalues(_BLOCK_EIGEN_DENSE_GRID, _BLOCK_EIGEN_DENSE_WANTED),
+                      _BLOCK_EIGEN_DENSE_WANTED)}
+
+
+def _block_eigen_counter_checks(checks, key, solver, results, mixed):
+    """work_counters of one runtime after the case's three solves (laplacian, masked, dense) against the results."""
+    from .block_eigen import block_size
+    counters = solver.work_counters()
+    applications = sum(result.applications for result in results)
+    iterations = sum(result.iterations for result in results)
+    checks.add(f'{key}_counter_solves', counters['eigen_solves'] == len(results), counters['eigen_solves'])
+    checks.add(f'{key}_counter_dense_solves', counters['eigen_dense_solves'] == 1, counters['eigen_dense_solves'])
+    checks.add(f'{key}_counter_unconverged', counters['eigen_unconverged'] == 0, counters['eigen_unconverged'])
+    checks.add(f'{key}_counter_iterations', counters['eigen_iterations'] == iterations, counters['eigen_iterations'],
+               expected=iterations)
+    checks.add(f'{key}_counter_single_iterations',
+               (counters['eigen_single_iterations'] > 0) == mixed
+               and counters['eigen_single_iterations'] + counters['eigen_double_iterations'] == iterations,
+               counters['eigen_single_iterations'])
+    checks.add(f'{key}_counter_applications', counters['operator_applications'] == applications
+               and counters['mass_applications'] == applications, counters['operator_applications'],
+               expected=applications)
+    checks.add(f'{key}_counter_preconditioner', counters['preconditioner_applications'] > 0,
+               counters['preconditioner_applications'])
+    checks.add(f'{key}_counter_block_size', counters['eigen_block_size'] == block_size(_BLOCK_EIGEN_DENSE_WANTED),
+               counters['eigen_block_size'])
+    return counters
+
+
+def _check_block_eigen(results_by_name):
+    """block_eigen mixed / double on cpu and gpu (Jacobi callback preconditioner): the Laplacian pencil against its
+    exact eigenvalues, the masked pencil against the dense eigh of its free part (vectors exactly 0 on the fixed
+    unknowns), the dense small-problem path; M-orthonormal vectors, host-recomputed residuals, the callback dtypes /
+    arrays and the work counters; refusals of a bad precision / preconditioner / too many wanted pairs."""
+    from .block_eigen import DEFAULT_TOLERANCE, BlockEigenSolver
+    pencils = _block_eigen_pencils(np.random.default_rng(_SEED + 9))
+    checks, details = SubChecks(), {'backends': list(_backends())}
+    for backend in _backends():
+        for precision in ('mixed', 'double'):
+            key = f'{backend}_{precision}'
+            mixed = precision == 'mixed'
+            solver = BlockEigenSolver(precision=precision, preconditioner='jacobi', backend=backend)
+            results = []
+            for name, (stiffness, mass_diagonal, mask, reference, wanted) in pencils.items():
+                run = f'{key}_{name}'
+                dense = name == 'dense'
+                pencil = _BlockPencil(backend, stiffness, mass_diagonal, mask)
+                result = solver.lowest(pencil.n_unknowns, wanted, pencil.stiffness, pencil.mass, pencil.precondition,
+                                       pencil.xp, mask=pencil.mask)
+                results.append(result)
+                values = np.asarray(result.eigenvalues, dtype=np.float64)
+                checks.add(f'{run}_converged', result.converged, result.warnings)
+                host_vectors = isinstance(result.vectors, np.ndarray)
+                checks.add(f'{run}_shape', host_vectors and values.shape == (wanted,)
+                           and result.vectors.shape == (pencil.n_unknowns, wanted), list(np.shape(result.vectors)))
+                if values.shape == (wanted,):
+                    checks.add_error(f'{run}_eigenvalues', np.max(np.abs(values - reference) / np.abs(reference)),
+                                     _BLOCK_EIGEN_VALUE_TOLERANCE)
+                residual, orthonormality, off_mask = _block_eigen_pair_errors(result, stiffness, mass_diagonal, mask)
+                checks.add_bound(f'{run}_residual', residual, _BLOCK_EIGEN_RESIDUAL_FACTOR * DEFAULT_TOLERANCE)
+                checks.add_bound(f'{run}_reported_residual', np.max(result.residuals, initial=0.0), DEFAULT_TOLERANCE)
+                checks.add_error(f'{run}_m_orthonormal', orthonormality, _BLOCK_EIGEN_ORTHONORMALITY)
+                checks.add_bound(f'{run}_zero_off_mask', off_mask, 0.0)
+                checks.add(f'{run}_method', result.method.startswith('dense' if dense else 'LOBPCG'), result.method)
+                dtypes = sorted({dtype for _callback, dtype in pencil.calls})
+                expected_dtypes = ['float32', 'float64'] if mixed and not dense else ['float64']
+                checks.add(f'{run}_callback_dtypes', dtypes == expected_dtypes, dtypes, expected=expected_dtypes)
+                checks.add(f'{run}_callback_arrays', not pencil.bad_calls, sorted(pencil.bad_calls))
+                if not dense:
+                    checks.add(f'{run}_preconditioner_called', ('precondition', 'float64') in pencil.calls,
+                               sorted(pencil.calls))
+                details[run] = {'eigenvalues': values.tolist(), 'reference': np.asarray(reference).tolist(),
+                                'iterations': [result.single_iterations, result.double_iterations],
+                                'applications': result.applications, 'method': result.method,
+                                'residuals': np.asarray(result.residuals, dtype=np.float64).tolist()}
+            details[f'{key}_counters'] = _block_eigen_counter_checks(checks, key, solver, results, mixed)
+    stiffness, mass_diagonal, _mask, _reference, _wanted = pencils['dense']
+    pencil = _BlockPencil('cpu', stiffness, mass_diagonal)
+    checks.add_raises('refuses_precision_single', lambda: BlockEigenSolver(precision='single', backend='cpu'))
+    checks.add_raises('refuses_unknown_preconditioner', lambda: BlockEigenSolver(preconditioner='ilu', backend='cpu'))
+    checks.add_raises('refuses_wanted_all_free', lambda: BlockEigenSolver(backend='cpu').lowest(
+        pencil.n_unknowns, pencil.n_unknowns, pencil.stiffness, pencil.mass, pencil.precondition, pencil.xp))
+    return checks.result(**details)
+
+
 SOLVER_SELFTEST_CASES = (
     SelfTestCase(
         name='solver_pcg_cpu_gpu',
@@ -2220,6 +2479,31 @@ SOLVER_SELFTEST_CASES = (
                     'own scipy spsolve with the same tolerance, accepted, and invalid after the next set_operator. '
                     'Not yet run with two omega values.',
         specs=lambda: {}, check=_check_line_block, max_wall_time=120.0, backends=('cpu', 'gpu')),
+    SelfTestCase(
+        name='solver_block_eigen_cpu_gpu',
+        label='Block eigensolver: processor and graphics card find the exact lowest eigenvalues',
+        description='block_eigen (BlockEigenSolver.lowest, LOBPCG on block callbacks) precision mixed and double on '
+                    'the CPU (numpy) and GPU (cupy) backends, with a Jacobi callback preconditioner (diag(K)^-1) and K '
+                    'applied as a CSR product per row on float32 / float64 copies: (1) the 7-point Dirichlet '
+                    'Laplacian of unit spacing on a '
+                    f"{' x '.join(str(n) for n in _BLOCK_EIGEN_GRID)} grid (n + 1 = "
+                    f"{', '.join(str(n + 1) for n in _BLOCK_EIGEN_GRID)} pairwise coprime: no degenerate pair) with M = {_BLOCK_EIGEN_MASS:g} I, its {_BLOCK_EIGEN_WANTED} lowest eigenvalues '
+                    'against the exact (1 / 2) sum_a 4 sin^2(k_a pi / (2 (n_a + 1))); (2) the same + a random '
+                    'diagonal in [0, 1] with a random mass diagonal in [0.5, 2] and a mask fixing the x_lo plane and '
+                    f'every {_BLOCK_EIGEN_FIXED_STRIDE}th unknown, against scipy eigh of the dense free pencil, the '
+                    'vectors exactly 0 on the fixed unknowns; (3) the dense small-problem path (a '
+                    f"{' x '.join(str(n) for n in _BLOCK_EIGEN_DENSE_GRID)} grid below DENSE_MAX_RATIO x the block, "
+                    f'{_BLOCK_EIGEN_DENSE_WANTED} wanted) against its exact eigenvalues. Each solve converged, '
+                    f'eigenvalues within {_BLOCK_EIGEN_VALUE_TOLERANCE:g} relative, the reported residuals within the '
+                    f'default tolerance and the host-recomputed ones within {_BLOCK_EIGEN_RESIDUAL_FACTOR:g} x it, '
+                    f'max |V^T M V - I| <= {_BLOCK_EIGEN_ORTHONORMALITY:g}, the method (LOBPCG / dense eigh), the '
+                    'callbacks called on C-contiguous backend rows of float32 and float64 (mixed) or float64 only '
+                    '(double, dense), the work counters (solves, dense solves, iterations split, K / M applications '
+                    'equal to the results, preconditioner applications, block size, none unconverged); the runtime '
+                    'refuses precision single, an unknown preconditioner and as many wanted pairs as free unknowns. '
+                    'error = number of failed sub-checks, tolerance 0; gpu half skipped without a usable GPU. '
+                    'Written, not run.',
+        specs=lambda: {}, check=_check_block_eigen, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(
         name='solver_eigsh_shift_on_eigenvalue',
         label='Symmetric eigen solver: target exactly on an eigenvalue',
@@ -2337,7 +2621,12 @@ SOLVER_SELFTEST_CASES = (
                     'keeps it; the cpu backend Automatic stays sparse_direct, a solid_mechanics pcg node stays jacobi '
                     '(pcg mixed on the gpu backend). '
                     'Each resolution passes the solver type validate without errors, linear_solver_multigrid (the '
-                    'memory estimators) agrees and node settings are never written. error = number of mismatches, '
+                    'memory estimators) agrees and node settings are never written. Eigen role rows (eigen_*, '
+                    'eigenfrequency study): solid_mechanics_3d in a 3D model keeps Automatic arpack_shift_invert double '
+                    '(solver_defaults.precision mixed listed ignored), a block_eigen node resolves mixed with '
+                    'preconditioner multigrid on both backends (double with solver_defaults.precision double, single '
+                    'listed ignored, its own double / jacobi kept) and fits the role (solver_misfit); the 2D '
+                    'solid_mechanics eigen role misfits block_eigen (not opted in). error = number of mismatches, '
                     'tolerance 0.',
         specs=lambda: {}, check=_check_default_precision, max_wall_time=60.0),
     SelfTestCase(

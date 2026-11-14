@@ -148,7 +148,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   case's node names must not collide with that pattern. A 'cpu' variant of a gpu case is its CPU coverage: without a
   usable GPU it still runs and judges the case (`_judge_by_variants`).
 - `solver_default_precision` (selftests.py, CPU) pins the S9 resolution table and the multigrid resolution: a change of
-  a role's precisions or Automatic type updates its `_PRECISION_CASES` / `_MULTIGRID_CASES` row.
+  a role's precisions or Automatic type updates its `_PRECISION_CASES` / `_MULTIGRID_CASES` / `_EIGEN_ROLE_CASES`
+  ('eigen' roles, opt-in block_eigen) row.
 - Build: its own stage after 'materials', one `MemoryLedger.track("solver '<physics>.<role>'")` per solver (never inside
   a physics create: the ledger does not nest); `BuildContext.solver_records`, `ctx.solvers(name)` -> {role: runtime}.
   `Session.close` clears the records.
@@ -787,6 +788,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
   norm kernel, block (multi-vector) brick kernels (today one launch per row), FEM pencils (tetrahedra / triangles:
   SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space preconditioner).
+- Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
+  callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
+  model runs: mechanics sub file "Self-tests".
 
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or
