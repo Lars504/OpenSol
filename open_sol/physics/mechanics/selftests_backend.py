@@ -278,6 +278,10 @@ def backend_cases(em_types):
              (_case_by_name(SELFTEST_CASES_3D, 'heat_solid_thermal_expansion_3d'), ()),
              (_case_by_name(EIGENFREQUENCY_3D_CASES, 'solid_3d_eigenfrequency_roller_box'), ())),
             backends=('cpu',)),
+        solid_parity_case(   # its own case: the block path's numpy / numba twin callbacks time apart from the above
+            'solid_mechanics_3d_block_eigen_cpu', 'Solid mechanics 3D: block eigensolver on the CPU backend',
+            ((_case_by_name(EIGENFREQUENCY_3D_CASES, 'solid_3d_eigenfrequency_block_eigen'), ()),),
+            backends=('cpu',)),
         _PRODUCT_NUMBA_CASE,
     ]
     optics = []

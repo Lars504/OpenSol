@@ -510,7 +510,10 @@ def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None, 
                       precisions=('double', 'mixed') if block_eigen else ('double',),
                       setting_choices={'factorization': factorizations},
                       auto_back_ends=dict(auto_factorizations or {}),
-                      opt_in_types=('block_eigen',) if block_eigen else ())
+                      opt_in_types=('block_eigen',) if block_eigen else (),
+                      # block_eigen mixed runs the physics' own float32 multigrid (solver_misfit / resolved_solvers
+                      # would else refuse it or drop it to jacobi); arpack has no preconditioner setting
+                      mixed_preconditioners=('jacobi', 'multigrid') if block_eigen else ('jacobi',))
 
 
 def resolved_back_end(solvers):

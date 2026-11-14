@@ -27,7 +27,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   twin that needs another kernel calls its registered twin (`_TWINS[name]`), never its factory, so each kernel is
   compiled / cache-loaded once per process.
 - Parity cases (`selftests_backend.py`, `solid_parity_case`: solid_mechanics_cpu, solid_mechanics_3d_cpu,
-  solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
+  solid_mechanics_3d_block_eigen_cpu, solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
   runs within FIELD_TOLERANCE relative to the max of the gpu fields of the same kind (u / strain / stress + von_mises),
   so name a NONZERO field of each kind (a zero u_x under rollers would be graded by its own round-off); a field only
   the parity reads needs a closed-form item in the case's check; every cpu run must record the solid 'linear' role on
@@ -299,7 +299,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   rows through it cast in (multigrid copyto) and out (`cycle_out`). No inner CG, rhs / CG unknown untouched. Still
   needs a float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D
   memory items (block_eigen.block_bytes + copies + private hierarchy, transient 'eigen solve') and the time recipe
-  (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either.
+  (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either. Self-tests:
+  section "Self-tests" (solid_3d_eigenfrequency_block_eigen).
 - Inner solves count in `n_solves`: `reaction` raises after an eigen solve / shown mode until the next static
   re-solve (`_shows_mode`), and `rhs` / the CG unknown are scratch (`_rhs_built` cleared).
 - Exact 3D roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give
@@ -764,6 +765,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   axisymmetric cases.
 - `selftests_3d.py` (exact trilinear, 1e-6): solid_3d_column_z_expressions expects the discrete solution with the
   solver's LUMPED cell loads f_c V / 8 (not the consistent load for non-constant f). Variant 'mixed' on
-  solid_3d_uniaxial_block_graded, solid_3d_column_z_expressions, solid_3d_eigenfrequency_roller_box. Examples
+  solid_3d_uniaxial_block_graded, solid_3d_column_z_expressions, solid_3d_eigenfrequency_roller_box;
+  solid_3d_eigenfrequency_block_eigen (`selftests_eigenfrequency.py`) is the same box by a block_eigen eigen node
+  (variant 'double' on the eigen role; its cpu run: the wrapper solid_mechanics_3d_block_eigen_cpu of
+  `selftests_backend.py`, a case of its own so the cpu block callbacks time apart). Examples
   thermal_inclusion_sphere_3d (mean-stress identities exact: centre strains x V are the element integrals),
   rotating_disk_3d.
