@@ -1,9 +1,9 @@
 """SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'batched_direct', 'banded', 'arpack_shift_invert',
-'block_eigen', 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
+'block_eigen', 'time_filter', 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
 model.study, before the physics definitions (solver_plan S3.5)."""
 from ..model.schema import Issue, Param, solver_backend
 from . import (arpack_shift_invert, banded, batched_direct, block_eigen, explicit_kernels, host_direct, line_block,
-               multigrid, pcg, sparse_direct)
+               multigrid, pcg, sparse_direct, time_filter)
 from .roles import SolverType
 
 _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
@@ -646,6 +646,70 @@ BLOCK_EIGEN = SolverType(
     create=_create_block_eigen, memory_estimate=_empty_memory_estimate, time_estimate=block_eigen.time_estimate)
 
 
+TIME_FILTER_PARAMS = (
+    Param('bandwidth', 'float', time_filter.DEFAULT_BANDWIDTH, label='Band half-width', unit='1', min=0.001,
+          max=0.9,
+          help='Half-width of the sampled band, relative to the target frequency (the wavelength setting): the '
+               'resonances searched lie within target (1 +- bandwidth); the source pulse covers '
+               f'{time_filter.PULSE_BANDWIDTH_FACTOR:g} x this. Wider finds more resonances per run but needs more '
+               'sampled frequencies.',
+          tip='How far from the target frequency resonances are searched, as a fraction of it.'),
+    Param('sampled_frequencies', 'int', 0, label='Sampled frequencies', min=0,
+          help='Frequencies of the running DFT over the band (one complex accumulator of the grid size each, the '
+               f'search basis); 0 = max({time_filter.MIN_SAMPLED_FREQUENCIES}, {time_filter.SAMPLES_PER_WANTED} x '
+               f'n_resonances + 8), at most {time_filter.MAX_SAMPLED_FREQUENCIES}. More than the resonances in the '
+               'band are needed: modes outside the requested count still occupy the span.',
+          tip='How many frequency samples build the search space; 0 picks a suitable number.'),
+    Param('periods', 'float', 0.0, label='Run periods', unit='1', min=0.0,
+          help='Length of the time stepping in periods of the target frequency after the source pulse; 0 = '
+               f'max({time_filter.MIN_PERIODS}, {time_filter.RESOLUTION_PERIODS:g} / bandwidth). Longer runs '
+               'separate close resonances better; very high Q needs no longer run (the Rayleigh-Ritz step, not the '
+               'ring-down, sets the accuracy).',
+          tip='How long the time-domain run lasts; 0 picks a suitable length.'),
+    Param('sources', 'int', time_filter.DEFAULT_SOURCES, label='Sources', min=1,
+          help='Seeded random point sources inside the window (not on PEC or wall cells) exciting the run: several, '
+               'so a mode with a node at one source is still excited.',
+          tip='How many random sources excite the time-domain run.'),
+    Param('polish_steps', 'int', time_filter.DEFAULT_POLISH_STEPS, label='Polish steps', min=0,
+          help='Rayleigh-Ritz refinements: each appends the scaled residuals of the wanted resonances to the basis and '
+               'projects again (sparse products only), removing the time-stepping and PML-stretch differences '
+               'between the FDTD fields and the frequency-domain modes; a resonance whose relative residual stays '
+               f'above {time_filter.RESIDUAL_WARNING:g} is named in a warning.',
+          tip='Extra refinement steps of the found resonances.'),
+    Param('precision', 'choice', 'single', label='Solver precision', choices=time_filter.PRECISIONS,
+          choice_labels=(('single', 'Single precision'), ('double', 'Double precision')),
+          help='Precision of the FDTD time stepping (fields and coefficients; the DFT accumulators are complex64, '
+               'the projection and residuals float64): single is enough for the search basis.',
+          tip='Number precision of the time-domain run.'),
+)
+
+
+def _create_time_filter(ctx, request):
+    values = request.values
+    return time_filter.TimeFilterEigenSolver(
+        bandwidth=values['bandwidth'], sampled_frequencies=values['sampled_frequencies'], periods=values['periods'],
+        sources=values['sources'], polish_steps=values['polish_steps'], precision=values['precision'],
+        label=lambda: f"{request.physics_name} {request.role} solver", backend=request.backend)
+
+
+TIME_FILTER = SolverType(
+    'time_filter', 'Time-filter eigensolver', roles=('eigen',), params=TIME_FILTER_PARAMS, opt_in_roles=('eigen',),
+    description='Resonances near a target without a factorisation: an FDTD time stepping of the same structure from '
+                'seeded broadband point sources, a running DFT of the whole grid at sampled frequencies of a band '
+                'around the target (one complex accumulator per sampled frequency), then a Rayleigh-Ritz projection '
+                'of the frequency-domain operator onto those fields with residual polish steps (sparse products and '
+                'small dense eigenproblems only); memory: the FDTD fields plus the accumulators. Opt-in where a '
+                'physics offers it: em_fdfd_ez / em_fdfd_hz on tensor meshes (eigenfrequency study; not with a Bloch '
+                'phase, polar coordinates, subpixel smoothing, conformal boundaries or conducting sheets). The '
+                'eigenvalues reach the projection accuracy (a residual per resonance in the log), not ARPACK\'s '
+                'machine precision. Both backends.',
+    summary='Finds resonances of open or lossy light models from a short time-domain run: no matrix factorisation, '
+            'little memory.',
+    operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=time_filter.PRECISIONS,
+    grids=('tensor',), create=_create_time_filter, memory_estimate=_empty_memory_estimate,
+    time_estimate=time_filter.time_estimate)
+
+
 EXPLICIT_KERNELS_PARAMS = (
     Param('precision', 'choice', 'single', label='Solver precision', choices=('single', 'double', 'half_storage'),
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision'),
@@ -693,7 +757,8 @@ EXPLICIT_KERNELS = SolverType(
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate)
 
-SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BATCHED_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
+SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BATCHED_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, TIME_FILTER,
+                EXPLICIT_KERNELS)
 
 
 def _selftest_cases():

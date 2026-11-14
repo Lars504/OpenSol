@@ -990,7 +990,8 @@ def _fdfd_physics_type(polarization):
         memory_estimate=fdfd_memory_estimate(polarization),
         time_estimate=_fdfd_time_estimate,
         solver_roles={'linear': FDFD_LINEAR_ROLE,
-                      'eigen': eigen_role((EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY), mixed_factorization=True)},
+                      'eigen': eigen_role((EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY), mixed_factorization=True,
+                                          time_filter=True)},   # time_filter: tensor meshes (its grids)
         subpixel_smoothing=True,
         conformal_boundaries=True,   # pec_domain cut cells (conformal_pec FDFD weights; 2D Cartesian)
         backends=('gpu', 'cpu'),   # cpu: numpy / scipy assembly, SuperLU and the adjoint

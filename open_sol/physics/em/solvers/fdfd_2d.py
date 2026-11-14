@@ -25,6 +25,7 @@ from ....solvers.cudss_factor import CudssAccuracyError
 from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.line_block import (LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve,
                                     operator_shift_bytes)
+from ....solvers.time_filter import TimeFilterEigenSolver
 from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SparseDirectSolver, host_size_back_end, qr_workspace_bytes,
                                        size_issue)
 from ..fdfd_line_block import LINE_BLOCK_TEXT, MAX_BATCH_WAVELENGTHS, fdfd_block_axis, fdfd_layout
@@ -44,6 +45,7 @@ from ..renderer import FDFDRendererEz, FDFDRendererHz
 from ..sheet_conductivity import ConductingSheet, SheetConductivity
 from ..sources import bloch_line_phase
 from ..subpixel_smoothing import SubpixelSmoothing
+from ..time_filter_eigen import solve_time_filter_resonances
 from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
@@ -291,6 +293,12 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if self.resonance_region is not None:
             options.update(in_region=self.resonance_region.cells.ravel(),
                            min_region_fraction=self.resonance_region.min_fraction)
+        if isinstance(self.eigen_solver, TimeFilterEigenSolver):   # no factor: an FDTD run + Rayleigh-Ritz
+            self.eigen_solve = solve_time_filter_resonances(
+                self, system, self.eigen_solver, n_resonances, pinned, cell_areas, in_window, options['field_of'],
+                symmetrizer=self._adjoint_symmetrizer(),
+                in_region=options.get('in_region'), min_region_fraction=options.get('min_region_fraction', 0.0))
+            return self.eigen_solve
         kept = self._system_line_factor() if self._line_block is not None else None
         factorization = (None if kept is None else
                          LineBlockFactorization(kept[0], kept[1], f'{self._line_block.label()} (shift-invert)'))
