@@ -43,7 +43,23 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   its timer starts. Every runner hands `_repeat` a tolerance, from which `_repeat` sets `inaccurate` (the report
   reads `ACCURACY_MARGIN` from runners for its "> tol" mark).
 - The catalogue varies every 'choice' param of a SolverType; a choice its short label does not name is appended as
-  '/name=value', so a new choice param multiplies the rows instead of running silently at its default.
+  '/name=value', so a new choice param multiplies the rows instead of running silently at its default. The one
+  exception is `ProblemClass.ignored_settings` {type: (setting, ...)}: a setting the problem's consumer provably
+  ignores is pinned to what its default resolves to (`_pinned_values`; 'auto' libraries through `_resolved_value`, so
+  the row keeps the Automatic / baseline label: solid_modes_3d's `arpack_shift_invert:superlu`). It is a claim about
+  open_sol's code (arpack's factorization on brick meshes: `eigsh_inverse`, no factor): recheck it when that consumer
+  changes, and never use it to drop a choice that only seems redundant.
+- Matrix-free problems (`Problem.kind` 'modes', operator None: `n_unknowns` = free dofs, `nnz` None) assemble the
+  physics' own system on the run backend in `runners.backend_arrays` (`problems.elastic_modes_system`, before the
+  memory baseline; its time is the case's `transfer_seconds`), one system for every repeat. Its 'linear' solver is
+  resolved from the role's Automatic in the problem's study and grid (`automatic_linear_values`), never spelled out,
+  and built as the pcg create + `solid_linear_solver` do (max_iterations 0 = twice the auto limit): check both when
+  they change. The mode runners call `ElasticSystem3D.lowest_modes` (its dispatch on the eigen runtime's type picks
+  eigsh_inverse or the block path) and read the ModalSolve `info` keys of both paths ('eigen_seconds',
+  'operator_applications', 'cg_iterations', 'lanczos_tolerance', 'preconditioner', 'block_residual', ...) with
+  `.get`: a renamed key silently empties a detail, not the run. The closed-form reference (`_roller_box_reference`)
+  parametrises selftests_eigenfrequency's 3D roller box: it is exact only for uniform cells, rollers on all six faces
+  and the trilinear consistent mass; a change of geometry or supports there needs a new reference, not a looser one.
 - Thread variables are set in the child environment before it starts (pools read them at library load), never by
   the child itself.
 

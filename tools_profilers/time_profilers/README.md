@@ -18,6 +18,8 @@ python -m tools_profilers.time_profilers.solver_profiler --problems heat_3d fdfd
 python -m tools_profilers.time_profilers.solver_profiler --models examples/em/nanobeam_cavity_fdfd.json --backends cpu gpu \
     --roles linear --repeat 1 --timeout 1800                          # whole runs, every linear solver choice
 python -m tools_profilers.time_profilers.solver_profiler --models MODEL.json --physics heat --scan mesh_n=20,40,80
+python -m tools_profilers.time_profilers.solver_profiler --problems solid_modes_3d --backends cpu gpu \
+    --sizes solid_modes_3d=16,32,64 --repeat 1 --timeout 3600          # block_eigen vs arpack's matrix-free Lanczos
 python tools_profilers/time_profilers/solver_profiler.py --quick            # the same as a script
 ```
 
@@ -56,13 +58,27 @@ values compared against the baseline run (`dd`; `err` against the model's analyt
 | `heat_3d` | heat / linear / stationary / tensor_3d | finite-volume 7-point (SuperLU from grid nested dissection) |
 | `heat_fem_3d` | heat / linear / stationary / tetrahedra | P2 FEM on Kuhn tetrahedra, Dirichlet dofs eliminated |
 | `heat_line` | heat / linear / stationary / line | 1D model (tridiagonal): where `banded` applies |
+| `solid_modes_3d` | solid_mechanics_3d / eigen / eigenfrequency / tensor_3d | `ElasticSystem3D.lowest_modes`, 6 lowest modes of a steel roller box, matrix-free (no operator) |
+
+`solid_modes_3d` is the point where the factor-free `block_eigen` is weighed against what it replaces: arpack's
+`eigsh_inverse` (shift-invert Lanczos at 0, one inner PCG solve per step) on brick meshes. The box has (n + 1) x n x
+(n - 1) cubic cells (n even: pairwise coprime counts, no exact degeneracy), rollers on all six faces, so the exact
+discrete frequencies have a closed form (the 3D roller box self-test's, `ex` in the tables). Sizes 16 / 32 / 48 / 64
+(64: ~0.82 M free dofs). Its system (and the PCG workspace, multigrid hierarchy when Automatic has one) is assembled
+on the run backend before the memory baseline and kept for every repeat (`transfer` seconds); its 'linear' solver is
+the role's Automatic in the eigenfrequency study on that backend (gpu: pcg mixed, cpu: pcg double, both block Jacobi:
+what arpack's inner solves use in a model without a solver node; the linear role is not varied here, so arpack with a
+multigrid inner PCG needs `--models`).
 
 The solver choices are not listed here: `solver_catalog` enumerates them from the registry (every SolverType filling
 the role, every combination of its back_end / factorization / precision / preconditioner choices that
-`solvers.roles.solver_misfit` admits on the cpu backend and the SolverType's validate does not refuse). With all
+`solvers.roles.solver_misfit` admits on the cpu backend and the SolverType's validate does not refuse; a setting the
+problem class lists in `ignored_settings` is pinned to its resolved default instead: one row). With all
 optional packages: `sparse_direct:{scipy_splu, mumps, mumps_mixed, pardiso, pardiso_mixed}`,
 `pcg:{double, single, mixed}/jacobi`, `pcg:{double, single}/multigrid`, `banded` (1D), `line_block:{mixed, double}`
-(FDFD), `arpack_shift_invert:{superlu, mumps, mumps_mixed, pardiso, pardiso_mixed}` (eigen). With `--backends gpu`
+(FDFD), `arpack_shift_invert:{superlu, mumps, mumps_mixed, pardiso, pardiso_mixed}` (eigen; `solid_modes_3d`: only
+`arpack_shift_invert:superlu`, its factorization being ignored on brick meshes), `block_eigen:{mixed, double}/{multigrid,
+jacobi}` (opt-in eigen of solid_mechanics_3d: `solid_modes_3d` only). With `--backends gpu`
 the same enumeration runs on the gpu backend: the cuDSS back ends / factorizations (where the role offers them),
 cuSOLVER QR (FDFD), gpu pcg, line_block and banded, and the host libraries again (their gpu-backend transfers
 included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-python for cuDSS, or a usable GPU is a
@@ -77,7 +93,10 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
   pattern, A x 1.001, the scaled copy made before the timer: kept MUMPS / PARDISO analysis, kept SuperLU ordering,
   kept multigrid aggregates), `total` = factor + solve, `sweep` = refactor + solve (the cost of one more point of a
   sweep on the same pattern; its own speed-up column). Eigen: `factor` the shifted factor, `solve` the ARPACK
-  iterations, `total` the whole `solve_resonances`.
+  iterations, `total` the whole `solve_resonances`. Vibration modes (`solid_modes_3d`): `total` the whole
+  `lowest_modes` call, `solve` its eigen iterations (arpack: Lanczos with the inner PCG solves), `factor` block_eigen's
+  set-up around them (float32 operator copies, the private multigrid hierarchy of preconditioner multigrid when the
+  linear solver has none: built in every call, as in every model eigen solve); arpack has no factor there.
 - Cold repeat: the first repeat (library loading, first touch) is reported apart (`cold`) and left out of the
   medians. `cpu/wall`: process CPU time over wall time of the warm repeats, roughly the threads that worked.
 - Peak RSS: each case runs in its own child process. On Linux the kernel high-water mark (VmHWM) is reset after the
@@ -89,8 +108,16 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
   its own float32 operator, `own`: a gap between the two is operator rounding, not CG); eigen: the eigen-pair
   residual of each resonance and the largest |omega - omega_SuperLU| / |omega| against the baseline. Tolerances: pcg
   its stop tolerance, line_block its accept tolerance, direct factors and eigen pairs the probe bound
-  `cudss_factor.ACCEPT_RESIDUAL`; above 10x the tolerance the case is `inaccurate`.
-- Status: `ok`, `inaccurate` (residual above 10x its tolerance), `unconverged` (pcg), `rejected` (line_block above
+  `cudss_factor.ACCEPT_RESIDUAL`; above 10x the tolerance the case is `inaccurate`. Vibration modes: the residual is
+  max ||K u - omega^2 M u|| / (omega^2 ||M u||) of the returned modes (float64 brick products: block_eigen's own
+  measure) against at least the solver's tolerance (arpack: the Lanczos tolerance it used, 1e3 x the CG tolerance with
+  the default 0), `dw` against the cpu arpack baseline and `ex` = the largest relative frequency error against the
+  exact discrete modes (rank order); details also hold iterations (arpack: inner CG; block_eigen: block iterations,
+  float32 / float64 split), operator / mass / preconditioner applications, the block size and the method text.
+- GPU memory of the vibration modes: the cupy pool's high water during the `lowest_modes` call over its live bytes at
+  the start (the pool's cached blocks are freed before the timer), the memory table's `gpu peak`.
+- Status: `ok`, `inaccurate` (residual above 10x its tolerance), `unconverged` (pcg; vibration modes: fewer modes
+  than asked, ARPACK short of its eigenvalues, an inner PCG solve or block_eigen stopped short), `rejected` (line_block above
   its accept tolerance: the physics would redo the solve on SuperLU), `no_resonances`, `refused` (size rules,
   bandwidth, not SPD), `refused_memory` (the MUMPS / PARDISO memory guard), `out_of_memory`, `failed` (singular /
   accuracy), `timeout`, `killed` (signal; SIGKILL is usually the OOM killer), `crashed` (these three keep the repeats
@@ -115,6 +142,11 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
   `MIXED_EIGEN_MIN_UNKNOWNS` (20 000) factors in double, as model runtimes do (`factorization_used`).
 - pcg runs a cold start to tolerance 1e-8 (single: 1e-6, its float32 floor), so its residuals are not those of a
   direct solve; real time-stepped runs warm-start and are cheaper per solve.
+- `solid_modes_3d` on the cpu backend runs the numpy twins of the brick kernels: the cpu arpack baseline (thousands
+  of block-Jacobi CG iterations per inner solve, tens of solves) takes minutes from n = 32 and can exceed the default
+  timeout at 48 / 64; the baseline always runs, so pass `--sizes solid_modes_3d=...`, `--repeat 1` and a larger
+  `--timeout` there (a timed-out case keeps its finished repeats). The Lame values are float64 constants (a model
+  derives them per cell from float32 E / nu), so `ex` measures the solver, not the material rounding.
 - Synthetic problems are simple geometries on open_sol's real assembly code, without PEC / mirror pinning, Bloch
   phases or conformal cuts, and the thermal-noise `shifted` role has none: use `--models` for those.
 - gpu rows: the operator and rhs are moved to the device once per case before the timers (a gpu model assembles them
