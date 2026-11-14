@@ -563,6 +563,15 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `region_energy_fraction` last; on tensor grids the region is `ctx.domain_mask`, so an object touching the window
   edge counts the PML cells beyond it (clamped centres; example dbr_cavity_q stops its gaps one cell short). Self-tests em_fdfd_eigenfrequency_pec_cavity, em_resonance_region_fraction,
   em_fdfd_resonance_region; template disk_resonator_eigenmodes.
+- Time-filter eigen solve (`time_filter_eigen.py`, eigen node 'time_filter', tensor meshes): `solve_eigenfrequencies`
+  dispatches before any factor; an EMPhysics on the FDFD Domain itself (it reads the same MaterialGrid: never write
+  materials there), PEC cells and dispersive regions copied (a region's box None = everywhere: a full mask), seeded
+  point sources inside the window off pinned cells, a whole-grid DFTMonitor (its (nx, ny) box flattened i * ny + j =
+  the FDFD unknown order; pinned rows zeroed), then `ritz_pairs` on A = L + k_t^2 M and the shared candidate filter
+  (theta = -1 / mu). D is `_adjoint_symmetrizer()` (measured complex symmetric), so the polish is the same Rayleigh
+  quotient as the shift-invert path. Anything the FDTD would model differently from the FDFD operator is refused by
+  `unsupported_reason` (Bloch, polar, subpixel smoothing, conformal PEC, conducting sheets): a new FDFD operator term
+  must either be copied into that FDTD or added there. info carries factor_text (the run), residuals per resonance.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
   objectives), zeros while a resonance is shown. `solve_adjoint` uses `self.system`: never call it after

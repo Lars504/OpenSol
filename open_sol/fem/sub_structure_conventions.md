@@ -597,6 +597,13 @@ all but drift_diffusion.
   `set_frequency_load` / `set_held_offsets` must be None while planned (would count twice). The sum of vector_of loads
   is cached per omega with S b and V^H b: a vector_of must not change while the model lives (a changed background needs
   a new plan_reduced).
+- Batched direct sweeps (`plan_batched`, solvers.batched_direct): the plan_reduced interface without a model:
+  solve() of a planned omega takes its free solution from a batch of the next unsolved planned omegas (rhs per omega
+  built exactly as the per-frequency solve: loads + extra loads + frequency_terms load - lift of the held values; a
+  frequency_terms block outside the pattern, a rejected system or an unavailable batch path takes that omega's own
+  factor), keyed on the same `_load` / `_fixed_value` objects (solve raises after a change); clear_reduced drops it and
+  releases the runtime's batched plan, as does the last planned omega. Planned omegas match by exact float: callers
+  plan and solve 2 pi f computed the same way.
 - A4 (`reduced_outputs.py`): `solve(omega, fields=False)` keeps only y (`solution` None, `reactions` refused);
   `linear_output(key, apply)` caches apply of each basis column per key (apply linear in full-numbering values);
   `publish_fields()` writes V y. Values pass `_physical_values(full)` (line Hermite slopes) in every write and in

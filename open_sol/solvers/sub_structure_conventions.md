@@ -6,8 +6,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - `roles.py` (SolverRole, SolverType, SolverRequest, ResolvedSolver, `solver_misfit` = the one fit rule) is pure Python
   and imports nothing from open_sol, so model.schema may import it; `__init__` imports only `roles`; model.schema
   re-exports SOLVER_ROLES, ResolvedSolver, SolverRole, SolverType, solver_misfit.
-- Runtimes (`pcg.py` (+ `multigrid.py`, imported inside factorize), `line_block.py`, `sparse_direct.py`, `banded.py`,
-  `arpack_shift_invert.py`, `block_eigen.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
+- Runtimes (`pcg.py` (+ `multigrid.py`, imported inside factorize), `line_block.py`, `sparse_direct.py`,
+  `batched_direct.py`, `banded.py`, `arpack_shift_invert.py`, `block_eigen.py`, `time_filter.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
   core.gpu_memory / core.backend / core.host_memory inside functions, kernels built on first use, so core.fv_diffusion,
   model.definition_helpers and GUI-thread checks (`scipy_available`, `size_issue`, `expected_back_end`) may import them.
   `cudss_factor.py` is the one cuDSS wrapper (sparse_direct imports it; arpack_shift_invert reaches it inside
@@ -132,6 +132,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   that cannot hold its factor (em_modes / em_fdfd_bor 'shifted' misfit the host names: their eigen node's
   factorization is the knob).
   `SolverRole.setting_choices` is the generic per-role restriction of setting values (checked by `solver_misfit`).
+  An opt-in type with precisions the role's Automatic lacks (batched_direct 'mixed', time_filter 'single',
+  block_eigen 'mixed') needs them in the role's `precisions` too (solver_misfit checks both); with_default_precision
+  then still leaves the Automatic alone because its own type does not offer them.
 - Private runtimes: a script constructor given a choice string or None builds its own runtime and reports its
   counters in the physics' `work_counters` (no role record); a build-injected one never does.
 - Validate (`check_solvers`): backend, node type / settings / SolverType.validate at ('solver', name), unused node =
@@ -792,6 +795,53 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
   model runs: mechanics sub file "Self-tests".
 
+## batched_direct (`BatchedDirectSolver`; role 'linear', opt-in)
+- A SparseDirectSolver subclass (per-system solves on cudss_mixed / cudss by precision, SuperLU after a cuDSS refusal;
+  cpu: scipy_splu), so every consumer of the role works unchanged and only consumers that test
+  `isinstance(linear_solver, BatchedDirectSolver)` batch. Opt-in by `opt_in_types=('batched_direct',)`:
+  PRESSURE_LINEAR_ROLE and MEMBRANE_LINEAR_ROLE, whose precisions list 'mixed' for it alone (sparse_direct offers
+  double only, so with_default_precision leaves the Automatic untouched). Grids triangles / tetrahedra.
+- `pattern(indptr, indices, terms, symmetric)` -> BatchPattern (kept per consumer pattern: never modify its arrays);
+  `batch_capacity(pattern, n)`; `solve_batch(pattern, coefficients (N, T), rhs (N, n), extras)` -> host solutions,
+  relative residuals, accepted: values = coefficients @ terms on the device (one GEMM; extras = (pattern slots, values)
+  per system, the port DtN blocks), R = |diag|^-1/2 equilibration, the lower triangle of a symmetric pencil, one
+  explicitly batched nvmath DirectSolver (lists of operators and rhs buffers) planned once per (pattern, batch size,
+  dtype) and refreshed in place (`data[k]` rows are the CSRs' data arrays: never rebind them), refinement against each
+  system's complex128 operator by one SpMM of a row selector. A shorter batch pads with copies of its last system.
+- Rejected systems (above ACCEPT_TOLERANCE, non-finite) are the consumer's to re-solve on the inherited per-system
+  path. Any error of the batched API or a plan over DEVICE_FRACTION of the free memory raises BatchUnavailable and
+  sets `unavailable` for good (the consumer warns once and goes per system): explicit batching is assumed from nvmath
+  1.0 (unmeasured here: check `batch_unavailable` in the counters after a first gpu run).
+- The kept plan lives outside the cupy pool (book_external_bytes / release_external_bytes in cudss_factor):
+  consumers call `release()` when their plan ends (fem.harmonic: after the last planned omega and in clear_reduced).
+- Consumer fem.harmonic `plan_batched(omegas, extra_loads, held_offsets_of)` (the plan_reduced interface; module
+  header): the physics' plan_frequency_response calls it for sweep_method 'direct' with a batched node, and their
+  solve_frequency_response must then take the planned branch (no per-frequency set_frequency_load: it changes the
+  load object the plan keys on, and solve raises). frequency_terms must be a pure function of omega (they are
+  evaluated for a whole batch ahead of the solve).
+- Counters: the SparseDirectSolver ones + batches, batched_systems, batch_plans, batch_rejected,
+  batch_refinement_steps, batch_seconds, batch_plan_seconds, batch_permanent_bytes / batch_peak_bytes (nvmath's plan
+  estimates, summed over systems), worst_batch_residual, batch_unavailable. Time recipe: per-system cuDSS
+  (an upper bound: the batching gain shows as a time_check deviation, not a lead on the recipe).
+- Not yet: mechanics HarmonicSystem (2D / 3D frequency response), FDFD wavelength scans on triangles / cuDSS,
+  thermal noise off line_block, BOR order sums, lockstep ARPACK on batched factors (several targets, EME sections).
+
+## time_filter (`TimeFilterEigenSolver`; role 'eigen', opt-in)
+- Settings holder + dense Rayleigh-Ritz (`ritz_pairs`, any array module) + counters; the time stepping is the
+  physics' (physics.em.time_filter_eigen: solvers never import physics). Opt-in through `eigen_role(time_filter=True)`
+  (opt_in_types, precisions + 'single' = the FDTD stepper precision): em_fdfd_ez / em_fdfd_hz, grids tensor; the FDFD
+  physics dispatches on `isinstance(eigen_solver, TimeFilterEigenSolver)` before any factor is made.
+- ritz_pairs: pinned rows (mass 0) zeroed, QR + SVD rank cut (RANK_TOLERANCE), bilinear projection (D Q)^T A Q with a
+  symmetrizer (the stationary quotient of a complex symmetric pencil), else Galerkin; polish steps append the
+  mass-scaled residuals of the wanted pairs (Gram-Schmidt twice, columns already in the span dropped). Non-finite mu
+  (directions with a singular projected mass) are dropped. Eigenvalue accuracy is the projection's: residuals are
+  reported per resonance and warned above RESIDUAL_WARNING (no machine-precision guarantee as ARPACK's).
+- Counters: eigen_solves, time_steps, sampled_frequencies, basis_columns, operator_applications, step_seconds,
+  projection_seconds, eigen_last_residual. Time recipe: work.factorizations = time steps of one run (no factor),
+  work.rhs = sampled frequencies; guesses.
+- Not yet: em_fdfd_3d (the 3D FDTD engine on the FDFD domain), elastic pencils, a Bloch phase (complex FDTD fields),
+  subpixel / conformal / sheet models (the FDTD would differ from the FDFD operator), several targets / bands.
+
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or
   the caller's row_scale), entry by entry on an own copy of the canonical pattern, as CudssFactorization: LDL^T when
@@ -817,6 +867,18 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   solve_backward_error, an int refinement_steps = plain steps; each low-precision solve scales its rhs to unit norm;
   the probe's stall test and mixed gates as cuDSS; a miss refactors in double (sticky: last_double_fallback,
   mixed_rejection). No low-precision Cholesky (as cuDSS), no remembered rejections per pattern (cuDSS H4).
+- Compressed (mumps_blr, `HOST_DIRECT_COMPRESSED_BACK_ENDS`; module header): a double MUMPS factor with ICNTL(35) =
+  BLR_ICNTL (set between set_matrix and analyze: the analysis needs it) and CNTL(7) = BLR_TOLERANCE (re-set before
+  every factor: python-mumps keeps one instance per dtype). Its probe misses ACCEPT_RESIDUAL by design, so it always
+  runs the double GMRES-IR path; a GMRES miss refactors full rank once (`_next_attempt`, sticky
+  `_compression_rejected`, last_compression_fallback / compression_rejection) before raising. Name helpers:
+  `library_of` strips `_NAME_SUFFIXES` ('_mixed', '_blr'), `host_direct_precision` is 'double', `host_direct_compressed`;
+  a new suffix goes into `_NAME_SUFFIXES` or every helper misreads it. Kept analyses and `previous=` refactors key on
+  the compression (a full-rank analysis is never adopted by a compressed request or the reverse). Estimators:
+  `superlu_bytes_scale` x BLR_FACTOR_FRACTION; time recipes HOST_DIRECT_COMPRESSED_FACTOR_TIME /
+  HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. Unverified: that
+  python-mumps' instance exposes `cntl` (a RuntimeError naming the wrapper otherwise) and the INFOG fields of a BLR
+  factor (INFOG(29) may count full-rank entries).
 - Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
   iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
   HostDirectMemoryError (no guard when unknown); library allocation errors map to it too. The factor lives in library
@@ -912,7 +974,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   are looked up once; `refresh=True` (refactorize / refactorize_values) looks again only when a scipy module that loads
   scipy's OpenBLAS (`_SCIPY_BLAS_MODULES`) appeared in sys.modules since (a ThreadpoolController walks every loaded
   library: 4.5 ms per Newton factorisation). A new lazily loaded BLAS user of scipy joins that list.
-- Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
+- Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), BLR memory estimates (ICNTL(38), INFOG of the
+  compressed factor), a mixed BLR factor, a two-level factor (em_fdfd_3d order 2 on an order-1 coarse factor: ND1 sits
+  inside ND2, so the prolongation is sparse with +-1 entries on an edge's two dofs and the face dofs around it, not an
+  injection; scalar P2 on P1: corners 1, edge midpoints 1/2), MPI, user orderings,
   a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
   checks of mixed factors, pydiso >= 0.3 in the conda env (needs Python >= 3.12, the env is 3.11; 0.2.0 reaches the
   same parallel ordering through `_ordered_pardiso_class`: analysis cpu/wall ~5 on 16 threads, measured), PARDISO
