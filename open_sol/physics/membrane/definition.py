@@ -1342,27 +1342,33 @@ def _time_estimate(settings_values, mesh, context):
     if study == FREQUENCY_RESPONSE_STUDY:   # the factorisations are the study's harmonic_factorizations (sweep_method)
         from ...model.definition_helpers import frequency_sweep_counts, reduced_sweep_time_items
         sweep = frequency_sweep_counts(context)
-        cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS
+        # a batched_direct node: per-system cuDSS / SuperLU at the run backend, batched sweeps on the batch counters
+        batched = batched_direct_sweep(context) is not None
+        per_system = batched_direct_back_end(context.solvers, context.backend)
+        cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS or per_system in CUDSS_BACK_ENDS
         pml = bool(_pml_faces(settings_values)) and triangles
         stiffness_bytes = 16 if pml or context.material_sets(LOSS_ARRAY) else 8
         # ports add their DtN block per frequency (frequency_terms): on a DevicePencil at slots mapped once
         # (factorize_pencil extra=, a few entries), else with the reduced operator by pattern_sum on the host
         ports = _feature_count(context, 'port')
         frequency_items = harmonic_frequency_items(
-            unknowns, nnz, sweep, device_pencil=cudss, term_value_bytes=(stiffness_bytes, 16 if pml else 8),
-            frequency_terms=bool(ports))
+            unknowns, nnz, sweep, device_pencil=cudss and not batched,
+            term_value_bytes=(stiffness_bytes, 16 if pml else 8), frequency_terms=bool(ports), batched=batched)
         port_items = ()
         if triangles and _plate(context) and ports:   # dense strip pencil per port and frequency
             strip = 4.0 * math.sqrt(float(mesh.n_nodes))
+            # batched: the batch's DtN blocks first, the outputs per frequency later (the one-omega cache misses twice)
             port_items = (te.TimeItem('plate port strip modes (per port and frequency)', 'solve',
-                                      ports * sweep['factorizations'], sweep['factorizations_kind'],
+                                      ports * sweep['factorizations'] * (2.0 if batched else 1.0),
+                                      sweep['factorizations_kind'],
                                       (te.DenseFlops((PLATE_STRIP_EIG_FLOPS + PLATE_STRIP_DTN_FLOPS) * strip ** 3,
                                                      host=True), te.PythonCalls(60))),)
         parts = [build, te.TimeEstimate((*frequency_items, *port_items, *reduced_sweep_time_items(sweep, unknowns))),
                  context.solver_work(
             'linear', unknowns=unknowns, nnz=nnz, value_bytes=16, dimensions=2, solves=sweep['solves'],
             solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
-            factorizations_kind=sweep['factorizations_kind'], device_values=cudss, **scales(cudss))]
+            factorizations_kind=sweep['factorizations_kind'], device_values=cudss, batched=batched, pencil_terms=2,
+            **scales(cudss))]
         if sweep['eigenpairs']:   # modal basis: one shift-invert of the 'eigen' role at the band centre
             cudss_eigen = eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
             parts.append(context.solver_work(
