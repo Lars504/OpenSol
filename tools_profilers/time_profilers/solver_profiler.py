@@ -41,7 +41,8 @@ def _parse_args(argv):
     parser = argparse.ArgumentParser(
         prog='python -m tools_profilers.time_profilers.solver_profiler',
         description='Compare every solver open_sol offers (sparse direct SuperLU / MUMPS / PARDISO / cuDSS incl. mixed '
-                    'precision, pcg, banded, line_block, shift-invert eigen factorizations) on problems assembled by '
+                    'precision, pcg, banded, line_block, shift-invert eigen factorizations, block_eigen) on problems '
+                    'assembled by '
                     'open_sol and on whole model files: wall time per phase, peak RSS, accuracy; one child process per '
                     'case.')
     parser.add_argument('--problems', nargs='+', choices=sorted(PROBLEMS), metavar='PROBLEM',
@@ -229,6 +230,8 @@ def _print_list(targets, sizes, catalog) -> None:
         print(f'{name}: {target.description}')
         print(f'  {target.physics_type} / {target.role} / {target.study} / grid {target.grid}; sizes {sizes[name]} '
               f'({target.size_text})')
+        for type_name, settings in (getattr(target, 'ignored_settings', None) or {}).items():
+            print(f"  {type_name}: {', '.join(settings)} ignored by this problem (one row, pinned to its default)")
         for candidate in candidates:
             marks = ''.join((' [baseline]' if candidate.baseline else '', ' [auto]' if candidate.automatic else ''))
             state = 'available' if candidate.available else f'unavailable: {candidate.reason}'
@@ -337,8 +340,9 @@ def main(argv=None) -> int:
                              'threads': args.threads, 'timeout': timeout, 'quick': args.quick},
                 'problems': {name: {'kind': target.kind, 'description': target.description,
                                     'physics_type': target.physics_type, 'role': target.role, 'study': target.study,
-                                    'grid': target.grid, 'size_text': target.size_text} for name, target in
-                             targets.items()},
+                                    'grid': target.grid, 'size_text': target.size_text,
+                                    'ignored_settings': getattr(target, 'ignored_settings', None) or {}}
+                             for name, target in targets.items()},
                 'solvers': {name: [dict(dataclasses.asdict(candidate), row=candidate.row)
                                    for candidate in catalog[name][0]] for name in targets},
                 'not_offered': {name: catalog[name][1] for name in targets},

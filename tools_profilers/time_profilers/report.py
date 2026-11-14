@@ -288,6 +288,8 @@ def _detail_cell(record) -> str:
     difference = record.get('eigen_difference')
     if difference is not None:
         text += f'; dw {difference:.1e}'
+    if details.get('reference_error') is not None:
+        text += f"; ex {details['reference_error']:.1e}"
     if record.get('derived_difference') is not None:
         text += f"; dd {record['derived_difference']:.1e}"
     errors = [value for value in (details.get('derived_error') or {}).values() if isinstance(value, (int, float))]
@@ -296,6 +298,10 @@ def _detail_cell(record) -> str:
     text += _work_text(record)
     if 'iterations' in details:
         text += f"; it {details['iterations']}"
+    if details.get('operator_applications') is not None:
+        text += f"; op {details['operator_applications']}"
+    if details.get('preconditioner_applications') is not None:
+        text += f"; pc {details['preconditioner_applications']}"
     if details.get('solve_refinements'):
         text += f"; gm {details['solve_refinements']}"
     if summary.get('cold_total') is not None:
@@ -334,13 +340,18 @@ def _legend(records) -> list:
              '(operator and rhs on the device, every phase timed after a device synchronise).', '',
              f'Memory cells: +X = host RSS the solver phase added ({memory}; device memory not included); factor = '
              'the host factor size the library reports, device factor = a cuDSS factor (outside the cupy pool), gpu '
-             'peak = the build ledger peak of a gpu model run.', '',
+             'peak = the build ledger peak of a gpu model run (a gpu vibration-mode problem: the cupy pool high water '
+             'of the eigen solve over its live arrays at the start).', '',
              'Phase cells (median seconds): a analysis, f factor / set-up (analysis included), s solve, rf value-only '
              'refactorisation; r max relative residual (eigen: max eigen-pair residual), "> tol" when above '
              f'{ACCURACY_MARGIN:g}x the tolerance (status inaccurate), own = the residual against the solver\'s own '
-             'float32 operator, dw max |omega - omega_SuperLU| / |omega|, it CG iterations, gm GMRES refinement '
-             'iterations of the solve, cold = total of the first (cold) repeat, cpu/wall = process CPU over wall time '
-             'of the warm repeats (about the threads that worked).', '']
+             'float32 operator, dw max |omega - omega_baseline| / |omega| (the baseline: SuperLU, or the cpu '
+             'Automatic), ex max relative omega error against the exact discrete modes (vibration-mode problems), it '
+             'CG iterations (vibration modes: arpack its inner CG iterations, block_eigen its block iterations), op '
+             'operator applications (arpack: shifted-inverse applications, i.e. factor or inner PCG solves; '
+             'block_eigen: stiffness products of block rows), pc preconditioner applications (block_eigen), gm GMRES '
+             'refinement iterations of the solve, cold = total of the first (cold) repeat, cpu/wall = process CPU over '
+             'wall time of the warm repeats (about the threads that worked).', '']
     if any(record.get('kind') == 'model' for record in records):
         lines += ['Model rows: b build (every build of the study: mesh, materials, assembly, solver set-up), st study '
                   '(the solves and everything between them), o output (validation, results written); dd max relative '
