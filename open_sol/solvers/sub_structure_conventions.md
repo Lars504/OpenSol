@@ -810,10 +810,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   system's complex128 operator by one SpMM of a row selector. A shorter batch pads with copies of its last system.
 - Rejected systems (above ACCEPT_TOLERANCE, non-finite) are the consumer's to re-solve on the inherited per-system
   path. Any error of the batched API or a plan over DEVICE_FRACTION of the free memory raises BatchUnavailable and
-  sets `unavailable` for good (the consumer warns once and goes per system): explicit batching is assumed from nvmath
-  1.0 (unmeasured here: check `batch_unavailable` in the counters after a first gpu run).
+  sets `unavailable` for good (the consumer warns once and goes per system). Explicit batching as read in the nvmath
+  1.0.0 source, not run here: a sequence of CSR operands becomes cuDSS's non-uniform batch
+  (`cudss.matrix_create_batch_csr`, one pointer set per system: nothing tells cuDSS the patterns are equal), not its
+  uniform batch (`UBATCH_SIZE`, one analysis for all: only in `nvmath.bindings.cudss`, DirectSolver has no option for
+  it). Whether the plan then costs one host reordering per system is unmeasured: check `batch_unavailable`,
+  `batch_plan_seconds` and `batch_seconds` in the counters after a first gpu run.
 - The kept plan lives outside the cupy pool (book_external_bytes / release_external_bytes in cudss_factor):
-  consumers call `release()` when their plan ends (fem.harmonic: after the last planned omega and in clear_reduced).
+  consumers call `release()` when their plan ends (fem.harmonic: after the last planned omega and in clear_reduced);
+  a plan dropped without it (a cancelled sweep, a closed session) frees itself (`_BatchPlan.__del__`: nvmath's
+  DirectSolver has none).
 - Consumer fem.harmonic `plan_batched(omegas, extra_loads, held_offsets_of)` (the plan_reduced interface; module
   header): the physics' plan_frequency_response calls it for sweep_method 'direct' with a batched node, and their
   solve_frequency_response must then take the planned branch (no per-frequency set_frequency_load: it changes the
@@ -889,10 +895,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   a new suffix goes into `_NAME_SUFFIXES` or every helper misreads it. Kept analyses and `previous=` refactors key on
   the compression (a full-rank analysis is never adopted by a compressed request or the reverse). Estimators:
   `superlu_bytes_scale` x BLR_FACTOR_FRACTION; time recipes HOST_DIRECT_COMPRESSED_FACTOR_TIME /
-  HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. Unverified: that
-  python-mumps' instance exposes `cntl` 1-based like icntl (a 0-based array would set CNTL(8) silently; a missing
-  one is a RuntimeError naming the wrapper), MUMPS >= 5.2 ICNTL(35) semantics, the in-core memory gain without
-  ICNTL(37) / (38), and the INFOG fields of a BLR factor (INFOG(29) may count full-rank entries).
+  HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. The memory guard and
+  host_direct_peak_bytes read INFOG(17), the full-rank estimate, and the SuperLU size rules apply unchanged: a model
+  whose full-rank factor is refused stays refused (INFOG(37), MUMPS's block low-rank in-core estimate, is not read);
+  lu_entries reads INFOG(35) (the entries with the compression; INFOG(29) when it is 0). Read in the python-mumps
+  0.0.1 / 0.0.3 / 0.0.6 sources: `icntl` / `cntl` are 1-based proxies without a bounds check, set_matrix creates the
+  instance, analyze and factor(reuse_analysis=True) leave ICNTL(35) / CNTL(7) alone (a missing cntl is a RuntimeError
+  naming the wrapper). Unverified (the MUMPS guide was not at hand; INFOG(17) / (19) / (35) / (37) as PETSc's MUMPS
+  interface texts describe them): ICNTL(35) = 2 semantics of MUMPS >= 5.2, the in-core memory gain without ICNTL(37) /
+  (38), INFOG(29) of a BLR factor, the transposed solve (ICNTL(9)) of a compressed LU. Nothing detects a MUMPS that
+  ignores ICNTL(35): the factor is then full rank under a block low-rank description.
 - Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
   iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
   HostDirectMemoryError (no guard when unknown); library allocation errors map to it too. The factor lives in library
@@ -938,7 +950,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Library notes (PARDISO: run on pydiso 0.3.1 / oneMKL 2026.2; MUMPS: verified against the python-mumps 0.0.6
   sources, not run): python-mumps
   `Context.set_matrix(a, symmetric=True)` keeps scipy.sparse.triu itself and creates the s/d/c/z instance only when
-  the dtype changes (SYM stays that of the first call: one Context per analysis); icntl / infog 1-based; ICNTL(9) = 2
+  the dtype changes (SYM stays that of the first call: one Context per analysis); icntl / cntl / infog 1-based; ICNTL(9) = 2
   solves A^T (believed unconjugated for complex: checked by solver_host_direct_cpu_gpu only); INFOG(12) negative
   pivots of SYM=2; MUMPSError.error = INFOG(1) (-10 / -6 singular; -5, -7, -8, -9, -13, -17, -19, -20 memory);
   `factor()` retries -8 / -9 itself. pydiso: symmetric types keep sp.triu of the matrix given; MKL needs every diagonal

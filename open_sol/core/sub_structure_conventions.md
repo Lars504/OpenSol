@@ -95,7 +95,9 @@ coordinate rules stay in the root file.
   up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter sums are
   cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call); per assembly of a solid_mechanics_3d system
   with the multigrid preconditioner (`physics.mechanics.multigrid3d.BrickMultigrid.build`) the power-iteration dots of
-  every level (2 x POWER_ITERATIONS + norms) and the 81 coarsest probe reads (never inside a V-cycle).
+  every level (2 x POWER_ITERATIONS + norms) and the 81 coarsest probe reads (never inside a V-cycle); per block
+  iteration of a block_eigen solve (`solvers.block_eigen`, LOBPCG) two reads (residual norms, Gram pair) and the
+  upload of the rotation coefficients (solvers sub file "block_eigen").
 
 ## Kernel twins (`kernels`; solver_plan S6, the explicit engines on the cpu backend)
 - `twin(name, gpu_kernel, cpu_fn, numba=None)` (Elementwise / Reduction / any cupy callable) and `raw_twin(...)`

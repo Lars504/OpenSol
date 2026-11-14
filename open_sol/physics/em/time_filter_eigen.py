@@ -173,7 +173,7 @@ def solve_time_filter_resonances(physics, system, solver, n_resonances, pinned, 
         if len(chosen) == int(n_resonances):
             break
         value = _relative_residual(host_operator, mass_host, k_target_squared - (candidate[1] / C0) ** 2,
-                                   candidate[4])
+                                   k_target_squared, candidate[4])
         if not value <= SPURIOUS_RESIDUAL:
             dropped['spurious'] += 1
             continue
@@ -219,10 +219,12 @@ def _residual_warning() -> float:
     return RESIDUAL_WARNING
 
 
-def _relative_residual(host_operator, mass, mu, vector) -> float:
-    """||A u - mu M u|| / (||A u|| + |mu| ||M u||) of one resonance (host float64 products)."""
+def _relative_residual(host_operator, mass, mu, shift, vector) -> float:
+    """||L u + k^2 M u|| / (||L u|| + |k^2| ||M u||) of one resonance (host float64 products) from the shifted
+    operator A = L + shift M and mu = shift - k^2 (the residual vector is A u - mu M u). The scale is the unshifted
+    pencil's: ||A u|| + |mu| ||M u|| goes to 0 with mu, so it would rate a resonance at the target as O(1)."""
     vector = np.asarray(vector, dtype=np.complex128).ravel()
     applied = host_operator @ vector
     massed = mass * vector
-    scale = float(np.linalg.norm(applied) + abs(mu) * np.linalg.norm(massed))
+    scale = float(np.linalg.norm(applied - shift * massed) + abs(shift - mu) * np.linalg.norm(massed))
     return float(np.linalg.norm(applied - mu * massed) / scale) if scale > 0.0 else 0.0

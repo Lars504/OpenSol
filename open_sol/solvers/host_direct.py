@@ -64,10 +64,15 @@ helpers here are GUI-thread safe."""
 # is refactored full rank once (sticky, last_compression_fallback / compression_rejection; counters
 # host_direct_compression_fallbacks / eigen_compression_fallbacks) before anything raises. Analyses are kept / adopted
 # per compression (_KeptAnalysis key 'mumps_blr'), a previous of the other compression is never refactored in place,
-# INFOG(17) (the guard) is MUMPS's full-rank estimate (safe side), and the LDL^T inertia is that of the compressed
-# factor (exact for eigenvalues farther than ~BLR_TOLERANCE ||A|| from the shift; ShiftInertia exact=False as for a
-# float32 factor). python-mumps exposes the instance's cntl as it does icntl (1-based; assumed, not checked: a missing
-# cntl raises RuntimeError naming the wrapper in _MumpsFactor._set_blr_tolerance).
+# INFOG(17) (the guard) is MUMPS's full-rank estimate (safe side: a model whose full-rank factor does not fit is
+# refused although its compressed one might; INFOG(37) is MUMPS's block low-rank in-core estimate, not read), the
+# counted factor entries are INFOG(35) (with the compression; INFOG(29) is believed to stay the full-rank count), and
+# the LDL^T inertia is that of the compressed factor (exact for eigenvalues farther than ~BLR_TOLERANCE ||A|| from the
+# shift; ShiftInertia exact=False as for a float32 factor). python-mumps exposes the instance's cntl as it does icntl
+# (1-based proxies without a bounds check: read in the sources of python-mumps 0.0.1 / 0.0.3 / 0.0.6; a missing cntl
+# raises RuntimeError naming the wrapper in _MumpsFactor._set_blr_tolerance). INFOG(17) / (19) / (35) / (37) as the
+# texts of PETSc's MUMPS interface describe them; the MUMPS guide itself was not at hand (ICNTL(35) = 2 against 3,
+# INFOG(29) of a compressed factor, the transposed solve of a compressed LU).
 # No automatic fallback: an explicit host node raises (HOST_DIRECT_REFUSALS).
 # Library calls live only in the adapter section at the end (_MumpsFactor, _PardisoFactor): PARDISO run against
 # pydiso 0.3.1 / oneMKL 2026.2, MUMPS checked against the sources of python-mumps 0.0.6 only (not run).
@@ -555,7 +560,7 @@ class HostDirectFactorization(ProbedFactor):
         self._last_solve_errors = (None, None, None)
         self.host_bytes = 0               # library factor bytes (MUMPS INFOG(19) MB, PARDISO iparm[15] + iparm[16] KiB)
         self.peak_bytes = 0               # the library's estimate after the analysis (the memory guard's number)
-        self.lu_entries = 0               # factor entries (MUMPS INFOG(29), PARDISO iparm[17])
+        self.lu_entries = 0               # factor entries (MUMPS INFOG(29), compressed INFOG(35); PARDISO iparm[17])
         self.perturbed_pivots = 0         # PARDISO iparm[13]; MUMPS INFOG(25) + INFOG(28) (static / null pivots)
         self.threads = None               # library thread count when known
         self.openblas_pools = 0           # OpenBLAS pools held at one thread during this factor's calls
@@ -1199,7 +1204,7 @@ def host_direct_values_factorization(values, indptr, indices, back_end, previous
 # general symmetric, complex symmetric in c/zmumps, not Hermitian) and creates the s/d/c/z instance from the data dtype
 # only when the dtype changes (SYM stays that of its first call: one Context per analysis here); analyze() = JOB 1
 # (ordering 'auto'), factor(reuse_analysis=True) = JOB 2 (it retries INFO -8 / -9 itself, doubling ICNTL(14)),
-# solve(b) = JOB 3 on a copy of b; mumps_instance.icntl / infog are 1-based; ICNTL(9) != 1 solves A^T x = b
+# solve(b) = JOB 3 on a copy of b; mumps_instance.icntl / cntl / infog are 1-based; ICNTL(9) != 1 solves A^T x = b
 # (transposed, believed unconjugated for complex as the MUMPS guide states; checked by selftest
 # solver_host_direct_cpu_gpu); INFOG(12) = negative pivots for SYM != 0; MUMPSError(RuntimeError).error = INFOG(1);
 # dropping the instance runs JOB -2 (dealloc). The call releases the GIL.
@@ -1286,6 +1291,10 @@ class _MumpsFactor:
         return _mumps_megabytes(self._infog(19))   # INFOG(19): allocated by the factorisation, total MB
 
     def lu_entries(self) -> int:
+        if self.compressed:   # INFOG(35): the entries with the BLR compression (INFOG(29): believed full rank)
+            stored = _mumps_count(self._infog(35))
+            if stored > 0:    # 0: a MUMPS that does not fill it
+                return stored
         return _mumps_count(self._infog(29))       # INFOG(29): entries in the factors
 
     def perturbed_pivots(self) -> int:
