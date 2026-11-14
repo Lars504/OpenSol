@@ -49,10 +49,12 @@ _MOTION_POWERS = {'acceleration': 0, 'velocity': 1, 'displacement': 2}   # (j om
 # backend with nvmath-python (basiri2019 E2, 76,740 unknowns: 15 ms per frequency vs 3.2 s SuperLU), else host
 # SuperLU; the opt-in MUMPS / PARDISO back ends of DIFFUSION_DIRECT_BACK_ENDS factorise the host A(omega) by
 # factorize_host (LDL^T, analysis reused per frequency through previous=); cusolver_qr refused (factorize_host would
-# silently run SuperLU)
-PRESSURE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
+# silently run SuperLU); opt-in batched_direct (the direct sweep's frequencies in batches, fem.harmonic plan_batched;
+# 'mixed' is listed for it only, sparse_direct offers double alone)
+PRESSURE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double', 'mixed'),
                                   setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
-                                  auto_back_ends={'triangles': 'cudss_mixed', 'tetrahedra': 'cudss_mixed'})
+                                  auto_back_ends={'triangles': 'cudss_mixed', 'tetrahedra': 'cudss_mixed'},
+                                  opt_in_types=('batched_direct',))
 # one Param object per shared material property name: the elastic_waves rho / sound_speed (registered first)
 _ELASTIC_PROPERTIES = {param.name: param for param in ELASTIC_WAVES.material_properties}
 _MATERIAL_PROPERTIES = (_ELASTIC_PROPERTIES['rho'], _ELASTIC_PROPERTIES['sound_speed'])

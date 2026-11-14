@@ -1,9 +1,9 @@
-"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen',
-'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
+"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'batched_direct', 'banded', 'arpack_shift_invert',
+'block_eigen', 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
 model.study, before the physics definitions (solver_plan S3.5)."""
 from ..model.schema import Issue, Param, solver_backend
-from . import (arpack_shift_invert, banded, block_eigen, explicit_kernels, host_direct, line_block, multigrid, pcg,
-               sparse_direct)
+from . import (arpack_shift_invert, banded, batched_direct, block_eigen, explicit_kernels, host_direct, line_block,
+               multigrid, pcg, sparse_direct)
 from .roles import SolverType
 
 _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
@@ -371,6 +371,69 @@ SPARSE_DIRECT = SolverType(
     opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS})
 
 
+BATCHED_DIRECT_PARAMS = (
+    Param('precision', 'choice', 'mixed', label='Solver precision', choices=batched_direct.PRECISIONS,
+          choice_labels=(('mixed', 'Mixed precision'), ('double', 'Double precision')),
+          help='mixed: each batch factorised in complex64 / float32 by cuDSS, every system refined against its own '
+               f'complex128 operator to a relative residual of {batched_direct.REFINEMENT_TOLERANCE:g} (one batched '
+               'solve per step for all systems); a system still above '
+               f'{batched_direct.ACCEPT_TOLERANCE:g} is re-solved on its own (counter batch_rejected). double: '
+               'complex128 factors (slower on consumer GPUs). The per-system solves of the role (other studies, '
+               'rejected systems) use cuDSS of the same precision (cudss_mixed / cudss), host SuperLU after a cuDSS '
+               'refusal; on the CPU backend every solve is host SuperLU.',
+          tip='Number precision of the batched solves.\n\n'
+              '- Mixed precision: fast; every result is checked and polished in double precision.\n'
+              '- Double precision: slower on most graphics cards.'),
+    Param('batch_size', 'int', 0, label='Batch size', min=0,
+          help=f'Systems factorised together (one cuDSS plan for the whole batch); 0 = up to {batched_direct.MAX_BATCH} '
+               f'and what {batched_direct.MEMORY_FRACTION:.0%} of the free memory holds (each system keeps its own '
+               'factor during its batch, so the memory grows with the batch size).',
+          tip='How many frequencies are solved together; 0 picks a suitable number. More can be faster but use more '
+              'graphics card memory.'),
+)
+
+
+def _create_batched_direct(ctx, request):
+    values = request.values
+    return batched_direct.BatchedDirectSolver(precision=values['precision'], batch_size=values['batch_size'],
+                                              label=lambda: f"{request.physics_name} {request.role} solver",
+                                              backend=request.backend)
+
+
+def _validate_batched_direct(vctx, values, path):
+    """The gpu backend without nvmath-python (cuDSS): error; the cpu backend without scipy: error (find_spec only)."""
+    if solver_backend(vctx.spec) == 'gpu':
+        from .cudss_factor import cudss_available
+        if not cudss_available():
+            return [Issue('error', path, 'the batched direct solver needs nvmath-python with cuDSS on the gpu backend, '
+                                         'which is not installed: pip install nvmath-python[cu12] (or [cu13]), or use '
+                                         'sparse_direct')]
+        return []
+    if not sparse_direct.scipy_available():
+        return [Issue('error', path, 'the batched direct solver on the CPU backend factorises with scipy (SuperLU), '
+                                     'which is not installed: pip install scipy')]
+    return []
+
+
+BATCHED_DIRECT = SolverType(
+    'batched_direct', 'Batched direct solver', roles=('linear',), params=BATCHED_DIRECT_PARAMS,
+    opt_in_roles=('linear',),
+    description='Many systems on one sparsity pattern factorised and solved together: the frequencies of a direct '
+                'frequency sweep (frequency_response study, sweep_method direct) in batches of up to '
+                f'{batched_direct.MAX_BATCH}, one explicitly batched GPU cuDSS factorisation per batch (planned once, '
+                'its values refreshed for every later batch), each system equilibrated and refined against its own '
+                'double-precision operator; a system missing the accept tolerance is re-solved on its own. Opt-in '
+                'where a physics offers it: pressure_acoustics (triangle and tetrahedron meshes) and membrane '
+                '(triangle meshes) linear role. Every other solve of the role (other studies, rejected systems, an '
+                'nvmath without explicit batching: a warning, then per system) runs as sparse_direct cuDSS of the same '
+                'precision. On the CPU backend a loop of host SuperLU factors (parity with the GPU runs, not speed).',
+    summary='Solves many frequencies of a sweep together on the graphics card: fewer, larger GPU calls than one '
+            'factorisation per frequency.',
+    operators=('complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=batched_direct.PRECISIONS,
+    grids=('triangles', 'tetrahedra'), create=_create_batched_direct, validate=_validate_batched_direct,
+    memory_estimate=_empty_memory_estimate, time_estimate=batched_direct.time_estimate)
+
+
 def _create_banded(ctx, request):
     return banded.BandedSolver(label=lambda: f"{request.physics_name} {request.role} solver", backend=request.backend)
 
@@ -630,7 +693,7 @@ EXPLICIT_KERNELS = SolverType(
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate)
 
-SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
+SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BATCHED_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
 
 
 def _selftest_cases():

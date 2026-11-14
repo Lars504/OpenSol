@@ -1117,6 +1117,31 @@ def _direct_solver(operator, rhs, kind):
     return DirectSolver(operator, rhs, options=options)
 
 
+def batched_direct_solver(operators, rhs, kind):
+    """Blocking nvmath DirectSolver of an explicit batch: sequences of cupyx CSR operators on one int32 pattern (kind
+    'symmetric': their lower triangles) and of their cupy rhs buffers (solvers.batched_direct); the same options and
+    library-thread / size-buffer setup as every single factor here."""
+    return _direct_solver(list(operators), list(rhs), kind)
+
+
+def book_external_bytes(permanent_bytes, peak_bytes) -> None:
+    """Book a planned solver outside CudssFactorization (a batched_direct plan) in external_live_bytes and its
+    high-water mark; release_external_bytes takes the permanent bytes off again when it is freed."""
+    _external['high_water'] = max(_external['high_water'], _external['live'] + max(int(permanent_bytes),
+                                                                                   int(peak_bytes)))
+    _external['live'] += int(permanent_bytes)
+
+
+def release_external_bytes(permanent_bytes) -> None:
+    """Take a freed batched plan's permanent bytes off external_live_bytes (book_external_bytes)."""
+    _external['live'] = max(_external['live'] - int(permanent_bytes), 0)
+
+
+def free_device_bytes() -> int:
+    """Free device memory after returning the cupy pool's cached blocks (public: solvers.batched_direct)."""
+    return _free_device_bytes()
+
+
 def _free_device_bytes() -> int:
     """Free device memory after returning the cupy pool's cached blocks (cuDSS allocates outside the pool)."""
     import cupy as cp

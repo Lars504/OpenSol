@@ -24,7 +24,11 @@ HarmonicPencil (K, C, M on one pattern, one complex factor per frequency), Harmo
 # Reduced sweeps: plan_reduced(omegas, 'adaptive' | 'modal') builds a fem.reduced_harmonic model from reduced_terms()
 # through _factorize (plan reuse); solve() then evaluates it and raises once the operator, load or held values change.
 # Non-polynomial per-frequency terms of a reduced sweep go in as plan_reduced(extra_loads=, held_offsets_of=) with
-# set_frequency_load / set_held_offsets left None. A4: solve(omega, fields=False) keeps only the reduced coordinates y
+# set_frequency_load / set_held_offsets left None. Batched direct sweeps: plan_batched(omegas, extra_loads=,
+# held_offsets_of=) on a solvers.batched_direct runtime: solve() of a planned omega then takes its solution from a batch
+# of the next planned omegas factorised and solved together (loads / held values / frequency_terms per omega computed
+# at batch time: frequency_terms must be a pure function of omega there); a rejected system or an unavailable batch
+# path re-solves that omega by the per-frequency factor. A4: solve(omega, fields=False) keeps only the reduced coordinates y
 # (values stale, fields_current False); linear_output(key, apply) then gives apply(values) from apply of each basis column
 # (cached per key until the next plan / clear), publish_fields() writes values = V y.
 # Conditions (HarmonicCondition): 'neumann' n_out . (a grad u) = value (the inward flux), 'robin' n_out . (a grad u) =
@@ -310,6 +314,7 @@ class HarmonicSystemBase:
         self._device_values = None      # cupy full-numbering values of the last direct cuDSS solve (device_values, R6)
         self._device_ids = None         # (pencil, cupy full ids of its free / fixed system dofs) of _keep_device_values
         self._reduced = None            # (ReducedHarmonicModel, its load, its held values) of plan_reduced, or None
+        self._batched = None            # plan_batched state (dict: omegas, loads, solved free solutions), or None
         self._held_offsets_of = None    # plan_reduced(held_offsets_of=): f(omega) -> full-numbering held offsets, or None
         self._coordinates = None        # (reduced coordinates y, held values) of the last reduced solve, or None
         self._output_columns = {}       # linear_output key -> (apply of each basis column (k, ...), fixed part or None)
@@ -480,8 +485,22 @@ class HarmonicSystemBase:
             if self.operator_dirty or self._load is not planned_load or self._fixed_value is not planned_fixed:
                 raise RuntimeError(f'{self.label()}: the operator, loads or held values changed after plan_reduced: '
                                    'plan again or call clear_reduced()')
+        if self._batched is not None and (self.operator_dirty or self._load is not self._batched['load']
+                                          or self._fixed_value is not self._batched['fixed']):
+            raise RuntimeError(f'{self.label()}: the operator, loads or held values changed after plan_batched: plan '
+                               'again or call clear_reduced()')
         load = self.load_vector()
         pencil = self.pencil
+        if self._batched is not None and pencil.free.size:
+            free = self._batched_free(omega)
+            if free is not None:
+                solution = np.zeros(pencil.shape[0], dtype=np.complex128)
+                solution[pencil.fixed] = self._planned_held(omega, self._batched['held_offsets_of'])
+                solution[pencil.free] = free
+                self._store_solution(solution)
+                self.last_omega = omega
+                self.n_solves += 1
+                return self.values
         if self._reduced is not None and pencil.free.size:
             model = self._reduced[0]
             held = self._reduced_held(omega)
@@ -672,10 +691,164 @@ class HarmonicSystemBase:
         """Drop the reduced model: solve() factorises per frequency again (values unpublished by solve(fields=False)
         stay as they were: publish_fields first to keep the last solve)."""
         self._reduced = None
+        if self._batched is not None:   # the batched runtime's kept plan (outside the cupy pool) goes with the plan
+            self._batched = None
+            self.linear_solver.release()
         self.fields_current = True
         self._held_offsets_of = None
         self._coordinates = None
         self._output_columns = {}
+
+    # ---- batched direct sweeps (solvers.batched_direct) ----
+    @property
+    def batched_plan(self):
+        """The plan_batched state solve() takes planned omegas from, or None (one factor per frequency)."""
+        return self._batched
+
+    def plan_batched(self, omegas, extra_loads=(), held_offsets_of=None) -> dict:
+        """Batched direct sweep over angular frequencies omegas [rad/s] on a solvers.batched_direct linear solver:
+        solve(omega) of a planned omega takes its solution from a batch of the next unsolved planned omegas (plan order,
+        batch_capacity systems) factorised and solved together, instead of its own factor; loads on top of load_vector
+        and held offsets per omega as plan_reduced (extra_loads: HarmonicLoads of full-numbering vectors, system
+        units; held_offsets_of(omega) -> full-numbering offsets of the held values); frequency_terms (ports) per system
+        at batch time. Clears a reduced model; until clear_reduced or a change of operator / loads. Returns info."""
+        from ..solvers.batched_direct import BatchedDirectSolver
+        if not isinstance(self.linear_solver, BatchedDirectSolver):
+            raise ValueError(f'{self.label()}: plan_batched needs a batched_direct linear solver')
+        self.clear_reduced()
+        omegas = np.atleast_1d(np.asarray(omegas, dtype=np.float64)).ravel()
+        if not (omegas.size and np.all(np.isfinite(omegas)) and np.all(omegas >= 0.0)):
+            raise ValueError(f'{self.label()}: a batched sweep needs finite angular frequencies >= 0 rad/s')
+        self.load_vector()   # assembles if needed; the plan keys on these objects (solve raises once they change)
+        self._batched = {'omegas': [float(omega) for omega in omegas],
+                         'index': {float(omega): index for index, omega in enumerate(omegas)},
+                         'load': self._load, 'fixed': self._fixed_value, 'extra_loads': tuple(extra_loads),
+                         'held_offsets_of': held_offsets_of, 'solved': {}, 'pattern': None,
+                         'batches': 0, 'rejected': 0, 'unavailable': None, 'remaining': set(range(omegas.size))}
+        return {'method': 'batched_direct', 'frequencies': int(omegas.size)}
+
+    def _planned_held(self, omega, held_offsets_of) -> np.ndarray:
+        """Complex held values per fixed system dof at omega: the assembled ones + held_offsets_of(omega)."""
+        held = self._fixed_value
+        if held_offsets_of is not None and self.pencil.fixed.size:
+            offsets = np.asarray(held_offsets_of(omega), dtype=np.complex128).ravel()
+            held = held + offsets[self.global_ids[self.pencil.fixed]]
+        return held
+
+    def _batched_system(self, omega) -> tuple:
+        """(free-dof rhs, free x free frequency_terms block or None) of one planned omega (the per-frequency solve's
+        rhs: loads, extra loads, frequency_terms load, minus the lift of the held values)."""
+        plan, pencil = self._batched, self.pencil
+        load = self._load
+        free_ids = self.global_ids[pencil.free]
+        rhs = np.array(load[pencil.free], dtype=np.complex128)
+        for extra in plan['extra_loads']:
+            rhs += np.asarray(extra.value(omega), dtype=np.complex128).ravel()[free_ids]
+        extra_matrix, extra_load = self.frequency_terms(omega)
+        if extra_load is not None:
+            rhs += np.asarray(extra_load, dtype=np.complex128).ravel()[pencil.free]
+        held = self._planned_held(omega, plan['held_offsets_of'])
+        block = free_rows = None
+        if extra_matrix is not None:
+            free_rows = extra_matrix.tocsr()[pencil.free]
+            block = free_rows[:, pencil.free]
+        if pencil.fixed.size and np.any(held != 0.0):
+            lift = pencil.coupling(omega) @ held
+            if free_rows is not None:
+                lift = lift + free_rows[:, pencil.fixed] @ held
+            rhs = rhs - lift
+        return rhs, block
+
+    def _batch_pattern(self):
+        """(BatchPattern of the reduced K, C, M on the free pattern, term names, sorted row-major pattern keys)."""
+        plan, pencil = self._batched, self.pencil
+        if plan['pattern'] is None:
+            indices, indptr, positions = pencil.free_pattern
+            data = {'stiffness': pencil.stiffness_data, 'damping': pencil.damping_data, 'mass': pencil.mass_data}
+            names = tuple(name for name in ('stiffness', 'damping', 'mass')
+                          if name == 'stiffness' or np.any(data[name] != 0))
+            rows = np.repeat(np.arange(pencil.free.size, dtype=np.int64), np.diff(indptr))
+            keys = rows * max(pencil.free.size, 1) + np.asarray(indices, dtype=np.int64)
+            batch_pattern = self.linear_solver.pattern(indptr, indices, [data[name][positions] for name in names],
+                                                       symmetric=self.symmetric)
+            plan['pattern'] = (batch_pattern, names, keys)
+        return plan['pattern']
+
+    def _block_slots(self, block, keys):
+        """(pattern slots, values) of a free x free CSR block, None when an entry lies outside the pattern."""
+        block = block.tocsr(copy=True)
+        block.sum_duplicates()
+        rows = np.repeat(np.arange(block.shape[0], dtype=np.int64), np.diff(block.indptr))
+        block_keys = rows * max(block.shape[0], 1) + block.indices.astype(np.int64)
+        slots = np.minimum(np.searchsorted(keys, block_keys), max(keys.size - 1, 0))
+        if keys.size == 0 or not np.array_equal(keys[slots], block_keys):
+            return None
+        return slots, np.asarray(block.data, dtype=np.complex128)
+
+    def _reference_free(self, omega, rhs, block) -> np.ndarray:
+        """Free-dof solution of one omega by its own factor (a rejected batch system, batching unavailable)."""
+        self._factorize(omega, block)
+        free, _ = self._solve_free(rhs, omega, block)
+        return free
+
+    def _batched_free(self, omega):
+        """Free-dof solution of a planned omega (solving the batch from it when not solved yet), None when unplanned."""
+        plan = self._batched
+        index = plan['index'].get(float(omega))
+        if index is None:
+            return None
+        free = self._planned_free(index, omega)
+        plan['remaining'].discard(index)
+        if not plan['remaining']:   # the last planned omega: free the batched plan's factors (outside the pool)
+            self.linear_solver.release()
+        return free
+
+    def _planned_free(self, index, omega):
+        """Free-dof solution of planned omega number index (solving its batch first when needed)."""
+        plan = self._batched
+        if index in plan['solved']:
+            return plan['solved'].pop(index)
+        if plan['unavailable'] is not None:
+            rhs, block = self._batched_system(omega)
+            return self._reference_free(omega, rhs, block)
+        from ..solvers.batched_direct import BatchUnavailable
+        batch_pattern, names, keys = self._batch_pattern()
+        pending = [position for position in range(index, len(plan['omegas'])) if position not in plan['solved']]
+        chunk = pending[:self.linear_solver.batch_capacity(batch_pattern, len(pending))]
+        powers = {'stiffness': lambda w: 1.0, 'damping': lambda w: 1j * w, 'mass': lambda w: -w * w}
+        systems, extras, outside = [], [], []
+        for position in chunk:
+            w = plan['omegas'][position]
+            rhs, block = self._batched_system(w)
+            slots = None if block is None else self._block_slots(block, keys)
+            if block is not None and slots is None:
+                outside.append((position, rhs, block))   # the block leaves the pattern: its own factor
+                continue
+            systems.append((position, rhs, block))
+            extras.append(slots)
+        if systems:
+            coefficients = np.array([[powers[name](plan['omegas'][position]) for name in names]
+                                     for position, _, _ in systems], dtype=np.complex128)
+            try:
+                solutions, _, accepted = self.linear_solver.solve_batch(
+                    batch_pattern, coefficients, np.stack([rhs for _, rhs, _ in systems]), extras)
+                plan['batches'] += 1
+            except BatchUnavailable as error:
+                plan['unavailable'] = str(error)
+                import warnings
+                warnings.warn(f'{self.label()}: batched direct solves unavailable ({error}); solving the remaining '
+                              'frequencies one factor each', RuntimeWarning, stacklevel=2)
+                rhs, block = self._batched_system(omega)   # the others: one factor each when their turn comes
+                return self._reference_free(omega, rhs, block)
+            for row, (position, rhs, block) in enumerate(systems):
+                if accepted[row]:
+                    plan['solved'][position] = solutions[row]
+                else:
+                    plan['rejected'] += 1
+                    plan['solved'][position] = self._reference_free(plan['omegas'][position], rhs, block)
+        for position, rhs, block in outside:
+            plan['solved'][position] = self._reference_free(plan['omegas'][position], rhs, block)
+        return plan['solved'].pop(index)
 
     def _reduced_held(self, omega) -> np.ndarray:
         """Complex held values per fixed system dof of a reduced solve at omega (+ held_offsets_of of the plan)."""

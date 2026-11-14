@@ -486,17 +486,19 @@ class AcousticHarmonicBase(PhysicsSolver):
         frequencies [Hz] with the source loads as (j omega)^power terms and the background as a non-polynomial load +
         held offsets -> its info dict."""
         from ...fem.reduced_harmonic import HarmonicLoad, PowerCoefficient
+        from ...solvers.batched_direct import BatchedDirectSolver
         method = options.get('method', 'direct')
-        if method == 'direct':
+        batched = method == 'direct' and isinstance(self.linear_solver, BatchedDirectSolver)
+        if method == 'direct' and not batched:
             self._field_policy = field_policy(options, frequencies)
             return None
         frequencies = np.asarray(frequencies, dtype=np.float64).ravel()
         if not (frequencies.size and np.all(np.isfinite(frequencies)) and np.all(frequencies > 0.0)):
-            raise ValueError(f'{self._label()}: a reduced frequency sweep needs frequencies > 0 Hz')
+            raise ValueError(f'{self._label()}: a reduced or batched frequency sweep needs frequencies > 0 Hz')
         if self._system_dirty or self.system is None:
             self._build_system()
         system = self.system
-        system.set_frequency_load(None)   # the model carries them (plan_reduced extra loads / held offsets)
+        system.set_frequency_load(None)   # the model / plan carries them (extra loads / held offsets per omega)
         system.set_held_offsets(None)
         extra_loads = [HarmonicLoad(vector, PowerCoefficient((1j) ** power, power))
                        for vector, power in self._frequency_loads]
@@ -504,6 +506,10 @@ class AcousticHarmonicBase(PhysicsSolver):
         if self._background_terms is not None:
             extra_loads.append(HarmonicLoad(vector_of=lambda omega: self._background_at(omega)[1]))
             held_offsets_of = lambda omega: -self._background_nodal_at(omega)   # noqa: E731 (p_s = given - p_b)
+        if batched:   # solvers.batched_direct: the same loads, solved in batches of frequencies (None: no reduced model)
+            system.plan_batched(2.0 * math.pi * frequencies, extra_loads=extra_loads, held_offsets_of=held_offsets_of)
+            self._field_policy = field_policy(options, frequencies)
+            return None
         info = system.plan_reduced(
             2.0 * math.pi * frequencies, method, tolerance=options.get('tolerance', 1e-6),
             moments=options.get('moments', 4), max_points=options.get('max_points', 40),
@@ -524,7 +530,7 @@ class AcousticHarmonicBase(PhysicsSolver):
         system = self.system
         omega = 2.0 * math.pi * frequency
         fields = wants_fields(self._field_policy, frequency)
-        if system.reduced_model is not None:
+        if system.reduced_model is not None or system.batched_plan is not None:   # loads per omega in the plan
             system.solve(omega, fields=fields)
         else:
             load = np.zeros(self.full.n_dofs, dtype=np.complex128)

@@ -55,10 +55,12 @@ _PML_FACE_SETTINGS = tuple(f'pml_{face}' for face in FACES)
 # 'auto' = cudss_mixed there on the gpu backend with nvmath-python, else host SuperLU; cusolver_qr refused (the membrane
 # factorises host matrices only); the opt-in MUMPS / PARDISO back ends factorise the host A(omega) on triangles (LDL^T,
 # analysis reused per frequency); a 1D model keeps the host SuperLU factor (validation refuses cuDSS / MUMPS / PARDISO
-# nodes there; 'auto' stays SuperLU on a line)
+# nodes there; 'auto' stays SuperLU on a line); opt-in batched_direct (triangles: the direct sweep's frequencies in
+# batches, fem.harmonic plan_batched; 'mixed' is listed for it only, sparse_direct offers double alone)
 MEMBRANE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', studies=(FREQUENCY_RESPONSE_STUDY,),
-                                  precisions=('double',), setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
-                                  auto_back_ends={'triangles': 'cudss_mixed'})
+                                  precisions=('double', 'mixed'),
+                                  setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
+                                  auto_back_ends={'triangles': 'cudss_mixed'}, opt_in_types=('batched_direct',))
 
 
 # ---- settings ----
