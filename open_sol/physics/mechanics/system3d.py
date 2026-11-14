@@ -11,7 +11,7 @@ from ...core.constants import FACES_3D
 from ...solvers.block_eigen import BlockEigenSolver
 from ...solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, PCGSolver
 from .kernels3d import BrickKernels, FusedBrickIteration
-from .multigrid3d import (CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
+from .multigrid3d import (BlockCycle, CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
                           BrickMultigrid)
 from .modal import LANCZOS_TOLERANCE_PER_CG, solve_lowest_modes_block, solve_lowest_modes_matrix_free
 from .solver_common import ElasticSystemBase
@@ -470,11 +470,13 @@ class ElasticSystem3D(ElasticSystemBase):
 
     def _lowest_modes_block(self, density, n_resonances, eigen_solver):
         """lowest_modes by a block_eigen runtime: K (masked brick product), M (consistent mass) and the preconditioner
-        as block callbacks on full dof rows (0 on fixed dofs); float64 rows on the assembled operator, float32 rows
+        as block callbacks on full dof rows (0 on fixed dofs), each ONE launch for all its rows (BrickKernels *_rows,
+        multigrid3d.BlockCycle: one thread per (row, node)); float64 rows on the assembled operator, float32 rows
         (mixed) on float32 copies (the mixed linear solver's when it keeps them, else made here and dropped after).
         Preconditioner 'multigrid': the linear solver's BrickMultigrid of this assembly (even after its CG guard
         switched it off: the block iteration only needs it SPD), else a private one built here (block Jacobi with a
-        warning when its build fails); 'jacobi': the reduced node blocks. No inner CG solve, rhs / CG unknown untouched."""
+        warning when its build fails), cycled on the block by a BlockCycle of the rows of the first call (regrown if
+        more come); 'jacobi': the reduced node blocks. No inner CG solve, rhs / CG unknown untouched."""
         xp, kernels, free = self.xp, self.kernels, self.free
         double = np.dtype(np.float64)
         single = np.dtype(np.float32)
@@ -509,34 +511,28 @@ class ElasticSystem3D(ElasticSystemBase):
                     cycle = None
             if cycle is not None:
                 preconditioner_text = 'multigrid V-cycle'
-        cycle_out = xp.empty(self.n_dofs, dtype=single) if cycle is not None else None
+        block_cycle = [None]   # BlockCycle of the most rows asked so far
 
         def stiffness(rows_in, rows_out):
             lame_lambda, mu, widths, _, _ = operator_set(rows_in.dtype)
-            for row_in, row_out in zip(rows_in, rows_out):
-                kernels.product(row_in, row_out, lame_lambda, mu, widths, free, masked=True)
+            kernels.product_rows(rows_in, rows_out, lame_lambda, mu, widths, free, masked=True)
 
         def mass(rows_in, rows_out):
             _, _, widths, _, rho = operator_set(rows_in.dtype)
-            for row_in, row_out in zip(rows_in, rows_out):
-                kernels.mass_product(row_in, row_out, rho, widths, free)
+            kernels.mass_product_rows(rows_in, rows_out, rho, widths, free)
 
         def precondition(rows_in, rows_out):
             if cycle is None:
-                blocks = operator_set(rows_in.dtype)[3]
-                for row_in, row_out in zip(rows_in, rows_out):
-                    kernels.precondition(blocks, row_in, row_out)
+                kernels.precondition_rows(operator_set(rows_in.dtype)[3], rows_in, rows_out)
                 return
-            for row_in, row_out in zip(rows_in, rows_out):   # float32 cycle: its first copy casts a float64 row
-                if row_out.dtype == single:
-                    cycle.precondition(row_in, row_out)
-                else:
-                    cycle.precondition(row_in, cycle_out)
-                    xp.copyto(row_out, cycle_out)
+            if block_cycle[0] is None or len(rows_in) > block_cycle[0].capacity:
+                block_cycle[0] = None   # the smaller work rows freed first
+                block_cycle[0] = BlockCycle(cycle, len(rows_in))
+            block_cycle[0].precondition(rows_in, rows_out)   # float32 cycle: float64 rows cast in and out
 
+        # no default_max_iterations: the linear CG limit (thousands) is no cap for block iterations
         return solve_lowest_modes_block(stiffness, mass, precondition, free, n_resonances, 3, eigen_solver, xp,
-                                        preconditioner_text,
-                                        default_max_iterations=self.linear_solver.max_iterations)
+                                        preconditioner_text)
 
 
 def _face(face):

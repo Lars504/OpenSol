@@ -23,8 +23,12 @@ import numpy as np
 #     Ritz pairs;
 #  5. X = C^T S and P = C_(W,P)^T S_(W,P) for S, KS and MS by column chunks of CHUNK_BYTES (each chunk read into the
 #     scratch before it is written: in place, no second (b, n) block).
+# The callbacks get all their rows in one call and should run them in one launch each (solid_mechanics_3d: the
+# BrickKernels *_rows entries and multigrid3d.BlockCycle), so a launch carries the block; only the wanted rows must
+# converge, the guard rows just widen the search space (callers ask the eigenpairs they keep, no margin on top).
 # Mixed: the float32 phase stops at max(tolerance, SINGLE_PHASE_TOLERANCE) or when the worst wanted residual stalls
-# (STALL_ITERATIONS without a STALL_RATIO gain: the float32 rounding floor ~eps32 lambda_max / lambda of the products);
+# (STALL_ITERATIONS without a STALL_RATIO gain, counted only once it has been below STALL_ARMED_RESIDUAL: the float32
+# rounding floor ~eps32 lambda_max / lambda of the products, not the O(1) start-up plateau of a weak preconditioner);
 # X is cast to float64 (the float32 stores freed first) and LOBPCG continues there to the tolerance. Float32 halves the
 # operator bandwidth and runs the dense block products (Gram matrices, projections, rotations) at the full float32 rate
 # of consumer GPUs (float64 there: 1/32 - 1/64); the float64 phase starts near the answer.
@@ -38,6 +42,7 @@ SINGLE_PHASE_TOLERANCE = 1e-4  # mixed: the float32 phase stops here at the late
 STALL_ITERATIONS = 8           # iterations whose best worst-wanted residual must beat STALL_RATIO x the best before ...
 STALL_RATIO = 0.9              # ... else the float32 phase ends (mixed), or the float64 one stops unconverged
 DOUBLE_STALL_ITERATIONS = 40   # float64: a stall that long is the rounding floor (tolerance too tight)
+STALL_ARMED_RESIDUAL = 1e-2    # no stall is declared before the worst wanted residual has been below this
 CHUNK_BYTES = 8 * 2 ** 20      # scratch of one column chunk of a block product
 # Rayleigh-Ritz basis drop (eigenvalues of the diag-scaled B below this x the largest): above the Gram rounding of the
 # dtype (float32 GEMMs over ~1e6 entries: ~1e-6 relative entries), so a noise direction is never amplified
@@ -67,14 +72,6 @@ def block_bytes(n_unknowns, n_wanted, guard_vectors=0, precision='mixed') -> int
     stores = 3 * rows * 8 * int(n_unknowns)
     cast = (rows // 3) * 4 * int(n_unknowns) if precision == 'mixed' else 0
     return int(stores + cast + 2 * CHUNK_BYTES)
-
-
-def _array_module(array):
-    module = type(array).__module__
-    if module.startswith('cupy'):
-        import cupy
-        return cupy
-    return np
 
 
 def _host(array):
@@ -155,7 +152,8 @@ class BlockEigenSolver:
         on the masked unknowns. Callbacks take (rows_in, rows_out): C-contiguous (m, n) arrays of the backend `xp`
         (numpy / cupy), float32 or float64 (mixed: both, one dtype per call), rows_out = K rows_in / M rows_in / the
         preconditioner (an SPD approximation of K^-1, e.g. one multigrid V-cycle); mask: a backend bool (n,) array of
-        the unknowns that take part (None: all), rows are 0 elsewhere and the callbacks keep them 0."""
+        the unknowns that take part (None: all), rows are 0 elsewhere and the callbacks keep them 0. A callback gets
+        every row of a step at once (up to the block size; rows_in and rows_out never overlap)."""
         started = time.perf_counter()
         n_unknowns, n_wanted = int(n_unknowns), int(n_wanted)
         rows = block_size(n_wanted, self.guard_vectors)
@@ -383,7 +381,8 @@ class _Lobpcg:
             if worst <= tolerance:
                 return iterations, relative[:k], True, False
             history.append(worst)   # stalled: the best of the last window gained less than STALL_RATIO on the best before
-            if len(history) > stall_window and min(history[-stall_window:]) > STALL_RATIO * min(history[:-stall_window]):
+            if (len(history) > stall_window and min(history[:-stall_window]) <= STALL_ARMED_RESIDUAL
+                    and min(history[-stall_window:]) > STALL_RATIO * min(history[:-stall_window])):
                 return iterations, relative[:k], False, True
             if iterations >= iteration_limit:
                 return iterations, relative[:k], False, False

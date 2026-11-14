@@ -768,6 +768,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   may be the runtime's scratch (the preconditioner's input rows are overwritten afterwards). With a `mask` every row is
   0 outside it and K / M must keep that (masked products); the runtime masks the preconditioner output itself. The
   preconditioner must be SPD (a symmetric V-cycle, block Jacobi), not exact: no inner solves, no tolerance coupling.
+  A callback gets every row of a step in one call and must run them in ONE launch (a per-row loop of single-vector
+  launches is latency-bound and leaves the GPU idle: the reason the Lanczos path does not load it): solid_mechanics_3d
+  uses the `*_rows` kernel entries (one thread per (row, node)) and `multigrid3d.BlockCycle`.
+- Only the wanted rows must converge; the guard rows widen the search space. A consumer asks exactly the eigenpairs
+  it keeps (no ARPACK-style margin such as EXTRA_EIGENVALUES on top: that only adds pairs to converge).
 - Memory: 9 b n values of the phase dtype (S, KS, MS of (3 b, n); b = wanted + guards) + CHUNK_BYTES scratch, nothing
   else of that size: every block product runs by column chunks in place (`_rotate`, the W projection), compaction is
   forward row copies, the start rows are drawn row by row on the gpu. Mixed frees the float32 stores before the
@@ -775,12 +780,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   transient of the eigen solve; the consumer adds its own copies, e.g. float32 operator copies and a private
   multigrid hierarchy). Host: the k eigenvectors only.
 - Syncs per iteration: two host reads (residual norms, Gram pair) and one small upload (the rotation coefficients);
-  the per-row callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
+  the block callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
   (3 b)^2 (diag(B)^-1/2 scaled, B eigenvalues below DROP dropped: dependent W / P directions near convergence).
 - Mixed: float32 to max(tolerance, SINGLE_PHASE_TOLERANCE) or a STALL_ITERATIONS stall (the float32 floor of the
   products is ~eps32 lambda_max / lambda: ~1e-3 on fine 3D elasticity, so the float64 phase is always needed for tight
   tolerances; it starts from the float32 X with a fresh P). Double stalls over DOUBLE_STALL_ITERATIONS stop
-  unconverged (tolerance below the float64 floor), with a warning.
+  unconverged (tolerance below the float64 floor), with a warning. A stall counts only once the worst wanted residual
+  has been below STALL_ARMED_RESIDUAL: the O(1) start-up plateau of a weak preconditioner is no rounding floor (it
+  runs to the iteration cap instead). The cap is the node's max_iterations, else DEFAULT_MAX_ITERATIONS (never a
+  linear CG limit).
 - Fewer free unknowns than DENSE_MAX_RATIO x b: a dense scipy eigh of the applied K and M (`eigen_dense_solves`).
 - Counters: eigen_solves, eigen_iterations / _single_ / _double_iterations, operator_applications (K rows),
   mass_applications, preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves,
@@ -789,8 +797,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   iterations a priori (multigrid: MULTIGRID_ITERATIONS_PER_DECADE x decades, flagged by work.setup_ops; Jacobi:
   sqrt(kappa) or CG_ITERATIONS_PER_AXIS_CELL x longest axis): uncalibrated guesses.
 - Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
-  norm kernel, block (multi-vector) brick kernels (today one launch per row), FEM pencils (tetrahedra / triangles:
-  SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space preconditioner).
+  norm kernel, dropping unconverged pairs from the result (today returned with a warning), FEM pencils (tetrahedra /
+  triangles: SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space
+  preconditioner).
 - Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
   callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
   model runs: mechanics sub file "Self-tests".
