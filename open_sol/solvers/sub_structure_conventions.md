@@ -814,17 +814,22 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `batch_capacity(pattern, n)`; `solve_batch(pattern, coefficients (N, T), rhs (N, n), extras)` -> host solutions,
   relative residuals, accepted: values = coefficients @ terms on the device (one GEMM; extras = (pattern slots, values)
   per system, the port DtN blocks), R = |diag|^-1/2 equilibration, the lower triangle of a symmetric pencil, one
-  explicitly batched nvmath DirectSolver (lists of operators and rhs buffers) planned once per (pattern, batch size,
-  dtype) and refreshed in place (`data[k]` rows are the CSRs' data arrays: never rebind them), refinement against each
-  system's complex128 operator by one SpMM of a row selector. A shorter batch pads with copies of its last system.
+  batched plan per (pattern, batch size, dtype) refreshed in place (`data` (B, stored) is the array cuDSS reads:
+  write into it, never rebind), refinement against each system's complex128 operator by one SpMM of a row selector.
+  A shorter batch pads with copies of its last system.
+- Batch modes (`batch_mode`, gpu): 'uniform' first = cuDSS's uniform batch (`cudss_factor.UniformBatch` on
+  `nvmath.bindings.cudss`, since nvmath's DirectSolver has no option for it: `UBATCH_SIZE`, one CSR / dense
+  descriptor of ONE system over arrays holding B systems back to back, one ANALYSIS for all, one FACTORIZATION and
+  one SOLVE execute per batch). Any error of it, or a first uniform batch that accepts no system, sets
+  `uniform_error`, switches to 'explicit' for good (nvmath's sequence-of-operands batch: one host reordering per
+  system) and solves that batch again. Written from the nvmath 1.0 bindings source and NVIDIA's
+  simple_uniform_batch sample (SPD, real, there), not run and without the cuDSS documentation: whether the uniform
+  batch serves complex symmetric LDL^T and whether its MEMORY_ESTIMATES count all B systems is open; read
+  `batch_mode`, `batch_uniform_error`, `batch_plan_seconds` and `batch_seconds` after a first gpu run.
 - Rejected systems (above ACCEPT_TOLERANCE, non-finite) are the consumer's to re-solve on the inherited per-system
-  path. Any error of the batched API or a plan over DEVICE_FRACTION of the free memory raises BatchUnavailable and
-  sets `unavailable` for good (the consumer warns once and goes per system). Explicit batching as read in the nvmath
-  1.0.0 source, not run here: a sequence of CSR operands becomes cuDSS's non-uniform batch
-  (`cudss.matrix_create_batch_csr`, one pointer set per system: nothing tells cuDSS the patterns are equal), not its
-  uniform batch (`UBATCH_SIZE`, one analysis for all: only in `nvmath.bindings.cudss`, DirectSolver has no option for
-  it). Whether the plan then costs one host reordering per system is unmeasured: check `batch_unavailable`,
-  `batch_plan_seconds` and `batch_seconds` in the counters after a first gpu run.
+  path. A plan over DEVICE_FRACTION of the free memory (or a device MemoryError) halves the batch: solve_batch solves
+  its two halves, `capacity_limit` bounds batch_capacity from then on (`batch_splits`); at one system, or on an error
+  of the explicit batch, BatchUnavailable sets `unavailable` for good (the consumer warns once and goes per system).
 - The kept plan lives outside the cupy pool (book_external_bytes / release_external_bytes in cudss_factor):
   consumers call `release()` when their plan ends (fem.harmonic: after the last planned omega and in clear_reduced);
   a plan dropped without it (a cancelled sweep, a closed session) frees itself (`_BatchPlan.__del__`: nvmath's
@@ -836,11 +841,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   evaluated for a whole batch ahead of the solve).
 - Counters: the SparseDirectSolver ones + batches, batched_systems, batch_plans, batch_rejected,
   batch_refinement_steps, batch_seconds, batch_plan_seconds, batch_permanent_bytes / batch_peak_bytes (nvmath's plan
-  estimates, summed over systems), worst_batch_residual, batch_unavailable. Time recipe: per-system cuDSS
+  estimates, summed over systems; uniform: cuDSS's entries as read), worst_batch_residual, batch_unavailable,
+  batch_mode, batch_uniform_error, batch_splits. Time recipe: per-system cuDSS
   (an upper bound: the batching gain shows as a time_check deviation, not a lead on the recipe).
 - Sizing: `batch_capacity` uses the 2D fill law even for tetrahedra (only `batch_external_bytes` takes dimensions),
   and never shrinks below the kept plan of the pattern (a sweep's later batches would else see the first plan's memory
-  as taken); a plan over DEVICE_FRACTION turns batching off for good instead of halving the batch. Estimators: a
+  as taken). fem.harmonic cuts the pending omegas into equal batches (33 at capacity 32: 17 + 16). Estimators: a
   batched node in a direct frequency_response sweep books `definition_helpers.batched_direct_items` (plan external
   bytes x capacity, pool items, kept host solutions) instead of the per-frequency factor; time items sit on the
   batch counters only with `SolverWork.batched`. Not booked: a rejected system's own cuDSS factor beside the plan.

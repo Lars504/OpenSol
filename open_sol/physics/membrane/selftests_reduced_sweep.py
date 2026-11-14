@@ -104,7 +104,7 @@ def _check_window(results_by_name):
 # blocks at their pattern slots) against the Automatic direct one. GPU natural (nvmath-python: else cpu), variant cpu.
 _PORTS_HZ_FACTORS = (1.2, 2.6)
 _PORTS_POINTS = 6
-_PORTS_BATCH = 4                   # two solve_batch calls, the last padded
+_PORTS_BATCH = 4                   # two solve_batch calls (fem.harmonic cuts equal batches)
 _PORTS_MODES = 3
 _PORTS_AMPLITUDE = 1e-9            # m
 _PORTS_NODE = 'batched_ports'

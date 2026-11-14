@@ -1,7 +1,8 @@
 """'batched_direct' linear-solver runtime: many systems on one sparsity pattern (a frequency sweep's A_k = sum_t c_kt T_t
-plus a small per-system block at fixed pattern slots) factorised and solved together, on the GPU as one explicitly
-batched cuDSS DirectSolver per (pattern, batch size, precision): planned once, its values refreshed in place for every
-later batch; each system equilibrated and refined against its own float64 operator, and a system missing the accept
+plus a small per-system block at fixed pattern slots) factorised and solved together, on the GPU as one cuDSS uniform
+batch per (pattern, batch size, precision): one reordering / symbolic analysis for all systems, its values refreshed
+in place for every later batch (nvmath's explicit batch, one analysis per system, only when the uniform batch
+fails); each system equilibrated and refined against its own float64 operator, and a system missing the accept
 tolerance is the consumer's to re-solve on the per-system path (BatchedDirectSolver is a SparseDirectSolver). CPU
 backend: the same calls as a loop of host SuperLU factors (parity, not speed). numpy at module level; cupy / cupyx /
 scipy / nvmath inside functions."""
@@ -12,13 +13,17 @@ scipy / nvmath inside functions."""
 #   symmetric pencil (cuDSS LDL^T, as cudss_factor) cast to the factor dtype into the B planned CSR data arrays;
 #   rhs buffers (B, n) of the factor dtype, one per planned system; residuals r = b - A x in float64 by one SpMM of
 #   the row selector S (n x z, ones) with (values * x[:, columns])^T (N x z complex128, the transient peak).
-# The first batch of a pattern plans (host reordering per system, symbolic phase): nvmath explicit batching, a list
-# of operators and a list of rhs. A batch shorter than the plan fills its pad slots with copies of its last system and
+# The first batch of a pattern plans. Mode 'uniform' (_UniformPlan, cudss_factor.UniformBatch on the raw bindings):
+# the (B, stored) values, (B, n) rhs and (B, n) solution arrays are the batch cuDSS reads, one analysis of the shared
+# pattern. Any error there, or a first uniform batch with no accepted system (a matrix kind the uniform batch does not
+# serve), switches the runtime to mode 'explicit' for good (_BatchPlan: nvmath explicit batching, a list of operators
+# and of rhs, one host reordering per system) and solves that batch again. A batch shorter than the plan fills its pad slots with copies of its last system and
 # zero rhs (no re-plan). Refinement: x += R E^-1 R r from x = 0, every system in every step (one batched solve), the
 # better iterate kept per system; stop when every system is below REFINEMENT_TOLERANCE or none improved by STALL_RATIO.
-# One host read per step (the per-system residual norms). Errors of the batched API (an nvmath without explicit
-# batching, a plan over DEVICE_FRACTION of the free memory) raise BatchUnavailable: the consumer warns once and goes on
-# per system; a system with a zero pivot shows up as a non-finite / large residual and is rejected, not raised.
+# One host read per step (the per-system residual norms). A plan over DEVICE_FRACTION of the free memory (or a device
+# out-of-memory) halves the batch: solve_batch solves its two halves and batch_capacity keeps that limit; at one
+# system, or on an error of the explicit batch API, BatchUnavailable: the consumer warns once and goes on per system;
+# a system with a zero pivot shows up as a non-finite / large residual and is rejected, not raised.
 import math
 import time
 
@@ -47,11 +52,11 @@ class BatchUnavailable(RuntimeError):
 
 def systems_bytes(n_unknowns, entries, n_terms, precision, symmetric=True) -> int:
     """Device bytes per batched system besides its cuDSS factor (pool arrays of solve_batch): combined and scaled
-    complex128 values, the factor-dtype copy, the residual product transient, the rhs buffer and the float64
-    solution / residual / candidate / correction vectors."""
+    complex128 values, the factor-dtype copy, the residual product transient, the rhs and solution buffers of the
+    uniform batch and the float64 solution / residual / candidate / correction vectors."""
     factor_bytes = np.dtype(FACTOR_DTYPES[precision]).itemsize
     stored = (int(entries) + int(n_unknowns)) // 2 if symmetric else int(entries)
-    return int(3 * int(entries) * 16 + stored * factor_bytes + int(n_unknowns) * (factor_bytes + 6 * 16))
+    return int(3 * int(entries) * 16 + stored * factor_bytes + int(n_unknowns) * (2 * factor_bytes + 6 * 16))
 
 
 def pattern_bytes(n_unknowns, entries, n_terms, symmetric=True) -> int:
@@ -121,45 +126,64 @@ class BatchPattern:
 
 
 class _BatchPlan:
-    """A planned explicitly batched cuDSS DirectSolver: B cupyx CSR operators sharing the factor pattern (their data
-    arrays refreshed in place), B rhs buffers, its booked outside-pool bytes."""
+    """A planned explicitly batched cuDSS DirectSolver (mode 'explicit'): B cupyx CSR operators sharing the factor
+    pattern (their data arrays refreshed in place), B rhs buffers, its booked outside-pool bytes."""
+    mode = 'explicit'
 
     def __init__(self, pattern, n_systems, dtype):
         import cupy as cp
-        from cupyx.scipy import sparse as cpsp
-        from .cudss_factor import batched_direct_solver, drop_parked_plans
+        from .cudss_factor import book_external_bytes, drop_parked_plans, free_device_bytes
         drop_parked_plans()   # as every fresh cuDSS plan: parked plans' device memory goes before this plan's check
         self.pattern = pattern
         self.n_systems = int(n_systems)
         self.dtype = np.dtype(dtype)
-        n = pattern.n_unknowns
         stored = int(pattern.lower_indices.size)
         self.data = cp.zeros((self.n_systems, stored), dtype=self.dtype)
         self.data[:, :] = 1.0   # a non-singular placeholder until the first refresh (never solved)
-        self.operators = [cpsp.csr_matrix((self.data[k], pattern.lower_indices, pattern.lower_indptr), shape=(n, n))
-                          for k in range(self.n_systems)]
-        self.buffers = cp.zeros((self.n_systems, n), dtype=self.dtype)
-        self.rhs = [self.buffers[k] for k in range(self.n_systems)]
+        self.buffers = cp.zeros((self.n_systems, pattern.n_unknowns), dtype=self.dtype)
         self.permanent_bytes = 0
         self.solver = None
         started = time.perf_counter()
         try:
-            self.solver = batched_direct_solver(self.operators, self.rhs,
-                                                'symmetric' if pattern.symmetric else 'general')
-            self.solver.plan()
-        except Exception as error:   # an nvmath without explicit batching, a refused plan: per system from now on
+            self._create()
+        except MemoryError:
             self.free()
-            raise BatchUnavailable(f'cuDSS explicit batching unavailable ({type(error).__name__}: {error})') from None
+            raise
+        except Exception as error:   # an nvmath / cuDSS without this batch mode, a refused plan
+            self.free()
+            raise BatchUnavailable(f'cuDSS {self.mode} batch unavailable ({type(error).__name__}: {error})') from None
         self.plan_seconds = time.perf_counter() - started
-        permanent, peak = _plan_estimates(self.solver)
+        permanent, peak = self._estimates()
         self.permanent_bytes, self.peak_bytes = permanent, peak
-        from .cudss_factor import book_external_bytes, free_device_bytes
         book_external_bytes(permanent, peak)
         free = free_device_bytes()
         if peak > DEVICE_FRACTION * free:
             self.free()
             raise MemoryError(f'batched cuDSS plan of {self.n_systems} systems needs ~{peak / 2**20:.0f} MiB, over '
                               f'{DEVICE_FRACTION:.0%} of the free device memory ({free / 2**20:.0f} MiB)')
+
+    def _create(self) -> None:
+        from cupyx.scipy import sparse as cpsp
+        from .cudss_factor import batched_direct_solver
+        pattern, n = self.pattern, self.pattern.n_unknowns
+        self.operators = [cpsp.csr_matrix((self.data[k], pattern.lower_indices, pattern.lower_indptr), shape=(n, n))
+                          for k in range(self.n_systems)]
+        self.rhs = [self.buffers[k] for k in range(self.n_systems)]
+        self.solver = batched_direct_solver(self.operators, self.rhs,
+                                            'symmetric' if pattern.symmetric else 'general')
+        self.solver.plan()
+
+    def _estimates(self) -> tuple:
+        return _plan_estimates(self.solver)
+
+    def _factorize(self) -> None:
+        self.solver.factorize()
+
+    def _solve(self, m):
+        import cupy as cp
+        result = self.solver.solve()
+        parts = list(result) if isinstance(result, (list, tuple)) else [result[k] for k in range(self.n_systems)]
+        return cp.stack([cp.asarray(part).reshape(-1) for part in parts[:m]])
 
     def matches(self, pattern, n_systems, dtype) -> bool:
         return self.pattern is pattern and self.n_systems >= int(n_systems) and self.dtype == np.dtype(dtype)
@@ -171,23 +195,26 @@ class _BatchPlan:
         if m < self.n_systems:
             self.data[m:] = values[m - 1]
         try:
-            self.solver.factorize()
+            self._factorize()
+        except MemoryError:
+            raise
         except Exception as error:
-            raise BatchUnavailable(f'cuDSS batched factorisation failed ({type(error).__name__}: {error})') from None
+            raise BatchUnavailable(f'cuDSS {self.mode} batch factorisation failed ({type(error).__name__}: {error})'
+                                   ) from None
 
     def solve(self, scaled_rhs):
-        """(m, n) solutions of E_k y_k = scaled_rhs[k] (factor dtype) for the first m systems; pads solve zero rhs."""
-        import cupy as cp
+        """(m, n) solutions of E_k y_k = scaled_rhs[k] (factor dtype) for the first m systems; pads solve zero rhs.
+        Mode 'uniform' returns a view of the plan's solution array: copy before the next solve."""
         m = scaled_rhs.shape[0]
         self.buffers[:m] = scaled_rhs
         if m < self.n_systems:
             self.buffers[m:] = 0
         try:
-            result = self.solver.solve()
+            return self._solve(m)
+        except MemoryError:
+            raise
         except Exception as error:
-            raise BatchUnavailable(f'cuDSS batched solve failed ({type(error).__name__}: {error})') from None
-        parts = list(result) if isinstance(result, (list, tuple)) else [result[k] for k in range(self.n_systems)]
-        return cp.stack([cp.asarray(part).reshape(-1) for part in parts[:m]])
+            raise BatchUnavailable(f'cuDSS {self.mode} batch solve failed ({type(error).__name__}: {error})') from None
 
     def free(self) -> None:
         if self.solver is not None:
@@ -201,13 +228,35 @@ class _BatchPlan:
             release_external_bytes(self.permanent_bytes)
             self.permanent_bytes = 0
         self.operators = self.rhs = []
-        self.data = self.buffers = None
+        self.data = self.buffers = self.solutions = None
 
-    def __del__(self):   # nvmath's DirectSolver has no __del__: a plan dropped unreleased would keep its factors
+    def __del__(self):   # neither nvmath's DirectSolver nor UniformBatch frees itself: a dropped plan keeps its factors
         try:
             self.free()
         except Exception:   # interpreter shutdown: the CUDA context may already be gone
             pass
+
+
+class _UniformPlan(_BatchPlan):
+    """A cuDSS uniform batch (mode 'uniform', cudss_factor.UniformBatch): the (B, stored) data, (B, n) rhs buffers and
+    (B, n) solutions are the arrays cuDSS reads and writes; one analysis of the pattern for all B systems."""
+    mode = 'uniform'
+
+    def _create(self) -> None:
+        import cupy as cp
+        from .cudss_factor import UniformBatch
+        pattern = self.pattern
+        self.solutions = cp.zeros_like(self.buffers)
+        self.solver = UniformBatch(pattern.lower_indptr, pattern.lower_indices, self.data, self.buffers,
+                                   self.solutions, 'symmetric' if pattern.symmetric else 'general')
+        self.solver.analyse()
+
+    def _estimates(self) -> tuple:
+        return self.solver.memory_estimates()
+
+    def _solve(self, m):
+        self.solver.solve()
+        return self.solutions[:m]
 
 
 def _plan_estimates(solver) -> tuple:
@@ -244,6 +293,11 @@ class BatchedDirectSolver(SparseDirectSolver):
         self.factor_dtype = np.dtype(FACTOR_DTYPES[precision] if gpu else np.complex128)
         self.batch_size = int(batch_size)
         self.unavailable = None   # text of the BatchUnavailable that stopped batching for good, or None
+        self.batch_mode = 'uniform' if gpu else 'host'   # gpu: 'uniform', 'explicit' after uniform_error
+        self.uniform_error = None   # why the uniform batch was given up for nvmath's explicit batch, or None
+        self._uniform_proven = False   # a uniform batch accepted a system (an all-rejected one is then the pencil's)
+        self.capacity_limit = 0   # systems per batch after a plan that did not fit (0: none)
+        self.n_batch_splits = 0
         self._plan = None
         self.n_batches = 0
         self.n_batched_systems = 0
@@ -266,7 +320,7 @@ class BatchedDirectSolver(SparseDirectSolver):
         """Systems of the next batch: at most n_systems, batch_size (0: MAX_BATCH) and what MEMORY_FRACTION of the free
         memory holds by the a-priori sizing (pool arrays + the cuDSS factor estimate per system); never fewer than the
         kept plan of this pattern holds (its memory is taken already: a smaller batch would only add pad systems)."""
-        limit = max(1, min(int(n_systems), self.batch_size or MAX_BATCH))
+        limit = max(1, min(int(n_systems), self.batch_size or MAX_BATCH, self.capacity_limit or MAX_BATCH))
         planned = self._plan.n_systems if self._plan is not None and self._plan.pattern is pattern else 0
         from .cudss_factor import factor_device_bytes
         mixed = self.factor_dtype == np.complex64
@@ -295,7 +349,8 @@ class BatchedDirectSolver(SparseDirectSolver):
         """(solutions complex128 host (N, n), relative residuals (N,), accepted (N,) bool) of A_k x_k = rhs[k] with A_k
         = sum_t coefficients[k, t] T_t (+ extras[k] = (slots int64, complex values) added at pattern slots, or None)
         for N <= batch_capacity systems; rejected systems (non-finite or above ACCEPT_TOLERANCE) are the caller's to
-        re-solve. BatchUnavailable when the batched path cannot run (then never again on this runtime)."""
+        re-solve. A batch that does not fit the device is solved as its two halves (capacity_limit from then on).
+        BatchUnavailable when the batched path cannot run (then never again on this runtime)."""
         if self.unavailable is not None:
             raise BatchUnavailable(self.unavailable)
         started = time.perf_counter()
@@ -310,10 +365,26 @@ class BatchedDirectSolver(SparseDirectSolver):
                 solutions, relative = self._host_batch(pattern, coefficients, rhs, extras)
             else:
                 solutions, relative = self._device_batch(pattern, coefficients, rhs, extras)
-        except (BatchUnavailable, MemoryError) as error:
+        except BatchUnavailable as error:
             self.unavailable = str(error)
             self.release()
             raise BatchUnavailable(self.unavailable) from None
+        except MemoryError as error:
+            reason = str(error)   # only its text: the traceback holds the failed batch's device arrays
+        else:
+            reason = None
+        if reason is not None:
+            self.release()
+            if n_systems == 1:
+                self.unavailable = reason
+                raise BatchUnavailable(reason)
+            half = (n_systems + 1) // 2
+            self.capacity_limit = half
+            self.n_batch_splits += 1
+            parts = [self.solve_batch(pattern, coefficients[part], rhs[part],
+                                      None if extras is None else list(extras)[part])
+                     for part in (slice(0, half), slice(half, n_systems))]
+            return tuple(np.concatenate([part[item] for part in parts]) for item in range(3))
         accepted = np.isfinite(relative) & (relative <= ACCEPT_TOLERANCE)
         self.n_batches += 1
         self.n_batched_systems += n_systems
@@ -354,6 +425,23 @@ class BatchedDirectSolver(SparseDirectSolver):
         return solutions, relative
 
     def _device_batch(self, pattern, coefficients, rhs, extras):
+        """GPU batch in the runtime's mode; a uniform batch that fails, or whose first batch accepts no system, turns
+        the runtime to the explicit batch and the batch is solved again there."""
+        if self.batch_mode == 'uniform':
+            try:
+                solutions, relative = self._device_systems(pattern, coefficients, rhs, extras)
+                if self._uniform_proven or np.any(np.isfinite(relative) & (relative <= ACCEPT_TOLERANCE)):
+                    self._uniform_proven = True
+                    return solutions, relative
+                reason = 'no system of the first uniform batch met the accept tolerance'
+            except BatchUnavailable as error:
+                reason = str(error)
+            self.uniform_error = reason
+            self.batch_mode = 'explicit'
+            self.release()
+        return self._device_systems(pattern, coefficients, rhs, extras)
+
+    def _device_systems(self, pattern, coefficients, rhs, extras):
         """GPU: combine, equilibrate, factorise all systems in one batched cuDSS call, refine every system against its
         float64 operator (one batched solve per step, one host read of the residual norms per step)."""
         import cupy as cp
@@ -412,7 +500,8 @@ class BatchedDirectSolver(SparseDirectSolver):
         if self._plan is not None and self._plan.matches(pattern, n_systems, self.factor_dtype):
             return self._plan
         self.release()
-        self._plan = _BatchPlan(pattern, n_systems, self.factor_dtype)
+        plan_type = _UniformPlan if self.batch_mode == 'uniform' else _BatchPlan
+        self._plan = plan_type(pattern, n_systems, self.factor_dtype)
         self.n_batch_plans += 1
         self.total_batch_plan_seconds += self._plan.plan_seconds
         self.batch_permanent_bytes, self.batch_peak_bytes = self._plan.permanent_bytes, self._plan.peak_bytes
@@ -425,7 +514,9 @@ class BatchedDirectSolver(SparseDirectSolver):
                     batch_refinement_steps=self.n_batch_refinements, batch_seconds=self.total_batch_seconds,
                     batch_plan_seconds=self.total_batch_plan_seconds,
                     batch_permanent_bytes=self.batch_permanent_bytes, batch_peak_bytes=self.batch_peak_bytes,
-                    worst_batch_residual=self.worst_batch_residual, batch_unavailable=self.unavailable or '')
+                    worst_batch_residual=self.worst_batch_residual, batch_unavailable=self.unavailable or '',
+                    batch_mode=self.batch_mode, batch_uniform_error=self.uniform_error or '',
+                    batch_splits=self.n_batch_splits)
 
 
 def batch_external_bytes(n_unknowns, entries, n_systems, precision, symmetric=True, dimensions=2) -> tuple:

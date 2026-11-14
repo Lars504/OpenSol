@@ -1124,6 +1124,104 @@ def batched_direct_solver(operators, rhs, kind):
     return _direct_solver(list(operators), list(rhs), kind)
 
 
+class UniformBatch:
+    """cuDSS uniform batch by the raw bindings (nvmath's DirectSolver has no option for it): B systems on ONE sparsity
+    pattern, analysed once (one host reordering and symbolic phase for all), factorised and solved by one execute
+    each. indptr / indices: the int32 device CSR pattern of one system (kind 'symmetric': its lower triangle); values
+    (B, stored), rhs (B, n), solutions (B, n): C-contiguous device arrays of one factor dtype, system after system,
+    read / written in place by every phase (the caller refreshes values and rhs and reads solutions; this object keeps
+    them alive). Written from the nvmath 1.0 bindings and NVIDIA's simple_uniform_batch sample (cuDSS >= 0.6), not
+    run here: every cuDSS error propagates to the caller (solvers.batched_direct falls back to the explicit batch).
+    Single-threaded host reordering (no threading layer is set on this handle)."""
+
+    def __init__(self, indptr, indices, values, rhs, solutions, kind):
+        _join_library_thread()
+        from nvmath.bindings import cudss
+        self._cudss = cudss
+        self._arrays = (indptr, indices, values, rhs, solutions)
+        self.handle = self.config = self.data = self.matrix = self.rhs = self.solution = 0
+        n_systems, stored = values.shape
+        n = int(indptr.size) - 1
+        if rhs.shape != (n_systems, n) or solutions.shape != (n_systems, n) or int(indices.size) != stored:
+            raise ValueError('uniform batch: values (B, stored), rhs (B, n) and solutions (B, n) on one pattern')
+        for array in (values, rhs, solutions):
+            if not array.flags.c_contiguous or array.dtype != values.dtype:
+                raise ValueError('uniform batch: C-contiguous arrays of one dtype')
+        types = cudss.DataType
+        value_type = {'float32': types.R_32F, 'float64': types.R_64F, 'complex64': types.C_32F,
+                      'complex128': types.C_64F}[values.dtype.name]
+        symmetric = kind != 'general'
+        matrix_type = cudss.MatrixType.SYMMETRIC if symmetric else cudss.MatrixType.GENERAL
+        view = cudss.MatrixViewType.LOWER if symmetric else cudss.MatrixViewType.FULL
+        tail = (int(value_type), int(matrix_type), int(view), int(cudss.IndexBase.ZERO))
+        head = (n, n, int(stored), indptr.data.ptr, 0, indices.data.ptr, values.data.ptr)
+        try:
+            self.handle = cudss.create()
+            self.config = cudss.config_create()
+            self.data = cudss.data_create(self.handle)
+            try:      # cuDSS 0.8 bindings: offset type and index type
+                self.matrix = cudss.matrix_create_csr(*head, int(types.R_32I), int(types.R_32I), *tail)
+            except TypeError:   # older bindings: one index type
+                self.matrix = cudss.matrix_create_csr(*head, int(types.R_32I), *tail)
+            column_major = int(cudss.Layout.COL_MAJOR)
+            self.rhs = cudss.matrix_create_dn(n, 1, n, rhs.data.ptr, int(value_type), column_major)
+            self.solution = cudss.matrix_create_dn(n, 1, n, solutions.data.ptr, int(value_type), column_major)
+            size = np.array([n_systems], dtype=np.int32)
+            cudss.config_set(self.config, cudss.ConfigParam.UBATCH_SIZE, size.ctypes.data, int(size.nbytes))
+        except Exception:
+            self.free()
+            raise
+
+    def _execute(self, phase) -> None:
+        import cupy as cp
+        cudss = self._cudss
+        cudss.set_stream(self.handle, cp.cuda.get_current_stream().ptr)
+        cudss.execute(self.handle, phase, self.config, self.data, self.matrix, self.solution, self.rhs)
+
+    def analyse(self) -> None:
+        """Reordering and symbolic factorisation, once for all systems (the pattern only)."""
+        self._execute(self._cudss.Phase.ANALYSIS)
+
+    def factorize(self) -> None:
+        """Numeric factorisation of every system from the values array as it is now."""
+        self._execute(self._cudss.Phase.FACTORIZATION)
+
+    def solve(self) -> None:
+        """Solve every system for the rhs array as it is now, into the solutions array."""
+        self._execute(self._cudss.Phase.SOLVE)
+
+    def memory_estimates(self) -> tuple:
+        """(permanent, peak) device bytes after analyse (cuDSS MEMORY_ESTIMATES entries 0 and 1; (0, 0) when the
+        read fails). Whether cuDSS counts every system of the batch in them is not checked here."""
+        try:
+            cudss = self._cudss
+            estimates = np.zeros(16, dtype=np.int64)
+            written = np.zeros(1, dtype=np.uint64)
+            cudss.data_get(self.handle, self.data, cudss.DataParam.MEMORY_ESTIMATES, estimates.ctypes.data,
+                           int(estimates.nbytes), written.ctypes.data)
+            return int(estimates[0]), int(estimates[1])
+        except Exception as error:
+            _LOGGER.info('cuDSS uniform batch memory estimates not read (%s)', error)
+            return 0, 0
+
+    def free(self) -> None:
+        cudss = self._cudss
+        for name in ('matrix', 'rhs', 'solution'):
+            if getattr(self, name):
+                cudss.matrix_destroy(getattr(self, name))
+                setattr(self, name, 0)
+        if self.data:
+            cudss.data_destroy(self.handle, self.data)
+            self.data = 0
+        if self.config:
+            cudss.config_destroy(self.config)
+            self.config = 0
+        if self.handle:
+            cudss.destroy(self.handle)
+            self.handle = 0
+        self._arrays = ()
+
+
 def book_external_bytes(permanent_bytes, peak_bytes) -> None:
     """Book a planned solver outside CudssFactorization (a batched_direct plan) in external_live_bytes and its
     high-water mark; release_external_bytes takes the permanent bytes off again when it is freed."""

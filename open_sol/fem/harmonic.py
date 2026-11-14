@@ -822,7 +822,9 @@ class HarmonicSystemBase:
         batch_pattern, names, keys = self._batch_pattern()
         pending = [index] + [position for position in range(index + 1, len(plan['omegas']))
                              if position in plan['remaining'] and position not in plan['solved']]
-        chunk = pending[:self.linear_solver.batch_capacity(batch_pattern, len(pending))]
+        capacity = self.linear_solver.batch_capacity(batch_pattern, len(pending))
+        # equal batches (33 pending at capacity 32: 17 + 16, not 32 + 1 padded to a second full batch)
+        chunk = pending[:-(-len(pending) // -(-len(pending) // capacity))]
         powers = {'stiffness': lambda w: 1.0, 'damping': lambda w: 1j * w, 'mass': lambda w: -w * w}
         systems, extras, outside = [], [], []
         for position in chunk:

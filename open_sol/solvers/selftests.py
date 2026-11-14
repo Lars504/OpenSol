@@ -1159,7 +1159,7 @@ def _batch_run(backend, precision, batch_size, union, terms, coefficients, rhs, 
 
 
 def _check_batched_direct(results_by_name):
-    """batched_direct solve_batch (cpu: SuperLU loop; gpu: one explicitly batched cuDSS plan) on both precisions against
+    """batched_direct solve_batch (cpu: SuperLU loop; gpu: one cuDSS uniform-batch plan) on both precisions against
     scipy spsolve per system, one system with an extra block; a batch_size 3 run over several solve_batch calls."""
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1202,7 +1202,8 @@ def _check_batched_direct(results_by_name):
                     details[f'{key}_memory_limited'] = True
                 details[key] = {'capacities': capacities, 'counters': {name: counters[name] for name in (
                     'batches', 'batched_systems', 'batch_plans', 'batch_rejected', 'batch_refinement_steps',
-                    'factorizations', 'worst_batch_residual', 'batch_unavailable')}}
+                    'factorizations', 'worst_batch_residual', 'batch_unavailable', 'batch_mode',
+                    'batch_uniform_error', 'batch_splits')}}
                 if not accepted.all():
                     failed.append(f'{key}_accepted')
                 if calls != expected_calls or counters['batches'] != calls:
@@ -1213,6 +1214,8 @@ def _check_batched_direct(results_by_name):
                     failed.append(f'{key}_no_per_system_factor')
                 if counters['batch_plans'] != (1 if backend == 'gpu' else 0):   # one plan, later batches pad it
                     failed.append(f'{key}_plans')
+                if counters['batch_mode'] != ('uniform' if backend == 'gpu' else 'host'):
+                    failed.append(f'{key}_uniform_batch')   # the explicit fallback ran: see batch_uniform_error
                 if not released:   # release() takes the plan's outside-pool bytes off again
                     failed.append(f'{key}_plan_released')
     return _outcome(errors, failed, {**details, 'backends': backends}, tolerance=_BATCH_TOLERANCE)
@@ -2921,12 +2924,14 @@ SOLVER_SELFTEST_CASES = (
                     f"{', '.join(f'{omega:g}' for omega in _BATCH_OMEGAS)} with random complex right-hand sides, system "
                     f'{_BATCH_EXTRA_SYSTEM} with a small complex symmetric block added at existing pattern slots '
                     '(extras); precision mixed and double on the CPU backend (a SuperLU loop) and the GPU backend (one '
-                    'explicitly batched nvmath / cuDSS LDL^T plan, values refreshed in place, float64 refinement), '
+                    'cuDSS uniform-batch LDL^T plan, one analysis for all systems, values refreshed in place, float64 '
+                    'refinement), '
                     f'batch_size 0 (all in one call) and {_BATCH_SMALL} (three solve_batch calls on one plan, the last '
                     'padded). Each solution against scipy spsolve of its own system (relative error <= '
                     f'{_BATCH_TOLERANCE:g}), every system accepted, counters batches = calls, batched_systems = '
                     f'{len(_BATCH_OMEGAS)}, batch_rejected 0, no per-system factorisation, batch_plans 1 on the gpu (0 '
-                    'on the cpu), the plan\'s outside-pool bytes released. The gpu half is skipped without a usable GPU '
+                    'on the cpu), batch_mode uniform on the gpu (a fallback to the explicit nvmath batch fails the '
+                    'case: its reason is in batch_uniform_error), the plan\'s outside-pool bytes released. The gpu half is skipped without a usable GPU '
                     'or nvmath-python. Written, not run.',
         specs=lambda: {}, check=_check_batched_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(

@@ -74,7 +74,7 @@ def _check_sweep(results_by_name):
 
 
 # ---- pressure_acoustics_batched_sweep: both drives of the duct above on a batched_direct 'linear' node (batch_size
-# _BATCHED_SIZE: three solve_batch calls, the last padded) over _BATCHED_HZ; the impedance end absorbs exactly, so the
+# _BATCHED_SIZE: three solve_batch calls of three systems) over _BATCHED_HZ; the impedance end absorbs exactly, so the
 # total field is rho c v0 exp(-j k x) (velocity) / p0 exp(-j k x) (held pressure; the background only moves the
 # scattered / background split) at every frequency. GPU natural (nvmath-python: else the cpu backend), variants cpu
 # (the SuperLU loop of the same plan_batched path) and double ----
@@ -144,7 +144,7 @@ REDUCED_SWEEP_CASES = (
         description=(f'The plane-wave duct of pressure_acoustics_reduced_sweep (P2 triangles, impedance x_hi) over '
                      f'{_BATCHED_HZ[0]:g} - {_BATCHED_HZ[1]:g} Hz ({_BATCHED_HZ[2]} frequencies, sweep_method direct, '
                      "snapshots none) on a batched_direct 'linear' node with batch_size "
-                     f'{_BATCHED_SIZE} (fem.harmonic plan_batched: three batches, the last padded on the kept plan): '
+                     f'{_BATCHED_SIZE} (fem.harmonic plan_batched: three equal batches on the kept plan): '
                      'driven by a vibrating x_lo ((j omega) load) and by a held x_lo pressure under a +x background '
                      'plane wave (non-polynomial load and held offsets per frequency, computed at batch time). Every '
                      'probe pressure against the absorbed plane wave rho c v0 exp(-j k x) / p0 exp(-j k x) within '
