@@ -832,14 +832,15 @@ def solve_lowest_modes_block(stiffness, mass, precondition, free, n_resonances, 
                              xp, preconditioner_text, default_max_iterations=0):
     """ModalSolve of the n_resonances lowest modes by a block_eigen runtime (solvers.block_eigen) on block callbacks
     over every dof (rows 0 on the dofs outside the backend bool mask `free`, which the callbacks keep 0): stiffness /
-    mass / precondition(rows_in, rows_out), float32 or float64 rows (mixed)."""
+    mass / precondition(rows_in, rows_out), float32 or float64 rows (mixed). Exactly n_resonances eigenpairs are asked
+    (no EXTRA_EIGENVALUES: the runtime's guard vectors are the margin and need not converge)."""
     started = time.perf_counter()
     n_resonances = _checked_count(n_resonances)
     n_dofs = int(free.size)
     n_free = int(free.sum())
     if n_free < 3:
         raise ValueError(f'solve_lowest_modes_block: only {n_free} free dofs remain outside the supports')
-    n_wanted = min(n_resonances + EXTRA_EIGENVALUES, n_free - 1)
+    n_wanted = min(n_resonances, n_free - 1)
     result = eigen_solver.lowest(n_dofs, n_wanted, stiffness, mass, precondition, xp, mask=free,
                                  default_max_iterations=default_max_iterations)
     warnings = list(result.warnings)

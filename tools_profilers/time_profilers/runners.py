@@ -446,7 +446,7 @@ def _run_arpack_modes(problem, arrays, solver) -> dict:
 
 def run_block_eigen(problem, values, arrays) -> dict:
     """block_eigen ('eigen' of solid_mechanics_3d on brick meshes): lowest_modes with the BlockEigenSolver made from
-    the values as the SolverType create makes it (max_iterations 0: lowest_modes passes the linear solver's limit;
+    the values as the SolverType create makes it (max_iterations 0: block_eigen.DEFAULT_MAX_ITERATIONS;
     preconditioner multigrid: the linear solver's hierarchy, else one built inside the call, so every repeat pays it
     as every model eigen solve does). Tolerance: the solver's, at least ACCEPT_RESIDUAL."""
     if problem.kind != 'modes':

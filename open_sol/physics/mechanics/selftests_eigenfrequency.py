@@ -284,6 +284,51 @@ def _check_box_3d_block_eigen(results_by_name):
                                eigen_settings=record.get('settings'), eigen_counters=counters)
 
 
+# ---- the block eigensolver on a multi-level hierarchy: the box above is below multigrid3d.COARSEST_DOFS (its
+# "multigrid" is the dense coarsest inverse alone), so the same block on cells of 1 / _FINE_FACTOR the size (18 x 10 x 8
+# cells, 5643 dofs: two levels) runs the block V-cycle (multigrid3d.BlockCycle: smoothing, transfers and coarse solve
+# of all rows per launch) and the block brick products. Reference: the shift-invert Lanczos run of the same model.
+_FINE_FACTOR = 2
+_FINE_RUNS = ('lanczos', 'block')
+
+
+def _box_3d_fine_specs():
+    """{'lanczos': the roller box of _box_3d_specs on the finer cells, 'block': the same with the block_eigen node}."""
+    specs = {}
+    for run in _FINE_RUNS:
+        spec = _box_3d_specs()['lowest']
+        spec.mesh.dx = _CELL / _FINE_FACTOR
+        if run == 'block':
+            spec.solvers.append(SolverSpec(_BLOCK_EIGEN_NODE, _BLOCK_EIGEN_TYPE, {}))
+            spec.physics[0].solvers['eigen'] = _BLOCK_EIGEN_NODE
+        specs[run] = spec
+    return specs
+
+
+def _check_box_3d_fine(results_by_name):
+    """The block run's table frequencies against the Lanczos run's (relative, in order) and its eigen role record
+    (type block_eigen, eigen_solves >= 1, eigen_unconverged 0); measured = error = the worst deviation in tolerance
+    units."""
+    frequencies = {}
+    for run in _FINE_RUNS:
+        rows = results_by_name[run].result(_PHYSICS, _TABLE)['rows']
+        if len(rows) < _N_LOWEST_3D:
+            raise ValueError(f'expected {_N_LOWEST_3D} modes in the table of the {run} run, got {len(rows)}')
+        frequencies[run] = [float(row[_FREQUENCY_COLUMN]) for row in rows[:_N_LOWEST_3D]]
+    record = solver_role(results_by_name['block'], _PHYSICS, 'eigen')
+    counters = record.get('counters') or {}
+    errors = {'frequency': max(abs(value / reference - 1.0)
+                               for value, reference in zip(frequencies['block'], frequencies['lanczos'])),
+              'eigen solver type': 0.0 if record.get('type') == _BLOCK_EIGEN_TYPE else 1.0,
+              'eigen solves': 0.0 if counters.get('eigen_solves', 0) >= 1 else 1.0,
+              'eigen unconverged': float(counters.get('eigen_unconverged', math.inf))}
+    tolerances = {'frequency': _FREQUENCY_TOLERANCE, 'eigen solver type': 0.5, 'eigen solves': 0.5,
+                  'eigen unconverged': 0.5}
+    return scaled_worst_result(errors, tolerances, frequency_lanczos=frequencies['lanczos'],
+                               frequency_block=frequencies['block'], eigen_settings=record.get('settings'),
+                               eigen_counters=counters)
+
+
 EIGENFREQUENCY_3D_CASES = (
     SelfTestCase(
         name='solid_3d_eigenfrequency_roller_box',
@@ -327,6 +372,22 @@ EIGENFREQUENCY_3D_CASES = (
         specs=_box_3d_block_eigen_specs,
         check=_check_box_3d_block_eigen,
         variants=(SelfTestVariant('double', tolerance=1.0, precision='double', roles=('eigen',)),)),
+    SelfTestCase(
+        name='solid_3d_eigenfrequency_block_eigen_levels',
+        label='Solid mechanics 3D: block eigensolver with a multi-level block V-cycle',
+        description='the block of solid_3d_eigenfrequency_roller_box on cells of half the size '
+                    f'({_CELLS_3D[0] * _FINE_FACTOR} x {_CELLS_3D[1] * _FINE_FACTOR} x {_CELLS_3D[2] * _FINE_FACTOR}: '
+                    'above the coarsest size of the geometric multigrid, so its hierarchy has two levels), solved '
+                    f"twice for the {_N_LOWEST_3D} lowest modes: 'lanczos' by the default shift-invert Lanczos (exact "
+                    f"CG inner solves), 'block' by the opt-in block_eigen node '{_BLOCK_EIGEN_NODE}' at its defaults "
+                    '(mixed, preconditioner multigrid). The block run applies K, M and the V-cycle (Chebyshev '
+                    'smoothing, separable transfers, dense coarse solve) to all rows of the search block in one launch '
+                    'each (the *_rows kernels, multigrid3d.BlockCycle); its table frequencies must match the Lanczos '
+                    f"run's in order (relative {_FREQUENCY_TOLERANCE:g}) and the summary solvers record of its eigen "
+                    'role names type block_eigen with eigen_solves >= 1 and eigen_unconverged 0. measured = error = '
+                    'the worst deviation in tolerance units, tolerance 1. Written, not run.',
+        specs=_box_3d_fine_specs,
+        check=_check_box_3d_fine),
 )
 
 EIGENFREQUENCY_CASES = (
