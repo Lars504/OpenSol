@@ -209,10 +209,16 @@ def _plan_estimates(solver) -> tuple:
     when this nvmath reports none)."""
     try:
         estimates = solver.plan_info.memory_estimates
-        return (int(np.sum(np.asarray(estimates['permanent_device_memory']))),
-                int(np.sum(np.asarray(estimates['peak_device_memory']))))
     except Exception:
         return 0, 0
+    parts = estimates if isinstance(estimates, (list, tuple)) else (estimates,)   # one record, or one per system
+
+    def total(key):
+        try:
+            return int(sum(np.sum(np.asarray(part[key])) for part in parts))
+        except Exception:
+            return 0
+    return total('permanent_device_memory'), total('peak_device_memory')
 
 
 class BatchedDirectSolver(SparseDirectSolver):

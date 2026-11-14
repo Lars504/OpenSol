@@ -15,12 +15,14 @@ import time
 import numpy as np
 
 from ...core.backend import to_host
+from ...solvers.time_filter import wanted_pairs
 from .eigenfrequency import (EigenSolve, _energy_weights, _filtered_candidates, _PencilMass, _resonance,
                              _ResonanceFilter, region_filter)
 
 
 def unsupported_reason(physics) -> str:
-    """'' when the FDFD physics can run a time-filter solve, else the feature that stops it (validation reuses it)."""
+    """'' when the FDFD physics can run a time-filter solve, else the feature that stops it (model validation refuses
+    the same list first: definition_fdfd._time_filter_issues; a new entry goes into both)."""
     if physics.boundary_config.has_bloch_phase:
         return 'a Bloch phase'
     if physics.metric is not None:
@@ -49,12 +51,27 @@ def _source_cells(physics, pinned, count, generator):
     return [(float(centres[0][i]), float(centres[1][j])) for i, j in zip(rows, columns)]
 
 
+def source_pulse_bandwidth(bandwidth) -> float:
+    """Relative bandwidth of the sources' GaussianPulse: PULSE_BANDWIDTH_FACTOR x the sampled band half-width, <= 1."""
+    from ...solvers import time_filter as tf
+    return min(1.0, tf.PULSE_BANDWIDTH_FACTOR * float(bandwidth))
+
+
+def run_steps(target_frequency, dt, bandwidth, periods=0.0) -> tuple:
+    """(pulse steps, all steps) of one time-filter run at step dt [s] (the run and the time estimate): the source pulse
+    (core.sources.GaussianPulse duration at source_pulse_bandwidth) plus run_periods target periods."""
+    from ...core.sources import GaussianPulse
+    from ...solvers import time_filter as tf
+    pulse_steps = int(math.ceil(GaussianPulse(float(target_frequency), source_pulse_bandwidth(bandwidth)).duration
+                                / float(dt)))
+    return pulse_steps, pulse_steps + tf.periods_steps(tf.run_periods(bandwidth, periods), target_frequency, dt)
+
+
 def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
     """(basis (n, m) complex128 of the run backend, details) of one FDTD run: seeded point sources (ez: filament
     currents, hz: magnetic line currents) with a Gaussian pulse centred on the target, the DFT of every cell at the
     sampled frequencies accumulated from step 0 over run_periods target periods (+ the pulse); pinned = xp bool (nx,
     ny) cells of the FDFD identity rows; target_omega [rad/s] = the system's."""
-    from ...core.sources import GaussianPulse
     from ...solvers import time_filter as tf
     from . import EMPhysics
     from .monitors import DFTMonitor
@@ -77,7 +94,7 @@ def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
     target = target_omega / (2.0 * math.pi)
     count = tf.sampled_count(n_resonances, solver.sampled_frequencies)
     frequencies = tf.sampled_frequencies(target, solver.bandwidth, count)
-    pulse_bandwidth = min(1.0, tf.PULSE_BANDWIDTH_FACTOR * solver.bandwidth)
+    pulse_bandwidth = source_pulse_bandwidth(solver.bandwidth)
     generator = np.random.default_rng(tf.SOURCE_SEED)
     for x, y in _source_cells(physics, pinned, solver.sources, generator):
         amplitude = float(generator.choice((-1.0, 1.0)) * (0.5 + generator.random()))
@@ -92,13 +109,13 @@ def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
                          periodic_x=bc.periodic_x, periodic_y=bc.periodic_y, xp=xp)
     fdtd.monitors.append(monitor)
     fdtd.finalize()
-    pulse_steps = int(math.ceil(GaussianPulse(target, pulse_bandwidth).duration / float(grid.dt)))
-    steps = pulse_steps + tf.periods_steps(tf.run_periods(solver.bandwidth, solver.periods), target, float(grid.dt))
+    pulse_steps, steps = run_steps(target, float(grid.dt), solver.bandwidth, solver.periods)
     stepping = time.perf_counter()
     for _ in range(steps):
         fdtd.step()
     spectra = monitor.ez_dft if polarization == 'ez' else monitor.hz_dft
-    basis = xp.ascontiguousarray(spectra.reshape(count, -1).T).astype(np.complex128)
+    # one complex128 (n, m) copy beside the accumulators (no complex64 C-order intermediate)
+    basis = spectra.reshape(count, -1).T.astype(np.complex128, order='C')
     to_host(basis[:1, :1])   # wait for the device: the stepping time is complete
     step_seconds = time.perf_counter() - stepping
     solver.count_run(steps, count, step_seconds)
@@ -125,12 +142,12 @@ def solve_time_filter_resonances(physics, system, solver, n_resonances, pinned, 
     k_target_squared = (system.omega / C0) ** 2
     basis, run = filtered_fields(physics, solver, pinned, n_resonances, system.omega)
     device_symmetrizer = None if symmetrizer is None else xp.asarray(np.asarray(symmetrizer, dtype=np.complex128))
-    wanted = int(n_resonances) + 2
+    wanted = wanted_pairs(n_resonances)
     pairs = solver.ritz_pairs(lambda block: operator @ block, mass, basis, wanted, 0.0,
                               symmetrizer=device_symmetrizer, xp=xp)
     del basis
     mu = pairs['mu']
-    vectors = np.asarray(to_host(pairs['vectors']))
+    vectors = np.asarray(to_host(pairs.pop('vectors')))   # the device copy is freed before the filter's
     nonzero = np.abs(mu) > 0.0
     theta = np.zeros(mu.shape, dtype=np.complex128)
     theta[nonzero] = -1.0 / mu[nonzero]

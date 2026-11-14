@@ -1,7 +1,8 @@
 """CPU vs GPU parity self-tests of the solver runtimes (solver_plan S6 / stage B): pcg, sparse_direct and line_block on
 small synthetic 2D grid operators, each backend against a scipy reference, the cuDSS eigen factorization against
 SuperLU and the cuDSS sparse_direct back ends against scipy. No model run; the gpu half is skipped without a usable GPU.
-The block_eigen LOBPCG on 3D grid pencils against their exact / dense eigenvalues, on both backends. Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
+The block_eigen LOBPCG on 3D grid pencils against their exact / dense eigenvalues and batched_direct solve_batch against
+scipy per system, and the time_filter Rayleigh-Ritz against dense eigenpairs, on both backends. Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
 of eigsh_shifted with its shift on an eigenvalue. The MUMPS / PARDISO host direct back ends and eigen factorizations
 against scipy (skipped without their wrappers)."""
 import numpy as np
@@ -1105,6 +1106,118 @@ def _ordering_reuse_checks(failed, errors, details):
             factor.release()
 
 
+# --- batched_direct -----------------------------------------------------------------------------------------------
+# K = 30 x 20 Laplacian (1 + j _PENCIL_LOSS) + a random real diagonal, C a random diagonal, M the bilinear consistent
+# mass (9-point union pattern): complex symmetric A_k = K + j w_k C - w_k^2 M at distinct w_k inside the spectrum; system
+# _BATCH_EXTRA_SYSTEM carries a small complex symmetric block at existing slots (the port DtN path of fem.harmonic)
+_BATCH_OMEGAS = (0.2, 0.45, 0.7, 0.95, 1.2, 1.45, 1.7)
+_BATCH_SMALL = 3                  # batch_size of the run needing several solve_batch calls (3 + 3 + 1, padded plan)
+_BATCH_EXTRA_SYSTEM = 4
+_BATCH_EXTRA_ROWS = (37, 38, 245)  # unknowns of the extra block: 37 - 38 are y neighbours (one stored pair), 245 alone
+_BATCH_TOLERANCE = 1e-9           # relative error vs spsolve: kappa (~1e2) x the 1e-12 refinement target, margin 10
+
+
+def _batch_extra(union):
+    """(slots in the union pattern, complex values) of the extra block, and the same block as a scipy CSR."""
+    import scipy.sparse
+    first, second, alone = _BATCH_EXTRA_ROWS
+    entries = {(first, first): 0.3 + 0.1j, (second, second): 0.2 - 0.05j, (alone, alone): 0.5 + 0.2j,
+               (first, second): 0.05 + 0.02j, (second, first): 0.05 + 0.02j}
+    rows = np.array([row for row, _ in entries], dtype=np.int64)
+    columns = np.array([column for _, column in entries], dtype=np.int64)
+    values = np.array(list(entries.values()), dtype=np.complex128)
+    pattern_rows = np.repeat(np.arange(union.shape[0], dtype=np.int64), np.diff(union.indptr))
+    keys = pattern_rows * union.shape[1] + union.indices.astype(np.int64)
+    slots = np.searchsorted(keys, rows * union.shape[1] + columns)
+    block = scipy.sparse.csr_matrix((values, (rows, columns)), shape=union.shape)
+    return (slots, values), block
+
+
+def _batch_run(backend, precision, batch_size, union, terms, coefficients, rhs, extras):
+    """(solutions (N, n), accepted (N,), capacities, solve_batch calls, work counters, plan bytes released) of every
+    system through BatchedDirectSolver.solve_batch in batch_capacity chunks (extras: a list, None or (slots, values)
+    per system)."""
+    from .batched_direct import BatchedDirectSolver
+    from .cudss_factor import external_live_bytes
+    live_before = external_live_bytes()
+    solver = BatchedDirectSolver(precision=precision, batch_size=batch_size, backend=backend)
+    pattern = solver.pattern(union.indptr, union.indices, terms, symmetric=True)
+    n_systems = coefficients.shape[0]
+    solutions = np.zeros(rhs.shape, dtype=np.complex128)
+    accepted = np.zeros(n_systems, dtype=bool)
+    capacities, start = [], 0
+    while start < n_systems:
+        capacity = solver.batch_capacity(pattern, n_systems - start)
+        capacities.append(capacity)
+        chunk = slice(start, start + capacity)
+        solutions[chunk], _relative, accepted[chunk] = solver.solve_batch(pattern, coefficients[chunk], rhs[chunk],
+                                                                         extras[chunk])
+        start += capacity
+    counters = solver.work_counters()
+    solver.release()
+    return solutions, accepted, capacities, len(capacities), counters, external_live_bytes() == live_before
+
+
+def _check_batched_direct(results_by_name):
+    """batched_direct solve_batch (cpu: SuperLU loop; gpu: one explicitly batched cuDSS plan) on both precisions against
+    scipy spsolve per system, one system with an extra block; a batch_size 3 run over several solve_batch calls."""
+    import scipy.sparse
+    import scipy.sparse.linalg
+    from .batched_direct import MAX_BATCH
+    from .cudss_factor import cudss_available
+    rng = np.random.default_rng(_SEED + 13)
+    nx, ny = _GRID
+    n_unknowns = nx * ny
+    laplacian, mass = _laplacian(nx, ny), _consistent_mass(nx, ny)
+    stiffness = (laplacian * (1.0 + 1j * _PENCIL_LOSS) + scipy.sparse.diags(rng.uniform(0.0, 0.2, n_unknowns))).tocsr()
+    damping = scipy.sparse.diags(rng.uniform(0.01, 0.1, n_unknowns)).tocsr()
+    union, terms = _aligned_terms([stiffness, damping, mass])
+    omegas = np.array(_BATCH_OMEGAS)
+    coefficients = np.column_stack([np.ones(omegas.size), 1j * omegas, -omegas * omegas]).astype(np.complex128)
+    rhs = rng.standard_normal((omegas.size, n_unknowns)) + 1j * rng.standard_normal((omegas.size, n_unknowns))
+    extra, extra_block = _batch_extra(union)
+    extras = [extra if index == _BATCH_EXTRA_SYSTEM else None for index in range(omegas.size)]
+    references = []
+    for index, omega in enumerate(omegas):
+        matrix = stiffness + 1j * omega * damping - omega * omega * mass
+        if index == _BATCH_EXTRA_SYSTEM:
+            matrix = matrix + extra_block
+        references.append(scipy.sparse.linalg.spsolve(matrix.tocsc(), rhs[index]))
+    errors, failed, details = {}, [], {}
+    backends = list(_backends())
+    if 'gpu' in backends and not cudss_available():
+        backends.remove('gpu')
+        details['gpu_skipped'] = 'nvmath-python (cuDSS) is not installed'
+    for backend in backends:
+        for precision in ('mixed', 'double'):
+            for batch_size in (0, _BATCH_SMALL):
+                key = f'{backend}_{precision}_batch_{batch_size}'
+                solutions, accepted, capacities, calls, counters, released = _batch_run(
+                    backend, precision, batch_size, union, terms, coefficients, rhs, extras)
+                errors[key] = max(norm_relative_error(solutions[index], references[index])
+                                  for index in range(omegas.size))
+                # batch_size 0: up to MAX_BATCH and the free memory (one call unless the memory is short: not judged)
+                expected_calls = -(-omegas.size // batch_size) if batch_size else calls
+                if not batch_size and capacities[0] != min(omegas.size, MAX_BATCH):
+                    details[f'{key}_memory_limited'] = True
+                details[key] = {'capacities': capacities, 'counters': {name: counters[name] for name in (
+                    'batches', 'batched_systems', 'batch_plans', 'batch_rejected', 'batch_refinement_steps',
+                    'factorizations', 'worst_batch_residual', 'batch_unavailable')}}
+                if not accepted.all():
+                    failed.append(f'{key}_accepted')
+                if calls != expected_calls or counters['batches'] != calls:
+                    failed.append(f'{key}_batches')
+                if counters['batched_systems'] != omegas.size or counters['batch_rejected'] != 0:
+                    failed.append(f'{key}_counters')
+                if counters['factorizations'] != 0 or counters['batch_unavailable']:   # nothing per system
+                    failed.append(f'{key}_no_per_system_factor')
+                if counters['batch_plans'] != (1 if backend == 'gpu' else 0):   # one plan, later batches pad it
+                    failed.append(f'{key}_plans')
+                if not released:   # release() takes the plan's outside-pool bytes off again
+                    failed.append(f'{key}_plan_released')
+    return _outcome(errors, failed, {**details, 'backends': backends}, tolerance=_BATCH_TOLERANCE)
+
+
 # --- solver_defaults.precision (S9) -------------------------------------------------------------------------------
 
 # (check name, physics type, role, study, default precision, node (type, settings) or None, backend,
@@ -1153,6 +1266,27 @@ _PRECISION_CASES = (
      ('pcg', {'tolerance': 1e-10}), 'gpu', ('pcg', 'double', False)),
     ('solid_3d_node_own_double', 'solid_mechanics_3d', 'linear', 'stationary', 'auto',
      ('pcg', {'precision': 'double'}), 'gpu', ('pcg', 'double', False)),
+    # pressure_acoustics / membrane linear: the roles list 'mixed' for the opt-in batched_direct only; Automatic
+    # sparse_direct stays double (mixed listed ignored), a batched_direct node resolves its own default mixed, takes
+    # solver_defaults.precision double, lists single ignored (the type has none) and keeps its own precision
+    ('pressure_auto', 'pressure_acoustics', 'linear', 'frequency_response', 'auto', None, 'gpu',
+     ('sparse_direct', 'double', False)),
+    ('pressure_mixed_direct_ignored', 'pressure_acoustics', 'linear', 'frequency_response', 'mixed', None, 'gpu',
+     ('sparse_direct', 'double', True)),
+    ('pressure_batched_node', 'pressure_acoustics', 'linear', 'frequency_response', 'auto', ('batched_direct', {}),
+     'gpu', ('batched_direct', 'mixed', False)),
+    ('pressure_batched_node_cpu', 'pressure_acoustics', 'linear', 'frequency_response', 'auto',
+     ('batched_direct', {}), 'cpu', ('batched_direct', 'mixed', False)),
+    ('pressure_batched_default_double', 'pressure_acoustics', 'linear', 'frequency_response', 'double',
+     ('batched_direct', {}), 'gpu', ('batched_direct', 'double', False)),
+    ('pressure_batched_single_ignored', 'pressure_acoustics', 'linear', 'frequency_response', 'single',
+     ('batched_direct', {}), 'gpu', ('batched_direct', 'mixed', True)),
+    ('membrane_auto', 'membrane', 'linear', 'frequency_response', 'auto', None, 'gpu',
+     ('sparse_direct', 'double', False)),
+    ('membrane_batched_default_mixed', 'membrane', 'linear', 'frequency_response', 'mixed', ('batched_direct', {}),
+     'gpu', ('batched_direct', 'mixed', False)),
+    ('membrane_batched_own_double', 'membrane', 'linear', 'frequency_response', 'mixed',
+     ('batched_direct', {'precision': 'double'}), 'gpu', ('batched_direct', 'double', True)),
     ('fdtd_double', 'em_fdtd_ez', 'stepper', 'time_dependent', 'double', None, 'gpu',
      ('explicit_kernels', 'double', False)),
     ('fdtd_half_storage_refused_by_role', 'em_fdtd_ez', 'stepper', 'time_dependent', 'half_storage', None, 'gpu',
@@ -1181,6 +1315,18 @@ _EIGEN_ROLE_CASES = (
      ('block_eigen', 'double', 'jacobi', False, True)),
     ('solid_2d_block_node_misfit', 'solid_mechanics', 'auto', ('block_eigen', {}), 'gpu',
      ('block_eigen', 'mixed', None, False, False)),
+    # em_fdfd_ez / _hz: role precisions double + single (time_filter's FDTD stepper), opt-in time_filter
+    ('fdfd_ez_auto', 'em_fdfd_ez', 'auto', None, 'gpu', ('arpack_shift_invert', 'double', None, False, True)),
+    ('fdfd_ez_single_automatic_ignored', 'em_fdfd_ez', 'single', None, 'gpu',
+     ('arpack_shift_invert', 'double', None, True, True)),
+    ('fdfd_ez_time_filter_node', 'em_fdfd_ez', 'auto', ('time_filter', {}), 'gpu',
+     ('time_filter', 'single', None, False, True)),
+    ('fdfd_hz_time_filter_default_double', 'em_fdfd_hz', 'double', ('time_filter', {}), 'cpu',
+     ('time_filter', 'double', None, False, True)),
+    ('fdfd_ez_time_filter_mixed_ignored', 'em_fdfd_ez', 'mixed', ('time_filter', {}), 'gpu',
+     ('time_filter', 'single', None, True, True)),
+    ('bor_time_filter_misfit', 'em_fdfd_bor', 'auto', ('time_filter', {}), 'gpu',
+     ('time_filter', 'single', None, False, False)),
 )
 _EIGEN_ROLE_STUDY = 'eigenfrequency'
 
@@ -1393,7 +1539,8 @@ def _multigrid_resolution_checks(registry, mismatches, outcomes):
 
 
 def _eigen_role_checks(registry, mismatches, outcomes):
-    """'eigen' role resolution against _EIGEN_ROLE_CASES (solid_mechanics_3d rows in a 3D model, grid tensor_3d),
+    """'eigen' role resolution against _EIGEN_ROLE_CASES (solid_mechanics_3d rows in a 3D model, grid tensor_3d; the
+    em_fdfd / em_fdfd_bor rows in 2D: opt-in time_filter and its stepper precisions),
     appended as 'eigen_<name>': resolved type, precision, preconditioner (rows naming one), the
     default_precision_ignored listing and solver_misfit on the model's grid; node settings never written."""
     from ..model.schema import (default_precision_ignored, resolved_precision, resolved_solvers, solver_grid,
@@ -1583,7 +1730,7 @@ _HOST_INERTIA_SHIFT_INDEX = 150   # real symmetric indefinite K - sigma I: sigma
 
 def _host_direct_role_checks(failed):
     """CPU, no wrapper needed: the host direct back ends fit the roles listing them (heat, em_fdfd_ez,
-    em_fdfd_nonlinear linear; magnetic_fields_ac double only; em_fdfd_ez eigen all four, membrane eigen double only)
+    em_fdfd_nonlinear linear; magnetic_fields_ac double only; em_fdfd_ez eigen all five, membrane eigen double only)
     and misfit em_modes 'shifted' (opt-in setting); no cpu misfit; the SuperLU size rule; resolve_back_end gives the
     name when the wrapper is installed, else raises missing_text; factorization_for maps a host *_mixed request
     below mixed_min_unknowns to its double name."""
@@ -1633,6 +1780,36 @@ def _host_direct_role_checks(failed):
             solver = ArpackShiftInvertSolver(factorization=name, mixed_min_unknowns=1000)
             if solver.factorization_for(600) != name[:-len('_mixed')] or solver.factorization_for(2000) != name:
                 failed.append(f'{name}_double_below_mixed_min_unknowns')
+    _host_direct_compressed_name_checks(failed)
+
+
+def _host_direct_compressed_name_checks(failed):
+    """No wrapper needed: a compressed (block low-rank) name is MUMPS, double, compressed, kept by double_of and
+    factorization_for, its estimate scale BLR_FACTOR_FRACTION x the full-rank one, its drop-down text says so."""
+    from ..model.schema import get_registry
+    from .arpack_shift_invert import ArpackShiftInvertSolver
+    from .host_direct import (BLR_FACTOR_FRACTION, HOST_DIRECT_COMPRESSED_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS,
+                              double_of, factor_host_bytes, host_direct_compressed, host_direct_precision, library_of,
+                              superlu_bytes_scale)
+    if 'mumps_blr' not in HOST_DIRECT_COMPRESSED_BACK_ENDS or host_direct_compressed('mumps'):
+        failed.append('mumps_blr_compressed_listed')
+    labels = next((dict(param.choice_labels) for param in get_registry().solver_type('sparse_direct').params
+                   if param.name == 'back_end'), {})
+    full = factor_host_bytes(10_000, 3, complex_values=False, symmetric=True)
+    if abs(factor_host_bytes(10_000, 3, complex_values=False, symmetric=True, compressed=True)
+           - BLR_FACTOR_FRACTION * full) > 2.0:   # int truncation of both
+        failed.append('compressed_factor_host_bytes')
+    for name in HOST_DIRECT_COMPRESSED_BACK_ENDS:
+        if (library_of(name) != 'mumps' or host_direct_precision(name) != 'double' or double_of(name) != name
+                or name not in HOST_DIRECT_DOUBLE_BACK_ENDS
+                or ArpackShiftInvertSolver(factorization=name, mixed_min_unknowns=1000).factorization_for(600) != name):
+            failed.append(f'{name}_name_helpers')
+        for symmetric in (False, True):
+            ratio = superlu_bytes_scale(name, symmetric=symmetric) / superlu_bytes_scale('mumps', symmetric=symmetric)
+            if abs(ratio - BLR_FACTOR_FRACTION) > 1e-12:
+                failed.append(f'{name}_estimate_scale_{symmetric}')
+        if 'block low-rank' not in labels.get(name, ''):
+            failed.append(f'{name}_choice_label')
 
 
 def _quiet_openblas_checks(failed, details):
@@ -1854,10 +2031,11 @@ def _host_direct_general_checks(back_end, operators, rhs, failed, errors, detail
 def _host_direct_pencil_checks(back_end, spd, rhs, failed, errors, details):
     """HostPencil + factorize_pencil on the cpu: a complex symmetric two-term pencil (+ a diagonal extra block) at two
     shifts against spsolve, symmetric once (LDL^T), the second factor on the kept analysis with its probe deferred to
-    the solve (double back ends; mixed ones probe); an unsymmetric term gives an LU pencil."""
+    the solve (double back ends; mixed and compressed ones probe); an unsymmetric term gives an LU pencil."""
     import scipy.sparse
     import scipy.sparse.linalg
     from .cudss_factor import csr_rows
+    from .host_direct import host_direct_compressed
     from .sparse_direct import HostPencil, SparseDirectSolver
     pattern = spd.tocsr(copy=True)
     pattern.sum_duplicates()
@@ -1886,7 +2064,8 @@ def _host_direct_pencil_checks(back_end, spd, rhs, failed, errors, details):
     last = outcomes[-1]
     if not last['reused']:
         failed.append(f'{back_end}_host_pencil_kept_analysis')
-    if last['deferred'] != (not back_end.endswith('_mixed')) or last['pending_after_solve']:
+    deferring = not (back_end.endswith('_mixed') or host_direct_compressed(back_end))   # those always probe
+    if last['deferred'] != deferring or last['pending_after_solve']:
         failed.append(f'{back_end}_host_pencil_deferred_check')
     factor.release()
     skewed = pattern.data * (1.0 + 0.1 * (pattern.indices > rows))   # unsymmetric values on the symmetric pattern
@@ -1951,6 +2130,120 @@ def _host_direct_fallback_checks(back_end, spd, rhs, failed, errors):
     factor.release()
 
 
+_BLR_GRID = (20, 20, 20)       # 3D Laplacian of the compressed (mumps_blr) check: fronts large enough to compress
+_BLR_SOLVE_TOLERANCE = 1e-10   # relative residual of a compressed factor's solves (GMRES-IR to ~1e-12)
+_BLR_EIGEN_TOLERANCE = 1e-10   # relative eigenvalue error of mumps_blr shift-invert vs eigh / superlu (ARPACK tol 0)
+
+
+def _relative_residual(operator, rhs, solution) -> float:
+    return float(np.linalg.norm(rhs - operator @ solution) / np.linalg.norm(rhs))
+
+
+def _host_direct_compressed_checks(back_end, spd, changed, general, real_rhs, complex_rhs, failed, errors, details):
+    """A compressed (block low-rank, mumps_blr) back end, once in double: a real 3D SPD solve and a complex 2D LU solve
+    and transposed solve within _BLR_SOLVE_TOLERANCE (relative residual), 'block low-rank' in the description and
+    GMRES-refined exactly when its probe missed (MUMPS leaves small fronts full rank, so a probe may pass), or a
+    recorded full-rank fallback; a forced miss (identity compressed solves) refactors full rank once (a second
+    analysis, sticky over a value change on the kept analysis, host_direct_compression_fallbacks 1); kept analyses and
+    previous= are keyed per compression (a full-rank one is never adopted or refactorised by a compressed request)."""
+    import scipy.sparse
+    import scipy.sparse.linalg
+    from . import host_direct
+    from .host_direct import host_analyses_kept, host_direct_factorization, library_of
+    from .sparse_direct import DiffusionDirectSolver, SparseDirectSolver
+    full_rank = library_of(back_end)   # the same library's full-rank name ('mumps')
+    record = {}
+    rng = np.random.default_rng(_SEED + 11)
+    laplacian = _laplacian_3d(_BLR_GRID)
+    spd_3d = (laplacian + scipy.sparse.diags(rng.uniform(0.01, 1.0, laplacian.shape[0]))).tocsr()
+    rhs_3d = rng.standard_normal(laplacian.shape[0])
+    factor = host_direct_factorization(spd_3d, back_end, real=True, positive_definite=True)
+    errors[f'{back_end}_3d_residual'] = residual = _relative_residual(spd_3d, rhs_3d, factor.solve_host(rhs_3d))
+    record['3d'] = {'description': factor.description, 'refinement_steps': factor.refinement_steps,
+                    'probe_residual': factor.probe_residual, 'compression_fallback': factor.last_compression_fallback,
+                    'lu_entries': factor.lu_entries, 'host_bytes': factor.host_bytes, 'peak_bytes': factor.peak_bytes,
+                    'residual': residual}
+    if residual > _BLR_SOLVE_TOLERANCE:
+        failed.append(f'{back_end}_3d_solve')
+    if factor.compressed_factor:
+        if ('block low-rank' not in factor.description
+                or factor._double_refined != ('GMRES refinement' in factor.description)):
+            failed.append(f'{back_end}_3d_description')
+    elif not (factor.last_compression_fallback and 'full rank' in factor.description):
+        failed.append(f'{back_end}_3d_compressed_or_fallback')
+    factor.release()
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    nx, ny = _GRID
+    factor = runtime.factorize(general, nx, ny, False, False)
+    for transpose in (False, True):
+        operator = general.T.tocsr() if transpose else general
+        errors[f'{back_end}_general_residual_{transpose}'] = residual = _relative_residual(
+            operator, complex_rhs, factor.solve(complex_rhs, transpose=transpose))
+        labelled = 'block low-rank' in factor.description or factor.last_compression_fallback
+        if residual > _BLR_SOLVE_TOLERANCE or not labelled or factor.symmetric:
+            failed.append(f'{back_end}_general_lu_{transpose}')
+    record['general'] = {'description': factor.description, 'refinement_steps': factor.refinement_steps}
+    factor.release()
+    # forced miss: compressed library solves return their rhs, so even GMRES misses; the full-rank factor solves
+    original = host_direct._MumpsFactor.solve
+
+    def identity_when_compressed(adapter, rhs, transpose=False):
+        return np.array(rhs, copy=True) if adapter.compressed else original(adapter, rhs, transpose)
+    runtime = SparseDirectSolver(back_end=back_end, backend='cpu')
+    direct = DiffusionDirectSolver(runtime)
+    host_direct._MumpsFactor.solve = identity_when_compressed
+    try:
+        direct.factorize(spd)
+    finally:
+        host_direct._MumpsFactor.solve = original
+    factor = direct._factor
+    first = {'fallback': factor.last_compression_fallback, 'compressed': factor.compressed_factor,
+             'analyses': factor.n_analyses, 'description': factor.description,
+             'rejection': factor.compression_rejection}
+    solution = np.zeros(spd.shape[0])
+    direct.solve(real_rhs, solution)
+    errors[f'{back_end}_compression_fallback'] = norm_relative_error(
+        solution, scipy.sparse.linalg.spsolve(spd.tocsc(), real_rhs))
+    if not (first['fallback'] and not first['compressed'] and first['rejection'] and first['analyses'] == 2
+            and 'full rank' in first['description']):
+        failed.append(f'{back_end}_compression_fallback')
+    direct.factorize(changed)   # sticky: full rank again, numeric only on the kept analysis
+    factor = direct._factor
+    second = {'fallback': factor.last_compression_fallback, 'compressed': factor.compressed_factor,
+              'reused': factor.last_plan_reused}
+    if second != {'fallback': False, 'compressed': False, 'reused': True}:
+        failed.append(f'{back_end}_compression_fallback_sticky')
+    counters = runtime.work_counters()
+    if counters.get('host_direct_compression_fallbacks') != 1:
+        failed.append(f'{back_end}_compression_fallback_counted')
+    record['fallback'] = {'first': first, 'second': second, 'counters': counters}
+    direct.release_factor()
+    # kept analyses and previous= per compression
+    if host_direct._kept_analyses is not None:
+        failed.append(f'{back_end}_kept_block_open_before_check')
+    else:
+        with host_analyses_kept():
+            plain = host_direct_factorization(spd, full_rank, real=True, positive_definite=True)
+            plain.release()   # parked full rank
+            compressed = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+            adopted_full = (compressed.n_analyses, compressed.last_analysis_kept, len(host_direct._kept_analyses))
+            compressed.release()   # parked block low-rank
+            again = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+            adopted_compressed = (again.n_analyses, again.last_analysis_kept, again.compressed_factor)
+            errors[f'{back_end}_kept_adopted'] = norm_relative_error(
+                again.solve_host(real_rhs), scipy.sparse.linalg.spsolve(spd.tocsc(), real_rhs))
+            again.release()
+        record['kept'] = {'full_rank_offered': adopted_full, 'compressed_offered': adopted_compressed}
+        if adopted_full != (1, False, 0) or adopted_compressed != (0, True, True):
+            failed.append(f'{back_end}_kept_per_compression')
+    compressed = host_direct_factorization(spd, back_end, real=True, positive_definite=True)
+    plain = host_direct_factorization(spd, full_rank, previous=compressed, real=True, positive_definite=True)
+    if plain is compressed or compressed.valid or plain.compressed:
+        failed.append(f'{back_end}_previous_per_compression')
+    plain.release()
+    details[f'{back_end}_compressed'] = record
+
+
 def _host_direct_gpu_checks(back_end, general, spd, complex_rhs, real_rhs, failed, errors):
     """gpu backend: factorize of a cupyx operator (one host copy; cupy solve in / out, transposed too) and
     DiffusionDirectSolver on a cupyx SPD operator, against spsolve."""
@@ -1980,11 +2273,12 @@ def _host_direct_gpu_checks(back_end, general, spd, complex_rhs, real_rhs, faile
 
 def _check_host_direct(results_by_name):
     """sparse_direct back ends mumps / mumps_mixed / pardiso / pardiso_mixed (each installed library, both precisions)
-    against scipy on 30 x 20 grid operators, CPU and (with a GPU) cupyx operators; the role / misfit / resolution part
-    always (passes as skipped without python-mumps / pydiso)."""
+    against scipy on 30 x 20 grid operators, CPU and (with a GPU) cupyx operators; the compressed mumps_blr once in
+    double (_host_direct_compressed_checks, its value route); the role / misfit / resolution / name part always
+    (passes as skipped without python-mumps / pydiso)."""
     import scipy.sparse
     from ..model.selftest_helpers import available_host_direct
-    from .host_direct import HOST_DIRECT_BACK_ENDS, library_of
+    from .host_direct import HOST_DIRECT_BACK_ENDS, host_direct_compressed, library_of
     failed, errors, details = [], {}, {}
     _host_direct_role_checks(failed)
     _quiet_openblas_checks(failed, details)
@@ -2011,6 +2305,11 @@ def _check_host_direct(results_by_name):
     gpu = 'gpu' in _backends()
     for back_end in HOST_DIRECT_BACK_ENDS:
         if library_of(back_end) not in libraries:
+            continue
+        if host_direct_compressed(back_end):   # once in double: its own checks + the value route (never deferred)
+            _host_direct_compressed_checks(back_end, spd, changed, general, real_rhs, complex_rhs, failed, errors,
+                                           details)
+            _host_direct_pencil_checks(back_end, spd, complex_rhs, failed, errors, details)
             continue
         _host_direct_spd_checks(back_end, spd, changed, real_rhs, failed, errors, details)
         _host_direct_kept_checks(back_end, general, symmetric, complex_rhs, failed, errors, details)
@@ -2176,12 +2475,14 @@ def _check_arpack_host_direct(results_by_name):
     """arpack_shift_invert factorizations mumps / pardiso (+ _mixed): count_below and eigsh_shifted(inertia=True) of
     the Laplacian with the consistent mass against the dense eigh counts (mixed recorded only), eigsh_shifted
     eigenvalues against eigh, one analysis for every shift (double), eigs_shifted of a complex symmetric pencil against
-    superlu, a Hermitian count_below by the counting SuperLU; passes as skipped without python-mumps / pydiso."""
+    superlu, a Hermitian count_below by the counting SuperLU; mumps_blr: both eigenvalue sets within
+    _BLR_EIGEN_TOLERANCE, block low-rank in the factor description (or a full-rank fallback counted); passes as skipped
+    without python-mumps / pydiso."""
     import scipy.linalg
     import scipy.sparse
     from ..model.selftest_helpers import available_host_direct
     from .arpack_shift_invert import EIGSH_SHIFT_RELATIVE_OFFSET, ArpackShiftInvertSolver
-    from .host_direct import HOST_DIRECT_FACTORIZATIONS, library_of
+    from .host_direct import HOST_DIRECT_FACTORIZATIONS, host_direct_compressed, library_of
     libraries = tuple(available_host_direct())
     if not libraries:
         return _outcome({'none': 0.0}, [], {'skipped': 'python-mumps / pydiso not installed'})
@@ -2220,7 +2521,8 @@ def _check_arpack_host_direct(results_by_name):
             worst = max(worst, _matched_error(result[0], nearest))
         errors[f'{factorization}_eigsh'] = worst
         outcomes[f'{factorization}_analyses'] = factor.n_analyses
-        if not mixed and factor.n_analyses != 1:
+        # a compressed factor refactored full rank re-analyses once (sticky)
+        if not mixed and factor.n_analyses != 1 + solver.compression_fallbacks:
             failed.append(f'{factorization}_one_analysis')
         factor.release()
         values, _vectors, _applications, converged, factor = solver.eigs_shifted(
@@ -2228,6 +2530,14 @@ def _check_arpack_host_direct(results_by_name):
         errors[f'{factorization}_eigs_shifted'] = _matched_error(values, reference)
         if not converged:
             failed.append(f'{factorization}_eigs_shifted_converged')
+        if host_direct_compressed(factorization):   # mumps_blr: the eigenvalues of the exact factors
+            outcomes[f'{factorization}_compressed'] = {'description': factor.description,
+                                                       'refinement_steps': factor.refinement_steps,
+                                                       'compression_fallbacks': solver.compression_fallbacks}
+            if max(worst, errors[f'{factorization}_eigs_shifted']) > _BLR_EIGEN_TOLERANCE:
+                failed.append(f'{factorization}_eigenvalues')
+            if 'block low-rank' not in factor.description and not solver.compression_fallbacks:
+                failed.append(f'{factorization}_description')
         factor.release()
         hermitian, _previous = solver.count_below(stiffness.astype(np.complex128), mass, sigmas[2])   # Hermitian
         if hermitian is None or hermitian.n_below != int(np.count_nonzero(exact < sigmas[2])):
@@ -2443,6 +2753,128 @@ def _check_block_eigen(results_by_name):
     return checks.result(**details)
 
 
+# --- time_filter (TimeFilterEigenSolver.ritz_pairs alone: the dense Rayleigh-Ritz + polish of the FDFD resonances) ----
+# Pencil A u = mu M u on _TIME_FILTER_UNKNOWNS rows: S = complex symmetric tridiagonal (lossy diagonal), D = a random
+# positive symmetrizer, A = D^-1 S - sigma M (D A complex symmetric, as the FDFD's stretched-area D), M a complex
+# diagonal, pinned rows (mass 0, A identity-like, decoupled) at both ends and every _TIME_FILTER_PIN_STRIDE-th row;
+# sigma halfway between two eigenvalues of mid spectrum (no mu = 0). Basis: random mixtures of the _TIME_FILTER_NEAR
+# eigenvectors nearest sigma plus _TIME_FILTER_NOISE x mixtures of _TIME_FILTER_FAR others (garbage on the pinned rows,
+# which ritz_pairs zeroes): the basis lies in an invariant subspace of NEAR + FAR eigenvectors, so the polish steps
+# (Krylov growth of M^-1 A inside it) complete it and the wanted Ritz pairs reach round-off.
+_TIME_FILTER_UNKNOWNS = 240
+_TIME_FILTER_PIN_STRIDE = 37
+_TIME_FILTER_NEAR = 5
+_TIME_FILTER_FAR = 12
+_TIME_FILTER_COLUMNS = 8          # basis columns (> NEAR: three noise-dominated directions)
+_TIME_FILTER_NOISE = 1e-4
+_TIME_FILTER_WANTED = 3
+_TIME_FILTER_POLISH = 4           # 8 + 4 x 3 >= NEAR + FAR: the subspace can be completed
+_TIME_FILTER_VALUE_TOLERANCE = 1e-10   # |mu - reference| / max(|reference|, 1) of the wanted pairs after the polish
+_TIME_FILTER_RESIDUAL_TOLERANCE = 1e-10   # reported relative residual of the wanted pairs
+_TIME_FILTER_PINNED_TOLERANCE = 1e-12     # max |vector| on pinned rows over max |vector|
+
+
+def _time_filter_pencil(rng):
+    """(A scipy CSR, M (n,) complex, D (n,), pinned (n,) bool, reference mu (n_free,) and vectors (n, n_free) padded
+    with 0 on the pinned rows, ordered by |mu|) of the case (section notes)."""
+    import scipy.linalg
+    import scipy.sparse
+    n = _TIME_FILTER_UNKNOWNS
+    pinned = np.zeros(n, dtype=bool)
+    pinned[[0, n - 1]] = True
+    pinned[::_TIME_FILTER_PIN_STRIDE] = True
+    free = ~pinned
+    diagonal = 2.0 + rng.uniform(0.0, 1.0, n) + 0.05j * rng.uniform(0.0, 1.0, n)
+    off = -1.0 + 0.1j * rng.uniform(-1.0, 1.0, n - 1)
+    keep = free.astype(np.float64)
+    off = off * keep[:-1] * keep[1:]   # pinned rows / columns decoupled
+    symmetric = scipy.sparse.diags([off, np.where(free, diagonal, 1.0), off], [-1, 0, 1], format='csr')
+    symmetrizer = rng.uniform(0.5, 2.0, n)
+    mass = np.where(free, rng.uniform(0.5, 2.0, n) * (1.0 + 0.02j * rng.uniform(-1.0, 1.0, n)), 0.0)
+    dense = symmetric.toarray()[np.ix_(free, free)]
+    values, vectors = scipy.linalg.eig(dense, np.diag(symmetrizer[free] * mass[free]))
+    order = np.argsort(values.real)
+    middle = order.size // 2
+    sigma = 0.5 * (values[order[middle]] + values[order[middle + 1]])
+    operator = (scipy.sparse.diags(1.0 / symmetrizer) @ symmetric - sigma * scipy.sparse.diags(mass)).tocsr()
+    mu = values - sigma
+    nearest = np.argsort(np.abs(mu))
+    padded = np.zeros((n, mu.size), dtype=np.complex128)
+    padded[free] = vectors[:, nearest]
+    return operator, mass, symmetrizer, pinned, mu[nearest], padded
+
+
+def _time_filter_basis(rng, reference_vectors, pinned):
+    """Host (n, _TIME_FILTER_COLUMNS) basis: NEAR eigenvector mixtures + NOISE x FAR ones, random on pinned rows."""
+    def mixtures(count, offset):
+        chosen = reference_vectors[:, offset:offset + count]
+        weights = rng.standard_normal((count, _TIME_FILTER_COLUMNS)) + 1j * rng.standard_normal(
+            (count, _TIME_FILTER_COLUMNS))
+        return (chosen / np.linalg.norm(chosen, axis=0)) @ weights
+    far_offset = 2 * _TIME_FILTER_NEAR   # skip the next nearest: the noise is out of the band
+    basis = mixtures(_TIME_FILTER_NEAR, 0) + _TIME_FILTER_NOISE * mixtures(_TIME_FILTER_FAR, far_offset)
+    basis[pinned] = rng.standard_normal((int(np.count_nonzero(pinned)), _TIME_FILTER_COLUMNS))
+    return basis
+
+
+def _check_time_filter(results_by_name):
+    """ritz_pairs on cpu and gpu, with the symmetrizer (bilinear projection) and without (Galerkin), polished and not:
+    the wanted mu against the dense scipy eig of the free pencil, reported residuals, the sort order, the rank cut
+    (columns within the invariant subspace), vectors 0 on the pinned rows, the counters; refusals of bad settings."""
+    from .time_filter import TimeFilterEigenSolver
+    rng = np.random.default_rng(_SEED + 11)
+    operator, mass, symmetrizer, pinned, reference_mu, reference_vectors = _time_filter_pencil(rng)
+    host_basis = _time_filter_basis(rng, reference_vectors, pinned)
+    wanted_reference = reference_mu[:_TIME_FILTER_WANTED]
+    checks, details = SubChecks(), {'backends': list(_backends()),
+                                    'reference_mu': [[float(value.real), float(value.imag)]
+                                                     for value in wanted_reference]}
+    for backend in _backends():
+        xp = _array_module(backend)
+        device_operator = _device_matrix(backend, operator)
+        for symmetrized in (True, False):
+            for polish_steps in (_TIME_FILTER_POLISH, 0):
+                run = f"{backend}_{'bilinear' if symmetrized else 'galerkin'}_polish{polish_steps}"
+                solver = TimeFilterEigenSolver(polish_steps=polish_steps, backend=backend)
+                result = solver.ritz_pairs(lambda block: device_operator @ block, _device(backend, mass),
+                                           _device(backend, host_basis.copy()), _TIME_FILTER_WANTED, 0.0,
+                                           symmetrizer=_device(backend, symmetrizer.astype(np.complex128))
+                                           if symmetrized else None, xp=xp)
+                mu = np.asarray(result['mu'])
+                vectors = np.asarray(_host_of(result['vectors']))
+                errors = [float(np.min(np.abs(mu - value)) / max(abs(value), 1.0)) if mu.size else float('inf')
+                          for value in wanted_reference]
+                details[run] = {'errors': errors, 'columns': result['columns'],
+                                'applications': result['applications'],
+                                'residuals': np.asarray(result['residuals'][:_TIME_FILTER_WANTED]).tolist()}
+                checks.add(f'{run}_host_mu', isinstance(result['mu'], np.ndarray), type(result['mu']).__name__)
+                checks.add(f'{run}_sorted', bool(np.all(np.diff(np.abs(mu)) >= 0.0)), np.abs(mu[:4]).tolist())
+                checks.add_bound(f'{run}_columns', result['columns'], _TIME_FILTER_NEAR + _TIME_FILTER_FAR)
+                checks.add_bound(f'{run}_pinned_rows', float(np.max(np.abs(vectors[pinned])))
+                                 / float(np.max(np.abs(vectors))), _TIME_FILTER_PINNED_TOLERANCE)
+                counters = solver.work_counters()
+                checks.add(f'{run}_counters', counters['operator_applications'] == result['applications']
+                           and counters['basis_columns'] == result['columns'], counters)
+                if polish_steps:   # unpolished runs only recorded (their error depends on the noise draw)
+                    checks.add_error(f'{run}_eigenvalues', max(errors), _TIME_FILTER_VALUE_TOLERANCE)
+                    checks.add_bound(f'{run}_residuals', float(np.max(result['residuals'][:_TIME_FILTER_WANTED])),
+                                     _TIME_FILTER_RESIDUAL_TOLERANCE)
+    checks.add_raises('refuses_precision_mixed', lambda: TimeFilterEigenSolver(precision='mixed', backend='cpu'))
+    checks.add_raises('refuses_bandwidth_one', lambda: TimeFilterEigenSolver(bandwidth=1.0, backend='cpu'))
+    checks.add_raises('refuses_negative_polish', lambda: TimeFilterEigenSolver(polish_steps=-1, backend='cpu'))
+    return checks.result(**details)
+
+
+def _array_module(backend):
+    from ..core.backend import array_module
+    return array_module(backend)
+
+
+def _host_of(array):
+    from ..core.backend import to_host
+    return to_host(array)
+
+
 SOLVER_SELFTEST_CASES = (
     SelfTestCase(
         name='solver_pcg_cpu_gpu',
@@ -2480,6 +2912,23 @@ SOLVER_SELFTEST_CASES = (
                     'Not yet run with two omega values.',
         specs=lambda: {}, check=_check_line_block, max_wall_time=120.0, backends=('cpu', 'gpu')),
     SelfTestCase(
+        name='solver_batched_direct_cpu_gpu',
+        label='Batched direct solver: many frequencies at once, processor and graphics card agree',
+        description='batched_direct BatchedDirectSolver.solve_batch on a complex symmetric 30 x 20 pencil (K = Laplacian '
+                    f'(1 + {_PENCIL_LOSS:g} j) + a random diagonal in [0, 0.2], C a random diagonal, M the bilinear '
+                    f'consistent mass, one 9-point pattern): {len(_BATCH_OMEGAS)} systems K + j w C - w^2 M at w = '
+                    f"{', '.join(f'{omega:g}' for omega in _BATCH_OMEGAS)} with random complex right-hand sides, system "
+                    f'{_BATCH_EXTRA_SYSTEM} with a small complex symmetric block added at existing pattern slots '
+                    '(extras); precision mixed and double on the CPU backend (a SuperLU loop) and the GPU backend (one '
+                    'explicitly batched nvmath / cuDSS LDL^T plan, values refreshed in place, float64 refinement), '
+                    f'batch_size 0 (all in one call) and {_BATCH_SMALL} (three solve_batch calls on one plan, the last '
+                    'padded). Each solution against scipy spsolve of its own system (relative error <= '
+                    f'{_BATCH_TOLERANCE:g}), every system accepted, counters batches = calls, batched_systems = '
+                    f'{len(_BATCH_OMEGAS)}, batch_rejected 0, no per-system factorisation, batch_plans 1 on the gpu (0 '
+                    'on the cpu), the plan\'s outside-pool bytes released. The gpu half is skipped without a usable GPU '
+                    'or nvmath-python. Written, not run.',
+        specs=lambda: {}, check=_check_batched_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
+    SelfTestCase(
         name='solver_block_eigen_cpu_gpu',
         label='Block eigensolver: processor and graphics card find the exact lowest eigenvalues',
         description='block_eigen (BlockEigenSolver.lowest, LOBPCG on block callbacks) precision mixed and double on '
@@ -2504,6 +2953,27 @@ SOLVER_SELFTEST_CASES = (
                     'error = number of failed sub-checks, tolerance 0; gpu half skipped without a usable GPU. '
                     'Written, not run.',
         specs=lambda: {}, check=_check_block_eigen, max_wall_time=120.0, backends=('cpu', 'gpu')),
+    SelfTestCase(
+        name='solver_time_filter_cpu_gpu',
+        label='Time-filter eigensolver: Rayleigh-Ritz on processor and graphics card',
+        description='time_filter TimeFilterEigenSolver.ritz_pairs alone (the projection and polish of the FDFD '
+                    'time-filter resonances, no FDTD run) on the CPU (numpy) and GPU (cupy) backends: a complex '
+                    f'symmetric lossy tridiagonal S on {_TIME_FILTER_UNKNOWNS} rows, a random positive symmetrizer D '
+                    'and complex mass diagonal M, A = D^-1 S - sigma M (D A complex symmetric) with pinned rows (mass '
+                    f'0, decoupled) at both ends and every {_TIME_FILTER_PIN_STRIDE}th row, sigma halfway between two '
+                    f'mid-spectrum eigenvalues. Basis: {_TIME_FILTER_COLUMNS} random mixtures of the '
+                    f'{_TIME_FILTER_NEAR} eigenvectors nearest sigma plus {_TIME_FILTER_NOISE:g} x mixtures of '
+                    f'{_TIME_FILTER_FAR} others (garbage on the pinned rows), so the polish steps can complete the '
+                    'invariant subspace. With the symmetrizer (bilinear (D Q)^T A Q) and without (Galerkin), '
+                    f'{_TIME_FILTER_POLISH} polish steps and none: the {_TIME_FILTER_WANTED} wanted mu nearest 0 '
+                    'against scipy eig of the dense free pencil (polished: within '
+                    f'{_TIME_FILTER_VALUE_TOLERANCE:g} of max(|mu|, 1), reported relative residuals <= '
+                    f'{_TIME_FILTER_RESIDUAL_TOLERANCE:g}; unpolished errors recorded only), mu host and sorted by |mu|, '
+                    f'basis columns <= {_TIME_FILTER_NEAR + _TIME_FILTER_FAR} (rank cut, converged pairs add none), '
+                    'vectors 0 on the pinned rows, counters equal to the result; refusals of precision mixed, bandwidth '
+                    '1 and negative polish steps. error = number of failed sub-checks, tolerance 0; gpu half skipped '
+                    'without a usable GPU. Written, not run.',
+        specs=lambda: {}, check=_check_time_filter, max_wall_time=60.0, backends=('cpu', 'gpu')),
     SelfTestCase(
         name='solver_eigsh_shift_on_eigenvalue',
         label='Symmetric eigen solver: target exactly on an eigenvalue',
@@ -2609,7 +3079,10 @@ SOLVER_SELFTEST_CASES = (
                     'solver_defaults.precision double wins over the gpu Automatic mixed; solid_mechanics stationary on '
                     'either backend: the sparse_direct study default, single / mixed ignored, rows in an eigenfrequency study '
                     'keep pcg, a pcg node without a precision still takes mixed); '
-                    'em_fdtd_ez stepper double and half_storage (its role refuses half_storage)): resolved solver type, '
+                    'em_fdtd_ez stepper double and half_storage (its role refuses half_storage); pressure_acoustics and '
+                    'membrane linear in a frequency_response study: Automatic sparse_direct double (mixed listed '
+                    'ignored), a batched_direct node mixed by default on both backends, double from '
+                    'solver_defaults.precision, single listed ignored, its own double kept and listed): resolved solver type, '
                     'precision and whether the default is reported ignored; node settings are never written; '
                     'with_default_precision directly (fills without a role, a role refusing mixed (a pcg role of the '
                     'default precisions) and an explicit precision leave the settings). Also the Automatic linear solver multigrid resolution of the diffusion types '
@@ -2626,8 +3099,10 @@ SOLVER_SELFTEST_CASES = (
                     '(solver_defaults.precision mixed listed ignored), a block_eigen node resolves mixed with '
                     'preconditioner multigrid on both backends (double with solver_defaults.precision double, single '
                     'listed ignored, its own double / jacobi kept) and fits the role (solver_misfit); the 2D '
-                    'solid_mechanics eigen role misfits block_eigen (not opted in). error = number of mismatches, '
-                    'tolerance 0.',
+                    'solid_mechanics eigen role misfits block_eigen (not opted in); em_fdfd_ez keeps Automatic '
+                    'arpack_shift_invert double (single listed ignored), a time_filter node resolves single (its '
+                    'stepper default; double from solver_defaults.precision on em_fdfd_hz, mixed listed ignored) and '
+                    'fits, em_fdfd_bor misfits time_filter (not opted in). error = number of mismatches, tolerance 0.',
         specs=lambda: {}, check=_check_default_precision, max_wall_time=60.0),
     SelfTestCase(
         name='solver_study_default_fit',
@@ -2693,12 +3168,20 @@ SOLVER_SELFTEST_CASES = (
                     'indefinite Laplacian - sigma I at two shifts (LDL^T, inertia equal to the counting SuperLU unless '
                     'pivots were perturbed, the second shift on the kept analysis); mixed: low-precision solves made '
                     'useless force the probe miss and the double fallback (solve right); with a GPU the same LU '
-                    '(cupy solves, transposed too) and DiffusionDirectSolver on cupyx operators. Always (no wrapper '
-                    'needed): the back ends fit heat, em_fdfd_ez and em_fdfd_nonlinear linear (all four), '
-                    'magnetic_fields_ac linear (double only), em_fdfd_ez eigen (all four), membrane eigen (double '
+                    '(cupy solves, transposed too) and DiffusionDirectSolver on cupyx operators. mumps_blr (block '
+                    'low-rank, double) instead: a real 20 x 20 x 20 SPD Laplacian solve and the complex LU (solve, '
+                    f'transposed solve) within a relative residual of {_BLR_SOLVE_TOLERANCE:g}, \'block low-rank\' in '
+                    'the description (GMRES refinement named exactly when its probe missed) or a recorded full-rank '
+                    'fallback; identity compressed solves force the full-rank refactor (two analyses, sticky over a '
+                    'value change on the kept analysis, host_direct_compression_fallbacks 1); kept analyses and '
+                    'previous= keyed per compression; the HostPencil route probing every factor. Always (no wrapper '
+                    'needed): the back ends fit heat, em_fdfd_ez and em_fdfd_nonlinear linear (all five), '
+                    'magnetic_fields_ac linear (double only), em_fdfd_ez eigen (all five), membrane eigen (double '
                     'only), misfit em_modes shifted, run on the cpu, keep the SuperLU size rule; resolve_back_end '
                     'raises missing_text without the wrapper; a host mixed eigen request below mixed_min_unknowns '
-                    'factors in double; quiet_openblas holds the OpenBLAS pools at one thread for PARDISO names only '
+                    'factors in double; a compressed name is MUMPS, double, kept by double_of / factorization_for, '
+                    'estimated at BLR_FACTOR_FRACTION of the full-rank bytes and labelled block low-rank; '
+                    'quiet_openblas holds the OpenBLAS pools at one thread for PARDISO names only '
                     '(nested, restored after; nothing without threadpoolctl). Passes as skipped without python-mumps / '
                     'pydiso (the role part still judged). Run with pydiso; the MUMPS part written, not run.',
         specs=lambda: {}, check=_check_host_direct, max_wall_time=120.0, backends=('cpu', 'gpu')),
@@ -2711,7 +3194,10 @@ SOLVER_SELFTEST_CASES = (
                     'only), the eigsh_shifted eigenvalues nearest each sigma against eigh (relative error <= '
                     f'{_PARITY_TOLERANCE:g}), one analysis for all eight shifts (double), eigs_shifted of the complex '
                     'symmetric pencil (1 + 0.01 j) K, M against superlu, a Hermitian count_below by the counting '
-                    'SuperLU. Passes as skipped without python-mumps / pydiso. Written, not run.',
+                    'SuperLU; mumps_blr (block low-rank, GMRES-refined solves): the eigsh_shifted and eigs_shifted '
+                    f'eigenvalues within {_BLR_EIGEN_TOLERANCE:g} of eigh / superlu, \'block low-rank\' in the factor '
+                    'description or a counted full-rank fallback. Passes as skipped without python-mumps / pydiso. '
+                    'Written, not run.',
         specs=lambda: {}, check=_check_arpack_host_direct, max_wall_time=120.0),
     SelfTestCase(
         name='solver_host_scale_numba',

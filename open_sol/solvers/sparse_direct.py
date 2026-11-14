@@ -999,6 +999,7 @@ class SparseDirectSolver:
         self.host_direct_refinement_steps = 0
         self.host_direct_single_residual = None
         self.n_host_direct_double_fallbacks = 0
+        self.n_host_direct_compression_fallbacks = 0   # mumps_blr factors refactored full rank after a miss
         self.host_direct_threads = None
 
     @property
@@ -1283,6 +1284,7 @@ class SparseDirectSolver:
             self.host_direct_refinement_steps = factor.refinement_steps
             self.host_direct_single_residual = factor.single_residual
             self.n_host_direct_double_fallbacks += int(factor.last_double_fallback)
+            self.n_host_direct_compression_fallbacks += int(factor.last_compression_fallback)
             self.host_direct_threads = factor.threads
         return factor
 
@@ -1315,6 +1317,8 @@ class SparseDirectSolver:
                             host_direct_single_residual=self.host_direct_single_residual,
                             host_direct_double_fallbacks=self.n_host_direct_double_fallbacks,
                             host_direct_threads=self.host_direct_threads)
+        if self._back_end in HOST_DIRECT_COMPRESSED_BACK_ENDS:   # mumps_blr: full-rank refactors after a miss
+            counters['host_direct_compression_fallbacks'] = self.n_host_direct_compression_fallbacks
         return counters
 
 

@@ -1,5 +1,6 @@
 """Problem classes of the solver profiler: each assembles one representative system with open_sol's own operator
-code (2D FDFD Helmholtz, finite-volume and P2 finite-element heat conduction, 3D brick elasticity) at a size knob and
+code (2D FDFD Helmholtz, finite-volume and P2 finite-element heat conduction, 3D brick elasticity, a 2D P2 acoustic
+frequency sweep) at a size knob and
 names the physics type, solver role, study and grid kind whose solver choices it stands for. open_sol is imported
 inside the builders only (the parent process reads the metadata alone)."""
 # Unknown order is open_sol's: FDFD / finite volume flat i * ny (* nz) + j over the full grid (PML included), FEM the
@@ -44,6 +45,20 @@ MODES_RESONANCES = 6            # n_resonances of the eigenfrequency study
 # orders searched per axis by the closed form: the lowest modes have orders <= 1 (continuum estimate: shear (1, 1, 0)
 # triplet, (1, 1, 1) pair, longitudinal (1, 0, 0) triplet, then (2, 1, 0) at 2.5x the lowest omega^2), so 6 is margin
 MODES_REFERENCE_MAX_ORDER = 6
+# 2D acoustic frequency sweep (pressure_acoustics, triangles, frequency_response sweep_method direct): air in a
+# rectangle of SWEEP_SIZE (structured P2 triangles, size = cells along x), the plane-wave impedance rho c on all four
+# sides (Robin damping 1 / (rho c): absorbing, the pencil's C term), a unit point load; SWEEP_FREQUENCIES
+# frequencies over SWEEP_HZ, each A(omega) = K + j omega C - omega^2 M on one pattern (complex symmetric)
+SWEEP_PHYSICS_TYPE = 'pressure_acoustics'
+SWEEP_STUDY = 'frequency_response'
+SWEEP_GRID = 'triangles'
+SWEEP_SIZE = (1.0, 0.5)         # [m] (x, y): cells along y = size / 2
+SWEEP_DENSITY = 1.2             # [kg/m^3]
+SWEEP_SPEED = 343.0             # [m/s]
+SWEEP_HZ = (200.0, 800.0)       # [Hz] (800 Hz: lambda 0.43 m, 43 cells of size 100)
+SWEEP_FREQUENCIES = 32          # one MAX_BATCH batch of batched_direct
+SWEEP_LOAD_POINT = (0.31, 0.19)   # [m]
+SWEEP_ORDER = 2
 
 
 @dataclass(frozen=True, eq=False)
@@ -54,6 +69,7 @@ class Problem:
     longest axis in cells (pcg auto iteration limit) and the eigen data (FDFD: mass diagonal, target omega, energy
     weights, window rows, resonances; modes: the box constants, free dofs and the closed-form reference omegas)."""
     kind: str                     # 'complex' (FDFD drive) | 'spd' (heat) | 'eigen' (FDFD shift-invert) | 'modes'
+                                  # | 'sweep' (acoustic frequency sweep: eigen holds the mesh and omegas)
     operator: object              # None for a matrix-free problem (kind 'modes')
     rhs: object = None
     grid_shape: tuple | None = None
@@ -320,6 +336,57 @@ def _modes_label():
     return 'profiler solid_modes_3d'
 
 
+def _sweep_label():
+    return 'profiler acoustic_sweep_2d'
+
+
+def _sweep_mesh(size):
+    """Structured TriangleMesh of SWEEP_SIZE with size x size / 2 cells (each split along its 00-11 diagonal), no
+    PML layer (fem selftests_harmonic's rectangle mesh)."""
+    from open_sol.fem.mesh import build_triangle_mesh
+    n_x = int(size)
+    n_y = max(n_x // 2, 1)
+    x_edges = np.linspace(0.0, SWEEP_SIZE[0], n_x + 1)
+    y_edges = np.linspace(0.0, SWEEP_SIZE[1], n_y + 1)
+    grid_x, grid_y = np.meshgrid(x_edges, y_edges, indexing='ij')
+    points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+    i, j = (index.ravel() for index in np.meshgrid(np.arange(n_x), np.arange(n_y), indexing='ij'))
+    rows = n_y + 1
+    n00, n10, n01, n11 = i * rows + j, (i + 1) * rows + j, i * rows + j + 1, (i + 1) * rows + j + 1
+    triangles = np.concatenate([np.column_stack([n00, n10, n11]), np.column_stack([n00, n11, n01])])
+    return build_triangle_mesh(points, triangles, pml_faces=np.zeros(len(triangles), dtype=np.uint8),
+                               window=(0.0, 0.0, float(SWEEP_SIZE[0]), float(SWEEP_SIZE[1])))
+
+
+def sweep_system(problem, linear_solver):
+    """fem.harmonic ScalarHarmonicSystem of an acoustic_sweep_2d problem on `linear_solver` (the physics' 'linear'
+    runtime), as AcousticHarmonicPhysics builds it: a = 1 / rho, mass = 1 / (rho c^2), the impedance rho c on every
+    face (Robin damping a / c), the point load; assembled (the caller times only the sweep)."""
+    from open_sol.fem.harmonic import HarmonicCondition, ScalarHarmonicSystem
+    system = ScalarHarmonicSystem(problem.eigen['mesh'], SWEEP_ORDER, linear_solver, label=_sweep_label)
+    system.set_coefficients(a=1.0 / SWEEP_DENSITY, mass=1.0 / (SWEEP_DENSITY * SWEEP_SPEED ** 2))
+    for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi'):
+        system.set_face_condition(face, HarmonicCondition('robin', damping=1.0 / (SWEEP_DENSITY * SWEEP_SPEED)))
+    system.add_point_load(SWEEP_LOAD_POINT, 1.0)
+    system.load_vector()   # assembles
+    return system
+
+
+def acoustic_sweep_2d(size) -> Problem:
+    """pressure_acoustics frequency sweep on triangles (module notes): the mesh and the SWEEP_FREQUENCIES omegas in
+    eigen ('mesh', 'omegas', 'n_free'); operator = the reduced A at the middle frequency (counts, residual scale),
+    rhs = its free-dof load. The runners build sweep_system per repeat on their runtime."""
+    mesh = _sweep_mesh(size)
+    omegas = 2.0 * math.pi * np.linspace(SWEEP_HZ[0], SWEEP_HZ[1], SWEEP_FREQUENCIES)
+    problem = Problem('sweep', None, eigen={'mesh': mesh, 'omegas': omegas, 'n_free': 0})
+    system = sweep_system(problem, None)   # host SuperLU placeholder: only the pencil is read
+    pencil = system.pencil
+    middle = float(omegas[omegas.size // 2])
+    return Problem('sweep', pencil.reduced(middle), rhs=np.asarray(system.load_vector()[pencil.free]),
+                   longest_axis=int(size) * SWEEP_ORDER,
+                   eigen={'mesh': mesh, 'omegas': omegas, 'n_free': int(pencil.free.size)})
+
+
 PROBLEMS = {problem.name: problem for problem in (
     ProblemClass('fdfd_driven', '2D FDFD E_z drive of a dielectric disc (complex Helmholtz, CPML; MUMPS / PARDISO '
                  'take the LDL^T of the symmetrised D A)', 'em_fdfd_ez', 'linear', 'stationary', 'tensor', 2,
@@ -346,6 +413,12 @@ PROBLEMS = {problem.name: problem for problem in (
                  'arpack factorization is ignored here)', MODES_PHYSICS_TYPE, 'eigen', MODES_STUDY, MODES_GRID, 3,
                  f'cells along y (x: one more, z: one less; even; y side {MODES_SIDE * 1e3:g} mm)', (16, 32, 48, 64),
                  (8, 16), solid_modes_3d, ignored_settings={'arpack_shift_invert': ('factorization',)}),
+    # batched_direct (opt-in) against the per-frequency sparse_direct factors on the same sweep
+    ProblemClass('acoustic_sweep_2d', f'2D pressure acoustics frequency sweep: {SWEEP_FREQUENCIES} frequencies '
+                 f'{SWEEP_HZ[0]:g} - {SWEEP_HZ[1]:g} Hz of air in a {SWEEP_SIZE[0]:g} x {SWEEP_SIZE[1]:g} m rectangle '
+                 f'(P{SWEEP_ORDER} triangles, impedance sides, point load; fem.harmonic solve per frequency, '
+                 'batched_direct: plan_batched)', SWEEP_PHYSICS_TYPE, 'linear', SWEEP_STUDY, SWEEP_GRID, 2,
+                 'cells along x (y: half as many; 2 triangles each)', (100, 200, 400), (60,), acoustic_sweep_2d),
 )}
 
 

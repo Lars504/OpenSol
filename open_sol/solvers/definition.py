@@ -416,18 +416,29 @@ def _create_batched_direct(ctx, request):
 
 
 def _validate_batched_direct(vctx, values, path):
-    """The gpu backend without nvmath-python (cuDSS): error; the cpu backend without scipy: error (find_spec only)."""
+    """The gpu backend without nvmath-python (cuDSS): error; the cpu backend without scipy: error (find_spec only);
+    info when the study does not batch (not a frequency_response study with sweep_method direct: per-system solves)."""
+    issues = []
+    study = vctx.spec.study
+    settings = study.settings if isinstance(study.settings, dict) else {}
+    method = settings.get('sweep_method', 'direct')
+    if study.type != 'frequency_response' or method != 'direct':
+        reason = (f"sweep_method '{method}' factorises its few frequencies one at a time"
+                  if study.type == 'frequency_response' else f"the {study.type} study has no frequency sweep")
+        issues.append(Issue('info', path, f'nothing is batched here ({reason}): every solve of this node runs on its '
+                                          'own, as sparse_direct cuDSS (cpu: SuperLU); batching needs a '
+                                          'frequency_response study with sweep_method direct'))
     if solver_backend(vctx.spec) == 'gpu':
         from .cudss_factor import cudss_available
         if not cudss_available():
-            return [Issue('error', path, 'the batched direct solver needs nvmath-python with cuDSS on the gpu backend, '
-                                         'which is not installed: pip install nvmath-python[cu12] (or [cu13]), or use '
-                                         'sparse_direct')]
-        return []
+            issues.append(Issue('error', path, 'the batched direct solver needs nvmath-python with cuDSS on the gpu '
+                                               'backend, which is not installed: pip install nvmath-python[cu12] (or '
+                                               '[cu13]), or use sparse_direct'))
+        return issues
     if not sparse_direct.scipy_available():
-        return [Issue('error', path, 'the batched direct solver on the CPU backend factorises with scipy (SuperLU), '
-                                     'which is not installed: pip install scipy')]
-    return []
+        issues.append(Issue('error', path, 'the batched direct solver on the CPU backend factorises with scipy '
+                                           '(SuperLU), which is not installed: pip install scipy'))
+    return issues
 
 
 BATCHED_DIRECT = SolverType(

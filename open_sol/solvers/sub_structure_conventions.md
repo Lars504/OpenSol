@@ -823,6 +823,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   batch_refinement_steps, batch_seconds, batch_plan_seconds, batch_permanent_bytes / batch_peak_bytes (nvmath's plan
   estimates, summed over systems), worst_batch_residual, batch_unavailable. Time recipe: per-system cuDSS
   (an upper bound: the batching gain shows as a time_check deviation, not a lead on the recipe).
+- Sizing: `batch_capacity` uses the 2D fill law even for tetrahedra (only `batch_external_bytes` takes dimensions),
+  and never shrinks below the kept plan of the pattern (a sweep's later batches would else see the first plan's memory
+  as taken); a plan over DEVICE_FRACTION turns batching off for good instead of halving the batch. Estimators: a
+  batched node in a direct frequency_response sweep books `definition_helpers.batched_direct_items` (plan external
+  bytes x capacity, pool items, kept host solutions) instead of the per-frequency factor; time items sit on the
+  batch counters only with `SolverWork.batched`. Not booked: a rejected system's own cuDSS factor beside the plan.
+  frequency_terms / background loads run a batch ahead, so one-omega caches (membrane plate strip modes, acoustics
+  `_background_at`) miss twice per frequency. Extras blocks are not symmetry-checked: an unsymmetric block on a
+  symmetric pencil shows as a rejected system. Self-tests with a gpu batched node choose their backend by
+  `cudss_available()` (the node is a validation error without nvmath); SelfTestVariant cannot change a solver type.
 - Not yet: mechanics HarmonicSystem (2D / 3D frequency response), FDFD wavelength scans on triangles / cuDSS,
   thermal noise off line_block, BOR order sums, lockstep ARPACK on batched factors (several targets, EME sections).
 

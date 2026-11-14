@@ -338,7 +338,8 @@ def diffusion_system_estimate(window_cells, precision, cross_term=False, transie
             host_items.append((f"host {host_direct.factor_label(direct)} factor ({'float32' if mixed else 'float64'}, "
                                'heuristic, uncalibrated)',
                                host_direct.factor_host_bytes(cells, dimensions, complex_values=False, symmetric=True,
-                                                             mixed=mixed)))
+                                                             mixed=mixed,
+                                                             compressed=host_direct.host_direct_compressed(direct))))
             host_items.append((f'host {host_direct.factor_label(direct)} solver arrays (equilibrated operator, its '
                                'library copy, row scale; mixed: refinement vectors)',
                                host_direct.solver_host_bytes(cells, entries_per_row * cells, complex_values=False,

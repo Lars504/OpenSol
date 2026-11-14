@@ -898,6 +898,8 @@ def _solver_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
     solvers = vctx.solvers(physics_spec) or {}
     linear = solvers.get('linear')
     cudss_linear = linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS
+    if not one_d and batched_direct_back_end(solvers, solver_backend(vctx.spec)) in CUDSS_BACK_ENDS:
+        cudss_linear = True   # batched_direct on the gpu: cuDSS batches and per-system cuDSS factors
     if one_d:
         if not cudss_linear and host_direct_back_end(solvers) is None:
             return []

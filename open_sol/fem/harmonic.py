@@ -720,8 +720,10 @@ class HarmonicSystemBase:
         if not (omegas.size and np.all(np.isfinite(omegas)) and np.all(omegas >= 0.0)):
             raise ValueError(f'{self.label()}: a batched sweep needs finite angular frequencies >= 0 rad/s')
         self.load_vector()   # assembles if needed; the plan keys on these objects (solve raises once they change)
-        self._batched = {'omegas': [float(omega) for omega in omegas],
-                         'index': {float(omega): index for index, omega in enumerate(omegas)},
+        positions = {}   # omega -> its positions in plan order (a frequency listed twice is solved twice, in order)
+        for index, omega in enumerate(omegas):
+            positions.setdefault(float(omega), []).append(index)
+        self._batched = {'omegas': [float(omega) for omega in omegas], 'index': positions,
                          'load': self._load, 'fixed': self._fixed_value, 'extra_loads': tuple(extra_loads),
                          'held_offsets_of': held_offsets_of, 'solved': {}, 'pattern': None,
                          'batches': 0, 'rejected': 0, 'unavailable': None, 'remaining': set(range(omegas.size))}
@@ -794,9 +796,11 @@ class HarmonicSystemBase:
     def _batched_free(self, omega):
         """Free-dof solution of a planned omega (solving the batch from it when not solved yet), None when unplanned."""
         plan = self._batched
-        index = plan['index'].get(float(omega))
-        if index is None:
+        positions = plan['index'].get(float(omega))
+        if positions is None:
             return None
+        # the first position of this omega not solved yet (a re-solve of a solved one: its first, solved again)
+        index = next((position for position in positions if position in plan['remaining']), positions[0])
         free = self._planned_free(index, omega)
         plan['remaining'].discard(index)
         if not plan['remaining']:   # the last planned omega: free the batched plan's factors (outside the pool)
@@ -813,7 +817,8 @@ class HarmonicSystemBase:
             return self._reference_free(omega, rhs, block)
         from ..solvers.batched_direct import BatchUnavailable
         batch_pattern, names, keys = self._batch_pattern()
-        pending = [position for position in range(index, len(plan['omegas'])) if position not in plan['solved']]
+        pending = [index] + [position for position in range(index + 1, len(plan['omegas']))
+                             if position in plan['remaining'] and position not in plan['solved']]
         chunk = pending[:self.linear_solver.batch_capacity(batch_pattern, len(pending))]
         powers = {'stiffness': lambda w: 1.0, 'damping': lambda w: 1j * w, 'mass': lambda w: -w * w}
         systems, extras, outside = [], [], []

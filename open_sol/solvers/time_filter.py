@@ -10,7 +10,8 @@ level; cupy / scipy inside functions; the time stepping lives with the physics (
 # mode give nearly parallel fields); with a symmetrizer D (D A, D M complex symmetric) the projection is bilinear,
 # A_r = (D Q)^T A Q, M_r = (D Q)^T M Q (the stationary quotient of a complex symmetric pencil: eigenvalue error ~ the
 # square of the subspace error), else Galerkin Q^H A Q, Q^H M Q; scipy.linalg.eig on the host (m x m). Polish step:
-# append the M^-1-scaled residuals (A u - mu M u) / M of the wanted Ritz pairs (pinned rows 0) to the basis and project
+# append the M^-1-scaled residuals (A u - mu M u) / M of the wanted Ritz pairs not yet below CONVERGED_RESIDUAL (pinned
+# rows 0; directions already in the span dropped, as is a step with none left) to the basis and project
 # again: an unpreconditioned Davidson step, cheap (sparse products and m x m dense work) and enough to remove the FDTD
 # time-discretisation error ((omega dt)^2 / 24 of the mode frequency) and the PML-region mismatch of the filtered fields
 # (FDTD applies its CPML stretch at every omega, the frequency-domain pencil freezes it at the target).
@@ -28,9 +29,21 @@ MIN_SAMPLED_FREQUENCIES = 12   # sampled frequencies (0 = auto): max(this, 4 x w
 SAMPLES_PER_WANTED = 4
 MAX_SAMPLED_FREQUENCIES = 64
 RANK_TOLERANCE = 1e-10      # basis columns below this x the largest singular value are dropped
+CONVERGED_RESIDUAL = 1e-12  # a wanted pair below this relative residual adds no polish column (round-off only)
 PULSE_BANDWIDTH_FACTOR = 3.0   # source pulse relative bandwidth = this x the sampled band half-width (<= 1)
 SOURCE_SEED = 31            # deterministic source positions / amplitudes
 RESIDUAL_WARNING = 1e-6     # a reported resonance above this relative residual is named in a warning
+GUARD_PAIRS = 2             # polished Ritz pairs beyond the requested resonances (wanted = n_resonances + this)
+
+
+def wanted_pairs(n_resonances) -> int:
+    """Ritz pairs each polish step refines: the requested resonances + GUARD_PAIRS."""
+    return int(n_resonances) + GUARD_PAIRS
+
+
+def basis_columns(n_resonances, sampled_frequencies=0, polish_steps=DEFAULT_POLISH_STEPS) -> int:
+    """Largest basis of one solve (estimators): the sampled fields + polish_steps x wanted_pairs residual columns."""
+    return sampled_count(n_resonances, sampled_frequencies) + int(polish_steps) * wanted_pairs(n_resonances)
 
 
 def sampled_count(n_resonances, sampled_frequencies=0) -> int:
@@ -98,13 +111,13 @@ class TimeFilterEigenSolver:
         """Rayleigh-Ritz of A u = mu M u on span(basis) (xp (n, m)) with polish_steps polish steps: apply_operator(V)
         -> A V (n, k) of the array module xp, mass = M diagonal (n,) xp (0 on pinned rows), symmetrizer D (n,) xp or
         None (module notes); wanted pairs = the `wanted` finite mu nearest `target` (mu of the target resonance, e.g.
-        0 for A = L + k_t^2 M) that each polish step refines. Returns {mu (r,) host, vectors xp (n, r) (every Ritz
-        pair, wanted first by |mu - target|), residuals (r,) host relative ||A u - mu M u|| / (||A u|| + |mu| ||M u||),
-        columns (basis rank), applications}."""
+        0 for A = L + k_t^2 M) that each polish step refines. basis is zeroed on the pinned rows in place (no copy).
+        Returns {mu (r,) host, vectors xp (n, r) (every Ritz pair, wanted first by |mu - target|), residuals (r,)
+        host relative ||A u - mu M u|| / (||A u|| + |mu| ||M u||), columns (basis rank), applications}."""
         import time
         started = time.perf_counter()
         free = mass != 0
-        basis = xp.where(free[:, None], basis, 0)
+        basis[~free] = 0
         quotient = self._orthonormal(basis, xp)
         applied = apply_operator(quotient)
         applications = quotient.shape[1]
@@ -116,17 +129,21 @@ class TimeFilterEigenSolver:
             device_coefficients = xp.asarray(coefficients)
             vectors = quotient @ device_coefficients
             products = applied @ device_coefficients
-            residual_vectors = products - xp.asarray(mu)[None, :] * (mass[:, None] * vectors)
-            scale = (xp.linalg.norm(products, axis=0)
-                     + xp.abs(xp.asarray(mu)) * xp.linalg.norm(mass[:, None] * vectors, axis=0))
+            massed = mass[:, None] * vectors
+            device_mu = xp.asarray(mu)
+            residual_vectors = products - device_mu[None, :] * massed
+            scale = xp.linalg.norm(products, axis=0) + xp.abs(device_mu) * xp.linalg.norm(massed, axis=0)
+            del massed
             residuals = _host(xp.linalg.norm(residual_vectors, axis=0) / xp.where(scale > 0, scale, 1.0))
             if step == self.polish_steps:
                 break
             count = min(int(wanted), int(np.count_nonzero(np.isfinite(mu))))
-            if count < 1:
+            # a converged pair's residual is round-off outside every useful span: it would only grow the basis
+            active = np.flatnonzero(residuals[:count] > CONVERGED_RESIDUAL)
+            if active.size == 0:
                 break
             safe_mass = xp.where(free, mass, 1.0)
-            extra = xp.where(free[:, None], residual_vectors[:, :count] / safe_mass[:, None], 0)
+            extra = xp.where(free[:, None], residual_vectors[:, xp.asarray(active)] / safe_mass[:, None], 0)
             before = xp.linalg.norm(extra, axis=0)
             extra = extra - quotient @ (quotient.conj().T @ extra)   # two Gram-Schmidt passes against Q
             extra = extra - quotient @ (quotient.conj().T @ extra)
@@ -184,21 +201,27 @@ def _host(array):
 def time_estimate(values, work):
     """Run-time recipe (core.time_estimate.SolverWork; work.unknowns = grid cells, work.factorizations = time steps
     of one run (the physics' run_periods / dt count: no factor here), work.solves = eigen solves, work.rhs = sampled
-    frequencies): the FDTD steps (elementwise passes of the fields, the DFT accumulation per sample), then the
-    projection (sparse products and the dense n x m^2 orthonormalisation, priced as products)."""
+    frequencies, work.eigenpairs = the wanted (polished) Ritz pairs, wanted_pairs): the FDTD steps (elementwise passes
+    of the fields, the DFT accumulation per sample), then per basis column (sampled + polish_steps x wanted, counter
+    basis_columns) one operator product, its orthonormalisation and its share of the projections and Ritz vectors
+    (dense n x columns per column and projection)."""
     from ..core import time_estimate as te
     cells = float(work.unknowns)
-    steps = float(work.factorizations) * float(work.solves or 1)
+    solves = float(work.solves or 1)
+    steps = float(work.factorizations) * solves
     sampled = float(work.rhs or MIN_SAMPLED_FREQUENCIES)
     value_bytes = 4.0 if values.get('precision', 'single') == 'single' else 8.0
     polish = float(values.get('polish_steps', DEFAULT_POLISH_STEPS))
     step_ops = (te.Elementwise(cells * value_bytes * 12.0, cells * value_bytes * 3.0, launches=12),
                 te.Elementwise(cells * sampled * 8.0, cells * sampled * 8.0, launches=2))
-    columns = sampled * (1.0 + polish)
-    projection = (te.Spmv(cells, 5.0 * cells, 16.0), te.DenseFlops(8.0 * cells * columns * columns))
+    columns = sampled + polish * float(work.eigenpairs or wanted_pairs(1))
+    # per column: A q (CSR of work.nnz complex entries), QR / Gram-Schmidt against the basis, the projected rows and
+    # its Ritz vector / product / residual columns in each of the (polish + 1) projections (complex: 8 real flops)
+    column_ops = (te.Spmv(cells, float(work.nnz or 5.0 * cells), 16),
+                  te.DenseFlops(8.0 * cells * columns * (2.0 + 3.0 * (polish + 1.0))))
     return te.TimeEstimate((
         te.TimeItem('time-filter FDTD steps', 'step', steps, 'guess', step_ops, counter=work.counter('time_steps')),
-        te.TimeItem('time-filter Rayleigh-Ritz', 'solve', float(work.solves or 1), 'guess', projection,
+        te.TimeItem('time-filter Rayleigh-Ritz', 'basis column', columns * solves, 'guess', column_ops,
                     counter=work.counter('basis_columns'))))
 
 

@@ -9,7 +9,7 @@ import numpy as np
 
 from .cudss_factor import CUDSS_REFUSALS, CudssAccuracyError, canonical_csr, csr_rows
 from .host_direct import (HOST_DIRECT_FACTORIZATIONS, HOST_DIRECT_MIXED_BACK_ENDS, double_of,
-                          host_direct_factorization, is_host_direct_factor, quiet_openblas)
+                          host_direct_compressed, host_direct_factorization, is_host_direct_factor, quiet_openblas)
 from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrdering, factorize_host
 
 # Shift-invert across several shifts (B1): the shifted operator K - sigma M is built on one fixed pattern (ShiftPencil
@@ -20,7 +20,8 @@ from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrd
 # diagonal (else one counting SuperLU with diag_pivot_thresh 0, counted as an eigen factorisation). Pencils and the
 # shifted operator stay host CSR: SuperLU converts to CSC itself (_ordered_superlu). MUMPS / PARDISO factorizations
 # (host_direct) count from their real LDL^T / Cholesky pivots (MUMPS INFOG(12), PARDISO iparm[21] / [22]); an LU,
-# perturbed / null pivots or a Hermitian pencil get the counting SuperLU; previous= refactorises on the kept analysis.
+# perturbed / null pivots or a Hermitian pencil get the counting SuperLU; previous= refactorises on the kept analysis;
+# a block low-rank LDL^T (mumps_blr) counts with exact=False, as a float32 factor.
 # ShiftPencil (H2): the terms of K - sigma M put on one canonical pattern once; per shift SuperLU gets a one-pass host
 # combination of the values, a cuDSS factorization one DevicePencil (uploaded and symmetry-checked once, through a
 # private sparse_direct runtime) refreshed by factorize_pencil on the device (host CSR, asymmetry check and lower take
@@ -467,6 +468,7 @@ class ArpackShiftInvertSolver:
         self.n_cudss_reused_orderings = 0   # of those, plans on a kept ordering (cudss_factor "Ordering reuse")
         self.total_cudss_plan_seconds = 0.0
         self.n_host_direct_analyses = 0   # MUMPS / PARDISO analyses (fallback re-analyses included)
+        self.compression_fallbacks = 0    # mumps_blr factors refactored full rank after a miss
         self.host_direct_threads = None   # the last host direct factor's library thread count
         self.orderings = SuperLUOrdering()   # SuperLU elimination order of the last pattern (shifts of one pencil)
         self._pencil_runtime = None   # private SparseDirectSolver of the cuDSS ShiftPencils (factorize_pencil)
@@ -578,6 +580,7 @@ class ArpackShiftInvertSolver:
             self.refinement_steps = factor.refinement_steps
             self.lu_entries = factor.lu_entries
             self.double_fallbacks += int(factor.last_double_fallback)
+            self.compression_fallbacks += int(factor.last_compression_fallback)
             self.n_host_direct_analyses += factor.last_analyses
             self.host_direct_threads = factor.threads
         elif self.factorization in CUDSS_FACTORIZATIONS:
@@ -610,7 +613,9 @@ class ArpackShiftInvertSolver:
         (cuDSS general LU or complex LDL^T); a SuperLU with off-diagonal pivots and a MUMPS / PARDISO factor without a
         count (LU, perturbed or null pivots) get one counting SuperLU factorisation."""
         counts = factor.inertia()
-        exact = getattr(factor, 'factor_precision', 'double') == 'double'   # what is factored, not the request
+        # what is factored, not the request; a block low-rank LDL^T (mumps_blr) perturbs its pivots like float32 does
+        exact = (getattr(factor, 'factor_precision', 'double') == 'double'
+                 and not getattr(factor, 'compressed_factor', False))
         if counts is None and (getattr(factor, 'back_end', '') == 'scipy_splu' or is_host_direct_factor(factor)):
             if is_host_direct_factor(factor):
                 exact = True   # the counting SuperLU is double
@@ -944,6 +949,8 @@ class ArpackShiftInvertSolver:
                             eigen_double_fallbacks=self.double_fallbacks,
                             eigen_refinement_steps=self.refinement_steps,
                             eigen_host_direct_threads=self.host_direct_threads)
+            if host_direct_compressed(self.factorization):   # mumps_blr: full-rank refactors after a miss
+                counters['eigen_compression_fallbacks'] = self.compression_fallbacks
         return counters
 
 
@@ -1330,7 +1337,6 @@ def time_estimate(values, work):
             factorisation, plan = plan + factorisation, ()
     else:   # host SuperLU, or MUMPS / PARDISO priced as SuperLU x sparse_direct.HOST_DIRECT_* (uncalibrated; a mixed
         # factor's solves x CUDSS_MIXED_SOLVES_PER_SOLVE as cudss_mixed: the eigen polish)
-        from .host_direct import host_direct_compressed
         from .sparse_direct import (HOST_DIRECT_COMPRESSED_FACTOR_TIME, HOST_DIRECT_COMPRESSED_FULL_SOLVES,
                                     HOST_DIRECT_FACTOR_TIME, HOST_DIRECT_SOLVE_TIME)
         host_direct = factorization in HOST_DIRECT_FACTORIZATIONS

@@ -38,6 +38,11 @@ SOLVE_PHASE = 'solve'                       # one solve's material temporaries, 
 EIGEN_PHASE = 'eigen solve'                 # solve_resonances / a mode solve: own factor copies, Krylov basis, filter
 REFACTOR_PHASE = 'cuDSS refactorisation'    # refactorize on the planned pattern (a later frequency / order / iteration)
 ADJOINT_PHASE = 'adjoint solve'             # one eps_sensitivity: transposed-solve temporaries and the gradients
+TIME_FILTER_RUN_PHASE = 'time-filter FDTD run'   # time_filter eigen node: the EMPhysics run (freed before the projection)
+# time_filter projection (solvers.time_filter.ritz_pairs at its largest basis): Q, A Q, then the Ritz vectors, their
+# products, the M-scaled vectors, mu x those and the residuals (complex128 n x columns each) at the residual step
+_RITZ_BASIS_BLOCKS = 2
+_RITZ_TEMPORARY_BLOCKS = 5
 # _ResonanceFilter.measures: device column blocks alive at once (columns, conjugate, A v, B v and one product
 # temporary; + D v with a row scale)
 _FILTER_BLOCKS = 5
@@ -315,6 +320,33 @@ def _pole_regions(context):
             if region.n_drude or region.n_lorentz]
 
 
+def fdtd_engine_items(polarization, settings_values, mesh, regions, double, nonlinear=False) -> list:
+    """Items of the 2D Yee engine itself (fdtd_ez_2d / fdtd_hz_2d, fdtd_2d_base, boundaries) at the stepper precision
+    (double: float64, else float32): fields, update coefficients, CPML psi slabs and the pole buffers of `regions`
+    (_pole_regions; nonlinear: a C5 nonlinear_medium adds the hz pole cell mask). Shared by fdtd_memory_estimate and
+    the time_filter eigen run of the FDFD types (time_filter_eigen: an EMPhysics on the FDFD domain)."""
+    n_cells = int(mesh.n_cells)
+    real_bytes, real_name = (FLOAT64_BYTES, 'float64') if double else (FLOAT32_BYTES, 'float32')
+    any_drude = any(n_drude for _, n_drude, _ in regions)
+    n_coefficients = 4 if polarization == 'ez' else 8   # da, db + ca, cb (ez) / ca, cb, eps per face set (hz)
+    items = [(f'fields (3 x {real_name})', 3 * real_bytes * n_cells),
+             (f'update coefficients ({n_coefficients} x {real_name})', n_coefficients * real_bytes * n_cells),
+             ('CPML psi slabs', _cpml_psi_bytes(mesh, settings_values, real_bytes))]
+    pole_bytes = 0
+    for box_cells, n_drude, n_lorentz in regions:
+        masks = (n_drude + n_lorentz) * BOOL_BYTES * box_cells   # dispersive_regions cropped masks
+        if polarization == 'ez':   # drive + j per Drude, drive + p + dp per Lorentz, on the box
+            pole_bytes += masks + (2 * n_drude + 3 * n_lorentz) * real_bytes * box_cells
+        else:   # two face sets: shared weights, j per Drude, p + dp per Lorentz
+            pole_bytes += masks + 2 * (1 + n_drude + 2 * n_lorentz) * real_bytes * box_cells
+    if regions:
+        pole_bytes += (real_bytes if polarization == 'ez' and any_drude else 0) * n_cells   # jz_total
+    if regions or nonlinear:
+        pole_bytes += (BOOL_BYTES if polarization == 'hz' else 0) * n_cells                 # pole cell mask
+    items.append(('dispersive poles', pole_bytes))
+    return items
+
+
 def fdtd_memory_estimate(polarization):
     """PhysicsType.memory_estimate of em_fdtd_<polarization> (fdtd_ez_2d / fdtd_hz_2d, fdtd_2d_base, boundaries): the
     field-side arrays (fields, coefficients, CPML psi, pole buffers, jz_total, hz pole power totals) in the resolved
@@ -327,30 +359,15 @@ def fdtd_memory_estimate(polarization):
         any_drude = any(n_drude for _, n_drude, _ in regions)
         q_accum = bool(settings_values.get('track_absorption')) or _q_accum_referenced(
             context.spec, context.physics_spec.name, context.registry)
-        n_coefficients = 4 if polarization == 'ez' else 8   # da, db + ca, cb (ez) / ca, cb, eps per face set (hz)
-        items = [(f'fields (3 x {real_name})', 3 * real_bytes * n_cells),
-                 (f'update coefficients ({n_coefficients} x {real_name})', n_coefficients * real_bytes * n_cells),
-                 ('CPML psi slabs', _cpml_psi_bytes(mesh, settings_values, real_bytes))]
         # C5 nonlinear_medium (its own arrays: the feature estimator): hz adds its cells to the pole cell mask and its
         # power to the pole power totals
         nonlinear = any(feature.enabled and feature.type == 'nonlinear_medium'
                         for feature in context.physics_spec.features)
+        items = fdtd_engine_items(polarization, settings_values, mesh, regions, double, nonlinear)
         if q_accum:   # float32 q_accum (+ hz pole power totals while a pole or nonlinear medium exists)
             pole_totals = 2 if polarization == 'hz' and (regions or nonlinear) else 0
             items.append((f'absorption accumulator (float32 + {pole_totals} x {real_name})',
                           (FLOAT32_BYTES + pole_totals * real_bytes) * n_cells))
-        pole_bytes = 0
-        for box_cells, n_drude, n_lorentz in regions:
-            masks = (n_drude + n_lorentz) * BOOL_BYTES * box_cells   # dispersive_regions cropped masks
-            if polarization == 'ez':   # drive + j per Drude, drive + p + dp per Lorentz, on the box
-                pole_bytes += masks + (2 * n_drude + 3 * n_lorentz) * real_bytes * box_cells
-            else:   # two face sets: shared weights, j per Drude, p + dp per Lorentz
-                pole_bytes += masks + 2 * (1 + n_drude + 2 * n_lorentz) * real_bytes * box_cells
-        if regions:
-            pole_bytes += (real_bytes if polarization == 'ez' and any_drude else 0) * n_cells   # jz_total
-        if regions or nonlinear:
-            pole_bytes += (BOOL_BYTES if polarization == 'hz' else 0) * n_cells                 # pole cell mask
-        items.append(('dispersive poles', pole_bytes))
         if bloch_active_axes(settings_values):   # Bloch k != 0: imaginary fields, CPML psi and pole buffers
             imaginary_pole_bytes = sum((1 if polarization == 'ez' else 2) * (n_drude + 2 * n_lorentz) * real_bytes
                                        * box_cells for box_cells, n_drude, n_lorentz in regions)
@@ -380,8 +397,8 @@ def fdtd_memory_estimate(polarization):
 def fdfd_memory_estimate(polarization):
     """PhysicsType.memory_estimate of em_fdfd_<polarization> (solvers/fdfd_2d, harmonic, operators; the resolved
     sparse_direct back end of context.solvers): the system and solution are run items, its assembly an ASSEMBLY_PHASE
-    item; a cuDSS factor (+ the transpose's LU of an adjoint solve with a Bloch phase) is external. Triangles:
-    _fdfd_fem_memory_estimate."""
+    item; a cuDSS factor (+ the transpose's LU of an adjoint solve with a Bloch phase) is external; a time_filter eigen
+    node books no factor (_time_filter_items). Triangles: _fdfd_fem_memory_estimate."""
     def estimate(settings_values, mesh, context):
         if getattr(mesh, 'kind', 'tensor') == 'triangles':
             return _fdfd_fem_memory_estimate(settings_values, mesh, context)
@@ -413,7 +430,14 @@ def fdfd_memory_estimate(polarization):
         operator_copy = (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells
         back_end = resolved_back_end(context.solvers)
         superlu_host = False   # host items with a SuperLU factor: the eps_xy fill below adds to them
-        if eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
+        time_filter = (context.solvers or {}).get('eigen')
+        time_filter = time_filter if time_filter is not None and time_filter.solver_type.name == 'time_filter' else None
+        if eigen_solved(context.spec, context.physics_spec.name) and time_filter is not None:   # no factor at all
+            host_items, eigen_transient = _time_filter_items(polarization, settings_values, mesh, context,
+                                                             time_filter.values, sparse_row)
+            transient_items += eigen_transient
+            run_items += line_block_items
+        elif eigen_solved(context.spec, context.physics_spec.name):   # no driven solve: the shift-invert factor instead
             host_items, eigen_transient, external_items, external_extra = _eigen_items(
                 context, n_cells, sparse_row, superlu=not line_block_items)
             superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
@@ -554,6 +578,54 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
         (f'resonance fields ({n_resonances} x complex128)', n_resonances * vector_bytes),
         ('eigen solve vectors', _EIGEN_HOST_VECTORS * vector_bytes)]
     return host_items, transient_items, external_items, external_extra
+
+
+def _time_filter_items(polarization, settings_values, mesh, context, values, sparse_row):
+    """(host items, transient items) of a time_filter eigen node (physics/em/time_filter_eigen, solvers.time_filter):
+    no factor. TIME_FILTER_RUN_PHASE: the EMPhysics on the FDFD domain at the node's precision (fdtd_engine_items, the
+    PEC keeps of a pec_domain), the whole-grid DFTMonitor (ez: E_z, hz: H_z + E_x + E_y complex64 per sampled frequency)
+    and the complex128 basis made from it; EIGEN_PHASE: that basis (held through the projection) + ritz_pairs at its
+    largest basis (sampled + polish_steps x wanted columns: Q, A Q and the residual-step temporaries); on the gpu the
+    resonance filter's device copies as their own phase (after the projection); host: the Ritz vectors, the host
+    operator copy (gpu), the resonance fields and solve vectors."""
+    from ...solvers import time_filter as tf
+    study_values = _study_values(context)
+    n_resonances = int(study_values.get('n_resonances', study_values.get('n_optical_resonances')) or 1)
+    n_cells = int(mesh.n_cells)
+    vector_bytes = COMPLEX128_BYTES * n_cells
+    sampled = tf.sampled_count(n_resonances, values.get('sampled_frequencies', 0))
+    polish_steps = int(values.get('polish_steps', tf.DEFAULT_POLISH_STEPS))
+    columns = tf.basis_columns(n_resonances, values.get('sampled_frequencies', 0), polish_steps)
+    double = values.get('precision', 'single') == 'double'
+    run = [(TIME_FILTER_RUN_PHASE, f'time-filter FDTD {label}', size)
+           for label, size in fdtd_engine_items(polarization, settings_values, mesh, _pole_regions(context), double)]
+    if any(feature.enabled and feature.type == 'pec_domain' for feature in context.physics_spec.features):
+        keeps = 1 if polarization == 'ez' else 2   # the engine's float32 keep masks + EMPhysics.pec_cells (bool)
+        run.append((TIME_FILTER_RUN_PHASE, f'time-filter FDTD PEC keeps ({keeps} x float32 + bool)',
+                    (keeps * FLOAT32_BYTES + BOOL_BYTES) * n_cells))
+    n_spectra = _DFT_SPECTRA[polarization]
+    run += [(TIME_FILTER_RUN_PHASE, f'time-filter DFT accumulators ({n_spectra} x {sampled} frequencies x complex64)',
+             n_spectra * sampled * COMPLEX64_BYTES * n_cells),
+            (TIME_FILTER_RUN_PHASE, f'time-filter search basis ({sampled} x complex128)', sampled * vector_bytes)]
+    projection = [(EIGEN_PHASE, f'time-filter search basis ({sampled} x complex128, held through the projection)',
+                   sampled * vector_bytes),
+                  (EIGEN_PHASE, f'Rayleigh-Ritz basis Q and A Q ({_RITZ_BASIS_BLOCKS} x {columns} x complex128)',
+                   _RITZ_BASIS_BLOCKS * columns * vector_bytes),
+                  (EIGEN_PHASE, f'Ritz vectors, products and residual temporaries ({_RITZ_TEMPORARY_BLOCKS} x '
+                                f'{columns} x complex128)', _RITZ_TEMPORARY_BLOCKS * columns * vector_bytes)]
+    operator_copy = (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells
+    gpu = solver_backend(context.spec) == 'gpu'
+    if gpu:   # _ResonanceFilter on the device: A copy (complex128 CSR), B / W / window columns, column blocks (+ D v)
+        blocks = _FILTER_BLOCKS + 1
+        projection.append(('time-filter resonance filter', f'resonance filter: device operator copy and {blocks} '
+                                                           'column blocks',
+                           operator_copy + blocks * min(FILTER_BLOCK_COLUMNS, columns) * vector_bytes))
+    host_items = [(f'Ritz vectors on the host ({columns} x complex128)', columns * vector_bytes),
+                  (f'resonance fields ({n_resonances} x complex128)', n_resonances * vector_bytes),
+                  ('eigen solve vectors (mass, B diagonal, energy weights)', 3 * vector_bytes)]
+    if gpu:
+        host_items.append(('eigen host operator copy', operator_copy))
+    return host_items, run + projection
 
 
 def modes_memory_estimate(settings_values, mesh, context):

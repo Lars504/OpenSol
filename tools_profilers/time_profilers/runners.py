@@ -1,6 +1,7 @@
 """One timed repeat of a profiler Problem per SolverType, in the child process, through the calls open_sol's own
 consumers make (SparseDirectSolver.factorize like fdfd_2d, DiffusionDirectSolver like DiffusionSystem, PCGSolver,
-BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, ElasticSystem3D.lowest_modes) on
+BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, ElasticSystem3D.lowest_modes,
+fem.harmonic frequency sweeps: solve per frequency, batched_direct through plan_batched) on
 the cpu or gpu backend: phase wall times, the relative residual against its tolerance and solver details. open_sol is
 imported inside the runners."""
 # Phases (seconds, None where the solver does not expose them): analysis = MUMPS / PARDISO ordering + symbolic
@@ -25,6 +26,9 @@ imported inside the runners."""
 # (arpack: the Lanczos tolerance it used); reference_error = max relative omega error against the closed form (rank
 # order); gpu_peak_bytes = the cupy pool's high water of the call over its live bytes at the start (cached blocks
 # freed before the timer).
+# Frequency sweeps (problem kind 'sweep', acoustic_sweep_2d): a fresh fem.harmonic system per repeat on the runtime
+# (assembled before the timer), every frequency solved in order; phases factor = the first frequency, solve = the mean
+# of each later one, total = the sweep (refactor None: no sweep column); the residual is the worst frequency's.
 import math
 import time
 from dataclasses import dataclass
@@ -64,7 +68,7 @@ def backend_arrays(problem, backend) -> BackendArrays:
     import cupyx.scipy.sparse as cpsp
     from open_sol.core import gpu_memory
     gpu_memory.set_budget()
-    if problem.kind == 'eigen':   # solve_resonances takes the host operator on both backends
+    if problem.kind in ('eigen', 'sweep'):   # solve_resonances / fem.harmonic take host operators on both backends
         return BackendArrays('gpu', problem.operator, None, cp)
     arrays = BackendArrays('gpu', cpsp.csr_matrix(problem.operator), cp.asarray(problem.rhs), cp)
     cp.cuda.Device().synchronize()
@@ -150,10 +154,65 @@ def _repeat(phases, residual, details, tolerance, status='ok') -> dict:
 
 def run_sparse_direct(problem, values, arrays) -> dict:
     """sparse_direct: a real SPD problem through DiffusionDirectSolver (the diffusion types' consumer), the FDFD drive
-    through SparseDirectSolver.factorize (the LDL^T of the symmetrised D A on cuDSS / MUMPS / PARDISO, as fdfd_2d)."""
+    through SparseDirectSolver.factorize (the LDL^T of the symmetrised D A on cuDSS / MUMPS / PARDISO, as fdfd_2d),
+    an acoustic sweep through fem.harmonic (_run_sweep: one factor per frequency)."""
     if problem.kind == 'spd':
         return _run_diffusion_direct(problem, values, arrays)
+    if problem.kind == 'sweep':
+        from open_sol.solvers.sparse_direct import SparseDirectSolver
+        return _run_sweep(problem, SparseDirectSolver(back_end=values['back_end'], label=_label,
+                                                      backend=arrays.backend), arrays, batched=False)
     return _run_grid_direct(problem, values, arrays)
+
+
+def run_batched_direct(problem, values, arrays) -> dict:
+    """batched_direct ('linear' of pressure_acoustics / membrane, opt-in): the acoustic sweep's frequencies through
+    fem.harmonic plan_batched (as the physics' plan_frequency_response hook) on the runtime the SolverType create
+    makes; the other problems have no batch of same-pattern systems ('refused')."""
+    if problem.kind != 'sweep':
+        raise ValueError(f"batched_direct runs on the frequency sweep problems only, not on a {problem.kind!r} one")
+    from open_sol.solvers.batched_direct import BatchedDirectSolver
+    runtime = BatchedDirectSolver(precision=values['precision'], batch_size=values['batch_size'], label=_label,
+                                  backend=arrays.backend)
+    return _run_sweep(problem, runtime, arrays, batched=True)
+
+
+def _run_sweep(problem, runtime, arrays, batched) -> dict:
+    """Every frequency of a 'sweep' problem through a fresh problems.sweep_system on `runtime` (assembled before the
+    timer): solve(omega) in order, after plan_batched(omegas) when batched (the physics hook's call). Phases: factor =
+    the first frequency (plan, first factor / first batch), solve = the mean of each later one (its refactorisation
+    and solve; batched: mostly taking a solved system, plus the later batches), total = the whole sweep. Residual: the
+    largest ||b - A(omega) x|| / ||b|| over the frequencies (host, after the timer); details: the runtime's work
+    counters."""
+    from tools_profilers.time_profilers.problems import sweep_system
+    backend = arrays.backend
+    system = sweep_system(problem, runtime)
+    pencil = system.pencil
+    omegas = [float(omega) for omega in problem.eigen['omegas']]
+    solutions = []
+    started = _clock(backend)
+    if batched:
+        system.plan_batched(omegas)
+    first = None
+    for omega in omegas:
+        system.solve(omega)
+        solutions.append(system.solution[pencil.free].copy())   # a host copy of n values per frequency
+        if first is None:
+            first = _clock(backend)
+    finished = _clock(backend)
+    load = system.load_vector()[pencil.free]
+    residuals = [relative_residual(pencil.reduced(omega), load, solution) for omega, solution in zip(omegas, solutions)]
+    counters = {name: _number(value) if not isinstance(value, str) else value
+                for name, value in runtime.work_counters().items()}
+    details = {'frequencies': len(omegas), 'counters': counters,
+               'factor_kind': getattr(system.factor, 'description', None) or counters.get('back_end'),
+               'device_bytes': _number(counters.get('cudss_factor_device_bytes') or counters.get('batch_permanent_bytes'))}
+    system.clear_reduced()   # the batched plan's outside-pool memory
+    _release(system.factor)
+    later = len(omegas) - 1
+    phases = {'analysis': None, 'factor': first - started,
+              'solve': (finished - first) / later if later else None, 'refactor': None, 'total': finished - started}
+    return _repeat(phases, max(residuals), details, _direct_tolerance())
 
 
 def _run_grid_direct(problem, values, arrays) -> dict:
@@ -473,5 +532,6 @@ def run_block_eigen(problem, values, arrays) -> dict:
                    _modes_status(problem, solve, counters['eigen_unconverged'] > 0))
 
 
-RUNNERS = {'sparse_direct': run_sparse_direct, 'pcg': run_pcg, 'banded': run_banded, 'line_block': run_line_block,
-           'arpack_shift_invert': run_arpack, 'block_eigen': run_block_eigen}
+RUNNERS = {'sparse_direct': run_sparse_direct, 'batched_direct': run_batched_direct, 'pcg': run_pcg,
+           'banded': run_banded, 'line_block': run_line_block, 'arpack_shift_invert': run_arpack,
+           'block_eigen': run_block_eigen}

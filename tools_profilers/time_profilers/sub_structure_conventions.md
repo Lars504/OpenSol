@@ -60,6 +60,14 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   `.get`: a renamed key silently empties a detail, not the run. The closed-form reference (`_roller_box_reference`)
   parametrises selftests_eigenfrequency's 3D roller box: it is exact only for uniform cells, rollers on all six faces
   and the trilinear consistent mass; a change of geometry or supports there needs a new reference, not a looser one.
+- Frequency sweeps (`Problem.kind` 'sweep', `acoustic_sweep_2d`): the problem holds the mesh and omegas, its
+  `operator` / `rhs` are only the middle frequency's reduced A and load (counts); `runners._run_sweep` builds a fresh
+  `problems.sweep_system` on the runtime per repeat (assembled before the timer) and calls `solve(omega)` in order,
+  after `plan_batched(omegas)` for batched_direct, as the pressure_acoustics hook does: check `sweep_system` against
+  the physics' system build (coefficients, impedance as Robin damping) and the hook when they change. Its phases are
+  not factor / solve / refactor of one system (factor = the first frequency, solve = the mean later one): its
+  rows compare by `total`. batched_direct has no library setting, so `solver_catalog._unavailable` names it by type
+  (gpu without nvmath-python); its `batch_size` is an int and stays at its default.
 - Thread variables are set in the child environment before it starts (pools read them at library load), never by
   the child itself.
 

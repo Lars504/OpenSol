@@ -123,13 +123,16 @@ def _gpu_missing() -> str:
     return '' if gpu_available() else 'gpu backend: no CUDA device answers'
 
 
-def _unavailable(values, backend, gpu_missing) -> str:
+def _unavailable(values, backend, gpu_missing, type_name='') -> str:
     """Why a choice cannot run on this machine: no GPU for the gpu backend, a missing MUMPS / PARDISO wrapper
-    (host_direct.missing_text; PARDISO off x86-64) or nvmath-python for a cuDSS back end ('' when it can)."""
+    (host_direct.missing_text; PARDISO off x86-64) or nvmath-python for a cuDSS back end or for batched_direct on the
+    gpu (its batches and per-system factors are cuDSS; no library setting names it) ('' when it can)."""
     from open_sol.solvers.cudss_factor import cudss_available
     from open_sol.solvers.host_direct import HOST_DIRECT_BACK_ENDS, host_direct_available, missing_text
     if backend == 'gpu' and gpu_missing:
         return gpu_missing
+    if backend == 'gpu' and type_name == 'batched_direct' and not cudss_available():
+        return 'batched_direct on the gpu needs nvmath-python with cuDSS (pip install nvmath-python[cu12])'
     for name in LIBRARY_SETTINGS:
         library = values.get(name)
         if library in HOST_DIRECT_BACK_ENDS and not host_direct_available(library):
@@ -168,7 +171,7 @@ def solver_candidates(target, backends=('cpu',)):
                 seen.add(label)
                 misfit = solver_misfit(solver_type, values, physics_type, role, target.study, backend, target.grid)
                 invalid = misfit or _validation_errors(solver_type, values, target.dimensions)
-                missing = _unavailable(values, backend, gpu_missing)
+                missing = _unavailable(values, backend, gpu_missing, solver_type.name)
                 if invalid and not missing:
                     excluded.append({'label': label, 'backend': backend, 'reason': invalid})
                     continue

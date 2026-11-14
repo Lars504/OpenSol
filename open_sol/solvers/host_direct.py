@@ -57,13 +57,17 @@ helpers here are GUI-thread safe."""
 # Compressed factors (mumps_blr, the double-precision block low-rank MUMPS factor): ICNTL(35) = 2 (BLR factorisation
 # and solve on the compressed factors, set before the analysis), CNTL(7) = BLR_TOLERANCE (the dropping threshold, set
 # before every factorisation): about half the factor memory and flops on large 3D fronts (2D gains little), at the
-# price of a backward error ~BLR_TOLERANCE, so its probe misses ACCEPT_RESIDUAL by design and every solve runs float64
-# GMRES-IR on the compressed factor (the double-refined path above: ~2 - 4 compressed solves per solve). A compressed
-# factor that still misses is refactored full rank once (sticky, last_compression_fallback / compression_rejection)
-# before anything raises. Analyses are kept / adopted per compression (_KeptAnalysis key 'mumps_blr'), a previous of
-# the other compression is never refactored in place, INFOG(17) (the guard) is MUMPS's full-rank estimate (safe side),
-# and the LDL^T inertia is that of the compressed factor (exact for eigenvalues farther than ~BLR_TOLERANCE ||A|| from
-# the shift). python-mumps exposes the instance's cntl as it does icntl (1-based; checked against the sources only).
+# price of a backward error ~BLR_TOLERANCE, so its probe usually misses ACCEPT_RESIDUAL and every solve runs float64
+# GMRES-IR on the compressed factor (the double-refined path above: ~2 - 4 compressed solves per solve; MUMPS leaves
+# fronts below its BLR block size full rank, so a small factor may pass unrefined). A compressed factor always probes
+# (no defer_check: a miss found by a later solve could not refactor full rank). A compressed factor that still misses
+# is refactored full rank once (sticky, last_compression_fallback / compression_rejection; counters
+# host_direct_compression_fallbacks / eigen_compression_fallbacks) before anything raises. Analyses are kept / adopted
+# per compression (_KeptAnalysis key 'mumps_blr'), a previous of the other compression is never refactored in place,
+# INFOG(17) (the guard) is MUMPS's full-rank estimate (safe side), and the LDL^T inertia is that of the compressed
+# factor (exact for eigenvalues farther than ~BLR_TOLERANCE ||A|| from the shift; ShiftInertia exact=False as for a
+# float32 factor). python-mumps exposes the instance's cntl as it does icntl (1-based; assumed, not checked: a missing
+# cntl raises RuntimeError naming the wrapper in _MumpsFactor._set_blr_tolerance).
 # No automatic fallback: an explicit host node raises (HOST_DIRECT_REFUSALS).
 # Library calls live only in the adapter section at the end (_MumpsFactor, _PardisoFactor): PARDISO run against
 # pydiso 0.3.1 / oneMKL 2026.2, MUMPS checked against the sources of python-mumps 0.0.6 only (not run).
@@ -293,10 +297,11 @@ def superlu_bytes_scale(name, symmetric=False, complex_values=True) -> float:
 
 
 def factor_host_bytes(n_unknowns, dimensions=2, complex_values=True, symmetric=False, mixed=False,
-                      counted_triangle_entries=None) -> int:
+                      counted_triangle_entries=None, compressed=False) -> int:
     """Heuristic host bytes of a MUMPS / PARDISO factor: the SuperLU heuristic of core.memory_estimate (complex:
     host_lu_bytes, 2D n log2 n or 3D curl-curl n^(4/3); real: host_real_lu_bytes; counted_triangle_entries: the
-    counted factor triangle, host_counted_lu_bytes) x superlu_bytes_scale (uncalibrated)."""
+    counted factor triangle, host_counted_lu_bytes) x superlu_bytes_scale (uncalibrated; compressed: mumps_blr, x
+    BLR_FACTOR_FRACTION)."""
     from ..core import memory_estimate
     n_unknowns = int(n_unknowns)
     if counted_triangle_entries is not None:
@@ -307,7 +312,7 @@ def factor_host_bytes(n_unknowns, dimensions=2, complex_values=True, symmetric=F
         superlu = memory_estimate.host_lu_bytes(n_unknowns, dimensions=dimensions)
     else:
         superlu = memory_estimate.host_real_lu_bytes(n_unknowns, dimensions=dimensions)
-    return int(superlu * _host_scale(symmetric, complex_values, mixed))
+    return int(superlu * _host_scale(symmetric, complex_values, mixed) * (BLR_FACTOR_FRACTION if compressed else 1.0))
 
 
 def solver_host_bytes(n_unknowns, entries, complex_values=True, mixed=False, symmetric=False) -> int:
@@ -782,7 +787,8 @@ class HostDirectFactorization(ProbedFactor):
         """Library factorisation of the current E as `kind` (analyse: a new analysis, the memory guard after it; else
         numeric only on the kept analysis), then the probe (defer: a double factor whose last probe passed unrefined
         leaves it to the next solve); _FactorRejected on a zero pivot or a missed probe."""
-        deferred = (defer and not analyse and self._probe_clean
+        # never for a compressed factor: a miss found by a later solve (_checked_solve) could not refactor full rank
+        deferred = (defer and not analyse and self._probe_clean and not self.compressed_factor
                     and self._wanted_factor_dtype() == self.value_dtype)
         self._double_refined = False
         self._check_pending = False
@@ -874,9 +880,9 @@ class HostDirectFactorization(ProbedFactor):
     def _describe(self) -> None:
         kind_text = _KIND_TEXTS[self.matrix_kind]
         refinement = ('float32' if self.real else 'complex64') + ' + float64 GMRES refinement'
-        if self.compressed_factor:
-            self.description = (f'{self.label} block low-rank {kind_text} (CNTL(7) {BLR_TOLERANCE:g}) + float64 '
-                                'GMRES refinement')
+        if self.compressed_factor:   # refined only when its probe missed (small fronts stay full rank: may pass)
+            self.description = (f'{self.label} block low-rank {kind_text} (CNTL(7) {BLR_TOLERANCE:g})'
+                                + (' + float64 GMRES refinement' if self._double_refined else ''))
         elif self.mixed_factor:
             self.description = f'{self.label} {kind_text} {refinement}'
         elif self._mixed_rejected:

@@ -736,8 +736,8 @@ class _BandSearch:
             self.warnings.append(f'between f = {_hertz(low.sigma):.6g} and {_hertz(high.sigma):.6g} Hz the inertia '
                                  f'count gives {expected} mode(s), the shifts found {found}: {what}')
         if not all(point.exact for point in points):
-            self.warnings.append('inertia counts from a float32 / complex64 factor (a mixed eigen factorization): a '
-                                 'pivot near a shift may be miscounted')
+            self.warnings.append('inertia counts from a float32 / complex64 or block low-rank factor (a mixed or '
+                                 'mumps_blr eigen factorization): a pivot near a shift may be miscounted')
 
 
 def _hertz(eigenvalue) -> float:

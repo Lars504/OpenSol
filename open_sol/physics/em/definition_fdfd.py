@@ -11,8 +11,8 @@ from ...core.renderer import FieldInfo
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
                                          host_direct_back_end, linear_solver_cudss, optimization_evaluations,
                                          resolved_back_end, validate_points_inside)
-from ...model.schema import (FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, known_physics,
-                             solver_backend)
+from ...model.schema import (FeatureType, Issue, Param, PhysicsType, conformal_boundaries_physics, coupling_writes,
+                             feature_path, known_physics, solver_backend, subpixel_smoothing_physics)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
                                 HOST_DIRECT_NAMES,
@@ -796,6 +796,45 @@ def _line_block_solver_issues(vctx, physics_spec, settings_values, path):
     return issues
 
 
+TIME_FILTER_TYPE = 'time_filter'   # solvers.definition TIME_FILTER (opt-in eigen node)
+
+
+def _resolved_time_filter(solvers):
+    """The resolved 'eigen' solver ({role: ResolvedSolver} of a Validation / Memory / TimeContext) when it is a
+    time_filter node, else None."""
+    resolved = (solvers or {}).get('eigen')
+    return resolved if resolved is not None and resolved.solver_type.name == TIME_FILTER_TYPE else None
+
+
+def _time_filter_issues(vctx, physics_spec, settings_values, path):
+    """A time_filter 'eigen' node of an eigen-solved physics: one error naming what its FDTD run of the structure cannot
+    reproduce (time_filter_eigen.unsupported_reason refuses the same at run time): a Bloch phase, polar coordinates,
+    subpixel smoothing or conformal boundaries of solver_defaults reaching this physics, conducting sheets. Searches
+    other than 'nearest' are refused by the study (eigen_searches)."""
+    resolved = _resolved_time_filter(vctx.solvers(physics_spec))
+    if resolved is None or not eigen_solved(vctx.spec, physics_spec.name):
+        return []
+    reasons = []
+    if bloch_active_axes(settings_values):
+        reasons.append('a Bloch phase (bloch_kx / bloch_ky != 0: the FDTD would step complex fields)')
+    if getattr(vctx.spec.domain, 'coordinates', 'cartesian') != 'cartesian':
+        reasons.append(f'{vctx.spec.domain.coordinates} coordinates')
+    if physics_spec.name in subpixel_smoothing_physics(vctx.spec, vctx.registry)[0]:
+        reasons.append('subpixel smoothing (solver_defaults.subpixel_smoothing)')
+    if physics_spec.name in conformal_boundaries_physics(vctx.spec, vctx.registry)[0]:
+        reasons.append('conformal boundaries (solver_defaults.conformal_boundaries)')
+    sheets = [feature.name for feature in physics_spec.features
+              if feature.enabled and feature.type == 'conducting_sheet']
+    if sheets:
+        reasons.append(f"conducting sheets ({', '.join(sheets)})")
+    if not reasons:
+        return []
+    node = f"eigen solver '{resolved.node}'" if resolved.node else 'the eigen solver'
+    return [Issue('error', path, f"{node} (time_filter) cannot run with {'; '.join(reasons)}: its time-domain run of "
+                                 'the structure would differ from the frequency-domain operator; assign '
+                                 'arpack_shift_invert (the Automatic eigen solver) instead, or switch these off')]
+
+
 def _time_dependent_issues(vctx, physics_spec, path):
     """time_dependent study only: error beside a time-stepped EM physics (FDTD: its femtosecond step would set the
     shared step of the whole run); info on the stroboscopic re-solves."""
@@ -859,6 +898,7 @@ def _make_validate_physics(slot_arrays):
             issues.extend(_off_diagonal_issues(vctx, physics_spec, path))
         issues.extend(direct_solver_issues(vctx, physics_spec, settings_values, path))
         issues.extend(_line_block_solver_issues(vctx, physics_spec, settings_values, path))
+        issues.extend(_time_filter_issues(vctx, physics_spec, settings_values, path))
         issues.extend(fdfd_bloch_issues(vctx, physics_spec, settings_values))
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
         bloch_axes = bloch_active_axes(settings_values)
@@ -1034,6 +1074,10 @@ def _fdfd_time_estimate(settings_values, mesh, context):
     nnz = 5.0 * unknowns
     sources = _source_count(context)
     assembly_ops = (te.HostStream(ASSEMBLY_BYTES_PER_ENTRY * nnz), te.PythonCalls(200))
+    time_filter = _resolved_time_filter(context.solvers)
+    if eigen_solved(context.spec, context.name) and time_filter is not None:
+        return _time_filter_time_estimate(settings_values, mesh, context, time_filter.values, unknowns, nnz,
+                                          assembly_ops)
     if eigen_solved(context.spec, context.name):
         eigenpairs = resonance_eigenpairs(context)
         return te.combine((te.TimeEstimate((te.TimeItem('Helmholtz assembly', 'assembly', 1.0, 'exact', assembly_ops),
@@ -1055,6 +1099,31 @@ def _fdfd_time_estimate(settings_values, mesh, context):
                                            solves_kind=kind, factorizations=points, factorizations_kind=kind,
                                            per_step=per_step, device_values=points > 1.0,   # cuDSS: device refreshes
                                            block_size=int(mesh.nx) if block_axis == 0 else int(mesh.ny))))
+
+
+def _time_filter_time_estimate(settings_values, mesh, context, values, unknowns, nnz, assembly_ops):
+    """Eigen-solved with a time_filter node: one Helmholtz assembly, the resonance filter of every Ritz pair and the
+    node's recipe (solvers.time_filter.time_estimate) with work.factorizations = the time steps of its one FDTD run
+    (time_filter_eigen.run_steps at the wavelength setting's frequency and the grid's Courant dt: the mesh estimate's,
+    else core.grid.courant_time_step of its finest cells at the default factor, as the FDFD domain is built),
+    work.rhs = the sampled frequencies, work.eigenpairs = the polished pairs, work.unknowns = cells."""
+    from ...core.constants import C0
+    from ...core.grid import courant_time_step
+    from ...solvers import time_filter as tf
+    from .time_filter_eigen import run_steps
+    wanted = max((resonance_eigenpairs(context) - 10) // 2, 1)   # the n_resonances it was built from
+    sampled = tf.sampled_count(wanted, values.get('sampled_frequencies', 0))
+    columns = tf.basis_columns(wanted, values.get('sampled_frequencies', 0),
+                               int(values.get('polish_steps', tf.DEFAULT_POLISH_STEPS)))
+    dt = mesh.dt if getattr(mesh, 'dt', None) else float(courant_time_step(float(np.min(mesh.dx_cells)),
+                                                                           float(np.min(mesh.dy_cells))))
+    _, steps = run_steps(C0 / float(settings_values['wavelength']), float(dt),
+                         float(values.get('bandwidth', tf.DEFAULT_BANDWIDTH)), float(values.get('periods', 0.0)))
+    return te.combine((te.TimeEstimate((te.TimeItem('Helmholtz assembly', 'assembly', 1.0, 'exact', assembly_ops),
+                                        resonance_filter_time_item(context.backend, unknowns, nnz, columns))),
+                       context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=16, solves=1.0,
+                                           factorizations=float(steps), rhs=float(sampled),
+                                           eigenpairs=tf.wanted_pairs(wanted))))
 
 
 # ... of a triangles mesh: host bytes per stored entry of one fem_fdfd assembly (quadrature-point stretch tensors, two
