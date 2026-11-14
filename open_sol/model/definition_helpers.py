@@ -494,8 +494,10 @@ STEPPER_ROLE = SolverRole('general', 'explicit_kernels', precisions=('single', '
 HALF_STORAGE_STEPPER_ROLE = SolverRole('general', 'explicit_kernels', precisions=('single', 'half_storage'))
 
 
-def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None):
-    """'eigen' SolverRole (arpack_shift_invert by default) used in `studies` (() = every study); factorization
+def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None, block_eigen=False):
+    """'eigen' SolverRole (arpack_shift_invert by default) used in `studies` (() = every study); block_eigen: a real
+    symmetric pencil whose physics also runs the factor-free 'block_eigen' solver (opt-in, precisions double / mixed:
+    operator class 'spd'; solid_mechanics_3d on brick meshes); factorization
     cudss_mixed only with mixed_factorization (callers of solve_resonances with a symmetrizer: em_fdfd_3d, em_fdfd,
     em_fdfd_bor, em_fdfd_conical; the real symmetric eigsh_shifted pencils of solid_mechanics (2D) and
     solid_mechanics_3d on tetrahedra, refined to full accuracy; em_modes, whose triangle pencil is Rayleigh-polished:
@@ -504,9 +506,11 @@ def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None):
     factorization becomes on the gpu with nvmath-python (the runtime falls back to superlu, B1b); other grids: superlu."""
     factorizations = (('auto', 'superlu', 'cudss') + HOST_DIRECT_DOUBLE_BACK_ENDS
                       + ((('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS) if mixed_factorization else ()))
-    return SolverRole('general', 'arpack_shift_invert', studies=tuple(studies), precisions=('double',),
+    return SolverRole('spd' if block_eigen else 'general', 'arpack_shift_invert', studies=tuple(studies),
+                      precisions=('double', 'mixed') if block_eigen else ('double',),
                       setting_choices={'factorization': factorizations},
-                      auto_back_ends=dict(auto_factorizations or {}))
+                      auto_back_ends=dict(auto_factorizations or {}),
+                      opt_in_types=('block_eigen',) if block_eigen else ())
 
 
 def resolved_back_end(solvers):

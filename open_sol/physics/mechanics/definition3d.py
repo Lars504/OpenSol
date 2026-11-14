@@ -38,7 +38,8 @@ from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_N
                                 STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, apply_body_force, apply_temperature_change,
                                 background_context, displacement_param, eigen_search_issues, electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                material_issues, materials_setting, modal_kept_count, modal_study_issues,
+                                material_issues, materials_setting, modal_kept_count, modal_resonance_count,
+                                modal_study_issues,
                                 nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
                                 stiffness_follows_state, support_holders, support_result, union_masks)
@@ -610,9 +611,9 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
         return issues
     if validated_linear_precision(vctx, physics_spec) != 'float64':
         issues.append(Issue('error', path,
-                            "the eigenfrequency study runs one 'linear' PCG solve per Lanczos step and needs it in "
-                            "double precision: set the linear solver's precision to double or mixed (or use "
-                            'Automatic)'))
+                            "the eigenfrequency study runs one 'linear' PCG solve per Lanczos step (block_eigen: the "
+                            "float64 brick operator of the 'linear' solver) and needs it in double precision: set the "
+                            "linear solver's precision to double or mixed (or use Automatic)"))
     if settings_values.get('target_frequency'):
         issues.append(Issue('error', path,
                             'target_frequency is set: on a rectangular-cell mesh the eigenfrequency study finds the '
@@ -1177,6 +1178,21 @@ def _time_estimate(settings_values, mesh, context):
             setup += (te.elementwise(elements, 2, 2, FLOAT32_BYTES), te.elementwise(nodes, 6, 6, FLOAT32_BYTES))
         common.update(preconditioner_ops=cycle, iteration_ops=(), setup_ops=setup,   # built in assemble, timed there
                       setup_counters=('multigrid_builds', 'multigrid_build_seconds'))
+    block = _block_eigen_values(context) if context.study.type == EIGENFREQUENCY_STUDY else None
+    if block is not None:   # block_eigen: per active row a K and an M product and one preconditioner application
+        eigenpairs = int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
+        item_bytes = FLOAT32_BYTES if block['precision'] == 'mixed' else FLOAT64_BYTES
+        mass = te.Elementwise(3 * dofs * item_bytes, dofs * item_bytes, launches=1, numba=True,
+                              flops=_BRICK_VISITS_PER_ELEMENT * _BRICK_MASS_VISIT_FLOPS * elements,
+                              flop_bytes=item_bytes)
+        if block['preconditioner'] == 'multigrid':   # the linear solver's hierarchy, or one built for the solve
+            cycle, setup = _multigrid_ops(_window_shape(mesh), FLOAT32_BYTES, brick_product)
+            preconditioner = dict(preconditioner_ops=cycle, setup_ops=setup)
+        else:
+            preconditioner = dict(preconditioner_ops=(te.elementwise(nodes, 9, 3, item_bytes),))
+        return context.solver_work('eigen', unknowns=float(dofs), dimensions=3, solves=1.0, factorizations=0.0,
+                                   eigenpairs=eigenpairs, longest_axis=context.longest_axis(),
+                                   product_ops=(brick_product(item_bytes), mass), **preconditioner)
     if context.study.type == EIGENFREQUENCY_STUDY:
         eigenpairs = int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
         resolved = context.solvers.get('eigen')
@@ -1613,7 +1629,29 @@ def _memory_estimate(settings_values, mesh, context):
         # float64 lambda x V, mu x V, V and the solid mask of the fine level while the level means are formed
         transient_items.append(('multigrid build', 'multigrid build (float64 volume-weighted Lame values)',
                                 (3 * FLOAT64_BYTES + BOOL_BYTES) * elements))
-    if context.spec.study.type == EIGENFREQUENCY_STUDY:
+    block = _block_eigen_values(context)
+    if context.spec.study.type == EIGENFREQUENCY_STUDY and block is not None:
+        # system3d._lowest_modes_block: density copies (+ float32), the block stores (block_eigen.block_bytes), the
+        # float32 operator copies when the linear solver keeps none (mixed), a private multigrid hierarchy when the
+        # linear solver has none (preconditioner multigrid) and its float32 cycle output
+        from ...solvers.block_eigen import block_bytes
+        n_wanted = max(min(modal_resonance_count(context) + EXTRA_EIGENVALUES, dofs - 1), 1)
+        mixed_block = block['precision'] == 'mixed'
+        eigen_bytes = ((2 * FLOAT64_BYTES + BOOL_BYTES + FLOAT32_BYTES) * elements
+                       + block_bytes(dofs, n_wanted, block['guard_vectors'], block['precision']))
+        if mixed_block and not (mixed or double_cycle):
+            eigen_bytes += 2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes
+        if block['preconditioner'] == 'multigrid':
+            eigen_bytes += FLOAT32_BYTES * dofs
+            if not multigrid:
+                eigen_bytes += hierarchy_bytes(_window_shape(mesh), FLOAT32_BYTES)
+                host_items = (('multigrid coarsest build (float64, transient)',
+                               coarsest_host_bytes(_window_shape(mesh))),)
+        transient_items.append(('eigen solve', 'block eigen solve (search block, products, copies)', eigen_bytes))
+        host_items = tuple(host_items) + (
+            (f'eigenvectors ({n_wanted} x float64)', n_wanted * FLOAT64_BYTES * dofs),
+            (f'mode shapes ({modal_kept_count(context)} x float64)', modal_kept_count(context) * FLOAT64_BYTES * dofs))
+    elif context.spec.study.type == EIGENFREQUENCY_STUDY:
         # density copy + masked copy, massless mask; free-dof index (int64), Lanczos vector, per-step gathers
         transient_items.append(('eigen solve', 'eigen solve vectors', (2 * FLOAT64_BYTES + BOOL_BYTES) * elements
                                 + 4 * FLOAT64_BYTES * dofs))
@@ -1624,6 +1662,13 @@ def _memory_estimate(settings_values, mesh, context):
     system = MemoryEstimate.from_items(items, build_extra=build_extra, host_items=host_items,
                                        transient_items=transient_items)
     return combine((fields, system))
+
+
+def _block_eigen_values(context):
+    """Resolved values of the 'eigen' role when it is a block_eigen node (MemoryContext / TimeContext solvers), else
+    None."""
+    resolved = (context.solvers or {}).get('eigen')
+    return resolved.values if resolved is not None and resolved.solver_type.name == 'block_eigen' else None
 
 
 def _eigen_host_items(context, dofs, rigid_motions=0, pml=False, basis_on_device=False):
@@ -1966,6 +2011,11 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'factor (memory: a few float64 vectors on the run backend, the Lanczos basis on the host; the cpu '
                 'backend runs numpy versions of the matrix-free kernels, the stiffness product numba-compiled when '
                 'numba is installed, much slower per CG iteration than the GPU). '
+                'An eigen solver node of type block_eigen (opt-in) replaces the Lanczos search by factor-free block '
+                'iterations (LOBPCG) on the stiffness and mass products, preconditioned by one multigrid V-cycle (or '
+                'block Jacobi) per vector and iteration, no inner CG solves: its own residual tolerance sets the '
+                'accuracy (frequency error ~ its square), memory 9 vectors of the system size per block row on the '
+                'run backend, mixed precision by default. '
                 'Supports held at '
                 '0, loads / thermal strain ignored (no prestress); one snapshot per mode labelled "resonance k: f = '
                 '<Hz> Hz" with the mode shape scaled to a peak node |u| of 1 m (strain and stress per that shape, no '
@@ -2045,10 +2095,11 @@ SOLID_MECHANICS_3D = PhysicsType(
     default_study={'type': 'stationary'},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
     # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy). Automatic is the double factor:
-    # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined)
+    # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined).
+    # block_eigen (opt-in, tensor meshes only by its grids): LOBPCG on the brick products and the multigrid3d V-cycle
     solver_roles={'linear': CG_ELASTIC_3D_LINEAR_ROLE,
                   'eigen': eigen_role(MODAL_STUDIES, mixed_factorization=True,
-                                      auto_factorizations={'tetrahedra': 'cudss'})},
+                                      auto_factorizations={'tetrahedra': 'cudss'}, block_eigen=True)},
     frequency_sweep_methods=('direct', 'adaptive', 'modal'),   # tetrahedra: frequency_response.HarmonicSystem
     backends=('gpu', 'cpu'),   # cpu: numpy twins of the kernels3d RawKernels (Gauss points), numba product
     create=_create_solid_3d,
