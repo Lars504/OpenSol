@@ -275,7 +275,8 @@ class _Lobpcg:
             for row in range(b):
                 basis[row] = generator.standard_normal(n, dtype=self.dtype)
         if self.mask is not None:
-            xp.multiply(basis[:b], self.mask, out=basis[:b])
+            start = basis[:b]   # one view as input and output: cupy copies an input that only overlaps the output
+            xp.multiply(start, self.mask, out=start)
 
     def _apply(self, first, stop):
         """KS / MS rows [first, stop) of S by the callbacks."""
