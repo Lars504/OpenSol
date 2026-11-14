@@ -309,8 +309,8 @@ def _check_disc(results_by_name):
 
     def frequency(row):
         return complex(float(row[_OMEGA_COLUMNS[0]]), float(row[_OMEGA_COLUMNS[1]]))
-    errors, tolerances, details = {}, {}, {'arpack': [list(map(float, row)) for row in reference_rows],
-                                          'time_filter': [list(map(float, row)) for row in filter_rows]}
+    errors, tolerances, details = {}, {}, {'arpack': [float_list(row) for row in reference_rows],
+                                          'time_filter': [float_list(row) for row in filter_rows]}
     compared = [row for row in reference_rows if float(row[_Q_COLUMN]) >= _DISC_MIN_Q
                 and abs(2.0 * math.pi * frequency(row).real / omega_target - 1.0) <= _DISC_COMPARED_BAND
                 * _DISC_BANDWIDTH]
