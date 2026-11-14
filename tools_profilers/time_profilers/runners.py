@@ -1,7 +1,8 @@
 """One timed repeat of a profiler Problem per SolverType, in the child process, through the calls open_sol's own
 consumers make (SparseDirectSolver.factorize like fdfd_2d, DiffusionDirectSolver like DiffusionSystem, PCGSolver,
-BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances) on the cpu or gpu backend: phase
-wall times, the relative residual against its tolerance and solver details. open_sol is imported inside the runners."""
+BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, ElasticSystem3D.lowest_modes) on
+the cpu or gpu backend: phase wall times, the relative residual against its tolerance and solver details. open_sol is
+imported inside the runners."""
 # Phases (seconds, None where the solver does not expose them): analysis = MUMPS / PARDISO ordering + symbolic
 # analysis (inside factor), factor = the first (cold) factorisation / preconditioner set-up incl. analysis and the
 # accuracy probe, solve = one solve (pcg: the CG iterations), refactor = a value-only refactorisation of the same
@@ -15,6 +16,15 @@ wall times, the relative residual against its tolerance and solver details. open
 # Tolerance of a repeat: pcg its (floored) stop tolerance, line_block its accept tolerance, direct factors and eigen
 # pairs cudss_factor.ACCEPT_RESIDUAL (the probe bound of open_sol's own factors; eigen: at least the ARPACK
 # tolerance). A residual above ACCURACY_MARGIN x tolerance makes an 'ok' repeat 'inaccurate'.
+# Matrix-free vibration modes (problem kind 'modes'): the system (ElasticSystem3D with the Automatic 'linear' PCG) is
+# assembled on the backend by backend_arrays and kept for every repeat; arpack_shift_invert and block_eigen both run
+# the physics' own lowest_modes (eigsh_inverse with inner PCG solves / the block path). Phases: solve = the eigen
+# iterations (ModalSolve info eigen_seconds), factor = block_eigen's set-up around them (float32 copies, a private
+# multigrid hierarchy; arpack: none), total = the lowest_modes call. Residual = max ||K u - omega^2 M u|| / (omega^2 ||M
+# u||) of the returned modes (float64 brick products; block_eigen's own measure), tolerance at least the solver's
+# (arpack: the Lanczos tolerance it used); reference_error = max relative omega error against the closed form (rank
+# order); gpu_peak_bytes = the cupy pool's high water of the call over its live bytes at the start (cached blocks
+# freed before the timer).
 import math
 import time
 from dataclasses import dataclass
@@ -28,15 +38,26 @@ ACCURACY_MARGIN = 10.0        # residual / tolerance above which a repeat is 'in
 @dataclass(frozen=True, eq=False)
 class BackendArrays:
     """The problem's operator and rhs on the run backend ('cpu': the host scipy / numpy objects themselves, 'gpu':
-    cupyx CSR / cupy copies) and that backend's array module."""
+    cupyx CSR / cupy copies) and that backend's array module; a matrix-free problem: operator / rhs None and system =
+    its problems.ModesSystem assembled on the backend."""
     backend: str
     operator: object
     rhs: object
     xp: object
+    system: object = None
 
 
 def backend_arrays(problem, backend) -> BackendArrays:
-    """BackendArrays of a problem; on 'gpu' the device copies are made here (and the GPU budget set as api.run does)."""
+    """BackendArrays of a problem; on 'gpu' the device copies are made here (and the GPU budget set as api.run does);
+    a 'modes' problem's system is assembled here on either backend."""
+    if problem.kind == 'modes':
+        from tools_profilers.time_profilers.problems import elastic_modes_system
+        if backend == 'gpu':
+            from open_sol.core import gpu_memory
+            gpu_memory.set_budget()
+        modes = elastic_modes_system(problem, backend)
+        _clock(backend)   # the assembly's queued kernels finish before the memory baseline
+        return BackendArrays(backend, None, None, modes.system.xp, system=modes)
     if backend == 'cpu':
         return BackendArrays('cpu', problem.operator, problem.rhs, np)
     import cupy as cp
@@ -297,7 +318,7 @@ def run_arpack(problem, values, arrays) -> dict:
     """arpack_shift_invert: eigenfrequency.solve_resonances on the host operator with the factorization, the FDFD
     symmetrizer (used by the LDL^T factorizations only, as fdfd_2d) and the model runtime's mixed_min_unknowns (S5c: a
     *_mixed request below it factors in double); on the gpu backend device_arnoldi as a gpu model runtime; eigenvalues
-    returned for the comparison against SuperLU."""
+    returned for the comparison against SuperLU. A 'modes' problem: _run_arpack_modes."""
     from open_sol.physics.em.eigenfrequency import solve_resonances
     from open_sol.solvers.arpack_shift_invert import MIXED_EIGEN_MIN_UNKNOWNS, ArpackShiftInvertSolver
     backend = arrays.backend
@@ -305,6 +326,8 @@ def run_arpack(problem, values, arrays) -> dict:
     solver = ArpackShiftInvertSolver(tolerance=values['tolerance'], subspace_size=values['subspace_size'],
                                      label=_label, factorization=values['factorization'],
                                      mixed_min_unknowns=MIXED_EIGEN_MIN_UNKNOWNS, device_arnoldi=backend == 'gpu')
+    if problem.kind == 'modes':
+        return _run_arpack_modes(problem, arrays, solver)
     started = _clock(backend)
     solve = solve_resonances(problem.operator, eigen['mass'], eigen['omega'], eigen['energy_weights'],
                              eigen['in_window'], eigen['n_resonances'], eigen_solver=solver,
@@ -326,5 +349,129 @@ def run_arpack(problem, values, arrays) -> dict:
                    'ok' if solve.resonances else 'no_resonances')
 
 
+def _solve_modes(problem, arrays, eigen_solver):
+    """(ModalSolve, wall seconds, gpu pool high water [bytes] or None) of one timed ElasticSystem3D.lowest_modes call
+    on the problem's system with its density, as SolidMechanics3DPhysics.solve_eigenfrequencies makes it; on the gpu
+    the pool's cached blocks are freed first (outside the timer), so the reserved bytes after the call over the live
+    bytes before are the call's device high water."""
+    modes = arrays.system
+    backend = arrays.backend
+    live_before = None
+    if backend == 'gpu':
+        import cupy as cp
+        from open_sol.core import gpu_memory
+        cp.get_default_memory_pool().free_all_blocks()
+        live_before = gpu_memory.pool_used_bytes()
+    started = _clock(backend)
+    solve = modes.system.lowest_modes(modes.density, problem.eigen['n_resonances'], eigen_solver)
+    finished = _clock(backend)
+    high_water = None if live_before is None else max(gpu_memory.pool_reserved_bytes() - live_before, 0)
+    return solve, finished - started, high_water
+
+
+def _mode_residuals(modes, resonances) -> list:
+    """||K u - omega^2 M u|| / (omega^2 ||M u||) of each resonance (u: every dof, 0 on the held ones) by the system's
+    float64 brick product (masked) and consistent mass on its backend."""
+    system = modes.system
+    xp, kernels = system.xp, system.kernels
+    product = xp.empty(system.n_dofs, dtype=np.float64)
+    massed = xp.empty(system.n_dofs, dtype=np.float64)
+    residuals = []
+    for resonance in resonances:
+        vector = xp.asarray(np.ascontiguousarray(resonance.displacement, dtype=np.float64))
+        kernels.product(vector, product, system.lame_lambda, system.mu, system.widths_device, system.free,
+                        masked=True)
+        kernels.mass_product(vector, massed, modes.density, system.widths_device, system.free)
+        eigenvalue = float(resonance.omega) ** 2
+        scale = eigenvalue * float(xp.linalg.norm(massed))
+        residual = float(xp.linalg.norm(product - eigenvalue * massed))
+        residuals.append(residual / scale if scale > 0.0 else residual)
+    return residuals
+
+
+def _reference_error(problem, omegas):
+    """max |omega - omega_ref| / omega_ref of the found omegas against the closed-form ones, both in ascending order
+    (the found ones only; None when none)."""
+    pairs = list(zip(sorted(omegas), problem.eigen['reference_omegas']))
+    return max(abs(omega - reference) / reference for omega, reference in pairs) if pairs else None
+
+
+def _modes_details(problem, arrays, solve, high_water) -> dict:
+    """Details shared by the mode runners: method, counts, warnings, eigenvalues ([omega, 0] pairs for the report's
+    difference against the baseline), the closed-form ones and the error against them, the linear solver settings."""
+    info = solve.info
+    omegas = [float(resonance.omega) for resonance in solve.resonances]
+    details = {'method': info.get('eigen_method') or info.get('method'), 'n_free': info.get('n_free'),
+               'operator_applications': info.get('operator_applications'),
+               'eigenvalues_requested': info.get('eigenvalues_requested'),
+               'eigenvalues_converged': info.get('eigenvalues_converged'), 'resonances_found': len(omegas),
+               'warnings': list(info.get('warnings') or ()), 'eigenvalues': [[omega, 0.0] for omega in omegas],
+               'reference_eigenvalues': list(problem.eigen['reference_omegas']),
+               'reference_error': _reference_error(problem, omegas), 'linear_solver': arrays.system.linear_values}
+    if high_water is not None:
+        details['gpu_peak_bytes'] = int(high_water)
+    return details
+
+
+def _modes_status(problem, solve, unconverged) -> str:
+    """'no_resonances' (none), 'unconverged' (fewer than asked, or the solver stopped short), else 'ok'."""
+    if not solve.resonances:
+        return 'no_resonances'
+    if unconverged or len(solve.resonances) < problem.eigen['n_resonances']:
+        return 'unconverged'
+    return 'ok'
+
+
+def _run_arpack_modes(problem, arrays, solver) -> dict:
+    """arpack_shift_invert on a 'modes' problem: lowest_modes runs eigsh_inverse (shift-invert Lanczos at 0, one inner
+    PCG solve of the system's Automatic linear solver per application; the factorization is unused: no factor).
+    Tolerance: the Lanczos tolerance it used (max(node, LANCZOS_TOLERANCE_PER_CG x the CG tolerance)), at least
+    ACCEPT_RESIDUAL, as run_arpack."""
+    linear_solver = arrays.system.system.linear_solver
+    unconverged_before = linear_solver.n_unconverged
+    solve, total, high_water = _solve_modes(problem, arrays, solver)
+    info = solve.info
+    details = _modes_details(problem, arrays, solve, high_water)
+    details.update(iterations=_number(info.get('cg_iterations')), inner_solves=info.get('operator_applications'),
+                   lanczos_tolerance=info.get('lanczos_tolerance'),
+                   counters={name: _number(value) for name, value in solver.work_counters().items()})
+    residuals = _mode_residuals(arrays.system, solve.resonances)
+    unconverged = (linear_solver.n_unconverged > unconverged_before
+                   or info.get('eigenvalues_converged', 0) < info.get('eigenvalues_requested', 0))
+    phases = {'analysis': None, 'factor': None, 'solve': info.get('eigen_seconds'), 'refactor': None, 'total': total}
+    tolerance = max(float(info.get('lanczos_tolerance') or 0.0), _direct_tolerance())
+    return _repeat(phases, max(residuals) if residuals else None, details, tolerance,
+                   _modes_status(problem, solve, unconverged))
+
+
+def run_block_eigen(problem, values, arrays) -> dict:
+    """block_eigen ('eigen' of solid_mechanics_3d on brick meshes): lowest_modes with the BlockEigenSolver made from
+    the values as the SolverType create makes it (max_iterations 0: lowest_modes passes the linear solver's limit;
+    preconditioner multigrid: the linear solver's hierarchy, else one built inside the call, so every repeat pays it
+    as every model eigen solve does). Tolerance: the solver's, at least ACCEPT_RESIDUAL."""
+    if problem.kind != 'modes':
+        raise ValueError(f"block_eigen runs on the matrix-free 'modes' problems only, not on a {problem.kind!r} one")
+    from open_sol.solvers.block_eigen import BlockEigenSolver
+    solver = BlockEigenSolver(tolerance=values['tolerance'], guard_vectors=values['guard_vectors'],
+                              max_iterations=values['max_iterations'], precision=values['precision'],
+                              preconditioner=values['preconditioner'], label=_label, backend=arrays.backend)
+    solve, total, high_water = _solve_modes(problem, arrays, solver)
+    info = solve.info
+    counters = {name: _number(value) for name, value in solver.work_counters().items()}
+    details = _modes_details(problem, arrays, solve, high_water)
+    details.update(iterations=counters['eigen_iterations'], single_iterations=counters['eigen_single_iterations'],
+                   double_iterations=counters['eigen_double_iterations'], preconditioner=info.get('preconditioner'),
+                   preconditioner_applications=counters['preconditioner_applications'],
+                   mass_applications=counters['mass_applications'], block_size=counters['eigen_block_size'],
+                   block_residual=info.get('block_residual'), counters=counters)
+    residuals = _mode_residuals(arrays.system, solve.resonances)
+    eigen_seconds = info.get('eigen_seconds')
+    phases = {'analysis': None, 'factor': None if eigen_seconds is None else max(total - eigen_seconds, 0.0),
+              'solve': eigen_seconds, 'refactor': None, 'total': total}
+    tolerance = max(solver.tolerance, _direct_tolerance())
+    return _repeat(phases, max(residuals) if residuals else None, details, tolerance,
+                   _modes_status(problem, solve, counters['eigen_unconverged'] > 0))
+
+
 RUNNERS = {'sparse_direct': run_sparse_direct, 'pcg': run_pcg, 'banded': run_banded, 'line_block': run_line_block,
-           'arpack_shift_invert': run_arpack}
+           'arpack_shift_invert': run_arpack, 'block_eigen': run_block_eigen}

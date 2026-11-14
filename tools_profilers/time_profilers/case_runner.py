@@ -185,7 +185,8 @@ def _timed_repeat(repeat_function, cold) -> dict:
 
 
 def _prepare_problem(case):
-    """(assembly fields, repeat()) of a synthetic case: the problem assembled on the host and moved to the backend."""
+    """(assembly fields, repeat()) of a synthetic case: the problem assembled on the host and moved to the backend (a
+    matrix-free 'modes' problem: host constants, then its system assembled on the backend, in transfer_seconds)."""
     from tools_profilers.time_profilers import problems, runners
     started = time.perf_counter()
     problem = problems.build(case['problem'], case['size'])
