@@ -19,7 +19,9 @@ from ...fem.harmonic_resonances import resonance_table
 from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZATION_SETTING,
-                                         KEPT_SOLUTION_BYTES_PER_DOF, SQUEEZE_FILM_GAS_PARAMS, cudss_external,
+                                         KEPT_SOLUTION_BYTES_PER_DOF, SQUEEZE_FILM_GAS_PARAMS,
+                                         batched_direct_back_end, batched_direct_items, batched_direct_sweep,
+                                         cudss_external,
                                          eigen_factorization, eigen_role, eigen_search_counts, element_order,
                                          evaluates_to, harmonic_frequency_items, host_direct_back_end, on_triangles,
                                          scalar_harmonic_build_items, optional_material_param,
@@ -1146,10 +1148,14 @@ def _complex_pencil(settings_values, context) -> bool:
 
 def _cudss_factor(settings_values, context):
     """(back end / factorization name, value bytes) of the cuDSS factor the study uses (frequency_response: the
-    'linear' back end, eigenfrequency: the 'eigen' factorization), None for a host SuperLU factor."""
+    'linear' back end, eigenfrequency: the 'eigen' factorization), None for a host SuperLU factor and for a
+    batched_direct direct sweep (batched_direct_items; outside one its per-system back end)."""
     study = context.spec.study.type
     if study == FREQUENCY_RESPONSE_STUDY:
-        back_end = resolved_back_end(context.solvers)
+        if batched_direct_sweep(context) is not None:
+            return None
+        back_end = (resolved_back_end(context.solvers)
+                    or batched_direct_back_end(context.solvers, solver_backend(context.spec)))
         return (back_end, COMPLEX128_BYTES) if back_end in CUDSS_BACK_ENDS else None
     if study == EIGENFREQUENCY_STUDY:
         factorization = eigen_factorization(context.solvers)
@@ -1185,7 +1191,14 @@ def _memory_estimate(settings_values, mesh, context):
     complex_pencil = _complex_pencil(settings_values, context)
     run_items, eigen_items, factors = [], [], ()
     host_direct = _host_direct_factor(context) if triangles and cudss is None else None
-    if host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
+    # a batched_direct direct sweep (triangles; K, M terms: the membrane has no damping term): the batch's items
+    batched = batched_direct_items(context, dofs, entries, 2) if triangles else None
+    if batched is not None:
+        host_items = list(batched['host_items'])
+        if solver_backend(context.spec) != 'gpu':   # cpu: one host SuperLU per system, freed after its solve
+            host_items.insert(0, ('complex factor L + U (heuristic, uncalibrated)', factor_bytes))
+        run_items = list(batched['run_items'])
+    elif host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
         label = factor_label(host_direct)
         complex_values = study == FREQUENCY_RESPONSE_STUDY or complex_pencil
         # S5c mirror (factorization_for): a small *_mixed eigen pencil factors in double
@@ -1250,11 +1263,12 @@ def _memory_estimate(settings_values, mesh, context):
         else:
             host_items.append(('ARPACK basis (complex128)', basis_bytes))
     host_items.extend(reduced_sweep_memory_items(context, dofs, entries))
+    external = batched['external'] if batched is not None and batched['external'] else cudss_external(factors)
     # fem.harmonic_resonances releases the shift factor after each solve (a search: its inertia factor too)
     return MemoryEstimate.from_items(
         ((f'element state and coupled slots ({_N_DEVICE_FIELDS} x float32)', _N_DEVICE_FIELDS * FLOAT32_BYTES
           * elements),), host_items=tuple(host_items), run_items=tuple(run_items),
-        transient_items=tuple(('eigen solve', label, size) for label, size in eigen_items), **cudss_external(factors))
+        transient_items=tuple(('eigen solve', label, size) for label, size in eigen_items), **external)
 
 
 def _build_items(settings_values, mesh, context, nnz) -> tuple:

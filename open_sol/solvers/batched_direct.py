@@ -127,7 +127,8 @@ class _BatchPlan:
     def __init__(self, pattern, n_systems, dtype):
         import cupy as cp
         from cupyx.scipy import sparse as cpsp
-        from .cudss_factor import batched_direct_solver
+        from .cudss_factor import batched_direct_solver, drop_parked_plans
+        drop_parked_plans()   # as every fresh cuDSS plan: parked plans' device memory goes before this plan's check
         self.pattern = pattern
         self.n_systems = int(n_systems)
         self.dtype = np.dtype(dtype)
@@ -251,8 +252,10 @@ class BatchedDirectSolver(SparseDirectSolver):
 
     def batch_capacity(self, pattern, n_systems) -> int:
         """Systems of the next batch: at most n_systems, batch_size (0: MAX_BATCH) and what MEMORY_FRACTION of the free
-        memory holds by the a-priori sizing (pool arrays + the cuDSS factor estimate per system)."""
+        memory holds by the a-priori sizing (pool arrays + the cuDSS factor estimate per system); never fewer than the
+        kept plan of this pattern holds (its memory is taken already: a smaller batch would only add pad systems)."""
         limit = max(1, min(int(n_systems), self.batch_size or MAX_BATCH))
+        planned = self._plan.n_systems if self._plan is not None and self._plan.pattern is pattern else 0
         from .cudss_factor import factor_device_bytes
         mixed = self.factor_dtype == np.complex64
         permanent, extra = factor_device_bytes(pattern.n_unknowns, pattern.n_entries, 16, 2, mixed=mixed,
@@ -267,7 +270,7 @@ class BatchedDirectSolver(SparseDirectSolver):
             from ..core import gpu_memory
             room = gpu_memory.pool_room_bytes(release_cached=True)
             free = UNBUDGETED_BATCH_BYTES if room is None else room
-        return max(1, min(limit, int(MEMORY_FRACTION * free // max(per_system, 1))))
+        return max(1, min(limit, max(planned, int(MEMORY_FRACTION * free // max(per_system, 1)))))
 
     def release(self) -> None:
         """Free the kept batched plan (its outside-pool factor bytes); counters stay."""
@@ -413,27 +416,57 @@ class BatchedDirectSolver(SparseDirectSolver):
                     worst_batch_residual=self.worst_batch_residual, batch_unavailable=self.unavailable or '')
 
 
-def batch_external_bytes(n_unknowns, entries, n_systems, precision, symmetric=True) -> tuple:
+def batch_external_bytes(n_unknowns, entries, n_systems, precision, symmetric=True, dimensions=2) -> tuple:
     """(permanent, peak extra) outside-pool bytes of one batched plan of n_systems (cudss_factor.factor_device_bytes per
-    system, 2D growth law): the memory estimators' external item."""
+    system; dimensions 2: the n log2 n growth law of triangles, 3: n^(4/3) of tetrahedra): the memory estimators'
+    external item."""
     from .cudss_factor import factor_device_bytes
-    permanent, extra = factor_device_bytes(n_unknowns, entries, 16, 2, mixed=precision == 'mixed',
+    permanent, extra = factor_device_bytes(n_unknowns, entries, 16, dimensions, mixed=precision == 'mixed',
                                            symmetric=symmetric)
     return int(n_systems) * permanent, int(n_systems) * extra
 
 
 def time_estimate(values, work):
     """Run-time recipe (core.time_estimate.SolverWork; work.factorizations = systems, work.solves = their solves):
-    priced as the per-system cuDSS factorisations and SOLVES_PER_SYSTEM_GUESS solves of the precision (gpu; the batch's
-    shared launches make the measured time lower: a deviation is the batching gain, not a lead on the recipe), host
-    SuperLU on the cpu."""
+    priced as the per-system sparse_direct recipe of the back end the runtime solves on (gpu: cudss_mixed / cudss by
+    precision, cpu: host SuperLU). work.batched (the consumer solves these systems by solve_batch: a direct
+    frequency_response sweep): its items count and time on the batch counters (batched_systems, batch_plans,
+    batch_seconds: the plan, factorisations, solves and refinement all inside solve_batch), plus per system the
+    combine / equilibration / lower-triangle cast and SOLVES_PER_SYSTEM_GUESS float64 residual steps (pencil_terms
+    terms; the batch's shared launches make the measured time lower: a deviation there is the batching gain, not a
+    lead on the recipe). Unbatched (other studies, adaptive / modal sweeps): the plain sparse_direct recipe on the
+    inherited counters."""
+    from dataclasses import replace
+    from ..core import time_estimate as te
     from . import sparse_direct
     precision = values.get('precision', 'mixed')
-    if work.backend == 'gpu':
-        back_end = 'cudss_mixed' if precision == 'mixed' else 'cudss'
-    else:
-        back_end = 'scipy_splu'
-    return sparse_direct.time_estimate({'back_end': back_end}, work)
+    gpu = work.backend == 'gpu'
+    back_end = ('cudss_mixed' if precision == 'mixed' else 'cudss') if gpu else 'scipy_splu'
+    estimate = sparse_direct.time_estimate({'back_end': back_end}, work)
+    if not getattr(work, 'batched', False):
+        return estimate
+    renamed = {work.counter('factorizations'): work.counter('batched_systems'),
+               work.counter('cudss_plans'): work.counter('batch_plans')}
+    seconds = work.counter('batch_seconds')
+    items = [replace(item, counter=renamed.get(tuple(item.counter), tuple(item.counter)), seconds_counter=seconds)
+             for item in estimate.items]
+    n, z = float(work.unknowns), float(work.nnz)
+    terms = float(max(int(work.pencil_terms), 1))
+    factor_bytes = (8.0 if precision == 'mixed' else 16.0) if gpu else 16.0
+    stored = 0.5 * (z + n)   # the lower triangle of a symmetric pencil (the general one stores z: a lower bound)
+    steps = SOLVES_PER_SYSTEM_GUESS[precision] if gpu else 1.0
+    # combine (terms GEMM), |diag| scale and the two scale gathers, the lower take + cast; per step the float64
+    # residual product (values x gathered x, the row-selector SpMM) and ~10 n-vector passes
+    reads = 16.0 * z * (terms + 2.0) + 16.0 * stored + steps * (48.0 * z + 160.0 * n)
+    writes = 32.0 * z + factor_bytes * stored + steps * (16.0 * z + 64.0 * n)
+    flops = 8.0 * terms * z + 12.0 * z + steps * 16.0 * z
+    ops = (te.Elementwise(reads, writes, launches=int(8 + 12 * steps), flops=flops, flop_bytes=8),)
+    if gpu:   # rhs up, solutions down
+        ops += (te.Transfer(32.0 * n), te.Sync(steps))
+    items.append(te.TimeItem('batched combine, equilibration and float64 residuals (per system)', 'factorisation',
+                             float(work.factorizations), work.factorizations_kind, ops,
+                             per_step=work.factor_per_step, seconds_counter=seconds))
+    return replace(estimate, items=tuple(items))
 
 
 def batches_of(n_systems, capacity) -> int:

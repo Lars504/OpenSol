@@ -39,13 +39,14 @@ def _source_cells(physics, pinned, count, generator):
     window = physics.domain.physical_window()
     centres = physics.domain.cell_centers()
     open_cells = ~np.asarray(to_host(pinned), dtype=bool)
-    rows = np.arange(open_cells.shape[0])[window[0]]
-    columns = np.arange(open_cells.shape[1])[window[1]]
-    candidates = [(i, j) for i in rows for j in columns if open_cells[i, j]] if open_cells.size <= 4_000_000 else []
-    if not candidates:
+    inside = np.zeros(open_cells.shape, dtype=bool)
+    inside[window] = True
+    candidates = np.flatnonzero(inside & open_cells)   # flat i * ny + j
+    if not candidates.size:
         raise ValueError('time-filter eigen solve: no free window cell for its sources')
-    picks = generator.choice(len(candidates), size=min(int(count), len(candidates)), replace=False)
-    return [(float(centres[0][candidates[k][0]]), float(centres[1][candidates[k][1]])) for k in picks]
+    picks = candidates[generator.choice(candidates.size, size=min(int(count), candidates.size), replace=False)]
+    rows, columns = np.divmod(picks, open_cells.shape[1])
+    return [(float(centres[0][i]), float(centres[1][j])) for i, j in zip(rows, columns)]
 
 
 def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
@@ -143,7 +144,10 @@ def solve_time_filter_resonances(physics, system, solver, n_resonances, pinned, 
     candidates, dropped, rayleigh_change = _filtered_candidates(
         theta, vectors, 'shift_invert', k_target_squared, resonance_filter, system.omega, symmetrizer is not None,
         min_region_fraction)
-    chosen = candidates[:int(n_resonances)]
+    in_band = [candidate for candidate in candidates   # outside the sampled band the span resolves nothing reliably
+               if abs(candidate[1].real / system.omega - 1.0) <= solver.bandwidth]
+    dropped['outside_band'] = len(candidates) - len(in_band)
+    chosen = in_band[:int(n_resonances)]
     resonances = [_resonance(omega, pml_fraction, field_of(vector) if field_of is not None else vector,
                              region_fraction)
                   for _, omega, pml_fraction, region_fraction, vector in chosen]

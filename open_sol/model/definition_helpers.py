@@ -641,6 +641,82 @@ def cudss_external(factors, one_at_a_time=False, phases=None) -> dict:
             'external_extra': max((extra for _, _, extra in sized), default=0)}
 
 
+def linear_solver_batched(solvers) -> bool:
+    """Whether the resolved 'linear' solver ({role: ResolvedSolver} of MemoryContext / ValidationContext / TimeContext,
+    or None) is batched_direct (a fem.harmonic consumer batches a direct frequency_response sweep on it)."""
+    resolved = (solvers or {}).get('linear')
+    return resolved is not None and resolved.solver_type.name == 'batched_direct'
+
+
+def batched_direct_back_end(solvers, backend) -> str | None:
+    """Back end of the per-system solves of a batched_direct 'linear' solver (other studies, adaptive / modal sweeps,
+    rejected systems): cudss_mixed / cudss by its precision on the gpu backend, scipy_splu on the cpu; None for any
+    other solver (resolved_back_end covers sparse_direct)."""
+    if not linear_solver_batched(solvers):
+        return None
+    if backend != 'gpu':
+        return 'scipy_splu'
+    return 'cudss_mixed' if solvers['linear'].values.get('precision', 'mixed') == 'mixed' else 'cudss'
+
+
+def batched_direct_sweep(context):
+    """(frequencies, batch capacity) of the direct frequency_response sweep a batched_direct 'linear' solver batches
+    (MemoryContext / TimeContext: spec, registry, parameters, solvers), capacity a priori min(frequencies, batch_size or
+    batched_direct.MAX_BATCH) (the runtime may take fewer when the free memory is short); None when the solver is not
+    batched_direct, the study is not frequency_response or its sweep_method is adaptive / modal (per-system solves)."""
+    from ..solvers.batched_direct import MAX_BATCH
+    from .schema import resolve_values
+    if not linear_solver_batched(context.solvers):
+        return None
+    study = context.spec.study
+    if study.type != 'frequency_response':
+        return None
+    try:
+        values = resolve_values(context.registry.study_type(study.type).params,
+                                study.settings if isinstance(study.settings, dict) else {}, context.parameters)
+    except (KeyError, ValueError, TypeError):   # reported by validate
+        return None
+    if values.get('sweep_method', 'direct') != 'direct':
+        return None
+    listed = values.get('frequencies') or []
+    frequencies = max(len(listed) if listed else int(values.get('n_frequencies') or 1), 1)
+    batch_size = int(context.solvers['linear'].values.get('batch_size') or 0)
+    return frequencies, max(1, min(frequencies, batch_size or MAX_BATCH))
+
+
+def batched_direct_items(context, unknowns, entries, n_terms, symmetric=True, dimensions=2):
+    """Memory items of a batched_direct direct sweep (batched_direct_sweep; None when it does not batch) on `unknowns`
+    free unknowns, `entries` pattern entries and `n_terms` pencil terms, counted from solvers.batched_direct at the
+    a-priori capacity: {'capacity', 'run_items', 'host_items', 'external'} (external: MemoryEstimate.from_items kwargs).
+    gpu: the BatchPattern (kept for the sweep) and capacity x the per-system pool arrays of solve_batch (run items),
+    the batched cuDSS plan outside the pool (batch_external_bytes; freed after the last planned frequency); cpu: the
+    pattern copies and the combined values on the host (the per-system SuperLU factor is the estimator's own item);
+    both: the host solutions of a batch and its stacked rhs. A rejected system's per-system factor is not booked."""
+    from ..solvers.batched_direct import batch_external_bytes, pattern_bytes, systems_bytes
+    from .schema import solver_backend
+    sweep = batched_direct_sweep(context)
+    if sweep is None:
+        return None
+    _, capacity = sweep
+    precision = context.solvers['linear'].values.get('precision', 'mixed')
+    n, z, terms = int(unknowns), int(entries), max(int(n_terms), 1)
+    host_items = [(f'batched sweep solutions and stacked rhs ({capacity} systems x 2 complex128 vectors)',
+                   2 * capacity * _COMPLEX_BYTES * n)]
+    if solver_backend(context.spec) != 'gpu':
+        host_items += [('batched_direct pattern terms and index arrays (host)', terms * _COMPLEX_BYTES * z + 20 * z
+                        + 16 * n),
+                       (f'batched_direct combined values ({capacity} systems, complex128)', capacity * _COMPLEX_BYTES * z)]
+        return {'capacity': capacity, 'run_items': (), 'host_items': tuple(host_items), 'external': {}}
+    run_items = (('batched_direct pattern (terms, index maps, row selector, lower-triangle take)',
+                  pattern_bytes(n, z, terms, symmetric)),
+                 (f'batched_direct batch of {capacity} systems (values, factor copies, residual transients, vectors)',
+                  capacity * systems_bytes(n, z, terms, precision, symmetric)))
+    permanent, extra = batch_external_bytes(n, z, capacity, precision, symmetric, dimensions)
+    external = {'external_items': ((f'cuDSS batched factors ({capacity} systems)', permanent),),
+                'external_transient_items': (), 'external_extra': extra}
+    return {'capacity': capacity, 'run_items': run_items, 'host_items': tuple(host_items), 'external': external}
+
+
 def reduced_sweep_time_items(sweep, unknowns) -> tuple:
     """core.time_estimate TimeItems of a reduced sweep (frequency_sweep_counts) on `unknowns` free unknowns: building
     the basis products once and V y per field frequency; () for 'direct'."""
@@ -886,13 +962,15 @@ def scalar_harmonic_build_items_3d(mesh, order, *, elements, dofs, stored_entrie
 
 
 def harmonic_frequency_items(dofs, stored_entries, sweep, *, device_pencil, term_value_bytes,
-                             frequency_terms=False) -> tuple:
+                             frequency_terms=False, batched=False) -> tuple:
     """Host work of fem.harmonic HarmonicSystemBase around the 'linear' role of a frequency_response study (sweep =
     frequency_sweep_counts): on a direct sweep per frequency the loads, rhs and solution scatters of solve; on a cuDSS
     back end (device_pencil) the DevicePencil set-up once (term gathers and nonzero checks, the upload, the device
     symmetry check: transposed-key argsort, gathers, max reductions), else HarmonicPencil.reduced per factorisation
-    (frequency_terms: + the pattern_sum with the per-frequency block). term_value_bytes = value bytes of the stored
-    pencil terms (K, mass; the zero damping is not uploaded)."""
+    (frequency_terms: + the pattern_sum with the per-frequency block). batched (a batched_direct node batching the
+    direct sweep: batched_direct_sweep): the BatchPattern set-up once (term gathers, keys, upload) instead, no
+    per-frequency host operator (the device combines; frequency_terms: the block's slot lookup per frequency).
+    term_value_bytes = value bytes of the stored pencil terms (K, mass; the zero damping is not uploaded)."""
     from ..core.time_estimate import Elementwise, HostStream, PythonCalls, Sync, TimeItem, Transfer
     stored = float(stored_entries)
     factorizations, kind = sweep['factorizations'], sweep['factorizations_kind']
@@ -902,6 +980,16 @@ def harmonic_frequency_items(dofs, stored_entries, sweep, *, device_pencil, term
                               sweep['solves_kind'],
                               (HostStream(_SOLVE_BYTES_PER_DOF * float(dofs)), numpy_calls(_SOLVE_NUMPY_CALLS))))
     terms = len(term_value_bytes)
+    if batched and sweep['method'] == 'direct':
+        # BatchPattern: complex128 term stack, rows / diagonal / lower take (int64 host, int32 device), the uploads
+        host = stored * (sum(8.0 + 2.0 * size for size in term_value_bytes) + 16.0 * terms + 64.0)
+        items.append(TimeItem('batched pattern set-up (term stack, index maps, upload)', 'setup', 1.0, 'exact',
+                              (HostStream(host), Transfer(stored * (16.0 * terms + 12.0)), PythonCalls(30),
+                               numpy_calls(15))))
+        if frequency_terms:
+            items.append(TimeItem('frequency block slots (per frequency)', 'solve', sweep['solves'],
+                                  sweep['solves_kind'], (numpy_calls(12),)))
+        return tuple(items)
     if device_pencil:
         host = stored * (sum(8.0 + 2.0 * size for size in term_value_bytes) + 18.0 + 20.0)
         device_reads = stored * (160.0 + sum(3.0 * size + 8.0 for size in term_value_bytes))

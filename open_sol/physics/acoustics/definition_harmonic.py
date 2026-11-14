@@ -17,6 +17,7 @@ from ...fem.diffusion3d import FEM_FILL_FACTOR_3D
 from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTINGS, DIFFUSION_DIRECT_BACK_ENDS,
                                          DISCRETIZATION_PARAM, KEPT_SOLUTION_BYTES_PER_DOF, axisymmetric_issues,
+                                         batched_direct_back_end, batched_direct_items, batched_direct_sweep,
                                          cudss_external, dof_map_bytes, element_order, element_term_ops, frequency_sweep_counts,
                                          geometry_param, harmonic_frequency_items, host_direct_back_end,
                                          is_axisymmetric, numpy_calls, plain_number, reduced_sweep_memory_items,
@@ -27,7 +28,7 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import expand_entities
 from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
-                             resolve_values)
+                             resolve_values, solver_backend)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
 from ...solvers.sparse_direct import CUDSS_BACK_ENDS, device_pencil_bytes, scipy_available
 from ..mechanics.pml3d import DEFAULT_PML_CELLS, PMLPadding
@@ -613,20 +614,27 @@ def _counts(settings_values, mesh) -> tuple:
 
 def _memory_estimate(settings_values, mesh, context):
     """Per-element state; host SuperLU factor (none on cuDSS), pencil copies, vectors and assembly COO (uncalibrated);
-    on cuDSS the kept DevicePencil, solution, publish maps and p_b (run items) and the factor outside the pool."""
+    on cuDSS the kept DevicePencil, solution, publish maps and p_b (run items) and the factor outside the pool; a
+    batched_direct direct sweep: definition_helpers.batched_direct_items instead of the per-system factor items."""
     if getattr(mesh, 'kind', 'tensor') not in _GRIDS:   # refused by validation
         return MemoryEstimate()
     order, three_d, dofs, entries = _counts(settings_values, mesh)
     elements = int(mesh.n_elements)
     fill = FEM_FILL_FACTOR_3D[order] if three_d else FEM_FILL_FACTOR
-    back_end = resolved_back_end(context.solvers)
-    cudss = back_end in CUDSS_BACK_ENDS
+    gpu = solver_backend(context.spec) == 'gpu'
+    # a batched_direct node: its per-system back end (cudss_mixed / cudss, cpu SuperLU) outside a batched sweep; a
+    # batched direct sweep books the batch instead of the per-system factor (fem.harmonic plan_batched)
+    back_end = (resolved_back_end(context.solvers)
+                or batched_direct_back_end(context.solvers, 'gpu' if gpu else 'cpu'))
+    batched = batched_direct_items(context, dofs, entries, _pencil_terms(context), dimensions=3 if three_d else 2)
+    cudss = back_end in CUDSS_BACK_ENDS and batched is None
     # the HarmonicSystem's factor, refreshed per frequency on one plan and kept for the session (no CSR copies in the
     # pool beside the DevicePencil: pressure_acoustics_rigid_disk measured within 4 %)
     factors = ((('cuDSS factor of K + j omega C - omega^2 M', dofs, entries, COMPLEX128_BYTES, 3 if three_d else 2,
                  back_end == 'cudss_mixed'),) if cudss else ())
     local = _LOCAL_DOFS[(3 if three_d else 2, order)]
-    factor = 0 if cudss else int(fill * host_lu_bytes(dofs, dimensions=3 if three_d else 2))
+    host_factor = not cudss and not (batched is not None and gpu)   # a batched gpu sweep holds no host factor
+    factor = int(fill * host_lu_bytes(dofs, dimensions=3 if three_d else 2)) if host_factor else 0
     # a MUMPS / PARDISO back end: the complex symmetric LDL^T at the SuperLU heuristic x superlu_bytes_scale + its own
     # copies (uncalibrated; refactorised per frequency on its analysis, fem.harmonic previous=)
     host_direct = host_direct_back_end(context.solvers)
@@ -656,6 +664,11 @@ def _memory_estimate(settings_values, mesh, context):
                       _INT64_BYTES * local * elements + dofs + elements + FLOAT64_BYTES * local)]
         if background:   # p_b at the dof points, uploaded per shown frequency
             run_items.append(('device background nodal values (complex128)', COMPLEX128_BYTES * dofs))
+    external = cudss_external(factors)
+    if batched is not None:   # the BatchPattern, a batch's pool arrays, its cuDSS plan outside the pool
+        run_items += list(batched['run_items'])
+        factor_items += list(batched['host_items'])
+        external = batched['external'] or external
     return MemoryEstimate.from_items(
         ((f'element state ({len(STATE_NAMES)} x float32)', len(STATE_NAMES) * FLOAT32_BYTES * elements),),
         host_items=(*factor_items,
@@ -663,7 +676,15 @@ def _memory_estimate(settings_values, mesh, context):
                     ('full-numbering complex vectors', _HOST_VECTORS_PER_DOF * COMPLEX128_BYTES * dofs),
                     ('assembly COO (transient, complex128)', 3 * COMPLEX128_BYTES * local * local * elements),
                     *reduced_sweep_memory_items(context, dofs, entries)), run_items=run_items,
-        **cudss_external(factors))
+        **external)
+
+
+def _pencil_terms(context) -> int:
+    """Pencil terms fem.harmonic batches (K, M, and C when an impedance feature adds Robin damping)."""
+    physics_spec = getattr(context, 'physics_spec', None)
+    damped = physics_spec is not None and any(feature.enabled and feature.type == 'impedance'
+                                              for feature in physics_spec.features)
+    return 3 if damped else 2
 
 
 # run-time recipe of the triangle host work beside definition_helpers' shared harmonic counts, counted from
@@ -683,7 +704,7 @@ _PROBE_NUMPY_CALLS = 15
 _SURFACE_NUMPY_CALLS = 40
 
 
-def _triangle_host_items(settings_values, mesh, context, order, dofs, entries, sweep, cudss) -> tuple:
+def _triangle_host_items(settings_values, mesh, context, order, dofs, entries, sweep, cudss, batched=False) -> tuple:
     """Host items on triangles: the build at finalize (scalar_harmonic_build_items + the background source operators,
     bounded by every element; timed by the assembly_seconds counter), the DevicePencil set-up / host reduced operators
     and per frequency the solve bookkeeping (harmonic_frequency_items), loads and background, shown fields, records."""
@@ -709,7 +730,7 @@ def _triangle_host_items(settings_values, mesh, context, order, dofs, entries, s
              *element_term_ops(degree=max(2 * order - 2 + axis, 2), kind='stiffness', **term),
              *element_term_ops(degree=2 * order + axis, kind='mass', **term)), seconds_counter=seconds))
     items += harmonic_frequency_items(dofs, entries, sweep, device_pencil=cudss,
-                                      term_value_bytes=(16, 16) if pml else (8, 8))
+                                      term_value_bytes=(16, 16) if pml else (8, 8), batched=batched)
     if sweep['method'] != 'direct':
         return tuple(items)
     loads = enabled('point_source', 'vibrating_boundary')
@@ -736,7 +757,8 @@ def _triangle_host_items(settings_values, mesh, context, order, dofs, entries, s
     return tuple(items)
 
 
-def _tetrahedron_host_items(settings_values, mesh, context, order, dofs, entries, sweep, cudss) -> tuple:
+def _tetrahedron_host_items(settings_values, mesh, context, order, dofs, entries, sweep, cudss,
+                            batched=False) -> tuple:
     """Host items on tetrahedra: the build at finalize (scalar_harmonic_build_items_3d: affine reference forms, the PML
     shell of pml_cells x h_max by quadrature; timed by the assembly_seconds counter), the DevicePencil set-up / per
     frequency solve bookkeeping (harmonic_frequency_items); background terms and post-processing are not estimated."""
@@ -749,7 +771,7 @@ def _tetrahedron_host_items(settings_values, mesh, context, order, dofs, entries
         counter=('solvers', context.name, 'counters', 'assemblies'),
         seconds_counter=('solvers', context.name, 'counters', 'assembly_seconds')))
     items += harmonic_frequency_items(dofs, entries, sweep, device_pencil=cudss,
-                                      term_value_bytes=(16, 16) if faces else (8, 8))
+                                      term_value_bytes=(16, 16) if faces else (8, 8), batched=batched)
     return tuple(items)
 
 
@@ -764,16 +786,22 @@ def _time_estimate(settings_values, mesh, context):
         return te.TimeEstimate(not_estimated=('pressure_acoustics on a rectangular-cell mesh',))
     order, three_d, dofs, entries = _counts(settings_values, mesh)
     sweep = frequency_sweep_counts(context)
-    cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS
+    # a batched_direct node: per-system cuDSS (gpu) / SuperLU (cpu) on its own recipe at the run backend; batched (a
+    # direct sweep, batched_direct_sweep) its items count on the batch counters
+    batched = batched_direct_sweep(context) is not None
+    per_system = batched_direct_back_end(context.solvers, context.backend)
+    cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS or per_system in CUDSS_BACK_ENDS
     fill = FEM_FILL_FACTOR_3D[order] if three_d else FEM_FILL_FACTOR   # the FEM operator over the 5- / 7-point curves
+    backend = {'device_values': True} if cudss else ({} if per_system else {'backend': 'cpu'})
     linear = context.solver_work('linear', unknowns=float(dofs), nnz=float(entries), value_bytes=COMPLEX128_BYTES,
                                  dimensions=3 if three_d else 2, solves=sweep['solves'],
                                  solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
                                  factorizations_kind=sweep['factorizations_kind'], factor_scale=fill, solve_scale=fill,
-                                 **({'device_values': True} if cudss else {'backend': 'cpu'}))
+                                 batched=batched, pencil_terms=_pencil_terms(context), **backend)
     missing = ('pressure_acoustics 3D background terms and post-processing',) if three_d else ()
     host = (_tetrahedron_host_items if three_d else _triangle_host_items)(settings_values, mesh, context, order, dofs,
-                                                                          entries, sweep, cudss)
+                                                                          entries, sweep, cudss and not batched,
+                                                                          batched)
     if sweep['eigenpairs']:
         missing += ('modal basis shift-invert (private eigen solver)',)
     return te.combine((te.TimeEstimate((*host, *reduced_sweep_time_items(sweep, dofs)), not_estimated=missing),
