@@ -103,6 +103,13 @@ class ModalSolve:
     def summary(self):
         """One line for the study log: resonances found, dofs, wall times, factor size, Lanczos counts."""
         info = self.info
+        if info.get('method') == 'block_eigen':
+            return (f"{len(self.resonances)} of {info['n_requested']} lowest vibration modes: {info['n_free']:,} free "
+                    f"dofs ({info['eigen_method']}, {info['preconditioner']}: {info['block_iterations']} iterations "
+                    f"({info['block_single_iterations']} float32), {info['operator_applications']:,} stiffness "
+                    f"products, {info['eigen_seconds']:.3g} s; largest relative residual {info['block_residual']:.1e} "
+                    f"of tolerance {info['block_tolerance']:.1e}, {info['eigenvalues_converged']} of "
+                    f"{info['eigenvalues_requested']} eigenvalues)")
         if info.get('method') == 'matrix_free':
             return (f"{len(self.resonances)} of {info['n_requested']} lowest vibration modes: {info['n_free']:,} free "
                     f"dofs (matrix-free shift-invert at 0: {info['operator_applications']} stiffness PCG solves, "
@@ -818,6 +825,36 @@ def solve_lowest_modes_matrix_free(inverse_stiffness, mass, free_dofs, n_dofs, n
             'operator_applications': applications, 'lanczos_tolerance': tolerance,
             'eigenvalues_requested': n_wanted, 'eigenvalues_converged': int(np.size(eigenvalues)),
             'warnings': warnings}
+    return ModalSolve(resonances=resonances, info=info)
+
+
+def solve_lowest_modes_block(stiffness, mass, precondition, free, n_resonances, components_per_node, eigen_solver,
+                             xp, preconditioner_text, default_max_iterations=0):
+    """ModalSolve of the n_resonances lowest modes by a block_eigen runtime (solvers.block_eigen) on block callbacks
+    over every dof (rows 0 on the dofs outside the backend bool mask `free`, which the callbacks keep 0): stiffness /
+    mass / precondition(rows_in, rows_out), float32 or float64 rows (mixed)."""
+    started = time.perf_counter()
+    n_resonances = _checked_count(n_resonances)
+    n_dofs = int(free.size)
+    n_free = int(free.sum())
+    if n_free < 3:
+        raise ValueError(f'solve_lowest_modes_block: only {n_free} free dofs remain outside the supports')
+    n_wanted = min(n_resonances + EXTRA_EIGENVALUES, n_free - 1)
+    result = eigen_solver.lowest(n_dofs, n_wanted, stiffness, mass, precondition, xp, mask=free,
+                                 default_max_iterations=default_max_iterations)
+    warnings = list(result.warnings)
+    resonances = _ranked_resonances(result.eigenvalues, result.vectors, 0.0, n_resonances, np.array,
+                                    components_per_node, warnings)
+    converged = int(np.count_nonzero(np.asarray(result.residuals) <= eigen_solver.tolerance))
+    info = {'method': 'block_eigen', 'eigen_method': result.method, 'preconditioner': preconditioner_text,
+            'n_dofs': n_dofs, 'n_free': n_free, 'n_requested': n_resonances, 'target_frequency': 0.0,
+            'factor_host_bytes': 0, 'factor_seconds': 0.0, 'eigen_seconds': result.seconds,
+            'seconds': time.perf_counter() - started, 'operator_applications': result.applications,
+            'block_iterations': result.iterations, 'block_single_iterations': result.single_iterations,
+            'block_double_iterations': result.double_iterations,
+            'block_residual': float(np.max(result.residuals)) if np.size(result.residuals) else 0.0,
+            'block_tolerance': eigen_solver.tolerance, 'eigenvalues_requested': n_wanted,
+            'eigenvalues_converged': n_wanted if result.converged else converged, 'warnings': warnings}
     return ModalSolve(resonances=resonances, info=info)
 
 

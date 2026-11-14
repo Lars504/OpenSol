@@ -7,7 +7,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   and imports nothing from open_sol, so model.schema may import it; `__init__` imports only `roles`; model.schema
   re-exports SOLVER_ROLES, ResolvedSolver, SolverRole, SolverType, solver_misfit.
 - Runtimes (`pcg.py` (+ `multigrid.py`, imported inside factorize), `line_block.py`, `sparse_direct.py`, `banded.py`,
-  `arpack_shift_invert.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
+  `arpack_shift_invert.py`, `block_eigen.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
   core.gpu_memory / core.backend / core.host_memory inside functions, kernels built on first use, so core.fv_diffusion,
   model.definition_helpers and GUI-thread checks (`scipy_available`, `size_issue`, `expected_back_end`) may import them.
   `cudss_factor.py` is the one cuDSS wrapper (sparse_direct imports it; arpack_shift_invert reaches it inside
@@ -749,6 +749,44 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `Factorization.inertia()` (U diagonal signs, valid only when perm_r == perm_c, else an extra counting SuperLU with
   diag_pivot_thresh 0). A Hermitian pencil on cuDSS has no count. Counting factorisations count in
   eigen_factorizations: a time recipe pricing a band search counts them there.
+
+## block_eigen (`BlockEigenSolver`; role 'eigen', opt-in)
+- Factor-free LOBPCG of the lowest eigenpairs of a symmetric pencil on caller block callbacks (module notes: layout,
+  the five steps of an iteration, mixed phases). Opt-in only: SolverType `opt_in_roles=('eigen',)` and the physics'
+  role from `definition_helpers.eigen_role(block_eigen=True)` (operator 'spd', precisions double / mixed,
+  opt_in_types ('block_eigen',)); grids ('tensor',), so a tetrahedra / triangle physics with that role misfits it.
+  Today: solid_mechanics_3d on brick meshes (`ElasticSystem3D._lowest_modes_block`). A new consumer: an 'spd' eigen
+  role with block_eigen=True, a dispatch on `isinstance(eigen_solver, BlockEigenSolver)` where it calls the eigen
+  runtime, its validation of what LOBPCG cannot do (interior targets, bands, zero eigenvalues: the relative residual
+  divides by |lambda|), and memory / time items (below).
+- Callback contract: `(rows_in, rows_out)` on C-contiguous (m, n) row blocks of the backend array module, float32 or
+  float64 (mixed calls both: keep an operator copy per dtype), rows_out written, never aliased with rows_in; rows_in
+  may be the runtime's scratch (the preconditioner's input rows are overwritten afterwards). With a `mask` every row is
+  0 outside it and K / M must keep that (masked products); the runtime masks the preconditioner output itself. The
+  preconditioner must be SPD (a symmetric V-cycle, block Jacobi), not exact: no inner solves, no tolerance coupling.
+- Memory: 9 b n values of the phase dtype (S, KS, MS of (3 b, n); b = wanted + guards) + CHUNK_BYTES scratch, nothing
+  else of that size: every block product runs by column chunks in place (`_rotate`, the W projection), compaction is
+  forward row copies, the start rows are drawn row by row on the gpu. Mixed frees the float32 stores before the
+  float64 ones (the float32 X is the only copy held across): `block_eigen.block_bytes` is the estimate item (a
+  transient of the eigen solve; the consumer adds its own copies, e.g. float32 operator copies and a private
+  multigrid hierarchy). Host: the k eigenvectors only.
+- Syncs per iteration: two host reads (residual norms, Gram pair) and one small upload (the rotation coefficients);
+  the per-row callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
+  (3 b)^2 (diag(B)^-1/2 scaled, B eigenvalues below DROP dropped: dependent W / P directions near convergence).
+- Mixed: float32 to max(tolerance, SINGLE_PHASE_TOLERANCE) or a STALL_ITERATIONS stall (the float32 floor of the
+  products is ~eps32 lambda_max / lambda: ~1e-3 on fine 3D elasticity, so the float64 phase is always needed for tight
+  tolerances; it starts from the float32 X with a fresh P). Double stalls over DOUBLE_STALL_ITERATIONS stop
+  unconverged (tolerance below the float64 floor), with a warning.
+- Fewer free unknowns than DENSE_MAX_RATIO x b: a dense scipy eigh of the applied K and M (`eigen_dense_solves`).
+- Counters: eigen_solves, eigen_iterations / _single_ / _double_iterations, operator_applications (K rows),
+  mass_applications, preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves,
+  eigen_block_size, eigen_last_residual. Time recipe `block_eigen.time_estimate`: per iteration and row the caller's
+  product_ops (K and M) + preconditioner_ops, block passes, DenseFlops (single for the mixed share), 2 syncs;
+  iterations a priori (multigrid: MULTIGRID_ITERATIONS_PER_DECADE x decades, flagged by work.setup_ops; Jacobi:
+  sqrt(kappa) or CG_ITERATIONS_PER_AXIS_CELL x longest axis): uncalibrated guesses.
+- Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
+  norm kernel, block (multi-vector) brick kernels (today one launch per row), FEM pencils (tetrahedra / triangles:
+  SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space preconditioner).
 
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or

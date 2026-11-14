@@ -290,6 +290,16 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   kernels3d mass product) on host vectors of the free dofs. Lanczos tolerance = max(node tolerance,
   `LANCZOS_TOLERANCE_PER_CG` x CG tolerance): with 0 the inexact inner solves floor the Ritz residual and ARPACK
   restarts forever (capped `MAX_LANCZOS_RESTARTS`). Validation errors on a single-precision 'linear' node here.
+- An eigen node of type block_eigen (opt-in, `eigen_role(block_eigen=True)`; tensor grids only, so tetrahedra misfit
+  it) takes `ElasticSystem3D._lowest_modes_block` -> `modal.solve_lowest_modes_block` (info 'method' 'block_eigen'):
+  full-dof rows masked by `free`, one brick product / mass product / preconditioner launch per row; float32 rows on
+  float32 copies (the mixed linear solver's `_single_operator` + widths_single when kept, else made per solve); the
+  'multigrid' preconditioner reuses `self.multigrid` even after its CG guard fell back (LOBPCG only needs it SPD),
+  else builds a private BrickMultigrid on the float32 copies (block Jacobi + warning when the build raises); float64
+  rows through it cast in (multigrid copyto) and out (`cycle_out`). No inner CG, rhs / CG unknown untouched. Still
+  needs a float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D
+  memory items (block_eigen.block_bytes + copies + private hierarchy, transient 'eigen solve') and the time recipe
+  (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either.
 - Inner solves count in `n_solves`: `reaction` raises after an eigen solve / shown mode until the next static
   re-solve (`_shows_mode`), and `rhs` / the CG unknown are scratch (`_rhs_built` cleared).
 - Exact 3D roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give

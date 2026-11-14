@@ -46,8 +46,8 @@ open_sol/
 │                    # membrane (film / plate, triangles + 1D, ports, Bloch), semiconductor, acoustics (elastic_waves;
 │                    # frequency-domain pressure_acoustics), fluid, magnetic (static, AC, 3D)
 ├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes: pcg (+ multigrid), line_block,
-│                    # sparse_direct, banded, arpack_shift_invert, cudss_factor, host_direct (MUMPS / PARDISO),
-│                    # explicit_kernels (solvers sub file)
+│                    # sparse_direct, banded, arpack_shift_invert, block_eigen (factor-free LOBPCG, opt-in), cudss_factor,
+│                    # host_direct (MUMPS / PARDISO), explicit_kernels (solvers sub file)
 ├── coupling/        # CouplingTerm / CouplingGroup, DynamicMaterialUpdate, MultiphysicsRunner, E13 SlotSum, the
 │                    # coupling type definitions per partner family (definitions*.py) and their self-tests
 ├── model/           # spec, schema (registry), expressions, geometry, validate, meshing, builder (-> Session), session,
@@ -556,8 +556,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/solvers/`: layout and imports, the model path (spec, backends, resolved_solvers, validate, feature
   precisions, build stage, summary 'solvers'), pcg (stop reference, mixed, users), multigrid, line_block (layout,
   shift family, chunks, rejected shifts), sparse_direct (cuDSS plan reuse, host / device value refreshes), banded (grid
-  kinds, 1D Automatic), arpack_shift_invert (several shifts, inertia counts), host_direct (MUMPS / PARDISO library
-  notes), explicit_kernels.
+  kinds, 1D Automatic), arpack_shift_invert (several shifts, inertia counts), block_eigen (opt-in rule, callback
+  contract, memory layout, mixed phases), host_direct (MUMPS / PARDISO library notes), explicit_kernels.
 - `open_sol/coupling/`: runner cadence, prepare / flush, coupling protocol, coupling type catalogue, q_accum readers,
   couplings across meshes (views, transfer classes), E13 contributor API / SlotSum, EM loss
   protocol, thermo-optic, Pockels, semiconductor / acoustics / piezo / fluid / magnetic / phase-change coupling
