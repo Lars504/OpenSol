@@ -50,6 +50,28 @@ _LINE_BLOCK_TOLERANCES = {'double': (_OMEGA_TOLERANCE, _Q_TOLERANCE), 'mixed': (
 _LINE_BLOCK_CELL = 80e-9
 _LINE_BLOCK_RUN_CELLS = {'ez': (26, 16), 'ez_lossy': (26, 16)}
 _LINE_BLOCK_RUNS = {'double': ('ez', 'ez_lossy'), 'mixed': ('ez_lossy',)}
+# em_fdfd_eigenfrequency_time_filter: the same three cavities with a time_filter 'eigen' node (FDTD run of the cavity +
+# Rayleigh-Ritz of the FDFD pencil). Bandwidth: the references lie at -25 % (ez / hz (1, 1)), +16 % (hz (3, 0)) and
+# +33 % (ez (3, 1)) of the target, and only resonances inside +-bandwidth are reported. Closed lossless (or uniformly
+# lossy) cavities: the FDTD and FDFD share the Yee Laplacian, so the filtered fields are exact combinations of the
+# discrete modes and only the out-of-band leakage (smooth across the samples: a few span directions) and the float32
+# stepping noise (~1e-6) remain; the bilinear Rayleigh quotient squares them: omega to 1e-8 (as ARPACK's case), Q to
+# 1e-5 (Q ~ 1080: a Q error ~ 2 Q x the omega error), the field (first order in the span error) to 1e-4.
+_TIME_FILTER_NODE = 'time_filter'
+_TIME_FILTER_BANDWIDTH = 0.4
+_TIME_FILTER_TOLERANCES = (1e-8, 1e-5)          # relative complex omega, relative Q
+_TIME_FILTER_FIELD_TOLERANCE = 1e-4
+# em_fdfd_time_filter_open_disc: a small silicon disc (eps_r of the template) in a CPML box, time_filter against
+# arpack_shift_invert (Automatic) on the same model: every high-Q arpack resonance within the inner band against the
+# nearest time-filter one (the FDTD's CPML differs from the frozen-stretch FDFD PML: the polish steps remove it)
+_DISC_RADIUS = 0.6e-6                           # m: whispering-gallery order ~7, FSR ~10 % of the target
+_DISC_DOMAIN = 2.0e-6                           # m, square (CPML outside)
+_DISC_CELL = 25e-9                              # m: 80 x 80 window cells + the CPML ring
+_DISC_RESONANCES = 4
+_DISC_BANDWIDTH = 0.15
+_DISC_COMPARED_BAND = 0.8                       # compared: |f / f_target - 1| <= this x the bandwidth
+_DISC_MIN_Q = 100.0                             # compared: arpack Q at least this (leaky modes are not the point)
+_DISC_TOLERANCES = (1e-6, 1e-3)                 # relative wavelength, relative Q
 
 # 'disk_resonator_eigenmodes' template: the disk of the FDTD 'disk_resonator' template (silicon eps_r 12.11, r = 1 um,
 # 4 x 4 um CPML box, 20 nm mesh: (200 + 30)^2 = 52,900 unknowns), solved for its whispering-gallery modes near 1.55 um
@@ -146,7 +168,8 @@ def _field_error(results, cells, cell):
     return max(shape_error, float(np.max(np.abs(imaginary_part))))
 
 
-def _cavity_errors(results_by_run, omega_tolerance, q_tolerance, cell=_CAVITY_CELL, run_cells=None):
+def _cavity_errors(results_by_run, omega_tolerance, q_tolerance, cell=_CAVITY_CELL, run_cells=None,
+                   field_tolerance=_FIELD_TOLERANCE):
     """(errors, tolerances, details) of the _RUNS in results_by_run (_RUNS key -> Results; run_cells: cells per run
     when not the _RUNS ones): complex omega of resonances 1..3 vs the closed form, Q of the lossy run, snapshot count
     and the resonance-1 field of the lossless ez run (when present)."""
@@ -178,7 +201,7 @@ def _cavity_errors(results_by_run, omega_tolerance, q_tolerance, cell=_CAVITY_CE
                         'snapshot_labels': list(labels)}
     if 'ez' in results_by_run:
         errors['ez field'] = _field_error(results_by_run['ez'], run_cells['ez'], cell)
-        tolerances['ez field'] = _FIELD_TOLERANCE
+        tolerances['ez field'] = field_tolerance
     return errors, tolerances, details
 
 
@@ -221,6 +244,86 @@ def _check_line_block_cavity(results_by_name):
             errors[f'{precision} {run} line_block record'] = 0.0 if used else math.inf
             tolerances[f'{precision} {run} line_block record'] = 1.0
             details[f'{precision} {run} counters'] = dict(counters)
+    return tolerance_units_result(errors, tolerances, details)
+
+
+def _with_time_filter(spec, bandwidth):
+    """spec with a time_filter node of `bandwidth` (else its defaults) as the physics' 'eigen' solver."""
+    spec.solvers.append(SolverSpec(_TIME_FILTER_NODE, 'time_filter', {'bandwidth': bandwidth}))
+    spec.physics_by_name(_PHYSICS).solvers['eigen'] = _TIME_FILTER_NODE
+    return spec
+
+
+def _time_filter_cavity_specs():
+    """The _RUNS cavities (the run backend: gpu, cpu variant) with a time_filter eigen node."""
+    return {run: _with_time_filter(_cavity_spec(*arguments), _TIME_FILTER_BANDWIDTH) for run, arguments in _RUNS.items()}
+
+
+def _time_filter_record(results, errors, tolerances, details, key):
+    """errors[key] 0 when the run summary records the eigen role as time_filter with one solve and time steps > 0."""
+    eigen = solver_role(results, _PHYSICS, 'eigen')
+    counters = eigen.get('counters') or {}
+    used = (eigen.get('type') == _TIME_FILTER_NODE and float(counters.get('eigen_solves', 0)) == 1.0
+            and float(counters.get('time_steps', 0)) > 0)
+    errors[key] = 0.0 if used else math.inf
+    tolerances[key] = 1.0
+    details[f'{key} counters'] = dict(counters)
+
+
+def _check_time_filter_cavity(results_by_name):
+    """_cavity_errors with the time-filter tolerances plus each run's eigen role record (_time_filter_record)."""
+    errors, tolerances, details = _cavity_errors(results_by_name, *_TIME_FILTER_TOLERANCES,
+                                                 field_tolerance=_TIME_FILTER_FIELD_TOLERANCE)
+    for run, results in results_by_name.items():
+        _time_filter_record(results, errors, tolerances, details, f'{run} time_filter record')
+    return tolerance_units_result(errors, tolerances, details)
+
+
+def _disc_spec(time_filter):
+    """Silicon disc of radius _DISC_RADIUS centred in a _DISC_DOMAIN CPML box, em_fdfd_ez eigenfrequency study near
+    the target (resonance table); time_filter: a time_filter eigen node, else Automatic (arpack_shift_invert)."""
+    centre = 0.5 * _DISC_DOMAIN
+    spec = ModelSpec(
+        title='Silicon disc resonances (' + ('time_filter' if time_filter else 'arpack_shift_invert') + ')',
+        domain=DomainSpec(size_x=_DISC_DOMAIN, size_y=_DISC_DOMAIN),
+        geometry=[GeometrySpec('disc', 'circle', {'cx': centre, 'cy': centre, 'r': _DISC_RADIUS})],
+        materials=[MaterialSpec('silicon_disc', properties={'eps_r': _DISK_EPS_R}, selection=['disc'])],
+        physics=[PhysicsSpec(_PHYSICS, 'em_fdfd_ez', settings={'wavelength': _TARGET_WAVELENGTH},
+                             features=[FeatureSpec(_TABLE, 'resonance_table')])],
+        mesh=MeshSpec(mode='uniform', dx=_DISC_CELL),
+        study=StudySpec(type=_STUDY, settings={'n_resonances': _DISC_RESONANCES}))
+    return _with_time_filter(spec, _DISC_BANDWIDTH) if time_filter else spec
+
+
+def _disc_specs():
+    return {'arpack': _disc_spec(False), 'time_filter': _disc_spec(True)}
+
+
+def _check_disc(results_by_name):
+    """Every arpack resonance with Q >= _DISC_MIN_Q within _DISC_COMPARED_BAND x the bandwidth of the target against the
+    time-filter resonance of nearest complex frequency: relative wavelength and Q (at least one compared), plus the
+    time_filter record."""
+    omega_target = 2.0 * math.pi * C0 / _TARGET_WAVELENGTH
+    reference_rows = results_by_name['arpack'].result(_PHYSICS, _TABLE)['rows']
+    filter_rows = results_by_name['time_filter'].result(_PHYSICS, _TABLE)['rows']
+
+    def frequency(row):
+        return complex(float(row[_OMEGA_COLUMNS[0]]), float(row[_OMEGA_COLUMNS[1]]))
+    errors, tolerances, details = {}, {}, {'arpack': [list(map(float, row)) for row in reference_rows],
+                                          'time_filter': [list(map(float, row)) for row in filter_rows]}
+    compared = [row for row in reference_rows if float(row[_Q_COLUMN]) >= _DISC_MIN_Q
+                and abs(2.0 * math.pi * frequency(row).real / omega_target - 1.0) <= _DISC_COMPARED_BAND
+                * _DISC_BANDWIDTH]
+    errors['compared resonances'] = 0.0 if compared and filter_rows else math.inf
+    tolerances['compared resonances'] = 1.0
+    for row in compared if filter_rows else ():
+        match = min(filter_rows, key=lambda candidate: abs(frequency(candidate) - frequency(row)))
+        key = f'resonance {int(row[0])}'
+        errors[f'{key} wavelength'] = abs(float(match[1]) / float(row[1]) - 1.0)
+        tolerances[f'{key} wavelength'] = _DISC_TOLERANCES[0]
+        errors[f'{key} Q'] = abs(float(match[_Q_COLUMN]) / float(row[_Q_COLUMN]) - 1.0)
+        tolerances[f'{key} Q'] = _DISC_TOLERANCES[1]
+    _time_filter_record(results_by_name['time_filter'], errors, tolerances, details, 'time_filter record')
     return tolerance_units_result(errors, tolerances, details)
 
 

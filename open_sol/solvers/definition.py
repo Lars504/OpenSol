@@ -49,8 +49,10 @@ _HOST_DIRECT_COMPRESSED_HELP = (
     f" {' / '.join(host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS)}: MUMPS's block low-rank factor (ICNTL(35) "
     f'{host_direct.BLR_ICNTL}, dropping threshold CNTL(7) {host_direct.BLR_TOLERANCE:g}), double precision: the '
     'off-diagonal blocks of the large fronts stored compressed, roughly half the factor memory and work on large 3D '
-    'models (little gain in 2D); every solve is refined by float64 GMRES on the compressed factor to 1e-12 (about 2 - 4 '
-    'compressed solves per solve), and a factor that still misses is refactorised full rank for the rest of the run. '
+    'models (little gain in 2D: fronts below the block size stay full rank); when its probe misses, every solve is '
+    'refined by float64 GMRES on the compressed factor to 1e-12 (about 2 - 4 compressed solves per solve), and a '
+    'factor that still misses is refactorised full rank for the rest of the run (counter '
+    'host_direct_compression_fallbacks / eigen_compression_fallbacks). Inertia counts from it are marked inexact. '
     'The memory guard reads MUMPS\'s full-rank estimate.'
     if host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS else '')
 _HOST_DIRECT_COMPRESSED_TIP = (

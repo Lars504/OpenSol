@@ -11,7 +11,8 @@ every right-hand side) or the device (cuSOLVER QR 'cusolver_qr', one factorisati
 # solve_host, transposed solves of symmetric factors only, not recyclable: re-solves after a value change refactorise
 # with previous=, reusing the cuDSS plan of an unchanged pattern). The factor lives outside the cupy pool and is guarded
 # by cuDSS's own estimate after planning, so the host size rules do not apply to it.
-# Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed, solvers.host_direct): opt-in like cuDSS (never
+# Host direct back ends (mumps / mumps_mixed / mumps_blr / pardiso / pardiso_mixed, solvers.host_direct; mumps_blr the
+# block low-rank MUMPS factor, GMRES-refined, full rank after a miss): opt-in like cuDSS (never
 # 'auto'), on both backends; factorize / factorize_host / DiffusionDirectSolver return a
 # host_direct.HostDirectFactorization (transposed solves, recyclable, inertia; previous= refactorises on the kept
 # analysis). They keep the SuperLU size rules (library-named texts; uncalibrated, LDL^T / nested dissection usually

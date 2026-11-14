@@ -879,16 +879,20 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   mixed_rejection). No low-precision Cholesky (as cuDSS), no remembered rejections per pattern (cuDSS H4).
 - Compressed (mumps_blr, `HOST_DIRECT_COMPRESSED_BACK_ENDS`; module header): a double MUMPS factor with ICNTL(35) =
   BLR_ICNTL (set between set_matrix and analyze: the analysis needs it) and CNTL(7) = BLR_TOLERANCE (re-set before
-  every factor: python-mumps keeps one instance per dtype). Its probe misses ACCEPT_RESIDUAL by design, so it always
-  runs the double GMRES-IR path; a GMRES miss refactors full rank once (`_next_attempt`, sticky
-  `_compression_rejected`, last_compression_fallback / compression_rejection) before raising. Name helpers:
+  every factor: python-mumps keeps one instance per dtype). Fronts below MUMPS's BLR block size stay full rank, so a
+  small factor may pass its probe unrefined (the description names GMRES refinement only when the probe missed); a
+  compressed factor always probes (never defer_check: a deferred miss could not fall back), and a GMRES miss or a zero
+  pivot refactors full rank once (`_next_attempt`, sticky `_compression_rejected`, last_compression_fallback /
+  compression_rejection; counters host_direct_compression_fallbacks / eigen_compression_fallbacks, compressed names
+  only) before raising. Its LDL^T inertia counts as inexact (perturbed pivots, like a float32 factor). Name helpers:
   `library_of` strips `_NAME_SUFFIXES` ('_mixed', '_blr'), `host_direct_precision` is 'double', `host_direct_compressed`;
   a new suffix goes into `_NAME_SUFFIXES` or every helper misreads it. Kept analyses and `previous=` refactors key on
   the compression (a full-rank analysis is never adopted by a compressed request or the reverse). Estimators:
   `superlu_bytes_scale` x BLR_FACTOR_FRACTION; time recipes HOST_DIRECT_COMPRESSED_FACTOR_TIME /
   HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. Unverified: that
-  python-mumps' instance exposes `cntl` (a RuntimeError naming the wrapper otherwise) and the INFOG fields of a BLR
-  factor (INFOG(29) may count full-rank entries).
+  python-mumps' instance exposes `cntl` 1-based like icntl (a 0-based array would set CNTL(8) silently; a missing
+  one is a RuntimeError naming the wrapper), MUMPS >= 5.2 ICNTL(35) semantics, the in-core memory gain without
+  ICNTL(37) / (38), and the INFOG fields of a BLR factor (INFOG(29) may count full-rank entries).
 - Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
   iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
   HostDirectMemoryError (no guard when unknown); library allocation errors map to it too. The factor lives in library
