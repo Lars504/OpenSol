@@ -27,8 +27,9 @@ HarmonicPencil (K, C, M on one pattern, one complex factor per frequency), Harmo
 # set_frequency_load / set_held_offsets left None. Batched direct sweeps: plan_batched(omegas, extra_loads=,
 # held_offsets_of=) on a solvers.batched_direct runtime: solve() of a planned omega then takes its solution from a batch
 # of the next planned omegas factorised and solved together (loads / held values / frequency_terms per omega computed
-# at batch time: frequency_terms must be a pure function of omega there); a rejected system or an unavailable batch
-# path re-solves that omega by the per-frequency factor. A4: solve(omega, fields=False) keeps only the reduced coordinates y
+# at batch time: frequency_terms must be a pure function of omega there); a rejected system, an unavailable batch
+# path or an omega outside the plan takes the per-frequency factor on the plan's loads / held values.
+# A4: solve(omega, fields=False) keeps only the reduced coordinates y
 # (values stale, fields_current False); linear_output(key, apply) then gives apply(values) from apply of each basis column
 # (cached per key until the next plan / clear), publish_fields() writes values = V y.
 # Conditions (HarmonicCondition): 'neumann' n_out . (a grad u) = value (the inward flux), 'robin' n_out . (a grad u) =
@@ -493,14 +494,13 @@ class HarmonicSystemBase:
         pencil = self.pencil
         if self._batched is not None and pencil.free.size:
             free = self._batched_free(omega)
-            if free is not None:
-                solution = np.zeros(pencil.shape[0], dtype=np.complex128)
-                solution[pencil.fixed] = self._planned_held(omega, self._batched['held_offsets_of'])
-                solution[pencil.free] = free
-                self._store_solution(solution)
-                self.last_omega = omega
-                self.n_solves += 1
-                return self.values
+            solution = np.zeros(pencil.shape[0], dtype=np.complex128)
+            solution[pencil.fixed] = self._planned_held(omega, self._batched['held_offsets_of'])
+            solution[pencil.free] = free
+            self._store_solution(solution)
+            self.last_omega = omega
+            self.n_solves += 1
+            return self.values
         if self._reduced is not None and pencil.free.size:
             model = self._reduced[0]
             held = self._reduced_held(omega)
@@ -711,7 +711,8 @@ class HarmonicSystemBase:
         batch_capacity systems) factorised and solved together, instead of its own factor; loads on top of load_vector
         and held offsets per omega as plan_reduced (extra_loads: HarmonicLoads of full-numbering vectors, system
         units; held_offsets_of(omega) -> full-numbering offsets of the held values); frequency_terms (ports) per system
-        at batch time. Clears a reduced model; until clear_reduced or a change of operator / loads. Returns info."""
+        at batch time; an omega outside the plan: its own factor on the same loads. Clears a reduced model; until
+        clear_reduced or a change of operator / loads. Returns info."""
         from ..solvers.batched_direct import BatchedDirectSolver
         if not isinstance(self.linear_solver, BatchedDirectSolver):
             raise ValueError(f'{self.label()}: plan_batched needs a batched_direct linear solver')
@@ -794,11 +795,13 @@ class HarmonicSystemBase:
         return free
 
     def _batched_free(self, omega):
-        """Free-dof solution of a planned omega (solving the batch from it when not solved yet), None when unplanned."""
+        """Free-dof solution of a planned omega (solving the batch from it when not solved yet); an omega outside the
+        plan: by its own factor on the plan's loads and held values (solve()'s per-frequency branch knows neither)."""
         plan = self._batched
         positions = plan['index'].get(float(omega))
         if positions is None:
-            return None
+            rhs, block = self._batched_system(omega)
+            return self._reference_free(omega, rhs, block)
         # the first position of this omega not solved yet (a re-solve of a solved one: its first, solved again)
         index = next((position for position in positions if position in plan['remaining']), positions[0])
         free = self._planned_free(index, omega)
@@ -838,11 +841,13 @@ class HarmonicSystemBase:
                 solutions, _, accepted = self.linear_solver.solve_batch(
                     batch_pattern, coefficients, np.stack([rhs for _, rhs, _ in systems]), extras)
                 plan['batches'] += 1
-            except BatchUnavailable as error:
+            except BatchUnavailable as error:   # only its text: the traceback holds the failed batch's device arrays
                 plan['unavailable'] = str(error)
+            if plan['unavailable'] is not None:   # after the except block: those arrays are free for the factor below
                 import warnings
-                warnings.warn(f'{self.label()}: batched direct solves unavailable ({error}); solving the remaining '
-                              'frequencies one factor each', RuntimeWarning, stacklevel=2)
+                warnings.warn(f"{self.label()}: batched direct solves unavailable ({plan['unavailable']}); solving the "
+                              'remaining frequencies one factor each', RuntimeWarning, stacklevel=2)
+                plan['pattern'] = batch_pattern = None   # the BatchPattern's device arrays: not needed any more
                 rhs, block = self._batched_system(omega)   # the others: one factor each when their turn comes
                 return self._reference_free(omega, rhs, block)
             for row, (position, rhs, block) in enumerate(systems):

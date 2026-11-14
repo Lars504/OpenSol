@@ -603,7 +603,9 @@ all but drift_diffusion.
   frequency_terms block outside the pattern, a rejected system or an unavailable batch path takes that omega's own
   factor), keyed on the same `_load` / `_fixed_value` objects (solve raises after a change); clear_reduced drops it and
   releases the runtime's batched plan, as does the last planned omega. Planned omegas match by exact float: callers
-  plan and solve 2 pi f computed the same way.
+  plan and solve 2 pi f computed the same way; an omega outside the plan is not batched (its own factor on the plan's
+  loads / held values). An unavailable batch path: act on it after the `except` block (the BatchUnavailable's
+  traceback holds the failed batch's device arrays).
 - A4 (`reduced_outputs.py`): `solve(omega, fields=False)` keeps only y (`solution` None, `reactions` refused);
   `linear_output(key, apply)` caches apply of each basis column per key (apply linear in full-numbering values);
   `publish_fields()` writes V y. Values pass `_physical_values(full)` (line Hermite slopes) in every write and in

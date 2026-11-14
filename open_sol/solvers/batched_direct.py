@@ -203,6 +203,12 @@ class _BatchPlan:
         self.operators = self.rhs = []
         self.data = self.buffers = None
 
+    def __del__(self):   # nvmath's DirectSolver has no __del__: a plan dropped unreleased would keep its factors
+        try:
+            self.free()
+        except Exception:   # interpreter shutdown: the CUDA context may already be gone
+            pass
+
 
 def _plan_estimates(solver) -> tuple:
     """(permanent, peak) device bytes of a planned batch from nvmath's plan_info (a per-system array is summed; 0
