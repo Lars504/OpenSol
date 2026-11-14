@@ -54,6 +54,16 @@ helpers here are GUI-thread safe."""
 # factorisation / solve of a HostDirectFactorization, and consumers iterating around such a factor wrap their loop
 # in it (arpack_shift_invert's ARPACK runs); MKL's own pool is never touched, MUMPS never limited (its BLAS may be
 # that OpenBLAS).
+# Compressed factors (mumps_blr, the double-precision block low-rank MUMPS factor): ICNTL(35) = 2 (BLR factorisation
+# and solve on the compressed factors, set before the analysis), CNTL(7) = BLR_TOLERANCE (the dropping threshold, set
+# before every factorisation): about half the factor memory and flops on large 3D fronts (2D gains little), at the
+# price of a backward error ~BLR_TOLERANCE, so its probe misses ACCEPT_RESIDUAL by design and every solve runs float64
+# GMRES-IR on the compressed factor (the double-refined path above: ~2 - 4 compressed solves per solve). A compressed
+# factor that still misses is refactored full rank once (sticky, last_compression_fallback / compression_rejection)
+# before anything raises. Analyses are kept / adopted per compression (_KeptAnalysis key 'mumps_blr'), a previous of
+# the other compression is never refactored in place, INFOG(17) (the guard) is MUMPS's full-rank estimate (safe side),
+# and the LDL^T inertia is that of the compressed factor (exact for eigenvalues farther than ~BLR_TOLERANCE ||A|| from
+# the shift). python-mumps exposes the instance's cntl as it does icntl (1-based; checked against the sources only).
 # No automatic fallback: an explicit host node raises (HOST_DIRECT_REFUSALS).
 # Library calls live only in the adapter section at the end (_MumpsFactor, _PardisoFactor): PARDISO run against
 # pydiso 0.3.1 / oneMKL 2026.2, MUMPS checked against the sources of python-mumps 0.0.6 only (not run).
@@ -72,10 +82,18 @@ from .cudss_factor import (ACCEPT_RESIDUAL, BACKWARD_ERROR_TOLERANCE, GMRES_REST
                            MIXED_SOLVE_TOLERANCE, SYMMETRY_TOLERANCE, ProbedFactor, _FactorRejected, _figure,
                            canonical_csr, csr_rows, gmres_refine, relative_asymmetry)
 
-HOST_DIRECT_BACK_ENDS = ('mumps', 'mumps_mixed', 'pardiso', 'pardiso_mixed')   # the one list (sparse_direct back_end)
+HOST_DIRECT_BACK_ENDS = ('mumps', 'mumps_mixed', 'mumps_blr', 'pardiso', 'pardiso_mixed')   # the one list
+                                                                                           # (sparse_direct back_end)
 HOST_DIRECT_FACTORIZATIONS = HOST_DIRECT_BACK_ENDS                           # arpack_shift_invert factorization values
 HOST_DIRECT_DOUBLE_BACK_ENDS = tuple(name for name in HOST_DIRECT_BACK_ENDS if not name.endswith('_mixed'))
 HOST_DIRECT_MIXED_BACK_ENDS = tuple(name for name in HOST_DIRECT_BACK_ENDS if name.endswith('_mixed'))
+HOST_DIRECT_COMPRESSED_BACK_ENDS = tuple(name for name in HOST_DIRECT_BACK_ENDS if name.endswith('_blr'))
+_NAME_SUFFIXES = ('_mixed', '_blr')   # library_of strips these
+BLR_TOLERANCE = 1e-8          # MUMPS CNTL(7) of the compressed factors (relative dropping threshold of the BLR blocks)
+BLR_ICNTL = 2                 # ICNTL(35): BLR factorisation, solves on the compressed factors (the memory gain)
+# estimators: compressed factor bytes over the full-rank host direct heuristic (uncalibrated guess: MUMPS reports
+# ~0.3 - 0.6 on 3D elliptic / Helmholtz fronts at 1e-8; refit from host_direct_peak_bytes / host_factor_bytes)
+BLR_FACTOR_FRACTION = 0.5
 HOST_DIRECT_LIBRARIES = ('mumps', 'pardiso')            # factor.back_end values
 LIBRARY_LABELS = {'mumps': 'MUMPS', 'pardiso': 'PARDISO'}
 WRAPPERS = {'mumps': ('mumps', 'python-mumps'), 'pardiso': ('pydiso.mkl_solver', 'pydiso')}   # (module, distribution)
@@ -153,7 +171,10 @@ def scaled_values(values, indptr, indices, row_scale, symmetrizer, value_dtype, 
 def library_of(name) -> str:
     """Library ('mumps' / 'pardiso') of a host direct back end or factorization name ('mumps_mixed' -> 'mumps');
     ValueError for any other name."""
-    library = name[:-len('_mixed')] if isinstance(name, str) and name.endswith('_mixed') else name
+    library = name
+    for suffix in _NAME_SUFFIXES:
+        if isinstance(name, str) and name.endswith(suffix):
+            library = name[:-len(suffix)]
     if library not in HOST_DIRECT_LIBRARIES:
         raise ValueError(f"not a host direct back end: {name!r} (one of {', '.join(HOST_DIRECT_BACK_ENDS)})")
     return library
@@ -162,6 +183,11 @@ def library_of(name) -> str:
 def host_direct_precision(name) -> str:
     """'mixed' for a *_mixed host direct name, else 'double'."""
     return 'mixed' if isinstance(name, str) and name.endswith('_mixed') else 'double'
+
+
+def host_direct_compressed(name) -> bool:
+    """True for a compressed (block low-rank) host direct name (HOST_DIRECT_COMPRESSED_BACK_ENDS)."""
+    return name in HOST_DIRECT_COMPRESSED_BACK_ENDS
 
 
 def double_of(name):
@@ -262,7 +288,8 @@ def superlu_bytes_scale(name, symmetric=False, complex_values=True) -> float:
     (LDL^T for symmetric) x WORKSPACE_OVER_FACTOR x the mixed value share (uncalibrated)."""
     if not _is_host_name(name):
         return 1.0
-    return _host_scale(symmetric, complex_values, host_direct_precision(name) == 'mixed')
+    scale = _host_scale(symmetric, complex_values, host_direct_precision(name) == 'mixed')
+    return scale * (BLR_FACTOR_FRACTION if host_direct_compressed(name) else 1.0)
 
 
 def factor_host_bytes(n_unknowns, dimensions=2, complex_values=True, symmetric=False, mixed=False,
@@ -489,6 +516,10 @@ class HostDirectFactorization(ProbedFactor):
                              'not offered)')
         self.back_end = library_of(back_end)    # the library, both precisions (as CudssFactorization 'cudss')
         self.precision = host_direct_precision(back_end)   # requested; factor_precision is what is factored
+        self.compressed = host_direct_compressed(back_end)   # requested block low-rank (mumps_blr)
+        self._compression_rejected = False   # a compressed factor missed even refined: full rank from then on
+        self.last_compression_fallback = False
+        self.compression_rejection = None
         self.label = LIBRARY_LABELS[self.back_end]
         self.real = bool(real)
         self.value_dtype = np.float64 if real else np.complex128   # solve in / out
@@ -605,6 +636,7 @@ class HostDirectFactorization(ProbedFactor):
         reuse = (refactorable and same_pattern and kind == self.matrix_kind
                  and self._factor_dtype == self._wanted_factor_dtype())
         self.last_double_fallback = False
+        self.last_compression_fallback = False
         self.last_analysis_kept = False
         attempt_kind, retried = kind, False
         try:
@@ -717,10 +749,25 @@ class HostDirectFactorization(ProbedFactor):
         self._operator_norm = None
         return operator, same_pattern
 
+    @property
+    def compressed_factor(self) -> bool:
+        """True while the analysed factor is block low-rank (mumps_blr, no full-rank fallback yet)."""
+        return self.compressed and not self._compression_rejected
+
+    def _analysis_key(self) -> str:
+        """Library name of the kept-analysis key: 'mumps_blr' for a compressed factor, else the library."""
+        return 'mumps_blr' if self.compressed_factor else self.back_end
+
     def _next_attempt(self, rejected, kind):
         """Kind to refactor after a rejected factor of `kind`: a Cholesky -> LDL^T, then a mixed factor -> the double
-        one of the same kind (a mixed positive_definite LDL^T -> the PARDISO double Cholesky; both sticky); None when
-        nothing is left (as CudssFactorization._next_attempt, without the remembered rejections)."""
+        one of the same kind (a mixed positive_definite LDL^T -> the PARDISO double Cholesky; both sticky), a
+        compressed one -> full rank (sticky); None when nothing is left (as CudssFactorization._next_attempt, without
+        the remembered rejections)."""
+        if self.compressed_factor:
+            self._compression_rejected = True
+            self.last_compression_fallback = True
+            self.compression_rejection = str(rejected)
+            return kind
         if kind == 'spd':
             self._cholesky_rejected = True
             return 'symmetric'
@@ -744,7 +791,7 @@ class HostDirectFactorization(ProbedFactor):
         try:
             if analyse:
                 self._free_library()
-                kept = _adopt_analysis(self.back_end, kind, self.real, self._factor_dtype, self._pattern)
+                kept = _adopt_analysis(self._analysis_key(), kind, self.real, self._factor_dtype, self._pattern)
                 self.last_analysis_kept = kept is not None
                 if kept is not None:   # a parked factor of this pattern (host_analyses_kept): numeric only
                     self._library = kept.library
@@ -754,7 +801,8 @@ class HostDirectFactorization(ProbedFactor):
                     self._library.refactor(matrix)
                 else:
                     started = time.perf_counter()
-                    self._library = _ADAPTERS[self.back_end](matrix, kind, self.real)
+                    options = {'compressed': True} if self.compressed_factor else {}
+                    self._library = _ADAPTERS[self.back_end](matrix, kind, self.real, **options)
                     self._library.keep_threads = self._keep_library_threads
                     self.matrix_kind = kind
                     self.analysis_seconds = time.perf_counter() - started
@@ -826,10 +874,15 @@ class HostDirectFactorization(ProbedFactor):
     def _describe(self) -> None:
         kind_text = _KIND_TEXTS[self.matrix_kind]
         refinement = ('float32' if self.real else 'complex64') + ' + float64 GMRES refinement'
-        if self.mixed_factor:
+        if self.compressed_factor:
+            self.description = (f'{self.label} block low-rank {kind_text} (CNTL(7) {BLR_TOLERANCE:g}) + float64 '
+                                'GMRES refinement')
+        elif self.mixed_factor:
             self.description = f'{self.label} {kind_text} {refinement}'
         elif self._mixed_rejected:
             self.description = f'{self.label} {kind_text} (double: the {refinement} was rejected)'
+        elif self._compression_rejected:
+            self.description = f'{self.label} {kind_text} (full rank: the block low-rank factor was rejected)'
         elif self._double_refined:
             self.description = f'{self.label} {kind_text} + float64 GMRES refinement'
         else:
@@ -1063,7 +1116,7 @@ class HostDirectFactorization(ProbedFactor):
         operator copies (idempotent)."""
         library = self._library
         if (library is not None and library.refactorable and self._pattern is not None and self.matrix_kind is not None
-                and _park_analysis(_KeptAnalysis(library, self.back_end, self.matrix_kind, self.real,
+                and _park_analysis(_KeptAnalysis(library, self._analysis_key(), self.matrix_kind, self.real,
                                                  self._factor_dtype, self._pattern))):
             self._library = None
         self._free_library()
@@ -1089,6 +1142,7 @@ def host_direct_factorization(host_operator, back_end, previous=None, real=False
     if not host_direct_available(back_end):
         raise ValueError(missing_text(back_end))
     if (isinstance(previous, HostDirectFactorization) and previous.back_end == library_of(back_end)
+            and previous.compressed == host_direct_compressed(back_end)
             and previous.n_unknowns == host_operator.shape[0]
             and previous.can_refactorize(real, host_direct_precision(back_end), symmetric, positive_definite,
                                          symmetrizer)):
@@ -1113,6 +1167,7 @@ def host_direct_values_factorization(values, indptr, indices, back_end, previous
                          f'got {back_end!r}')
     n_rows = int(np.asarray(indptr).size) - 1
     if (isinstance(previous, HostDirectFactorization) and previous.back_end == library_of(back_end)
+            and previous.compressed == host_direct_compressed(back_end)
             and previous.n_unknowns == n_rows
             and previous.can_refactorize(real, host_direct_precision(back_end), symmetric, positive_definite)):
         previous.refactorize_values(values, indptr, indices, row_scale=row_scale, symmetric_known=symmetric_known,
@@ -1168,14 +1223,26 @@ class _MumpsFactor:
 
     refactorable = True   # no thread switching (the PARDISO thread rule)
 
-    def __init__(self, matrix, kind, real):
+    def __init__(self, matrix, kind, real, compressed=False):
         import mumps
         self._error_type = mumps.MUMPSError
         self.symmetric = kind != 'general'
         self.kind = kind
+        self.compressed = bool(compressed)
         self._context = mumps.Context(verbose=False)
         self._call(lambda: self._context.set_matrix(matrix, symmetric=self.symmetric), 'analysis')
+        if self.compressed:   # before JOB 1: the analysis prepares the BLR clustering (module notes)
+            self._context.mumps_instance.icntl[35] = BLR_ICNTL
+            self._set_blr_tolerance()
         self._call(lambda: self._context.analyze(ordering='auto'), 'analysis')
+
+    def _set_blr_tolerance(self) -> None:
+        """CNTL(7) = BLR_TOLERANCE on the instance (RuntimeError naming the wrapper when it exposes no cntl array)."""
+        try:
+            self._context.mumps_instance.cntl[7] = BLR_TOLERANCE
+        except (AttributeError, TypeError, IndexError) as error:
+            raise RuntimeError(f'MUMPS block low-rank factor (mumps_blr): this python-mumps exposes no CNTL array '
+                               f'({type(error).__name__}: {error}); use mumps') from None
 
     def _call(self, function, phase):
         try:
@@ -1191,6 +1258,8 @@ class _MumpsFactor:
         return _mumps_megabytes(self._infog(17))   # INFOG(17): estimated in-core total, MB
 
     def factor(self) -> None:
+        if self.compressed:
+            self._set_blr_tolerance()
         self._call(lambda: self._context.factor(reuse_analysis=True), 'factorisation')
 
     def refactor(self, matrix) -> None:

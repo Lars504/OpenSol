@@ -24,7 +24,8 @@ import time
 import numpy as np
 
 from .cudss_factor import csr_rows
-from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
+from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_COMPRESSED_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS,
+                          factor_label, host_direct_available,
                           host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
                           missing_text)
 
@@ -42,6 +43,11 @@ HOST_FACTOR_BACK_ENDS = ('scipy_splu',) + HOST_DIRECT_BACK_ENDS        # factors
 HOST_DIRECT_FACTOR_TIME = 1.0
 HOST_DIRECT_SOLVE_TIME = 1.0
 HOST_DIRECT_MIXED_FULL_SOLVES = 4.0
+# compressed (block low-rank) host factors (mumps_blr): factorisation time over the full-rank one, and compressed solves
+# per full-accuracy solve (GMRES-IR from a ~1e-8 backward error: ~2 iterations + the residual products); both
+# uncalibrated guesses
+HOST_DIRECT_COMPRESSED_FACTOR_TIME = 0.6
+HOST_DIRECT_COMPRESSED_FULL_SOLVES = 3.0
 # run-time recipe of the cuDSS back ends (2D: the profile's complex 5-point cudss curves; 3D: the arpack_shift_invert
 # fit of complex 3D curl-curl factors), scaled for real operators by these value-size / flop ratios (uncalibrated
 # guesses: scalar 7-point and FEM fills differ from the curl-curl one), and (3D only; the 2D mixed solve curve holds its
@@ -1567,9 +1573,14 @@ def time_estimate(values, work):
                                               f"{work.dimensions}D)",))
     host_direct = back_end in HOST_DIRECT_BACK_ENDS
     label = factor_label(back_end)   # 'SuperLU' for scipy_splu
-    factor_scale = work.factor_scale * (HOST_DIRECT_FACTOR_TIME if host_direct else 1.0)
+    compressed = back_end in HOST_DIRECT_COMPRESSED_BACK_ENDS
+    factor_scale = work.factor_scale * ((HOST_DIRECT_FACTOR_TIME
+                                         * (HOST_DIRECT_COMPRESSED_FACTOR_TIME if compressed else 1.0))
+                                        if host_direct else 1.0)
     solve_scale = work.solve_scale * ((HOST_DIRECT_SOLVE_TIME * (HOST_DIRECT_MIXED_FULL_SOLVES
-                                                                 if back_end in MIXED_BACK_ENDS else 1.0))
+                                                                 if back_end in MIXED_BACK_ENDS else
+                                                                 HOST_DIRECT_COMPRESSED_FULL_SOLVES if compressed
+                                                                 else 1.0))
                                       if host_direct else 1.0)
     gpu = work.backend == 'gpu'
     solve = (te.HostSolve(work.unknowns, work.dimensions, work.complex, work.rhs, scale=solve_scale),) + (

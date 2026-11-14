@@ -1330,13 +1330,20 @@ def time_estimate(values, work):
             factorisation, plan = plan + factorisation, ()
     else:   # host SuperLU, or MUMPS / PARDISO priced as SuperLU x sparse_direct.HOST_DIRECT_* (uncalibrated; a mixed
         # factor's solves x CUDSS_MIXED_SOLVES_PER_SOLVE as cudss_mixed: the eigen polish)
-        from .sparse_direct import HOST_DIRECT_FACTOR_TIME, HOST_DIRECT_SOLVE_TIME
+        from .host_direct import host_direct_compressed
+        from .sparse_direct import (HOST_DIRECT_COMPRESSED_FACTOR_TIME, HOST_DIRECT_COMPRESSED_FULL_SOLVES,
+                                    HOST_DIRECT_FACTOR_TIME, HOST_DIRECT_SOLVE_TIME)
         host_direct = factorization in HOST_DIRECT_FACTORIZATIONS
-        factor_scale = work.factor_scale * (HOST_DIRECT_FACTOR_TIME if host_direct else 1.0)
+        compressed = host_direct_compressed(factorization)   # mumps_blr: GMRES-refined solves on a cheaper factor
+        factor_scale = work.factor_scale * ((HOST_DIRECT_FACTOR_TIME
+                                             * (HOST_DIRECT_COMPRESSED_FACTOR_TIME if compressed else 1.0))
+                                            if host_direct else 1.0)
         solve_scale = work.solve_scale * ((HOST_DIRECT_SOLVE_TIME * (CUDSS_MIXED_SOLVES_PER_SOLVE
                                                                      if factorization in MIXED_FACTORIZATIONS
                                                                      and float(work.unknowns)
-                                                                     >= MIXED_EIGEN_MIN_UNKNOWNS else 1.0))
+                                                                     >= MIXED_EIGEN_MIN_UNKNOWNS else
+                                                                     HOST_DIRECT_COMPRESSED_FULL_SOLVES if compressed
+                                                                     else 1.0))
                                           if host_direct else 1.0)
         apply = work.product_ops or (te.HostSolve(n_unknowns, work.dimensions, work.complex, rhs=work.rhs,
                                                   scale=solve_scale),)

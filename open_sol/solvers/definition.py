@@ -28,10 +28,12 @@ def _host_direct_choice_labels(names) -> dict:
     """{name: drop-down text} of host direct back ends / factorizations."""
     return {name: f'{_gui_library_name(name)} on the processor'
                   + (', mixed precision' if host_direct.host_direct_precision(name) == 'mixed' else '')
+                  + (', compressed (block low-rank)' if host_direct.host_direct_compressed(name) else '')
             for name in names}
 
 
-_GUI_HOST_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
+_GUI_HOST_LIBRARIES = ' / '.join(dict.fromkeys(_gui_library_name(name)
+                                               for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS))
 _GUI_HOST_MIXED_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
 _HOST_DIRECT_MIXED_HELP = (
     f' {_HOST_DIRECT_MIXED_NAMES}: the equilibrated operator factorised in single precision (float32 / complex64, '
@@ -42,6 +44,19 @@ _HOST_DIRECT_MIXED_TIP = (
     f'\n- {_GUI_HOST_MIXED_LIBRARIES} on the processor, mixed precision: faster to set up and less memory, with the '
     'same accuracy; switches to double precision by itself when a model needs it.'
     if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
+
+_HOST_DIRECT_COMPRESSED_HELP = (
+    f" {' / '.join(host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS)}: MUMPS's block low-rank factor (ICNTL(35) "
+    f'{host_direct.BLR_ICNTL}, dropping threshold CNTL(7) {host_direct.BLR_TOLERANCE:g}), double precision: the '
+    'off-diagonal blocks of the large fronts stored compressed, roughly half the factor memory and work on large 3D '
+    'models (little gain in 2D); every solve is refined by float64 GMRES on the compressed factor to 1e-12 (about 2 - 4 '
+    'compressed solves per solve), and a factor that still misses is refactorised full rank for the rest of the run. '
+    'The memory guard reads MUMPS\'s full-rank estimate.'
+    if host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS else '')
+_HOST_DIRECT_COMPRESSED_TIP = (
+    '\n- MUMPS on the processor, compressed (block low-rank): about half the memory of the exact MUMPS factor on large '
+    '3D models, with the same final accuracy (each solve is polished); slower solves.'
+    if host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS else '')
 
 PCG_PARAMS = (
     Param('precision', 'choice', 'double', label='Solver precision', choices=('double', 'single', 'mixed'),
@@ -275,7 +290,7 @@ SPARSE_DIRECT_PARAMS = (
                f'analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a probe solve checks each factor '
                '(float64 GMRES refinement on the factor when its residual misses 1e-10); a refusal raises (no '
                'fallback).'
-               f'{_HOST_DIRECT_MIXED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
+               f'{_HOST_DIRECT_MIXED_HELP}{_HOST_DIRECT_COMPRESSED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
                'MKL_NUM_THREADS for PARDISO; with numba or a threaded BLAS in the same process set them to share the '
                f'cores). Optional packages, a validation error without them: {_HOST_DIRECT_INSTALL}.',
           tip='Where the equations are solved.\n\n'
@@ -296,7 +311,7 @@ SPARSE_DIRECT_PARAMS = (
               f'- {_GUI_HOST_LIBRARIES} on the processor: fast exact solvers using every processor core, for large '
               'models, limited by computer memory; need the optional python-mumps or pydiso package (Intel PARDISO: '
               'Intel / AMD 64-bit processors only); never picked by Automatic.'
-              f'{_HOST_DIRECT_MIXED_TIP}'),
+              f'{_HOST_DIRECT_MIXED_TIP}{_HOST_DIRECT_COMPRESSED_TIP}'),
 )
 
 
@@ -516,7 +531,8 @@ ARPACK_PARAMS = (
                "the library's LDL^T pivots (a counting SuperLU when pivots were perturbed or the pencil is "
                "Hermitian); the host SuperLU size rules apply, plus the library's own memory estimate after its "
                f"analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a refusal raises (no fallback)."
-               f"{_HOST_FACTORIZATION_MIXED_HELP} Ignored by solid_mechanics_3d on brick meshes (no factor).",
+               f"{_HOST_FACTORIZATION_MIXED_HELP}{_HOST_DIRECT_COMPRESSED_HELP} Ignored by solid_mechanics_3d on brick "
+               "meshes (no factor).",
           tip='Where the eigenvalue search factorises its matrix.\n\n'
               '- Automatic: host SuperLU, except vibration modes on finite element meshes, which use the GPU cuDSS '
               'solver when nvmath-python is installed (switching to host SuperLU if the graphics card solver refuses '
@@ -530,7 +546,7 @@ ARPACK_PARAMS = (
               f'- {_GUI_HOST_LIBRARIES} on the processor: exact factorisation using every processor core, often '
               'faster than host SuperLU on large models; needs the optional python-mumps or pydiso package; never '
               'picked by Automatic.'
-              f'{_HOST_FACTORIZATION_MIXED_TIP}'),
+              f'{_HOST_FACTORIZATION_MIXED_TIP}{_HOST_DIRECT_COMPRESSED_TIP}'),
 )
 
 
