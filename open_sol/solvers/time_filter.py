@@ -33,6 +33,7 @@ CONVERGED_RESIDUAL = 1e-12  # a wanted pair below this relative residual adds no
 PULSE_BANDWIDTH_FACTOR = 3.0   # source pulse relative bandwidth = this x the sampled band half-width (<= 1)
 SOURCE_SEED = 31            # deterministic source positions / amplitudes
 RESIDUAL_WARNING = 1e-6     # a reported resonance above this relative residual is named in a warning
+SPURIOUS_RESIDUAL = 1e-3    # an in-band Ritz pair above this relative residual is no mode of the span: dropped
 GUARD_PAIRS = 2             # polished Ritz pairs beyond the requested resonances (wanted = n_resonances + this)
 
 

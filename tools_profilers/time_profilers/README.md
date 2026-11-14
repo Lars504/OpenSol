@@ -53,7 +53,7 @@ values compared against the baseline run (`dd`; `err` against the model's analyt
 | name | stands for (physics / role / study / grid) | operator |
 |---|---|---|
 | `fdfd_driven` | em_fdfd_ez / linear / stationary / tensor | complex Helmholtz, CPML; MUMPS / PARDISO factor the LDL^T of D A |
-| `fdfd_eigen` | em_fdfd_ez / eigen / eigenfrequency / tensor | `eigenfrequency.solve_resonances`, 3 disc resonances |
+| `fdfd_eigen` | em_fdfd_ez / eigen / eigenfrequency / tensor | `eigenfrequency.solve_resonances`, 3 disc resonances (`time_filter`: `time_filter_eigen.solve_time_filter_resonances`) |
 | `heat_2d` | heat / linear / stationary / tensor | finite-volume 5-point, real SPD, contrast 100 inclusion |
 | `heat_3d` | heat / linear / stationary / tensor_3d | finite-volume 7-point (SuperLU from grid nested dissection) |
 | `heat_fem_3d` | heat / linear / stationary / tetrahedra | P2 FEM on Kuhn tetrahedra, Dirichlet dofs eliminated |
@@ -91,7 +91,9 @@ optional packages: `sparse_direct:{scipy_splu, mumps, mumps_mixed, mumps_blr, pa
 (FDFD), `arpack_shift_invert:{superlu, mumps, mumps_mixed, mumps_blr, pardiso, pardiso_mixed}` (eigen; `solid_modes_3d`: only
 `arpack_shift_invert:superlu`, its factorization being ignored on brick meshes), `block_eigen:{mixed, double}/{multigrid,
 jacobi}` (opt-in eigen of solid_mechanics_3d: `solid_modes_3d` only), `batched_direct:{mixed, double}` (opt-in linear
-of pressure_acoustics / membrane: `acoustic_sweep_2d` only). With `--backends gpu`
+of pressure_acoustics / membrane: `acoustic_sweep_2d` only), `time_filter:{single, double}` (opt-in factor-free eigen
+of em_fdfd_ez / _hz: `fdfd_eigen` only; its int / float settings bandwidth, sampled_frequencies, periods, sources and
+polish_steps are not varied: defaults). With `--backends gpu`
 the same enumeration runs on the gpu backend: the cuDSS back ends / factorizations (where the role offers them),
 cuSOLVER QR (FDFD), gpu pcg, line_block and banded, and the host libraries again (their gpu-backend transfers
 included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-python for cuDSS, or a usable GPU is a
@@ -106,7 +108,11 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
   pattern, A x 1.001, the scaled copy made before the timer: kept MUMPS / PARDISO analysis, kept SuperLU ordering,
   kept multigrid aggregates), `total` = factor + solve, `sweep` = refactor + solve (the cost of one more point of a
   sweep on the same pattern; its own speed-up column). Eigen: `factor` the shifted factor, `solve` the ARPACK
-  iterations, `total` the whole `solve_resonances`. Vibration modes (`solid_modes_3d`): `total` the whole
+  iterations, `total` the whole `solve_resonances`; `time_filter` (no factor): `factor` the FDTD run of the disc (an
+  EMPhysics on an FDFDPhysics domain of the problem's grid, float32 cell widths), `solve` the Rayleigh-Ritz, polish
+  and resonance filter on the problem's own float64 operator, `total` the call; its residual is the same eigen-pair
+  residual against the problem's operator, its tolerance the runtime's RESIDUAL_WARNING (1e-6: a projection, not
+  ARPACK's machine precision), details hold the time steps, sampled frequencies, basis columns and counters. Vibration modes (`solid_modes_3d`): `total` the whole
   `lowest_modes` call, `solve` its eigen iterations (arpack: Lanczos with the inner PCG solves), `factor` block_eigen's
   set-up around them (float32 operator copies, the private multigrid hierarchy of preconditioner multigrid when the
   linear solver has none: built in every call, as in every model eigen solve); arpack has no factor there.

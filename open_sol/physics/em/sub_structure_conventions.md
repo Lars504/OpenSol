@@ -571,7 +571,13 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (theta = -1 / mu). D is `_adjoint_symmetrizer()` (measured complex symmetric), so the polish is the same Rayleigh
   quotient as the shift-invert path. Anything the FDTD would model differently from the FDFD operator is refused by
   `unsupported_reason` (Bloch, polar, subpixel smoothing, conformal PEC, conducting sheets): a new FDFD operator term
-  must either be copied into that FDTD or added there. info carries factor_text (the run), residuals per resonance.
+  must either be copied into that FDTD or added there (also a runtime set_extra_permittivity, which validation cannot
+  see). info carries factor_text (the run), residuals per resonance. Candidates: in the sampled band only, nearest
+  first, an O(1)-residual Ritz value (above time_filter.SPURIOUS_RESIDUAL) dropped. Known gaps: hz with eps_xy runs
+  the FDTD without it (approximate basis, polish only, not refused); EMPhysics.finalize checks the Courant limit, so
+  strong Drude poles can raise on an FDFD model (it has no courant setting); the hz DFTMonitor also allocates Ex / Ey
+  accumulators the solve never reads (~2/3 of its run phase). The run's step count and pulse bandwidth come from
+  `run_steps` / `source_pulse_bandwidth`, shared with the time estimate: change them there only.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
   objectives), zeros while a resonance is shown. `solve_adjoint` uses `self.system`: never call it after

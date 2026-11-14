@@ -23,6 +23,8 @@ from .eigenfrequency import (EigenSolve, _energy_weights, _filtered_candidates, 
 def unsupported_reason(physics) -> str:
     """'' when the FDFD physics can run a time-filter solve, else the feature that stops it (model validation refuses
     the same list first: definition_fdfd._time_filter_issues; a new entry goes into both)."""
+    if getattr(physics, '_extra_permittivity', None) is not None:   # added to the FDFD cells only, never the arrays
+        return 'an extra permittivity (set_extra_permittivity)'
     if physics.boundary_config.has_bloch_phase:
         return 'a Bloch phase'
     if physics.metric is not None:
@@ -164,19 +166,30 @@ def solve_time_filter_resonances(physics, system, solver, n_resonances, pinned, 
     in_band = [candidate for candidate in candidates   # outside the sampled band the span resolves nothing reliably
                if abs(candidate[1].real / system.omega - 1.0) <= solver.bandwidth]
     dropped['outside_band'] = len(candidates) - len(in_band)
-    chosen = in_band[:int(n_resonances)]
+    from ...solvers.time_filter import SPURIOUS_RESIDUAL
+    chosen, residuals = [], []
+    dropped['spurious'] = 0
+    for candidate in in_band:   # nearest first; a Ritz value of no mode keeps an O(1) residual: not a resonance
+        if len(chosen) == int(n_resonances):
+            break
+        value = _relative_residual(host_operator, mass_host, k_target_squared - (candidate[1] / C0) ** 2,
+                                   candidate[4])
+        if not value <= SPURIOUS_RESIDUAL:
+            dropped['spurious'] += 1
+            continue
+        chosen.append(candidate)
+        residuals.append(value)
     resonances = [_resonance(omega, pml_fraction, field_of(vector) if field_of is not None else vector,
                              region_fraction)
                   for _, omega, pml_fraction, region_fraction, vector in chosen]
-    residuals = [_relative_residual(host_operator, mass_host, k_target_squared - (omega / C0) ** 2, vector)
-                 for _, omega, _, _, vector in chosen]
     solver.last_residual = float(max(residuals, default=0.0))
     solver.n_solves += 1
     target_wavelength = 2.0 * math.pi * C0 / system.omega
     warnings = []
     if len(resonances) < n_resonances:
         warnings.append(f'{len(resonances)} of {n_resonances} resonances found within +-{solver.bandwidth:.3g} of the '
-                        f'target frequency ({dropped["pml"]} PML resonances dropped): raise the time filter bandwidth '
+                        f'target frequency ({dropped["pml"]} PML resonances and {dropped["spurious"]} Ritz values above '
+                        f'the residual {SPURIOUS_RESIDUAL:g} dropped): raise the time filter bandwidth '
                         'or the sampled frequencies, or set the wavelength nearer the resonance')
     poor = [index + 1 for index, value in enumerate(residuals) if value > _residual_warning()]
     if poor:

@@ -1,6 +1,7 @@
 """One timed repeat of a profiler Problem per SolverType, in the child process, through the calls open_sol's own
 consumers make (SparseDirectSolver.factorize like fdfd_2d, DiffusionDirectSolver like DiffusionSystem, PCGSolver,
-BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, ElasticSystem3D.lowest_modes,
+BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, time_filter_eigen (an FDTD run on an
+FDFDPhysics domain + Rayleigh-Ritz), ElasticSystem3D.lowest_modes,
 fem.harmonic frequency sweeps: solve per frequency, batched_direct through plan_batched) on
 the cpu or gpu backend: phase wall times, the relative residual against its tolerance and solver details. open_sol is
 imported inside the runners."""
@@ -532,6 +533,80 @@ def run_block_eigen(problem, values, arrays) -> dict:
                    _modes_status(problem, solve, counters['eigen_unconverged'] > 0))
 
 
+def _time_filter_physics(problem, backend, runtime):
+    """FDFDPhysics (em_fdfd_ez, all CPML) on a Domain of the problem's grid with its disc written into eps_r: what
+    time_filter_eigen time-steps (problems.FDFD_* constants; the domain's float32 cell width is the FDTD's own, the
+    projection uses the problem's float64 operator)."""
+    from open_sol.physics.em import FDFDPhysics
+    from open_sol.physics.em.boundaries import BoundaryConfig
+    from tools_profilers.time_profilers.problems import FDFD_DISC_EPS, FDFD_PML_CELLS, FDFD_WAVELENGTH, FDFD_WINDOW
+    from open_sol.core.domain import Domain
+    n = problem.grid_shape[0]
+    cell = FDFD_WINDOW / n
+    config = BoundaryConfig.all_pml(FDFD_PML_CELLS)
+    window = (n - 2 * FDFD_PML_CELLS) * cell
+    domain = Domain.uniform(window, window, cell, boundary_config=config, verbose=False, backend=backend)
+    if (domain.grid.nx, domain.grid.ny) != tuple(problem.grid_shape):
+        raise ValueError(f'time_filter profiler domain {domain.grid.nx} x {domain.grid.ny} differs from the problem '
+                         f'grid {problem.grid_shape}')
+    physics = FDFDPhysics(domain, 'ez', boundary_config=config, wavelength=FDFD_WAVELENGTH, eigen_solver=runtime)
+    disc = domain.xp.asarray(np.asarray(problem.eigen['mass']).reshape(problem.grid_shape).real > 1.0)
+    domain.materials.set_mask(disc, eps_r=FDFD_DISC_EPS)
+    physics.materials_changed(('eps_r',))
+    return physics
+
+
+def run_time_filter(problem, values, arrays) -> dict:
+    """time_filter ('eigen' of em_fdfd_ez / _hz, opt-in): physics.em.time_filter_eigen.solve_time_filter_resonances
+    with the arguments fdfd_2d.solve_eigenfrequencies hands it (pinned cells none: all CPML, cell areas, window rows,
+    the symmetrizer), the runtime the SolverType create makes, an FDFDPhysics on a Domain of the problem's grid for
+    its FDTD run and the problem's own operator / mass as the system (gpu: a cupyx copy made before the timer), so the
+    residual and eigenvalues are measured as the arpack rows'. Phases: factor = the FDTD run (no factorisation), solve
+    = the projection, polish and filter, total = the call. Tolerance: the runtime's RESIDUAL_WARNING."""
+    if problem.kind != 'eigen':
+        raise ValueError(f"time_filter runs on the FDFD eigen problems only, not on a {problem.kind!r} one")
+    from types import SimpleNamespace
+    from open_sol.physics.em.time_filter_eigen import solve_time_filter_resonances
+    from open_sol.solvers import time_filter
+    backend = arrays.backend
+    eigen = problem.eigen
+    runtime = time_filter.TimeFilterEigenSolver(
+        bandwidth=values['bandwidth'], sampled_frequencies=values['sampled_frequencies'], periods=values['periods'],
+        sources=values['sources'], polish_steps=values['polish_steps'], precision=values['precision'], label=_label,
+        backend=backend)
+    physics = _time_filter_physics(problem, backend, runtime)
+    xp = physics.xp
+    operator = problem.operator
+    if backend == 'gpu':
+        import cupyx.scipy.sparse as cpsp
+        operator = cpsp.csr_matrix(problem.operator)
+    system = SimpleNamespace(operator=operator, cell_eps=eigen['mass'], cell_mu=None, polarization='ez',
+                             omega=eigen['omega'])
+    shape = tuple(problem.grid_shape)
+    pinned = xp.zeros(shape, dtype=bool)
+    started = _clock(backend)
+    solve = solve_time_filter_resonances(physics, system, runtime, eigen['n_resonances'], pinned,
+                                         eigen['energy_weights'], eigen['in_window'],
+                                         lambda vector: vector.reshape(shape), symmetrizer=problem.symmetrizer)
+    finished = _clock(backend)
+    info = solve.info
+    residuals = [_eigen_residual(problem, resonance) for resonance in solve.resonances]
+    counters = {name: _number(value) for name, value in runtime.work_counters().items()}
+    details = {'factor_kind': info.get('factor_text'), 'time_steps': info.get('time_steps'),
+               'sampled_frequencies': info.get('sampled_frequencies'), 'basis_columns': counters['basis_columns'],
+               'operator_applications': info['operator_applications'], 'resonances_found': len(solve.resonances),
+               'warnings': list(info['warnings']), 'own_residuals': list(info.get('residuals') or ()),
+               'counters': counters,
+               'eigenvalues': [[float(complex(resonance.omega).real), float(complex(resonance.omega).imag)]
+                               for resonance in solve.resonances]}
+    step_seconds = info.get('step_seconds')
+    phases = {'analysis': None, 'factor': step_seconds,
+              'solve': None if step_seconds is None else max(info['eigen_seconds'] - step_seconds, 0.0),
+              'refactor': None, 'total': finished - started}
+    return _repeat(phases, max(residuals) if residuals else None, details, float(time_filter.RESIDUAL_WARNING),
+                   'ok' if solve.resonances else 'no_resonances')
+
+
 RUNNERS = {'sparse_direct': run_sparse_direct, 'batched_direct': run_batched_direct, 'pcg': run_pcg,
            'banded': run_banded, 'line_block': run_line_block, 'arpack_shift_invert': run_arpack,
-           'block_eigen': run_block_eigen}
+           'block_eigen': run_block_eigen, 'time_filter': run_time_filter}

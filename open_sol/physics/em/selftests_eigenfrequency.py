@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import float_list, solver_role
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
@@ -370,4 +370,40 @@ EIGENFREQUENCY_SELFTEST_CASES = (
                     'tolerance 1.',
         specs=_line_block_cavity_specs,
         check=_check_line_block_cavity),
+    SelfTestCase(
+        name='em_fdfd_eigenfrequency_time_filter',
+        label='EM FDFD: time-filter eigenfrequencies of a PEC cavity',
+        description='The em_fdfd_eigenfrequency_pec_cavity runs (ez, hz, ez_lossy) with a time_filter solver node as '
+                    f"the 'eigen' solver (bandwidth {_TIME_FILTER_BANDWIDTH:g}: the references lie at -25 % to +33 % "
+                    'of the target; other settings default, FDTD precision single): no factorisation, an FDTD run of '
+                    'the cavity from seeded point sources with a whole-grid running DFT at the sampled frequencies, '
+                    'the Rayleigh-Ritz projection of the FDFD pencil (bilinear with the stretched-area symmetrizer) '
+                    'and its polish steps. The same closed-form references and checks, with projection tolerances: relative '
+                    f'complex omega {_TIME_FILTER_TOLERANCES[0]:g} (the FDTD and FDFD share the Yee Laplacian, so '
+                    'only the out-of-band leakage and the float32 stepping noise enter the span, squared by the '
+                    f'stationary quotient), lossy Q {_TIME_FILTER_TOLERANCES[1]:g} (~2 Q x the omega tolerance), the '
+                    f'(2, 1) field shape {_TIME_FILTER_FIELD_TOLERANCE:g} (first order in the span error); each run '
+                    'summary records the eigen role as time_filter with one solve and time steps > 0. Run on the '
+                    'default backend (gpu) and as a cpu variant (the numpy FDTD twins and host projection). measured = '
+                    'error = the worst item in tolerance units, tolerance 1. Written, not run.',
+        specs=_time_filter_cavity_specs,
+        check=_check_time_filter_cavity,
+        variants=(SelfTestVariant('cpu', tolerance=1.0, backend='cpu'),)),
+    SelfTestCase(
+        name='em_fdfd_time_filter_open_disc',
+        label='EM FDFD: time-filter resonances of an open disc agree with shift-invert',
+        description=f'A silicon disc (eps_r {_DISK_EPS_R:g}, radius {_DISC_RADIUS * 1e6:g} um) centred in a '
+                    f'{_DISC_DOMAIN * 1e6:g} um CPML box on {_DISC_CELL * 1e9:g} nm cells, em_fdfd_ez eigenfrequency '
+                    f'study near {_TARGET_WAVELENGTH * 1e6:g} um ({_DISC_RESONANCES} resonances), solved twice on one '
+                    'model: Automatic arpack_shift_invert (SuperLU shift-invert, Rayleigh-polished) and a time_filter '
+                    f'node (bandwidth {_DISC_BANDWIDTH:g}; the FDTD run has CPML, the FDFD pencil the frozen PML '
+                    'stretch, which the polish steps reconcile). Every arpack resonance with Q >= '
+                    f'{_DISC_MIN_Q:g} within {_DISC_COMPARED_BAND:g} x the bandwidth of the target (at least one) '
+                    'against the time-filter resonance of nearest complex frequency: relative wavelength '
+                    f'{_DISC_TOLERANCES[0]:g}, relative Q {_DISC_TOLERANCES[1]:g}; the time_filter run records its '
+                    'eigen role (one solve, time steps > 0). Default backend (gpu) and a cpu variant. measured = '
+                    'error = the worst item in tolerance units, tolerance 1. Written, not run.',
+        specs=_disc_specs,
+        check=_check_disc,
+        variants=(SelfTestVariant('cpu', tolerance=1.0, backend='cpu'),)),
 )

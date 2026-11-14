@@ -89,14 +89,15 @@ _SPEC_FIELD_HELP = {
     'ModelSpec.solver_defaults': 'Model-wide solver choices (SolverDefaultsSpec).',
     'SolverSpec.name': 'Identifier, unique among solvers; PhysicsSpec.solvers refers to it.',
     'SolverSpec.type': 'Registered solver type: pcg, line_block, sparse_direct, batched_direct, banded, '
-                       'arpack_shift_invert, block_eigen, explicit_kernels (see solvers: roles, settings and which '
-                       'physics use them).',
+                       'arpack_shift_invert, block_eigen, time_filter, explicit_kernels (see solvers: roles, settings '
+                       'and which physics use them).',
     'SolverSpec.settings': 'Values of the solver type settings by name (see solvers); missing keys take the defaults.',
     'SolverDefaultsSpec.backend': "auto (default) | gpu | cpu: where the run computes (api check / run backend=, CLI "
                                   "--backend override it); auto = gpu when cupy is installed, else cpu. cpu needs "
                                   "every physics type to list it in its backends (the Backends line of each physics "
                                   "type; else a validation error per physics) and every solver to fit it (pcg, line_block, sparse_direct without "
-                                  "cusolver_qr, batched_direct (a host SuperLU loop), arpack_shift_invert, block_eigen do; "
+                                  "cusolver_qr, batched_direct (a host SuperLU loop), arpack_shift_invert, "
+                                  "block_eigen, time_filter (the numpy FDTD twins) do; "
                                   "explicit_kernels does not); on cpu the "
                                   "device memory estimate counts against the host RAM.",
     'SolverDefaultsSpec.precision': (
@@ -104,7 +105,8 @@ _SPEC_FIELD_HELP = {
         "own default (pcg double, explicit_kernels single, ...). Otherwise every role solver whose type and role "
         "offer that precision takes it, unless its solver node sets a precision of its own (the per-solver "
         "override): Automatic roles and nodes without a precision setting. Solvers that do not offer it keep their "
-        "default (a validation info names them), e.g. double makes pcg and the time steppers double while "
+        "default (a validation info names them), e.g. double makes pcg, the time steppers and time_filter nodes "
+        "(their FDTD run) double while "
         "sparse_direct / arpack_shift_invert / banded are double anyway; mixed reaches only pcg nodes and Automatic "
         "pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block, block_eigen and "
         "batched_direct nodes. A node with "
@@ -975,7 +977,9 @@ _RESULTS_NOTES = (
         'eigen_seconds} (eigen: em_modes, em_fdfd_* in an eigenfrequency study), block_eigen {eigen_solves, '
         'eigen_iterations, eigen_single_iterations, eigen_double_iterations, operator_applications, mass_applications, '
         'preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves, eigen_block_size, '
-        'eigen_last_residual} (eigen: solid_mechanics_3d on brick meshes, opt-in), explicit_kernels {} (stepper); the '
+        'eigen_last_residual} (eigen: solid_mechanics_3d on brick meshes, opt-in), time_filter {eigen_solves, '
+        'time_steps, sampled_frequencies, basis_columns, operator_applications, step_seconds, projection_seconds, '
+        'eigen_last_residual} (eigen: em_fdfd_ez / _hz on tensor meshes, opt-in), explicit_kernels {} (stepper); the '
         'physics\' own counters (loops and solves outside a role) em_fdfd_* {solves}; em_fdfd_nonlinear {channels, '
         'sweeps, solves}; magnetic_fields_ac {solves}; em_modes {solves, modes_found, solve_seconds, '
         'line_block_fallbacks with a line_block shifted node}; '
