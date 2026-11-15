@@ -843,11 +843,13 @@ def _selftest_cases():
     from .selftests_carriers import CARRIER_SELFTEST_CASES
     from .selftests_cross_section import CROSS_SECTION_CPU_SELFTESTS
     from .selftests_em_modes import EM_MODES_SELFTEST_CASES
+    from .selftests_gyrotropy import GYROTROPY_MODES_SELFTEST_CASES
     from .selftests_modes_backend import MODES_BACKEND_SELFTEST_CASES
     from .selftests_modes_fem import MODES_FEM_SELFTEST_CASES
     from .selftests_shg_overlap import SHG_OVERLAP_SELFTEST_CASES
     return (*CROSS_SECTION_CPU_SELFTESTS, *EM_MODES_SELFTEST_CASES, *CARRIER_SELFTEST_CASES,
-            *SHG_OVERLAP_SELFTEST_CASES, *MODES_BACKEND_SELFTEST_CASES, *MODES_FEM_SELFTEST_CASES)
+            *SHG_OVERLAP_SELFTEST_CASES, *MODES_BACKEND_SELFTEST_CASES, *MODES_FEM_SELFTEST_CASES,
+            *GYROTROPY_MODES_SELFTEST_CASES)
 
 
 def register(registry):

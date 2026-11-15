@@ -44,6 +44,7 @@ def _selftest_cases():
     from .selftests_fdfd_backend import FDFD_BACKEND_SELFTEST_CASES
     from .selftests_fdfd_conformal import FDFD_CONFORMAL_SELFTEST_CASES
     from .selftests_fdfd_fem import FDFD_FEM_SELFTESTS
+    from .selftests_gyrotropy import GYROTROPY_FDFD_SELFTEST_CASES
     from .selftests_harmonic_fdtd import HARMONIC_FDTD_SELFTEST_CASES
     from .selftests_hz import HZ_SELFTEST_CASES
     from .selftests_material_fit import MATERIAL_FIT_SELFTEST_CASES
@@ -62,7 +63,7 @@ def _selftest_cases():
         ADJOINT_BACKEND_SELFTEST_CASES, MATERIAL_FIT_SELFTEST_CASES, EFFECTIVE_INDEX_SELFTEST_CASES,
         CONDUCTING_SHEET_SELFTEST_CASES, BEND_SELFTEST_CASES, SYMMETRY_SELFTEST_CASES, ANISOTROPY_SELFTEST_CASES,
         FDTD_BACKEND_SELFTEST_CASES, PRECISION_SELFTEST_CASES, POLAR_SELFTEST_CASES, FDFD_FEM_SELFTESTS,
-        RESONANCE_REGION_SELFTEST_CASES)
+        RESONANCE_REGION_SELFTEST_CASES, GYROTROPY_FDFD_SELFTEST_CASES)
         for case in cases]
 
 
