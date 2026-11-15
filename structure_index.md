@@ -10,25 +10,25 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/fem/: lines 105-170
 - open_sol/gui/: lines 172-192
 - open_sol/io/: lines 194-198
-- open_sol/materials/: lines 200-216
-- open_sol/mesh_study/: lines 218-228
-- open_sol/model/: lines 230-298
-- open_sol/physics/: lines 300-302
-- open_sol/physics/acoustics/: lines 304-322
-- open_sol/physics/em/: lines 324-436
-- open_sol/physics/em/solvers/: lines 438-460
-- open_sol/physics/em3d/: lines 462-498
-- open_sol/physics/eme/: lines 500-517
-- open_sol/physics/fluid/: lines 519-530
-- open_sol/physics/heat/: lines 532-557
-- open_sol/physics/magnetic/: lines 559-589
-- open_sol/physics/mechanics/: lines 591-675
-- open_sol/physics/membrane/: lines 677-695
-- open_sol/physics/nlfd/: lines 697-716
-- open_sol/physics/potential/: lines 718-735
-- open_sol/physics/semiconductor/: lines 737-750
-- open_sol/solvers/: lines 752-766
-- open_sol/viz/: lines 768-775
+- open_sol/materials/: lines 200-217
+- open_sol/mesh_study/: lines 219-229
+- open_sol/model/: lines 231-299
+- open_sol/physics/: lines 301-303
+- open_sol/physics/acoustics/: lines 305-323
+- open_sol/physics/em/: lines 325-438
+- open_sol/physics/em/solvers/: lines 440-462
+- open_sol/physics/em3d/: lines 464-500
+- open_sol/physics/eme/: lines 502-519
+- open_sol/physics/fluid/: lines 521-532
+- open_sol/physics/heat/: lines 534-559
+- open_sol/physics/magnetic/: lines 561-591
+- open_sol/physics/mechanics/: lines 593-677
+- open_sol/physics/membrane/: lines 679-697
+- open_sol/physics/nlfd/: lines 699-718
+- open_sol/physics/potential/: lines 720-737
+- open_sol/physics/semiconductor/: lines 739-752
+- open_sol/solvers/: lines 754-768
+- open_sol/viz/: lines 770-777
 
 ## open_sol/
 
@@ -203,6 +203,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `_base.py`: Material (library dataclass: EM poles, optical, thermal, mechanical, electrical and fluid property dicts) and NkTable (tabulated n + j k per wavelength for the nk_fit dispersion fit).
 - `air.py`: Library material AIR: room-temperature air with vacuum optics (eps_r = 1), heat conduction without convection and no DC conductivity.
 - `aluminum.py`: Library material ALUMINUM: a near-IR Drude pole (fit at 1.55 um), thermal, elastic and DC-conductivity data, and its Rakic 1995 n, k table.
+- `ce_yig.py`: Library material CE_YIG: cerium-substituted yttrium iron garnet (Ce:YIG) films at 1.55 um, the magneto-optic garnet of integrated optical isolators (index and loss; its gyration in the description).
 - `crystal_tensors.py`: Crystal tensors (numpy only, GUI-thread safe): c^E, e, eps^S, photoelastic p and clamped Pockels r per crystal in its standard axes, Bond rotations into model axes by SAW Euler angles, and the sagittal (2D) or full (3D) expansion of a ...
 - `gold.py`: Library material GOLD: a Drude pole fitted to Johnson & Christy (about 0.6-2 um), thermal, elastic and DC-conductivity data and its n, k table.
 - `gst.py`: Library materials GST_225_AMORPHOUS / _CRYSTALLINE: Ge2Sb2Te5 phase-change alloy, eps_r and sigma_e at 1.55 um from physics.em.phase_change.GST_225, plus thermal data.
@@ -412,6 +413,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_fdtd_bor_media.py`: Self-tests of the em_fdtd_bor media and ports (symmetry 2.3, fdtd_bor / fdtd_bor_ports): Drude / Lorentz poles (CPU: a lossy dispersive PEC cavity vs em_fdfd_bor at omega_tilde with the stepped susceptibility; a cpu-backend model run vs ...
 - `selftests_fdtd_bor_orders.py`: Self-tests of the body-of-revolution FDTD driven order sum (symmetry 2.3, fdtd_bor.BOROrderSum): a CPU check of an off-axis z + y (phi) dipole pair against the em_fdfd_bor order sum at omega_tilde and the closed forms, and a cpu-backend ...
 - `selftests_gain_threshold.py`: C5 gain-threshold self-test of the gain_medium feature (em_fdtd_ez): a lossy PEC-walled cavity filled with the four-level gain medium rings down after a pulse; the resonance_monitor decay rates of a cold and a half-inverted run give the ...
+- `selftests_gyrotropy.py`: Model-run self-tests of the gyrotropic (magneto-optic) permittivity: em_fdfd_hz gyration_z (non-reciprocal point-source pairs through a lossless block, reciprocity with the magnetisation reversed, the flux balance around the block; the ...
 - `selftests_harmonic_fdtd.py`: Self-tests of the harmonic FDTD (frequency_domain study of em_fdtd_*): em_fdtd_ez against em_fdfd_ez on one model, an em_fdtd_hz slab against the Airy transmission off the pulse carrier; the 'cylinder_harmonic_fdtd' template.
 - `selftests_hz.py`: Analytic H_z-polarisation EM self-tests (plane wave, Fresnel, dielectric and Drude Mie cylinders) and the 'gold_nanodisk_hz' template; the plane-wave, Fresnel and Drude cylinder cases are polarisation-generic (`plane_wave_case`, ...
 - `selftests_material_fit.py`: CPU self-test of the A7 nk_fit (physics/em/material_fit, materials.effective_material_data): analytic round trip and the library tables (no model run).

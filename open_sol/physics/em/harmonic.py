@@ -13,6 +13,11 @@ eps / mu per cell, the H_z face-current right-hand side, absorbed power density 
 # eta D with eta = eps^-1 per cell: diagonal V = 1 / face mean of 1/eta_ii (= eps_xx - eps_xy^2 / eps_yy at E_x), the
 # coupling X = face mean . eta_xy . centre mean (operators.off_diagonal_face_couplings); the operator gains
 # -(dx_e X_yx dy_h + dy_e X_xy dx_h) and the face-current rhs dx_e (X_yx J_xF) - dy_e (X_xy J_yF).
+# Gyrotropic (magneto-optic) term g = gyration_z (a magnetisation along z): the in-plane tensor is
+#   eps = [[eps_xx, eps_xy + j g], [eps_xy - j g, eps_yy]]   (Hermitian for real values: lossless)
+# with det = eps_xx eps_yy - eps_xy^2 - g^2, 1/eta_xx = det / eps_yy = eps_xx - (eps_xy^2 + g^2) / eps_yy (E_x faces),
+# eta_xy = -(eps_xy + j g) / det (X_xy, E_x from D_y), eta_yx = -(eps_xy - j g) / det (X_yx): A(g)^T = A(-g) up to
+# the area weights, so S_21(g) = S_12(-g) (reciprocity with the magnetisation reversed) while S_21(g) != S_12(g).
 from dataclasses import dataclass
 
 import numpy as np
@@ -44,6 +49,18 @@ def cell_permeability(materials, omega, xp=cp):
         raise ValueError(f"cell_permeability needs a finite angular frequency omega > 0 [rad/s], got {omega!r}")
     return (xp.asarray(materials.mu_r, dtype=xp.complex128)
             - 1j * xp.asarray(materials.sigma_m, dtype=xp.float64) / (omega * MU0))
+
+
+def off_diagonal_entries(cell_eps_xy, cell_gyration, xp=cp):
+    """(eps_xy entry, eps_yx entry) of the hz in-plane tensor from the assembly's float64 eps_xy and gyration g (either
+    None = 0; header): the real eps_xy itself twice without g, else complex128 eps_xy + j g, eps_xy - j g; None, None
+    when both are None."""
+    if cell_gyration is None:
+        return cell_eps_xy, cell_eps_xy
+    imaginary = 1j * xp.asarray(cell_gyration, dtype=xp.float64)
+    if cell_eps_xy is None:
+        return imaginary, -imaginary
+    return cell_eps_xy + imaginary, cell_eps_xy - imaginary
 
 
 def write_float32(target, host_values) -> None:
@@ -159,9 +176,11 @@ class HarmonicSystem:
     pec_cells: object            # xp bool (nx, ny) of the fixed unknowns (ez pinned, hz H_z = 0 rows) or None
     periodic_x: bool
     periodic_y: bool
-    # hz with a non-zero eps_xy: (hi-x -> hi-y, hi-y -> hi-x) CSR face couplings of eta_xy (header); else None
+    # hz with a non-zero eps_xy or gyration: (hi-x -> hi-y, hi-y -> hi-x) CSR face couplings of eta_xy / eta_yx
+    # (header); else None
     off_diagonal: object = None
     cell_eps_xy: object = None   # hz: float64 (nx, ny) eps_xy of the assembly (FDFDPhysics.assembly_eps_xy) or None
+    cell_gyration: object = None   # hz: float64 (nx, ny) gyration g of the assembly (assembly_gyration) or None
     # hz conformal PEC (conformal_pec.ConformalFDFD): (hi-x, hi-y) free face fractions the operator (and the face-current
     # rhs, q_abs, adjoint) multiply the weights by, and the free-area fractions of the k0^2 mu mass; else None
     face_fractions: object = None

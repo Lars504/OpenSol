@@ -46,6 +46,9 @@ SOURCE_FREE_DERIVED_OPERATIONS = FIELD_DERIVED_OPERATIONS + (GLOBAL_DERIVED_OPER
 DERIVED_OPERATIONS = SOURCE_DERIVED_OPERATIONS + ('mode_volume', GLOBAL_DERIVED_OPERATION)
 COUPLING_ROLES = ('source', 'target')
 PERMITTIVITY_PROPERTY_NAMES = ('eps_r', 'eps_xx', 'eps_yy', 'eps_zz')   # material properties writing permittivity
+# gyration vector g of a magneto-optic (gyrotropic) material, eps_ij += j e_ijk g_k: em_fdfd_hz reads gyration_z,
+# em_modes gyration_x / gyration_y; the other EM types refuse a non-zero value (physics/em definition_common)
+GYRATION_PROPERTY_NAMES = ('gyration_x', 'gyration_y', 'gyration_z')
 # PhysicsType.group -> GUI Add physics submenu (in this order; '' -> 'Other')
 PHYSICS_GROUPS = (('em', 'Electromagnetic waves'), ('heat', 'Heat transfer'),
                   ('electrical', 'Electric fields, currents and semiconductors'),

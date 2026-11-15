@@ -9,15 +9,15 @@ from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import eigen_factorization, study_duration, validate_points_inside
+from ...model.definition_helpers import eigen_factorization, evaluates_to, study_duration, validate_points_inside
 from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.explicit_kernels import stepper_precision
-from ...model.schema import (PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param, array_owner,
-                             coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
+from ...model.schema import (GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
+                             array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
                              resolve_values, state_field_names)
 from . import EMPhysics
 from .boundaries import BoundaryConfig
@@ -1413,6 +1413,15 @@ def _material_issues(vctx, em_types):
             issues.append(Issue('warning', path, f'eps_r is not used: every permittivity array of the present EM '
                                                  f'physics is owned by a component ({components}); set '
                                                  f'{components} instead'))
+        for name in GYRATION_PROPERTY_NAMES:
+            ignoring = [physics_type.name for physics_type, params in zip(em_types, em_params)
+                        if not any(param.name == name for param in params)]
+            if ignoring and evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0):
+                issues.append(Issue('error', path, f"{name} (a magneto-optic, non-reciprocal medium) is not supported "
+                                                   f"by {', '.join(ignoring)}: only em_fdfd_hz reads gyration_z "
+                                                   '(magnetisation out of the plane, in its operator) and em_modes '
+                                                   'gyration_x / gyration_y (transverse magnetisation, the first-order '
+                                                   'non-reciprocal phase shift); remove it or use one of those types'))
         for name, value in user_properties.items():
             if name in PERMITTIVITY_PROPERTY_NAMES and value is not None and name not in em_permittivity_names:
                 issues.append(Issue('warning', path, f"{name} is not used by the present EM physics "

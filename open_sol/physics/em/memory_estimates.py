@@ -20,6 +20,7 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZA
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
 from .eigenfrequency import FILTER_BLOCK_COLUMNS, WIDENING_BASIS_RESERVE
+from .materials import GYRATION_Z
 
 # FDFD assembly peak (operators.helmholtz_operator at the y-product sum): the x product (3 entries per row), the
 # column-scaled dy_e copy (2) and the y product (3) beside their sum (5: the Helmholtz run item's size, not yet made)
@@ -219,18 +220,23 @@ def later_factorisations(context) -> bool:
 
 
 def _off_diagonal_items(context, n_cells, sparse_row):
-    """em_fdfd_hz with eps_xy (a material sets it or a coupling writes eps_xy_update): (run items, host items) of the
-    coupled change array, the two face couplings, the 4 extra operator entries per row and the larger factor."""
+    """em_fdfd_hz with eps_xy (a material sets it or a coupling writes eps_xy_update) or a material gyration_z: (run
+    items, host items) of the coupled change array (eps_xy) / the assembled gyration, the two face couplings, the 4
+    extra operator entries per row and the larger factor."""
     def writes_xy(coupling):
         if not (coupling.enabled and coupling.type in _OFF_DIAGONAL_WRITERS
                 and coupling.target == context.physics_spec.name):
             return False
         needed = _OFF_DIAGONAL_WRITERS[coupling.type]
         return needed is None or any(context.material_sets(name) for name in needed)
-    if not (context.material_sets('eps_xy') or any(writes_xy(coupling) for coupling in context.spec.couplings)):
+    off_diagonal = context.material_sets('eps_xy') or any(writes_xy(coupling) for coupling in context.spec.couplings)
+    gyrotropic = context.material_sets(GYRATION_Z)   # magneto-optic: the same couplings, eta_xy != eta_yx
+    if not (off_diagonal or gyrotropic):
         return [], []
-    run_items = [('eps_xy coupled change (float32)', FLOAT32_BYTES * n_cells),
-                 ('eps_xy face couplings (2 sparse complex128, 4 entries per row)',
+    run_items = [('eps_xy coupled change (float32)', FLOAT32_BYTES * n_cells)] if off_diagonal else []
+    if gyrotropic:
+        run_items.append(('assembled gyration_z kept on the system (float64)', FLOAT64_BYTES * n_cells))
+    run_items += [('eps_xy face couplings (2 sparse complex128, 4 entries per row)',
                   2 * (4 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                  ('eps_xy operator entries (4 per row) and eta transients (3 x complex128)',
                   (4 * COMPLEX128_CSR_ENTRY_BYTES + 3 * COMPLEX128_BYTES) * n_cells),

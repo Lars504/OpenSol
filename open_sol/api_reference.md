@@ -17,170 +17,170 @@ Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the
 - lines 185-528: Model spec
 - lines 530-647: Expressions
 - lines 649-914: Geometry
-- lines 916-1078: Materials
-- lines 1080-1126: Mesh
-- lines 1128-1247: Solvers
-- lines 1249-2107: Shared help texts
-- lines 2109-2274: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2276-2529: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2531-2662: Physics type `electric_currents` - Electric Currents
-- lines 2664-2866: Physics type `electrostatics` - Electrostatics
-- lines 2868-3092: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3094-3282: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3284-3397: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3399-3596: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3598-3770: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3772-4114: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4116-4478: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4480-5000: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4492-4519: Settings (PhysicsSpec.settings)
-  - lines 4521-4536: Material properties (MaterialSpec.properties)
-  - lines 4538-4579: Fields
-  - lines 4581-4585: Source slots
-  - lines 4587-4607: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4609-4669: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4671-4719: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4721-4741: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4743-4777: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4779-4788: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4790-4810: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4812-4832: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4834-4856: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4858-4872: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4874-4892: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4894-4908: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4910-4928: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4930-4942: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4944-4954: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4956-4968: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 4970-4982: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 4984-5000: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 5002-5309: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5311-5544: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5546-5949: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5558-5579: Settings (PhysicsSpec.settings)
-  - lines 5581-5592: Material properties (MaterialSpec.properties)
-  - lines 5594-5624: Fields
-  - lines 5626-5629: Source slots
-  - lines 5631-5647: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5649-5665: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5667-5687: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5689-5705: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5707-5727: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5729-5738: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5740-5758: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5760-5785: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5787-5812: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5814-5848: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5850-5860: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5862-5879: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5881-5895: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5897-5913: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5915-5931: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5933-5949: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5951-6362: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5963-5984: Settings (PhysicsSpec.settings)
-  - lines 5986-5999: Material properties (MaterialSpec.properties)
-  - lines 6001-6030: Fields
-  - lines 6032-6036: Source slots
-  - lines 6038-6060: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6062-6078: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6080-6100: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6102-6118: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6120-6140: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6142-6151: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6153-6171: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6173-6198: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6200-6225: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6227-6261: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6263-6273: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6275-6292: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6294-6308: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6310-6326: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6328-6344: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6346-6362: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6364-6569: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6571-6871: Physics type `heat` - Heat Transfer in Solids
-- lines 6873-7031: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 7033-7227: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7229-7397: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7399-7571: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7573-7880: Physics type `membrane` - Membrane
-- lines 7882-8115: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8117-8603: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8129-8186: Settings (PhysicsSpec.settings)
-  - lines 8188-8275: Material properties (MaterialSpec.properties)
-  - lines 8277-8334: Fields
-  - lines 8336-8340: Source slots
-  - lines 8342-8352: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8354-8364: Feature `solid_mechanics.roller` - Roller
-  - lines 8366-8379: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8381-8391: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8393-8406: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8408-8421: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8423-8436: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8438-8451: Feature `solid_mechanics.body_force` - Body force
-  - lines 8453-8464: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8466-8477: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8479-8489: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8491-8501: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8503-8514: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
-  - lines 8516-8553: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8555-8569: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8571-8585: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8587-8603: Feature `solid_mechanics.admittance` - Admittance
-- lines 8605-9172: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8617-8666: Settings (PhysicsSpec.settings)
-  - lines 8668-8805: Material properties (MaterialSpec.properties)
-  - lines 8807-8877: Fields
-  - lines 8879-8884: Source slots
-  - lines 8886-8896: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8898-8908: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8910-8925: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8927-8937: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8939-8954: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8956-8971: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 8973-8988: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 8990-9001: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 9003-9014: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 9016-9026: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 9028-9038: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 9040-9063: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 9065-9076: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 9078-9095: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9097-9114: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9116-9133: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9135-9172: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9174-9182: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9184-9192: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9194-9203: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9205-9214: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9216-9224: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9226-9234: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9236-9247: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9249-9257: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9259-9272: Coupling type `field_transfer` - Field transfer
-- lines 9274-9282: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9284-9292: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9294-9302: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9304-9312: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9314-9322: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9324-9332: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9334-9347: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9349-9358: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9360-9369: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9371-9405: Study type `eigenfrequency` - Eigenfrequency
-- lines 9407-9442: Study type `frequency_domain` - Frequency domain
-- lines 9444-9487: Study type `frequency_response` - Frequency response
-- lines 9489-9511: Study type `mode_analysis` - Mode analysis
-- lines 9513-9535: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9537-9553: Study type `optimization` - Optimization
-- lines 9555-9578: Study type `optomechanics` - Optomechanics
-- lines 9580-9601: Study type `stationary` - Stationary
-- lines 9603-9632: Study type `thermal_noise` - Thermal noise
-- lines 9634-9648: Study type `time_dependent` - Time dependent
-- lines 9650-9718: Templates
-- lines 9720-9938: Results, reports and files
+- lines 916-1085: Materials
+- lines 1087-1133: Mesh
+- lines 1135-1254: Solvers
+- lines 1256-2114: Shared help texts
+- lines 2116-2281: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2283-2536: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2538-2669: Physics type `electric_currents` - Electric Currents
+- lines 2671-2873: Physics type `electrostatics` - Electrostatics
+- lines 2875-3099: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3101-3289: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3291-3404: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3406-3603: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3605-3777: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3779-4121: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4123-4487: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4489-5009: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4501-4528: Settings (PhysicsSpec.settings)
+  - lines 4530-4545: Material properties (MaterialSpec.properties)
+  - lines 4547-4588: Fields
+  - lines 4590-4594: Source slots
+  - lines 4596-4616: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4618-4678: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4680-4728: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4730-4750: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4752-4786: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4788-4797: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4799-4819: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4821-4841: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4843-4865: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4867-4881: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4883-4901: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4903-4917: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4919-4937: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4939-4951: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4953-4963: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4965-4977: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 4979-4991: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 4993-5009: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 5011-5318: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5320-5553: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5555-5958: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5567-5588: Settings (PhysicsSpec.settings)
+  - lines 5590-5601: Material properties (MaterialSpec.properties)
+  - lines 5603-5633: Fields
+  - lines 5635-5638: Source slots
+  - lines 5640-5656: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5658-5674: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5676-5696: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5698-5714: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5716-5736: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5738-5747: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5749-5767: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5769-5794: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5796-5821: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5823-5857: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5859-5869: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5871-5888: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5890-5904: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5906-5922: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5924-5940: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5942-5958: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5960-6371: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5972-5993: Settings (PhysicsSpec.settings)
+  - lines 5995-6008: Material properties (MaterialSpec.properties)
+  - lines 6010-6039: Fields
+  - lines 6041-6045: Source slots
+  - lines 6047-6069: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6071-6087: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6089-6109: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6111-6127: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6129-6149: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6151-6160: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6162-6180: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6182-6207: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6209-6234: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6236-6270: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6272-6282: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6284-6301: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6303-6317: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6319-6335: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6337-6353: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6355-6371: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6373-6582: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6584-6884: Physics type `heat` - Heat Transfer in Solids
+- lines 6886-7044: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 7046-7240: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7242-7410: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7412-7584: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7586-7893: Physics type `membrane` - Membrane
+- lines 7895-8128: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8130-8616: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8142-8199: Settings (PhysicsSpec.settings)
+  - lines 8201-8288: Material properties (MaterialSpec.properties)
+  - lines 8290-8347: Fields
+  - lines 8349-8353: Source slots
+  - lines 8355-8365: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8367-8377: Feature `solid_mechanics.roller` - Roller
+  - lines 8379-8392: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8394-8404: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8406-8419: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8421-8434: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8436-8449: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8451-8464: Feature `solid_mechanics.body_force` - Body force
+  - lines 8466-8477: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8479-8490: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8492-8502: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8504-8514: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8516-8527: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+  - lines 8529-8566: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8568-8582: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8584-8598: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8600-8616: Feature `solid_mechanics.admittance` - Admittance
+- lines 8618-9185: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8630-8679: Settings (PhysicsSpec.settings)
+  - lines 8681-8818: Material properties (MaterialSpec.properties)
+  - lines 8820-8890: Fields
+  - lines 8892-8897: Source slots
+  - lines 8899-8909: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8911-8921: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8923-8938: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8940-8950: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8952-8967: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8969-8984: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 8986-9001: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 9003-9014: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 9016-9027: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 9029-9039: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 9041-9051: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 9053-9076: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 9078-9089: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 9091-9108: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9110-9127: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9129-9146: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9148-9185: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9187-9195: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9197-9205: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9207-9216: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9218-9227: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9229-9237: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9239-9247: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9249-9260: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9262-9270: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9272-9285: Coupling type `field_transfer` - Field transfer
+- lines 9287-9295: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9297-9305: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9307-9315: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9317-9325: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9327-9335: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9337-9345: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9347-9360: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9362-9371: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9373-9382: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9384-9418: Study type `eigenfrequency` - Eigenfrequency
+- lines 9420-9455: Study type `frequency_domain` - Frequency domain
+- lines 9457-9500: Study type `frequency_response` - Frequency response
+- lines 9502-9524: Study type `mode_analysis` - Mode analysis
+- lines 9526-9548: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9550-9566: Study type `optimization` - Optimization
+- lines 9568-9591: Study type `optomechanics` - Optomechanics
+- lines 9593-9614: Study type `stationary` - Stationary
+- lines 9616-9645: Study type `thermal_noise` - Thermal noise
+- lines 9647-9661: Study type `time_dependent` - Time dependent
+- lines 9663-9731: Templates
+- lines 9733-9951: Results, reports and files
 
 ## Model spec
 
@@ -942,6 +942,13 @@ Aluminium (library name aluminum) for EM, heat and electric currents (room tempe
 - Properties: {"k": 237, "rho": 2700, "cp": 897, "dndT": 0, "alpha": 2.31e-05, "youngs_modulus": 7e+10, "poisson_ratio": 0.35, "sigma_dc": 3.8e+07}
 - Dispersion poles: [{"model": "drude", "omega_p": 1.94e+16, "gamma": 2.46e+14, "eps_inf": 1}]
 
+#### Library material `ce_yig`
+
+Polycrystalline Ce:YIG (Ce1Y2Fe5O12) film at 1.55 um and room temperature, as sputtered or pulsed-laser deposited on silicon or silicon nitride and saturated by a small in-plane field, non-dispersive. Magneto-optic data are not material properties (the magnetisation direction is the model's): set the gyration g on the material, |g| ~ 0.009 from its Faraday rotation theta_F ~ -4500 deg/cm (g = theta_F lambda n / pi in magnitude; films range ~ -2000 to -6000 deg/cm, and g changes sign with the magnetisation): gyration_z (em_fdfd_hz, magnetisation out of the plane) or gyration_x / gyration_y (em_modes, transverse magnetisation, the non-reciprocal phase shift). The loss (~40 dB/cm, sigma_e) varies a lot between films (~20-60 dB/cm). Values are typical figures from the integrated-isolator literature (Bi et al., Nature Photonics 5, 758 (2011); Zhang et al., Optica 6, 473 (2019)), unverified: check against the film at hand. Thermal data rough (YIG bulk).
+
+- Properties: {"eps_r": 4.93, "sigma_e": 5.4, "k": 6, "rho": 5200, "cp": 570}
+- Dispersion poles: none
+
 #### Library material `gold`
 
 Gold for EM, heat and electric currents (room temperature). The Drude pole is a fit to Johnson & Christy 1972 valid about 0.6-2 um: eps about -116 - 10.6j at 1.55 um (Johnson & Christy about -114 - 11j; evaporated films in Olmon 2012 have |Im eps| about 7, single crystals about 4). The far-IR / DC damping (about 4e13 rad/s) would underestimate the near-IR loss 2-3x. No interband absorption, so least accurate below about 550 nm (|Im eps| up to ~5x low). Resolve the field decay into the metal (about 25 nm) with several cells. Its table (Johnson & Christy 1972, 188-1937 nm) serves an nk_fit dispersion entry, whose Lorentz poles add the interband absorption.
@@ -1031,13 +1038,13 @@ Liquid water at 1.55 um and 20 C (n = 1.3154) with its absorption (extinction 1.
 - `em_fdfd_bor`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdfd_conical`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdfd_ez`: eps_r (eps_r), eps_zz (eps_r), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
-- `em_fdfd_hz`: eps_r (eps_xx, eps_yy), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m), eps_xy (eps_xy)
+- `em_fdfd_hz`: eps_r (eps_xx, eps_yy), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m), eps_xy (eps_xy), gyration_z (gyration_z)
 - `em_fdfd_nonlinear`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdtd_3d`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdtd_bor`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdtd_ez`: eps_r (eps_r), eps_zz (eps_r), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
 - `em_fdtd_hz`: eps_r (eps_xx, eps_yy), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
-- `em_modes`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m)
+- `em_modes`: eps_r (eps_r, eps_xx, eps_yy), eps_zz (eps_r), eps_xx (eps_xx), eps_yy (eps_yy), sigma_e (sigma_e), mu_r (mu_r), sigma_m (sigma_m), gyration_x (gyration_x), gyration_y (gyration_y)
 - `heat`: k (k_xx, k_yy, k_zz), k_xx (k_xx), k_yy (k_yy), k_zz (k_zz), k_xy (k_xy), rho (rho), cp (cp), dndT (dndT_xx, dndT_yy, dndT_zz), dndT_xx (dndT_xx), dndT_yy (dndT_yy), dndT_zz (dndT_zz), alpha (alpha_xx, alpha_yy), alpha_xx (alpha_xx), alpha_yy (alpha_yy)
 - `laminar_flow`: viscosity (viscosity), rho (rho)
 - `magnetic_fields_ac`: mu_dc (mu_dc_xx, mu_dc_yy), mu_dc_xx (mu_dc_xx), mu_dc_yy (mu_dc_yy), mu_dc_loss (mu_dc_loss), sigma_dc (sigma_dc_xx, sigma_dc_yy), sigma_dc_xx (sigma_dc_xx), sigma_dc_yy (sigma_dc_yy)
@@ -4164,6 +4171,8 @@ Params (FeatureSpec.params):
   Magnetic loss on H_z in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0); sigma_m / (mu0 mu_r) = sigma_e / (eps0 eps_r) gives an impedance-matched absorber without reflection at normal incidence.
 - `eps_xy` (float; unit 1; default 0; may use x, y; writes arrays eps_xy) - Relative permittivity, xy (off-diagonal)
   Off-diagonal in-plane relative permittivity eps_xy = eps_yx (real, default 0) of a crystal whose in-plane axes are turned against x / y: a uniaxial crystal with its optic axis in the plane at angle theta from x has eps_xx = n_o^2 + (n_e^2 - n_o^2) cos^2 theta, eps_yy = n_o^2 + (n_e^2 - n_o^2) sin^2 theta, eps_xy = (n_e^2 - n_o^2) sin theta cos theta; eps_xx eps_yy > eps_xy^2 is required. The solve uses eta = eps^-1 per cell: an E_x (E_y) face takes the mean of eps_xx - eps_xy^2 / eps_yy (eps_yy - eps_xy^2 / eps_xx) of its two cells and couples to the other component through eta_xy averaged over the four faces around it (so at normal incidence on a layer only eps_yy - eps_xy^2 / eps_xx matters, and D_x = 0 gives E_x = -eps_xy / eps_xx E_y). The operator then has 9 points per row, which makes the direct solve dearer; the array is allocated only when a material sets it. Taken as 0 in PEC cells and in the outer two cell rows of a wall or mirror face. Mode ports, line-source / beam calibrations and the TFSF background do not see it (the build warns for a port or source line on cells with a material eps_xy: keep them in isotropic or unrotated cells). The adjoint (eps_sensitivity, optimization study) differentiates the face couplings with eps_xy held fixed; the output field eps_xy_sensitivity is dJ / d eps_xy. The acousto-optic and Pockels couplings add their change to it (source slot eps_xy_update); em_fdtd_hz and em_modes have no eps_xy.
+- `gyration_z` (float; unit 1; default 0; may use x, y; writes arrays gyration_z) - Gyration, z (magneto-optic)
+  Gyration g (real, default 0) of a magneto-optic (gyrotropic) material magnetised along z, out of the plane: the in-plane tensor becomes eps = [[eps_xx, eps_xy + j g], [eps_xy - j g, eps_yy]] (exp(+j omega t); Hermitian, so a real g absorbs nothing), i.e. the gyration vector (0, 0, g) with eps_ij += j e_ijk g_k; g changes sign with the magnetisation. The in-plane E of H_z sees it with light travelling across the magnetisation (Voigt geometry): a uniform medium of eps keeps one index, eps_eff = eps - g^2 / eps in every direction, but the term odd in the propagation direction makes interfaces and guides non-reciprocal: a slab guide magnetised along z whose index profile is not mirror symmetric across it has beta_forward != beta_backward (the non-reciprocal phase shift of magneto-optic isolators), and S_21(g) = S_12(-g) instead of S_21 = S_12. Faraday rotation per length, for light along the magnetisation, theta_F = pi g / (lambda n) in magnitude, so g = theta_F lambda n / pi: Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2, theta_F ~ -4500 deg/cm) |g| ~ 0.009, Bi:YIG ~ 0.01-0.02; the sign of g for a given magnetisation is the material's. The solve uses eta = eps^-1 per cell as for eps_xy: an E_x (E_y) face takes the mean of eps_xx - (eps_xy^2 + g^2) / eps_yy (eps_yy - (eps_xy^2 + g^2) / eps_xx) and couples to the other component through eta_xy = -(eps_xy + j g) / det, eta_yx = -(eps_xy - j g) / det (det = eps_xx eps_yy - eps_xy^2 - g^2, which must stay > 0), so the operator is no longer symmetric: direct solves take a general LU (no LDL^T), and the adjoint (eps_sensitivity, optimization) solves the transposed system, which is the solve with -g (g held fixed in the gradient). Lossless g conserves power exactly on the grid (q_abs counts the diagonal loss only, as for eps_xy). Allocated only when a material sets it; taken as 0 in PEC cells and the outer two cell rows of a wall face. Mode ports, line-source / beam calibrations and the TFSF background do not see it (the build warns for such a line on cells with gyration_z). Validation errors: symmetric / antisymmetric mirror faces and parity sectors (a mirror image reverses the magnetisation), triangles meshes, and every other EM type (em_modes takes gyration_x / gyration_y for its non-reciprocal phase shift).
 
 ### Fields
 
@@ -6426,6 +6435,10 @@ Full-vector finite-difference eigenmode solver of a waveguide cross-section: the
   Real relative permeability (>= 1) of H_x, H_y and H_z, each taking the value of the cell it belongs to (H_x on the +y face, H_y on the +x face, H_z at the +x+y corner of that cell); 1 for practically every optical material. The solve uses mu_r - j sigma_m / (omega mu0).
 - `sigma_m` (float; unit Ohm/m; default 0; range [0, inf); may use x, y; may use physics fields; writes arrays sigma_m) - Magnetic conductivity
   Magnetic loss on H_x, H_y, H_z in Ohm/m, default 0: mu_r gains -j sigma_m / (omega mu0) (artificial absorbers only).
+- `gyration_x` (float; unit 1; default 0; may use x, y; writes arrays gyration_x) - Gyration, x (magneto-optic)
+  Gyration g_x (real, default 0) of a magneto-optic material magnetised along x, across the guide: the gyration vector (g_x, g_y, 0) adds eps_ij += j e_ijk g_k (exp(+j omega t)), so eps_yz = -eps_zy = j g_x and eps_zx = -eps_xz = j g_y; Hermitian (lossless) for real g, which changes sign with the magnetisation. It does NOT enter the mode solve: every mode gets the first-order non-reciprocal phase shift delta_beta = beta_forward - beta_backward = -(omega eps0 / P) integral [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA (the perturbation formula of Mizumoto / Shintaku; P = 1 W, the solved mode travelling toward +z), scalar output delta_beta_<k> and mode_table column delta_beta; error ~ g^2 relative (n_eff itself moves only by ~g^2, not computed). E_y couples to the longitudinal E_z, so a transverse magnetisation along x shifts the modes with E mostly along y (g_x: quasi-TM, E along y; g_y: quasi-TE, E along x), and only where the guide is not mirror symmetric across y (a magneto-optic cladding on one side, or opposite magnetisations on two sides: push-pull). A pi phase difference needs L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2): |g| ~ 0.009 from its Faraday rotation ~ -4500 deg/cm (g = theta_F lambda n / pi); the sign for a given magnetisation is the material's. Allocated only when a material sets it. Validation errors: a y_lo / y_hi mirror face (its image reverses the magnetisation), a bend, a triangles mesh, and every other EM type (em_fdfd_hz takes gyration_z, magnetisation out of the plane, in its operator).
+- `gyration_y` (float; unit 1; default 0; may use x, y; writes arrays gyration_y) - Gyration, y (magneto-optic)
+  Gyration g_y (real, default 0) of a magneto-optic material magnetised along y, across the guide: the gyration vector (g_x, g_y, 0) adds eps_ij += j e_ijk g_k (exp(+j omega t)), so eps_yz = -eps_zy = j g_x and eps_zx = -eps_xz = j g_y; Hermitian (lossless) for real g, which changes sign with the magnetisation. It does NOT enter the mode solve: every mode gets the first-order non-reciprocal phase shift delta_beta = beta_forward - beta_backward = -(omega eps0 / P) integral [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA (the perturbation formula of Mizumoto / Shintaku; P = 1 W, the solved mode travelling toward +z), scalar output delta_beta_<k> and mode_table column delta_beta; error ~ g^2 relative (n_eff itself moves only by ~g^2, not computed). E_x couples to the longitudinal E_z, so a transverse magnetisation along y shifts the modes with E mostly along x (g_x: quasi-TM, E along y; g_y: quasi-TE, E along x), and only where the guide is not mirror symmetric across x (a magneto-optic cladding on one side, or opposite magnetisations on two sides: push-pull). A pi phase difference needs L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2): |g| ~ 0.009 from its Faraday rotation ~ -4500 deg/cm (g = theta_F lambda n / pi); the sign for a given magnetisation is the material's. Allocated only when a material sets it. Validation errors: a x_lo / x_hi mirror face (its image reverses the magnetisation), a bend, a triangles mesh, and every other EM type (em_fdfd_hz takes gyration_z, magnetisation out of the plane, in its operator).
 
 ### Fields
 
@@ -6453,7 +6466,7 @@ Output fields (primary e_intensity):
 - `eps_yy` - Relative permittivity yy (1)
 - `sigma_e` - Electric conductivity (S/m)
 
-Scalar outputs: n_eff_<k> for k = 1 .. n_modes (unit 1): Re n_eff of mode k of the last solve, ranked as mode_table (a frequency_domain study: its last wavelength). A mode that was not found has no value: its derived value is NaN plus a run-log warning. Example derived value {"name": "n_eff_te0", "expression": "modes_n_eff_1"} (operation mean of a constant is the value itself); in a parameter sweep it gives n_eff per value.
+Scalar outputs: n_eff_<k> for k = 1 .. n_modes (unit 1): Re n_eff of mode k of the last solve, ranked as mode_table (a frequency_domain study: its last wavelength). A mode that was not found has no value: its derived value is NaN plus a run-log warning. Example derived value {"name": "n_eff_te0", "expression": "modes_n_eff_1"} (operation mean of a constant is the value itself); in a parameter sweep it gives n_eff per value. delta_beta_<k> (unit 1/m): beta_forward - beta_backward of mode k, the first-order non-reciprocal phase shift of the gyration_x / gyration_y materials (0 without them; NaN for an evanescent mode); a pi phase difference needs L_pi = pi / |delta_beta_<k>|.
 
 ### Source slots
 
@@ -6463,7 +6476,7 @@ Scalar outputs: n_eff_<k> for k = 1 .. n_modes (unit 1): Re n_eff of mode k of t
 
 ### Feature `em_modes.mode_table` - Mode table
 
-Mode table of the last solve (a frequency_domain study: its last wavelength). Result 'table', one row per mode found, by descending Re(beta^2) (see n_modes): mode_number (1-based rank), n_eff (Re n_eff = Re beta / k0), n_eff_imag (Im n_eff < 0 = loss in the exp(+j omega t), exp(-j beta z) convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the whole mode, mirror images included) and pml_fraction (share of the mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding), and selected (True for the mode of the mode_number setting); extras wavelength (m) and selected_mode. For n_eff in a parameter sweep the scalar output <physics>_n_eff_<k> is simplest; any other column needs a derived value with source '<physics>.<this feature>', the column name as expression, operation at and at = mode_number - 1 (the row index).
+Mode table of the last solve (a frequency_domain study: its last wavelength). Result 'table', one row per mode found, by descending Re(beta^2) (see n_modes): mode_number (1-based rank), n_eff (Re n_eff = Re beta / k0), n_eff_imag (Im n_eff < 0 = loss in the exp(+j omega t), exp(-j beta z) convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the whole mode, mirror images included), pml_fraction (share of the mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding) and delta_beta (beta_forward - beta_backward in 1/m, the first-order non-reciprocal phase shift of the gyration_x / gyration_y materials; 0 without them), and selected (True for the mode of the mode_number setting); extras wavelength (m) and selected_mode. For n_eff in a parameter sweep the scalar output <physics>_n_eff_<k> is simplest; any other column needs a derived value with source '<physics>.<this feature>', the column name as expression, operation at and at = mode_number - 1 (the row index).
 
 - FeatureSpec.type `mode_table`; category monitor
 - Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
@@ -6475,7 +6488,7 @@ none
 
 ### Feature `em_modes.mode_dispersion` - Mode dispersion
 
-Scalars of one mode versus vacuum wavelength. Result 'xy' (x = wavelength in m, ascending; one point per solved wavelength, so a mode_analysis study gives one; a wavelength solved again keeps its latest solve), series n_eff (Re n_eff = Re beta / k0), n_eff_imag (Im n_eff < 0 = loss in the exp(+j omega t), exp(-j beta z) convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the whole mode, mirror images included) and pml_fraction (share of the mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding), and overlap (|overlap| of the followed mode with the one followed at the previous solve, 1 at the first; a value well below 1 means the mode changed character or crossed another); extras frequency (Hz), wavelength (m) and mode_number. The first solve that finds at least mode_number modes picks the mode of that rank; every later solve follows the mode of largest overlap with the previous one, so it keeps its identity where modes swap order in n_eff (solve order: the frequency_domain wavelengths list, else wavelength_start to wavelength_stop). Rows are NaN while the mode is not found.
+Scalars of one mode versus vacuum wavelength. Result 'xy' (x = wavelength in m, ascending; one point per solved wavelength, so a mode_analysis study gives one; a wavelength solved again keeps its latest solve), series n_eff (Re n_eff = Re beta / k0), n_eff_imag (Im n_eff < 0 = loss in the exp(+j omega t), exp(-j beta z) convention), loss_db_per_cm = -20 log10(e) Im(beta) / 100 (power loss in dB/cm, > 0 for a lossy or leaky mode), n_group (C0 d(Re beta) / d(omega), NaN unless group_index or when the mode could not be followed to the shifted frequencies, with a run-log warning), te_fraction = integral |E_x|^2 dA / integral (|E_x|^2 + |E_y|^2) dA (the industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the whole mode, mirror images included), pml_fraction (share of the mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding) and delta_beta (beta_forward - beta_backward in 1/m, the first-order non-reciprocal phase shift of the gyration_x / gyration_y materials; 0 without them), and overlap (|overlap| of the followed mode with the one followed at the previous solve, 1 at the first; a value well below 1 means the mode changed character or crossed another); extras frequency (Hz), wavelength (m) and mode_number. The first solve that finds at least mode_number modes picks the mode of that rank; every later solve follows the mode of largest overlap with the previous one, so it keeps its identity where modes swap order in n_eff (solve order: the frequency_domain wavelengths list, else wavelength_start to wavelength_stop). Rows are NaN while the mode is not found.
 
 - FeatureSpec.type `mode_dispersion`; category monitor
 - Selection (FeatureSpec.selection): none (a selection is ignored with a warning)

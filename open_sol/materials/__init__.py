@@ -16,11 +16,12 @@ from .air import AIR
 from .water import WATER
 from .heavy_water import HEAVY_WATER
 from .gst import GST_225_AMORPHOUS, GST_225_CRYSTALLINE
+from .ce_yig import CE_YIG
 
 
 REGISTRY = {
     m.name: m for m in (GOLD, SILVER, ALUMINUM, SILICON, SILICA, SILICON_NITRIDE, LITHIUM_NIOBATE_Z_CUT,
-                        LITHIUM_NIOBATE_X_CUT, AIR, WATER, HEAVY_WATER, GST_225_AMORPHOUS, GST_225_CRYSTALLINE)
+                        LITHIUM_NIOBATE_X_CUT, AIR, WATER, HEAVY_WATER, GST_225_AMORPHOUS, GST_225_CRYSTALLINE, CE_YIG)
 }
 
 
