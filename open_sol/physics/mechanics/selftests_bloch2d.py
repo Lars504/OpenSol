@@ -238,26 +238,40 @@ def _check_lamb(results_by_name):
 # 16, piezoelectric, no electrode (k != 0 excludes a constant potential). Runs free (3 um of void dielectric eps0 above
 # the surface: the open surface) and metallised (an electrode at 0 V on the surface y_hi). Reference: the literature
 # YZ LN SAW speeds v_free = 3488 m/s, v_metal = 3404 m/s (the crystal data are transcribed: a sanity check, tolerance
-# 2e-2; measured +0.5 % / +0.3 %); details also K^2 = 2 (v_free - v_metal) / v_free (literature ~4.8 %).
+# 2e-2; measured +0.5 % / +0.3 %); details also K^2 = 2 (v_free - v_metal) / v_free (literature ~4.8 %). Run grating:
+# one IDT-like period p = L of a shorted strip (electrode_domain at 0 V on the top cell row, metallisation 0.5, no mass),
+# 6 um deep, at the zone edge k = pi / p (real phase -1): the two lowest modes are the stopband edges v = 2 p f; no
+# closed form here, so the check is a band: both edges within [0.98 v_metal, 1.02 v_free] of the references and a
+# relative gap in (0.1 %, 5 %) (measured 3404.5 / 3441.8 m/s, gap 1.1 %).
 _SAW_DEPTH = 8.0 * UM
 _SAW_VACUUM = 3.0 * UM
 _SAW_STEP = _SLAB_PERIOD / 16.0
 _SAW_REFERENCE = {'free': 3488.0, 'metallised': 3404.0}
 _SAW_TOLERANCE = 2e-2
+_SAW_RUNS = ('free', 'metallised', 'grating')
+_GRATING_DEPTH = 6.0 * UM
+_GRATING_GAP = (1e-3, 5e-2)
 YZ_EULER = [0.0, 90.0, 90.0]
 
 
 def _saw_spec(run):
     features = [FeatureSpec('bottom', 'fixed', ['y_lo'])]
-    height = _SAW_DEPTH + (_SAW_VACUUM if run == 'free' else 0.0)
+    depth = _GRATING_DEPTH if run == 'grating' else _SAW_DEPTH
+    height = depth + (_SAW_VACUUM if run == 'free' else 0.0)
+    geometry = [GeometrySpec('substrate', 'rectangle', {'x0': 0.0, 'y0': 0.0, 'x1': _SLAB_PERIOD, 'y1': depth})]
     if run == 'metallised':
         features.append(FeatureSpec('metal', 'electrode', ['y_hi'], {'connection': 'voltage', 'voltage': 0.0}))
-    substrate = GeometrySpec('substrate', 'rectangle', {'x0': 0.0, 'y0': 0.0, 'x1': _SLAB_PERIOD, 'y1': _SAW_DEPTH})
+    if run == 'grating':
+        geometry.append(GeometrySpec('strip', 'rectangle', {'x0': 0.25 * _SLAB_PERIOD, 'y0': depth - _SAW_STEP,
+                                                            'x1': 0.75 * _SLAB_PERIOD, 'y1': depth}))
+        features.append(FeatureSpec('finger', 'electrode_domain', ['strip'], {'connection': 'voltage',
+                                                                               'voltage': 0.0}))
     material = MaterialSpec('yz_ln', dispersion=[lithium_niobate_entry(YZ_EULER, plane='sagittal')],
                             selection=['substrate'])
+    wavenumber = math.pi / _SLAB_PERIOD if run == 'grating' else _SLAB_K
     return _cell_spec(f'Self-test: 2D Bloch YZ lithium niobate SAW ({run})', (_SLAB_PERIOD, height), 'tensor',
-                      _SAW_STEP, {'periodic_x': True, 'bloch_kx': _SLAB_K, 'piezoelectric': True}, features, count=2,
-                      materials=[material], geometry=[substrate])
+                      _SAW_STEP, {'periodic_x': True, 'bloch_kx': wavenumber, 'piezoelectric': True}, features,
+                      count=2, materials=[material], geometry=geometry)
 
 
 def _check_saw(results_by_name):
@@ -265,6 +279,14 @@ def _check_saw(results_by_name):
     speeds = {}
     for run, results in results_by_name.items():
         frequencies = _table_frequencies(results)
+        if run == 'grating':   # stopband edges at the zone edge: a band check (module comment)
+            edges = [2.0 * _SLAB_PERIOD * value for value in frequencies[:2]]
+            gap = edges[1] / edges[0] - 1.0 if len(edges) == 2 else math.nan
+            inside = (len(edges) == 2 and 0.98 * _SAW_REFERENCE['metallised'] <= edges[0]
+                      and edges[1] <= 1.02 * _SAW_REFERENCE['free'] and _GRATING_GAP[0] < gap < _GRATING_GAP[1])
+            errors[run], tolerances[run] = (0.0 if inside else math.inf), 1.0
+            details[run] = {'edge_speeds': edges, 'relative_gap': gap}
+            continue
         speeds[run] = 2.0 * math.pi * frequencies[0] / _SLAB_K if frequencies else math.nan
         errors[run] = abs(speeds[run] / _SAW_REFERENCE[run] - 1.0) if frequencies else math.inf
         tolerances[run] = _SAW_TOLERANCE
@@ -391,9 +413,11 @@ BLOCH_2D_CASES = (
                      'the surface; metallised: an Electrode at 0 V on y_hi. The lowest mode speed against the '
                      'literature YZ LN SAW speeds 3488 / 3404 m/s within '
                      f'{_SAW_TOLERANCE:g} (sanity check of the transcribed crystal data and the coupled Bloch pencil: '
-                     'u and phi share the phase; K^2 in the details). measured = error = the worst deviation in '
+                     'u and phi share the phase; K^2 in the details); grating: a shorted strip electrode_domain '
+                     '(metallisation 0.5) at the zone edge k = pi / p, its two stopband edges inside [0.98 v_metal, '
+                     '1.02 v_free] with a relative gap in (0.1 %, 5 %). measured = error = the worst deviation in '
                      'tolerance units, tolerance 1.'),
-        specs=lambda: {run: _saw_spec(run) for run in _SAW_REFERENCE}, check=_check_saw),
+        specs=lambda: {run: _saw_spec(run) for run in _SAW_RUNS}, check=_check_saw),
     SelfTestCase(
         name='solid_bloch_rules_2d', label='Solid mechanics 2D: validation of periodic cells',
         description=('model.validate only (no run): a valid periodic cell (triangles, periodic x, k != 0, Fixed bottom) '

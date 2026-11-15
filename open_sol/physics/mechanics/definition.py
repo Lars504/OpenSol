@@ -119,7 +119,8 @@ _TARGET_FREQUENCY_PARAM = Param(
          '(2 pi target_frequency)^2, moved 1e-4 above it so a target on a resonance still factors); 0 = the lowest '
          'modes (a body that moves without strain then fails: check the supports). On a triangle mesh a target > 0 '
          'also allows a free body (no supports; axisymmetric: no held u_z): its rigid-body modes (f below 1e-4 x the '
-         'target) are dropped. Ignored by the other studies.',
+         'target) are dropped; likewise the free translations of a periodic cell with every bloch_k 0 (either mesh '
+         'kind). Ignored by the other studies.',
     tip="Used only by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
         '0 finds the lowest modes.')
 _AXIAL_WAVENUMBER_PARAM = Param(
@@ -146,7 +147,8 @@ _PIEZOELECTRIC_PARAM = Param(
          'node, void cells included as dielectric) couples to the displacement through the piezo_e* material arrays '
          '(solid cells) with the clamped permittivity eps0 eps_dc_xx / _yy / _xy (every window cell, unset = 1): T = c S '
          '- e^T E, D = e S + eps E, E = -grad phi, div D = 0 (no free volume charge). Electrode / Electrode (domain) '
-         'features fix phi (connection voltage; at least one, the ground, is required) or make an isolated '
+         'features fix phi (connection voltage; at least one, the ground, is required, except in a Bloch cell with a '
+         'bloch_k != 0, which excludes a constant phi) or make an isolated '
          'equipotential carrying a net charge (floating); every other outer face is insulating (D . n = 0). The '
          'coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]] is symmetric but indefinite, so the static solve is '
          'one host SuperLU factorisation (float64, kept while the operator is unchanged; counters piezo_* in the '
@@ -1041,7 +1043,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
     if study == EIGENFREQUENCY_STUDY:
         host_items.append(('consistent mass CSR', csr_entry_bytes * entries))
         pml = bool(_pml_faces(settings_values))
-        complex_pencil = bool(context.material_sets(LOSS_ARRAYS[0]) or pml)   # complex pencil, factor and vectors
+        complex_pencil = bool(context.material_sets(LOSS_ARRAYS[0]) or pml   # complex pencil, factor and vectors
+                              or complex_bloch_pencil_2d(settings_values))
         rigid_motions = _estimated_rigid_motions(settings_values, context)
         _, n_basis = eigen_basis_counts(context, vector_dofs, rigid_motions, pml)
         # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve; a complex pencil
@@ -1197,6 +1200,8 @@ def _memory_estimate(settings_values, mesh, context):
     elif study == FREQUENCY_RESPONSE_STUDY:   # host stencils of K, loss, M and the complex factor per frequency
         host_items = (('frequency response host stencils', 3 * _GUIDED_ASSEMBLY_BYTES_PER_ENTRY * entries),
                       *frequency_response_host_items(dofs))
+    if study in MODAL_STUDIES and complex_bloch_pencil_2d(settings_values):   # complex P^H K P: factor, vectors
+        host_items = tuple((name, 2 * value) for name, value in host_items)
     if study == FREQUENCY_RESPONSE_STUDY:   # density, loss and amplitude window temporaries on the device
         transient_items.append(('frequency response', 'frequency response device temporaries',
                                 6 * value_bytes * elements))
@@ -1408,8 +1413,10 @@ def _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembl
     # real SuperLU priced on the scalar 5-point curve: the 2 x 2 (guided 3 x 3) node blocks fill b^1.5 more; one
     # shift-invert per shift of the eigenfrequency search (eigen_search_counts)
     shift_work, _ = eigen_search_counts(context)
+    # a Bloch phase != 1: the complex Hermitian P^H K P (complex factor and vectors)
+    pencil_bytes = 2 * FLOAT64_BYTES if complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES
     return te.combine((te.TimeEstimate(items),
-                       context.solver_work('eigen', unknowns=float(unknowns), nnz=float(nnz), value_bytes=FLOAT64_BYTES,
+                       context.solver_work('eigen', unknowns=float(unknowns), nnz=float(nnz), value_bytes=pencil_bytes,
                                            dimensions=2, eigenpairs=eigenpairs, plan_reused=True, **shift_work)))
 
 
@@ -1496,11 +1503,13 @@ _FEM_TANGENT_BYTES_PER_COO = {'linear': 800.0, 'quadratic': 1500.0}
 def _estimated_rigid_motions(settings_values, context) -> int:
     """Rigid motions an eigenfrequency solve on triangles asks on top of n + 4 (target_frequency > 0, no enabled
     support, no PML ring): 1 axisymmetric (u_z slide), 2 at azimuthal order 1 (sideways translation, tilt), 0 at m >=
-    2, 3 planar; else 0 (partial supports: not counted)."""
+    2, 3 planar, 2 for a trivial-phase Bloch cell (0 at any other phase); else 0 (partial supports: not counted)."""
     if not settings_values.get('target_frequency') or _pml_faces(settings_values):
         return 0
     if any(feature.enabled and feature.type in SUPPORT_FEATURES for feature in context.physics_spec.features):
         return 0
+    if periodic_axes_2d(settings_values):   # a wrapping cell cannot rotate; a Bloch phase != 1 admits no motion
+        return 2 if trivial_bloch_phase_2d(settings_values) else 0
     if is_axisymmetric(settings_values):
         return {0: 1, 1: 2}.get(_azimuthal_order(settings_values), 0)
     return 3
@@ -1541,6 +1550,7 @@ def _fem_time_estimate(settings_values, mesh, context):
         pml = bool(_pml_faces(settings_values))
         loss = context.material_sets(LOSS_ARRAYS[0])
         complex_pencil = pml or loss   # eigs on the complex symmetric pencil, else eigsh (Lanczos)
+        bloch = complex_bloch_pencil_2d(settings_values)   # complex Hermitian: Lanczos on complex values
         if not complex_pencil:
             scales = dict(scales, applications_per_basis=LANCZOS_APPLICATIONS_PER_BASIS)
         shift_work, resonances = eigen_search_counts(context)   # one shift-invert per shift of the search
@@ -1560,7 +1570,8 @@ def _fem_time_estimate(settings_values, mesh, context):
             and linear.values.get('back_end') in CUDSS_BACK_ENDS)
         return te.combine((te.TimeEstimate(items, not_estimated=overlaps), *prestress(with_loads=True),
                            context.solver_work('eigen', unknowns=unknowns, nnz=entries,
-                                               value_bytes=2 * FLOAT64_BYTES if complex_pencil else FLOAT64_BYTES,
+                                               value_bytes=(2 * FLOAT64_BYTES if complex_pencil or bloch
+                                                            else FLOAT64_BYTES),
                                                dimensions=2, eigenpairs=eigenpairs, plan_reused=True,
                                                ordering_kept=ordering_kept, **shift_work, **scales, **host)))
     if study == FREQUENCY_RESPONSE_STUDY:   # factorisations: the study's harmonic_factorizations (sweep_method)
@@ -2013,7 +2024,16 @@ SOLID_MECHANICS = PhysicsType(
                 '(triangle meshes; J/m^3; not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, '
                 'a shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 at the '
                 'mode / drive frequency (azimuthal order: twice the phi mean, so ring integrals give the totals); in a '
-                'PML ring they use the unstretched gradients (not physical there).',
+                'PML ring they use the unstretched gradients (not physical there). Settings periodic_x / periodic_y '
+                'with bloch_kx / bloch_ky (eigenfrequency study, both mesh kinds, planar plane strain or plane '
+                'stress): a Bloch / Floquet unit cell, u on the hi side = u on the lo side times exp(-j k L), the '
+                'modes of the reduced pencil P^H K P, P^H M P (complex: shown as the real part and u_abs = |u|); one '
+                'study per k gives the band diagram of a phononic crystal (template solid_bloch_band_diagram), a '
+                'cell with a free top and a Fixed bottom or (triangles) an elastic PML on the other axis the '
+                'surface or plate waves (Rayleigh, Lamb) of one period; on the rectangular-cell mesh also with '
+                'piezoelectric (u and phi share the phase; no ground electrode needed at k != 0; an electrode grating '
+                'of one IDT period gives the SAW stopband edges at the zone edge) and with axial_wavenumber (the '
+                'guided k_z of the cell).',
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
