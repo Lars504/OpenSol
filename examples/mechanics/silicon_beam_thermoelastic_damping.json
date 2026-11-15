@@ -1,0 +1,55 @@
+{
+  "title": "Analytic: thermoelastic damping of a silicon beam across the Debye peak (Zener / Lifshitz-Roukes, eigenfrequency)",
+  "description": "Half of a simply supported silicon beam, thickness h = 2 um along y, length L = 80 um (library silicon: E = 165 GPa, nu = 0.22, rho = 2329 kg/m^3, cp = 700 J/(kg K), alpha = 2.6e-6 1/K, k = 130 W/(m K) overridden by the parameter k_beam), plane stress (a narrow beam): u_y = 0 on x_lo (the support), a roller on x_hi (the mid-span mirror), 16 square cells over h. Eigenfrequency study (1 mode, the fundamental flexure near 2.9 MHz) with a thermoelastic_damping feature at T0 = 293.15 K, sweep of the conductivity k_beam over 130 (silicon) down to 1.6 W/(m K), which moves omega tau from 0.04 across the Debye peak to 3 at a fixed mode.\nAnalytic: the bending strain eps_xx = -y w'' heats the compressed side and cools the stretched one; the heat flows across the thickness (relaxation time tau = h^2 / (pi^2 D), D = k / (rho cp)) and the irreversible part costs 1 / Q = Delta omega tau / (1 + (omega tau)^2) (Zener), Delta = E alpha^2 T0 / (rho cp) = 2.0e-4, peak 1 / Q = Delta / 2 (Q ~ 1e4) at omega tau = 1. The exact 1D heat-flow solution (Lifshitz-Roukes) 1 / Q = Delta (6 / xi^2 - 6 / xi^3 (sinh xi + sin xi) / (cosh xi + cos xi)), xi = h sqrt(omega / (2 D)), lies within 2 % of Zener. omega = the Euler-Bernoulli fundamental (pi / L)^2 sqrt(E h^2 / (12 rho)) (the computed one is 1e-4 off at L / h = 40). Library silicon itself (k = 130) sits far below the peak: Q_TED ~ 1.3e5.\nDerived values tab: Qinv_ted against Lifshitz-Roukes (~0.1-0.5 %: Timoshenko shear energy ~(h / L)^2 and the bilinear temperature), Qinv_zener against Zener (~1-2 %), q_total_ted (= q_ted: no other loss) against 1 / Lifshitz-Roukes.\nSweep tab: 1 / Q_TED vs k_beam with the dashed Lifshitz-Roukes and Zener curves: the Debye peak. The parameters E_si .. alpha_si repeat the library silicon data for the references.",
+  "version": 1,
+  "parameters": [
+    {"name": "h_beam", "expression": "2*um", "description": "beam thickness along y"},
+    {"name": "L_beam", "expression": "40*h_beam", "description": "beam length (the half beam is L / 2 long)"},
+    {"name": "dx_mesh", "expression": "h_beam/16", "description": "uniform cell size (16 cells over h)"},
+    {"name": "T_ref", "expression": 293.15, "description": "reference temperature T0 [K]"},
+    {"name": "E_si", "expression": 165000000000.0, "description": "library silicon Young's modulus [Pa]"},
+    {"name": "rho_si", "expression": 2329.0, "description": "library silicon density [kg/m^3]"},
+    {"name": "cp_si", "expression": 700.0, "description": "library silicon specific heat [J/(kg K)]"},
+    {"name": "k_beam", "expression": 130.0, "description": "thermal conductivity [W/(m K)]: library silicon 130, swept down to 1.6 (overrides the library value)"},
+    {"name": "alpha_si", "expression": 2.6e-06, "description": "library silicon thermal expansion [1/K]"},
+    {"name": "D_th", "expression": "k_beam/(rho_si*cp_si)", "description": "thermal diffusivity [m^2/s]"},
+    {"name": "Delta_ted", "expression": "E_si*alpha_si**2*T_ref/(rho_si*cp_si)", "description": "Zener relaxation strength"},
+    {"name": "omega_eb", "expression": "(pi/L_beam)**2*sqrt(E_si*h_beam**2/(12*rho_si))", "description": "Euler-Bernoulli fundamental of the simply supported beam [rad/s]"},
+    {"name": "omega_tau", "expression": "omega_eb*h_beam**2/(pi**2*D_th)", "description": "omega tau, tau = h^2 / (pi^2 D)"},
+    {"name": "xi_lr", "expression": "h_beam*sqrt(omega_eb/(2*D_th))", "description": "Lifshitz-Roukes xi"},
+    {"name": "Qinv_lr", "expression": "Delta_ted*(6/xi_lr**2 - 6/xi_lr**3*(sinh(xi_lr) + sin(xi_lr))/(cosh(xi_lr) + cos(xi_lr)))", "description": "Lifshitz-Roukes 1 / Q"},
+    {"name": "Qinv_z", "expression": "Delta_ted*omega_tau/(1 + omega_tau**2)", "description": "Zener 1 / Q"}
+  ],
+  "domain": {"size_x": "L_beam/2", "size_y": "h_beam"},
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {"name": "beam", "library": "silicon", "properties": {"k": "k_beam"}, "dispersion": null, "selection": ["all"]}
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {"out_of_plane": "plane_stress"},
+      "every": 1,
+      "features": [
+        {"name": "support", "type": "displacement", "selection": ["x_lo"], "params": {"u_x": null, "u_y": 0.0}, "enabled": true},
+        {"name": "mid_span", "type": "roller", "selection": ["x_hi"], "params": {}, "enabled": true},
+        {"name": "modes", "type": "resonance_table", "selection": [], "params": {}, "enabled": true},
+        {"name": "ted", "type": "thermoelastic_damping", "selection": [], "params": {"T0": "T_ref"}, "enabled": true}
+      ]
+    }
+  ],
+  "couplings": [],
+  "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null, "points_per_wavelength": 20.0, "refinements": []},
+  "study": {"type": "eigenfrequency", "settings": {"n_resonances": 1}, "stored_fields": ["solid.u_abs", "solid.u_y", "solid.strain_xx"], "sweep": {"parameter": "k_beam", "values": [130.0, 26.0, 6.5, 1.6]}},
+  "derived_values": [
+    {"name": "Qinv_ted", "expression": "1/q_ted", "selection": [], "operation": "at", "source": "solid.ted", "at": 0, "reference": "Qinv_lr", "tolerance": 0.01},
+    {"name": "Qinv_zener", "expression": "1/q_ted", "selection": [], "operation": "at", "source": "solid.ted", "at": 0, "reference": "Qinv_z", "tolerance": 0.03},
+    {"name": "q_total_ted", "expression": "q_total", "selection": [], "operation": "at", "source": "solid.ted", "at": 0, "reference": "1/Qinv_lr", "tolerance": 0.01}
+  ],
+  "analytic_curves": [
+    {"name": "lifshitz_roukes", "target": "sweep", "expression": "Qinv_lr", "tolerance": 0.01, "series": "Qinv_ted"},
+    {"name": "zener", "target": "sweep", "expression": "Qinv_z", "tolerance": 0.03, "series": "Qinv_zener"}
+  ]
+}
