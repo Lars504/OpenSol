@@ -58,3 +58,6 @@ Sub file of the root `structure_conventions.md` (read that first). Library mater
 - `gst_225_amorphous` / `gst_225_crystalline` (gst.py): eps_r / sigma_e computed from `physics/em/phase_change.GST_225`
   n, k (one source with the phase_change_medium defaults: edit the numbers there); thermal data per phase in gst.py.
   Static phases only: switching is the phase_change_medium feature.
+- `ce_yig`: index and film loss only; its gyration (|g| ~ 0.009 at 1.55 um) is in the description, not in a dict: the
+  gyration_x / _y / _z component is the magnetisation direction of the model (and its sign the device's), so a library
+  value would silently pick one. Its values are typical literature figures, marked unverified like the crystal optics.

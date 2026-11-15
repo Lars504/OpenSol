@@ -821,7 +821,8 @@ def _line_block_solver_issues(vctx, physics_spec, settings_values, path):
         issues.append(Issue('info', path, 'with a Bloch phase the operator is not complex symmetric, so the adjoint '
                                           'solves of the gradient cannot reuse the line-block factor: they use a host '
                                           'sparse direct factor (SuperLU) of each operator, and every design '
-                                          'iteration also factorises it once (likewise with a material eps_xy)'))
+                                          'iteration also factorises it once (likewise with a material eps_xy or '
+                                          'gyration_z)'))
     return issues
 
 
