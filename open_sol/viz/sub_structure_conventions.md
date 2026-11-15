@@ -65,3 +65,15 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   MESH_LINES_MAX_EDGES); `common.tetrahedron_mesh_data` / `tetrahedron_mesh_cut` give a tetrahedron mesh's host nodes /
   elements and the outlines of axis-normal cross-sections (nodes on the plane nudged above it, shared edges once, PML
   shell segments apart).
+- mode_player (HTML mode animation; `Results.export_animation`, CLI `show <run dir> --html`, GUI File > Export
+  animation): `mode_player.py` packs numpy data into `mode_player.html` (package data) at `DATA_MARKER`; the page is
+  self-contained on purpose (hand-written WebGL2, no CDN, works offline in a talk): keep it free of external scripts
+  and fonts. Data: positions float32 / triangles uint32 / per mode re + im int16 (base64), each mode phase-aligned (largest
+  component real) and scaled to max |u| = 1 (`_aligned`), lengths in the unit `length_scale` picks; '</' escaped in
+  the JSON. Animation u = Re[U exp(j (cell_phase n + theta))], theta = omega t, tile n along the lattice axis: open_sol
+  Bloch modes satisfy u(x + L) = u(x) exp(-j k L) with time exp(+j omega t), so the adapter sets cell_phase = -k L.
+  `mode_player_from_results` duck-types api.Results (result_names / result / sweep_result / summary / spec; no api or
+  model import) and reads only 'mode_shapes' results; sweep values on another surface mesh than the last are dropped;
+  band = rank of the frequency among the computed resonances at that k (a search window, not an absolute band index),
+  the page labels it 'mode j of n'. Band gaps on the page: intervals no band segment crosses (bands continuous between
+  samples, matched across k with an index shift for a moving search window) and inside the window at every k.

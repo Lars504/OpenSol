@@ -11,7 +11,8 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   Save run (`MainWindow._save_run`: `api.save_session_run` in a `bridge.call`, the `run --out` files; log.txt = the
   Messages lines since the last Build / Compute, `_job_log` capped; summary model.file = the document path at the
   request). The results panel then names that cause in its banner and skips session fetches after a sweep whose last
-  value failed.
+  value failed. File > Export animation (`MainWindow._export_animation`) takes the same state and enabling rule and
+  calls `api.export_session_animation` in a `bridge.call` (viz.mode_player page of a mode_shapes result).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
   definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not

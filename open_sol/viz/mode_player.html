@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mode player</title>
+<!-- open_sol mode player: one self-contained page (no network). viz/mode_player.py fills the data block below. -->
+<style>
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #f8f9fb;
+  --ink: #16181d;
+  --ink-2: #4a5160;
+  --ink-3: #7c8494;
+  --rule: #e2e5eb;
+  --accent: #2f6fdf;
+  --accent-ink: #ffffff;
+  --gap: rgba(47, 111, 223, 0.10);
+  --gap-ink: #2f5fb8;
+  --band: #9aa3b2;
+  --dot: #3c4352;
+  --view-top: #ffffff;
+  --view-bottom: #e9ecf2;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+  --line: rgba(20, 24, 32, 0.32);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0f13;
+    --panel: #151820;
+    --panel-2: #1a1e27;
+    --ink: #eef0f4;
+    --ink-2: #b4bac6;
+    --ink-3: #7d8594;
+    --rule: #262b36;
+    --accent: #6ea0ff;
+    --accent-ink: #0b0d12;
+    --gap: rgba(110, 160, 255, 0.12);
+    --gap-ink: #9cbcff;
+    --band: #4f5768;
+    --dot: #d5d9e1;
+    --view-top: #1b1f29;
+    --view-bottom: #0f1117;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --line: rgba(0, 0, 0, 0.45);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d0f13;
+  --panel: #151820;
+  --panel-2: #1a1e27;
+  --ink: #eef0f4;
+  --ink-2: #b4bac6;
+  --ink-3: #7d8594;
+  --rule: #262b36;
+  --accent: #6ea0ff;
+  --accent-ink: #0b0d12;
+  --gap: rgba(110, 160, 255, 0.12);
+  --gap-ink: #9cbcff;
+  --band: #4f5768;
+  --dot: #d5d9e1;
+  --view-top: #1b1f29;
+  --view-bottom: #0f1117;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --line: rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.num { font-variant-numeric: tabular-nums; }
+.app { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; gap: 12px; padding: 16px; }
+header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+header h1 { font-size: 18px; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
+.main { display: grid; grid-template-columns: minmax(280px, 34%) 1fr; gap: 12px; min-height: 0; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; box-shadow: var(--shadow);
+        min-height: 0; position: relative; overflow: hidden; }
+.bands { display: flex; flex-direction: column; }
+.bands h2, .card-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+                         color: var(--ink-3); margin: 0; padding: 12px 14px 0; }
+#bandsvg { flex: 1; width: 100%; min-height: 0; display: block; }
+#bandsvg text { fill: var(--ink-3); font-size: 11px; }
+#bandsvg .axis { stroke: var(--rule); }
+#bandsvg .grid { stroke: var(--rule); stroke-dasharray: 2 3; }
+#bandsvg .band { fill: none; stroke: var(--band); stroke-width: 1.5; }
+#bandsvg .gaprect { fill: var(--gap); }
+#bandsvg text.gaplabel { fill: var(--gap-ink); font-size: 11px; font-weight: 600; }
+#bandsvg .pt { fill: var(--panel); stroke: var(--dot); stroke-width: 1.4; }
+#bandsvg .pt.has { fill: var(--dot); cursor: pointer; }
+#bandsvg .pt.has:hover { fill: var(--accent); stroke: var(--accent); }
+#bandsvg .sel { fill: none; stroke: var(--accent); stroke-width: 2.5; }
+#bandsvg .selline { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0.6; }
+#bandsvg text.axislabel { fill: var(--ink-2); font-size: 12px; }
+#bandsvg text.ticklabel-strong { fill: var(--ink-2); font-size: 13px; font-weight: 600; }
+.view { background: linear-gradient(180deg, var(--view-top), var(--view-bottom)); }
+#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#gl:active { cursor: grabbing; }
+.readout { position: absolute; left: 18px; top: 14px; pointer-events: none; }
+.readout .f { font-size: 30px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+.readout .f small { font-size: 16px; font-weight: 500; color: var(--ink-2); margin-left: 4px; }
+.readout .m { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
+.legend { position: absolute; right: 18px; bottom: 16px; width: 168px; pointer-events: none; font-size: 11px;
+          color: var(--ink-3); }
+.legend .bar { height: 8px; border-radius: 4px; margin-bottom: 3px; }
+.legend .ticks { display: flex; justify-content: space-between; }
+.legend .name { color: var(--ink-2); margin-bottom: 4px; }
+.hint { position: absolute; left: 18px; bottom: 14px; font-size: 11px; color: var(--ink-3); pointer-events: none; }
+.rec { position: absolute; right: 18px; top: 16px; display: none; align-items: center; gap: 6px; font-size: 12px;
+       font-weight: 600; color: #e5484d; }
+.rec::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; }
+.rec.on { display: flex; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; background: var(--panel);
+            border: 1px solid var(--rule); border-radius: 12px; padding: 10px 14px; box-shadow: var(--shadow); }
+.group { display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.group label { white-space: nowrap; }
+.sep { width: 1px; align-self: stretch; background: var(--rule); }
+button, select { font: inherit; font-size: 13px; color: var(--ink); background: var(--panel-2);
+                 border: 1px solid var(--rule); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+button:hover, select:hover { border-color: var(--ink-3); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); min-width: 76px;
+                 font-weight: 600; }
+button.icon { padding: 5px 8px; min-width: 32px; }
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+input[type="range"] { width: 110px; accent-color: var(--accent); }
+.val { min-width: 42px; color: var(--ink); }
+.spacer { flex: 1; }
+.empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center;
+         padding: 24px; }
+body.present .controls, body.present header p, body.present .hint { display: none; }
+body.present .app { padding: 10px; gap: 10px; }
+@media (max-width: 820px) {
+  .app { height: auto; min-height: 100vh; }
+  .main { grid-template-columns: 1fr; }
+  .view { aspect-ratio: 4 / 3; order: -1; }
+  .bands { height: 320px; }
+  .readout .f { font-size: 24px; }
+  .legend { width: 120px; }
+  .legend .name { display: none; }
+  .hint { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1 id="title">Mode player</h1>
+      <p id="subtitle"></p>
+    </div>
+  </header>
+  <div class="main">
+    <section class="card bands" aria-label="Band diagram">
+      <h2 id="bandstitle">Band diagram</h2>
+      <svg id="bandsvg" role="img" aria-label="Frequency against wavenumber; click a point to show its mode"></svg>
+    </section>
+    <section class="card view" aria-label="Mode shape">
+      <canvas id="gl"></canvas>
+      <div class="readout"><div class="f num" id="rf"></div><div class="m num" id="rm"></div></div>
+      <div class="legend" id="legend"><div class="name" id="lgname"></div><div class="bar" id="lgbar"></div>
+        <div class="ticks num"><span id="lglo"></span><span id="lgmid"></span><span id="lghi"></span></div></div>
+      <div class="hint">Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset</div>
+      <div class="rec" id="rec">REC</div>
+      <div class="empty" id="empty" hidden></div>
+    </section>
+  </div>
+  <div class="controls">
+    <div class="group">
+      <button class="icon" id="prev" title="Previous wavenumber (Left)">&#8592;</button>
+      <button class="primary" id="play" title="Play / pause (Space)">Pause</button>
+      <button class="icon" id="next" title="Next wavenumber (Right)">&#8594;</button>
+    </div>
+    <div class="group"><label for="speed">Speed</label><input type="range" id="speed" min="0.05" max="2" step="0.05" value="0.5">
+      <span class="val num" id="speedv"></span></div>
+    <div class="group"><label for="amp">Amplitude</label><input type="range" id="amp" min="0" max="1" step="0.01" value="0.35">
+      <span class="val num" id="ampv"></span></div>
+    <div class="group" id="cellsgroup"><label for="cells">Cells</label><input type="range" id="cells" min="1" max="16" step="1" value="5">
+      <span class="val num" id="cellsv"></span></div>
+    <div class="group"><label for="color">Colour</label>
+      <select id="color">
+        <option value="1">Displacement |u|</option>
+        <option value="0">Mode amplitude</option>
+        <option value="2">u_x</option>
+        <option value="3">u_y</option>
+        <option value="4">u_z</option>
+        <option value="5">Plain</option>
+      </select>
+      <select id="cmap" title="Colour map">
+        <option value="viridis">Viridis</option>
+        <option value="inferno">Inferno</option>
+        <option value="ice">Ice</option>
+      </select>
+    </div>
+    <div class="group"><button id="lines" aria-pressed="true" title="Mesh lines (L)">Mesh</button>
+      <button id="ghost" aria-pressed="false" title="Undeformed outline (G)">Rest shape</button></div>
+    <div class="spacer"></div>
+    <div class="group">
+      <button id="png" title="Save the view as PNG">PNG</button>
+      <button id="record" title="Record a few periods of the view as video">Record</button>
+      <button id="present" title="Presentation mode (P)">Present</button>
+      <button id="theme" title="Light / dark">Theme</button>
+    </div>
+  </div>
+</div>
+<script id="mode-data" type="application/json">/*__MODE_DATA__*/null</script>
+<script>
+'use strict';
+(function () {
+const DATA = JSON.parse(document.getElementById('mode-data').textContent);
+const $ = (id) => document.getElementById(id);
+
+// ---------- small helpers ----------
+function store(key, value) { try { if (value === undefined) return localStorage.getItem('mode_player.' + key);
+  localStorage.setItem('mode_player.' + key, value); } catch (e) { return null; } return null; }
+function b64bytes(text) { const bin = atob(text); const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out.buffer; }
+function f32(text) { return new Float32Array(b64bytes(text)); }
+function u32(text) { return new Uint32Array(b64bytes(text)); }
+function i16(text) { return new Int16Array(b64bytes(text)); }
+function niceStep(span, count) { const raw = span / Math.max(count, 1); const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const r = raw / p; return (r < 1.5 ? 1 : r < 3 ? 2 : r < 7 ? 5 : 10) * p; }
+function fmt(v, digits) { if (!isFinite(v)) return '-'; return Number(v.toPrecision(digits || 4)).toString(); }
+const PREFIXES = [[1e12, 'T'], [1e9, 'G'], [1e6, 'M'], [1e3, 'k'], [1, '']];
+function freqUnit(maxF) { for (const [s, p] of PREFIXES) if (maxF >= s) return [s, p + 'Hz']; return [1, 'Hz']; }
+function hexRgb(h) { return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }
+
+const CMAPS = {
+  viridis: ['#440154', '#472d7b', '#3b528b', '#2c728e', '#21918c', '#28ae80', '#5ec962', '#addc30', '#fde725'],
+  inferno: ['#000004', '#1f0c48', '#550f6d', '#88226a', '#ba3655', '#e35933', '#f98e09', '#f8c931', '#fcffa4'],
+  ice: ['#04051a', '#151a4b', '#1d3a7a', '#1f5f9e', '#2a86b5', '#4fabc4', '#86ccd3', '#c2e7e6', '#f4fbfb'],
+  diverging: ['#3b4cc0', '#6282ea', '#8db0fe', '#b8d0f9', '#dddcdc', '#f5c4ad', '#f49a7b', '#de604d', '#b40426'],
+};
+
+// ---------- data ----------
+if (!DATA) { $('empty').hidden = false; $('empty').textContent = 'No mode data in this file.'; return; }
+document.title = DATA.title || 'Mode player';
+$('title').textContent = DATA.title || 'Mode player';
+$('subtitle').textContent = DATA.subtitle || '';
+const geo = DATA.geometry;
+const POS = f32(geo.positions);
+const TRI = u32(geo.triangles);
+const NNODE = POS.length / 3;
+const NTRI = TRI.length / 3;
+const EDGES = geo.edges ? u32(geo.edges) : null;
+const lattice = DATA.lattice || null;
+const MODES = DATA.modes.map((m, i) => Object.assign({ index: i }, m));
+const lengthUnit = DATA.length_unit || 'm';
+const up = geo.up || (geo.dimensions === 2 ? [0, 0, 1] : [0, 0, 1]);
+const is2d = geo.dimensions === 2;
+
+// bounding box of one cell
+const bmin = [Infinity, Infinity, Infinity], bmax = [-Infinity, -Infinity, -Infinity];
+for (let i = 0; i < NNODE; i++) for (let c = 0; c < 3; c++) { const v = POS[3 * i + c];
+  if (v < bmin[c]) bmin[c] = v; if (v > bmax[c]) bmax[c] = v; }
+const center = [0, 1, 2].map((c) => 0.5 * (bmin[c] + bmax[c]));
+const cellSize = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]) || 1;
+
+// ---------- state ----------
+const state = {
+  mode: Math.min(Math.max(DATA.default_mode || 0, 0), MODES.length - 1),
+  playing: true, speed: 0.5, amp: 0.35, cells: lattice ? 5 : 1, color: 1, cmap: store('cmap') || 'viridis',
+  lines: true, ghost: false, theta: 0,
+};
+$('cmap').value = CMAPS[state.cmap] ? state.cmap : 'viridis';
+state.cmap = $('cmap').value;
+const savedTheme = store('theme');
+if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+
+// ---------- WebGL ----------
+const canvas = $('gl');
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: false });
+if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has no WebGL2: the mode view cannot be drawn.'; }
+
+const VS = `#version 300 es
+precision highp float;
+precision highp int;
+in vec3 aPos; in vec3 aRe; in vec3 aIm; in vec3 aBary;
+uniform mat4 uView; uniform mat4 uProj;
+uniform float uTheta; uniform float uCellPhase; uniform float uAmp; uniform float uCells; uniform float uPeriod;
+uniform vec3 uAxis; uniform vec3 uCenter; uniform int uColor; uniform float uRest;
+out vec3 vBary; out float vScalar; out vec3 vViewPos;
+void main() {
+  float idx = float(gl_InstanceID);
+  float psi = uCellPhase * idx + uTheta;   // u = Re[U exp(j (cell_phase n + omega t))]
+  vec3 u = aRe * cos(psi) - aIm * sin(psi);
+  vec3 p = aPos - uCenter + uAxis * (uPeriod * (idx - 0.5 * (uCells - 1.0))) + (1.0 - uRest) * uAmp * u;
+  float s;
+  if (uColor == 0) s = sqrt(dot(aRe, aRe) + dot(aIm, aIm));
+  else if (uColor == 1) s = length(u);
+  else if (uColor == 2) s = 0.5 + 0.5 * u.x;
+  else if (uColor == 3) s = 0.5 + 0.5 * u.y;
+  else if (uColor == 4) s = 0.5 + 0.5 * u.z;
+  else s = 0.0;
+  vScalar = s; vBary = aBary;
+  vec4 vp = uView * vec4(p, 1.0);
+  vViewPos = vp.xyz;
+  gl_Position = uProj * vp;
+}`;
+const FS = `#version 300 es
+precision highp float;
+precision highp int;
+in vec3 vBary; in float vScalar; in vec3 vViewPos;
+uniform vec3 uStops[9]; uniform int uColor; uniform float uLines; uniform vec3 uPlain; uniform vec4 uLineColor;
+uniform float uRest;
+out vec4 outColor;
+vec3 cmap(float t) {
+  t = clamp(t, 0.0, 1.0) * 8.0;
+  int i = int(min(floor(t), 7.0));
+  return mix(uStops[i], uStops[i + 1], t - float(i));
+}
+void main() {
+  if (uRest > 0.5) {
+    float e = min(min(vBary.x, vBary.y), vBary.z);
+    float w = 1.0 - smoothstep(0.0, fwidth(e) * 1.3, e);
+    if (w < 0.02) discard;
+    outColor = vec4(uLineColor.rgb, uLineColor.a * w);
+    return;
+  }
+  vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
+  vec3 v = normalize(-vViewPos);
+  vec3 key = normalize(vec3(0.45, 0.75, 0.55));
+  vec3 fill = normalize(vec3(-0.6, -0.25, 0.5));
+  float dk = abs(dot(n, key)), df = max(dot(n, fill), 0.0);
+  float sp = pow(max(dot(n, normalize(key + v)), 0.0), 40.0);
+  float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+  vec3 base = (uColor == 5) ? uPlain : cmap(vScalar);
+  vec3 col = base * (0.36 + 0.58 * dk + 0.16 * df) + vec3(0.20) * sp + vec3(0.06) * rim;
+  float e = min(min(vBary.x, vBary.y), vBary.z);
+  float edge = 1.0 - smoothstep(0.0, fwidth(e) * 1.1, e);
+  col = mix(col, uLineColor.rgb, edge * uLines * uLineColor.a);
+  outColor = vec4(col, 1.0);
+}`;
+
+let prog = null, vao = null, buf = {}, uni = {}, ready = false;
+function compile(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function setupGL() {
+  prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  for (const name of ['uView', 'uProj', 'uTheta', 'uCellPhase', 'uAmp', 'uCells', 'uPeriod', 'uAxis', 'uCenter', 'uColor',
+                      'uStops', 'uLines', 'uPlain', 'uLineColor', 'uRest']) uni[name] = gl.getUniformLocation(prog, name);
+  vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const nv = NTRI * 3;
+  const pos = new Float32Array(nv * 3), bary = new Float32Array(nv * 3);
+  for (let t = 0; t < NTRI; t++) for (let c = 0; c < 3; c++) {
+    const n = TRI[3 * t + c], o = 3 * (3 * t + c);
+    pos[o] = POS[3 * n]; pos[o + 1] = POS[3 * n + 1]; pos[o + 2] = POS[3 * n + 2]; bary[o + c] = 1;
+  }
+  buf.pos = attribute('aPos', pos); buf.bary = attribute('aBary', bary);
+  buf.re = attribute('aRe', new Float32Array(nv * 3)); buf.im = attribute('aIm', new Float32Array(nv * 3));
+  gl.enable(gl.DEPTH_TEST);
+  ready = true;
+}
+function attribute(name, data) { const loc = gl.getAttribLocation(prog, name); const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+  if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0); } return b; }
+
+const modeCache = new Map();
+function modeArrays(m) {
+  if (modeCache.has(m.index)) return modeCache.get(m.index);
+  const re = i16(m.re), im = i16(m.im), k = 1 / 32767;
+  const nv = NTRI * 3, er = new Float32Array(nv * 3), ei = new Float32Array(nv * 3);
+  for (let t = 0; t < NTRI; t++) for (let c = 0; c < 3; c++) {
+    const n = TRI[3 * t + c], o = 3 * (3 * t + c);
+    for (let d = 0; d < 3; d++) { er[o + d] = re[3 * n + d] * k; ei[o + d] = im[3 * n + d] * k; }
+  }
+  const out = { re: er, im: ei };
+  if (modeCache.size > 24) modeCache.delete(modeCache.keys().next().value);
+  modeCache.set(m.index, out);
+  return out;
+}
+function uploadMode() {
+  if (!gl || !ready) return;
+  const a = modeArrays(MODES[state.mode]);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.re); gl.bufferSubData(gl.ARRAY_BUFFER, 0, a.re);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf.im); gl.bufferSubData(gl.ARRAY_BUFFER, 0, a.im);
+}
+
+// ---------- camera ----------
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+const UP = norm(up);
+const E1 = norm(Math.abs(UP[0]) < 0.9 ? cross(cross(UP, [1, 0, 0]), UP).map((v) => -v) : cross([0, 1, 0], UP));
+const E2 = cross(UP, E1);
+const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0] };
+function resetCamera() {
+  if (is2d) { cam.az = -Math.PI / 2; cam.el = 89.4 * Math.PI / 180; }
+  else { cam.az = -0.95; cam.el = 0.42; }
+  if (geo.view) { cam.az = geo.view[0] * Math.PI / 180; cam.el = geo.view[1] * Math.PI / 180; }
+  cam.target = [0, 0, 0];
+  fitDistance();
+}
+function sceneRadius() {
+  const span = [bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]];
+  if (lattice) { const ax = lattice.axis; const extra = lattice.period * (state.cells - 1);
+    for (let c = 0; c < 3; c++) span[c] += Math.abs(ax[c]) * extra; }
+  return 0.5 * Math.hypot(span[0], span[1], span[2]) || 1;
+}
+function fitDistance() { const fov = 30 * Math.PI / 180; const aspect = canvas.width / Math.max(canvas.height, 1);
+  const r = sceneRadius() * (1 + 0.25 * state.amp);
+  const h = r / Math.tan(fov / 2), w = r / (Math.tan(fov / 2) * Math.min(aspect, 1.0));
+  cam.dist = Math.max(h, w) * 0.82; }
+function eyeDir() { const c = Math.cos(cam.el); return [0, 1, 2].map((i) => c * (Math.cos(cam.az) * E1[i] + Math.sin(cam.az) * E2[i]) + Math.sin(cam.el) * UP[i]); }
+function viewMatrix() {
+  const d = eyeDir(); const eye = cam.target.map((t, i) => t + cam.dist * d[i]);
+  const f = norm(sub(cam.target, eye)); let s = norm(cross(f, UP)); if (!isFinite(s[0])) s = E1; const u = cross(s, f);
+  return new Float32Array([s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0,
+    -dot(s, eye), -dot(u, eye), dot(f, eye), 1]);
+}
+function projMatrix() { const fov = 30 * Math.PI / 180, a = canvas.width / Math.max(canvas.height, 1);
+  const n = cam.dist * 0.02, fa = cam.dist * 20, t = 1 / Math.tan(fov / 2);
+  return new Float32Array([t / a, 0, 0, 0, 0, t, 0, 0, 0, 0, (fa + n) / (n - fa), -1, 0, 0, 2 * fa * n / (n - fa), 0]); }
+
+// ---------- drawing ----------
+function cssColor(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function cssRgb(name) { const v = cssColor(name); if (v.startsWith('#')) return hexRgb(v);
+  const m = v.match(/[\d.]+/g); return m ? [m[0] / 255, m[1] / 255, m[2] / 255] : [0.5, 0.5, 0.5]; }
+let themeColors = null;
+function readTheme() { const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
+  themeColors = { clearTop: cssRgb('--view-top'), clearBottom: cssRgb('--view-bottom'), dark,
+    line: dark ? [0.02, 0.03, 0.05, 0.55] : [0.06, 0.08, 0.12, 0.30],
+    ghost: dark ? [0.75, 0.8, 0.9, 0.35] : [0.2, 0.25, 0.35, 0.35],
+    plain: dark ? [0.62, 0.68, 0.78] : [0.66, 0.71, 0.80] }; }
+function resize() {
+  const r = canvas.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+function draw() {
+  if (!gl || !ready) return;
+  resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  const bg = themeColors.clearBottom.map((v, i) => 0.5 * (v + themeColors.clearTop[i]));
+  gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+  const m = MODES[state.mode];
+  const signed = state.color >= 2 && state.color <= 4;
+  const stops = CMAPS[signed ? 'diverging' : state.cmap].map(hexRgb).flat();
+  gl.uniformMatrix4fv(uni.uView, false, viewMatrix()); gl.uniformMatrix4fv(uni.uProj, false, projMatrix());
+  gl.uniform1f(uni.uTheta, state.theta);
+  gl.uniform1f(uni.uCellPhase, lattice ? (m.cell_phase || 0) : 0);
+  gl.uniform1f(uni.uAmp, state.amp * 0.25 * cellSize);
+  gl.uniform1f(uni.uCells, lattice ? state.cells : 1);
+  gl.uniform1f(uni.uPeriod, lattice ? lattice.period : 0);
+  gl.uniform3fv(uni.uAxis, lattice ? lattice.axis : [1, 0, 0]);
+  gl.uniform3fv(uni.uCenter, center);
+  gl.uniform1i(uni.uColor, state.color);
+  gl.uniform3fv(uni.uStops, new Float32Array(stops));
+  gl.uniform1f(uni.uLines, state.lines ? 1 : 0);
+  gl.uniform3fv(uni.uPlain, themeColors.plain);
+  gl.uniform4fv(uni.uLineColor, themeColors.line);
+  gl.uniform1f(uni.uRest, 0);
+  const n = lattice ? state.cells : 1;
+  gl.disable(gl.BLEND);
+  gl.drawArraysInstanced(gl.TRIANGLES, 0, NTRI * 3, n);
+  if (state.ghost) {
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+    gl.uniform1f(uni.uRest, 1); gl.uniform4fv(uni.uLineColor, themeColors.ghost);
+    gl.disable(gl.DEPTH_TEST); gl.drawArraysInstanced(gl.TRIANGLES, 0, NTRI * 3, n); gl.enable(gl.DEPTH_TEST);
+    gl.depthMask(true); gl.disable(gl.BLEND);
+  }
+}
+
+// ---------- readout and legend ----------
+const allF = MODES.map((m) => m.frequency).concat(DATA.bands ? DATA.bands.frequencies.flat() : []).filter(isFinite);
+const [FS_, FU] = freqUnit(Math.max(...allF.map(Math.abs), 1));
+function modeText(m) {
+  const parts = [];
+  if (m.band != null) { const n = MODES.filter((x) => x.k_index === m.k_index).length;
+    parts.push('mode ' + m.band + (n > 1 ? ' of ' + n : '')); }
+  if (m.k != null && DATA.bands) parts.push((DATA.bands.k_symbol || 'k') + ' = ' + fmt(m.k, 3) + (DATA.bands.k_unit ? ' ' + DATA.bands.k_unit : ''));
+  if (m.q_factor != null && isFinite(m.q_factor)) parts.push('Q = ' + fmt(m.q_factor, 3));
+  if (m.label && !parts.length) parts.push(m.label);
+  return parts.join('  ·  ');
+}
+function updateReadout() {
+  const m = MODES[state.mode];
+  $('rf').innerHTML = fmt(m.frequency / FS_, 5) + '<small>' + FU + '</small>';
+  $('rm').textContent = modeText(m);
+  const signed = state.color >= 2 && state.color <= 4;
+  const names = ['Mode amplitude |u|', 'Displacement |u|', 'u_x', 'u_y', 'u_z', ''];
+  $('legend').style.display = state.color === 5 ? 'none' : '';
+  $('lgname').textContent = names[state.color] + ' (normalised)';
+  $('lgbar').style.background = 'linear-gradient(90deg,' + CMAPS[signed ? 'diverging' : state.cmap].join(',') + ')';
+  $('lglo').textContent = signed ? '−1' : '0'; $('lgmid').textContent = signed ? '0' : ''; $('lghi').textContent = signed ? '+1' : '1';
+}
+
+// ---------- band diagram ----------
+const svg = $('bandsvg');
+const SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent, text) { const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; (parent || svg).appendChild(e); return e; }
+const bands = DATA.bands;
+function bandSegments() {
+  // [k0, f0, k1, f1] pairs: the j-th sorted frequency of neighbouring k values, shifting the index where the
+  // computed window of bands moved between them
+  const rows = bands.frequencies.map((r) => r.filter(isFinite).slice().sort((a, b) => a - b));
+  const segs = [];
+  for (let i = 0; i + 1 < rows.length; i++) {
+    const A = rows[i], B = rows[i + 1]; let best = 0, bestCost = Infinity;
+    for (let s = -2; s <= 2; s++) { let c = 0, n = 0;
+      for (let j = 0; j < A.length; j++) { const b = B[j + s]; if (b === undefined) continue; c += Math.abs(A[j] - b); n++; }
+      if (n >= Math.max(1, Math.min(A.length, B.length) - 2) && c / n < bestCost) { bestCost = c / n; best = s; } }
+    for (let j = 0; j < A.length; j++) { const b = B[j + best]; if (b !== undefined) segs.push([bands.k[i], A[j], bands.k[i + 1], b]); }
+  }
+  return segs;
+}
+function bandGaps() {
+  // frequency intervals no band crosses (bands taken as continuous between samples) and inside the computed window
+  // at every k (each row has frequencies below and above), wider than 1 % of the mid-gap frequency
+  if (!bands || !bands.k.length) return [];
+  const spans = bandSegments().map((s) => [Math.min(s[1], s[3]), Math.max(s[1], s[3])]);
+  bands.frequencies.flat().filter(isFinite).forEach((f) => spans.push([f, f]));
+  spans.sort((a, b) => a[0] - b[0]);
+  const gaps = []; let top = spans.length ? spans[0][1] : 0;
+  for (const [lo, hi] of spans) {
+    if (lo > top && lo - top > 0.01 * 0.5 * (lo + top)
+        && bands.frequencies.every((row) => row.some((f) => f <= top) && row.some((f) => f >= lo))) gaps.push([top, lo]);
+    top = Math.max(top, hi);
+  }
+  return gaps;
+}
+function bandPaths(xOf, yOf) {
+  return bandSegments().map((s) => 'M' + xOf(s[0]).toFixed(1) + ' ' + yOf(s[1]).toFixed(1) + 'L' + xOf(s[2]).toFixed(1) + ' ' + yOf(s[3]).toFixed(1)).join('');
+}
+function drawBands() {
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const r = svg.getBoundingClientRect(); const W = Math.max(r.width, 200), H = Math.max(r.height, 160);
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  const L = 54, R = 16, T = 14, B = 40;
+  const pts = [];
+  if (bands) { bands.k.forEach((k, i) => bands.frequencies[i].forEach((f) => { if (isFinite(f)) pts.push([k, f]); })); }
+  MODES.forEach((m) => { if (m.k == null || !bands) pts.push([m.index + 1, m.frequency]); });
+  if (!pts.length) return;
+  const useK = !!bands;
+  let x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(...pts.map((p) => p[0]));
+  if (useK && bands.k_range) { x0 = bands.k_range[0]; x1 = bands.k_range[1]; }
+  if (x1 === x0) { x0 -= 0.5; x1 += 0.5; }
+  if (!useK) { x0 = 0.5; x1 = Math.max(x1, 1) + 0.5; }
+  let y0 = Math.min(...pts.map((p) => p[1])), y1 = Math.max(...pts.map((p) => p[1]));
+  const pad = (y1 - y0 || Math.abs(y1) || 1) * 0.08; y0 -= pad; y1 += pad;
+  const xOf = (x) => L + (x - x0) / (x1 - x0) * (W - L - R);
+  const yOf = (y) => H - B - (y - y0) / (y1 - y0) * (H - T - B);
+  // gaps
+  for (const [lo, hi] of bandGaps()) {
+    el('rect', { class: 'gaprect', x: L, y: yOf(hi), width: W - L - R, height: Math.max(yOf(lo) - yOf(hi), 1) });
+    const pct = 200 * (hi - lo) / (hi + lo);
+    if (yOf(lo) - yOf(hi) > 14) el('text', { class: 'gaplabel', x: W - R - 6, y: 0.5 * (yOf(lo) + yOf(hi)) + 4, 'text-anchor': 'end' },
+      null, 'gap ' + fmt((hi - lo) / FS_, 3) + ' ' + FU + '  (' + pct.toFixed(1) + ' %)');
+  }
+  // y grid
+  const ys = niceStep((y1 - y0) / FS_, 6) * FS_;
+  for (let y = Math.ceil(y0 / ys) * ys; y <= y1 + 1e-9 * ys; y += ys) {
+    el('line', { class: 'grid', x1: L, x2: W - R, y1: yOf(y), y2: yOf(y) });
+    el('text', { x: L - 8, y: yOf(y) + 4, 'text-anchor': 'end', class: 'num' }, null, fmt(y / FS_, 4));
+  }
+  el('text', { class: 'axislabel', transform: 'translate(14 ' + (0.5 * (T + H - B)) + ') rotate(-90)', 'text-anchor': 'middle' }, null, 'Frequency (' + FU + ')');
+  el('line', { class: 'axis', x1: L, x2: W - R, y1: H - B, y2: H - B });
+  el('line', { class: 'axis', x1: L, x2: L, y1: T, y2: H - B });
+  // x ticks
+  if (useK && bands.k_ticks) for (const [k, name] of bands.k_ticks) {
+    el('line', { class: 'grid', x1: xOf(k), x2: xOf(k), y1: T, y2: H - B });
+    el('text', { class: 'ticklabel-strong', x: xOf(k), y: H - B + 18, 'text-anchor': 'middle' }, null, name);
+  } else {
+    const xs = niceStep(x1 - x0, 5);
+    for (let x = Math.ceil(x0 / xs) * xs; x <= x1 + 1e-9; x += xs) el('text', { x: xOf(x), y: H - B + 16, 'text-anchor': 'middle', class: 'num' }, null, fmt(x, 3));
+  }
+  el('text', { class: 'axislabel', x: 0.5 * (L + W - R), y: H - 6, 'text-anchor': 'middle' }, null,
+    useK ? (bands.k_label || 'Wavenumber') : 'Mode number');
+  if (useK) el('path', { class: 'band', d: bandPaths(xOf, yOf) });
+  // points
+  const m = MODES[state.mode];
+  const sx = useK && m.k != null ? xOf(m.k) : xOf(m.index + 1);
+  el('line', { class: 'selline', x1: sx, x2: sx, y1: T, y2: H - B });
+  const withMode = new Set();
+  MODES.forEach((mm) => withMode.add(useK && mm.k != null ? mm.k_index + ':' + mm.frequency : 'm' + mm.index));
+  if (useK) bands.k.forEach((k, i) => bands.frequencies[i].forEach((f) => {
+    if (!isFinite(f)) return; if (withMode.has(i + ':' + f)) return;
+    el('circle', { class: 'pt', cx: xOf(k), cy: yOf(f), r: 3 });
+  }));
+  MODES.forEach((mm) => {
+    const x = useK && mm.k != null ? xOf(mm.k) : xOf(mm.index + 1);
+    const c = el('circle', { class: 'pt has', cx: x, cy: yOf(mm.frequency), r: 3.6 });
+    el('title', {}, c, fmt(mm.frequency / FS_, 5) + ' ' + FU + (modeText(mm) ? '  ·  ' + modeText(mm) : ''));
+    c.addEventListener('click', () => select(mm.index));
+  });
+  el('circle', { class: 'sel', cx: sx, cy: yOf(m.frequency), r: 8 });
+}
+
+// ---------- selection and navigation ----------
+function select(i) { state.mode = Math.max(0, Math.min(MODES.length - 1, i)); uploadMode(); updateReadout(); drawBands(); }
+function neighbour(dk, db) {
+  const m = MODES[state.mode];
+  if (m.k_index == null) { select(state.mode + (dk || db)); return; }
+  if (dk) {
+    // same band number at the next k that has modes, else the nearest frequency there
+    const ks = [...new Set(MODES.filter((x) => x.k_index != null).map((x) => x.k_index))].sort((a, b) => a - b);
+    const pos = ks.indexOf(m.k_index) + dk; if (pos < 0 || pos >= ks.length) return;
+    const cand = MODES.filter((x) => x.k_index === ks[pos]);
+    const same = cand.find((x) => x.band === m.band);
+    const pick = same || cand.reduce((a, b) => Math.abs(a.frequency - m.frequency) < Math.abs(b.frequency - m.frequency) ? a : b);
+    select(pick.index);
+  } else {
+    const cand = MODES.filter((x) => x.k_index === m.k_index).sort((a, b) => a.frequency - b.frequency);
+    const pos = cand.indexOf(m) + db; if (pos >= 0 && pos < cand.length) select(cand[pos].index);
+  }
+}
+
+// ---------- controls ----------
+function syncControls() {
+  $('play').textContent = state.playing ? 'Pause' : 'Play';
+  $('speedv').textContent = state.speed.toFixed(2) + ' Hz';
+  $('ampv').textContent = Math.round(state.amp * 100) + ' %';
+  $('cellsv').textContent = String(state.cells);
+  $('lines').setAttribute('aria-pressed', String(state.lines));
+  $('ghost').setAttribute('aria-pressed', String(state.ghost));
+  $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
+}
+$('cellsgroup').style.display = lattice ? '' : 'none';
+$('cells').value = state.cells;
+$('play').onclick = () => { state.playing = !state.playing; syncControls(); };
+$('prev').onclick = () => neighbour(-1, 0);
+$('next').onclick = () => neighbour(1, 0);
+$('speed').oninput = (e) => { state.speed = +e.target.value; syncControls(); };
+$('amp').oninput = (e) => { state.amp = +e.target.value; syncControls(); };
+$('cells').oninput = (e) => { state.cells = +e.target.value; fitDistance(); syncControls(); };
+$('color').onchange = (e) => { state.color = +e.target.value; updateReadout(); };
+$('cmap').onchange = (e) => { state.cmap = e.target.value; store('cmap', state.cmap); updateReadout(); };
+$('lines').onclick = () => { state.lines = !state.lines; syncControls(); };
+$('ghost').onclick = () => { state.ghost = !state.ghost; syncControls(); };
+$('present').onclick = () => { document.body.classList.toggle('present'); syncControls(); setTimeout(layout, 0); };
+$('theme').onclick = () => {
+  const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'light' : 'dark'; store('theme', document.documentElement.dataset.theme);
+  readTheme(); drawBands();
+};
+function fileStem() { return (DATA.title || 'mode').replace(/[^\w.-]+/g, '_').slice(0, 60); }
+function download(href, name) { const a = document.createElement('a'); a.href = href; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); }
+$('png').onclick = () => { draw(); download(canvas.toDataURL('image/png'), fileStem() + '.png'); };
+let recorder = null;
+$('record').onclick = () => {
+  if (recorder) { recorder.stop(); return; }
+  if (!canvas.captureStream || !window.MediaRecorder) { alert('This browser cannot record the canvas.'); return; }
+  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  const type = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  const chunks = [];
+  recorder = new MediaRecorder(canvas.captureStream(60), type ? { mimeType: type, videoBitsPerSecond: 16e6 } : {});
+  recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+  recorder.onstop = () => {
+    const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
+    download(URL.createObjectURL(blob), fileStem() + (blob.type.includes('mp4') ? '.mp4' : '.webm'));
+    recorder = null; $('rec').classList.remove('on'); $('record').textContent = 'Record';
+  };
+  state.playing = true; syncControls();
+  recorder.start(); $('rec').classList.add('on'); $('record').textContent = 'Stop';
+  const periods = 3; setTimeout(() => { if (recorder) recorder.stop(); }, 1000 * periods / Math.max(state.speed, 0.05));
+};
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  const k = e.key;
+  if (k === ' ') { state.playing = !state.playing; syncControls(); e.preventDefault(); }
+  else if (k === 'ArrowLeft') { neighbour(-1, 0); e.preventDefault(); }
+  else if (k === 'ArrowRight') { neighbour(1, 0); e.preventDefault(); }
+  else if (k === 'ArrowUp') { neighbour(0, 1); e.preventDefault(); }
+  else if (k === 'ArrowDown') { neighbour(0, -1); e.preventDefault(); }
+  else if (k === 'p' || k === 'P') $('present').click();
+  else if (k === 'f' || k === 'F') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
+  else if (k === 'l' || k === 'L') $('lines').click();
+  else if (k === 'g' || k === 'G') $('ghost').click();
+});
+
+// ---------- pointer: orbit, pan, zoom ----------
+const pointers = new Map(); let pinch = 0;
+canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, e.shiftKey || e.button === 2]); });
+canvas.addEventListener('pointerup', (e) => { pointers.delete(e.pointerId); pinch = 0; });
+canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); pinch = 0; });
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+canvas.addEventListener('pointermove', (e) => {
+  if (!pointers.has(e.pointerId)) return;
+  const [px, py, pan] = pointers.get(e.pointerId); const dx = e.clientX - px, dy = e.clientY - py;
+  pointers.set(e.pointerId, [e.clientX, e.clientY, pan]);
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    if (pinch) cam.dist *= pinch / d; pinch = d; return;
+  }
+  if (pan) {
+    const f = norm(eyeDir().map((v) => -v)); const s = norm(cross(f, UP)); const u = cross(s, f);
+    const k = cam.dist * 0.0018;
+    cam.target = cam.target.map((t, i) => t - (s[i] * dx - u[i] * dy) * k);
+  } else {
+    cam.az -= dx * 0.008; cam.el = Math.max(-1.55, Math.min(1.56, cam.el + dy * 0.008));
+  }
+});
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist *= Math.exp(e.deltaY * 0.0012); }, { passive: false });
+canvas.addEventListener('dblclick', () => resetCamera());
+
+// ---------- loop ----------
+function layout() { resize(); fitDistance(); drawBands(); }
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  if (state.playing) state.theta = (state.theta + 2 * Math.PI * state.speed * dt) % (2 * Math.PI);
+  draw();
+  requestAnimationFrame(frame);
+}
+readTheme();
+const mq = window.matchMedia('(prefers-color-scheme: dark)');
+if (mq.addEventListener) mq.addEventListener('change', () => { readTheme(); drawBands(); });
+window.addEventListener('resize', () => { drawBands(); });
+if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
+syncControls(); resize(); resetCamera(); uploadMode(); updateReadout(); drawBands();
+window.modePlayer = { state, select, draw, cam };
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

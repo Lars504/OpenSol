@@ -33,4 +33,4 @@ version = { attr = "open_sol.__version__" }
 include = ["open_sol*"]
 
 [tool.setuptools.package-data]
-open_sol = ["api_reference.md", "api_templates.md", "mesh_study/models/*.json"]
+open_sol = ["api_reference.md", "api_templates.md", "mesh_study/models/*.json", "viz/mode_player.html"]

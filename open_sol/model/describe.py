@@ -822,13 +822,15 @@ _RESULTS_NOTES = (
         'line curve, scene_3d.png for a 3D model: perspective picture of the objects with the first saved field on '
         'the x, y and z cut planes through the window middle); --max-wall-time stops cleanly with status timeout and '
         'partial results.',
-        'show PATH [--out DIR] [--figures] [--series NAME] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--json]: '
+        'show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--set NAME=EXPR ...] [--backend '
+        'auto|gpu|cpu] [--json]: '
         'outline and check counts of a model file, or the summary of a results directory (--figures re-renders its '
         'figures into <out>/figures/*.png, by default the run directory\'s figures/, a sweep also its sweep_*.png '
         'overlays; --series NAME draws only that series of xy results and sweep overlays; a 3D run directory draws '
         'scene_3d.png with its saved cut planes: the mid-height z cut and the stored cuts of the last snapshot) -> '
         'show.json. A 3D model file with --figures gets <out>/figures/scene_3d.png, the objects only (CPU, no run; '
-        'api.scene_figure).',
+        'api.scene_figure). --html [FILE] (results directory) writes the mode animation page of its mode_shapes '
+        'result (Results.export_animation; default <out>/<model stem>_modes.html; exit 1 when the run has none).',
         '--set NAME=EXPR (repeatable) replaces the expression of the model parameter NAME for this command only (the '
         'file is not changed; run records it in model.json), e.g. --set P_in=2e3 --set "w=450*nm"; an unknown NAME '
         'is a model error at the parameters node. --backend (check, run, show) overrides the model\'s '
@@ -1307,6 +1309,10 @@ _RESULTS_NOTES = (
         '(values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, '
         'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
         '(values, x_centers, y_centers, z_centers, metadata kind volume); '
+        "export_animation(path, result=None, title=None) -> the written .html path: a self-contained page (no network) "
+        "animating the complex mode shapes of a mode_shapes result ('physics.feature'; None = the only one) on the "
+        'solid surface beside the band diagram; a sweep contributes every successful value on the same surface mesh, '
+        'abscissa k a / 2 pi of the Bloch wavenumber (else the swept parameter); live, closed or loaded alike; '
         'result(physics, feature, '
         "**options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds "
         "freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field "
@@ -1381,6 +1387,9 @@ _RESULTS_NOTES = (
         'save_session_run(directory, spec, session, build_summary, study_summary, log_entries, model_file=None, '
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
+        'export_session_animation(path, spec, session, build_summary, study_summary, log_entries, model_file=None, '
+        'result=None) -> the written path: Results.export_animation of such a live session (the GUI File > Export '
+        'animation); the session stays open.',
         'Never mix api.run with the GUI worker in one process.',
     )),
     ('GPU memory', (

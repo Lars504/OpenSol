@@ -102,6 +102,10 @@ def _build_parser():
                                   'summary.json is read); a sweep also gets its sweep_*.png overlays. 3D model '
                                   'file: write <out>/figures/scene_3d.png (perspective picture of the objects, no '
                                   'run); a 3D results directory also gets scene_3d.png with the saved cut planes')
+    show_parser.add_argument('--html', metavar='FILE', nargs='?', const='',
+                             help='results directory: load results.npz and write the mode animation page (a '
+                                  'self-contained HTML player of the mode_shapes result: animated mode shapes beside '
+                                  'the band diagram); default <out>/<model stem>_modes.html')
     show_parser.add_argument('--series', metavar='NAME',
                              help='with --figures: draw only this series of xy results and of the sweep result '
                                   'overlays (e.g. fraction_positive of a mode monitor)')
@@ -298,7 +302,7 @@ def _show_results(path, args):
     stream = sys.stderr if args.json else sys.stdout
     out_dir = Path(args.out) if args.out else path
     try:   # results.npz and model.json are read only to draw figures
-        results = api.Results.load(path) if args.figures else None
+        results = api.Results.load(path) if args.figures or args.html is not None else None
         summary = results.summary() if results is not None else load_summary(path)
     except OSError:   # no summary.json (not a results directory) or unreadable: exit 2 in main
         raise
@@ -314,8 +318,17 @@ def _show_results(path, args):
     if args.figures:   # the figures of api.run(figures=True); --series only where the result has it
         for name, draw in results._figure_jobs(args.series):
             _write_figure(name, draw, out_dir / 'figures' / f'{name}.png', stream)
+    status = 0
+    if args.html is not None:
+        stem = Path(((summary.get('model') or {}).get('file')) or 'model').stem
+        html_path = Path(args.html) if args.html else out_dir / f'{stem}_modes.html'
+        try:
+            print(f'  animation {results.export_animation(html_path)}', file=stream)
+        except (OSError, ValueError, KeyError) as exc:
+            print(f'open_sol: no mode animation: {error_message(exc)}', file=sys.stderr)
+            status = 1
     _write_show_report(out_dir, _show_report('results', path, None, None, summary), args.json, stream)
-    return 0
+    return status
 
 
 def _show_model(path, args, overrides):

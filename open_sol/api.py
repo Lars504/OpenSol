@@ -1,5 +1,6 @@
 """Headless interface for agents and scripts (no Qt): describe, template / load / save, check, run, selftest, Results.
 run and live Results use the GPU on the calling thread: never mix them with a GUI BackendWorker in one process."""
+import contextlib
 import copy
 import itertools
 import math
@@ -58,12 +59,13 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
+from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
 from .viz.scene_figure import DEFAULT_VIEW, scene_figure as new_scene_figure
 
 __all__ = ['API_REFERENCE_PATH', 'API_TEMPLATES_PATH', 'BUILTIN_SELFTESTS', 'describe', 'template', 'load', 'save', 'check', 'run',
-           'save_session_run', 'scene_figure', 'selftest', 'selftest_examples', 'profile_machine', 'Results', 'RunError',
+           'save_session_run', 'export_session_animation', 'scene_figure', 'selftest', 'selftest_examples', 'profile_machine', 'Results', 'RunError',
            'ProgressPrinter',
            # run() progress events (open_sol.model.study dataclasses)
            'LogEvent', 'SweepStep', 'SweepValueDone', 'Built', 'BuildFailed', 'StudyStarted', 'Progress',
@@ -761,8 +763,26 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
     """Write the run directory run(out_dir=) would (summary.json, log.txt, model.json, results.npz, meshes.npz) of a
     live session its caller built and ran (the GUI worker, on its thread); the session stays open. log_entries =
     [(clock text, level, message)]; returns the directory."""
+    with _session_results(spec, session, build_summary, study_summary, log_entries, model_file,
+                          save_arrays) as results:
+        results._save(Path(directory), save_arrays, {})
+    return str(directory)
+
+
+def export_session_animation(path, spec, session, build_summary, study_summary, log_entries, model_file=None,
+                             result=None) -> str:
+    """Write the HTML mode player (Results.export_animation) of a live session its caller built and ran (the GUI
+    worker, on its thread); the session stays open. Arguments as save_session_run; returns the written path."""
+    with _session_results(spec, session, build_summary, study_summary, log_entries, model_file, False) as results:
+        return results.export_animation(path, result=result)
+
+
+@contextlib.contextmanager
+def _session_results(spec, session, build_summary, study_summary, log_entries, model_file, stack_dft):
+    """Results around a caller's live session with its summary (host cache: fields, results, sweep results,
+    snapshots) filled as a run's; the session is never closed here."""
     if study_summary is None:
-        raise ValueError('no finished study to save: compute first (a build alone has no results)')
+        raise ValueError('no finished study: compute first (a build alone has no results)')
     collector = _Collector(None, time.perf_counter())
     for clock, level, message in log_entries:
         collector.lines.append(f'{clock} [{level}] {message}')
@@ -777,12 +797,11 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
     results = Results(status, spec, None, session, build_summary, collector.lines)
     try:
         outcome = _RunOutcome(status, message, '', study_summary, [], model_file, wall_time)
-        results._data.summary = _run_summary(results, outcome, collector, save_arrays)
-        results._save(Path(directory), save_arrays, {})
+        results._data.summary = _run_summary(results, outcome, collector, stack_dft)
+        yield results
     finally:
         results.session = None   # the caller's session: never closed here
         _LIVE_RESULTS.discard(results)
-    return str(directory)
 
 
 def _run_summary(results, outcome, collector, stack_dft):
@@ -1487,6 +1506,13 @@ class Results:
         if not field_planes:
             raise ValueError(f'no saved cut plane of field {name!r} (an older run directory without plane records)')
         return field_planes
+
+    def export_animation(self, path, result=None, title=None) -> str:
+        """Write the HTML mode player (viz.mode_player: one self-contained page, no network) of a mode_shapes result
+        ('physics.feature'; None = the only one): animated complex mode shapes on the solid surface beside the band
+        diagram, every sweep value on the same mesh (abscissa k a / 2 pi of the Bloch wavenumber, else the swept
+        parameter); live, closed or loaded alike. Returns the written path (.html added when missing)."""
+        return mode_player_from_results(self, path, key=result, title=title)
 
     def save(self, path, save_arrays=True) -> Path:
         """Write summary.json, log.txt, model.json and (save_arrays) results.npz into the directory path, copying the

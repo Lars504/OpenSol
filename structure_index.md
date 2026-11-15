@@ -28,7 +28,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/physics/potential/: lines 712-729
 - open_sol/physics/semiconductor/: lines 731-744
 - open_sol/solvers/: lines 746-760
-- open_sol/viz/: lines 762-769
+- open_sol/viz/: lines 762-770
 
 ## open_sol/
 
@@ -764,6 +764,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `__init__.py`: Visualization package: re-exports Visualizer, plot_field_array (pyplot-free Figures) and the PNG writers save_field_figure / save_result_figure.
 - `common.py`: numpy-only plot helpers shared by viz and the GUI (no matplotlib, no Qt): axis units, colour limits, safe ratios, dB normalisation, the probe FFT, line profiles of native fields, the line sets of triangle meshes and plane cuts of ...
 - `curve_figure.py`: Article-quality export of a 2D curve plot (pyplot-free matplotlib Figure): PlotStyle (fonts, ticks, line widths, legend; the GUI preview follows it on screen) and save_curve_figure of plain curve data at a given physical size, optionally ...
+- `mode_player.py`: Self-contained HTML mode player: animated complex mode shapes on a surface mesh beside their band diagram.
 - `result_plots.py`: PNG report figures of fields and feature-result dicts (pyplot-free Figures); ASCII text, never prints.
 - `scene_figure.py`: Perspective 3D picture of a model.scene_3d.Scene3D on a pyplot-free matplotlib Axes3D (view_3d C): translucent material faces in one depth-sorted collection, rim edges, dashed composite inputs, point / line glyphs; optionally field cut ...
 - `visualization.py`: Matplotlib plots of open_sol simulations (pyplot-free Figures): geometry, mesh, fields and EM monitor results (FDFD: annotations, plot_flux / plot_transmission, plot_radiation_pattern; FDFD probes have no time series).
