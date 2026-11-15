@@ -281,7 +281,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   catalogue (default instances, registration order, which material Params types share, when a coupling registers) is
   in `api_reference.md` and the sub files: physics/<pkg> "type" bullets, coupling sub file "Registered coupling
   types", model sub file "Study catalogue". A material property shared by several types is ONE Param object (the
-  first registered type's per name; e.g. rho: heat, laminar_flow, elastic_waves, solid_mechanics), so editing it
+  first registered type's per name; e.g. rho: heat, laminar_flow, elastic_waves, solid_mechanics; k / cp: heat and
+  both solids), so editing it
   changes every type. `PhysicsType.family` ('em', 'heat', '' none): coupling/definitions builds its CouplingTypes
   from the registered family-'em' types (heat_em_thermo_optic: all; em_heat_joule: those with an 'absorbed_power'
   output field, so not em_modes), so a new EM type needs family='em', `state()['q_accum']` (None allowed), the EM loss

@@ -279,7 +279,7 @@ TED_MATERIAL_PROPERTIES = (
     _material_property('k', 'Thermal conductivity', 'W/(m K)', 0.0,
                        help_text=f'Isotropic thermal conductivity (sets k_xx, k_yy, k_zz); {_TED_READ}: the heat '
                                  'diffusion of the thermoelastic temperature of a vibration mode. Typical: silicon 130 '
-                                 '(library; pure bulk 148), silica 1.38, silicon nitride films 3-30.',
+                                 '(library; pure bulk 148), silica 1.38, silicon nitride 10 (library; films 2-15).',
                        tip='How well the material conducts heat. Solid mechanics uses it only for thermoelastic '
                            'damping.\n\nTypical: silicon 130, silica 1.38.'),
     _material_property('k_xx', 'Thermal conductivity along x', 'W/(m K)', 0.0,
@@ -845,8 +845,8 @@ def thermoelastic_damping_feature(grids, where_text):
             'omega T0 (beta : eps) drives the harmonic heat equation j omega rho cp theta - div(k grad theta) = q on '
             'the solid cells, adiabatic (no heat flux) on every boundary of the solid, theta on the solid\'s own '
             'nodes (tensor mesh: bilinear on the cell corners; element meshes: the solid\'s P1 / P2 map); beta = C : '
-            'alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced beta_I '
-            '- c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row '
+            'alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced '
+            'beta_I - c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row '
             'u_r / r). The thermal stress -beta theta adds the complex modal stiffness d = -int beta : eps* theta dV '
             'to u^H K u = omega^2 u^H M u (twice the peak stored energy), so 1 / Q_TED = Im d / (u^H K u) = -Im(int '
             'beta : eps* theta dV) / (omega^2 u^H M u) (> 0, energy lost per cycle / (2 pi x stored energy)) and the '
@@ -854,13 +854,15 @@ def thermoelastic_damping_feature(grids, where_text):
             'the modes themselves stay isothermal). Reproduces Zener Q^-1 = Delta omega tau / (1 + (omega tau)^2), '
             'Delta = E alpha^2 T0 / (rho cp), tau = h^2 / (pi^2 k / (rho cp)), for the flexure of a thin beam of '
             'thickness h (more precisely the exact Lifshitz-Roukes form, within 2 % of Zener). Material data: k '
-            '(k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon / silica have them), alpha '
+            '(k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon, silica and silicon_nitride '
+            'have them), alpha '
             '(alpha_xx / _yy / _zz), the stiffness; '
             'every solid cell needs rho > 0 and cp > 0. Result \'table\', one row per mode: '
             f"{', '.join(TABLE_COLUMNS)} (Hz; Q inf without loss): q_other combines the other losses of the mode, the "
             'Q of a damped pencil (elastic PML / anchor radiation and, on element meshes, mechanical_loss_factor), on '
-            'a tensor mesh (undamped pencil) the loss factor perturbatively u^H (eta K) u / u^H K u, on tetrahedra '
-            'also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 and '
+            'a tensor mesh (undamped pencil) the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u, on '
+            'tetrahedra also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 '
+            'and '
             'selected_resonance. Damped (complex) modes use Re omega and Re(u^H M u). One complex host SuperLU '
             'factorisation of the thermal operator per mode, on the first read of the result. Not modelled: '
             'piezoelectric solids, guided (2.5D) modes, azimuthal_order m >= 1, Bloch cells; the PML ring / shell '

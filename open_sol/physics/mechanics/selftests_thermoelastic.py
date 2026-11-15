@@ -348,5 +348,5 @@ THERMOELASTIC_CASES = _TED_2D_CASES + (
                      'plumbing only (the uniform guide couples weakly in forward). measured = error = failed '
                      'sub-checks.'),
         specs=_quality_from_specs, check=_check_quality_from,
-        heavy=True),   # ~15 s on the cpu: the em_modes solve of the periodic guide (the TED part is milliseconds)
+        heavy=True),   # 6-15 s on the cpu: the em_modes solve of the periodic guide (the TED part is milliseconds)
 )
