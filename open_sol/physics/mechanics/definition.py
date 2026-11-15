@@ -37,20 +37,22 @@ from .coupling import make_temperature_rise_transform
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, apply_body_force, apply_temperature_change,
+                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
+                                apply_temperature_change,
                                 background_context, displacement_param, eigen_search_issues, electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
                                 initial_stress_materials, material_issues, materials_setting, modal_kept_count,
                                 modal_resonance_count, modal_study_issues, nonlinear_state_infos, outer_faces,
                                 piezo_material_issues, prestress_issues, register_support, resonance_table_feature,
                                 solid_linear_solver, solid_study, stiffness_follows_state, support_holders,
-                                support_result, union_masks)
+                                support_result, thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
 from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA,
-                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, PIEZO_ARRAYS, PIEZO_DEFAULTS,
+                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA, PIEZO_ARRAYS,
+                        PIEZO_DEFAULTS,
                         PRESTRESS_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
 from .piezo import ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS
 from .pml2d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, pml_padding
@@ -60,6 +62,7 @@ from .modal import EXTRA_EIGENVALUES
 from .optical_force import make_optical_force_transforms
 from .renderer import SolidRenderer
 from .selftests import HEATED_WAVEGUIDE_STRESS_DESCRIPTION, HEATED_WAVEGUIDE_STRESS_LABEL, heated_waveguide_stress_spec
+from .selftests_thermoelastic import SILICON_BEAM_TED_DESCRIPTION, SILICON_BEAM_TED_LABEL, silicon_beam_ted_spec
 from .solver import (GENERALIZED_PLANE_STRAIN, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
                      SolidMechanicsPhysics)
 from .solver_common import SupportRegion
@@ -1878,6 +1881,8 @@ _FEATURES = (
     frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,)),
     replace(resonance_table_feature('nearest the target (the target_frequency setting) first, ranked by |omega - '
                                     'omega_target|'), grids=_BOTH_GRIDS),
+    thermoelastic_damping_feature(_BOTH_GRIDS, 'on tensor (rectangular-cell) and triangle meshes (planar plane '
+                                               'strain / plane stress, axisymmetric)'),
     OPTOMECHANICAL_COUPLING_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', allow_interior=False,
                 params=_ELECTRODE_PARAMS, result_kind='table',
@@ -2010,10 +2015,11 @@ SOLID_MECHANICS = PhysicsType(
               _DISCRETIZATION_PARAM, *_pml_params()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM, PHOTOELASTIC_P44_PARAM) + PIEZO_MATERIAL_PROPERTIES
-                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES),
+                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES
+                         + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA, **SHEAR_PHOTOELASTIC_SCHEMA},
     optional_material_schema={**OPTIONAL_PIEZO_SCHEMA, **OPTIONAL_STIFFNESS_SCHEMA, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA},
+                              **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
@@ -2241,16 +2247,18 @@ def _selftest_cases(em_types):
     from .selftests_prestress_string import PRESTRESS_STRING_CASES
     from .selftests_reduced_sweep import REDUCED_SWEEP_CASES
     from .selftests_segment_load import SEGMENT_LOAD_CASES
+    from .selftests_thermoelastic import THERMOELASTIC_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + optomechanics_cases(em_types) + backend_cases(em_types))
+            + THERMOELASTIC_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
 
 
 def register(registry):
     """solid_mechanics, solid_mechanics_3d (definition3d.register: type, template, 3D selftest loader), the
     heat_solid_thermal_strain coupling (both targets), solid_em_strain_optic (with family-'em' types) and
-    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress' and the optomechanics templates
+    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress', 'silicon_beam_thermoelastic_damping' and
+    the optomechanics templates
     (definition_optomechanics), then the 2D selftest loader (bound to the registered em types)."""
     registry.register_physics(SOLID_MECHANICS)
     definition3d.register(registry)
@@ -2266,5 +2274,10 @@ def register(registry):
         heated_waveguide_stress_spec,
         summary='Thermal stress in the cross-section of a silicon waveguide under a gold heater: the heat spreads into '
                 'the silica, everything expands, and the silicon core ends up compressed. Steady state.')
+    registry.register_template(
+        'silicon_beam_thermoelastic_damping', SILICON_BEAM_TED_LABEL, SILICON_BEAM_TED_DESCRIPTION,
+        silicon_beam_ted_spec,
+        summary='Vibration modes of a thin silicon beam and how much of each vibration is lost to heat flowing '
+                'between its compressed and stretched sides (thermoelastic damping).')
     register_optomechanics_templates(registry, em_types)
     registry.register_selftests(partial(_selftest_cases, em_types))

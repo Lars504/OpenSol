@@ -1,7 +1,8 @@
 """Linear elasticity on triangle meshes (mesh plan 2.7, stage T5): vector Lagrange P1 / P2 with interleaved dofs
 (2 d + component), planar Voigt rows (xx, yy, g = 2 strain_xy) or axisymmetric (r, z) rows (rr, zz, tt, g) with the
 hoop strain u_r / r and whole-ring weights 2 pi r; stiffness, consistent mass, stress / body / edge loads and element
-strains (nodal recovery: fem.assembly.nodal_average). Prestress pieces (new_modules_plan K1): StressField, geometric
+strains (nodal recovery: fem.assembly.nodal_average), the strain source int phi beta . eps (thermoelastic damping).
+Prestress pieces (new_modules_plan K1): StressField, geometric
 stiffness K_sigma, initial-stress force, stress sampling and the total-Lagrangian Green-Lagrange internal force /
 tangent (geometric nonlinearity, K6; Newton iterations on TangentAssembler, a fixed pattern). PML coordinate stretches (stretch= of the stiffness / mass / K_sigma, K5) and the
 azimuthal order m >= 1 form (U_r, U_z, U_phi) of the axisymmetric solid (K7). Host numpy, scipy inside functions (via
@@ -200,6 +201,27 @@ def assemble_stress_load(dofs, stress, *, axisymmetric=False, weight=None) -> np
             weights = weights * weight(geometry.points)
         local = np.einsum('mqki,mk,mq->mi', operator, stress[dofs.elements[positions]], weights)
         scatter_add(result, vector_dofs(dofs.element_dofs[positions]), local)
+    return result
+
+
+def assemble_strain_source(dofs, displacement, beta, *, axisymmetric=False, elements=None) -> np.ndarray:
+    """Scalar vector (n,) of int phi_a (beta . eps(u)) dV (x 2 pi r: whole rings) on the map's Lagrange basis: the
+    transpose of the thermal stress load (assemble_stress_load of beta theta), for nodal displacement (n, 2) real or
+    complex (a complex vector then), beta (n_mesh_elements, k) per element in the Voigt rows (engineering shear);
+    elements: bool per dofs element integrated (None = all). Thermoelastic damping's strain-rate heat source."""
+    beta = np.asarray(beta, dtype=np.float64)
+    displacement = np.asarray(displacement).reshape(-1)
+    result = np.zeros(dofs.n_dofs, dtype=np.result_type(displacement, np.float64))
+    for positions, rule in _groups(dofs, axisymmetric, max(2 * dofs.order - 1, 2)):
+        if elements is not None:
+            positions = positions[np.asarray(elements, dtype=bool)[positions]]
+            if not positions.size:
+                continue
+        _, operator, weights = _operator_at(dofs, positions, rule, axisymmetric)
+        local_u = displacement[vector_dofs(dofs.element_dofs[positions])]               # (m, 2 n)
+        source = np.einsum('mqki,mi,mk->mq', operator, local_u, beta[dofs.elements[positions]])
+        local = (source * weights) @ lagrange_basis(dofs.order, rule.points)[0]         # (m, n)
+        scatter_add(result, dofs.element_dofs[positions], local)
     return result
 
 

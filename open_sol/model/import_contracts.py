@@ -53,6 +53,7 @@ TEMPLATE_SOURCES = (
     ('physics.magnetic.definition_magnetostatics', 'physics.magnetic.selftests'),
     ('physics.magnetic.definition_magnetostatics', 'physics.magnetic.selftests_fem'),
     ('physics.mechanics.definition', 'physics.mechanics.selftests'),
+    ('physics.mechanics.definition', 'physics.mechanics.selftests_thermoelastic'),
     ('physics.mechanics.definition3d', 'physics.mechanics.selftests_3d'),
     ('physics.mechanics.definition3d', 'physics.mechanics.selftests_bloch3d'),
     ('physics.mechanics.definition_optomechanics', 'physics.mechanics.selftests_optomechanics'),

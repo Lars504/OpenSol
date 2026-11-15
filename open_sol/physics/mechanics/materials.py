@@ -33,6 +33,7 @@ MECHANICAL_PROPERTY_ARRAYS = {
     'c44': ('c44',), 'c45': ('c45',), 'c46': ('c46',), 'c55': ('c55',), 'c56': ('c56',),
     'mechanical_loss_factor': ('mechanical_loss_factor',), 'dielectric_loss_tangent': ('dielectric_loss_tangent',),
     **{f'initial_stress_{pair}': (f'initial_stress_{pair}',) for pair in ('xx', 'yy', 'zz', 'yz', 'xz', 'xy')},
+    'k': ('k_xx', 'k_yy', 'k_zz'), 'k_xx': ('k_xx',), 'k_yy': ('k_yy',), 'k_zz': ('k_zz',), 'cp': ('cp',),
 }
 # Piezoelectric plane strain (2D, setting piezoelectric): the reduced in-plane e block (the elastic_waves names and
 # order), the out-of-plane column e_k3 (stress_zz only) and the clamped static permittivity (the electrostatics names),
@@ -112,3 +113,10 @@ def lame_coefficients(youngs_modulus, poisson_ratio):
     mu = youngs_modulus / (2.0 * (1.0 + poisson_ratio))
     lame_lambda = youngs_modulus * poisson_ratio / ((1.0 + poisson_ratio) * (1.0 - 2.0 * poisson_ratio))
     return lame_lambda, mu
+# Thermoelastic damping (feature thermoelastic_damping, physics/mechanics/thermoelastic.py): heat's conductivity and
+# specific heat arrays (the names and default 0 of physics/heat THERMAL_SCHEMA; with rho the heat capacity rho cp),
+# optional: allocated when a material sets k / k_xx / k_yy / k_zz / cp (library silicon and silica do, so a solid of
+# library silicon carries them even without the feature); a heat physics in the model allocates them anyway.
+TED_ARRAYS = ('k_xx', 'k_yy', 'k_zz', 'cp')
+_TED_TRIGGERS = ('k', 'k_xx', 'k_yy', 'k_zz', 'cp')
+OPTIONAL_TED_SCHEMA = {name: (0.0, _TED_TRIGGERS) for name in TED_ARRAYS}
