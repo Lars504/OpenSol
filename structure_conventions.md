@@ -566,7 +566,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/physics/mechanics/`: 2D / 3D split (SolidMechanicsBase), type catalogue, SolidMechanicsPhysics /
   ElasticSystem (Q1 layout, supports, rigid-mode check, loads), anisotropic c_ij stiffness, eigenfrequency study (2D,
   3D), piezoelectric plane strain (coupled host operator, electrodes, short / open modes), frequency response (losses,
-  admittance, BVD fit, reduced / modal sweeps), optomechanical g0, ElasticSystem3D
+  admittance, BVD fit, reduced / modal sweeps), 2D Bloch cells (both mesh kinds), optomechanical g0, ElasticSystem3D
   (matrix-free bricks, reduced blocks, Gram rank check, geometric multigrid and its guard, 2D rules that do not
   apply), tetrahedra (modal pencils and
   target / band searches, PML, Bloch, squeeze film), geometric nonlinearity (warm start, tangent updates, GPU tangents),
