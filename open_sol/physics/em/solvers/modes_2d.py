@@ -17,14 +17,15 @@ from ..boundaries import solver_boundary_config
 from ..cross_section_modes import (BEND_MODELS, GROUP_RELATIVE_STEP, LINE_BLOCK_BOTH_PERIODIC_TEXT,
                                    CrossSectionMaterials, bloch_wrap_factors, centre_fields, line_block_layout,
                                    mode_group_indices, mode_overlap, mode_point_materials,
-                                   prepare_cross_section_modes, size_issue_for, solve_prepared_modes)
+                                   nonreciprocal_shift, prepare_cross_section_modes, size_issue_for,
+                                   solve_prepared_modes)
 from ..fdfd_line_block import MAX_BATCH_WAVELENGTHS
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, ArpackShiftInvertSolver
 from ....solvers.host_direct import HOST_DIRECT_FACTORIZATIONS, factor_label
 from ....solvers.line_block import LineBlockSolver, RejectedLineBlockSolve, batch_factorizations
 from ....solvers.sparse_direct import scipy_available
 from ..harmonic import cell_permeability, cell_permittivity, write_float32
-from ..materials import DrudePole, LorentzPole, register_em_arrays
+from ..materials import GYRATION_ARRAYS, DrudePole, LorentzPole, register_em_arrays
 from ..nonlinear_overlap import ShgOverlapMonitor
 from ..renderer import ModeRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
@@ -36,8 +37,8 @@ MODE_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz 
 MODE_PERMITTIVITY_SLOTS = {f'{array}_update': array for array in MODE_PERMITTIVITY_ARRAYS}
 MODE_FIELD_NAMES = ('ex', 'ey', 'ez', 'hx', 'hy', 'hz', 'e_intensity', 'h_abs', 'sz')   # ModeRenderer's mode fields
 MODE_TABLE_COLUMNS = ('mode_number', 'n_eff', 'n_eff_imag', 'loss_db_per_cm', 'n_group', 'te_fraction',
-                      'effective_area', 'pml_fraction', 'selected')
-MODE_TABLE_UNITS = ('1', '1', '1', 'dB/cm', '1', '1', 'm^2', '1', '')
+                      'effective_area', 'pml_fraction', 'delta_beta', 'selected')
+MODE_TABLE_UNITS = ('1', '1', '1', 'dB/cm', '1', '1', 'm^2', '1', '1/m', '')
 _DB_PER_NEPER = 20.0 / math.log(10.0)   # power loss in dB of a field decaying by e^-1
 # factor_kind prefixes of the eigen solver's own MUMPS / PARDISO factor (its description, e.g. 'MUMPS LDL^T')
 HOST_DIRECT_KINDS = tuple(dict.fromkeys(factor_label(name) for name in HOST_DIRECT_FACTORIZATIONS))
@@ -77,6 +78,7 @@ class _ModeStudyMixin:
         self.n_eff_guess = None if n_eff_guess is None else _positive(n_eff_guess, 'n_eff_guess')
         self.group_index = bool(group_index)
         self.modes = []               # modes of the last solve, descending Re beta^2
+        self.delta_betas = []         # beta_forward - beta_backward [rad/m] per mode (gyration_x / _y; 0 without)
         self.selected_mode = None     # 1-based number shown (None: no mode)
         self.solved_omega = None
         self.last_solve_info = None   # solve info of the last solve
@@ -108,8 +110,15 @@ class _ModeStudyMixin:
                 f'({wavelength_label(2.0 * math.pi * C0 / self.solved_omega)})')
 
     def scalars(self) -> dict:
-        """{'n_eff_k': Re n_eff of mode k} of the last solve, modes found only (E5 scalar outputs)."""
-        return {f'n_eff_{number}': complex(mode.n_eff).real for number, mode in enumerate(self.modes, start=1)}
+        """{'n_eff_k': Re n_eff, 'delta_beta_k': beta_forward - beta_backward [rad/m] of mode k} of the last solve,
+        modes found only (E5 scalar outputs)."""
+        values = {f'n_eff_{number}': complex(mode.n_eff).real for number, mode in enumerate(self.modes, start=1)}
+        values.update({f'delta_beta_{number}': shift for number, shift in enumerate(self.delta_betas, start=1)})
+        return values
+
+    def _nonreciprocal_shifts(self, modes):
+        """beta_forward - beta_backward per mode [rad/m]: 0 here (ModePhysics computes it from gyration_x / _y)."""
+        return [0.0] * len(modes)
 
     def _solve(self):
         """Solve at self.omega on the current materials (group indices when enabled), select mode_index, record the
@@ -120,6 +129,7 @@ class _ModeStudyMixin:
         label = wavelength_label(2.0 * math.pi * C0 / omega)
         self.runtime_warnings.extend(f'{label}: {warning}' for warning in warnings)
         self.modes = modes
+        self.delta_betas = self._nonreciprocal_shifts(modes)
         self.solved_omega = omega
         self.last_solve_info = info
         self.host_factor_bytes = info['factor_host_bytes']
@@ -351,6 +361,22 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         for name, values in host_fields.items():
             write_float32(self.mode_fields[name], values)
         self.selected_mode = number
+
+    def _nonreciprocal_shifts(self, modes):
+        """beta_forward - beta_backward [rad/m] per mode, first order in the material gyration_x / gyration_y
+        (cross_section_modes.nonreciprocal_shift); zeros when no material sets them."""
+        materials = self.domain.materials
+        gyration = {name: np.asarray(to_host(getattr(materials, name)), dtype=np.float64)
+                    for name in GYRATION_ARRAYS[MODE_POLARIZATION] if name in materials.property_names()}
+        gyration = {name: values for name, values in gyration.items() if np.any(values != 0.0)}
+        if not gyration or not modes:
+            return [0.0] * len(modes)
+        if self._bend is not None:   # validation refuses it: the perturbation integral has no bend metric
+            self.runtime_warnings.append('gyration_x / gyration_y with a bend: delta_beta is not computed (NaN)')
+            return [math.nan] * len(modes)
+        point_materials = self.point_materials(self.omega)   # the eps of the solve (_solve: before solved_omega)
+        return [nonreciprocal_shift(mode, point_materials, gyration.get('gyration_x'), gyration.get('gyration_y'),
+                                    self.wrap_factors) for mode in modes]
 
     @property
     def bend(self):
@@ -618,8 +644,8 @@ class ModeTableMonitor:
     def record(self, physics):
         self.omega = physics.solved_omega
         selected = physics.selected_mode
-        self.rows = [[number, *_mode_scalars(mode), number == selected]
-                     for number, mode in enumerate(physics.modes, start=1)]
+        self.rows = [[number, *_mode_scalars(mode), shift, number == selected]
+                     for number, (mode, shift) in enumerate(zip(physics.modes, physics.delta_betas), start=1)]
 
 
 class ModeDispersionMonitor:
@@ -628,7 +654,7 @@ class ModeDispersionMonitor:
 
     def __init__(self, mode_number=1):
         self.mode_number = _positive_int(mode_number, 'mode_dispersion mode_number')
-        self._records = {}     # omega [rad/s] -> _mode_scalars + [overlap with the previously followed mode]
+        self._records = {}     # omega [rad/s] -> _mode_scalars + [delta_beta, overlap with the previously followed one]
         self._followed = None  # CrossSectionMode of the last record
 
     def record(self, physics):
@@ -645,10 +671,11 @@ class ModeDispersionMonitor:
             self._records[float(physics.solved_omega)] = [math.nan] * (len(MODE_TABLE_COLUMNS) - 2) + [overlap]
             return
         self._followed = modes[index]
-        self._records[float(physics.solved_omega)] = _mode_scalars(modes[index]) + [overlap]
+        self._records[float(physics.solved_omega)] = (_mode_scalars(modes[index]) + [physics.delta_betas[index]]
+                                                      + [overlap])
 
     def recorded(self):
-        """(omega float64 in ascending wavelength order, float64 (n, 8) rows); ValueError before the first solve."""
+        """(omega float64 in ascending wavelength order, float64 (n, 9) rows); ValueError before the first solve."""
         if not self._records:
             raise ValueError('not solved yet: the mode dispersion has no solve (run a mode_analysis or '
                              'frequency_domain study)')
@@ -713,7 +740,7 @@ def mode_table_result(monitor) -> dict:
 
 def mode_dispersion_result(monitor) -> dict:
     """'xy' of a ModeDispersionMonitor vs ascending wavelength [m]: series n_eff (Re), n_eff_imag, loss_db_per_cm,
-    n_group, te_fraction, effective_area, pml_fraction, overlap; extras frequency, wavelength, mode_number."""
+    n_group, te_fraction, effective_area, pml_fraction, delta_beta, overlap; extras frequency, wavelength, mode_number."""
     omegas, values = monitor.recorded()
     names = MODE_TABLE_COLUMNS[1:-1] + ('overlap',)
     units = MODE_TABLE_UNITS[1:-1] + ('1',)

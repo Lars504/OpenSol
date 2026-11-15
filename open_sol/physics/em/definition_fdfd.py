@@ -8,9 +8,10 @@ from ...core import time_estimate as te
 from ...core.backend import to_host
 from ...core.memory_estimate import BOOL_BYTES, MemoryEstimate
 from ...core.renderer import FieldInfo
+from ...core.mirror import mirror_faces
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
                                          host_direct_back_end, linear_solver_cudss, optimization_evaluations,
-                                         resolved_back_end, validate_points_inside)
+                                         resolved_back_end, selected_material_sets, validate_points_inside)
 from ...model.schema import (FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, known_physics,
                              solver_backend)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
@@ -50,7 +51,7 @@ from .fdfd_ports import harmonic_mode_monitor_result, harmonic_mode_source_resul
 from .index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from .definition_effective_index import effective_index_feature
 from .definition_phase_change import phase_change_medium_feature
-from .materials import EM_MATERIAL_SCHEMAS
+from .materials import EM_MATERIAL_SCHEMAS, GYRATION_Z
 from .memory_estimates import fdfd_memory_estimate, pec_memory_estimate
 from .placement import PERMITTIVITY_SLOTS
 from .renderer import FDFDRendererEz, FDFDRendererHz
@@ -172,7 +173,35 @@ _HZ_MATERIAL_PROPERTIES = em_material_params('hz', {
          '(source slot eps_xy_update); em_fdtd_hz and em_modes have no eps_xy.',
     tip='Cross term of the permittivity of a crystal whose axes are turned in the plane: an electric field along x '
         'then also polarises the material along y. Usually empty.\n\n'
-        "Keep it smaller than both the x and y values. Coupled effects (acousto-optic, Pockels) add to it."),)
+        "Keep it smaller than both the x and y values. Coupled effects (acousto-optic, Pockels) add to it."), Param(
+    GYRATION_Z, 'float', 0.0, label='Gyration, z (magneto-optic)', unit='1', field_dependent=True,
+    expands_to=(GYRATION_Z,),
+    help='Gyration g (real, default 0) of a magneto-optic (gyrotropic) material magnetised along z, out of the '
+         'plane: the in-plane tensor becomes eps = [[eps_xx, eps_xy + j g], [eps_xy - j g, eps_yy]] (exp(+j omega t); '
+         'Hermitian, so a real g absorbs nothing), i.e. the gyration vector (0, 0, g) with eps_ij += j e_ijk g_k; g '
+         'changes sign with the magnetisation. The in-plane E of H_z sees it with light travelling across the '
+         'magnetisation (Voigt geometry): a uniform medium of eps keeps one index, eps_eff = eps - g^2 / eps in every '
+         'direction, but the term odd in the propagation direction makes interfaces and guides non-reciprocal: a '
+         'slab guide magnetised along z whose index profile is not mirror symmetric across it has beta_forward != '
+         'beta_backward (the non-reciprocal phase shift of magneto-optic isolators), and S_21(g) = S_12(-g) instead of '
+         'S_21 = S_12. Faraday rotation per length, for light along the magnetisation, theta_F = pi g / (lambda n) in '
+         'magnitude, so g = theta_F lambda n / pi: Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2, theta_F ~ -4500 '
+         'deg/cm) |g| ~ 0.009, Bi:YIG ~ 0.01-0.02; the sign of g for a given magnetisation is the material\'s. The '
+         'solve uses eta = eps^-1 per cell as for eps_xy: an E_x (E_y) face takes the mean of eps_xx - (eps_xy^2 + '
+         'g^2) / eps_yy (eps_yy - (eps_xy^2 + g^2) / eps_xx) and couples to the other component through eta_xy = '
+         '-(eps_xy + j g) / det, eta_yx = -(eps_xy - j g) / det (det = eps_xx eps_yy - eps_xy^2 - g^2, which must stay '
+         '> 0), so the operator is no longer symmetric: direct solves take a general LU (no LDL^T), and the adjoint '
+         '(eps_sensitivity, optimization) solves the transposed system, which is the solve with -g (g held fixed in '
+         'the gradient). Lossless g conserves power exactly on the grid (q_abs counts the diagonal loss only, as for '
+         'eps_xy). Allocated only when a material sets it; taken as 0 in PEC cells and the outer two cell rows of a '
+         'wall face. Mode ports, line-source / beam calibrations and the TFSF background do not see it (the build '
+         'warns for such a line on cells with gyration_z). Validation errors: symmetric / antisymmetric mirror faces '
+         'and parity sectors (a mirror image reverses the magnetisation), triangles meshes, and every other EM type '
+         '(em_modes takes gyration_x / gyration_y for its non-reciprocal phase shift).',
+    tip='Strength of the magneto-optic effect of a magnetised material, such as cerium-doped yttrium iron garnet, '
+        'magnetised perpendicular to the drawing. Light then travels differently forward and backward, as in an '
+        'optical isolator. Usually empty.\n\n'
+        'About 0.009 for cerium-doped garnet at 1550 nm; reversing the magnetisation flips its sign.'),)
 
 
 # ---- feature parameters ----
@@ -843,10 +872,34 @@ def _off_diagonal_issues(vctx, physics_spec, path):
                                 'there); the eps_xy_sensitivity field gives dJ / d eps_xy')]
 
 
+def _gyration_issues(vctx, physics_spec, path):
+    """H_z with a selected material setting gyration_z: errors for mirror faces (a mirror image reverses the
+    magnetisation, so parity sectors too) and a triangles mesh; info in an optimization study (g held fixed)."""
+    if not selected_material_sets(vctx, (GYRATION_Z,)):
+        return []
+    issues = []
+    faces = sorted(mirror_faces(vctx.spec))
+    if faces:
+        issues.append(Issue('error', path, f"a material sets gyration_z (magneto-optic) while {', '.join(faces)} "
+                                           f"{'is a mirror face' if len(faces) == 1 else 'are mirror faces'}: the "
+                                           'mirror image of a magnetisation along z is the reversed magnetisation, so '
+                                           'the mirrored model (and its parity sectors) is not the drawn one; model '
+                                           'the whole structure with cpml / periodic / wall faces'))
+    if mesh_kind(vctx) == 'triangles':
+        issues.append(Issue('error', path, 'gyration_z (a non-reciprocal magneto-optic medium) runs on tensor meshes '
+                                           'only: the triangles-mesh pencil is solved as complex symmetric; use a '
+                                           'tensor mesh'))
+    if vctx.study_type == OPTIMIZATION_STUDY:
+        issues.append(Issue('info', path, 'gyration_z: the adjoint solves the transposed (reversed-magnetisation) '
+                                          'system and the gradient holds gyration_z fixed'))
+    return issues
+
+
 def _make_validate_physics(slot_arrays):
     """validate(vctx, physics_spec, settings_values) of an FDFD type: the shared EM checks (periodic pairing,
     materials, slot writers, resolution and skin depth at every solved wavelength) plus the study override, the
-    time_dependent rules, the linear solver, (H_z) the eps_xy optimization rule and the triangles-mesh rules."""
+    time_dependent rules, the linear solver, (H_z) the eps_xy optimization rule and the gyration_z rules, and the
+    triangles-mesh rules."""
     shared_validate = make_validate_physics(slot_arrays, time_domain=False, solved_wavelengths=all_solved_wavelengths)
     hz = 'eps_xx_update' in slot_arrays
 
@@ -857,6 +910,7 @@ def _make_validate_physics(slot_arrays):
         issues.extend(_time_dependent_issues(vctx, physics_spec, path))
         if hz:
             issues.extend(_off_diagonal_issues(vctx, physics_spec, path))
+            issues.extend(_gyration_issues(vctx, physics_spec, path))
         issues.extend(direct_solver_issues(vctx, physics_spec, settings_values, path))
         issues.extend(_line_block_solver_issues(vctx, physics_spec, settings_values, path))
         issues.extend(fdfd_bloch_issues(vctx, physics_spec, settings_values))
@@ -961,7 +1015,7 @@ def _fdfd_physics_type(polarization):
     optional_schema = {}
     if polarization == 'hz':   # eps_xy: allocated when a material sets it; the slot adds coupled changes to it
         source_slots[OFF_DIAGONAL_SLOT] = _EPS_XY_SLOT_DOC
-        optional_schema = {OFF_DIAGONAL_ARRAY: (0.0, (OFF_DIAGONAL_ARRAY,))}
+        optional_schema = {OFF_DIAGONAL_ARRAY: (0.0, (OFF_DIAGONAL_ARRAY,)), GYRATION_Z: (0.0, (GYRATION_Z,))}
     return PhysicsType(
         name=type_name,
         label=_PHYSICS_LABELS[polarization],

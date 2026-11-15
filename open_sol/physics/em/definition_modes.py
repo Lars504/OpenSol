@@ -2,7 +2,7 @@
 dispersion features) on definition_common, with its templates and self-tests; definition.register calls register."""
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT64_BYTES, MemoryEstimate
-from ...model.definition_helpers import eigen_factorization, eigen_role
+from ...model.definition_helpers import eigen_factorization, eigen_role, selected_material_sets
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
 from ...solvers.line_block import factor_solve_ops
@@ -18,7 +18,7 @@ from .cross_section_modes import (BEND_MODELS, LINE_BLOCK_BOTH_PERIODIC_TEXT, cp
                                   mode_default_basis, size_issue_for)
 from .definition_bloch import bloch_active_axes, bloch_params, fdfd_bloch_issues, fdfd_domain_requirements
 from .fem_modes import DISCRETIZATION_ORDERS, FEM_ENTRIES_PER_ROW, FEM_LU_FILL_FACTOR, PERIODIC_TEXT, estimated_unknowns
-from .materials import EM_MATERIAL_SCHEMAS
+from .materials import EM_MATERIAL_SCHEMAS, GYRATION_ARRAYS
 from .memory_estimates import modes_memory_estimate, pec_memory_estimate
 from .nonlinear_overlap import RING_CRYSTALS, VOIGT_NAMES, shg_overlap_result, voigt_tensor
 from .renderer import ModeRenderer
@@ -204,6 +204,32 @@ _MATERIAL_PROPERTIES = em_material_params('modes', {
                 'absorbers only).'),
 }, tips={'eps_zz': ('Permittivity for the electric field along z, the direction the light travels.\n\n'
                     "When set it replaces 'Relative permittivity' for that direction.")})
+_GYRATION_HELP = (
+    'Gyration g_{axis} (real, default 0) of a magneto-optic material magnetised along {axis}, across the guide: the '
+    'gyration vector (g_x, g_y, 0) adds eps_ij += j e_ijk g_k (exp(+j omega t)), so eps_yz = -eps_zy = j g_x and eps_zx = '
+    '-eps_xz = j g_y; Hermitian (lossless) for real g, which changes sign with the magnetisation. It does NOT enter the '
+    'mode solve: every mode gets the first-order non-reciprocal phase shift delta_beta = beta_forward - '
+    'beta_backward = -(omega eps0 / P) integral [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA (the perturbation '
+    'formula of Mizumoto / Shintaku; P = 1 W, the solved mode travelling toward +z), scalar output delta_beta_<k> and '
+    'mode_table column delta_beta; error ~ g^2 relative (n_eff itself moves only by ~g^2, not computed). '
+    '{field} couples to the longitudinal E_z, so a transverse magnetisation along {axis} shifts the modes with E '
+    'mostly along {other} (g_x: quasi-TM, E along y; g_y: quasi-TE, E along x), and only where the guide is not '
+    'mirror symmetric across {other} (a magneto-optic cladding on one side, or opposite magnetisations on two sides: '
+    'push-pull). A pi phase difference needs L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, n ~ 2.2): '
+    '|g| ~ 0.009 from its Faraday rotation ~ -4500 deg/cm (g = theta_F lambda n / pi); the sign for a given '
+    'magnetisation is the material\'s. Allocated only when a material sets it. Validation errors: a {mirror} mirror '
+    'face (its image reverses the magnetisation), a bend, a triangles mesh, and every other EM type (em_fdfd_hz takes '
+    'gyration_z, magnetisation out of the plane, in its operator).')
+_GYRATION_TIP = ('Strength of the magneto-optic effect of a material magnetised along {axis}, such as cerium-doped '
+                 'yttrium iron garnet: light then travels with a slightly different effective index forward and '
+                 'backward, the effect behind optical isolators. Usually empty.\n\n'
+                 'About 0.009 for cerium-doped garnet at 1550 nm; reversing the magnetisation flips its sign.')
+_GYRATION_PROPERTIES = tuple(
+    Param(name, 'float', 0.0, label=f'Gyration, {axis} (magneto-optic)', unit='1', field_dependent=True,
+          expands_to=(name,), help=_GYRATION_HELP.format(axis=axis, other=other, field=field, mirror=mirror),
+          tip=_GYRATION_TIP.format(axis=axis))
+    for name, axis, other, field, mirror in (('gyration_x', 'x', 'y', 'E_y', 'y_lo / y_hi'),
+                                             ('gyration_y', 'y', 'x', 'E_x', 'x_lo / x_hi')))
 
 # ---- features ----
 _MODE_SCALARS = (
@@ -214,8 +240,10 @@ _MODE_SCALARS = (
     'industry-standard TE polarisation fraction: 1 = E along x, e.g. the quasi-TE mode of a strip on a substrate '
     'parallel to the xz plane, 0 = E along y), effective_area = (integral |E|^2 dA)^2 / integral |E|^4 dA in m^2 (all '
     'three components at the cell centres; the nonlinear-optics definition; like the 1 W normalisation it covers the '
-    'whole mode, mirror images included) and pml_fraction (share of the '
-    "mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding)")
+    'whole mode, mirror images included), pml_fraction (share of the '
+    "mode's |H|^2 in PML cells: kept modes have < 0.5, and above ~1e-2 the PML shapes the mode: widen the cladding) "
+    'and delta_beta (beta_forward - beta_backward in 1/m, the first-order non-reciprocal phase shift of the '
+    'gyration_x / gyration_y materials; 0 without them)')
 _MODE_TABLE_DESCRIPTION = (
     "Mode table of the last solve (a frequency_domain study: its last wavelength). Result 'table', one row per mode "
     f'found, by descending Re(beta^2) (see n_modes): mode_number (1-based rank), {_MODE_SCALARS}, and selected (True for the '
@@ -636,16 +664,41 @@ def _triangle_issues(vctx, physics_spec, settings_values, path):
     return issues + fem_size_issues(vctx, physics_spec, settings_values, path)
 
 
+def _gyration_issues(vctx, settings_values, path):
+    """A selected material setting gyration_x / gyration_y: errors for a mirror face normal to the other transverse
+    axis (its image reverses that magnetisation), a bend and a triangles mesh."""
+    issues = []
+    set_names = [name for name in GYRATION_ARRAYS[MODE_POLARIZATION] if selected_material_sets(vctx, (name,))]
+    for name, axis in (('gyration_x', 'y'), ('gyration_y', 'x')):
+        faces = [face for face in (f'{axis}_lo', f'{axis}_hi')
+                 if name in set_names and settings_values[f'bc_{face}'] in ('symmetric', 'antisymmetric')]
+        if faces:
+            issues.append(Issue('error', path, f"a material sets {name} while {' / '.join(faces)} is a mirror face: "
+                                               f'the mirror image of a magnetisation along {name[-1]} is reversed, so '
+                                               'the mirrored guide is not the drawn one; model that side whole'))
+    if set_names and settings_values['bend_radius'] != 0.0:
+        issues.append(Issue('error', path, f"{' / '.join(set_names)}: the non-reciprocal phase shift is computed for "
+                                           'straight guides only; set bend_radius to 0'))
+    if set_names and mesh_kind(vctx) == 'triangles':
+        issues.append(Issue('error', path, f"{' / '.join(set_names)}: the non-reciprocal phase shift is computed on "
+                                           'tensor meshes only; use a tensor mesh'))
+    return issues
+
+
 def _scalar_outputs(settings_values, physics_spec):
-    """n_eff_1 .. n_eff_<n_modes> (ModePhysics.scalars)."""
-    return tuple(f'n_eff_{number}' for number in range(1, int(settings_values['n_modes']) + 1))
+    """n_eff_1 .. n_eff_<n_modes>, delta_beta_1 .. delta_beta_<n_modes> (ModePhysics.scalars)."""
+    numbers = range(1, int(settings_values['n_modes']) + 1)
+    return tuple(f'n_eff_{number}' for number in numbers) + tuple(f'delta_beta_{number}' for number in numbers)
 
 
 _SCALAR_OUTPUTS_HELP = (
     'n_eff_<k> for k = 1 .. n_modes (unit 1): Re n_eff of mode k of the last solve, ranked as mode_table (a '
     'frequency_domain study: its last wavelength). A mode that was not found has no value: its derived value is NaN '
     'plus a run-log warning. Example derived value {"name": "n_eff_te0", "expression": "modes_n_eff_1"} (operation '
-    'mean of a constant is the value itself); in a parameter sweep it gives n_eff per value.')
+    'mean of a constant is the value itself); in a parameter sweep it gives n_eff per value. delta_beta_<k> (unit '
+    '1/m): beta_forward - beta_backward of mode k, the first-order non-reciprocal phase shift of the gyration_x / '
+    'gyration_y materials (0 without them; NaN for an evanescent mode); a pi phase difference needs L_pi = pi / '
+    '|delta_beta_<k>|.')
 
 _SHARED_VALIDATE = make_validate_physics(MODE_PERMITTIVITY_SLOTS, time_domain=False,
                                          solved_wavelengths=all_solved_wavelengths)
@@ -653,8 +706,8 @@ _SHARED_VALIDATE = make_validate_physics(MODE_PERMITTIVITY_SLOTS, time_domain=Fa
 
 def _validate_physics(vctx, physics_spec, settings_values):
     """The shared EM checks (periodic pairing, materials, slot writers, resolution and skin depth at every solved
-    wavelength), the unused wavelength setting, other EM types, the bend, the solver, the Bloch settings and the
-    triangles-mesh rules."""
+    wavelength), the unused wavelength setting, other EM types, the bend, the solver, the Bloch settings, the
+    triangles-mesh rules and the gyration rules."""
     path = ('physics', physics_spec.name)
     issues = _SHARED_VALIDATE(vctx, physics_spec, settings_values)
     issues.extend(unused_wavelength_issues(vctx, settings_values, path))
@@ -663,6 +716,7 @@ def _validate_physics(vctx, physics_spec, settings_values):
     issues.extend(_solver_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_bloch_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
+    issues.extend(_gyration_issues(vctx, settings_values, path))
     return issues
 
 
@@ -754,8 +808,9 @@ EM_MODES = PhysicsType(
             'effective index, loss, polarisation and field shape of each mode, optionally heated or bent.',
     settings=_SETTINGS,
     features=_FEATURES,
-    material_properties=_MATERIAL_PROPERTIES,
+    material_properties=_MATERIAL_PROPERTIES + _GYRATION_PROPERTIES,
     material_schema=EM_MATERIAL_SCHEMAS[MODE_POLARIZATION],
+    optional_material_schema={name: (0.0, (name,)) for name in GYRATION_ARRAYS[MODE_POLARIZATION]},
     state_fields=tuple(ModeRenderer.field_infos[name]
                        for name in ('e_intensity', 'sz', *MODE_PERMITTIVITY_ARRAYS, 'sigma_e')),
     output_fields=tuple(ModeRenderer.field_infos.values()),

@@ -34,7 +34,7 @@ from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DER
                      GLOBAL_DERIVED_OPERATION, INTERFACE_OPERATIONS, SOURCE_FREE_DERIVED_OPERATIONS,
                      INTERFACE_PROJECTIONS, INTERFACE_SIDES, INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS,
                      MEMORY_CHECKS, MESH_KINDS, MESH_PARAMS,
-                     PERMITTIVITY_PROPERTY_NAMES,
+                     GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES,
                      PRECISIONS, SELECTION_KINDS, SOURCE_DERIVED_OPERATIONS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                      SOLVER_ROLES, Issue, ValidationContext, check_value,
                      conformal_boundaries_physics, coupling_role_text, coupling_type_accepts, coupling_writes,
@@ -599,11 +599,11 @@ class _Validator:
 
     def _check_unread_properties(self, path, properties, property_params, type_names, read_names):
         """Warn for user-set properties no present physics type declares (the builder ignores them); permittivity
-        names are left to the EM types' own hint when any present type reads permittivity."""
+        and gyration names are left to the EM types' own checks when any present type reads permittivity."""
         reads_permittivity = any(name in PERMITTIVITY_PROPERTY_NAMES for name in read_names)
         unread = [key for key, raw in properties.items()
                   if raw is not None and key in property_params and key not in read_names
-                  and not (reads_permittivity and key in PERMITTIVITY_PROPERTY_NAMES)]
+                  and not (reads_permittivity and key in PERMITTIVITY_PROPERTY_NAMES + GYRATION_PROPERTY_NAMES)]
         if unread:
             self.warning(path, f"{', '.join(unread)} {'is' if len(unread) == 1 else 'are'} not read by the present "
                                f"physics ({', '.join(type_names)}) and ignored; they read: "
