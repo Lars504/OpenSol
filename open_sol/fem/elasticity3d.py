@@ -2,7 +2,8 @@
 P2 with interleaved dofs (3 d + component) on a full-mesh scalar DofMap3D, Voigt rows (xx, yy, zz, yz, xz, xy;
 engineering shear), stiffness of a per-element 6 x 6 Voigt matrix (isotropic or anisotropic c_ij), the piezoelectric
 coupling block to a scalar potential on the same map, consistent mass, stress / body / face-traction loads, element
-strains / scalar gradients and their nodal average over an element subset. Prestress pieces (new_modules_plan K1): the
+strains / scalar gradients and their nodal average over an element subset, the strain source int phi beta . eps
+(thermoelastic damping). Prestress pieces (new_modules_plan K1): the
 geometric stiffness K_sigma (PML stretch capable), initial-stress force, stress sampling of a fem.elasticity StressField
 and the total-Lagrangian Green-Lagrange internal force / tangent (the K6 Newton of physics/mechanics/solver_fem3d; its
 iterations on TangentAssembler3D: fixed pattern, cached rule gradients; device=True runs them on cupy). Affine
@@ -225,6 +226,26 @@ def assemble_stress_load_3d(dofs, stress, elements=None) -> np.ndarray:
         operator = strain_operator_3d(piola_vectors_3d(reference_gradients, geometry))
         local = np.einsum('mqki,mk,mq->mi', operator, stress[chunk], _volume_weights(geometry, rule))
         scatter_add(result, vector_dofs_3d(dofs.element_dofs[chunk]), local)
+    return result
+
+
+def assemble_strain_source_3d(dofs, displacement, beta, elements=None) -> np.ndarray:
+    """Scalar vector (n,) of int phi_a (beta . eps(u)) dV on the map's Lagrange basis (the transpose of
+    assemble_stress_load_3d of beta theta) for nodal displacement (n, 3) real or complex (a complex vector then), beta
+    (n_elements, 6) Voigt rows per element (engineering shear); thermoelastic damping's strain-rate heat source."""
+    _require_vector(dofs, 'assemble_strain_source_3d')
+    mesh = dofs.mesh
+    beta = np.asarray(beta, dtype=np.float64)
+    displacement = np.asarray(displacement).reshape(-1)
+    elements = _element_list(mesh, elements)
+    result = np.zeros(dofs.n_dofs, dtype=np.result_type(displacement, np.float64))
+    rule = tetrahedron_rule(_rule_degree(2 * dofs.order - 1, None))
+    values, reference_gradients = lagrange_basis_3d(dofs.order, rule.points)
+    for chunk, geometry in element_chunks_3d(mesh, elements):
+        operator = strain_operator_3d(piola_vectors_3d(reference_gradients, geometry))
+        local_u = displacement[vector_dofs_3d(dofs.element_dofs[chunk])]
+        source = np.einsum('mqki,mi,mk->mq', operator, local_u, beta[chunk])
+        scatter_add(result, dofs.element_dofs[chunk], (source * _volume_weights(geometry, rule)) @ values)
     return result
 
 
