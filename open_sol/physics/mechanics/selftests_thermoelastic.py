@@ -1,13 +1,14 @@
 """Model-run self-tests of the thermoelastic_damping feature (solid_mechanics on tensor and triangle meshes,
 solid_mechanics_3d on tetrahedra): Zener / Lifshitz-Roukes damping of thin-beam flexure and of a clamped circular plate
 (axisymmetric, plate strength Delta (1 + nu) / (1 - nu)), the frequency shift and the combined Q with a loss factor;
-no physics imports."""
+the template 'silicon_beam_thermoelastic_damping'; no physics imports."""
 import cmath
 import math
 
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import SubChecks, cpu_defaults
-from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
+from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
+                           PhysicsSpec, StudySpec)
 
 _PHYSICS = 'solid'
 _TED = 'ted'
@@ -137,6 +138,35 @@ def _beam_3d_spec():
                          mesher='builtin')],
         study=StudySpec(type=_STUDY, settings={'n_resonances': 1}),
         solver_defaults=cpu_defaults())   # the TED evaluation is host SuperLU either way
+
+
+# ---- template 'silicon_beam_thermoelastic_damping' (registered by definition.py) ----
+SILICON_BEAM_TED_LABEL = 'Silicon beam thermoelastic damping'
+SILICON_BEAM_TED_DESCRIPTION = (
+    'Solid mechanics (plane stress), eigenfrequency: half of a simply supported library-silicon beam (h = 2 um, L = 80 '
+    'um, mirror roller at mid-span), its symmetric flexural modes with a resonance table and the thermoelastic_damping '
+    'table (Q_TED per mode, T0 293.15 K); derived f_1 (1.19 MHz) and Q_ted_1 (1.3e5: far below the Debye peak, omega '
+    'tau ~0.04; the 3rd and 5th flexural modes at 10.7 / 29 MHz reach 1.7e4 / 1.0e4, the peak Delta / 2 ~ 1e-4 sits '
+    'near omega tau = 1; a lower k_beam or a thicker beam moves the fundamental towards it).')
+
+
+def silicon_beam_ted_spec():
+    """Template 'silicon_beam_thermoelastic_damping': Q_TED of a simply supported silicon beam (plane stress)."""
+    return ModelSpec(
+        title=SILICON_BEAM_TED_LABEL,
+        parameters=[ParameterSpec('h_beam', '2*um', 'beam thickness along y'),
+                    ParameterSpec('L_beam', '80*um', 'beam length (the half beam L / 2 is drawn)'),
+                    ParameterSpec('k_beam', 130.0, 'thermal conductivity [W/(m K)] (library silicon 130)')],
+        domain=DomainSpec(size_x='L_beam/2', size_y='h_beam'),
+        materials=[MaterialSpec('beam', library='silicon', properties={'k': 'k_beam'}, selection=['all'])],
+        physics=[PhysicsSpec(_PHYSICS, 'solid_mechanics', settings={'out_of_plane': 'plane_stress'},
+                             features=[FeatureSpec('support', 'displacement', ['x_lo'], params={'u_y': 0.0}),
+                                       FeatureSpec('mid_span', 'roller', ['x_hi']),
+                                       FeatureSpec('modes', 'resonance_table'), _ted_feature()])],
+        mesh=MeshSpec(mode='uniform', dx='h_beam/16'),
+        study=StudySpec(type=_STUDY, settings={'n_resonances': 3}),
+        derived_values=[DerivedValueSpec('f_1', 'frequency', operation='at', source=f'{_PHYSICS}.{_TED}', at=0),
+                        DerivedValueSpec('Q_ted_1', 'q_ted', operation='at', source=f'{_PHYSICS}.{_TED}', at=0)])
 
 
 def _first_row(results):

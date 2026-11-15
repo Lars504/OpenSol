@@ -62,6 +62,7 @@ from .modal import EXTRA_EIGENVALUES
 from .optical_force import make_optical_force_transforms
 from .renderer import SolidRenderer
 from .selftests import HEATED_WAVEGUIDE_STRESS_DESCRIPTION, HEATED_WAVEGUIDE_STRESS_LABEL, heated_waveguide_stress_spec
+from .selftests_thermoelastic import SILICON_BEAM_TED_DESCRIPTION, SILICON_BEAM_TED_LABEL, silicon_beam_ted_spec
 from .solver import (GENERALIZED_PLANE_STRAIN, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
                      SolidMechanicsPhysics)
 from .solver_common import SupportRegion
@@ -2256,7 +2257,8 @@ def _selftest_cases(em_types):
 def register(registry):
     """solid_mechanics, solid_mechanics_3d (definition3d.register: type, template, 3D selftest loader), the
     heat_solid_thermal_strain coupling (both targets), solid_em_strain_optic (with family-'em' types) and
-    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress' and the optomechanics templates
+    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress', 'silicon_beam_thermoelastic_damping' and
+    the optomechanics templates
     (definition_optomechanics), then the 2D selftest loader (bound to the registered em types)."""
     registry.register_physics(SOLID_MECHANICS)
     definition3d.register(registry)
@@ -2272,5 +2274,10 @@ def register(registry):
         heated_waveguide_stress_spec,
         summary='Thermal stress in the cross-section of a silicon waveguide under a gold heater: the heat spreads into '
                 'the silica, everything expands, and the silicon core ends up compressed. Steady state.')
+    registry.register_template(
+        'silicon_beam_thermoelastic_damping', SILICON_BEAM_TED_LABEL, SILICON_BEAM_TED_DESCRIPTION,
+        silicon_beam_ted_spec,
+        summary='Vibration modes of a thin silicon beam and how much of each vibration is lost to heat flowing '
+                'between its compressed and stretched sides (thermoelastic damping).')
     register_optomechanics_templates(registry, em_types)
     registry.register_selftests(partial(_selftest_cases, em_types))
