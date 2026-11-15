@@ -299,7 +299,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   complex symmetric nor Hermitian, so `ModalPencil._pencil` asks a general ShiftPencil (symmetric = vouched) and
   `eigs_shifted` honours the caller pencil's flag (LU). Tensor complex modes: `_show_complex_mode` (real parts, u_abs).
 - ARPACK can return only some copies of an exactly degenerate band (the Q1 square cell's 4-fold c_T 2 pi / a band at
-  Gamma came back 3-fold with n = 4): cases ask a few more modes than they grade.
+  Gamma came back 3-fold with n = 4; guided at k_z = 0 its 8-fold in-plane + antiplane band 4-fold even with n = 10):
+  cases ask a few more modes than they grade, or grade at a k off the symmetry point.
 - Self-tests `selftests_bloch2d.py` (also the template solid_bloch_band_diagram: definition.py imports it, so its
   sibling selftests imports stay inside functions; listed in import_contracts TEMPLATE_SOURCES); example
   examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: periodic frequency responses (the harmonic

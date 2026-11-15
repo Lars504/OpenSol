@@ -521,16 +521,17 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
                     free_body=False, held_elsewhere=False):
     """Error without a held u_x or u_y anywhere (rigid translation; none for guided modes at k_z > 0, incl. the
     study-set backward k_z, at k_z = 0 also without a held u_z; axisymmetric: u_y only, the axis holds u_r; free_body
-    (triangles, free_body_allowed): an info instead; held_elsewhere: none, a clamped PML ring or an azimuthal order m
-    >= 2 leaves no rigid motion); warning per face component held by several features and per boundary load on a fully
+    (triangles, free_body_allowed): an info instead; held_elsewhere: none, a clamped PML ring, an azimuthal order m
+    >= 2 or a Bloch cell (bloch_issues_2d decides) leaves no rigid motion); warning per face component held by several features and per boundary load on a fully
     held face."""
     holders = support_holders(vctx, physics_spec, _held_components)
     held_directions = {component for _, component in holders}
     if axisymmetric:
         held_directions.add('x')   # u_r = 0 on the axis; a radial translation strains the hoop, so it is no rigid mode
     issues = []
-    if axial_wavenumber == 0.0 and not any(feature.enabled and feature.type in ('fixed', 'fixed_domain')
-                                           for feature in physics_spec.features):
+    if axial_wavenumber == 0.0 and not held_elsewhere and not any(feature.enabled and feature.type in
+                                                                  ('fixed', 'fixed_domain')
+                                                                  for feature in physics_spec.features):
         issues.append(Issue('error', path,
                             'axial_wavenumber 0: the antiplane (u_z) modes need u_z held, else the solid translates '
                             'freely along z: add a Fixed face or a Fixed (domain) region (Roller and Displacement leave '
