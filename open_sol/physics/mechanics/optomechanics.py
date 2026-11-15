@@ -541,7 +541,7 @@ class OptomechanicalCoupling:
 
     def __init__(self, name, optical_physics, optical_mode, length, moving_boundary=True, photoelastic=True,
                  reference_point=None, quality_factor=None, scattering='forward', crystal_regions=(),
-                 prescribed_normal_displacement=None, axis_point=(0.0, 0.0, 0.0)):
+                 prescribed_normal_displacement=None, axis_point=(0.0, 0.0, 0.0), quality_from=None):
         if scattering not in SCATTERING:
             raise ValueError(f"scattering must be one of {', '.join(SCATTERING)}, got {scattering!r}")
         self.name = name
@@ -554,6 +554,8 @@ class OptomechanicalCoupling:
         self.crystal_regions = tuple(crystal_regions)
         self.backward = scattering == 'backward'   # guided vibration modes at k_z = 2 Re beta, the twin overlap
         self.quality_factor = quality_factor   # mechanical Q_m of the Brillouin gain column (None: NaN)
+        # name of a thermoelastic_damping feature of the solid: its per-mode q_total is Q_m instead (None: not used)
+        self.quality_from = quality_from
         self.optical_physics = optical_physics
         self.optical_mode = int(optical_mode)
         self.length = float(length)
@@ -566,6 +568,17 @@ class OptomechanicalCoupling:
     def axial_wavenumber(self, optical):
         """k_z [rad/m] the vibration modes need: 2 Re beta of the optical mode (backward), None (forward: plane strain)."""
         return backward_axial_wavenumber(optical, self.optical_mode) if self.backward else None
+
+    def _quality_factors(self, solid, count) -> list:
+        """Q_m per mode of the Brillouin gain: q_total of the solid's thermoelastic_damping feature named by
+        quality_from (thermoelastic.ThermoelasticDamping in solid.thermoelastic_dampings), else quality_factor."""
+        if not self.quality_from:
+            return [self.quality_factor] * count
+        damping = getattr(solid, 'thermoelastic_dampings', {}).get(self.quality_from)
+        if damping is None:
+            raise ValueError(f"optomechanical_coupling '{self.name}': quality_from '{self.quality_from}' is no built "
+                             'thermoelastic_damping feature of the solid')
+        return [row[-1] for row in damping.rows(solid)]   # q_total, the last thermoelastic.TABLE_COLUMNS entry
 
     def evaluate(self, optical, solid):
         """Table (and om_integrand densities) of every mode of solid's last eigenfrequency solve against the optical
@@ -594,11 +607,12 @@ class OptomechanicalCoupling:
         crystal_regions = [(mask[data['window']], tensor) for mask, tensor in self.crystal_regions]
         shapes = [scaled_mode_shape(number, resonance.displacement, data['node_shape'], reference, components)
                   for number, resonance in enumerate(resonances, start=1)]   # once per mode: rows and integrands
+        qualities = self._quality_factors(solid, len(resonances))
         rows = [mode_coupling_row(number, overlap, resonance.omega, resonance.displacement, data['node_shape'],
                                   data['mass'], data['solid'], data['p11'], data['p12'], data['dx'], data['dy'],
                                   self.length, reference, self.moving_boundary, self.photoelastic, data['p44'],
-                                  self.quality_factor, wavenumber, crystal_regions, scaled=shape)
-                for number, (resonance, shape) in enumerate(zip(resonances, shapes), start=1)]
+                                  quality, wavenumber, crystal_regions, scaled=shape)
+                for number, (resonance, shape, quality) in enumerate(zip(resonances, shapes, qualities), start=1)]
         self.integrands = [moving_boundary_density(overlap, shape, data['dx'], data['dy']) for shape in shapes]
         omega = overlap.omega
         self.table = {

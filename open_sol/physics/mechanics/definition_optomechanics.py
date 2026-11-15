@@ -7,7 +7,7 @@ from ...core.constants import FACES
 from ...model.definition_helpers import evaluates_to
 from ...model.geometry import expand_entities
 from ...model.schema import FeatureType, Issue, Param, feature_path, subpixel_smoothing_physics
-from .definition_common import OPTOMECHANICS_STUDY, plain_value
+from .definition_common import OPTOMECHANICS_STUDY, TED_FEATURE, plain_value
 from .optomechanics import (NORMALISATIONS, OPTOMECHANICS_TABLE_COLUMNS, SCATTERING, OptomechanicalCoupling,
                             optomechanical_table_result)
 from .selftests_optomechanics import (SILICON_DISK_G0_DESCRIPTION, SILICON_DISK_G0_LABEL, SILICON_RING_G0_DESCRIPTION,
@@ -70,6 +70,13 @@ _PARAMS = (
                'undamped). Typical 100-1000 (silicon wires at room temperature).',
           tip='Damping of the vibrations (quality factor), used only for the Brillouin gain of a waveguide mode; '
               'empty leaves the gain out.'),
+    Param('quality_from', 'str', '', label='Quality factor from damping feature',
+          help='Name of a thermoelastic_damping feature of this solid whose per-mode q_total (thermoelastic damping '
+               'combined with the other losses of that table) is Q_m of the brillouin_gain column instead of '
+               "mechanical_quality_factor (set one of the two); '' = not used. Forward scattering with an em_modes "
+               'optical physics only (the guided modes of backward scattering have no thermoelastic damping).',
+          tip='Takes the quality factor of every vibration mode from a thermoelastic damping feature of this solid '
+              'instead of the fixed value above. Leave empty to use the fixed value.'),
     Param('scattering', 'choice', 'forward', label='Brillouin scattering', choices=SCATTERING,
           choice_labels=(('forward', 'Forward (vibrations in the cross-section)'),
                          ('backward', 'Backward (vibrations travelling along the guide)')),
@@ -138,7 +145,7 @@ _DESCRIPTION = (
     f"row per vibration mode: {', '.join(OPTOMECHANICS_TABLE_COLUMNS)} (Hz, kg, m, rad/s/m, 1/m; g0 columns are g0 / "
     '2 pi in Hz, signed: total = moving boundary + photoelastic; brillouin_gain [1/(W m)] = the forward intramodal '
     "G_B = 2 Q_m (d beta / d alpha)^2 / (omega m' Omega^2), m' = m_eff / length, em_modes with "
-    'mechanical_quality_factor only, else NaN). scattering backward (em_modes): the vibration modes are the guided '
+    'mechanical_quality_factor (or the per-mode q_total of the thermoelastic_damping feature named by quality_from) only, else NaN). scattering backward (em_modes): the vibration modes are the guided '
     'modes at k_z = 2 Re beta (set by the study), |Q| and m_eff include u_z, the overlap is kappa = omega (I_mb + I_pe) '
     '/ (4 P) between the mode and its counter-propagating twin (E_x, E_y, -E_z) with the conjugated phonon strain '
     '(S_zz = k_z u_z, shears S_xz / S_yz with p44 pairing E_x / E_y and E_z; the E_z terms flip sign), g_om = -(C0 / '
@@ -204,7 +211,8 @@ def _apply(ctx, solver, feature_spec, values, selection):
                                       values['mechanical_quality_factor'], values['scattering'],
                                       _crystal_regions(ctx) if values['photoelastic'] and tensor else (),
                                       prescribed_normal_displacement=values['prescribed_normal_displacement'],
-                                      axis_point=(values['axis_x'], values['axis_y'], 0.0))
+                                      axis_point=(values['axis_x'], values['axis_y'], 0.0),
+                                      quality_from=values['quality_from'] or None)
     solver.optomechanical_couplings.append(coupling)
     return coupling
 
@@ -224,6 +232,25 @@ def _roller_faces(vctx, physics_spec):
         except (ValueError, TypeError):
             continue
     return faces
+
+
+def _quality_from_issues(physics_spec, values, path):
+    """Errors for a quality_from that names no enabled thermoelastic_damping feature of the solid, is set together
+    with mechanical_quality_factor or with backward scattering."""
+    name = values.get('quality_from') or ''
+    if not name:
+        return []
+    issues = []
+    feature = next((feature for feature in physics_spec.features if feature.name == name), None)
+    if feature is None or feature.type != TED_FEATURE or not feature.enabled:
+        issues.append(Issue('error', path, f"quality_from '{name}' is no enabled {TED_FEATURE} feature of "
+                                           f"'{physics_spec.name}'"))
+    if values.get('mechanical_quality_factor') is not None:
+        issues.append(Issue('error', path, 'set either mechanical_quality_factor or quality_from, not both'))
+    if values['scattering'] == 'backward':
+        issues.append(Issue('error', path, 'quality_from needs scattering forward: the guided modes of backward '
+                                           'scattering have no thermoelastic damping'))
+    return issues
 
 
 def _backward_issues(physics_spec, feature_spec, values, path):
@@ -460,7 +487,11 @@ def _validate(vctx, physics_spec, feature_spec, values):
             issues.append(Issue('info', path, f"'{name}' uses the conformal bend map: the overlaps use its mapped "
                                               'permittivity, an approximation second order in the mode width / R '
                                               "(bend_model 'exact' has none)"))
+        issues.extend(_quality_from_issues(physics_spec, values, path))
     else:
+        if values.get('quality_from'):
+            issues.append(Issue('info', path, 'quality_from is read only with an em_modes optical physics (waveguide '
+                                              'Brillouin gain): brillouin_gain reads NaN here'))
         if values.get('mechanical_quality_factor') is not None:
             issues.append(Issue('info', path, 'mechanical_quality_factor is read only with an em_modes optical physics '
                                               '(waveguide Brillouin gain): brillouin_gain reads NaN here'))

@@ -767,7 +767,11 @@ _TED_TEMPERATURE_PARAM = Param(
 
 def _apply_thermoelastic_damping(ctx, solver, feature_spec, values, selection):
     from .thermoelastic import ThermoelasticDamping
-    return ThermoelasticDamping(feature_spec.name, values['T0'])
+    damping = ThermoelasticDamping(feature_spec.name, values['T0'])
+    if not hasattr(solver, 'thermoelastic_dampings'):   # name -> runtime (optomechanical_coupling quality_from)
+        solver.thermoelastic_dampings = {}
+    solver.thermoelastic_dampings[feature_spec.name] = damping
+    return damping
 
 
 def _thermoelastic_damping_result(session, solver, runtime, feature_spec, options):

@@ -140,7 +140,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `system.unknown`, `_write_outputs(thermal=False)`; n_solves stays 0, so support reactions raise (results left out
   with a warning). rho is in both material schemas (3D: one more float32 full-grid array in every study).
 - Shared definition pieces (`definition_common`): `resonance_table_feature(order_text)` (callbacks read
-  `physics.eigen_solve`), `modal_study_issues`, `modal_resonance_count`.
+  `physics.eigen_solve`), `thermoelastic_damping_feature(grids, where_text)`, `modal_study_issues`,
+  `modal_resonance_count`.
 - `ModalPencil` (2D and 3D): free-dof reduction (or P^H K P) once; kind 'symmetric' / 'damped' (loss, PML) /
   'loaded' (resistive electrode); one factor kept across shifts (`previous=`, cuDSS plan reuse); K, M, load matrix as
   host CSR, plus the eigen runtime's `ShiftPencil` (`_pencil()`) that count_below / eigsh_shifted / eigs_shifted all
@@ -634,6 +635,27 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   meshes show 0 and refuse probes.
 - Initial-stress balance: finalize build warning (validation has no mesh) when sigma0 is not self-equilibrated and no
   static solve relaxes it (Bloch, PML, free body).
+
+## Thermoelastic damping (`thermoelastic.py`, feature thermoelastic_damping; definition_common)
+- Post-processing of the last `eigen_solve` (both modal studies), evaluated on the first result read and kept per
+  solve object (identity): solid_mechanics tensor (own Q1 2 x 2 Gauss scalar assembly, not the elastic stencils) and
+  triangles, solid_mechanics_3d tetrahedra (a tensor 3D mesh raises: matrix-free modes). Formula, sign convention and
+  discretisation in the module header; the help text is the user contract (keep both in step).
+- Needs `modal_mass` of the same solve (stored energy = omega^2 Re(u^H M u), never K: complex PML / loss pencils) and
+  the solver's beta (`_thermal_coefficients` / `_thermal_stress` of the last assembly, plane stress reduced): a new
+  solid variant listing the modal studies keeps both, or the feature's validation must refuse it. Refused: piezo,
+  guided, azimuthal_order >= 1, Bloch cells; PML ring / shell elements are left out of the thermal problem.
+- One host SuperLU per mode through a private `SparseDirectSolver('scipy_splu', 'cpu')` (no solver role: a feature
+  evaluation like the squeeze films; not in work_counters); host memory booked by the feature's memory_estimate.
+- q_other: a damped pencil's Q (PML + loss factor on element meshes) or, on the tensor mesh (undamped pencil), the
+  perturbative eta from `_harmonic_operators[1]`; tetrahedra add the squeeze films' gas Q (never both for one loss).
+- Materials: k / k_xx / k_yy / k_zz / cp are solid Params mirroring heat's (kind, unit, bounds, flags: the registry
+  check), arrays `OPTIONAL_TED_SCHEMA`, allocated by any material setting one of them, so a solid of library silicon
+  / silica carries four more arrays even without the feature (a heat physics allocates them anyway).
+- Accuracy (selftests_thermoelastic.py vs Lifshitz-Roukes): planar tensor 16 cells over h 0.4 % (8 cells: 1 % off the
+  Debye peak), tensor axisymmetric slower (+5 / +1.4 / +0.45 % at 4 / 8 / 16 cells over h), P2 triangles / tetrahedra
+  ~0.3 % at 4 / 2 elements over h; slender-beam theory itself is (h / L)^2 off (Timoshenko shear energy, ~0.5 % at L /
+  h = 20).
 
 ## Reused sweep builds (SweepSpec.reuse_build; model sub file)
 - Flagged values (`definition_common.following`): body_force f_*, boundary_load / segment_load t_*, displacement /

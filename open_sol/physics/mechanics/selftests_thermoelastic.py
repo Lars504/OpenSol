@@ -216,7 +216,7 @@ _THEORY = ('Lifshitz-Roukes 1 / Q = Delta Im f, f = 24 / (k h)^3 (k h / 2 - tan(
            '(omega tau)^2), tau = h^2 / (pi^2 D), within 2 %, recorded per run), at the computed omega')
 _MATERIAL_TEXT = (f'E {_YOUNGS_MODULUS:g} Pa, nu {_POISSON_RATIO:g}, rho {_DENSITY:g}, cp {_HEAT_CAPACITY:g}, alpha '
                   f'{_EXPANSION:g}, T0 {_T0:g} K, h {_THICKNESS * 1e6:g} um; k sets omega tau')
-THERMOELASTIC_CASES = (
+_TED_2D_CASES = (
     SelfTestCase(
         name='solid_thermoelastic_damping',
         label='Solid mechanics: thermoelastic damping of a beam and a plate (Zener)',
@@ -265,4 +265,58 @@ THERMOELASTIC_3D_CASES = (
                      f'{_THEORY} within {_TOLERANCE_3D:g} (~0.5 % below: the Timoshenko shear energy at L / h = 20), '
                      f'shift within {_SHIFT_TOLERANCE:g}. measured = error = failed sub-checks.'),
         specs=_specs_3d, check=_check_3d),
+)
+
+
+# ---- optomechanical_coupling quality_from: Q_m of the Brillouin gain per mode from the TED table ----
+_FIXED_QUALITY = 1000.0
+_BRILLOUIN_PHYSICS = 'solid'   # = selftests_brillouin's solid name
+
+
+def _quality_from_specs():
+    """The uniform-guide optomechanics model of om_backward_brillouin_chain with forward scattering (plane-strain
+    modes), a thermal material, a thermoelastic_damping feature and two couplings: 'fixed' (mechanical_quality_factor)
+    and 'damped' (quality_from the TED feature)."""
+    from .selftests_brillouin import _chain_specs
+    spec = _chain_specs()['backward']
+    spec.solver_defaults = cpu_defaults()
+    solid = next(physics for physics in spec.physics if physics.name == _BRILLOUIN_PHYSICS)
+    solid.settings = {'target_frequency': 0.0}
+    coupling = next(feature for feature in solid.features if feature.type == 'optomechanical_coupling')
+    fixed = dict(coupling.params, scattering='forward', mechanical_quality_factor=_FIXED_QUALITY)
+    damped = {name: value for name, value in fixed.items() if name != 'mechanical_quality_factor'}
+    solid.features = [feature for feature in solid.features if feature is not coupling] + [
+        FeatureSpec('fixed', 'optomechanical_coupling', params=fixed),
+        FeatureSpec('damped', 'optomechanical_coupling', params={**damped, 'quality_from': _TED}), _ted_feature()]
+    spec.materials[0].properties.update({'cp': _HEAT_CAPACITY, 'alpha': _EXPANSION, 'k': 1.0})
+    return {'forward': spec}
+
+
+def _check_quality_from(results_by_name):
+    results = results_by_name['forward']
+    fixed, damped = (results.result(_BRILLOUIN_PHYSICS, name) for name in ('fixed', 'damped'))
+    column = fixed['columns'].index('brillouin_gain')
+    ted = results.result(_BRILLOUIN_PHYSICS, _TED)
+    total = ted['columns'].index('q_total')
+    checks = SubChecks()
+    checks.add('rows', len(fixed['rows']) == len(damped['rows']) == len(ted['rows']) > 0, len(ted['rows']))
+    for number, (row_fixed, row_damped, row_ted) in enumerate(zip(fixed['rows'], damped['rows'], ted['rows']), 1):
+        expected = float(row_fixed[column]) * float(row_ted[total]) / _FIXED_QUALITY
+        checks.add_relative(f'mode {number} gain', float(row_damped[column]), expected, 1e-9)
+    return checks.result()
+
+
+THERMOELASTIC_CASES = _TED_2D_CASES + (
+    SelfTestCase(
+        name='om_thermoelastic_quality_factor',
+        label='Optomechanics: Brillouin gain with the thermoelastic Q of each mode',
+        description=('optomechanics study of the uniform guide of om_backward_brillouin_chain with forward scattering '
+                     '(plane-strain modes; em_modes on the cpu) and a thermal material, two optomechanical_coupling '
+                     f"features: 'fixed' with mechanical_quality_factor {_FIXED_QUALITY:g}, 'damped' with quality_from "
+                     "the thermoelastic_damping feature: per mode the 'damped' brillouin_gain must be the 'fixed' one x "
+                     'q_total / 1000 of the TED table (relative 1e-9; G_B is linear in Q_m). Pins the per-mode Q_m '
+                     'plumbing only (the uniform guide couples weakly in forward). measured = error = failed '
+                     'sub-checks.'),
+        specs=_quality_from_specs, check=_check_quality_from,
+        heavy=True),   # ~15 s on the cpu: the em_modes solve of the periodic guide (the TED part is milliseconds)
 )
