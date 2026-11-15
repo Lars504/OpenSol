@@ -1,9 +1,10 @@
 """Bloch / Floquet unit cells of solid_mechanics_3d on tetrahedra (piezo_3d_plan stage 5): the reduced pencil
 identities on a two-material slab cell (CPU, no model), bulk bands of all-periodic cells against the Christoffel
 equation (isotropic, rotated LN, a k = 0 cell with its rigid modes dropped), the piezoelectrically stiffened LN bands,
-gmsh periodic surfaces (skipped without gmsh) and the 'solid_bloch_band_diagram_3d' template. definition3d registers
-them."""
+gmsh periodic surfaces (skipped without gmsh), the 'solid_bloch_band_diagram_3d' template and the mode_shapes result of
+its cell. definition3d registers them."""
 import math
+from dataclasses import replace
 
 import numpy as np
 
@@ -11,7 +12,7 @@ from ...core.constants import EPS0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result, worst_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, ParameterSpec,
-                           PhysicsSpec, StudySpec, SweepSpec)
+                           PhysicsSpec, SolverDefaultsSpec, StudySpec, SweepSpec)
 from .selftests import _elastic, _lame
 
 # definition3d imports this module for its template: the sibling 3D selftests modules load inside the checks only
@@ -301,13 +302,15 @@ BAND_DIAGRAM_3D_DESCRIPTION = (
     '0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = '
     'k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz '
     '(resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between '
-    'them are the phononic band gaps of the corrugation.')
+    'them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (File > '
+    'Export animation, or show <run dir> --html: animated modes beside the band diagram).')
 _TEMPLATE_PERIOD = 0.5e-6
 _TEMPLATE_WIDTH = 0.75e-6        # wing width (domain y)
 _TEMPLATE_CORE = 0.25e-6         # core width and the film thickness
 _TEMPLATE_K_FRACTIONS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
 _TEMPLATE_TARGET = 4e9           # Hz
 _TEMPLATE_BANDS = 8
+_SHAPES = 'shapes'               # the template's mode_shapes feature
 
 
 def solid_bloch_band_diagram_3d_spec():
@@ -329,10 +332,101 @@ def solid_bloch_band_diagram_3d_spec():
         geometry=geometry,
         materials=[MaterialSpec('silicon', properties=_elastic(169e9, 0.28, rho=2329.0), selection=['core', 'wing'])],
         physics=[PhysicsSpec(_SOLID, 'solid_mechanics_3d', settings=settings,
-                             features=[FeatureSpec(_TABLE, 'resonance_table')])],
+                             features=[FeatureSpec(_TABLE, 'resonance_table'),
+                                       FeatureSpec(_SHAPES, 'mode_shapes')])],
         meshes=[MeshSpec(name='tetrahedra', kind='tetrahedra', mode='uniform', dx=62.5e-9, mesher='builtin')],
         study=StudySpec(type='eigenfrequency', settings={'n_resonances': _TEMPLATE_BANDS},
                         sweep=SweepSpec('k_fraction', list(_TEMPLATE_K_FRACTIONS))))
+
+
+# ---- solid_fem3d_bloch_mode_shapes: the mode_shapes result of the template cell at one k ----
+# The template without its sweep at k_fraction 0.25 (k a = pi / 2, a complex Bloch pencil), cpu, plus a mode_shapes
+# feature: its frequencies / numbers are the resonance_table rows; on every x_lo / x_hi surface node pair u_hi = u_lo
+# exp(-j k a) (phase_convention); the triangles close the solid outward (divergence theorem: sum a . (b x c) / 6 = the
+# drawn core + wing volume, exact on the conforming Kuhn mesh); keys, dtypes and shapes as RESULT_KIND_DOCS.
+_SHAPES_K_FRACTION = 0.25
+_SHAPES_BLOCH_TOLERANCE = 1e-6    # of the peak |u| (1 m): float32 storage of the displacement
+_SHAPES_EXACT_TOLERANCE = 1e-12   # relative: copies of the same float64 numbers / exact geometry
+_SHAPES_DTYPES = {'nodes': ('float64', 2), 'triangles': ('int32', 2), 'resonance_number': ('int32', 1),
+                  'frequency': ('float64', 1), 'q_factor': ('float64', 1), 'displacement_re': ('float32', 3),
+                  'displacement_im': ('float32', 3), 'bloch_k': ('float64', 1), 'periodic': ('int8', 1),
+                  'period': ('float64', 1)}
+
+
+def _mode_shapes_spec():
+    """The band-diagram template (which holds the mode_shapes feature _SHAPES) at k_fraction _SHAPES_K_FRACTION, no
+    sweep, cpu backend."""
+    spec = solid_bloch_band_diagram_3d_spec()
+    parameters = [replace(parameter, expression=_SHAPES_K_FRACTION) if parameter.name == 'k_fraction' else parameter
+                  for parameter in spec.parameters]
+    return replace(spec, title='Self-test: mode shapes of the phononic nanobeam cell', parameters=parameters,
+                   study=replace(spec.study, sweep=None), solver_defaults=SolverDefaultsSpec(backend='cpu'))
+
+
+def _contract_problems(shapes):
+    """[text] of mode_shapes keys missing or of another dtype / rank / size than RESULT_KIND_DOCS."""
+    problems = [f'{key} missing' for key in (*_SHAPES_DTYPES, 'kind', 'phase_convention', 'unit') if key not in shapes]
+    for key, (dtype, rank) in _SHAPES_DTYPES.items():
+        value = shapes.get(key)
+        if value is not None and (str(np.asarray(value).dtype) != dtype or np.ndim(value) != rank):
+            problems.append(f'{key}: {np.asarray(value).dtype} rank {np.ndim(value)}, expected {dtype} rank {rank}')
+    if problems:
+        return problems
+    n_nodes, count = shapes['nodes'].shape[0], shapes['frequency'].size
+    expected_shapes = {'nodes': (n_nodes, 3), 'triangles': (shapes['triangles'].shape[0], 3),
+                       'resonance_number': (count,), 'q_factor': (count,), 'displacement_re': (count, n_nodes, 3),
+                       'displacement_im': (count, n_nodes, 3), 'bloch_k': (3,), 'periodic': (3,), 'period': (3,)}
+    problems += [f'{key}: shape {shapes[key].shape}, expected {shape}' for key, shape in expected_shapes.items()
+                 if shapes[key].shape != shape]
+    if shapes['triangles'].min() < 0 or shapes['triangles'].max() >= n_nodes:
+        problems.append('triangles index outside nodes')
+    if shapes['kind'] != 'mode_shapes' or shapes['unit'] != 'm' or 'exp(-j k L)' not in shapes['phase_convention']:
+        problems.append(f"kind / unit / phase_convention: {shapes['kind']!r}, {shapes['unit']!r}, "
+                        f"{shapes['phase_convention']!r}")
+    return problems
+
+
+def _check_mode_shapes(results_by_name):
+    """Frequencies against the resonance table, the Bloch relation on the periodic surface pairs, the outward closed
+    surface volume, the cell data and the result contract."""
+    from scipy.spatial import cKDTree
+    results = results_by_name['cell']
+    shapes = results.result(_SOLID, _SHAPES)
+    rows = results.result(_SOLID, _TABLE)['rows']
+    errors, tolerances, details = {}, {}, {}
+    problems = _contract_problems(shapes)
+    errors['contract'], tolerances['contract'] = (math.inf if problems else 0.0), 1.0
+    details['contract_problems'] = problems
+    if problems:
+        return scaled_worst_result(errors, tolerances, **details)
+    table = np.array([float(row[1]) for row in rows])
+    numbers_match = np.array_equal(shapes['resonance_number'], [int(row[0]) for row in rows])
+    errors['frequencies'] = (_band_error(shapes['frequency'], table) if numbers_match else math.inf)
+    nodes, triangles = shapes['nodes'], shapes['triangles']
+    displacement = shapes['displacement_re'].astype(np.float64) + 1j * shapes['displacement_im']
+    low = np.flatnonzero(np.isclose(nodes[:, 0], nodes[:, 0].min(), rtol=0.0, atol=1e-6 * _TEMPLATE_PERIOD))
+    high = np.flatnonzero(np.isclose(nodes[:, 0], nodes[:, 0].max(), rtol=0.0, atol=1e-6 * _TEMPLATE_PERIOD))
+    distance, partner = cKDTree(nodes[low][:, 1:]).query(nodes[high][:, 1:])
+    wavenumber = _SHAPES_K_FRACTION * 2.0 * math.pi / _TEMPLATE_PERIOD
+    paired = len(low) == len(high) > 0 and float(distance.max()) <= 1e-9 * _TEMPLATE_PERIOD
+    mismatch = displacement[:, high] - displacement[:, low[partner]] * np.exp(-1j * wavenumber * _TEMPLATE_PERIOD)
+    peak = float(np.abs(displacement).max())
+    errors['bloch_relation'] = float(np.abs(mismatch).max()) / peak if paired and peak > 0.0 else math.inf
+    corner = nodes[triangles]
+    volume = float(np.einsum('ij,ij->i', corner[:, 0], np.cross(corner[:, 1], corner[:, 2])).sum()) / 6.0
+    expected_volume = _TEMPLATE_CORE * (_TEMPLATE_PERIOD * _TEMPLATE_CORE
+                                        + 0.5 * _TEMPLATE_PERIOD * (_TEMPLATE_WIDTH - _TEMPLATE_CORE))
+    errors['outward_surface_volume'] = abs(volume / expected_volume - 1.0)
+    cell = np.concatenate([shapes['bloch_k'] / np.array([wavenumber, 1.0, 1.0]) - [1.0, 0.0, 0.0],
+                           shapes['period'] / [_TEMPLATE_PERIOD, _TEMPLATE_WIDTH, _TEMPLATE_CORE] - 1.0])
+    errors['cell'] = (float(np.abs(cell).max()) if np.array_equal(shapes['periodic'], [1, 0, 0]) else math.inf)
+    tolerances.update({'frequencies': _SHAPES_EXACT_TOLERANCE, 'bloch_relation': _SHAPES_BLOCH_TOLERANCE,
+                       'outward_surface_volume': _SHAPES_EXACT_TOLERANCE, 'cell': _SHAPES_EXACT_TOLERANCE})
+    details.update({'n_nodes': int(nodes.shape[0]), 'n_triangles': int(triangles.shape[0]),
+                    'periodic_pairs': int(len(high)), 'complex_modes': bool(np.abs(shapes['displacement_im']).max()),
+                    'frequencies_Hz': shapes['frequency'].tolist(), 'volume_m3': volume,
+                    'expected_volume_m3': expected_volume})
+    return scaled_worst_result(errors, tolerances, **details)
 
 
 BLOCH_FEM_3D_CASES = (
@@ -372,4 +466,16 @@ BLOCH_FEM_3D_CASES = (
                      f'the translated position within {_GMSH_TOLERANCE:g} of the side, and the P2 Bloch masters build '
                      '(Lagrange edge partners without the node-order rule). Pins the .geo Periodic Surface rows.'),
         specs=dict, check=_check_gmsh_periodic),
+    SelfTestCase(
+        name='solid_fem3d_bloch_mode_shapes', label='Solid mechanics 3D on tetrahedra: Bloch mode shapes result',
+        description=('The solid_bloch_band_diagram_3d template without its sweep at k_fraction '
+                     f'{_SHAPES_K_FRACTION:g} (bloch_kx a = pi / 2: complex modes), cpu backend, plus a mode_shapes '
+                     'feature: resonance_number and frequency equal the resonance_table rows (relative '
+                     f'{_SHAPES_EXACT_TOLERANCE:g}); on every x_lo / x_hi surface node pair u_hi = u_lo exp(-j k a) '
+                     f'(the phase_convention) within {_SHAPES_BLOCH_TOLERANCE:g} of the peak |u| (float32 storage); '
+                     'the P2-split surface triangles close the solid outward: sum a . (b x c) / 6 = the core + wing '
+                     f'volume within {_SHAPES_EXACT_TOLERANCE:g} (conforming builtin mesh); bloch_k, periodic, '
+                     'period of the cell and the key / dtype / shape contract of RESULT_KIND_DOCS. measured = error '
+                     '= the worst deviation in tolerance units, tolerance 1.'),
+        specs=lambda: {'cell': _mode_shapes_spec()}, check=_check_mode_shapes),
 )

@@ -796,6 +796,16 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                 'p11': _host(materials.photoelastic_p11), 'p12': _host(materials.photoelastic_p12), 'p44': None,
                 'mass': self.modal_mass, 'axial_wavenumber': None}
 
+    @property
+    def solid_elements(self):
+        """Read-only host bool (n_elements,) of the elements with stiffness in the last assembly (c11 > 0: the solid of
+        the window and of any PML shell; void elements False); None before the first assembly."""
+        if self._solid is None:
+            return None
+        solid = np.array(to_host(self._solid), dtype=bool)
+        solid.flags.writeable = False
+        return solid
+
     def add_squeeze_film(self, film):
         """Register a squeeze_film.SqueezeFilmDamping (evaluated after every eigenfrequency solve); returns it."""
         self.squeeze_films.append(film)

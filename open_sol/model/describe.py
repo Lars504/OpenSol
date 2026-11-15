@@ -1203,6 +1203,8 @@ _RESULTS_NOTES = (
         'xy: {kind, x_label, x_unit, n_points, x_min, x_max, series {name: {unit, min, max, x_at_max}}}; statistics '
         'over the finite values only (NaN marks a value that could not be computed).',
         'table: {kind, columns, units, n_rows, rows [the first 50 rows]}.',
+        'mode_shapes: {kind, n_nodes, n_triangles, n_resonances, frequencies [Hz per mode, resonance order], bloch_k '
+        '[rad/m per axis]}.',
         'Values that cannot be computed (empty arrays, no finite value) are null.',
     )),
     ('results.npz', (

@@ -210,6 +210,11 @@ def result_digest(result, max_intensity=None):
         return {'kind': kind, 'columns': [str(column) for column in result['columns']],
                 'units': [str(unit) for unit in result.get('units') or []], 'n_rows': len(rows),
                 'rows': json_safe(rows[:_MAX_DIGEST_TABLE_ROWS])}
+    if kind == 'mode_shapes':
+        frequency = _float_vector(result['frequency'])
+        return {'kind': kind, 'n_nodes': int(np.shape(result['nodes'])[0]),
+                'n_triangles': int(np.shape(result['triangles'])[0]), 'n_resonances': int(frequency.size),
+                'frequencies': frequency.tolist(), 'bloch_k': _float_vector(result['bloch_k']).tolist()}
     return {'kind': kind, 'keys': sorted(str(key) for key in result)}
 
 

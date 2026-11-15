@@ -54,3 +54,7 @@ Sub file of the root `structure_conventions.md` (read that first). File formats 
   the GUI 'Curves & tables' tab. A timeseries whose samples all share one t (stationary iterations) plots against the
   1-based iteration index (`analytic.is_iteration_series`; no FFT) in `_draw_timeseries` and the GUI Probes / Sweep
   tabs alike.
+- Result kind 'mode_shapes' (solid_mechanics_3d.mode_shapes): every array (int8 / int32 / float32 included) goes to
+  results.npz, phase_convention / unit to the metadata; its digest has no arrays (counts, frequencies, bloch_k).
+  Not a derived-value / curve kind (validation refuses it); result_plots draws its frequency table only (the shapes
+  animate in viz.mode_player); the GUI result tabs and the Sweep tab list it nowhere (sweep_value_curve None).

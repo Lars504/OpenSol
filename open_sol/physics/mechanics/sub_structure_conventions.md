@@ -535,6 +535,17 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   periodic face raise. Eigenfrequency only (`_bloch_issues`; `_support_issues` skips its support errors for Bloch
   cells). `_domain_requirements` declares periodic axes so gmsh writes periodic surfaces. Not built: static periodic
   solves.
+- mode_shapes feature (`mode_shapes.py`, result kind 'mode_shapes' in `schema.RESULT_KIND_DOCS`; tetrahedra only,
+  eigenfrequency / optomechanics, a validation error elsewhere): reads `eigen_solve` like resonance_table (same row
+  order) and the public `solid_elements` (read-only host copy of `_solid`) & window elements. Surface =
+  `interface_faces` of that set, oriented outward by the owner element's centroid; P2 faces split 1 -> 4 at their edge
+  dofs (`face_local_dofs` order a, b, c, ab, ac, bc), nodes = the used face dofs ascending (P1: unsplit). The ModeShapes
+  runtime caches the surface per (dof map, solid set); displacement = rows of the first 3 n_dofs (piezo phi dropped),
+  float32, solver normalisation. bloch_k / periodic from `system.bloch` (0 off periodic axes), period = node extent
+  (the L of the phase). No memory estimate: r x n_surface x 24 B per value, a fraction of the eigenvectors the eigen
+  items count; a sweep keeps one per value (host, results.npz). Self-test solid_fem3d_bloch_mode_shapes (template
+  cell at k a = pi / 2: phase exactly -j, the opposite sign fails by O(1)) pins the convention, the frequencies and the
+  closed outward surface (divergence-theorem volume).
 - Elastic PML (`pml3d.py`): `_domain_requirements` returns a `pml3d.PMLPadding` (meshing grows the shell, materials by
   the clamped-centroid rule); shell carries stiffness (`_elastic_elements`), outer faces held at 0, s = 1 - j beta (d /
   w)^2 frequency independent (pencil stays linear in omega^2). a damped ModalPencil (`shell_dofs`) keeps Re

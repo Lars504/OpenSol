@@ -33,7 +33,7 @@ INTERFACE_SIDES = ('inside', 'outside')   # SelectionSpec.side of an 'interface'
 INTERFACE_VARIABLES = ('normal_x', 'normal_y', 'tangent_x', 'tangent_y')
 INTERFACE_OPERATIONS = ('mean', 'max', 'min', 'integral')   # field operations over an interface selection
 INTERFACE_PROJECTIONS = ('normal', 'tangential')   # AnalyticCurveSpec.projection of an interface line curve
-RESULT_KINDS = ('timeseries', 'flux_spectrum', 'dft_fields', 'far_field', 'xy', 'table')
+RESULT_KINDS = ('timeseries', 'flux_spectrum', 'dft_fields', 'far_field', 'xy', 'table', 'mode_shapes')
 ISSUE_LEVELS = ('error', 'warning', 'info')
 FIELD_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'mode_volume', 'at')   # source None (fields)
 SOURCE_DERIVED_OPERATIONS = ('mean', 'max', 'min', 'integral', 'last', 'at', 'argmax', 'fwhm', 'polyfit', 'exp_fit',
@@ -1411,6 +1411,25 @@ RESULT_KIND_DOCS = {
         ('units', "unit of each column, list of str ('1' = dimensionless, '' = none)"),
         ('rows', 'one list per row with one value per column: number, str, bool or null; non-finite numbers are '
                  'floats, also in a loaded run (results.npz metadata stores them as "nan", "inf", "-inf")'),
+    ),
+    'mode_shapes': (
+        ('kind', "'mode_shapes', str"),
+        ('nodes', 'surface node positions, float64 (n, 3), m: the vertices (and, quadratic elements, edge midpoints) '
+                  'of the boundary faces of the solid, numbered compactly'),
+        ('triangles', 'surface triangles, int32 (m, 3), indices into nodes, counter-clockwise seen from outside the '
+                      'solid (quadratic elements: each face split into 4 at its edge midpoints)'),
+        ('resonance_number', '1-based resonance of each mode, int32 (r,), in the resonance_table row order'),
+        ('frequency', 'Re f of each mode, float64 (r,), Hz'),
+        ('q_factor', 'quality factor Re f / (2 Im f) of each mode, float64 (r,), 1; NaN for an undamped mode'),
+        ('displacement_re', 'real part of the complex nodal displacement, float32 (r, n, 3) (components x, y, z), m, '
+                            'as the solver normalises the mode'),
+        ('displacement_im', 'imaginary part of the same, float32 (r, n, 3), m (0 for a real mode)'),
+        ('bloch_k', 'Bloch wavenumber per axis (x, y, z) of the solve, float64 (3,), rad/m; 0 off the periodic axes'),
+        ('periodic', '1 per Bloch-periodic axis, else 0, int8 (3,)'),
+        ('period', 'cell length L per axis (the mesh extent), float64 (3,), m'),
+        ('phase_convention', "Bloch phase and time convention of the displacement, str, e.g. 'u(x + L) = u(x) "
+                             "exp(-j k L), time exp(+j omega t)'"),
+        ('unit', "unit of nodes and the displacement, str ('m')"),
     ),
 }
 

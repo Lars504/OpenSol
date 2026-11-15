@@ -44,12 +44,16 @@ def save_field_figure(field_data, path, title='', show_mesh=False, contours=0):
 
 def save_result_figure(result, path, title='', freq_index=None, curves=()):
     """PNG of a feature-result dict: timeseries, flux spectrum, far-field polar plot, DFT intensity map (freq_index
-    picks a frequency of 'intensity_all'), xy curves or table; curves [(label, abscissa in the result's units, values,
-    series)] are drawn dashed (far field: normalised, curve k in the colour of far_field_wavelengths(result)[k % n];
-    a table draws none: plot analytic.table_xy of it instead). Creates the parent directory; returns str(path)."""
+    picks a frequency of 'intensity_all'), xy curves, table or the frequency table of a mode_shapes result (the shapes
+    animate in viz.mode_player); curves [(label, abscissa in the result's units, values, series)] are drawn dashed (far
+    field: normalised, curve k in the colour of far_field_wavelengths(result)[k % n]; a table draws none: plot
+    analytic.table_xy of it instead). Creates the parent directory; returns str(path)."""
     if not isinstance(result, dict):
         raise TypeError(f'result must be a dict, got {type(result).__name__}')
     kind = result.get('kind')
+    if kind == 'mode_shapes':
+        result, kind = _mode_shapes_table(result), 'table'
+        title = title or 'Mode shapes'
     if kind not in _RESULT_FIGURE_SIZES:
         raise ValueError(f"cannot plot result kind {kind!r}; supported kinds: {', '.join(_RESULT_FIGURE_SIZES)}")
     if freq_index is not None and kind != 'dft_fields':
@@ -249,6 +253,14 @@ def _draw_table(ax, result, title):
 
 
 # ---- helpers ----
+def _mode_shapes_table(result):
+    """'table' of a mode_shapes result: one row per mode (resonance_number, frequency [Hz], q_factor)."""
+    rows = [[int(number), float(frequency), float(q_factor)] for number, frequency, q_factor
+            in zip(result['resonance_number'], result['frequency'], result['q_factor'])]
+    return {'kind': 'table', 'columns': ['resonance_number', 'frequency', 'q_factor'], 'units': ['1', 'Hz', '1'],
+            'rows': rows}
+
+
 def _figure_size(result, kind):
     """Figure size (inches) of a result: _RESULT_FIGURE_SIZES, grown by the xy unit panels or the table rows shown."""
     width, height = _RESULT_FIGURE_SIZES[kind]

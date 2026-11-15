@@ -14,171 +14,172 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. A line "Help: shared `<key>`" stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text, the first included, points there.
 
-- lines 183-526: Model spec
-- lines 528-645: Expressions
-- lines 647-912: Geometry
-- lines 914-1069: Materials
-- lines 1071-1117: Mesh
-- lines 1119-1238: Solvers
-- lines 1240-2070: Shared help texts
-- lines 2072-2237: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2239-2492: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2494-2625: Physics type `electric_currents` - Electric Currents
-- lines 2627-2829: Physics type `electrostatics` - Electrostatics
-- lines 2831-3055: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3057-3245: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3247-3360: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3362-3559: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3561-3733: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3735-4077: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4079-4441: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4443-4963: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4455-4482: Settings (PhysicsSpec.settings)
-  - lines 4484-4499: Material properties (MaterialSpec.properties)
-  - lines 4501-4542: Fields
-  - lines 4544-4548: Source slots
-  - lines 4550-4570: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4572-4632: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4634-4682: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4684-4704: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4706-4740: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4742-4751: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4753-4773: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4775-4795: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4797-4819: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4821-4835: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4837-4855: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4857-4871: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4873-4891: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4893-4905: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4907-4917: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4919-4931: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 4933-4945: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 4947-4963: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 4965-5272: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5274-5507: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5509-5912: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5521-5542: Settings (PhysicsSpec.settings)
-  - lines 5544-5555: Material properties (MaterialSpec.properties)
-  - lines 5557-5587: Fields
-  - lines 5589-5592: Source slots
-  - lines 5594-5610: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5612-5628: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5630-5650: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5652-5668: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5670-5690: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5692-5701: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5703-5721: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5723-5748: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5750-5775: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5777-5811: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5813-5823: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5825-5842: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5844-5858: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5860-5876: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5878-5894: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5896-5912: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5914-6325: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5926-5947: Settings (PhysicsSpec.settings)
-  - lines 5949-5962: Material properties (MaterialSpec.properties)
-  - lines 5964-5993: Fields
-  - lines 5995-5999: Source slots
-  - lines 6001-6023: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6025-6041: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6043-6063: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6065-6081: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6083-6103: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6105-6114: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6116-6134: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6136-6161: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6163-6188: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6190-6224: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6226-6236: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6238-6255: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6257-6271: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6273-6289: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6291-6307: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6309-6325: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6327-6532: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6534-6834: Physics type `heat` - Heat Transfer in Solids
-- lines 6836-6994: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 6996-7190: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7192-7360: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7362-7534: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7536-7843: Physics type `membrane` - Membrane
-- lines 7845-8078: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8080-8533: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8092-8141: Settings (PhysicsSpec.settings)
-  - lines 8143-8220: Material properties (MaterialSpec.properties)
-  - lines 8222-8279: Fields
-  - lines 8281-8285: Source slots
-  - lines 8287-8297: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8299-8309: Feature `solid_mechanics.roller` - Roller
-  - lines 8311-8324: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8326-8336: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8338-8351: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8353-8366: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8368-8381: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8383-8396: Feature `solid_mechanics.body_force` - Body force
-  - lines 8398-8409: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8411-8422: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8424-8434: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8436-8446: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8448-8483: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8485-8499: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8501-8515: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8517-8533: Feature `solid_mechanics.admittance` - Admittance
-- lines 8535-9077: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8547-8596: Settings (PhysicsSpec.settings)
-  - lines 8598-8725: Material properties (MaterialSpec.properties)
-  - lines 8727-8797: Fields
-  - lines 8799-8804: Source slots
-  - lines 8806-8816: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8818-8828: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8830-8845: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8847-8857: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8859-8874: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8876-8891: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 8893-8908: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 8910-8921: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 8923-8934: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 8936-8946: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 8948-8958: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 8960-8983: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 8985-9002: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9004-9021: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9023-9040: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9042-9077: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9079-9087: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9089-9097: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9099-9108: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9110-9119: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9121-9129: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9131-9139: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9141-9152: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9154-9162: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9164-9177: Coupling type `field_transfer` - Field transfer
-- lines 9179-9187: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9189-9197: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9199-9207: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9209-9217: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9219-9227: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9229-9237: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9239-9252: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9254-9263: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9265-9274: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9276-9310: Study type `eigenfrequency` - Eigenfrequency
-- lines 9312-9347: Study type `frequency_domain` - Frequency domain
-- lines 9349-9392: Study type `frequency_response` - Frequency response
-- lines 9394-9416: Study type `mode_analysis` - Mode analysis
-- lines 9418-9440: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9442-9458: Study type `optimization` - Optimization
-- lines 9460-9483: Study type `optomechanics` - Optomechanics
-- lines 9485-9506: Study type `stationary` - Stationary
-- lines 9508-9537: Study type `thermal_noise` - Thermal noise
-- lines 9539-9553: Study type `time_dependent` - Time dependent
-- lines 9555-9621: Templates
-- lines 9623-9842: Results, reports and files
+- lines 184-527: Model spec
+- lines 529-646: Expressions
+- lines 648-913: Geometry
+- lines 915-1070: Materials
+- lines 1072-1118: Mesh
+- lines 1120-1239: Solvers
+- lines 1241-2071: Shared help texts
+- lines 2073-2238: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2240-2493: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2495-2626: Physics type `electric_currents` - Electric Currents
+- lines 2628-2830: Physics type `electrostatics` - Electrostatics
+- lines 2832-3056: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3058-3246: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3248-3361: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3363-3560: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3562-3734: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3736-4078: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4080-4442: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4444-4964: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4456-4483: Settings (PhysicsSpec.settings)
+  - lines 4485-4500: Material properties (MaterialSpec.properties)
+  - lines 4502-4543: Fields
+  - lines 4545-4549: Source slots
+  - lines 4551-4571: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4573-4633: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4635-4683: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4685-4705: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4707-4741: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4743-4752: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4754-4774: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4776-4796: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4798-4820: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4822-4836: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4838-4856: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4858-4872: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4874-4892: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4894-4906: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4908-4918: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4920-4932: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 4934-4946: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 4948-4964: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 4966-5273: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5275-5508: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5510-5913: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5522-5543: Settings (PhysicsSpec.settings)
+  - lines 5545-5556: Material properties (MaterialSpec.properties)
+  - lines 5558-5588: Fields
+  - lines 5590-5593: Source slots
+  - lines 5595-5611: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5613-5629: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5631-5651: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5653-5669: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5671-5691: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5693-5702: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5704-5722: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5724-5749: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5751-5776: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5778-5812: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5814-5824: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5826-5843: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5845-5859: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5861-5877: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5879-5895: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5897-5913: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5915-6326: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5927-5948: Settings (PhysicsSpec.settings)
+  - lines 5950-5963: Material properties (MaterialSpec.properties)
+  - lines 5965-5994: Fields
+  - lines 5996-6000: Source slots
+  - lines 6002-6024: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6026-6042: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6044-6064: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6066-6082: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6084-6104: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6106-6115: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6117-6135: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6137-6162: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6164-6189: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6191-6225: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6227-6237: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6239-6256: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6258-6272: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6274-6290: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6292-6308: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6310-6326: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6328-6533: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6535-6835: Physics type `heat` - Heat Transfer in Solids
+- lines 6837-6995: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 6997-7191: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7193-7361: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7363-7535: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7537-7844: Physics type `membrane` - Membrane
+- lines 7846-8079: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8081-8534: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8093-8142: Settings (PhysicsSpec.settings)
+  - lines 8144-8221: Material properties (MaterialSpec.properties)
+  - lines 8223-8280: Fields
+  - lines 8282-8286: Source slots
+  - lines 8288-8298: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8300-8310: Feature `solid_mechanics.roller` - Roller
+  - lines 8312-8325: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8327-8337: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8339-8352: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8354-8367: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8369-8382: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8384-8397: Feature `solid_mechanics.body_force` - Body force
+  - lines 8399-8410: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8412-8423: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8425-8435: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8437-8447: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8449-8484: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8486-8500: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8502-8516: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8518-8534: Feature `solid_mechanics.admittance` - Admittance
+- lines 8536-9090: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8548-8597: Settings (PhysicsSpec.settings)
+  - lines 8599-8726: Material properties (MaterialSpec.properties)
+  - lines 8728-8798: Fields
+  - lines 8800-8805: Source slots
+  - lines 8807-8817: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8819-8829: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8831-8846: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8848-8858: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8860-8875: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8877-8892: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 8894-8909: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 8911-8922: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 8924-8935: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 8937-8947: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 8949-8959: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 8961-8971: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 8973-8996: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 8998-9015: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9017-9034: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9036-9053: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9055-9090: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9092-9100: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9102-9110: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9112-9121: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9123-9132: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9134-9142: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9144-9152: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9154-9165: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9167-9175: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9177-9190: Coupling type `field_transfer` - Field transfer
+- lines 9192-9200: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9202-9210: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9212-9220: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9222-9230: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9232-9240: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9242-9250: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9252-9265: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9267-9276: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9278-9287: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9289-9323: Study type `eigenfrequency` - Eigenfrequency
+- lines 9325-9360: Study type `frequency_domain` - Frequency domain
+- lines 9362-9405: Study type `frequency_response` - Frequency response
+- lines 9407-9429: Study type `mode_analysis` - Mode analysis
+- lines 9431-9453: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9455-9471: Study type `optimization` - Optimization
+- lines 9473-9496: Study type `optomechanics` - Optomechanics
+- lines 9498-9519: Study type `stationary` - Stationary
+- lines 9521-9550: Study type `thermal_noise` - Thermal noise
+- lines 9552-9566: Study type `time_dependent` - Time dependent
+- lines 9568-9634: Templates
+- lines 9636-9874: Results, reports and files
 
 ## Model spec
 
@@ -8542,7 +8543,7 @@ Params (FeatureSpec.params):
 - Backends (SolverDefaultsSpec.backend): gpu, cpu
 - Mesh kinds (MeshSpec.kind): tensor, tetrahedra; refinement indicator fields (when its solver has no error indicator of its own): u_abs
 - Dispersion poles (MaterialSpec.dispersion): not used
-- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, squeeze_film_damping, electrode, electrode_domain, admittance, optomechanical_coupling
+- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, mode_shapes, squeeze_film_damping, electrode, electrode_domain, admittance, optomechanical_coupling
 
 ### Settings (PhysicsSpec.settings)
 
@@ -8953,6 +8954,18 @@ Vibration modes of the last eigenfrequency study solve, the lowest first on a te
 - Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
 - Mesh kinds (MeshSpec.kind): tensor, tetrahedra
 - Result kind `table`
+
+Params (FeatureSpec.params):
+none
+
+### Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+
+Complex surface displacement of every resonance of the last eigenfrequency (or optomechanics) solve, tetrahedron mesh only; one result per sweep value (Results.sweep_result). Surface = the faces with exactly one solid window element (element with stiffness: youngs_modulus or c11; solid / void interfaces and the outer box faces of solid elements). Quadratic discretization: nodes = the three vertices and three edge midpoints of each surface face (its P2 dofs), each face split into 4 triangles; linear: the vertices and faces as they are. Triangles counter-clockwise seen from outside the solid. Result 'mode_shapes': nodes (n, 3) m, triangles (m, 3), resonance_number / frequency [Hz] / q_factor (NaN undamped) in the resonance_table row order, displacement_re / _im (r, n, 3) float32 m with the solver normalisation (peak node |u| = 1 m, its largest component real positive; real modes have _im = 0), bloch_k (3,) rad/m (0 off the periodic axes), periodic (3,) 0 / 1, period (3,) = the mesh extent per axis in m and phase_convention: the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)). A piezoelectric potential is not kept. Size about r x n x 24 bytes per value.
+
+- FeatureSpec.type `mode_shapes`; category monitor
+- Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
+- Mesh kinds (MeshSpec.kind): tetrahedra
+- Result kind `mode_shapes`
 
 Params (FeatureSpec.params):
 none
@@ -9600,7 +9613,7 @@ The model JSON of each template is in api_templates.md beside this file (its Con
 - `flux_concentrator_needle_ac` - Flux-concentrator needle, AC: Magnetic fields AC, axisymmetric, stationary sweep over the frequency f = 10 Hz .. 30 kHz: the flux_concentrator_needle model (Metglas needle r = 31 um, l = 15 mm, mu_dc 1e5, applied axial field amplitude B_ext = 1e-4 T) with the needle conductivity sigma_needle = 7e5 S/m and magnetic loss mu_dc_loss = loss_tangent mu_dc: eddy currents screen the needle once the skin depth falls below its radius (~1 kHz), so the gain = B_sensor / B_ext (mean |B| over a 31 um disc a gap = 100 um below the tip; EF = 20 log10(gain) dB) drops with frequency. Uses physics magnetic_fields_ac; features magnetic_fields_ac.external_field; study stationary.
 - `needle_3d` - Flux concentrator needle (3D): Magnetostatics (3D, stationary): a 15 mm x 125 um x 25 um Metglas needle (mu_dc 1e5) along z in a uniform axial field B_ext (external_field, 10 x 10 x 35 mm window held at the applied potential), the geometry of Carey et al. 2026 on coarse 25 um cells around the needle and its lower tip (graded by 1.3 to 1 mm, by 1.5 to 2 mm outside). Derived values: gain_h50 = mean |B| / B_ext over a sensor box 50 um below the tip and EF_h50 = 20 log10(gain) against the prolate-spheroid estimate (Eq. 2 with m = l / sqrt(w t)); line curve B_axis: |B| on the needle axis below the tip against Eq. 2. The converged, paper-matched run is experiments/Ben_flux/needle_3d_scalar_potential. Uses physics magnetostatics_3d; features magnetostatics_3d.external_field; study stationary.
 - `heated_chip_stress_3d` - Heated chip stress (3D): Heat + solid mechanics 3D, stationary: a 1 x 1 x 0.5 mm silicon block on a 300 K heat sink (z_lo, also clamped) with a 0.4 mm square chip dissipating 0.8 W in its top 50 um, convection on z_hi; heat_solid_thermal_strain hands the temperature rise to the solid; derived T_max, von_mises_max, u_z_max. Uses physics heat, solid_mechanics_3d; features heat.temperature, heat.convection, heat.heat_source, solid_mechanics_3d.fixed; couplings heat_solid_thermal_strain; study stationary.
-- `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D): Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. Uses physics solid_mechanics_3d; features solid_mechanics_3d.resonance_table; study eigenfrequency.
+- `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D): Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (File > Export animation, or show <run dir> --html: animated modes beside the band diagram). Uses physics solid_mechanics_3d; features solid_mechanics_3d.resonance_table, solid_mechanics_3d.mode_shapes; study eigenfrequency.
 - `heated_waveguide_stress` - Heated waveguide stress: Heat + solid mechanics (plane strain), stationary: cross-section of a 0.48 x 0.22 um silicon waveguide in silica under a 2 x 0.2 um gold heater (P_heater = 20 W/m), substrate y_lo held at 293.15 K and clamped, rollers on the sides; heat_solid_thermal_strain hands the temperature rise (~5 K at the core) to the solid; derived T_core, stress_xx_core, stress_yy_core, von_mises_max. Uses physics heat, solid_mechanics; features heat.heat_source, heat.temperature, heat.convection, solid_mechanics.fixed, solid_mechanics.roller; couplings heat_solid_thermal_strain; study stationary.
 - `silicon_ring_breathing_g0` - Silicon ring breathing g0: Optomechanics study: quasi-TE0 mode (em_modes, 1.55 um, group index) and the lowest in-plane vibration modes of a suspended 450 x 220 nm silicon strip (quarter domain with mirrors and rollers), optomechanical_coupling table of g0 / 2 pi (moving boundary, photoelastic, total) for a ring of R = 10 um (length 2 pi R). Uses physics em_modes, solid_mechanics; features em_modes.mode_table, solid_mechanics.roller, solid_mechanics.optomechanical_coupling; study optomechanics.
 - `silicon_disk_wgm_g0` - Silicon disk breathing g0: Optomechanics study: in-plane whispering-gallery resonance (em_fdfd_hz eigen-solve near 1.55 um, quarter domain with mirrors) and the vibration modes of a 2D silicon disk of R = 1.5 um in air (plane strain, rollers on the mirror faces), optomechanical_coupling table of g0 / 2 pi (moving boundary, photoelastic, total) for a 220 nm thick disk (length). Uses physics em_fdfd_hz, solid_mechanics; features solid_mechanics.roller, solid_mechanics.optomechanical_coupling; study optomechanics.
@@ -9720,6 +9733,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - far_field: {kind, quantity, unit, n_wavelengths, n_angles, wavelengths, power_max [per wavelength: the largest finite power], angle_at_max_deg [per wavelength]}.
 - xy: {kind, x_label, x_unit, n_points, x_min, x_max, series {name: {unit, min, max, x_at_max}}}; statistics over the finite values only (NaN marks a value that could not be computed).
 - table: {kind, columns, units, n_rows, rows [the first 50 rows]}.
+- mode_shapes: {kind, n_nodes, n_triangles, n_resonances, frequencies [Hz per mode, resonance order], bloch_k [rad/m per axis]}.
 - Values that cannot be computed (empty arrays, no finite value) are null.
 
 ### results.npz
@@ -9840,3 +9854,21 @@ Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.
 - `columns`: column names, list of str
 - `units`: unit of each column, list of str ('1' = dimensionless, '' = none)
 - `rows`: one list per row with one value per column: number, str, bool or null; non-finite numbers are floats, also in a loaded run (results.npz metadata stores them as "nan", "inf", "-inf")
+
+#### Result kind `mode_shapes`
+
+Produced by: solid_mechanics_3d.mode_shapes
+
+- `kind`: 'mode_shapes', str
+- `nodes`: surface node positions, float64 (n, 3), m: the vertices (and, quadratic elements, edge midpoints) of the boundary faces of the solid, numbered compactly
+- `triangles`: surface triangles, int32 (m, 3), indices into nodes, counter-clockwise seen from outside the solid (quadratic elements: each face split into 4 at its edge midpoints)
+- `resonance_number`: 1-based resonance of each mode, int32 (r,), in the resonance_table row order
+- `frequency`: Re f of each mode, float64 (r,), Hz
+- `q_factor`: quality factor Re f / (2 Im f) of each mode, float64 (r,), 1; NaN for an undamped mode
+- `displacement_re`: real part of the complex nodal displacement, float32 (r, n, 3) (components x, y, z), m, as the solver normalises the mode
+- `displacement_im`: imaginary part of the same, float32 (r, n, 3), m (0 for a real mode)
+- `bloch_k`: Bloch wavenumber per axis (x, y, z) of the solve, float64 (3,), rad/m; 0 off the periodic axes
+- `periodic`: 1 per Bloch-periodic axis, else 0, int8 (3,)
+- `period`: cell length L per axis (the mesh extent), float64 (3,), m
+- `phase_convention`: Bloch phase and time convention of the displacement, str, e.g. 'u(x + L) = u(x) exp(-j k L), time exp(+j omega t)'
+- `unit`: unit of nodes and the displacement, str ('m')

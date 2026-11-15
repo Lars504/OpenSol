@@ -432,7 +432,7 @@ function cssRgb(name) { const v = cssColor(name); if (v.startsWith('#')) return 
 let themeColors = null;
 function readTheme() { const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
   themeColors = { clearTop: cssRgb('--view-top'), clearBottom: cssRgb('--view-bottom'), dark,
-    line: dark ? [0.02, 0.03, 0.05, 0.55] : [0.06, 0.08, 0.12, 0.30],
+    line: dark ? [0.02, 0.03, 0.05, 0.38] : [0.06, 0.08, 0.12, 0.18],
     ghost: dark ? [0.75, 0.8, 0.9, 0.35] : [0.2, 0.25, 0.35, 0.35],
     plain: dark ? [0.62, 0.68, 0.78] : [0.66, 0.71, 0.80] }; }
 function resize() {
@@ -505,32 +505,48 @@ const SVGNS = 'http://www.w3.org/2000/svg';
 function el(tag, attrs, parent, text) { const e = document.createElementNS(SVGNS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; (parent || svg).appendChild(e); return e; }
 const bands = DATA.bands;
+// Bands: each row lists the computed frequencies at one k (a search window may move between k values, e.g. the
+// modes nearest a target). Neighbouring k values are joined greedily by nearest frequency, each point used once per
+// side, never across a jump above 12 % of the plotted range (new or lost bands stay dots).
 function bandSegments() {
-  // [k0, f0, k1, f1] pairs: the j-th sorted frequency of neighbouring k values, shifting the index where the
-  // computed window of bands moved between them
-  const rows = bands.frequencies.map((r) => r.filter(isFinite).slice().sort((a, b) => a - b));
+  const rows = bands.frequencies.map((r) => r.filter(isFinite));
+  const all = rows.flat(); const span = (Math.max(...all) - Math.min(...all)) || 1;
   const segs = [];
   for (let i = 0; i + 1 < rows.length; i++) {
-    const A = rows[i], B = rows[i + 1]; let best = 0, bestCost = Infinity;
-    for (let s = -2; s <= 2; s++) { let c = 0, n = 0;
-      for (let j = 0; j < A.length; j++) { const b = B[j + s]; if (b === undefined) continue; c += Math.abs(A[j] - b); n++; }
-      if (n >= Math.max(1, Math.min(A.length, B.length) - 2) && c / n < bestCost) { bestCost = c / n; best = s; } }
-    for (let j = 0; j < A.length; j++) { const b = B[j + best]; if (b !== undefined) segs.push([bands.k[i], A[j], bands.k[i + 1], b]); }
+    const A = rows[i], B = rows[i + 1], pairs = [];
+    A.forEach((a, ia) => B.forEach((b, ib) => pairs.push([Math.abs(a - b), ia, ib])));
+    pairs.sort((p, q) => p[0] - q[0]);
+    const usedA = new Set(), usedB = new Set();
+    for (const [d, ia, ib] of pairs) {
+      if (d > 0.12 * span) break;
+      if (usedA.has(ia) || usedB.has(ib)) continue;
+      usedA.add(ia); usedB.add(ib); segs.push([bands.k[i], A[ia], bands.k[i + 1], B[ib]]);
+    }
   }
   return segs;
 }
 function bandGaps() {
-  // frequency intervals no band crosses (bands taken as continuous between samples) and inside the computed window
-  // at every k (each row has frequencies below and above), wider than 1 % of the mid-gap frequency
+  // complete gaps, wider than 1 % of their mid frequency, between neighbouring computed frequencies (none at any k
+  // inside) that no band crosses between samples: the same number of frequencies below the gap at every k, counted
+  // from the bottom of each row (rows that start at the same band: lowest modes, band searches) or from the highest
+  // row bottom (rows that are moving windows of complete eigenvalues: the modes nearest a target), and no drawn band
+  // segment spans it (a band that jumps across it between two samples)
   if (!bands || !bands.k.length) return [];
-  const spans = bandSegments().map((s) => [Math.min(s[1], s[3]), Math.max(s[1], s[3])]);
-  bands.frequencies.flat().filter(isFinite).forEach((f) => spans.push([f, f]));
-  spans.sort((a, b) => a[0] - b[0]);
-  const gaps = []; let top = spans.length ? spans[0][1] : 0;
-  for (const [lo, hi] of spans) {
-    if (lo > top && lo - top > 0.01 * 0.5 * (lo + top)
-        && bands.frequencies.every((row) => row.some((f) => f <= top) && row.some((f) => f >= lo))) gaps.push([top, lo]);
-    top = Math.max(top, hi);
+  const rows = bands.frequencies.map((r) => r.filter(isFinite)).filter((r) => r.length);
+  if (!rows.length) return [];
+  const floor = Math.max(...rows.map((r) => Math.min(...r))), ceil = Math.min(...rows.map((r) => Math.max(...r)));
+  const all = [...new Set(rows.flat())].sort((a, b) => a - b);
+  const same = (counts) => counts.every((n) => n === counts[0]);
+  const segs = bandSegments();
+  const gaps = [];
+  for (let i = 0; i + 1 < all.length; i++) {
+    const lo = all[i], hi = all[i + 1];
+    if (hi - lo <= 0.01 * 0.5 * (hi + lo)) continue;
+    if (!rows.every((r) => r.some((f) => f <= lo) && r.some((f) => f >= hi))) continue;
+    const fromBottom = same(rows.map((r) => r.filter((f) => f <= lo).length));
+    const fromFloor = lo >= floor && hi <= ceil && same(rows.map((r) => r.filter((f) => f >= floor && f <= lo).length));
+    const crossed = segs.some((g) => Math.min(g[1], g[3]) <= lo && Math.max(g[1], g[3]) >= hi);
+    if ((fromBottom || fromFloor) && !crossed) gaps.push([lo, hi]);
   }
   return gaps;
 }

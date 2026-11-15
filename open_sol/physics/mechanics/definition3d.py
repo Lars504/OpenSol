@@ -1762,6 +1762,47 @@ def _resonance_table_feature():
                                 f'({_GAS_COLUMNS_TEXT}; c, k and gamma add over the films).'))
 
 
+# ---- mode_shapes feature (tetrahedra; mode_shapes.py, result kind 'mode_shapes') ----
+def _apply_mode_shapes(ctx, solver, feature_spec, values, selection):
+    from .mode_shapes import ModeShapes   # the surface cache of the feature
+    return ModeShapes()
+
+
+def _mode_shapes_result(session, solver, shapes, feature_spec, options):
+    from .mode_shapes import mode_shapes_result
+    return mode_shapes_result(solver, shapes)
+
+
+def _validate_mode_shapes(vctx, physics_spec, feature_spec, values):
+    """Error outside the studies running solve_eigenfrequencies (the mesh kind is the FeatureType grids' rule)."""
+    study = background_context(vctx, physics_spec).study_type
+    if study in MODAL_STUDIES:
+        return []
+    return [Issue('error', feature_path(physics_spec, feature_spec),
+                  f"mode_shapes keeps the vibration modes of an {' or '.join(MODAL_STUDIES)} study (the solid runs "
+                  f'{study} here): use the eigenfrequency study, or remove the feature')]
+
+
+MODE_SHAPES_FEATURE = FeatureType(
+    'mode_shapes', 'Mode shapes', 'monitor', None, result_kind='mode_shapes',
+    summary=('Keeps the vibration shape of every resonance on the surface of the solid, for each value of a sweep, so '
+             'the modes can be animated later (for example beside a phononic band diagram).'),
+    description=(
+        'Complex surface displacement of every resonance of the last eigenfrequency (or optomechanics) solve, '
+        'tetrahedron mesh only; one result per sweep value (Results.sweep_result). Surface = the faces with exactly '
+        'one solid window element (element with stiffness: youngs_modulus or c11; solid / void interfaces and the '
+        'outer box faces of solid elements). Quadratic discretization: nodes = the three vertices and three edge '
+        'midpoints of each surface face (its P2 dofs), each face split into 4 triangles; linear: the vertices and '
+        'faces as they are. Triangles counter-clockwise seen from outside the solid. Result \'mode_shapes\': nodes '
+        '(n, 3) m, triangles (m, 3), resonance_number / frequency [Hz] / q_factor (NaN undamped) in the '
+        'resonance_table row order, displacement_re / _im (r, n, 3) float32 m with the solver normalisation (peak '
+        'node |u| = 1 m, its largest component real positive; real modes have _im = 0), bloch_k (3,) rad/m (0 off '
+        'the periodic axes), periodic (3,) 0 / 1, period (3,) = the mesh extent per axis in m and phase_convention: '
+        'the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)). '
+        'A piezoelectric potential is not kept. Size about r x n x 24 bytes per value.'),
+    apply=_apply_mode_shapes, result=_mode_shapes_result, validate=_validate_mode_shapes, grids=(_TETRAHEDRA,))
+
+
 # ---- type ----
 _FEATURES = (
     FeatureType('fixed', 'Fixed', 'boundary_condition', 'boundary', result_kind='table',
@@ -1879,6 +1920,7 @@ _FEATURES = (
                 apply=_apply_probe, result=_probe_result, validate=validate_points_inside, grids=_GRIDS),
     frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y', 'u_z'), (_TETRAHEDRA,)),
     _resonance_table_feature(),
+    MODE_SHAPES_FEATURE,
     SQUEEZE_FILM_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', params=_ELECTRODE_PARAMS,
                 result_kind='table',
