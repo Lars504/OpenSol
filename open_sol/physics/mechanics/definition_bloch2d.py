@@ -15,7 +15,8 @@ def periodic_params_2d():
     """periodic_x / _y and bloch_kx / _ky (Bloch / Floquet unit cells: both mesh kinds, eigenfrequency)."""
     periodic = tuple(Param(
         f'periodic_{axis}', 'bool', False, label=f'Periodic {axis}',
-        help=(f'Eigenfrequency study only: {axis}_lo and {axis}_hi are one Bloch-periodic pair, u (and phi with '
+        help=(f'Eigenfrequency study (a plain periodic cell, every bloch_k 0, on a triangle mesh also stationary / '
+              f'time_dependent): {axis}_lo and {axis}_hi are one Bloch-periodic pair, u (and phi with '
               f'piezoelectric, the u_z amplitude with axial_wavenumber) on {axis}_hi equal those on {axis}_lo times '
               f'exp(-j bloch_k{axis} L) (L = the window size along {axis}, exp(+j omega t)). Both mesh kinds: the '
               'rectangular-cell mesh pairs its corner nodes by index (plane strain or plane stress, also with '
@@ -26,11 +27,14 @@ def periodic_params_2d():
               f'electrodes must stay off {axis}_lo / {axis}_hi (a support or voltage electrode on a face of the other '
               'axis may reach their corners); floating electrodes must not touch them. With every periodic bloch_k 0 '
               'a cell without supports keeps its rigid translations: set target_frequency > 0, which drops them, or '
-              'hold the cell; a piezoelectric cell then also needs a ground electrode, while k != 0 needs none. Not '
-              'with geometry axisymmetric, generalized plane strain, stress_stiffening or geometric_nonlinearity.'),
+              'hold the cell; a piezoelectric cell then also needs a ground electrode, while k != 0 needs none. A '
+              'static solve of a plain periodic triangle cell takes K_r = P^T K P (forces on a hi-side node join its '
+              'lo-side partner; the mean strain along the periodic axis is 0, the cell of an infinite array: hold '
+              'it, e.g. Fixed on the other axis). Not with geometry axisymmetric, generalized plane strain, '
+              'stress_stiffening, geometric_nonlinearity or the frequency_response study.'),
         tip=(f'Makes the {axis} faces periodic: the model is one cell of an infinite periodic structure, such as a '
-             'phononic crystal or one period of a surface acoustic wave device.\n\nOnly for an eigenfrequency '
-             'study.')) for axis in AXES_2D)
+             'phononic crystal or one period of a surface acoustic wave device.\n\nFor an eigenfrequency study; '
+             'on a triangle mesh without a phase step also for a stationary study.')) for axis in AXES_2D)
     bloch = tuple(Param(
         f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
         visible_if=((f'periodic_{axis}', (True,)),),

@@ -285,8 +285,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   0, else refused); a region touching no partner keeps the ordinary rules. The tensor system gained `bloch` /
   `rigid_motions_allowed` / `n_rigid_motions` for this only (still no free bodies otherwise); guided at k_z = 0 adds the
   u_z translation (`_guided_bloch_rigid_motions`) instead of check_antiplane_supports.
-- Eigenfrequency only (validation `bloch_issues_2d`, solvers raise in static / harmonic solves): no static periodic
-  solve, so stress_stiffening / geometric_nonlinearity, generalized plane strain and axisymmetric are refused. Supports
+- Eigenfrequency study; a plain periodic cell (every bloch_k 0) on triangles also stationary / time_dependent:
+  `ElasticFEMSystem.solve` factors K_r = P^T K P of the real prolongation (`_periodic_p`, per assembly; the ordinary
+  support rules apply, `static_periodic_cell` turns the Bloch support rules off), reactions stay K u - f at held dofs.
+  Validation `bloch_issues_2d` refuses the rest (tensor statics: the PCG has no P; frequency_response: HarmonicSystem's
+  output rows assume no column map); stress_stiffening / geometric_nonlinearity, generalized plane strain and
+  axisymmetric are refused (no periodic prestate / superposition / axis rule). Supports
   and electrodes on a periodic face are validation errors; a face of the other axis may reach the periodic corners
   (consistent: a master is held with any dof it stands for). Floating electrodes touching a periodic side raise in
   `_assemble_piezo` (their G tie would fight the phase); `PiezoSystem(require_ground=)` and `_piezo_issues` drop the
@@ -298,9 +302,10 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   Gamma came back 3-fold with n = 4): cases ask a few more modes than they grade.
 - Self-tests `selftests_bloch2d.py` (also the template solid_bloch_band_diagram: definition.py imports it, so its
   sibling selftests imports stay inside functions; listed in import_contracts TEMPLATE_SOURCES); example
-  examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: static / frequency-response periodic solves (k = 0
-  periodic statics would need P^T K P in the tensor PCG and the triangle factor), the harmonic admittance of an
-  infinite IDT (needs a prolongation in HarmonicSystem), Bloch with piezoelectric on triangles (no 2D piezo there).
+  examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: periodic frequency responses (the harmonic
+  admittance of an infinite IDT would need a prolongation through HarmonicSystem's output rows), tensor periodic
+  statics, Bloch with piezoelectric on triangles (no 2D piezo there). The error_indicator treats periodic sides as free
+  edges (one-sided traction jumps).
 
 ## Eigenfrequency study, 3D tensor meshes (`ElasticSystem3D.lowest_modes`; tetrahedra: section "Tetrahedron meshes")
 - Decision: matrix-free shift-invert at sigma = 0 (no CSR in 3D; a 3D elastic SuperLU fills host memory at ~30-40^3

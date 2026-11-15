@@ -2035,7 +2035,8 @@ SOLID_MECHANICS = PhysicsType(
                 'surface or plate waves (Rayleigh, Lamb) of one period; on the rectangular-cell mesh also with '
                 'piezoelectric (u and phi share the phase; no ground electrode needed at k != 0; an electrode grating '
                 'of one IDT period gives the SAW stopband edges at the zone edge) and with axial_wavenumber (the '
-                'guided k_z of the cell).',
+                'guided k_z of the cell); a plain periodic triangle cell (every bloch_k 0) also solves stationary / '
+                'time_dependent (K_r = P^T K P: one cell of an infinite array).',
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,

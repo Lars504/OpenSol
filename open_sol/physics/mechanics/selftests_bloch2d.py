@@ -296,9 +296,61 @@ def _check_saw(results_by_name):
     return scaled_worst_result(errors, tolerances, **details)
 
 
+# ---- solid_bloch_static_2d: a plain periodic cell (every bloch_k 0) in the stationary study, triangles ----
+# 1 x 2 um cell, periodic along x, Fixed bottom, free or loaded top; an off-centre disc and a point only shape the
+# mesh (P2, h 0.25 um, unstructured). Periodicity forces the mean eps_xx = 0, so the homogeneous cell is in uniaxial
+# strain: run load (t_y = -1 MPa on y_hi) u_y = t y / (lambda + 2 mu), F_y of the bottom = t L; run thermal (alpha 1e-5
+# /K, temperature_change 100 K, top free) u_y = alpha dT (3 lambda + 2 mu) / (lambda + 2 mu) y = (5 / 3) alpha dT y at
+# nu 0.25, no reaction. Both linear in y: exact in P2 (probe float32: tolerance 1e-6 relative; reaction 1e-9).
+_STATIC_SIZE = (1.0 * UM, 2.0 * UM)
+_STATIC_PROBE = (0.9 * UM, 1.7 * UM)
+_STATIC_TRACTION = 1e6
+_STATIC_ALPHA, _STATIC_RISE = 1e-5, 100.0
+_STATIC_TOLERANCE = {'probe': 1e-6, 'reaction': 1e-9}
+
+
+def _static_spec(run):
+    youngs_modulus, poisson_ratio, density = _ISOTROPIC
+    properties = _elastic(youngs_modulus, poisson_ratio, rho=density, alpha=_STATIC_ALPHA)
+    features = [FeatureSpec('bottom', 'fixed', ['y_lo']),
+                FeatureSpec('probe', 'solid_probe', ['probe_point'], {'component': 'u_y'})]
+    if run == 'load':
+        features.append(FeatureSpec('press', 'boundary_load', ['y_hi'], {'t_x': 0.0, 't_y': -_STATIC_TRACTION}))
+    else:
+        features.append(FeatureSpec('heat', 'temperature_change', ['all'], {'delta_T': _STATIC_RISE}))
+    spec = _cell_spec(f'Self-test: 2D plain periodic cell, stationary ({run})', _STATIC_SIZE, 'triangles', 0.25 * UM,
+                      {'periodic_x': True}, features,
+                      materials=[MaterialSpec('medium', properties=properties, selection=['all'])],
+                      geometry=[GeometrySpec('disc', 'circle', {'cx': 0.3 * UM, 'cy': 1.0 * UM, 'r': 0.2 * UM}),
+                                GeometrySpec('probe_point', 'point', {'x': _STATIC_PROBE[0], 'y': _STATIC_PROBE[1]})])
+    spec.physics[0].features = [feature for feature in spec.physics[0].features if feature.type != 'resonance_table']
+    spec.study = StudySpec(type='stationary')
+    return spec
+
+
+def _check_static(results_by_name):
+    youngs_modulus, poisson_ratio, _ = _ISOTROPIC
+    lame_lambda, mu = _lame(youngs_modulus, poisson_ratio)
+    modulus = lame_lambda + 2.0 * mu
+    expected = {'load': -_STATIC_TRACTION * _STATIC_PROBE[1] / modulus,
+                'thermal': _STATIC_ALPHA * _STATIC_RISE * (3.0 * lame_lambda + 2.0 * mu) / modulus * _STATIC_PROBE[1]}
+    errors, tolerances, details = {}, {}, {}
+    for run, results in results_by_name.items():
+        value = float(results.result(_SOLID, 'probe')['values'][-1])
+        errors[f'{run} probe'] = abs(value / expected[run] - 1.0)
+        tolerances[f'{run} probe'] = _STATIC_TOLERANCE['probe']
+        force_y = float(results.result(_SOLID, 'bottom')['F_y'])
+        reference = _STATIC_TRACTION * _STATIC_SIZE[0] if run == 'load' else 0.0
+        errors[f'{run} reaction'] = abs(force_y - reference) / (_STATIC_TRACTION * _STATIC_SIZE[0])
+        tolerances[f'{run} reaction'] = _STATIC_TOLERANCE['reaction']
+        details[run] = {'u_y': value, 'u_y_expected': expected[run], 'F_y': force_y, 'F_y_expected': reference}
+    return scaled_worst_result(errors, tolerances, **details)
+
+
 # ---- solid_bloch_rules_2d: the validation of periodic settings (no run) ----
-# A valid cell (triangles, periodic x, k != 0, fixed bottom) has no error; errors for: the stationary study, a support
-# on a periodic face, a PML on a periodic face, geometry axisymmetric, stress_stiffening, a free trivial-phase cell at
+# A valid cell (triangles, periodic x, k != 0, fixed bottom) and the same cell at k = 0 in a stationary study have no
+# error; errors for: the stationary study at k != 0 or on the tensor mesh, the frequency_response study, a support on
+# a periodic face, a PML on a periodic face, geometry axisymmetric, stress_stiffening, a free trivial-phase cell at
 # target 0; a warning for bloch_ky with periodic_y off.
 def _rules_base(kind='triangles', **settings):
     values = {'periodic_x': True, 'bloch_kx': _SLAB_K, **settings}
@@ -312,7 +364,16 @@ def _check_rules(_):
     cases['valid'] = (_rules_base(), None, None)
     stationary = _rules_base()
     stationary.study = StudySpec(type='stationary')
-    cases['stationary'] = (stationary, 'error', 'eigenfrequency study only')
+    cases['stationary_bloch_k'] = (stationary, 'error', 'is not available: turn periodic_* off')
+    plain = _rules_base(bloch_kx=0.0)
+    plain.study = StudySpec(type='stationary')
+    cases['stationary_plain_triangles'] = (plain, None, None)
+    plain_tensor = _rules_base('tensor', bloch_kx=0.0)
+    plain_tensor.study = StudySpec(type='stationary')
+    cases['stationary_plain_tensor'] = (plain_tensor, 'error', 'is not available: turn periodic_* off')
+    response = _rules_base(bloch_kx=0.0)
+    response.study = StudySpec(type='frequency_response', settings={'frequencies': [1e9]})
+    cases['frequency_response'] = (response, 'error', 'is not available: turn periodic_* off')
     on_face = _rules_base()
     on_face.physics[0].features.append(FeatureSpec('side', 'roller', ['x_lo']))
     cases['support_on_periodic_face'] = (on_face, 'error', 'periodic face')
@@ -419,10 +480,23 @@ BLOCH_2D_CASES = (
                      'tolerance units, tolerance 1.'),
         specs=lambda: {run: _saw_spec(run) for run in _SAW_RUNS}, check=_check_saw),
     SelfTestCase(
+        name='solid_bloch_static_2d', label='Solid mechanics 2D: plain periodic cell, stationary (triangles)',
+        description=('stationary study of solid_mechanics on P2 triangles (h 0.25 um, an off-centre disc and a point '
+                     'shape the mesh), a 1 x 2 um cell periodic along x with every bloch_k 0 (the reduced K_r = P^T K '
+                     'P), Fixed bottom; isotropic E 100 GPa, nu 0.25. Run load (t_y = -1 MPa on top): u_y = t y / '
+                     '(lambda + 2 mu) at the probe and the bottom reaction F_y = t L; run thermal (alpha 1e-5 /K, '
+                     'temperature_change 100 K, free top): u_y = alpha dT (3 lambda + 2 mu) / (lambda + 2 mu) y, no '
+                     'reaction. Periodicity forces the mean eps_xx = 0 (free x sides would bulge), and both fields are '
+                     f"linear: exact in P2 (probe {_STATIC_TOLERANCE['probe']:g} relative, float32 sample; reaction "
+                     f"{_STATIC_TOLERANCE['reaction']:g} of t L). measured = error = the worst deviation in tolerance "
+                     'units, tolerance 1.'),
+        specs=lambda: {run: _static_spec(run) for run in ('load', 'thermal')}, check=_check_static),
+    SelfTestCase(
         name='solid_bloch_rules_2d', label='Solid mechanics 2D: validation of periodic cells',
         description=('model.validate only (no run): a valid periodic cell (triangles, periodic x, k != 0, Fixed bottom) '
-                     'has no error; errors for the stationary study, a support on a periodic face, a PML on a periodic '
-                     'face, geometry axisymmetric, stress_stiffening and a free cell at bloch_k 0 with target 0; a '
-                     'warning for bloch_ky with periodic_y off. error = failed items, tolerance 1.'),
+                     'and the k = 0 cell in a stationary study have no error; errors for the stationary study at k != 0 '
+                     'or on the rectangular-cell mesh, the frequency_response study, a support on a periodic face, a '
+                     'PML on a periodic face, geometry axisymmetric, stress_stiffening and a free cell at bloch_k 0 '
+                     'with target 0; a warning for bloch_ky with periodic_y off. error = failed items, tolerance 1.'),
         specs=dict, check=_check_rules),
 )
