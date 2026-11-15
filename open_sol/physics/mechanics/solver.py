@@ -20,6 +20,8 @@ from .frequency_response import FrequencyPoint, HarmonicSystem, solve_harmonic
 from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA, PERMITTIVITY_ARRAYS,
                         PIEZO_ARRAYS, PIEZO_DEFAULTS, PIEZO_OUT_OF_PLANE_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA,
                         STIFFNESS_TENSOR_ARRAYS)
+from .bloch2d import tensor_bloch_cell
+from .bloch3d import bloch_prolongation
 from .modal import ModalPencil, MultiShiftModes
 from .piezo import (DISPLACEMENT_COMPONENTS, ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS, Electrode, PiezoSystem,
                     coupled_mass, coupled_operator, interleaved_layout, node_potential_dofs)
@@ -53,7 +55,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
                  compute_residual: bool = False, linear_solver=None, target_frequency: float = 0.0,
                  eigen_solver=None, axial_wavenumber=None, guided_by_study=False, piezoelectric: bool = False,
                  geometry: str = 'planar', out_of_plane: str = PLANE_STRAIN, axial_force: float = 0.0,
-                 thickness=None, bending: str = 'xy', bending_moment_x: float = 0.0, bending_moment_y: float = 0.0):
+                 thickness=None, bending: str = 'xy', bending_moment_x: float = 0.0, bending_moment_y: float = 0.0,
+                 periodic=(False, False), bloch_k=(0.0, 0.0)):
         if geometry not in GEOMETRIES:
             raise ValueError(f"geometry must be one of {', '.join(GEOMETRIES)}, got {geometry!r}")
         if out_of_plane not in OUT_OF_PLANE_CONDITIONS:
@@ -108,6 +111,13 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self.modal_mass = None           # host scipy CSR consistent mass [kg/m] of that solve (all dofs)
         self.selected_resonance = None   # 1-based mode shown in the outputs, None = the static solve
         self.optomechanical_couplings = []   # optomechanics.OptomechanicalCoupling of the features (optomechanics study)
+        # Bloch / Floquet axes (x, y) and wavenumbers [rad/m]: eigenfrequency modes on P^H K P (bloch2d)
+        self.periodic = tuple(bool(value) for value in periodic)
+        self.bloch_k = tuple(float(value) for value in bloch_k)
+        if len(self.periodic) != 2 or len(self.bloch_k) != 2:
+            raise ValueError(f'periodic and bloch_k take two entries (x, y), got {periodic!r} / {bloch_k!r}')
+        if any(self.periodic) and (self._axisymmetric or self.out_of_plane != PLANE_STRAIN):
+            raise ValueError('periodic axes (Bloch cells) need planar plane strain')
         self._init_solid(system, domain)
 
     def prepare(self, domain) -> None:
@@ -139,6 +149,12 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             domain.materials.add_properties(PIEZO_DEFAULTS)   # no-op for the arrays a material allocated
         if self._axisymmetric:   # the axis rule: u_r = 0 on the x_lo nodes (r = 0)
             self.hold_face('x_lo', u_x=0.0)
+        system.bloch = None
+        if any(self.periodic):   # the window sides of the periodic axes; free translations counted about a target > 0
+            system.bloch = tensor_bloch_cell(system.node_shape, (float(system.dx_window.sum()),
+                                                                 float(system.dy_window.sum())),
+                                             self.periodic, self.bloch_k)
+            system.rigid_motions_allowed = self.target_frequency > 0.0
 
     @property
     def axisymmetric(self) -> bool:
@@ -400,17 +416,34 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         system = self.system
         if system.operator_dirty:
             self._assemble()
+        self._check_bloch_target(lowest_target)
+        bloch = system.bloch
+        bloch_text = '' if bloch is None else bloch.text()
         if self.piezoelectric:   # coupled pencil: voltage electrodes short-circuited, floating ones open
             solid_density = system.xp.where(self._solid, self._solid_density(), 0.0)
             self.modal_mass = coupled_mass(to_host(solid_density).astype(np.float64), system.dx_window,
                                            system.dy_window)
             piezo = self._piezo_system
-            return piezo.modal_pencil(self.modal_mass, self.eigen_solver), piezo.expanded
+            prolongation = (None if bloch is None else
+                            bloch_prolongation(*bloch.vector_masters(PIEZO_COMPONENTS), piezo.free)[1])
+            return (piezo.modal_pencil(self.modal_mass, self.eigen_solver, prolongation=prolongation,
+                                       bloch_text=bloch_text, rigid_motions=system.n_rigid_motions), piezo.expanded)
         if self._harmonic_operators is None:   # host float64 K / M, never the solve-precision device CSR
             self._harmonic_operators = self._build_harmonic_operators()
         stiffness, _, self.modal_mass = self._harmonic_operators
-        return (ModalPencil(stiffness, self.modal_mass, to_host(system.free) > 0.5, 2, self.eigen_solver),
+        free = to_host(system.free) > 0.5
+        prolongation = None if bloch is None else bloch_prolongation(*bloch.vector_masters(2), free)[1]
+        return (ModalPencil(stiffness, self.modal_mass, free, 2, self.eigen_solver, prolongation=prolongation,
+                            rigid_motions=system.n_rigid_motions, bloch_text=bloch_text),
                 lambda solve: solve)
+
+    def _check_bloch_target(self, lowest_target):
+        """ValueError for free rigid motions (a trivial-phase Bloch cell) at a target 0 (K - 0 M singular)."""
+        system = self.system
+        if system.n_rigid_motions and lowest_target is not None and lowest_target <= 0.0:
+            raise ValueError(f'{system.label()}: {system.n_rigid_motions} rigid motion(s) of the Bloch cell are free '
+                             'and the target frequency is 0, where K - 0 M is singular: set the target > 0 (the 0 Hz '
+                             'rigid-body modes are then dropped), a bloch_k != 0 or supports')
 
     def _solid_density(self):
         """Window rho in the solve dtype; ValueError when a solid cell has none (rho <= 0)."""
@@ -435,7 +468,8 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self._solid = solid
         if self.axial_wavenumber == 0.0:
             self.system._check_rigid_modes(solid)
-            check_antiplane_supports(to_host(solid), to_host(self._held_axial), self.system.label)
+            if self.system.bloch is None:   # a Bloch cell counts its free u_z translation (_guided_pencil)
+                check_antiplane_supports(to_host(solid), to_host(self._held_axial), self.system.label)
 
     def _guided_pencil(self):
         """ModalPencil of the guided (2.5D) modes at k_z = axial_wavenumber: guided_modes host pencil of the solid
@@ -450,8 +484,29 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         stiffness, self.modal_mass = guided_operators(lame_lambda, mu, to_host(density).astype(np.float64),
                                                       system.dx_window, system.dy_window, self.axial_wavenumber)
         free = guided_free_dofs(stiffness, to_host(system.held), to_host(self._held_axial))
+        bloch = system.bloch
+        rigid_motions = 0
+        if bloch is not None:   # every guided component shares the node phase (u_z -> -i u_z keeps P^H K P Hermitian)
+            rigid_motions = self._guided_bloch_rigid_motions(free)
+            self._check_bloch_target(self.target_frequency if rigid_motions else None)
+        prolongation = None if bloch is None else bloch_prolongation(*bloch.vector_masters(GUIDED_COMPONENTS), free)[1]
         return ModalPencil(stiffness, self.modal_mass, free, GUIDED_COMPONENTS, self.eigen_solver,
-                           axial_wavenumber=self.axial_wavenumber)
+                           prolongation=prolongation, rigid_motions=rigid_motions,
+                           axial_wavenumber=self.axial_wavenumber, bloch_text='' if bloch is None else bloch.text())
+
+    def _guided_bloch_rigid_motions(self, free) -> int:
+        """Free rigid motions of a guided Bloch cell: none at k_z > 0 or a non-trivial phase; at k_z = 0 and phase 1 the
+        plane translations counted by the assembly check plus a free u_z translation (no u_z held); refused (ValueError)
+        without a target > 0."""
+        system = self.system
+        if self.axial_wavenumber or not system.bloch.trivial:
+            return 0
+        count = system.n_rigid_motions + int(not bool(to_host(self._held_axial).any()))
+        if count and not self.target_frequency > 0.0:
+            raise ValueError(f'{system.label()}: a guided Bloch cell at axial_wavenumber 0 and a trivial phase keeps '
+                             f'{count} rigid translation(s): set target_frequency > 0, a bloch_k != 0, '
+                             'axial_wavenumber > 0 or supports')
+        return count
 
     def modal_overlap_data(self):
         """Host data the g0 overlap (optomechanics) reads after an eigenfrequency solve: window slices, node shape,
@@ -483,6 +538,10 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         resonance = self.eigen_solve.resonances[number - 1]
         system = self.system
         xp = system.xp
+        if np.iscomplexobj(resonance.displacement):   # a Bloch mode: its real part (phase 0) and u_abs = |u|
+            self._show_complex_mode(resonance.displacement)
+            self.selected_resonance = number
+            return
         if self.guided:   # (u_x, u_y) into the plane-strain unknown, the u_z amplitude w beside it
             nodes = resonance.displacement.reshape(*system.node_shape, GUIDED_COMPONENTS)
             xp.copyto(system.unknown, xp.asarray(nodes[..., :2].reshape(-1), dtype=system.dtype))
@@ -497,6 +556,17 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         for destination, source in self._pml_copies:
             xp.copyto(destination, source)
         self.selected_resonance = number
+
+    def _show_complex_mode(self, displacement):
+        """Show a complex (Bloch) mode over every node: plane strain (u_x, u_y), guided (+ the u_z amplitude) or
+        piezoelectric (+ phi); real parts and u_abs = |u| of the complex centre displacement (in-plane components)."""
+        system = self.system
+        components = GUIDED_COMPONENTS if self.guided else PIEZO_COMPONENTS if self.piezoelectric else 2
+        nodes = np.asarray(displacement).reshape(*system.node_shape, components)
+        if self.guided:
+            self._axial_nodes = system.xp.array(nodes[..., 2].real, dtype=system.dtype)
+        self._show_harmonic(nodes[..., :DISPLACEMENT_COMPONENTS],
+                            nodes[..., DISPLACEMENT_COMPONENTS] if self.piezoelectric else None)
 
     # --- frequency_response study hooks -----------------------------------------
 
@@ -515,6 +585,9 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         if self.guided or self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             raise ValueError(f'{system.label()}: the frequency response is not modelled for guided (2.5D) modes or '
                              'generalized plane strain (the uniform eps_zz carries no mass)')
+        if system.bloch is not None:
+            raise ValueError(f'{system.label()}: periodic axes (a Bloch cell) on the rectangular-cell mesh are solved by '
+                             'the eigenfrequency study only')
         if system.operator_dirty:
             self._assemble()
         # the drive: tractions and body forces; the thermal strain is static, never a harmonic drive
@@ -766,12 +839,24 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
                                     tuple(to_host(values) for values in (eps_xx, eps_yy, eps_xy)),
                                     system.dx_window, system.dy_window)
         displacement_dofs, potential_dofs = interleaved_layout(operator.shape[0] // PIEZO_COMPONENTS)
+        bloch = system.bloch
+        if bloch is not None:   # a tied phi on a periodic side would contradict its periodic image
+            on_periodic = bloch.on_periodic_faces
+            for electrode in self._electrodes:
+                if electrode.connection != 'voltage' and on_periodic[np.asarray(electrode.dofs) // PIEZO_COMPONENTS].any():
+                    raise ValueError(f"{system.label()}: {electrode.connection} electrode '{electrode.name}' touches a "
+                                     'periodic side: a tied potential there would contradict its periodic image (keep '
+                                     'it inside the cell, or use connection voltage)')
         self._piezo_system = PiezoSystem(operator, self._electrodes, displacement_dofs, potential_dofs,
-                                         np.array(to_host(system.held)), system.label)
+                                         np.array(to_host(system.held)), system.label,
+                                         require_ground=bloch is None or bloch.trivial)
 
     def _solve_system(self):
         """PCG of the plane-strain system; piezoelectric: the host SuperLU solve of the coupled system (u into the
         unknown, phi, reactions and electrode values kept); generalized plane strain: + the eps_zz terms."""
+        if self.system.bloch is not None:
+            raise ValueError(f'{self.system.label()}: periodic axes (a Bloch cell) on the rectangular-cell mesh are '
+                             'solved by the eigenfrequency study only (no static periodic solve)')
         if self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             self._solve_generalized()
             return

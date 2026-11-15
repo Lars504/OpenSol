@@ -38,6 +38,7 @@ from .generalized_plane_strain import (BENDING_TERMS, condition_matrix, conditio
 from .materials import (DENSITY_SCHEMA, EXPANSION_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA, PRESTRESS_ARRAYS,
                         PRESTRESS_NAMES, SHEAR_PHOTOELASTIC_SCHEMA, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS,
                         lame_coefficients)
+from .bloch3d import bloch_prolongation
 from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
@@ -106,7 +107,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                  bending_moment_x: float = 0.0, bending_moment_y: float = 0.0, stress_stiffening: bool = False,
                  free_body=None, azimuthal_order: int = 0, pml_faces=(), pml_reflection: float = DEFAULT_PML_REFLECTION,
                  geometric_nonlinearity: bool = False, load_steps: int = 1, nonlinear_tolerance: float = 1e-8,
-                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow'):
+                 nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow', periodic=(False, False),
+                 bloch_k=(0.0, 0.0)):
         # K_sigma of the static state in every pencil (new_modules_plan K2); free rigid motions allowed (None: target > 0)
         self.stress_stiffening = bool(stress_stiffening)
         self._free_body = None if free_body is None else bool(free_body)
@@ -136,6 +138,20 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if self.pml_faces and self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             raise ValueError('an elastic PML runs in the eigenfrequency study, which refuses generalized plane strain')
         self.pml_reflection = float(pml_reflection)
+        # Bloch / Floquet axes (x, y) and wavenumbers [rad/m]: eigenfrequency modes on P^H K P (bloch2d), planar only
+        self.periodic = tuple(bool(value) for value in periodic)
+        self.bloch_k = tuple(float(value) for value in bloch_k)
+        if len(self.periodic) != 2 or len(self.bloch_k) != 2:
+            raise ValueError(f'periodic and bloch_k take two entries (x, y), got {periodic!r} / {bloch_k!r}')
+        if any(self.periodic):
+            if self._axisymmetric or self.out_of_plane == GENERALIZED_PLANE_STRAIN:
+                raise ValueError('periodic axes (Bloch cells) need a planar plane-strain or plane-stress solid')
+            if stress_stiffening or geometric_nonlinearity:
+                raise ValueError('periodic axes (Bloch cells) take no stress_stiffening or geometric_nonlinearity '
+                                 '(no periodic static state)')
+            on_pml = [face for face in self.pml_faces if self.periodic['xy'.index(face[0])]]
+            if on_pml:
+                raise ValueError(f'a PML on the periodic face(s) {on_pml}: put it on the other axis')
         # total-Lagrangian Newton of every static solve (new_modules_plan K6): load steps and the damped loop
         if isinstance(load_steps, bool) or int(load_steps) != load_steps or load_steps < 1:
             raise ValueError(f'load_steps must be an integer >= 1, got {load_steps!r}')
@@ -200,6 +216,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         # modes about a target > 0 or a frequency response: free rigid motions counted, static solves refused
         self.system.rigid_motions_allowed = (self.target_frequency > 0.0 if self._free_body is None
                                              else self._free_body)
+        if any(self.periodic):   # every assembly identifies the periodic sides of its solid map (bloch2d)
+            self.system.periodic = (self.periodic, self.bloch_k)
         n_elements = domain.n_elements
         self.fields = _ElementFields(n_elements, domain.xp)
         self._window_elements = np.asarray(domain.window_elements(), dtype=bool)
@@ -284,6 +302,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         """Why the solid runs in the eigenfrequency study only ('' when not): an elastic PML or an azimuthal order."""
         if self.pml_faces:
             return 'an elastic PML'
+        if any(self.periodic):
+            return 'periodic axes (a Bloch cell)'
         if self.azimuthal_order:
             return f'azimuthal order {self.azimuthal_order}'
         return ''
@@ -798,17 +818,22 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         stiffness = self._pencil_stiffness(with_loads=True)
         loss = self._stiffness_loss()
         components = system.components
+        bloch = system.bloch   # periodic sides: x = P x_r of the Bloch masters (planar, so no axis tie beside it)
+        prolongation = (system.prolongation if bloch is None
+                        else bloch_prolongation(*bloch.vector_masters(components), system.free)[1])
+        bloch_text = '' if bloch is None else bloch.text()
         if loss is not None or system.pml is not None:   # complex pencil: K_el (1 + j eta) (K_sigma lossless), PML
             if loss is not None:
                 stiffness = pattern_sum([stiffness.astype(np.complex128), 1j * loss])
             pencil = ModalPencil(stiffness, self.modal_mass, system.free, components, self.eigen_solver,
-                                 prolongation=system.prolongation, rigid_motions=system.n_rigid_motions, damped=True,
+                                 prolongation=prolongation, rigid_motions=system.n_rigid_motions, damped=True,
                                  shell_dofs=None if system.pml is None else system.ring_only_dofs(),
-                                 pml_text='' if system.pml is None else system.pml.text(),
+                                 bloch_text=bloch_text, pml_text='' if system.pml is None else system.pml.text(),
                                  loss_text='' if loss is None else 'mechanical_loss_factor')
         else:
             pencil = ModalPencil(stiffness, self.modal_mass, system.free, components, self.eigen_solver,
-                                 prolongation=system.prolongation, rigid_motions=system.n_rigid_motions)
+                                 prolongation=prolongation, rigid_motions=system.n_rigid_motions,
+                                 bloch_text=bloch_text)
         return pencil, lambda solve: solve
 
     def set_axial_wavenumber(self, wavenumber):

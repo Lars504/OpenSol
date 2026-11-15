@@ -34,6 +34,8 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
+from .definition_bloch2d import (bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d, periodic_params_2d,
+                                solver_periodic_arguments, trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
@@ -299,12 +301,14 @@ def _azimuthal_order(settings_values) -> int:
 
 
 def _domain_requirements(settings_values):
-    """The PML ring padding (pml_cells x dx on the pml_<face> faces of a triangle mesh); none without a PML face."""
+    """The PML ring padding (pml_cells x dx on the pml_<face> faces of a triangle mesh; none without a PML face) and
+    the periodic axes (a triangle mesh matches their side nodes; the rectangular-cell mesh needs nothing)."""
     faces = _pml_faces(settings_values)
+    periodic = periodic_axes_2d(settings_values)
     if not faces:
-        return DomainRequirements()
+        return DomainRequirements(periodic_axes=periodic)
     return DomainRequirements(boundary_config=pml_padding(faces, int(settings_values.get('pml_cells')
-                                                                     or DEFAULT_PML_CELLS)))
+                                                                     or DEFAULT_PML_CELLS)), periodic_axes=periodic)
 
 
 # ---- feature texts ----
@@ -583,7 +587,8 @@ def _piezo_issues(vctx, physics_spec, settings_values, path):
                                            'solid (its modes carry the potential); turn piezoelectric off'))
     if vctx.study_type == EIGENFREQUENCY_STUDY and settings_values.get('axial_wavenumber') is not None:
         issues.append(Issue('error', path, 'piezoelectric has no guided (2.5D) modes: leave axial_wavenumber empty'))
-    grounded = False
+    # a Bloch phase != 1 excludes a constant potential: no ground electrode needed there
+    grounded = not trivial_bloch_phase_2d(settings_values)
     for feature in electrodes:
         values = vctx.values(SOLID_MECHANICS.feature_type(feature.type).params, feature.params)
         grounded = grounded or values is None or values['connection'] == 'voltage'
@@ -816,6 +821,9 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(prestress_issues(vctx, physics_spec, settings_values, path, triangles, refused_zz=refused_zz,
                                    static_refused=static_refused))
     issues.extend(_pml_issues(vctx, physics_spec, settings_values, path, triangles))
+    bloch_cell = bool(periodic_axes_2d(settings_values))
+    issues.extend(bloch_issues_2d(vctx, physics_spec, settings_values, path, _held_components,
+                                  _pml_faces(settings_values)))
     issues.extend(_azimuthal_issues(vctx, physics_spec, settings_values, path, triangles))
     issues.extend(_nonlinear_issues(vctx, physics_spec, settings_values, path, triangles, static_refused))
     if triangles and condition == GENERALIZED_PLANE_STRAIN and not is_axisymmetric(settings_values):
@@ -843,7 +851,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     # leave no rigid motion
     issues.extend(_support_issues(vctx, physics_spec, path, axial_wavenumber, guided_by_study,
                                   is_axisymmetric(settings_values) and order != 1, free_body=free_body,
-                                  held_elsewhere=order >= 2 or pml))
+                                  held_elsewhere=order >= 2 or pml or bloch_cell))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
@@ -888,7 +896,8 @@ def _create_solid(ctx, physics_spec, values):
                                         load_steps=values['load_steps'],
                                         nonlinear_tolerance=values['nonlinear_tolerance'],
                                         nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                        tangent_update=values['tangent_update'])
+                                        tangent_update=values['tangent_update'],
+                                        **solver_periodic_arguments(values))
     study = solid_study(ctx.spec, physics_spec.name)   # a background solid of solved_physics: 'stationary'
     guided = values['axial_wavenumber'] if study == EIGENFREQUENCY_STUDY else None
     return SolidMechanicsPhysics(ctx.domain, linear_solver=solid_linear_solver(ctx, physics_spec),
@@ -899,7 +908,7 @@ def _create_solid(ctx, physics_spec, values):
                                  geometry=values['geometry'], out_of_plane=values['out_of_plane'],
                                  axial_force=values['axial_force'], thickness=values['thickness'],
                                  bending=values['bending'], bending_moment_x=values['bending_moment_x'],
-                                 bending_moment_y=values['bending_moment_y'])
+                                 bending_moment_y=values['bending_moment_y'], **solver_periodic_arguments(values))
 
 
 _INT64_BYTES = 8
@@ -2007,7 +2016,7 @@ SOLID_MECHANICS = PhysicsType(
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
-              _DISCRETIZATION_PARAM, *_pml_params()),
+              _DISCRETIZATION_PARAM, *_pml_params(), *periodic_params_2d()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM, PHOTOELASTIC_P44_PARAM) + PIEZO_MATERIAL_PROPERTIES
                          + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES),
@@ -2029,7 +2038,7 @@ SOLID_MECHANICS = PhysicsType(
     validate=_validate_solid,
     memory_estimate=_memory_estimate,
     time_estimate=_time_estimate,
-    domain_requirements=_domain_requirements,   # the elastic PML ring (triangles)
+    domain_requirements=_domain_requirements,   # the elastic PML ring and the periodic sides (triangles)
     grids=_BOTH_GRIDS,   # triangles: solver_fem.SolidMechanicsFEMPhysics (create dispatches on the mesh kind)
     eigen_searches=('nearest', 'targets', 'band'),   # modal.MultiShiftModes (piezoelectric: band refused in validate)
 )
