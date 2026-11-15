@@ -2246,10 +2246,11 @@ def _selftest_cases(em_types):
     from .selftests_prestress_string import PRESTRESS_STRING_CASES
     from .selftests_reduced_sweep import REDUCED_SWEEP_CASES
     from .selftests_segment_load import SEGMENT_LOAD_CASES
+    from .selftests_thermoelastic import THERMOELASTIC_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + optomechanics_cases(em_types) + backend_cases(em_types))
+            + THERMOELASTIC_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
 
 
 def register(registry):

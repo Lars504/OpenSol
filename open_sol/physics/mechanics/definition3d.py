@@ -2074,10 +2074,11 @@ def _selftest_cases():
     from .selftests_squeeze_film import SQUEEZE_FILM_CASES
     from .selftests_squeeze_film_model import SQUEEZE_FILM_MODEL_CASES
     from .selftests_swept_plate import SWEPT_PLATE_CASES
+    from .selftests_thermoelastic import THERMOELASTIC_3D_CASES
     return (SELFTEST_CASES_3D + EIGENFREQUENCY_3D_CASES + EIGEN_SEARCH_3D_CASES + FEM_3D_CASES + PIEZO_FEM_3D_CASES
             + FREQUENCY_RESPONSE_3D_CASES + BLOCH_FEM_3D_CASES + MESH_SYMMETRY_3D_CASES + PML_3D_CASES
             + FREE_MODES_3D_CASES + PRESTRESS_3D_CASES + NONLINEAR_3D_CASES + SQUEEZE_FILM_CASES
-            + SQUEEZE_FILM_MODEL_CASES + SWEPT_PLATE_CASES)
+            + SQUEEZE_FILM_MODEL_CASES + SWEPT_PLATE_CASES + THERMOELASTIC_3D_CASES)
 
 
 def register(registry):
