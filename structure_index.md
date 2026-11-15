@@ -10,25 +10,25 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/fem/: lines 105-170
 - open_sol/gui/: lines 172-192
 - open_sol/io/: lines 194-198
-- open_sol/materials/: lines 200-215
-- open_sol/mesh_study/: lines 217-227
-- open_sol/model/: lines 229-297
-- open_sol/physics/: lines 299-301
-- open_sol/physics/acoustics/: lines 303-321
-- open_sol/physics/em/: lines 323-435
-- open_sol/physics/em/solvers/: lines 437-459
-- open_sol/physics/em3d/: lines 461-497
-- open_sol/physics/eme/: lines 499-516
-- open_sol/physics/fluid/: lines 518-529
-- open_sol/physics/heat/: lines 531-556
-- open_sol/physics/magnetic/: lines 558-588
-- open_sol/physics/mechanics/: lines 590-669
-- open_sol/physics/membrane/: lines 671-689
-- open_sol/physics/nlfd/: lines 691-710
-- open_sol/physics/potential/: lines 712-729
-- open_sol/physics/semiconductor/: lines 731-744
-- open_sol/solvers/: lines 746-760
-- open_sol/viz/: lines 762-769
+- open_sol/materials/: lines 200-216
+- open_sol/mesh_study/: lines 218-228
+- open_sol/model/: lines 230-298
+- open_sol/physics/: lines 300-302
+- open_sol/physics/acoustics/: lines 304-322
+- open_sol/physics/em/: lines 324-436
+- open_sol/physics/em/solvers/: lines 438-460
+- open_sol/physics/em3d/: lines 462-498
+- open_sol/physics/eme/: lines 500-517
+- open_sol/physics/fluid/: lines 519-530
+- open_sol/physics/heat/: lines 532-557
+- open_sol/physics/magnetic/: lines 559-589
+- open_sol/physics/mechanics/: lines 591-672
+- open_sol/physics/membrane/: lines 674-692
+- open_sol/physics/nlfd/: lines 694-713
+- open_sol/physics/potential/: lines 715-732
+- open_sol/physics/semiconductor/: lines 734-747
+- open_sol/solvers/: lines 749-763
+- open_sol/viz/: lines 765-772
 
 ## open_sol/
 
@@ -211,6 +211,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `nk_data.py`: Tabulated n, k of the library materials (room temperature), transcribed from the refractiveindex.info copies of the cited data sets; rows are (vacuum wavelength [um], n, k).
 - `silica.py`: Library material SILICA: fused silica at 1.55 um (n = 1.444, lossless, non-dispersive) with thermal, elastic, photoelastic and DC data.
 - `silicon.py`: Library material SILICON: crystalline silicon at 1.55 um (n = 3.476) with thermal, elastic, photoelastic and drift-diffusion data and its Green 2008 n, k table.
+- `silicon_nitride.py`: Library material SILICON_NITRIDE: stoichiometric LPCVD silicon nitride (Si3N4) film at 1.55 um (n = 1.996, lossless, non-dispersive) with thermal, elastic and DC data.
 - `silver.py`: Library material SILVER: a free-electron Drude pole, thermal, elastic and DC-conductivity data and its Johnson & Christy n, k table.
 - `water.py`: Library material WATER: liquid water at 1.55 um and 20 C with its absorption as sigma_e, thermal, DC (sigma_dc, eps_dc) and viscosity data.
 
@@ -653,6 +654,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_squeeze_film.py`: Squeeze-film self-tests (new_modules_plan S6; CPU, specs() empty, check({}), builtin Kuhn meshes, no gmsh): the fem.surface_mesh footprint and P1 / P2 displacement transfer with the compressible strip closed form, and the vented annulus of ...
 - `selftests_squeeze_film_model.py`: Model-run self-test of the solid_mechanics_3d squeeze_film_damping feature (new_modules_plan S6w): the thickness mode of a roller-guided column (a rigid piston on its top face) under three films against the strip, compressible-strip and ...
 - `selftests_swept_plate.py`: Model-run self-test of solid_mechanics_3d on swept prism layers (experiment plan D5): the first mode of a clamped square plate meshed with 3 P2 layers across its thickness against the Kirchhoff clamped-plate value. definition3d registers ...
+- `selftests_thermoelastic.py`: Model-run self-tests of the thermoelastic_damping feature (solid_mechanics on tensor and triangle meshes, solid_mechanics_3d on tetrahedra): Zener / Lifshitz-Roukes damping of thin-beam flexure and of a clamped circular plate ...
 - `solver.py`: Static 2D solid mechanics: planar per unit z length (plane strain, plane stress or generalized plane strain) or axisymmetric (r, z) whole rings; small strain, isotropic or anisotropic (c_ij, stiffness.py) linear elastic cells, thermal ...
 - `solver3d.py`: Static 3D solid mechanics on a Domain3D: small strain, isotropic linear elastic cells, thermal strain from the temperature-rise slot, supports, tractions and body forces; one ElasticSystem3D solve per change; the lowest vibration modes for ...
 - `solver_common.py`: Dimension-free part of the static solid mechanics physics (2D plane strain and 3D): the PhysicsSolver contract with the re-solve logic, coupled source slots, convergence record, reactions, warm start and the element Lame coefficients; ...
@@ -667,6 +669,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `system_fem.py`: ElasticFEMSystem: the host float64 vector P1 / P2 elasticity of a solid on a triangle mesh (mesh plan 2.7, stage T5): dofs on the solid window elements, holds kept on the full-mesh dof ids (nodes, P2 edge nodes), assembly by ...
 - `system_fem3d.py`: ElasticFEMSystem3D: the host float64 vector P1 / P2 elasticity of a solid on a tetrahedron mesh (fem.elasticity3d): holds on the full-mesh dof ids, the active dofs of the solid elements, the 6 x 6 Gram rigid-mode check per solid region, ...
 - `tangent_update.py`: Tangent refresh rule and Newton proposal of the total-Lagrangian solids (2D triangles, 3D tetrahedra): full Newton or modified Newton that keeps the factorised tangent while the residual falls fast (plan G4)
+- `thermoelastic.py`: Thermoelastic damping (TED) of the vibration modes of solid_mechanics (2D tensor and triangle meshes) and solid_mechanics_3d (tetrahedra): per mode the harmonic heat equation of its strain-rate heat source on the solid, Q_TED from the ...
 
 ## open_sol/physics/membrane/
 

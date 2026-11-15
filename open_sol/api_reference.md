@@ -14,171 +14,173 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. A line "Help: shared `<key>`" stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text, the first included, points there.
 
-- lines 183-526: Model spec
-- lines 528-645: Expressions
-- lines 647-912: Geometry
-- lines 914-1069: Materials
-- lines 1071-1117: Mesh
-- lines 1119-1238: Solvers
-- lines 1240-2070: Shared help texts
-- lines 2072-2237: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2239-2492: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2494-2625: Physics type `electric_currents` - Electric Currents
-- lines 2627-2829: Physics type `electrostatics` - Electrostatics
-- lines 2831-3055: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3057-3245: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3247-3360: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3362-3559: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3561-3733: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3735-4077: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4079-4441: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4443-4963: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4455-4482: Settings (PhysicsSpec.settings)
-  - lines 4484-4499: Material properties (MaterialSpec.properties)
-  - lines 4501-4542: Fields
-  - lines 4544-4548: Source slots
-  - lines 4550-4570: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4572-4632: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4634-4682: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4684-4704: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4706-4740: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4742-4751: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4753-4773: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4775-4795: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4797-4819: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4821-4835: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4837-4855: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4857-4871: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4873-4891: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4893-4905: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4907-4917: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4919-4931: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 4933-4945: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 4947-4963: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 4965-5272: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5274-5507: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5509-5912: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5521-5542: Settings (PhysicsSpec.settings)
-  - lines 5544-5555: Material properties (MaterialSpec.properties)
-  - lines 5557-5587: Fields
-  - lines 5589-5592: Source slots
-  - lines 5594-5610: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5612-5628: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5630-5650: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5652-5668: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5670-5690: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5692-5701: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5703-5721: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5723-5748: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5750-5775: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5777-5811: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5813-5823: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5825-5842: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5844-5858: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5860-5876: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5878-5894: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5896-5912: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5914-6325: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5926-5947: Settings (PhysicsSpec.settings)
-  - lines 5949-5962: Material properties (MaterialSpec.properties)
-  - lines 5964-5993: Fields
-  - lines 5995-5999: Source slots
-  - lines 6001-6023: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6025-6041: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6043-6063: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6065-6081: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6083-6103: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6105-6114: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6116-6134: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6136-6161: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6163-6188: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6190-6224: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6226-6236: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6238-6255: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6257-6271: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6273-6289: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6291-6307: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6309-6325: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6327-6532: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6534-6834: Physics type `heat` - Heat Transfer in Solids
-- lines 6836-6994: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 6996-7190: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7192-7360: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7362-7534: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7536-7843: Physics type `membrane` - Membrane
-- lines 7845-8078: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8080-8533: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8092-8141: Settings (PhysicsSpec.settings)
-  - lines 8143-8220: Material properties (MaterialSpec.properties)
-  - lines 8222-8279: Fields
-  - lines 8281-8285: Source slots
-  - lines 8287-8297: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8299-8309: Feature `solid_mechanics.roller` - Roller
-  - lines 8311-8324: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8326-8336: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8338-8351: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8353-8366: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8368-8381: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8383-8396: Feature `solid_mechanics.body_force` - Body force
-  - lines 8398-8409: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8411-8422: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8424-8434: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8436-8446: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8448-8483: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8485-8499: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8501-8515: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8517-8533: Feature `solid_mechanics.admittance` - Admittance
-- lines 8535-9077: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8547-8596: Settings (PhysicsSpec.settings)
-  - lines 8598-8725: Material properties (MaterialSpec.properties)
-  - lines 8727-8797: Fields
-  - lines 8799-8804: Source slots
-  - lines 8806-8816: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8818-8828: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8830-8845: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8847-8857: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8859-8874: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8876-8891: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 8893-8908: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 8910-8921: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 8923-8934: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 8936-8946: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 8948-8958: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 8960-8983: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 8985-9002: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9004-9021: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9023-9040: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9042-9077: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9079-9087: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9089-9097: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9099-9108: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9110-9119: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9121-9129: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9131-9139: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9141-9152: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9154-9162: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9164-9177: Coupling type `field_transfer` - Field transfer
-- lines 9179-9187: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9189-9197: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9199-9207: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9209-9217: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9219-9227: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9229-9237: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9239-9252: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9254-9263: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9265-9274: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9276-9310: Study type `eigenfrequency` - Eigenfrequency
-- lines 9312-9347: Study type `frequency_domain` - Frequency domain
-- lines 9349-9392: Study type `frequency_response` - Frequency response
-- lines 9394-9416: Study type `mode_analysis` - Mode analysis
-- lines 9418-9440: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9442-9458: Study type `optimization` - Optimization
-- lines 9460-9483: Study type `optomechanics` - Optomechanics
-- lines 9485-9506: Study type `stationary` - Stationary
-- lines 9508-9537: Study type `thermal_noise` - Thermal noise
-- lines 9539-9553: Study type `time_dependent` - Time dependent
-- lines 9555-9621: Templates
-- lines 9623-9841: Results, reports and files
+- lines 185-528: Model spec
+- lines 530-647: Expressions
+- lines 649-914: Geometry
+- lines 916-1078: Materials
+- lines 1080-1126: Mesh
+- lines 1128-1247: Solvers
+- lines 1249-2107: Shared help texts
+- lines 2109-2274: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2276-2529: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2531-2662: Physics type `electric_currents` - Electric Currents
+- lines 2664-2866: Physics type `electrostatics` - Electrostatics
+- lines 2868-3092: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3094-3282: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3284-3397: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3399-3596: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3598-3770: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3772-4114: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4116-4478: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4480-5000: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4492-4519: Settings (PhysicsSpec.settings)
+  - lines 4521-4536: Material properties (MaterialSpec.properties)
+  - lines 4538-4579: Fields
+  - lines 4581-4585: Source slots
+  - lines 4587-4607: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4609-4669: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4671-4719: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4721-4741: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4743-4777: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4779-4788: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4790-4810: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4812-4832: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4834-4856: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4858-4872: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4874-4892: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4894-4908: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4910-4928: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4930-4942: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4944-4954: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4956-4968: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 4970-4982: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 4984-5000: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 5002-5309: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5311-5544: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5546-5949: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5558-5579: Settings (PhysicsSpec.settings)
+  - lines 5581-5592: Material properties (MaterialSpec.properties)
+  - lines 5594-5624: Fields
+  - lines 5626-5629: Source slots
+  - lines 5631-5647: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5649-5665: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5667-5687: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5689-5705: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5707-5727: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5729-5738: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5740-5758: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5760-5785: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5787-5812: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5814-5848: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5850-5860: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5862-5879: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5881-5895: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5897-5913: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5915-5931: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5933-5949: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5951-6362: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5963-5984: Settings (PhysicsSpec.settings)
+  - lines 5986-5999: Material properties (MaterialSpec.properties)
+  - lines 6001-6030: Fields
+  - lines 6032-6036: Source slots
+  - lines 6038-6060: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6062-6078: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6080-6100: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6102-6118: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6120-6140: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6142-6151: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6153-6171: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6173-6198: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6200-6225: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6227-6261: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6263-6273: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6275-6292: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6294-6308: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6310-6326: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6328-6344: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6346-6362: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6364-6569: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6571-6871: Physics type `heat` - Heat Transfer in Solids
+- lines 6873-7031: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 7033-7227: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7229-7397: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7399-7571: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7573-7880: Physics type `membrane` - Membrane
+- lines 7882-8115: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8117-8595: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8129-8178: Settings (PhysicsSpec.settings)
+  - lines 8180-8267: Material properties (MaterialSpec.properties)
+  - lines 8269-8326: Fields
+  - lines 8328-8332: Source slots
+  - lines 8334-8344: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8346-8356: Feature `solid_mechanics.roller` - Roller
+  - lines 8358-8371: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8373-8383: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8385-8398: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8400-8413: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8415-8428: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8430-8443: Feature `solid_mechanics.body_force` - Body force
+  - lines 8445-8456: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8458-8469: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8471-8481: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8483-8493: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8495-8506: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+  - lines 8508-8545: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8547-8561: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8563-8577: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8579-8595: Feature `solid_mechanics.admittance` - Admittance
+- lines 8597-9164: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8609-8658: Settings (PhysicsSpec.settings)
+  - lines 8660-8797: Material properties (MaterialSpec.properties)
+  - lines 8799-8869: Fields
+  - lines 8871-8876: Source slots
+  - lines 8878-8888: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8890-8900: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8902-8917: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8919-8929: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8931-8946: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8948-8963: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 8965-8980: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 8982-8993: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 8995-9006: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 9008-9018: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 9020-9030: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 9032-9055: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 9057-9068: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 9070-9087: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9089-9106: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9108-9125: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9127-9164: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9166-9174: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9176-9184: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9186-9195: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9197-9206: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9208-9216: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9218-9226: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9228-9239: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9241-9249: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9251-9264: Coupling type `field_transfer` - Field transfer
+- lines 9266-9274: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9276-9284: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9286-9294: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9296-9304: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9306-9314: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9316-9324: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9326-9339: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9341-9350: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9352-9361: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9363-9397: Study type `eigenfrequency` - Eigenfrequency
+- lines 9399-9434: Study type `frequency_domain` - Frequency domain
+- lines 9436-9479: Study type `frequency_response` - Frequency response
+- lines 9481-9503: Study type `mode_analysis` - Mode analysis
+- lines 9505-9527: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9529-9545: Study type `optimization` - Optimization
+- lines 9547-9570: Study type `optomechanics` - Optomechanics
+- lines 9572-9593: Study type `stationary` - Stationary
+- lines 9595-9624: Study type `thermal_noise` - Thermal noise
+- lines 9626-9640: Study type `time_dependent` - Time dependent
+- lines 9642-9709: Templates
+- lines 9711-9929: Results, reports and files
 
 ## Model spec
 
@@ -996,6 +998,13 @@ Crystalline silicon at 1.55 um and room temperature (n = 3.476), lossless and no
 - Properties: {"eps_r": 12.08, "k": 130, "rho": 2329, "cp": 700, "dndT": 0.00018, "alpha": 2.6e-06, "youngs_modulus": 1.65e+11, "poisson_ratio": 0.22, "photoelastic_p11": -0.094, "photoelastic_p12": 0.017, "photoelastic_p44": -0.051, "eps_dc": 11.7, "n_intrinsic": 1e+16, "mobility_n": 0.135, "mobility_p": 0.048, "radiative_recombination": 1.1e-20}
 - Dispersion poles: none
 
+#### Library material `silicon_nitride`
+
+Stoichiometric silicon nitride (Si3N4) as deposited by LPCVD for integrated photonics and nano-mechanical resonators, at 1.55 um and room temperature: lossless and non-dispersive (every wavelength sees n = 1.996; about 2.02 in the visible). Film data vary with the deposition: Young's modulus 200-300 GPa, density 2900-3200 kg/m^3, thermal expansion 1.5-3.3e-6 1/K (bulk ceramic the upper end), and above all the thermal conductivity (thin films measure about 2-15 W/(m K), bulk ceramic 15-30): set k (and alpha) for your film when thermal effects such as thermoelastic damping matter. The large tensile deposition stress of stoichiometric films (about 1 GPa) is not included: set initial_stress_* for stressed membranes and strings. An insulator (no sigma_dc).
+
+- Properties: {"eps_r": 3.984, "k": 10, "rho": 3100, "cp": 700, "dndT": 2.45e-05, "alpha": 2.3e-06, "youngs_modulus": 2.5e+11, "poisson_ratio": 0.23, "eps_dc": 7.5}
+- Dispersion poles: none
+
 #### Library material `silver`
 
 Silver for EM, heat and electric currents (room temperature): one Drude pole without interband terms, a common free-electron fit whose eps_inf absorbs the interband background (its original source is not recorded). At 1.55 um it gives eps -123 - 2.9j against Johnson & Christy -129 - 3.3j (real part 5 %, loss 13 % low); visible / near-IR only, wrong below the interband edge near 320 nm. Tabulated n, k (Johnson & Christy 1972, 188-1937 nm) for an nk_fit dispersion entry, which fits Drude + Lorentz poles over a chosen band.
@@ -1036,8 +1045,8 @@ Liquid water at 1.55 um and 20 C (n = 1.3154) with its absorption (extinction 1.
 - `magnetostatics_3d`: mu_dc (mu_dc_xx, mu_dc_yy, mu_dc_zz), mu_dc_xx (mu_dc_xx), mu_dc_yy (mu_dc_yy), mu_dc_zz (mu_dc_zz), remanence_x (remanence_x), remanence_y (remanence_y), remanence_z (remanence_z), saturation_polarization (saturation_polarization), bh_curve (table, no array)
 - `membrane`: tension (tension_xx, tension_yy), tension_xx (tension_xx), tension_yy (tension_yy), tension_xy (tension_xy), areal_density (areal_density), loss_factor (loss_factor), bending_stiffness (bending_stiffness), plate_poisson_ratio (plate_poisson_ratio)
 - `pressure_acoustics`: rho (rho), sound_speed (sound_speed)
-- `solid_mechanics`: youngs_modulus (youngs_modulus), poisson_ratio (poisson_ratio), alpha (alpha_xx, alpha_yy, alpha_zz), alpha_xx (alpha_xx), alpha_yy (alpha_yy), alpha_zz (alpha_zz), photoelastic_p11 (photoelastic_p11), photoelastic_p12 (photoelastic_p12), rho (rho), photoelastic_p44 (photoelastic_p44), piezo_e11 (piezo_e11), piezo_e12 (piezo_e12), piezo_e16 (piezo_e16), piezo_e21 (piezo_e21), piezo_e22 (piezo_e22), piezo_e26 (piezo_e26), piezo_e13 (piezo_e13), piezo_e23 (piezo_e23), eps_dc (eps_dc_xx, eps_dc_yy), eps_dc_xx (eps_dc_xx), eps_dc_yy (eps_dc_yy), eps_dc_xy (eps_dc_xy), c11 (c11), c12 (c12), c13 (c13), c22 (c22), c23 (c23), c33 (c33), c16 (c16), c26 (c26), c36 (c36), c66 (c66), mechanical_loss_factor (mechanical_loss_factor), dielectric_loss_tangent (dielectric_loss_tangent), initial_stress_xx (initial_stress_xx), initial_stress_yy (initial_stress_yy), initial_stress_xy (initial_stress_xy), initial_stress_zz (initial_stress_zz)
-- `solid_mechanics_3d`: youngs_modulus (youngs_modulus), poisson_ratio (poisson_ratio), alpha (alpha_xx, alpha_yy, alpha_zz), alpha_xx (alpha_xx), alpha_yy (alpha_yy), alpha_zz (alpha_zz), photoelastic_p11 (photoelastic_p11), photoelastic_p12 (photoelastic_p12), rho (rho), c11 (c11), c12 (c12), c13 (c13), c14 (c14), c15 (c15), c16 (c16), c22 (c22), c23 (c23), c24 (c24), c25 (c25), c26 (c26), c33 (c33), c34 (c34), c35 (c35), c36 (c36), c44 (c44), c45 (c45), c46 (c46), c55 (c55), c56 (c56), c66 (c66), piezo_e11 (piezo_e11), piezo_e12 (piezo_e12), piezo_e13 (piezo_e13), piezo_e14 (piezo_e14), piezo_e15 (piezo_e15), piezo_e16 (piezo_e16), piezo_e21 (piezo_e21), piezo_e22 (piezo_e22), piezo_e23 (piezo_e23), piezo_e24 (piezo_e24), piezo_e25 (piezo_e25), piezo_e26 (piezo_e26), piezo_e31 (piezo_e31), piezo_e32 (piezo_e32), piezo_e33 (piezo_e33), piezo_e34 (piezo_e34), piezo_e35 (piezo_e35), piezo_e36 (piezo_e36), eps_dc (eps_dc_xx, eps_dc_yy, eps_dc_zz), eps_dc_xx (eps_dc_xx), eps_dc_yy (eps_dc_yy), eps_dc_zz (eps_dc_zz), eps_dc_yz (eps_dc_yz), eps_dc_xz (eps_dc_xz), eps_dc_xy (eps_dc_xy), mechanical_loss_factor (mechanical_loss_factor), dielectric_loss_tangent (dielectric_loss_tangent), initial_stress_xx (initial_stress_xx), initial_stress_yy (initial_stress_yy), initial_stress_zz (initial_stress_zz), initial_stress_yz (initial_stress_yz), initial_stress_xz (initial_stress_xz), initial_stress_xy (initial_stress_xy)
+- `solid_mechanics`: youngs_modulus (youngs_modulus), poisson_ratio (poisson_ratio), alpha (alpha_xx, alpha_yy, alpha_zz), alpha_xx (alpha_xx), alpha_yy (alpha_yy), alpha_zz (alpha_zz), photoelastic_p11 (photoelastic_p11), photoelastic_p12 (photoelastic_p12), rho (rho), photoelastic_p44 (photoelastic_p44), piezo_e11 (piezo_e11), piezo_e12 (piezo_e12), piezo_e16 (piezo_e16), piezo_e21 (piezo_e21), piezo_e22 (piezo_e22), piezo_e26 (piezo_e26), piezo_e13 (piezo_e13), piezo_e23 (piezo_e23), eps_dc (eps_dc_xx, eps_dc_yy), eps_dc_xx (eps_dc_xx), eps_dc_yy (eps_dc_yy), eps_dc_xy (eps_dc_xy), c11 (c11), c12 (c12), c13 (c13), c22 (c22), c23 (c23), c33 (c33), c16 (c16), c26 (c26), c36 (c36), c66 (c66), mechanical_loss_factor (mechanical_loss_factor), dielectric_loss_tangent (dielectric_loss_tangent), initial_stress_xx (initial_stress_xx), initial_stress_yy (initial_stress_yy), initial_stress_xy (initial_stress_xy), initial_stress_zz (initial_stress_zz), k (k_xx, k_yy, k_zz), k_xx (k_xx), k_yy (k_yy), k_zz (k_zz), cp (cp)
+- `solid_mechanics_3d`: youngs_modulus (youngs_modulus), poisson_ratio (poisson_ratio), alpha (alpha_xx, alpha_yy, alpha_zz), alpha_xx (alpha_xx), alpha_yy (alpha_yy), alpha_zz (alpha_zz), photoelastic_p11 (photoelastic_p11), photoelastic_p12 (photoelastic_p12), rho (rho), c11 (c11), c12 (c12), c13 (c13), c14 (c14), c15 (c15), c16 (c16), c22 (c22), c23 (c23), c24 (c24), c25 (c25), c26 (c26), c33 (c33), c34 (c34), c35 (c35), c36 (c36), c44 (c44), c45 (c45), c46 (c46), c55 (c55), c56 (c56), c66 (c66), piezo_e11 (piezo_e11), piezo_e12 (piezo_e12), piezo_e13 (piezo_e13), piezo_e14 (piezo_e14), piezo_e15 (piezo_e15), piezo_e16 (piezo_e16), piezo_e21 (piezo_e21), piezo_e22 (piezo_e22), piezo_e23 (piezo_e23), piezo_e24 (piezo_e24), piezo_e25 (piezo_e25), piezo_e26 (piezo_e26), piezo_e31 (piezo_e31), piezo_e32 (piezo_e32), piezo_e33 (piezo_e33), piezo_e34 (piezo_e34), piezo_e35 (piezo_e35), piezo_e36 (piezo_e36), eps_dc (eps_dc_xx, eps_dc_yy, eps_dc_zz), eps_dc_xx (eps_dc_xx), eps_dc_yy (eps_dc_yy), eps_dc_zz (eps_dc_zz), eps_dc_yz (eps_dc_yz), eps_dc_xz (eps_dc_xz), eps_dc_xy (eps_dc_xy), mechanical_loss_factor (mechanical_loss_factor), dielectric_loss_tangent (dielectric_loss_tangent), initial_stress_xx (initial_stress_xx), initial_stress_yy (initial_stress_yy), initial_stress_zz (initial_stress_zz), initial_stress_yz (initial_stress_yz), initial_stress_xz (initial_stress_xz), initial_stress_xy (initial_stress_xy), k (k_xx, k_yy, k_zz), k_xx (k_xx), k_yy (k_yy), k_zz (k_zz), cp (cp)
 
 ### Dispersion pole models (MaterialSpec.dispersion items)
 
@@ -1977,13 +1986,37 @@ Initial (residual) stress sigma0_xy [Pa] of the cell, e.g. the deposition stress
 
 Initial (residual) stress sigma0_zz [Pa] of the cell, e.g. the deposition stress of a film (tension > 0): the total stress is sigma0 + C eps - beta dT, so a stationary solve relaxes it (a released structure contracts until the total stress balances the supports); default 0. Triangle and tetrahedron meshes only (a rectangular-cell mesh refuses it). In 3D a Voigt row; in 2D plane strain the out-of-plane stress (stress_zz only, no in-plane effect), axisymmetric the hoop stress; plane stress (sigma_zz = 0) and generalized plane strain refuse it. With the stress_stiffening setting the eigenfrequency / frequency_response / optomechanics studies add the geometric stiffness K_sigma of the static state (a tensioned string or membrane rises in frequency). Constant per element (an x / y / z expression is evaluated at the centroids).
 
+#### `solid_mechanics.k`
+
+Isotropic thermal conductivity (sets k_xx, k_yy, k_zz); read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with heat, see there): the heat diffusion of the thermoelastic temperature of a vibration mode. Typical: silicon 130 (library; pure bulk 148), silica 1.38, silicon nitride 10 (library; films 2-15).
+
+#### `solid_mechanics.k_xx`
+
+Conductivity along x; overrides k for this axis (read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with heat, see there)).
+
+#### `solid_mechanics.k_yy`
+
+Conductivity along y; overrides k for this axis (read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with heat, see there)).
+
+#### `solid_mechanics.k_zz`
+
+Conductivity along z, read in 3D only; overrides k for this axis (read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with heat, see there)).
+
+#### `solid_mechanics.cp`
+
+Specific heat capacity; with rho the heat capacity rho cp, read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with heat, see there) (every solid cell then needs rho > 0 and cp > 0). Typical: silicon 700, silica 746, silicon nitride 700.
+
 #### `solid_mechanics.temperature_change`
 
 Applied temperature change [K] for thermal strain, without a heat physics: added to temperature_rise_ext, which adds to the coupled temperature_rise of heat_solid_thermal_strain.
 
+#### `solid_mechanics.thermoelastic_damping.T0`
+
+Absolute temperature T0 [K] of the solid about which it vibrates (the heat type's T0 default): the thermoelastic relaxation strength Delta = E alpha^2 T0 / (rho cp) and so 1 / Q_TED scale with it.
+
 #### `solid_mechanics.optomechanical_coupling`
 
-Vacuum optomechanical coupling between one optical mode and every vibration mode of the optomechanics study (2D plane strain, guided 2.5D modes with scattering backward; rho needed in every solid cell). g_om = d omega_optical / d alpha for the displacement alpha Q, Q = the mode shape scaled to |Q| = 1 at the reference node; moving boundary: each interior cell face whose cells differ in permittivity contributes Q_n [eps0 (eps_lo - eps_hi) |E_par|^2 - (1/eps_lo - 1/eps_hi) |D_n|^2 / eps0] times its length (Q_n = mean of its two corner nodes; staircase interfaces); photoelastic: eps0 E* d eps E dA per solid cell with d eps_ii = -eps_ii^2 (p11 S_ii + p12 (S_jj + S_kk)) and the shear d eps_xy = -eps_xx eps_yy 2 p44 S_xy (photoelastic_p44, unset = (p11 - p12) / 2), S the mode strain (tensor shear S_xy), S_zz = S_xz = S_yz = 0; the shear term pairs E_x and E_y averaged to the cell centres (2 Re(E_x* E_y)) and is the continuum form (the optical solvers hold diagonal eps), so em_fdfd_ez has none. A material with a {"model": "crystal"} entry with photoelastic data and no photoelastic_* property of its own uses the full p of the crystal rotated into model axes (as the entry expands): Delta(1/eps)_I = p_IJ S_J (Nye, Voigt xx, yy, zz, yz, xz, xy, engineering shear), d eps_ij = -eps_ii eps_jj Delta(1/eps)_ij, whose xz / yz rows pair E_x / E_y with E_z at the centres (2 Re(E_x* E_z), em_modes only; continuum form like xy); its stiffness stays the isotropic youngs_modulus / poisson_ratio. Subpixel smoothing: the face jumps and the photoelastic eps are the unsmoothed cell values (the build's material assignment), the fields, D_n and the mode energy those of the smoothed solve. em_fdfd_ez resonance: g_om = -(omega / 2) Re[(I_mb + I_pe) / sum eps0 eps |E_z|^2 dA]; em_fdfd_hz resonance: the same over sum mu0 mu |H_z|^2 dA, E_par on the Yee face itself, |D_n|^2 the mean over the four nearest normal-E faces, the photoelastic sum over the E_x / E_y faces (face-averaged d eps_xx / d eps_yy); em_modes cross-section mode (needs group_index): d beta / d alpha = omega (I_mb + I_pe) / (4 P) (1 W, the whole mode) and the ring conversion at fixed azimuthal order g_om = -(C0 / n_group) d beta / d alpha (column dn_eff_dx = d n_eff / d alpha at fixed omega; a bent em_modes uses its bend-mapped eps components, exact for bend_model 'exact'). m_eff = length x the consistent-mass Q^T M Q (x 2 per EM mirror face), x_zpf = sqrt(hbar / (2 m_eff Omega)), g0 = g_om x_zpf. Result 'table', one row per vibration mode: mechanical_mode, frequency, effective_mass, zero_point_motion, g_om_moving_boundary, g_om_photoelastic, g_om, dn_eff_dx, g0_moving_boundary, g0_photoelastic, g0, brillouin_gain (Hz, kg, m, rad/s/m, 1/m; g0 columns are g0 / 2 pi in Hz, signed: total = moving boundary + photoelastic; brillouin_gain [1/(W m)] = the forward intramodal G_B = 2 Q_m (d beta / d alpha)^2 / (omega m' Omega^2), m' = m_eff / length, em_modes with mechanical_quality_factor only, else NaN). scattering backward (em_modes): the vibration modes are the guided modes at k_z = 2 Re beta (set by the study), |Q| and m_eff include u_z, the overlap is kappa = omega (I_mb + I_pe) / (4 P) between the mode and its counter-propagating twin (E_x, E_y, -E_z) with the conjugated phonon strain (S_zz = k_z u_z, shears S_xz / S_yz with p44 pairing E_x / E_y and E_z; the E_z terms flip sign), g_om = -(C0 / n_group) Re kappa and g0 the forward-backward coupling rate, brillouin_gain = 2 Q_m |kappa|^2 / (omega m' Omega^2) (bulk limit: g_B / area). Extras optical_physics, optical_mode, optical_frequency, optical_wavelength, n_eff, n_group, length, mirror_factor, scattering, axial_wavenumber (None forward), normalisation, reference_node. Lossy or open optical modes use |E|^2 forms and the real part (no quasi-normal-mode correction). An EM mirror face needs a solid roller on the same face (even vibration modes; the odd ones do not couple). The solid field om_integrand (optomechanics study only) maps the moving-boundary g_om density of the shown vibration mode (first coupling) in rad/s/m^3: each face term half to each of its cells over the cell area, summing to g_om_moving_boundary. em_fdfd_bor optics (a resonance ~ exp(-j m phi) on a triangles mesh; the solid axisymmetric on a triangles mesh, or a solid_mechanics_3d on tetrahedra): every integral carries 2 pi r over the window elements (PML ring, PEC and interfaces touching them left out); moving boundary on the curved element edges between permittivities (the eps_phiphi component, isotropic), n out of the first element, q . n [eps0 Delta eps |E_par|^2 - Delta(1/eps) |D_n|^2 / eps0], |E_par|^2 = |E_phi|^2 + |E_t|^2 and |D_n|^2 the means of both sides, q . n of the solid side; photoelastic eps0 E* d eps E with the cylindrical strains (rr, phiphi = u_r / r, zz, rz) and isotropic p11 / p12 / p44 (crystal tensors are not used); U = sum eps0 eps |E|^2 2 pi r dA. An axisymmetric solid of azimuthal_order m >= 1 couples through the ring mean of cos(m phi) (zero to round-off); a 3D solid is sampled on 64 angles per (r, z) point about the axis through (axis_x, axis_y) and phi-averaged (its crown parts drop out). m_eff = Q^T M Q in kg (whole rings or the 3D body; length and mirror factors unused, a pec / pmc z face used as a mirror plane counts the drawn half), normalisation point: the solid dof nearest (reference_x, reference_y) (triangles only), no om_integrand, dn_eff_dx and brillouin_gain NaN. Extras optical_azimuthal_order, optical_q_factor, solid_mesh, mechanical_azimuthal_order, prescribed_normal_displacement and prescribed_g_om (setting prescribed_normal_displacement: the rate of that uniform outward motion of the solid surface).
+Vacuum optomechanical coupling between one optical mode and every vibration mode of the optomechanics study (2D plane strain, guided 2.5D modes with scattering backward; rho needed in every solid cell). g_om = d omega_optical / d alpha for the displacement alpha Q, Q = the mode shape scaled to |Q| = 1 at the reference node; moving boundary: each interior cell face whose cells differ in permittivity contributes Q_n [eps0 (eps_lo - eps_hi) |E_par|^2 - (1/eps_lo - 1/eps_hi) |D_n|^2 / eps0] times its length (Q_n = mean of its two corner nodes; staircase interfaces); photoelastic: eps0 E* d eps E dA per solid cell with d eps_ii = -eps_ii^2 (p11 S_ii + p12 (S_jj + S_kk)) and the shear d eps_xy = -eps_xx eps_yy 2 p44 S_xy (photoelastic_p44, unset = (p11 - p12) / 2), S the mode strain (tensor shear S_xy), S_zz = S_xz = S_yz = 0; the shear term pairs E_x and E_y averaged to the cell centres (2 Re(E_x* E_y)) and is the continuum form (the optical solvers hold diagonal eps), so em_fdfd_ez has none. A material with a {"model": "crystal"} entry with photoelastic data and no photoelastic_* property of its own uses the full p of the crystal rotated into model axes (as the entry expands): Delta(1/eps)_I = p_IJ S_J (Nye, Voigt xx, yy, zz, yz, xz, xy, engineering shear), d eps_ij = -eps_ii eps_jj Delta(1/eps)_ij, whose xz / yz rows pair E_x / E_y with E_z at the centres (2 Re(E_x* E_z), em_modes only; continuum form like xy); its stiffness stays the isotropic youngs_modulus / poisson_ratio. Subpixel smoothing: the face jumps and the photoelastic eps are the unsmoothed cell values (the build's material assignment), the fields, D_n and the mode energy those of the smoothed solve. em_fdfd_ez resonance: g_om = -(omega / 2) Re[(I_mb + I_pe) / sum eps0 eps |E_z|^2 dA]; em_fdfd_hz resonance: the same over sum mu0 mu |H_z|^2 dA, E_par on the Yee face itself, |D_n|^2 the mean over the four nearest normal-E faces, the photoelastic sum over the E_x / E_y faces (face-averaged d eps_xx / d eps_yy); em_modes cross-section mode (needs group_index): d beta / d alpha = omega (I_mb + I_pe) / (4 P) (1 W, the whole mode) and the ring conversion at fixed azimuthal order g_om = -(C0 / n_group) d beta / d alpha (column dn_eff_dx = d n_eff / d alpha at fixed omega; a bent em_modes uses its bend-mapped eps components, exact for bend_model 'exact'). m_eff = length x the consistent-mass Q^T M Q (x 2 per EM mirror face), x_zpf = sqrt(hbar / (2 m_eff Omega)), g0 = g_om x_zpf. Result 'table', one row per vibration mode: mechanical_mode, frequency, effective_mass, zero_point_motion, g_om_moving_boundary, g_om_photoelastic, g_om, dn_eff_dx, g0_moving_boundary, g0_photoelastic, g0, brillouin_gain (Hz, kg, m, rad/s/m, 1/m; g0 columns are g0 / 2 pi in Hz, signed: total = moving boundary + photoelastic; brillouin_gain [1/(W m)] = the forward intramodal G_B = 2 Q_m (d beta / d alpha)^2 / (omega m' Omega^2), m' = m_eff / length, em_modes with mechanical_quality_factor (or the per-mode q_total of the thermoelastic_damping feature named by quality_from) only, else NaN). scattering backward (em_modes): the vibration modes are the guided modes at k_z = 2 Re beta (set by the study), |Q| and m_eff include u_z, the overlap is kappa = omega (I_mb + I_pe) / (4 P) between the mode and its counter-propagating twin (E_x, E_y, -E_z) with the conjugated phonon strain (S_zz = k_z u_z, shears S_xz / S_yz with p44 pairing E_x / E_y and E_z; the E_z terms flip sign), g_om = -(C0 / n_group) Re kappa and g0 the forward-backward coupling rate, brillouin_gain = 2 Q_m |kappa|^2 / (omega m' Omega^2) (bulk limit: g_B / area). Extras optical_physics, optical_mode, optical_frequency, optical_wavelength, n_eff, n_group, length, mirror_factor, scattering, axial_wavenumber (None forward), normalisation, reference_node. Lossy or open optical modes use |E|^2 forms and the real part (no quasi-normal-mode correction). An EM mirror face needs a solid roller on the same face (even vibration modes; the odd ones do not couple). The solid field om_integrand (optomechanics study only) maps the moving-boundary g_om density of the shown vibration mode (first coupling) in rad/s/m^3: each face term half to each of its cells over the cell area, summing to g_om_moving_boundary. em_fdfd_bor optics (a resonance ~ exp(-j m phi) on a triangles mesh; the solid axisymmetric on a triangles mesh, or a solid_mechanics_3d on tetrahedra): every integral carries 2 pi r over the window elements (PML ring, PEC and interfaces touching them left out); moving boundary on the curved element edges between permittivities (the eps_phiphi component, isotropic), n out of the first element, q . n [eps0 Delta eps |E_par|^2 - Delta(1/eps) |D_n|^2 / eps0], |E_par|^2 = |E_phi|^2 + |E_t|^2 and |D_n|^2 the means of both sides, q . n of the solid side; photoelastic eps0 E* d eps E with the cylindrical strains (rr, phiphi = u_r / r, zz, rz) and isotropic p11 / p12 / p44 (crystal tensors are not used); U = sum eps0 eps |E|^2 2 pi r dA. An axisymmetric solid of azimuthal_order m >= 1 couples through the ring mean of cos(m phi) (zero to round-off); a 3D solid is sampled on 64 angles per (r, z) point about the axis through (axis_x, axis_y) and phi-averaged (its crown parts drop out). m_eff = Q^T M Q in kg (whole rings or the 3D body; length and mirror factors unused, a pec / pmc z face used as a mirror plane counts the drawn half), normalisation point: the solid dof nearest (reference_x, reference_y) (triangles only), no om_integrand, dn_eff_dx and brillouin_gain NaN. Extras optical_azimuthal_order, optical_q_factor, solid_mesh, mechanical_azimuthal_order, prescribed_normal_displacement and prescribed_g_om (setting prescribed_normal_displacement: the rate of that uniform outward motion of the solid surface).
 
 #### `solid_mechanics.optomechanical_coupling.optical_physics`
 
@@ -2008,6 +2041,10 @@ Node where the mode shape is scaled to |u| = 1 for g_om and m_eff: 'max' the pea
 #### `solid_mechanics.optomechanical_coupling.mechanical_quality_factor`
 
 Q_m of every vibration mode for the brillouin_gain column (em_modes only): Brillouin gain G_B = 2 Q_m |kappa|^2 / (omega m' Omega^2) [1/(W m)], m' = m_eff / length, kappa = d beta / d alpha (forward intramodal: pump and Stokes in the optical mode, k_z = 0 vibration; its real part) or the coupling to the counter-propagating twin (scattering backward). Empty: the column reads NaN (the modal analysis is undamped). Typical 100-1000 (silicon wires at room temperature).
+
+#### `solid_mechanics.optomechanical_coupling.quality_from`
+
+Name of a thermoelastic_damping feature of this solid whose per-mode q_total (thermoelastic damping combined with the other losses of that table) is Q_m of the brillouin_gain column instead of mechanical_quality_factor (set one of the two); '' = not used. Forward scattering with an em_modes optical physics only (the guided modes of backward scattering have no thermoelastic damping).
 
 #### `solid_mechanics.optomechanical_coupling.scattering`
 
@@ -8087,7 +8124,7 @@ Params (FeatureSpec.params):
 - Backends (SolverDefaultsSpec.backend): gpu, cpu
 - Mesh kinds (MeshSpec.kind): tensor, triangles; refinement indicator fields (when its solver has no error indicator of its own): u_abs
 - Dispersion poles (MaterialSpec.dispersion): not used
-- Features (topics `solid_mechanics.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, optomechanical_coupling, electrode, electrode_domain, admittance
+- Features (topics `solid_mechanics.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, segment_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, thermoelastic_damping, optomechanical_coupling, electrode, electrode_domain, admittance
 
 ### Settings (PhysicsSpec.settings)
 
@@ -8218,6 +8255,16 @@ Params (FeatureSpec.params):
   Help: shared `solid_mechanics.initial_stress_xy`
 - `initial_stress_zz` (float; unit Pa; optional (null allowed); may use x, y; may use physics fields; writes arrays initial_stress_zz) - Initial stress zz
   Help: shared `solid_mechanics.initial_stress_zz`
+- `k` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_xx, k_yy, k_zz) - Thermal conductivity
+  Help: shared `solid_mechanics.k`
+- `k_xx` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_xx) - Thermal conductivity along x
+  Help: shared `solid_mechanics.k_xx`
+- `k_yy` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_yy) - Thermal conductivity along y
+  Help: shared `solid_mechanics.k_yy`
+- `k_zz` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_zz) - Thermal conductivity along z
+  Help: shared `solid_mechanics.k_zz`
+- `cp` (float; unit J/(kg K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays cp) - Specific heat capacity
+  Help: shared `solid_mechanics.cp`
 
 ### Fields
 
@@ -8445,6 +8492,19 @@ Vibration modes of the last eigenfrequency study solve, nearest the target (the 
 Params (FeatureSpec.params):
 none
 
+### Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+
+Thermoelastic damping (TED) of every vibration mode of the last eigenfrequency (or optomechanics) solve, on tensor (rectangular-cell) and triangle meshes (planar plane strain / plane stress, axisymmetric); perturbative and one-way (it does not change the modes). Per mode (omega = Re omega, exp(+j omega t), strain eps in Voigt rows, engineering shear) the heat source of the strain rate q = -j omega T0 (beta : eps) drives the harmonic heat equation j omega rho cp theta - div(k grad theta) = q on the solid cells, adiabatic (no heat flux) on every boundary of the solid, theta on the solid's own nodes (tensor mesh: bilinear on the cell corners; element meshes: the solid's P1 / P2 map); beta = C : alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced beta_I - c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row u_r / r). The thermal stress -beta theta adds the complex modal stiffness d = -int beta : eps* theta dV to u^H K u = omega^2 u^H M u (twice the peak stored energy), so 1 / Q_TED = Im d / (u^H K u) = -Im(int beta : eps* theta dV) / (omega^2 u^H M u) (> 0, energy lost per cycle / (2 pi x stored energy)) and the relative frequency shift ted_frequency_shift = Re d / (2 u^H K u) (> 0: towards the adiabatic stiffness; the modes themselves stay isothermal). Reproduces Zener Q^-1 = Delta omega tau / (1 + (omega tau)^2), Delta = E alpha^2 T0 / (rho cp), tau = h^2 / (pi^2 k / (rho cp)), for the flexure of a thin beam of thickness h (more precisely the exact Lifshitz-Roukes form, within 2 % of Zener). Material data: k (k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon, silica and silicon_nitride have them), alpha (alpha_xx / _yy / _zz), the stiffness; every solid cell needs rho > 0 and cp > 0. Result 'table', one row per mode: resonance_number, frequency, q_ted, ted_frequency_shift, q_other, q_total (Hz; Q inf without loss): q_other combines the other losses of the mode, the Q of a damped pencil (elastic PML / anchor radiation and, on element meshes, mechanical_loss_factor), on a tensor mesh (undamped pencil) the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u, on tetrahedra also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 and selected_resonance. Damped (complex) modes use Re omega and Re(u^H M u). One complex host SuperLU factorisation of the thermal operator per mode, on the first read of the result. Not modelled: piezoelectric solids, guided (2.5D) modes, azimuthal_order m >= 1, Bloch cells; the PML ring / shell elements take no part. For Q_TED versus a parameter add a derived value with source '<physics>.<this feature>', expression q_ted, operation at and at = 0 (the first mode).
+
+- FeatureSpec.type `thermoelastic_damping`; category monitor
+- Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
+- Mesh kinds (MeshSpec.kind): tensor, triangles
+- Result kind `table`
+
+Params (FeatureSpec.params):
+- `T0` (float; unit K; default 293.15; range (0, inf)) - Reference temperature
+  Help: shared `solid_mechanics.thermoelastic_damping.T0`
+
 ### Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
 
 Help: shared `solid_mechanics.optomechanical_coupling`
@@ -8473,6 +8533,8 @@ Params (FeatureSpec.params):
   y of the reference point (normalisation 'point').
 - `mechanical_quality_factor` (float; unit 1; range (0, inf); optional (null allowed)) - Mechanical quality factor
   Help: shared `solid_mechanics.optomechanical_coupling.mechanical_quality_factor`
+- `quality_from` (str; default "") - Quality factor from damping feature
+  Help: shared `solid_mechanics.optomechanical_coupling.quality_from`
 - `scattering` (choice; default "forward"; choices forward | backward) - Brillouin scattering
   Help: shared `solid_mechanics.optomechanical_coupling.scattering`
 - `prescribed_normal_displacement` (float; unit m; optional (null allowed)) - Prescribed boundary motion
@@ -8542,7 +8604,7 @@ Params (FeatureSpec.params):
 - Backends (SolverDefaultsSpec.backend): gpu, cpu
 - Mesh kinds (MeshSpec.kind): tensor, tetrahedra; refinement indicator fields (when its solver has no error indicator of its own): u_abs
 - Dispersion poles (MaterialSpec.dispersion): not used
-- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, squeeze_film_damping, electrode, electrode_domain, admittance, optomechanical_coupling
+- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, squeeze_film_damping, thermoelastic_damping, electrode, electrode_domain, admittance, optomechanical_coupling
 
 ### Settings (PhysicsSpec.settings)
 
@@ -8723,6 +8785,16 @@ Params (FeatureSpec.params):
   Initial (residual) stress sigma0_xz [Pa] of the cell, e.g. the deposition stress of a film (tension > 0): the total stress is sigma0 + C eps - beta dT, so a stationary solve relaxes it (a released structure contracts until the total stress balances the supports); default 0. Triangle and tetrahedron meshes only (a rectangular-cell mesh refuses it). solid_mechanics_3d only (a Voigt row). With the stress_stiffening setting the eigenfrequency / frequency_response / optomechanics studies add the geometric stiffness K_sigma of the static state (a tensioned string or membrane rises in frequency). Constant per element (an x / y / z expression is evaluated at the centroids).
 - `initial_stress_xy` (float; unit Pa; optional (null allowed); may use x, y; may use physics fields; writes arrays initial_stress_xy) - Initial stress xy
   Help: shared `solid_mechanics.initial_stress_xy`
+- `k` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_xx, k_yy, k_zz) - Thermal conductivity
+  Help: shared `solid_mechanics.k`
+- `k_xx` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_xx) - Thermal conductivity along x
+  Help: shared `solid_mechanics.k_xx`
+- `k_yy` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_yy) - Thermal conductivity along y
+  Help: shared `solid_mechanics.k_yy`
+- `k_zz` (float; unit W/(m K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays k_zz) - Thermal conductivity along z
+  Help: shared `solid_mechanics.k_zz`
+- `cp` (float; unit J/(kg K); range [0, inf); optional (null allowed); may use x, y; may use physics fields; writes arrays cp) - Specific heat capacity
+  Help: shared `solid_mechanics.cp`
 
 ### Fields
 
@@ -8982,6 +9054,19 @@ Params (FeatureSpec.params):
 - `vents` (choice; default "all"; choices all | window_sealed | x_sealed | y_sealed | z_sealed | none) - Vented rim
   Which rim edges of the footprint vent to the ambient (p = 0; the others are sealed, no gas flux): all = the whole rim; window_sealed = rim edges lying on the domain boundary planes sealed (mirror planes of a half / quarter model), the rest vented; x_sealed / y_sealed / z_sealed = only those on the x / y / z boundary planes sealed (an in-plane axis; e.g. a strip vented on two sides); none = a closed film (needs ambient_pressure > 0: a trapped gas spring).
 
+### Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+
+Thermoelastic damping (TED) of every vibration mode of the last eigenfrequency (or optomechanics) solve, on tetrahedron meshes of solid_mechanics_3d (a tensor mesh refuses it: its modes are matrix-free); perturbative and one-way (it does not change the modes). Per mode (omega = Re omega, exp(+j omega t), strain eps in Voigt rows, engineering shear) the heat source of the strain rate q = -j omega T0 (beta : eps) drives the harmonic heat equation j omega rho cp theta - div(k grad theta) = q on the solid cells, adiabatic (no heat flux) on every boundary of the solid, theta on the solid's own nodes (tensor mesh: bilinear on the cell corners; element meshes: the solid's P1 / P2 map); beta = C : alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced beta_I - c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row u_r / r). The thermal stress -beta theta adds the complex modal stiffness d = -int beta : eps* theta dV to u^H K u = omega^2 u^H M u (twice the peak stored energy), so 1 / Q_TED = Im d / (u^H K u) = -Im(int beta : eps* theta dV) / (omega^2 u^H M u) (> 0, energy lost per cycle / (2 pi x stored energy)) and the relative frequency shift ted_frequency_shift = Re d / (2 u^H K u) (> 0: towards the adiabatic stiffness; the modes themselves stay isothermal). Reproduces Zener Q^-1 = Delta omega tau / (1 + (omega tau)^2), Delta = E alpha^2 T0 / (rho cp), tau = h^2 / (pi^2 k / (rho cp)), for the flexure of a thin beam of thickness h (more precisely the exact Lifshitz-Roukes form, within 2 % of Zener). Material data: k (k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon, silica and silicon_nitride have them), alpha (alpha_xx / _yy / _zz), the stiffness; every solid cell needs rho > 0 and cp > 0. Result 'table', one row per mode: resonance_number, frequency, q_ted, ted_frequency_shift, q_other, q_total (Hz; Q inf without loss): q_other combines the other losses of the mode, the Q of a damped pencil (elastic PML / anchor radiation and, on element meshes, mechanical_loss_factor), on a tensor mesh (undamped pencil) the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u, on tetrahedra also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 and selected_resonance. Damped (complex) modes use Re omega and Re(u^H M u). One complex host SuperLU factorisation of the thermal operator per mode, on the first read of the result. Not modelled: piezoelectric solids, guided (2.5D) modes, azimuthal_order m >= 1, Bloch cells; the PML ring / shell elements take no part. For Q_TED versus a parameter add a derived value with source '<physics>.<this feature>', expression q_ted, operation at and at = 0 (the first mode).
+
+- FeatureSpec.type `thermoelastic_damping`; category monitor
+- Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
+- Mesh kinds (MeshSpec.kind): tetrahedra
+- Result kind `table`
+
+Params (FeatureSpec.params):
+- `T0` (float; unit K; default 293.15; range (0, inf)) - Reference temperature
+  Help: shared `solid_mechanics.thermoelastic_damping.T0`
+
 ### Feature `solid_mechanics_3d.electrode` - Electrode
 
 Electrode on outer faces and on domain objects (their interface faces, outer boundary faces of the object included): every node of the faces, edges and corners included, one equipotential. piezoelectric only, tetrahedron mesh (ignored with a validation warning when piezoelectric is off): an equipotential electrode, connection voltage (held phi), floating (one shared phi with a net charge) or resistive_load (one shared phi through a resistor to ground: damped modes, a loaded response). Two electrodes must not share a node (adjacent faces share their edge nodes: a build error; select both in one feature instead). Its nodes keep their mechanical supports and loads (a thin metal film without stiffness). Result 'table' of the latest static solve (eigenfrequency study: of the shown mode, per its 1 m peak displacement) with one row [feature, V, Q] (units '', V, C) and the extras V and Q: the electrode potential and the net free charge on it (Q = -sum of the potential rows of A x over its nodes, the discrete Gauss law; a voltage electrode: the charge its source delivered, so Q / V of a single driven electrode against ground is its capacitance, fringing included; a mode: the short-circuit charge of a voltage electrode, the open-circuit voltage of a floating one).
@@ -9067,6 +9152,8 @@ Params (FeatureSpec.params):
   y of the reference point (normalisation 'point').
 - `mechanical_quality_factor` (float; unit 1; range (0, inf); optional (null allowed)) - Mechanical quality factor
   Help: shared `solid_mechanics.optomechanical_coupling.mechanical_quality_factor`
+- `quality_from` (str; default "") - Quality factor from damping feature
+  Help: shared `solid_mechanics.optomechanical_coupling.quality_from`
 - `scattering` (choice; default "forward"; choices forward | backward) - Brillouin scattering
   Help: shared `solid_mechanics.optomechanical_coupling.scattering`
 - `prescribed_normal_displacement` (float; unit m; optional (null allowed)) - Prescribed boundary motion
@@ -9602,6 +9689,7 @@ The model JSON of each template is in api_templates.md beside this file (its Con
 - `heated_chip_stress_3d` - Heated chip stress (3D): Heat + solid mechanics 3D, stationary: a 1 x 1 x 0.5 mm silicon block on a 300 K heat sink (z_lo, also clamped) with a 0.4 mm square chip dissipating 0.8 W in its top 50 um, convection on z_hi; heat_solid_thermal_strain hands the temperature rise to the solid; derived T_max, von_mises_max, u_z_max. Uses physics heat, solid_mechanics_3d; features heat.temperature, heat.convection, heat.heat_source, solid_mechanics_3d.fixed; couplings heat_solid_thermal_strain; study stationary.
 - `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D): Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. Uses physics solid_mechanics_3d; features solid_mechanics_3d.resonance_table; study eigenfrequency.
 - `heated_waveguide_stress` - Heated waveguide stress: Heat + solid mechanics (plane strain), stationary: cross-section of a 0.48 x 0.22 um silicon waveguide in silica under a 2 x 0.2 um gold heater (P_heater = 20 W/m), substrate y_lo held at 293.15 K and clamped, rollers on the sides; heat_solid_thermal_strain hands the temperature rise (~5 K at the core) to the solid; derived T_core, stress_xx_core, stress_yy_core, von_mises_max. Uses physics heat, solid_mechanics; features heat.heat_source, heat.temperature, heat.convection, solid_mechanics.fixed, solid_mechanics.roller; couplings heat_solid_thermal_strain; study stationary.
+- `silicon_beam_thermoelastic_damping` - Silicon beam thermoelastic damping: Solid mechanics (plane stress), eigenfrequency: half of a simply supported library-silicon beam (h = 2 um, L = 80 um, mirror roller at mid-span), its symmetric flexural modes with a resonance table and the thermoelastic_damping table (Q_TED per mode, T0 293.15 K); derived f_1 (1.19 MHz) and Q_ted_1 (1.3e5: far below the Debye peak, omega tau ~0.04; the 3rd and 5th flexural modes at 10.7 / 29 MHz reach 1.7e4 / 1.0e4, the peak Delta / 2 ~ 1e-4 sits near omega tau = 1; a lower k_beam or a thicker beam moves the fundamental towards it). Uses physics solid_mechanics; features solid_mechanics.displacement, solid_mechanics.roller, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping; study eigenfrequency.
 - `silicon_ring_breathing_g0` - Silicon ring breathing g0: Optomechanics study: quasi-TE0 mode (em_modes, 1.55 um, group index) and the lowest in-plane vibration modes of a suspended 450 x 220 nm silicon strip (quarter domain with mirrors and rollers), optomechanical_coupling table of g0 / 2 pi (moving boundary, photoelastic, total) for a ring of R = 10 um (length 2 pi R). Uses physics em_modes, solid_mechanics; features em_modes.mode_table, solid_mechanics.roller, solid_mechanics.optomechanical_coupling; study optomechanics.
 - `silicon_disk_wgm_g0` - Silicon disk breathing g0: Optomechanics study: in-plane whispering-gallery resonance (em_fdfd_hz eigen-solve near 1.55 um, quarter domain with mirrors) and the vibration modes of a 2D silicon disk of R = 1.5 um in air (plane strain, rollers on the mirror faces), optomechanical_coupling table of g0 / 2 pi (moving boundary, photoelastic, total) for a 220 nm thick disk (length). Uses physics em_fdfd_hz, solid_mechanics; features solid_mechanics.roller, solid_mechanics.optomechanical_coupling; study optomechanics.
 - `silicon_nitride_membrane_modes` - Silicon nitride membrane modes: A 1 x 0.7 mm silicon nitride membrane (50 nm film at 1 GPa stress: tension 50 N/m, areal density 1.55e-4 kg/m^2) clamped on its frame: the six lowest drum modes on quadratic triangles, f_mn = (c / 2) sqrt((m / a)^2 + (n / b)^2) with c = sqrt(T / rho_s) = 568 m/s (f_11 = 495 kHz), listed by the resonance table. Uses physics membrane; features membrane.clamped, membrane.resonance_table; study eigenfrequency.
@@ -9833,7 +9921,7 @@ Produced by: em_eme.eme_length_sweep, em_eme.adjoint_objective, em_eme.design_re
 
 #### Result kind `table`
 
-Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
+Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.resonance_monitor, electric_currents.voltage, electric_currents.terminal, electrostatics.voltage, electrostatics.terminal, em_eme.eme_ports, em_eme.eme_section_table, em_eme.eme_periodic, em_eme_3d.eme_ports, em_eme_3d.eme_section_table, em_eme_3d.eme_periodic, em_fdfd_3d.resonance_table, em_fdfd_bor.mode_source, em_fdfd_bor.resonance_table, em_fdfd_conical.resonance_table, em_fdfd_ez.mode_source, em_fdfd_ez.resonance_table, em_fdfd_hz.mode_source, em_fdfd_hz.resonance_table, em_fdfd_nonlinear.mode_source, em_fdtd_3d.resonance_monitor, em_fdtd_3d.mode_source, em_fdtd_bor.resonance_monitor, em_fdtd_bor.mode_source, em_fdtd_ez.mode_source, em_fdtd_ez.resonance_monitor, em_fdtd_hz.mode_source, em_fdtd_hz.resonance_monitor, em_modes.mode_table, em_modes.bend_overlap, magnetic_fields_ac.coil, magnetostatics.coil, magnetostatics_3d.coil, membrane.resonance_table, membrane.squeeze_film_damping, solid_mechanics.fixed, solid_mechanics.roller, solid_mechanics.displacement, solid_mechanics.fixed_domain, solid_mechanics.prescribed_displacement_domain, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping, solid_mechanics.optomechanical_coupling, solid_mechanics.electrode, solid_mechanics.electrode_domain, solid_mechanics_3d.fixed, solid_mechanics_3d.roller, solid_mechanics_3d.displacement, solid_mechanics_3d.fixed_domain, solid_mechanics_3d.prescribed_displacement_domain, solid_mechanics_3d.resonance_table, solid_mechanics_3d.squeeze_film_damping, solid_mechanics_3d.thermoelastic_damping, solid_mechanics_3d.electrode, solid_mechanics_3d.electrode_domain, solid_mechanics_3d.optomechanical_coupling
 
 - `kind`: 'table', str; the producing feature may add further keys, listed in its description
 - `columns`: column names, list of str
