@@ -593,7 +593,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   checks keep K SPD; only an unchecked mechanism is singular, modal.py words it).
 - `eigs_shifted(...)`: complex symmetric K with real semi-definite M (solid_mechanics_3d resistive_load): same sigma and
   equilibration, complex `factorize_host(symmetric=True)`, eigs on (K - sigma M)^-1 M, lambda = sigma + 1 / theta (theta
-  = 0 -> NaN). Not for a Hermitian pencil (eigsh_shifted keeps M-orthogonality).
+  = 0 -> NaN). Not for a Hermitian pencil (eigsh_shifted keeps M-orthogonality). A caller's `pencil=` keeps its own
+  `symmetric` flag: a ShiftPencil(symmetric=False) factors by LU (modal.ModalPencil does so for a damped pencil reduced
+  by a complex Bloch P: P^H A P of a complex symmetric A is neither symmetric nor Hermitian).
 - 'auto': the role's `auto_back_ends` (`eigen_role(auto_factorizations=)`) on the gpu with nvmath, else superlu (the
   runtime maps an unresolved auto to superlu). A runtime resolved from auto falls back to SuperLU for good on
   CUDSS_REFUSALS (factorize_host, the ShiftPencil device path, the deferred check inside eigsh_shifted / eigs_shifted;

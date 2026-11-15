@@ -70,11 +70,22 @@ def complex_bloch_pencil_2d(settings_values) -> bool:
     return bool(periodic_axes_2d(settings_values)) and not trivial_bloch_phase_2d(settings_values)
 
 
-def bloch_issues_2d(vctx, physics_spec, settings_values, path, held_components, pml_faces):
+STATIC_PERIODIC_STUDIES = ('stationary', 'time_dependent')   # a plain periodic cell on triangles (every bloch_k 0)
+
+
+def static_periodic_cell(vctx, settings_values, triangles) -> bool:
+    """A plain periodic cell solved statically: triangles, every periodic bloch_k 0, a stationary / time-dependent
+    study (P^T K P of system_fem; the ordinary support rules apply)."""
+    return bool(triangles and periodic_axes_2d(settings_values) and trivial_bloch_phase_2d(settings_values)
+                and vctx.study_type in STATIC_PERIODIC_STUDIES)
+
+
+def bloch_issues_2d(vctx, physics_spec, settings_values, path, held_components, pml_faces, triangles):
     """Periodic axes of the 2D solid: warning per bloch_k on a non-periodic axis (ignored); errors outside the
-    eigenfrequency study, for geometry axisymmetric, generalized plane strain, stress_stiffening, geometric
+    eigenfrequency study (a plain periodic cell on triangles also solves stationary / time_dependent), for geometry
+    axisymmetric, generalized plane strain, stress_stiffening, geometric
     nonlinearity, a PML on a periodic face, per support / electrode on a periodic face and for a cell free to slide
-    with every periodic bloch_k 0 at target_frequency 0 (singular K - 0 M)."""
+    with every periodic bloch_k 0 at target_frequency 0 (singular K - 0 M; guided k_z > 0 has no rigid motion)."""
     periodic = periodic_axes_2d(settings_values)
     issues = [Issue('warning', path, f'bloch_k{axis} = {bloch_wavenumber_2d(settings_values, axis):.4g} rad/m is '
                                      f'ignored: periodic_{axis} is off')
@@ -82,10 +93,12 @@ def bloch_issues_2d(vctx, physics_spec, settings_values, path, held_components, 
     if not periodic:
         return issues
     names = ', '.join(periodic)
-    if vctx.study_type != EIGENFREQUENCY_STUDY:
+    if vctx.study_type != EIGENFREQUENCY_STUDY and not static_periodic_cell(vctx, settings_values, triangles):
+        static = (' (a plain periodic cell, every bloch_k 0, on a triangle mesh also solves the stationary / '
+                  'time_dependent study)' if vctx.study_type in STATIC_PERIODIC_STUDIES else '')
         issues.append(Issue('error', path, f'periodic axes ({names}) are solved by the {EIGENFREQUENCY_STUDY} study '
-                                           f'only (Bloch bands per k); the {vctx.study_type} study of a periodic cell '
-                                           'is not available: turn periodic_* off'))
+                                           f'(Bloch bands per k){static}; the {vctx.study_type} study of this periodic '
+                                           'cell is not available: turn periodic_* off'))
     refused = []
     if is_axisymmetric(settings_values):
         refused.append('geometry axisymmetric')
@@ -110,7 +123,9 @@ def bloch_issues_2d(vctx, physics_spec, settings_values, path, held_components, 
                                 f"{feature.type} on the periodic face(s) {', '.join(faces)}: a hold or electrode there "
                                 'would contradict its periodic image; select non-periodic faces (or objects inside '
                                 'the cell)'))
-    if trivial_bloch_phase_2d(settings_values) and not settings_values.get('target_frequency'):
+    guided = vctx.study_type == EIGENFREQUENCY_STUDY and bool(settings_values.get('axial_wavenumber'))
+    if (vctx.study_type == EIGENFREQUENCY_STUDY and trivial_bloch_phase_2d(settings_values)
+            and not settings_values.get('target_frequency') and not guided):
         held = {component for _, component in support_holders(vctx, physics_spec, held_components)}
         sliding = [axis for axis in AXES_2D if axis not in held]
         if sliding and not pml_faces:

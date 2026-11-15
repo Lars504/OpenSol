@@ -299,11 +299,12 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             self._prestress = None
 
     def _eigen_only(self) -> str:
-        """Why the solid runs in the eigenfrequency study only ('' when not): an elastic PML or an azimuthal order."""
+        """Why the solid runs in the eigenfrequency study only ('' when not): an elastic PML, a Bloch phase != 1 (a
+        plain periodic cell, every bloch_k 0, has static solves) or an azimuthal order."""
         if self.pml_faces:
             return 'an elastic PML'
-        if any(self.periodic):
-            return 'periodic axes (a Bloch cell)'
+        if any(value for value in self.bloch_k):
+            return 'periodic axes with a bloch_k != 0 (a Bloch cell)'
         if self.azimuthal_order:
             return f'azimuthal order {self.azimuthal_order}'
         return ''
@@ -900,7 +901,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         if self.out_of_plane == GENERALIZED_PLANE_STRAIN:
             raise ValueError(f'{self._label()}: generalized plane strain has no frequency response (the uniform eps_zz '
                              'carries no mass)')
-        only = self._eigen_only()
+        only = self._eigen_only() or ('periodic axes' if any(self.periodic) else '')
         if only:
             raise ValueError(f'{self._label()}: {only} is solved by the eigenfrequency study only (no frequency '
                              'response yet)')

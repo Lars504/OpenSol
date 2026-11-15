@@ -34,8 +34,9 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
-from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d, periodic_params_2d,
-                                solver_periodic_arguments, trivial_bloch_phase_2d)
+from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
+                                periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
+                                trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
@@ -824,9 +825,10 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(prestress_issues(vctx, physics_spec, settings_values, path, triangles, refused_zz=refused_zz,
                                    static_refused=static_refused))
     issues.extend(_pml_issues(vctx, physics_spec, settings_values, path, triangles))
-    bloch_cell = bool(periodic_axes_2d(settings_values))
+    # a Bloch cell's supports are bloch_issues_2d's (a static plain periodic cell keeps the ordinary rules)
+    bloch_cell = bool(periodic_axes_2d(settings_values)) and not static_periodic_cell(vctx, settings_values, triangles)
     issues.extend(bloch_issues_2d(vctx, physics_spec, settings_values, path, _held_components,
-                                  _pml_faces(settings_values)))
+                                  _pml_faces(settings_values), triangles))
     issues.extend(_azimuthal_issues(vctx, physics_spec, settings_values, path, triangles))
     issues.extend(_nonlinear_issues(vctx, physics_spec, settings_values, path, triangles, static_refused))
     if triangles and condition == GENERALIZED_PLANE_STRAIN and not is_axisymmetric(settings_values):

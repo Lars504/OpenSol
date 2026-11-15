@@ -43,7 +43,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Type catalogue: `solid_mechanics` (default 'solid'; shares alpha / alpha_xx / alpha_yy and their arrays with heat,
   adds alpha_zz; rho read only by eigenfrequency / frequency_response; youngs_modulus / poisson_ratio /
   photoelastic_p11 / _p12 are elastic_waves' Param objects, `material_params.py`; optional c_ij, piezoelectric,
-  axial_wavenumber = 2.5D guided modes (u_z nonzero only there), frequency_response study). `solid_mechanics_3d` (3D
+  axial_wavenumber = 2.5D guided modes (u_z nonzero only there), frequency_response study, periodic_x / _y + bloch_kx /
+  _ky Bloch cells on both mesh kinds: section "Bloch cells, 2D"). `solid_mechanics_3d` (3D
   only, separate type like em_fdtd_3d; default 'solid'; same material Params incl. rho; tensor meshes: lowest modes
   only; tetrahedra: target_frequency / search targets / band, 21 c_IJ, piezoelectric (18 piezo_e*, six eps_dc*,
   charges in C, static on 'linear' sparse_direct, short / open modes on 'eigen'), frequency_response on 'linear').
@@ -270,6 +271,37 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Self-tests `selftests_guided_modes.py`; solid_guided_modes_roller_box pins the sign of the k terms by the mode-1
   shape.
 
+## Bloch cells, 2D (`bloch2d.py`, `definition_bloch2d.py`; settings periodic_x / _y, bloch_kx / _ky)
+- Same phase convention and reduction as the tetrahedra cells (`bloch3d`, section "Tetrahedron meshes"): the 2D
+  identification is a `bloch3d.BlochCell3D` with z never periodic (`vector_masters(c)` for every interleaved layout: 2
+  plane strain, 3 guided (u_x, u_y, w) and 3 piezo (u_x, u_y, phi), all sharing the node phase), prolongation
+  `bloch3d.bloch_prolongation(master, phase, free)`. Tensor: `tensor_bloch_cell` pairs the window corner nodes by index
+  (x_hi column -> x_lo, y_hi row -> y_lo, corners chained by `fem.dofs.bloch_master_map`; L = the window widths sum, so
+  graded cells need no matching), built once in prepare. Triangles: `system_fem.ElasticFEMSystem.periodic` makes every
+  assembly rebuild `bloch` on the SOLID map (`fem.dofs.bloch_masters`: a void-touching side raises when the solid does
+  not reach both sides alike; L = the node extent, a y_lo / y_hi PML ring strip keeps the x extent).
+- Rigid check: regions join through partner pairs (`bloch2d.joined_regions`); a wrapping region cannot rotate, keeps
+  nothing at a non-trivial phase and its unheld translations at phase 1 (counted with rigid_motions_allowed = target >
+  0, else refused); a region touching no partner keeps the ordinary rules. The tensor system gained `bloch` /
+  `rigid_motions_allowed` / `n_rigid_motions` for this only (still no free bodies otherwise); guided at k_z = 0 adds the
+  u_z translation (`_guided_bloch_rigid_motions`) instead of check_antiplane_supports.
+- Eigenfrequency only (validation `bloch_issues_2d`, solvers raise in static / harmonic solves): no static periodic
+  solve, so stress_stiffening / geometric_nonlinearity, generalized plane strain and axisymmetric are refused. Supports
+  and electrodes on a periodic face are validation errors; a face of the other axis may reach the periodic corners
+  (consistent: a master is held with any dof it stands for). Floating electrodes touching a periodic side raise in
+  `_assemble_piezo` (their G tie would fight the phase); `PiezoSystem(require_ground=)` and `_piezo_issues` drop the
+  ground rule at a non-trivial phase.
+- Triangles + elastic PML on the other axis (a surface-wave cell): the damped pencil reduced by a complex P is neither
+  complex symmetric nor Hermitian, so `ModalPencil._pencil` asks a general ShiftPencil (symmetric = vouched) and
+  `eigs_shifted` honours the caller pencil's flag (LU). Tensor complex modes: `_show_complex_mode` (real parts, u_abs).
+- ARPACK can return only some copies of an exactly degenerate band (the Q1 square cell's 4-fold c_T 2 pi / a band at
+  Gamma came back 3-fold with n = 4): cases ask a few more modes than they grade.
+- Self-tests `selftests_bloch2d.py` (also the template solid_bloch_band_diagram: definition.py imports it, so its
+  sibling selftests imports stay inside functions; listed in import_contracts TEMPLATE_SOURCES); example
+  examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: static / frequency-response periodic solves (k = 0
+  periodic statics would need P^T K P in the tensor PCG and the triangle factor), the harmonic admittance of an
+  infinite IDT (needs a prolongation in HarmonicSystem), Bloch with piezoelectric on triangles (no 2D piezo there).
+
 ## Eigenfrequency study, 3D tensor meshes (`ElasticSystem3D.lowest_modes`; tetrahedra: section "Tetrahedron meshes")
 - Decision: matrix-free shift-invert at sigma = 0 (no CSR in 3D; a 3D elastic SuperLU fills host memory at ~30-40^3
   cells). K - sigma M is indefinite above omega_1^2, which CG cannot solve, so the tensor mesh finds the LOWEST n
@@ -420,7 +452,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `discretization` quadratic (P2, default) / linear, isoparametric on curved edges. Runs stationary, time_dependent,
   eigenfrequency, frequency_response, optomechanics (axisymmetric with em_fdfd_bor only; `set_axial_wavenumber`
   raises), all out-of-plane conditions and axisymmetric, c_ij via ElementStiffness (ring elements void unless an
-  elastic PML). Refused (`_triangle_issues`): piezoelectric (so no electrode / admittance), guided modes, the planar
+  elastic PML), Bloch cells (section "Bloch cells, 2D"). Refused (`_triangle_issues`): piezoelectric (so no electrode /
+  admittance), guided modes, the planar
   optomechanics study, solid_em_strain_optic from it, a 'linear' node other than sparse_direct (back_end choices
   DIFFUSION_DIRECT_BACK_ENDS keep cusolver_qr out; cg_solver_issues is tensor only: it reads nx).
 - Why the gaps stay open: piezo needs phi on every window element + G on a DofMap (~a piezo_fem.py, would unlock

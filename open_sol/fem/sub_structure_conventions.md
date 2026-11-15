@@ -226,6 +226,8 @@ all but drift_diffusion.
 - Periodic / Bloch (2D twins of mesh3d / dofs3d, Lagrange only): `mesh.periodic_node_partners`, `dofs.periodic_dof_partners`,
   `dofs.bloch_masters(dofs, {axis: k})` -> (master, phase e^{-jkL} per crossed period; corners chain both axes),
   `dofs.bloch_prolongation` -> (columns, P), x = P x_r (float64 when every phase is real); callers form P^H A P.
+  `bloch_master_map` takes any partners_of(axis): the 2D solid's tensor-mesh cells pair Q1 corner nodes by index with
+  it (physics/mechanics bloch2d), so a new grid kind needs no mesh object for its masters.
 
 ## Domain, sampling, transfers
 - TriangleDomain: `grid_kind` 'triangles', MaterialGrid (n_elements,) (D12), `coordinate_grids()` = float32 centroid

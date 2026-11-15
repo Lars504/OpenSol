@@ -201,6 +201,7 @@ class ElasticFEMSystem(DirectElasticSystem):
         self.pml = None                         # fem.pml.PMLStretch of an elastic PML ring (set by the caller)
         self.periodic = None                     # ((periodic_x, periodic_y), (k_x, k_y)) of a Bloch cell (caller)
         self.bloch = None                        # bloch3d.BlochCell3D of the solid map of the last assembly
+        self._periodic_p = None                  # its real prolongation of a static solve (trivial phase)
         self._axis_ties = None                   # full-mesh ids of the m = 1 axis nodes (u_phi = -u_r there)
         self._solution = None                    # run-backend free-dof solution; None = nothing factorised
         self._factor_holds_operator = False      # the linear solver's factor is K_ff (not a Newton tangent)
@@ -284,6 +285,7 @@ class ElasticFEMSystem(DirectElasticSystem):
                              '> 0)')
         self.dofs = lagrange_dofs(self.mesh, self.order, elements=solid)
         self.bloch = None
+        self._periodic_p = None
         if self.periodic is not None:
             from .bloch2d import triangle_bloch_cell
             try:
@@ -310,8 +312,40 @@ class ElasticFEMSystem(DirectElasticSystem):
     def _check_static(self) -> None:
         if self.prolongation is not None:
             raise RuntimeError(f'{self.label()}: an azimuthal order has no static solve')
-        if self.bloch is not None:
-            raise RuntimeError(f'{self.label()}: periodic axes (a Bloch cell) have no static solve')
+        if self.bloch is not None and not self.bloch.trivial:
+            raise RuntimeError(f'{self.label()}: periodic axes with a bloch_k != 0 (a Bloch phase) have no static '
+                               'solve; a plain periodic cell (every bloch_k 0) has')
+
+    def solve(self, load) -> None:
+        """DirectElasticSystem.solve; a plain periodic cell (bloch trivial): the reduced K_r = P^T K P of the periodic
+        masters (forces on a hi-side dof join its master), unknown = fixed + P x_r (one factor of K_r per assembly)."""
+        if self.bloch is None:
+            super().solve(load)
+            return
+        self._require_assembled()
+        self._check_static()
+        load = np.asarray(load, dtype=np.float64)
+        fixed = self.fixed_values()
+        prolongation = self._periodic_prolongation()
+        xp = array_module(self.backend)
+        if self._solution is None or not self._factor_holds_operator:
+            reduced = (prolongation.T @ self.operator @ prolongation).tocsr()
+            self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(reduced))
+            self._factor_holds_operator = True
+            self._solution = xp.zeros(prolongation.shape[1], dtype=np.float64)
+        self.linear_solver.solve(xp.asarray(prolongation.T @ (load - self.operator @ fixed)), self._solution, 'rhs')
+        solution = fixed + prolongation @ np.array(to_host(self._solution), dtype=np.float64)
+        self.unknown = solution.reshape(-1, self.components)
+        self.load = load
+        self.residual = None
+        self.n_solves += 1
+
+    def _periodic_prolongation(self):
+        """Real host CSR P (c n_dofs, n_r) of a trivial-phase cell over the free dofs (kept until the next assembly)."""
+        if self._periodic_p is None:
+            from .bloch3d import bloch_prolongation
+            self._periodic_p = bloch_prolongation(*self.bloch.vector_masters(self.components), self.free)[1].tocsr()
+        return self._periodic_p
 
     def _reaction_mask(self, dof_mask) -> np.ndarray:
         return (np.asarray(dof_mask, dtype=bool) & self.held)[self.dofs.global_ids]
