@@ -122,6 +122,7 @@ _CRYSTAL_INDICES = (3.3, 3.6)             # (n_o, n_e)
 _CRYSTAL_AXIS_ANGLE = 30.0                # deg from +x
 _XY_GRADIENT_VALUE = 'block_xy_gradient'  # derived value [W/m per unit eps_xy]: eps_xy_sensitivity over the block
 _XY_COMPONENTS = ('diagonal', 'off_diagonal')
+_ADJOINT_GYRATION = 0.6                   # em_fdfd_hz_gyrotropic_adjoint_gradient: gyration_z of crystal and block
 
 
 def _crystal_permittivity():
@@ -134,14 +135,17 @@ def _crystal_permittivity():
     return tuple(float(np.float32(value)) for value in values)
 
 
-def _xy_adjoint_spec(diagonal_step, off_diagonal_step, reflection_weight, transmission_weight):
-    """em_fdfd_hz facet layout with the crystal end section and the block shifted by (diagonal, off-diagonal) steps;
-    derived block integrals of eps_sensitivity and eps_xy_sensitivity."""
+def _xy_adjoint_spec(diagonal_step, off_diagonal_step, reflection_weight, transmission_weight, gyration=0.0):
+    """em_fdfd_hz facet layout with the crystal end section (gyration_z `gyration` when non-zero, crystal and block)
+    and the block shifted by (diagonal, off-diagonal) steps; derived block integrals of eps_sensitivity and
+    eps_xy_sensitivity."""
     spec = _adjoint_spec('hz', _SILICON_EPS_R, reflection_weight, transmission_weight)
     eps_xx, eps_yy, eps_xy = _crystal_permittivity()
     y_lo, y_hi = _ADJOINT_SLAB_Y
     crystal = {'eps_xx': eps_xx, 'eps_yy': eps_yy, 'eps_xy': eps_xy}
     block = {'eps_xx': eps_xx + diagonal_step, 'eps_yy': eps_yy + diagonal_step, 'eps_xy': eps_xy + off_diagonal_step}
+    if gyration:
+        crystal['gyration_z'] = block['gyration_z'] = gyration
     materials = [material for material in spec.materials if material.name != 'block']
     materials += [MaterialSpec('crystal', properties=crystal, selection=['crystal']),
                   MaterialSpec('block', properties=block, selection=['block'])]
@@ -153,15 +157,15 @@ def _xy_adjoint_spec(diagonal_step, off_diagonal_step, reflection_weight, transm
                    geometry=geometry, materials=materials, derived_values=derived)
 
 
-def _xy_adjoint_specs():
+def _xy_adjoint_specs(gyration=0.0):
     """One gradient run per objective, then per component (diagonal, off_diagonal) the block at +- _BLOCK_STEP."""
-    specs = {f'{objective}_gradient': _xy_adjoint_spec(0.0, 0.0, *weights)
+    specs = {f'{objective}_gradient': _xy_adjoint_spec(0.0, 0.0, *weights, gyration=gyration)
              for objective, weights in ((_REFLECTION, (1.0, 0.0)), (_TRANSMISSION, (0.0, 1.0)))}
     for component in _XY_COMPONENTS:
         for sign, label in ((1.0, 'plus'), (-1.0, 'minus')):
             step = sign * _BLOCK_STEP
             steps = (step, 0.0) if component == 'diagonal' else (0.0, step)
-            specs[f'{component}_{label}'] = _xy_adjoint_spec(*steps, 1.0, 1.0)
+            specs[f'{component}_{label}'] = _xy_adjoint_spec(*steps, 1.0, 1.0, gyration=gyration)
     return specs
 
 
@@ -227,6 +231,18 @@ ADJOINT_SELFTEST_CASES = (
                     'transposed solve of the 9-point operator; the objective lines see no eps_xy, so the coupling '
                     'part of the adjoint source (a face-field objective in eps_xy cells) is not exercised.',
         specs=lambda: cpu_specs(_xy_adjoint_specs()),
+        check=_check_xy_adjoint_gradient,
+        heavy=True),
+    SelfTestCase(
+        name='em_fdfd_hz_gyrotropic_adjoint_gradient',
+        label='EM FDFD H_z adjoint sensitivity in a magneto-optic (gyration_z) crystal vs finite difference',
+        description='em_fdfd_hz_eps_xy_adjoint_gradient with gyration_z = 0.6 added to the crystal end section and '
+                    'the block (eps_xy +- j g: a non-reciprocal operator; g held fixed): the same gradient runs and '
+                    'central differences of eps_xx = eps_yy steps and eps_xy steps, measured = error = max |adjoint / '
+                    'finite difference - 1| / 2e-3, tolerance 1. It pins the transposed solve of the non-symmetric '
+                    'operator (the solve with -g), the separate eta_xy / eta_yx cotangents and the chain rule through '
+                    'q = eps_xy^2 + g^2. cpu backend.',
+        specs=lambda: cpu_specs(_xy_adjoint_specs(_ADJOINT_GYRATION)),
         check=_check_xy_adjoint_gradient,
         heavy=True),
 )
