@@ -16,8 +16,9 @@ Sub file of the root `structure_conventions.md` (read that first). Library mater
   / `selected_material_sets` (the builder's merge; unresolved materials skipped or flagged), never its own loop. `water` / `heavy_water` carry absorption as sigma_e, alpha = 0.
 - `model_properties()` merges `electrical` (sigma_dc / eps_dc: gold, silver, aluminum, water conduct in any
   electric_currents physics), `fluid` (viscosity: water, heavy_water; air has none: set it to make air flow) and
-  `mechanical` (isotropic youngs_modulus / poisson_ratio: silica, silicon (Hill average), gold, silver, aluminum, both
-  lithium niobates (rough estimate); liquids and air have none = void in solid_mechanics) like `optical` / `thermal`.
+  `mechanical` (isotropic youngs_modulus / poisson_ratio: silica, silicon (Hill average), silicon_nitride (LPCVD film
+  values: the film-dependent k / alpha / E ranges are in its description), gold, silver, aluminum, both lithium niobates
+  (rough estimate); liquids and air have none = void in solid_mechanics) like `optical` / `thermal`.
   Properties of absent types are ignored by the builder (validation warns for user-set ones, never library-merged
   ones; permittivity names are left to the EM `_material_issues` hint).
 - `Material.nk_table` (`NkTable`, rows in `nk_data.py` from refractiveindex.info copies: silver / gold Johnson & Christy

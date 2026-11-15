@@ -226,12 +226,17 @@ def thermal_problem(solver) -> ThermalProblem:
     kind TED does not model (3D tensor meshes: matrix-free, no assembled K)."""
     if getattr(solver, 'eigen_solve', None) is None or getattr(solver, 'modal_mass', None) is None:
         raise ValueError('not solved yet: thermoelastic damping needs an eigenfrequency (or optomechanics) study')
+    system = solver.system
+    if getattr(system, 'bloch', None) is not None or (getattr(system, 'prolongation', None) is not None
+                                                       and not getattr(solver, 'azimuthal_order', 0)):
+        raise ValueError('thermoelastic damping is not available for Bloch-periodic modes (the heat problem would need '
+                         'the same periodic conditions)')
     kind = getattr(solver.domain, 'grid_kind', 'tensor')
     if kind == 'triangles':
         return _triangle_problem(solver)
     if kind == 'tetrahedra':
         return _tetrahedra_problem(solver)
-    if hasattr(solver.system, 'node_shape') and len(solver.system.node_shape) == 2:
+    if hasattr(system, 'node_shape') and len(system.node_shape) == 2:
         return _tensor_problem(solver)
     raise ValueError('thermoelastic damping of solid_mechanics_3d needs a tetrahedron mesh (the tensor-mesh modes are '
                      'matrix-free)')
