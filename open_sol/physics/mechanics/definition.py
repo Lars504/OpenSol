@@ -34,7 +34,7 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
-from .definition_bloch2d import (bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d, periodic_params_2d,
+from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d, periodic_params_2d,
                                 solver_periodic_arguments, trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
@@ -62,6 +62,7 @@ from .modal import EXTRA_EIGENVALUES
 from .optical_force import make_optical_force_transforms
 from .renderer import SolidRenderer
 from .selftests import HEATED_WAVEGUIDE_STRESS_DESCRIPTION, HEATED_WAVEGUIDE_STRESS_LABEL, heated_waveguide_stress_spec
+from .selftests_bloch2d import BAND_DIAGRAM_DESCRIPTION, BAND_DIAGRAM_LABEL, solid_bloch_band_diagram_spec
 from .solver import (GENERALIZED_PLANE_STRAIN, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
                      SolidMechanicsPhysics)
 from .solver_common import SupportRegion
@@ -2243,6 +2244,7 @@ def _selftest_cases(em_types):
     from .selftests_frequency_response import FREQUENCY_RESPONSE_CASES
     from .selftests_guided_modes import GUIDED_MODES_CASES
     from .selftests_azimuthal import AZIMUTHAL_CASES
+    from .selftests_bloch2d import BLOCH_2D_CASES
     from .selftests_nonlinear import NONLINEAR_CASES
     from .selftests_piezo import PIEZO_CASES
     from .selftests_pml2d import PML_2D_CASES
@@ -2253,13 +2255,14 @@ def _selftest_cases(em_types):
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + optomechanics_cases(em_types) + backend_cases(em_types))
+            + BLOCH_2D_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
 
 
 def register(registry):
     """solid_mechanics, solid_mechanics_3d (definition3d.register: type, template, 3D selftest loader), the
     heat_solid_thermal_strain coupling (both targets), solid_em_strain_optic (with family-'em' types) and
-    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress' and the optomechanics templates
+    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress', 'solid_bloch_band_diagram' and the
+    optomechanics templates
     (definition_optomechanics), then the 2D selftest loader (bound to the registered em types)."""
     registry.register_physics(SOLID_MECHANICS)
     definition3d.register(registry)
@@ -2275,5 +2278,9 @@ def register(registry):
         heated_waveguide_stress_spec,
         summary='Thermal stress in the cross-section of a silicon waveguide under a gold heater: the heat spreads into '
                 'the silica, everything expands, and the silicon core ends up compressed. Steady state.')
+    registry.register_template(
+        BAND_TEMPLATE_2D, BAND_DIAGRAM_LABEL, BAND_DIAGRAM_DESCRIPTION, solid_bloch_band_diagram_spec,
+        summary='Band diagram of a 2D phononic crystal: one cell of a square lattice of holes in silicon, its in-plane '
+                'vibration frequencies for each wave number along x.')
     register_optomechanics_templates(registry, em_types)
     registry.register_selftests(partial(_selftest_cases, em_types))
