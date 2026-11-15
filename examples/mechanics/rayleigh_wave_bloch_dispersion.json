@@ -1,0 +1,238 @@
+{
+  "title": "Rayleigh surface wave dispersion of a periodic half-space cell (analytic, eigenfrequency, Bloch)",
+  "description": "Rayleigh surface wave of an isotropic half space as a Bloch-periodic cell of solid_mechanics (2D, plane strain) on a quadratic triangle mesh: one period L = 1 um along x (periodic_x, bloch_kx = k_fraction 2 pi / L swept over 0.2-0.5, Gamma to the zone edge), 12 um deep with a Fixed bottom (the wave decays as exp(-0.39 k depth) for its shear part, so the bottom sits > 6 decay lengths down at the smallest k), free top surface, E 70 GPa, nu 0.25 (a Poisson solid), rho 2200 kg/m^3; an eigenfrequency study per k lists the 2 lowest bands (resonance_table 'bands'). The lowest band is the Rayleigh wave f_1 = c_R k / (2 pi) (the slab's other modes lie above c_T k, the folded branch at |k - 2 pi / L| above it too; at the zone edge the folded branch meets it: the pair of standing waves).\nAnalytic: for nu = 0.25 the Rayleigh equation (2 - xi^2)^2 = 4 sqrt(1 - xi^2) sqrt(1 - xi^2 c_T^2 / c_L^2), xi = c / c_T, has the closed-form root xi^2 = 2 - 2 / sqrt(3): c_R = 0.91940 c_T, plane-strain c_T = sqrt(mu / rho), c_L = sqrt(3) c_T.\nDerived values tab: f_1 (lowest band) against c_R k / (2 pi) and v_R = 2 pi f_1 / k against c_R per k (P2 with h = L / 4: ~1e-4); Sweep tab: f_1 over k_fraction with the analytic line f = c_R k_fraction / L. Snapshot slider: the complex Bloch modes as their real part (phase 0) and u_abs = |u| (decaying into the depth).",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "E_s",
+      "expression": 70000000000.0,
+      "description": "Young's modulus [Pa]"
+    },
+    {
+      "name": "nu_s",
+      "expression": 0.25,
+      "description": "Poisson ratio (0.25: closed-form Rayleigh root)"
+    },
+    {
+      "name": "rho_s",
+      "expression": 2200.0,
+      "description": "density [kg/m^3]"
+    },
+    {
+      "name": "L_p",
+      "expression": "1*um",
+      "description": "period along x [m]"
+    },
+    {
+      "name": "depth",
+      "expression": "12*um",
+      "description": "slab depth (Fixed bottom) [m]"
+    },
+    {
+      "name": "h_mesh",
+      "expression": "0.25*um",
+      "description": "triangle size [m]"
+    },
+    {
+      "name": "k_fraction",
+      "expression": 0.5,
+      "description": "Bloch kx in units of 2 pi / L (swept 0.2-0.5)"
+    },
+    {
+      "name": "k_x",
+      "expression": "k_fraction*2*pi/L_p",
+      "description": "Bloch wavenumber [rad/m]"
+    },
+    {
+      "name": "mu_s",
+      "expression": "E_s/(2*(1 + nu_s))",
+      "description": "shear modulus [Pa]"
+    },
+    {
+      "name": "c_T",
+      "expression": "sqrt(mu_s/rho_s)",
+      "description": "shear wave speed [m/s]"
+    },
+    {
+      "name": "c_R",
+      "expression": "c_T*sqrt(2 - 2/sqrt(3))",
+      "description": "Rayleigh wave speed of a Poisson solid (nu = 0.25) [m/s]"
+    },
+    {
+      "name": "f_R",
+      "expression": "c_R*k_x/(2*pi)",
+      "description": "Rayleigh frequency at k_x [Hz]"
+    }
+  ],
+  "domain": {
+    "size_x": "L_p",
+    "size_y": "depth",
+    "size_z": null,
+    "coordinates": "cartesian",
+    "radius_min": 0.0,
+    "angle_min": 0.0,
+    "angle_wrap": "none"
+  },
+  "geometry": [],
+  "selections": [],
+  "materials": [
+    {
+      "name": "medium",
+      "library": null,
+      "properties": {
+        "youngs_modulus": "E_s",
+        "poisson_ratio": "nu_s",
+        "rho": "rho_s"
+      },
+      "dispersion": null,
+      "selection": [
+        "all"
+      ]
+    }
+  ],
+  "physics": [
+    {
+      "name": "solid",
+      "type": "solid_mechanics",
+      "settings": {
+        "discretization": "quadratic",
+        "periodic_x": true,
+        "bloch_kx": "k_x"
+      },
+      "features": [
+        {
+          "name": "bottom",
+          "type": "fixed",
+          "selection": [
+            "y_lo"
+          ],
+          "params": {},
+          "enabled": true
+        },
+        {
+          "name": "bands",
+          "type": "resonance_table",
+          "selection": [],
+          "params": {},
+          "enabled": true
+        }
+      ],
+      "every": 1,
+      "solvers": {},
+      "mesh": ""
+    }
+  ],
+  "couplings": [],
+  "meshes": [
+    {
+      "name": "triangles",
+      "kind": "triangles",
+      "mode": "uniform",
+      "dx": "h_mesh",
+      "max_ratio": null,
+      "wavelength_min": null,
+      "points_per_wavelength": null,
+      "refinements": [],
+      "outer_dx": null,
+      "outer_ratio": null,
+      "axes": [],
+      "h_min": null,
+      "curvature_factor": 0.3,
+      "mesher": "builtin",
+      "sweep_axis": "none",
+      "pml_layers": 8,
+      "mirror_x": false,
+      "mirror_y": false,
+      "size_points": [],
+      "face_sizes": []
+    }
+  ],
+  "solvers": [],
+  "solver_defaults": {
+    "backend": "auto",
+    "precision": "auto",
+    "subpixel_smoothing": false,
+    "conformal_boundaries": false,
+    "memory_check": "error"
+  },
+  "study": {
+    "type": "eigenfrequency",
+    "settings": {
+      "n_resonances": 2
+    },
+    "stored_fields": [
+      "solid.u_abs",
+      "solid.u_x",
+      "solid.u_y"
+    ],
+    "sweep": {
+      "parameter": "k_fraction",
+      "values": [
+        0.2,
+        0.3,
+        0.4,
+        0.5
+      ],
+      "keep_fields": true,
+      "spacing": "list",
+      "lower": null,
+      "upper": null,
+      "count": 5,
+      "reuse_build": false
+    },
+    "stored_cuts": [],
+    "adaptation": null,
+    "estimation": null,
+    "solved_physics": []
+  },
+  "derived_values": [
+    {
+      "name": "f_1",
+      "expression": "frequency",
+      "selection": [],
+      "operation": "min",
+      "source": "solid.bands",
+      "at": null,
+      "reference": "f_R",
+      "tolerance": 0.001,
+      "window": [],
+      "wavelength": null,
+      "fit": "",
+      "degree": 1,
+      "point": ""
+    },
+    {
+      "name": "v_R",
+      "expression": "2*pi*frequency/k_x",
+      "selection": [],
+      "operation": "min",
+      "source": "solid.bands",
+      "at": null,
+      "reference": "c_R",
+      "tolerance": 0.001,
+      "window": [],
+      "wavelength": null,
+      "fit": "",
+      "degree": 1,
+      "point": ""
+    }
+  ],
+  "analytic_curves": [
+    {
+      "name": "f_1_vs_k",
+      "target": "sweep",
+      "expression": "c_R*k_fraction/L_p",
+      "series": "f_1",
+      "line": [],
+      "field": "",
+      "x_column": "",
+      "plane": null,
+      "snapshot": null,
+      "tolerance": 0.001,
+      "interface": "",
+      "sampling": "nearest",
+      "projection": ""
+    }
+  ],
+  "derived_curves": []
+}
