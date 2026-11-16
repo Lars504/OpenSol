@@ -689,8 +689,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - q_other: a damped pencil's Q (PML + loss factor on element meshes) or, on the tensor mesh (undamped pencil), the
   perturbative eta from `_harmonic_operators[1]`; tetrahedra add the squeeze films' gas Q (never both for one loss).
 - Materials: k / k_xx / k_yy / k_zz / cp are solid Params mirroring heat's (kind, unit, bounds, flags: the registry
-  check), arrays `OPTIONAL_TED_SCHEMA`, allocated by any material setting one of them, so a solid of library silicon
-  / silica carries four more arrays even without the feature (a heat physics allocates them anyway).
+  check), arrays `OPTIONAL_TED_SCHEMA` (feature-gated entries: allocated only with an enabled thermoelastic_damping
+  feature and a material setting one of them, so plain solids of library silicon / silica carry none; a heat physics
+  allocates them anyway). Code reading them outside the feature must not assume they exist.
 - Accuracy (selftests_thermoelastic.py vs Lifshitz-Roukes): planar tensor 16 cells over h 0.4 % (8 cells: 1 % off the
   Debye peak), tensor axisymmetric slower (+5 / +1.4 / +0.45 % at 4 / 8 / 16 cells over h), P2 triangles / tetrahedra
   ~0.3 % at 4 / 2 elements over h; slender-beam theory itself is (h / L)^2 off (Timoshenko shear energy, ~0.5 % at L /

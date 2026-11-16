@@ -115,8 +115,9 @@ def lame_coefficients(youngs_modulus, poisson_ratio):
     return lame_lambda, mu
 # Thermoelastic damping (feature thermoelastic_damping, physics/mechanics/thermoelastic.py): heat's conductivity and
 # specific heat arrays (the names and default 0 of physics/heat THERMAL_SCHEMA; with rho the heat capacity rho cp),
-# optional: allocated when a material sets k / k_xx / k_yy / k_zz / cp (library silicon and silica do, so a solid of
-# library silicon carries them even without the feature); a heat physics in the model allocates them anyway.
+# optional: allocated only when the solid has an enabled thermoelastic_damping feature and a material sets k / k_xx /
+# k_yy / k_zz / cp (library silicon and silica set them for heat, so the feature condition keeps them off plain
+# solids); a heat physics in the model allocates them anyway.
 TED_ARRAYS = ('k_xx', 'k_yy', 'k_zz', 'cp')
 _TED_TRIGGERS = ('k', 'k_xx', 'k_yy', 'k_zz', 'cp')
-OPTIONAL_TED_SCHEMA = {name: (0.0, _TED_TRIGGERS) for name in TED_ARRAYS}
+OPTIONAL_TED_SCHEMA = {name: (0.0, _TED_TRIGGERS, ('thermoelastic_damping',)) for name in TED_ARRAYS}

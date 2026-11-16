@@ -2496,9 +2496,19 @@ def _selection_bounds(spec, entities, shapes, mesh):
 
 def optional_material_arrays(spec, physics_types) -> dict:
     """{array: default} of the physics types' optional_material_schema arrays a spec material (library merged) triggers
-    by setting one of their trigger properties (the builder allocates exactly these)."""
-    candidates = {array: entry for physics_type in physics_types
-                  for array, entry in physics_type.optional_material_schema.items()}
+    by setting one of their trigger properties (the builder allocates exactly these); an entry naming feature types
+    also needs an enabled feature of one of them on a spec physics of its type."""
+    candidates = {}
+    for physics_type in physics_types:
+        used_features = None
+        for array, (default, triggers, *feature_types) in physics_type.optional_material_schema.items():
+            if feature_types:
+                if used_features is None:
+                    used_features = {feature.type for physics in spec.physics if physics.type == physics_type.name
+                                     for feature in physics.features if feature.enabled}
+                if used_features.isdisjoint(feature_types[0]):
+                    continue
+            candidates.setdefault(array, (default, triggers))
     if not candidates:
         return {}
     set_names = set()
