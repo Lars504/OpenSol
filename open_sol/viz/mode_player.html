@@ -193,11 +193,7 @@ body.present .app { padding: 10px; gap: 10px; }
         <option value="4">u_z</option>
         <option value="5">Plain</option>
       </select>
-      <select id="cmap" title="Colour map">
-        <option value="viridis">Viridis</option>
-        <option value="inferno">Inferno</option>
-        <option value="ice">Ice</option>
-      </select>
+      <select id="cmap" title="Colour map (sequential for magnitudes, diverging for signed components)"></select>
     </div>
     <div class="group"><button id="lines" aria-pressed="true" title="Mesh lines (L)">Mesh</button>
       <button id="ghost" aria-pressed="false" title="Undeformed outline (G)">Rest shape</button></div>
@@ -232,12 +228,24 @@ const PREFIXES = [[1e12, 'T'], [1e9, 'G'], [1e6, 'M'], [1e3, 'k'], [1, '']];
 function freqUnit(maxF) { for (const [s, p] of PREFIXES) if (maxF >= s) return [s, p + 'Hz']; return [1, 'Hz']; }
 function hexRgb(h) { return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }
 
+// 9 stops each; sequential maps colour the magnitudes (0 .. 1), diverging maps the signed components (-1 .. +1, the
+// middle stop at 0)
 const CMAPS = {
   viridis: ['#440154', '#472d7b', '#3b528b', '#2c728e', '#21918c', '#28ae80', '#5ec962', '#addc30', '#fde725'],
   inferno: ['#000004', '#1f0c48', '#550f6d', '#88226a', '#ba3655', '#e35933', '#f98e09', '#f8c931', '#fcffa4'],
   ice: ['#04051a', '#151a4b', '#1d3a7a', '#1f5f9e', '#2a86b5', '#4fabc4', '#86ccd3', '#c2e7e6', '#f4fbfb'],
-  diverging: ['#3b4cc0', '#6282ea', '#8db0fe', '#b8d0f9', '#dddcdc', '#f5c4ad', '#f49a7b', '#de604d', '#b40426'],
+  coolwarm: ['#3b4cc0', '#6282ea', '#8db0fe', '#b8d0f9', '#dddcdc', '#f5c4ad', '#f49a7b', '#de604d', '#b40426'],
+  rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
+  puor: ['#542788', '#8073ac', '#b2abd2', '#d8daeb', '#f7f7f7', '#fee0b6', '#fdb863', '#e08214', '#b35806'],
+  icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
 };
+const CMAP_CHOICES = {
+  sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
+  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
+};
+const isSigned = (color) => color >= 2 && color <= 4;
+const cmapKind = () => (isSigned(state.color) ? 'diverging' : 'sequential');
+const currentCmap = () => state.cmaps[cmapKind()];
 
 // ---------- data ----------
 if (!DATA) { $('empty').hidden = false; $('empty').textContent = 'No mode data in this file.'; return; }
@@ -266,11 +274,20 @@ const cellSize = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2
 // ---------- state ----------
 const state = {
   mode: Math.min(Math.max(DATA.default_mode || 0, 0), MODES.length - 1),
-  playing: true, speed: 0.5, amp: 0.35, cells: lattice ? 5 : 1, color: 1, cmap: store('cmap') || 'viridis',
+  playing: true, speed: 0.5, amp: 0.35, cells: lattice ? 5 : 1, color: 1,
+  cmaps: { sequential: store('cmap') || 'viridis', diverging: store('cmap_signed') || 'coolwarm' },
   lines: true, ghost: false, theta: 0,
 };
-$('cmap').value = CMAPS[state.cmap] ? state.cmap : 'viridis';
-state.cmap = $('cmap').value;
+for (const kind of ['sequential', 'diverging']) {
+  if (!CMAP_CHOICES[kind].some(([key]) => key === state.cmaps[kind])) state.cmaps[kind] = CMAP_CHOICES[kind][0][0];
+}
+function fillCmapChoices() {
+  // the colour-map menu lists the maps of the shown quantity's kind and shows its remembered choice
+  const select = $('cmap'); const kind = cmapKind();
+  select.replaceChildren(...CMAP_CHOICES[kind].map(([key, label]) => new Option(label, key)));
+  select.value = state.cmaps[kind];
+  select.disabled = state.color === 5;
+}
 const savedTheme = store('theme');
 if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
 
@@ -448,8 +465,7 @@ function draw() {
   gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.useProgram(prog); gl.bindVertexArray(vao);
   const m = MODES[state.mode];
-  const signed = state.color >= 2 && state.color <= 4;
-  const stops = CMAPS[signed ? 'diverging' : state.cmap].map(hexRgb).flat();
+  const stops = CMAPS[currentCmap()].map(hexRgb).flat();
   gl.uniformMatrix4fv(uni.uView, false, viewMatrix()); gl.uniformMatrix4fv(uni.uProj, false, projMatrix());
   gl.uniform1f(uni.uTheta, state.theta);
   gl.uniform1f(uni.uCellPhase, lattice ? (m.cell_phase || 0) : 0);
@@ -491,11 +507,11 @@ function updateReadout() {
   const m = MODES[state.mode];
   $('rf').innerHTML = fmt(m.frequency / FS_, 5) + '<small>' + FU + '</small>';
   $('rm').textContent = modeText(m);
-  const signed = state.color >= 2 && state.color <= 4;
+  const signed = isSigned(state.color);
   const names = ['Mode amplitude |u|', 'Displacement |u|', 'u_x', 'u_y', 'u_z', ''];
   $('legend').style.display = state.color === 5 ? 'none' : '';
   $('lgname').textContent = names[state.color] + ' (normalised)';
-  $('lgbar').style.background = 'linear-gradient(90deg,' + CMAPS[signed ? 'diverging' : state.cmap].join(',') + ')';
+  $('lgbar').style.background = 'linear-gradient(90deg,' + CMAPS[currentCmap()].join(',') + ')';
   $('lglo').textContent = signed ? '−1' : '0'; $('lgmid').textContent = signed ? '0' : ''; $('lghi').textContent = signed ? '+1' : '1';
 }
 
@@ -654,8 +670,9 @@ $('next').onclick = () => neighbour(1, 0);
 $('speed').oninput = (e) => { state.speed = +e.target.value; syncControls(); };
 $('amp').oninput = (e) => { state.amp = +e.target.value; syncControls(); };
 $('cells').oninput = (e) => { state.cells = +e.target.value; fitDistance(); syncControls(); };
-$('color').onchange = (e) => { state.color = +e.target.value; updateReadout(); };
-$('cmap').onchange = (e) => { state.cmap = e.target.value; store('cmap', state.cmap); updateReadout(); };
+$('color').onchange = (e) => { state.color = +e.target.value; fillCmapChoices(); updateReadout(); };
+$('cmap').onchange = (e) => { const kind = cmapKind(); state.cmaps[kind] = e.target.value;
+  store(kind === 'diverging' ? 'cmap_signed' : 'cmap', e.target.value); updateReadout(); };
 $('lines').onclick = () => { state.lines = !state.lines; syncControls(); };
 $('ghost').onclick = () => { state.ghost = !state.ghost; syncControls(); };
 $('present').onclick = () => { document.body.classList.toggle('present'); syncControls(); setTimeout(layout, 0); };
@@ -739,7 +756,7 @@ const mq = window.matchMedia('(prefers-color-scheme: dark)');
 if (mq.addEventListener) mq.addEventListener('change', () => { readTheme(); drawBands(); });
 window.addEventListener('resize', () => { drawBands(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
-syncControls(); resize(); resetCamera(); uploadMode(); updateReadout(); drawBands();
+fillCmapChoices(); syncControls(); resize(); resetCamera(); uploadMode(); updateReadout(); drawBands();
 window.modePlayer = { state, select, draw, cam };
 requestAnimationFrame(frame);
 })();
