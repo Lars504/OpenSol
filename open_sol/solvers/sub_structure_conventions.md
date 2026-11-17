@@ -918,9 +918,9 @@ without a reason that answers these findings.
   a new suffix goes into `_NAME_SUFFIXES` or every helper misreads it. Kept analyses and `previous=` refactors key on
   the compression (a full-rank analysis is never adopted by a compressed request or the reverse). Estimators:
   `superlu_bytes_scale` x BLR_FACTOR_FRACTION; time recipes HOST_DIRECT_COMPRESSED_FACTOR_TIME /
-  HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. Unverified: that
-  python-mumps' instance exposes `cntl` 1-based like icntl (a 0-based array would set CNTL(8) silently; a missing
-  one is a RuntimeError naming the wrapper), MUMPS >= 5.2 ICNTL(35) semantics, the in-core memory gain without
+  HOST_DIRECT_COMPRESSED_FULL_SOLVES (sparse_direct; arpack reads them): all uncalibrated. python-mumps' `cntl` is
+  1-based like icntl (its own `factor` sets `cntl[1]` = the pivot threshold CNTL(1)). Unverified: MUMPS >= 5.2
+  ICNTL(35) semantics, the in-core memory gain without
   ICNTL(37) / (38), and the INFOG fields of a BLR factor (INFOG(29) may count full-rank entries).
 - Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
   iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
