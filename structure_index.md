@@ -27,8 +27,8 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/physics/nlfd/: lines 700-719
 - open_sol/physics/potential/: lines 721-738
 - open_sol/physics/semiconductor/: lines 740-753
-- open_sol/solvers/: lines 755-769
-- open_sol/viz/: lines 771-778
+- open_sol/solvers/: lines 755-770
+- open_sol/viz/: lines 772-779
 
 ## open_sol/
 
@@ -757,8 +757,9 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `__init__.py`: Solvers (solver_plan Part I): roles, SolverRole / SolverType and the role runtimes (pcg, line_block, sparse_direct)
 - `arpack_shift_invert.py`: 'arpack_shift_invert' solver type runtime (role 'eigen'): SuperLU (host) or cuDSS (device) LU of the shifted operator and scipy ARPACK (eigs, 'LM') on its inverse, symmetric shift-invert Lanczos of a host pencil (solid_mechanics), or ...
 - `banded.py`: Banded direct solver of 1D models (symmetry plan 2.20; SolverType 'banded', role 'linear'): the PCGSolver protocol of core.fv_diffusion.DiffusionSystem on a window one cell across (unknowns in line order, so the operator is banded), one ...
+- `block_eigen.py`: 'block_eigen' solver type runtime (role 'eigen'): the factor-free preconditioned block eigensolver (LOBPCG with soft locking, row-block storage and chunked in-place updates) of the lowest eigenpairs of a symmetric pencil K x = lambda M x ...
 - `cudss_factor.py`: cuDSS sparse LU / LDL^T / Cholesky on the device (nvmath-python DirectSolver): the 'cudss' / 'cudss_mixed' factorizations of arpack_shift_invert and back ends of sparse_direct, a sparse_direct.Factorization stand-in. numpy only at module ...
-- `definition.py`: SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'explicit_kernels') and register(registry)
+- `definition.py`: SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen', 'explicit_kernels') and register(registry)
 - `explicit_kernels.py`: 'explicit_kernels' solver type runtime (role 'stepper'): the settings bundle of an explicit time-stepping engine (solver_plan S3.1); the engine stays the loop. single = float32 fields; double = float64 fields and arithmetic (em_fdtd_ez / ...
 - `host_direct.py`: Host multicore sparse direct factors by MUMPS (python-mumps) and MKL PARDISO (pydiso): back ends mumps / pardiso (+ _mixed) of sparse_direct and arpack_shift_invert
 - `line_block.py`: 'line_block' shifted-solver runtime (solver_plan Part II): batched block-tridiagonal direct solves of (K + sum_i s_i M_i + sum_j t_j N_j) x = b, M_i diagonal, N_j sparse block-tridiagonal, on line-ordered grid unknowns: per shift a block ...
