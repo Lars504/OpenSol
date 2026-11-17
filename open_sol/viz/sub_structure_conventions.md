@@ -95,4 +95,5 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   would otherwise beat [hidden] and the transparent overlay would take the canvas's pointer input.
   frame_kind 'time' plays (Play, Speed, Record = one pass), 'labelled' (wavelengths, modes, DFT frequencies) only steps
   (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
-  relief. Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.
+  relief. Colour limits default to all frames for 'time', to the shown frame for 'labelled' (independent states).
+  Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.

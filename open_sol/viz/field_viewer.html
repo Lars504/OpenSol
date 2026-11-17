@@ -278,7 +278,8 @@ const sceneSize = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[
 
 // ---------- state ----------
 const state = {
-  frame: 0, playing: false, fps: 8, scale: 'all', log: false, decades: 3, range: 1, relief: 0,
+  // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
+  frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
   lines: false, box: !is2d, spin: false,
   cmap: (SIGNED ? store('cmap_signed') : store('cmap')) || (SIGNED ? 'coolwarm' : 'viridis'),
 };
@@ -550,6 +551,7 @@ $('framegroup').style.display = NF > 1 ? '' : 'none';
 $('play').style.display = KIND === 'time' ? '' : 'none';
 $('speedgroup').style.display = KIND === 'time' ? '' : 'none';
 $('scale').style.display = NF > 1 ? '' : 'none';
+$('scale').value = state.scale;
 $('log').style.display = LOG_OK ? '' : 'none';
 $('reliefgroup').style.display = is2d ? '' : 'none';
 $('box').style.display = is2d ? 'none' : '';
