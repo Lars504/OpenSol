@@ -816,6 +816,8 @@ without a reason that answers these findings.
   already keeps one analysis and refreshes values per frequency. Only the smallest pattern reached parity.
 - time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): missed resonances on open (CPML) disks
   (0-3 of 6), residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells.
+  The tag predates gyration_z: a rebuild must refuse it (em_fdtd_hz never reads it, so the FDTD basis is of another
+  structure), in validation and unsupported_reason.
 - mumps_blr (block low-rank MUMPS refined by GMRES): MUMPS compressed 2-10 % of the entries on the profiled 3D
   cases, the factor took 1.4-2.1x longer and no memory was saved (only ICNTL(35) / CNTL(7) were set, so MUMPS
   allocated for the full-rank factor). A retry needs the memory flags, a looser drop threshold and a case much larger
