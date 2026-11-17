@@ -1390,8 +1390,8 @@ _RESULTS_NOTES = (
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
         'export_session_animation(path, spec, session, build_summary, study_summary, log_entries, model_file=None, '
-        'result=None) -> the written path: Results.export_animation of such a live session (the GUI File > Export '
-        'animation); the session stays open.',
+        'result=None) -> the written path: Results.export_animation of such a live session (the GUI Results dock, Export > '
+        'Export animation); the session stays open.',
         'Never mix api.run with the GUI worker in one process.',
     )),
     ('GPU memory', (

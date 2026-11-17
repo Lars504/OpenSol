@@ -11,8 +11,11 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   Save run (`MainWindow._save_run`: `api.save_session_run` in a `bridge.call`, the `run --out` files; log.txt = the
   Messages lines since the last Build / Compute, `_job_log` capped; summary model.file = the document path at the
   request). The results panel then names that cause in its banner and skips session fetches after a sweep whose last
-  value failed. File > Export animation (`MainWindow._export_animation`) takes the same state and enabling rule and
-  calls `api.export_session_animation` in a `bridge.call` (viz.mode_player page of a mode_shapes result).
+  value failed. Exports sit in the Results dock's Export menu (`ResultsPanel.export_menu`, the tab bar's corner;
+  MainWindow adds its actions and greys out each with nothing to export in `_update_export_actions`, also on
+  aboutToShow: field data needs `canvas.current_field`, the animation the Save run state plus a 'mode_shapes' kind in
+  `last_build_summary.feature_results`). Export animation (`MainWindow._export_animation`) calls
+  `api.export_session_animation` in a `bridge.call` (viz.mode_player page of a mode_shapes result).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
   definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not
@@ -233,7 +236,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   'canvas_plot_style'; placed by ResultsPanel at the end of the Field tab); fixed colour limits override the field's /
   replay range in `_update_field_image` (lowest >= highest: ignored); 'Log colour' images hold `_color_values` = log10
   of values clipped at `_field_log_floor`, levels and colour-bar axis in log10; hover readout and data exports keep the
-  values. `_redraw` and `_update_field_image` end with its `apply()`. Its Export plot (and File > Export figure) is
+  values. `_redraw` and `_update_field_image` end with its `apply()`. Its Export plot (and Export > Export figure) is
   `scene_export`: visible ImageItems as drawn (RGBA), overlays in z order and the colour bar to
   `save_curve_figure(scene=)`; ROIs are left out. A new overlay item type needs a case in `plot_controls._scene_layers`.
 - Canvas interaction: hit tests respect object_kinds, allow_outer_faces, allow_interior; select clicks are ignored in

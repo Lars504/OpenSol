@@ -65,8 +65,8 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   MESH_LINES_MAX_EDGES); `common.tetrahedron_mesh_data` / `tetrahedron_mesh_cut` give a tetrahedron mesh's host nodes /
   elements and the outlines of axis-normal cross-sections (nodes on the plane nudged above it, shared edges once, PML
   shell segments apart).
-- mode_player (HTML mode animation; `Results.export_animation`, CLI `show <run dir> --html`, GUI File > Export
-  animation): `mode_player.py` packs numpy data into `mode_player.html` (package data) at `DATA_MARKER`; the page is
+- mode_player (HTML mode animation; `Results.export_animation`, CLI `show <run dir> --html`, GUI Results dock
+  Export > Export animation): `mode_player.py` packs numpy data into `mode_player.html` (package data) at `DATA_MARKER`; the page is
   self-contained on purpose (hand-written WebGL2, no CDN, works offline in a talk): keep it free of external scripts
   and fonts. Data: positions float32 / triangles uint32 / per mode re + im int16 (base64), each mode phase-aligned (largest
   component real) and scaled to max |u| = 1 (`_aligned`), lengths in the unit `length_scale` picks; '</' escaped in

@@ -366,7 +366,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_animation_action = self._make_action(
             'Export &animation (HTML)…', self._export_animation,
             tip='Save the computed modes as a self-contained web page: animated mode shapes beside the band diagram '
-                '(eigenfrequency studies, also swept over a Bloch wavenumber), for presentations')
+                '(eigenfrequency studies, also swept over a Bloch wavenumber), for presentations. Needs a finished run with a '
+                'mode_shapes output feature')
         self.export_image_action = self._make_action('Export &figure…', self._export_image,
                                                      tip='Save the canvas figure as shown (PDF, SVG, EPS or PNG; style '
                                                          'in the Results Field tab, Figure box)')
@@ -469,9 +470,12 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addActions([self.save_action, self.save_as_action, self.save_run_action])
         file_menu.addSeparator()
-        file_menu.addActions([self.export_field_action, self.export_image_action, self.export_animation_action])
-        file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
+
+        # exports live in the Results dock's Export menu, greyed out while there is nothing to export
+        export_menu = self.results_panel.export_menu
+        export_menu.addActions([self.export_field_action, self.export_image_action, self.export_animation_action])
+        export_menu.aboutToShow.connect(self._update_export_actions)
 
         edit_menu = menu_bar.addMenu('&Edit')
         edit_menu.addActions([self.undo_action, self.redo_action])
@@ -749,6 +753,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_job('run', 'Starting…')
         self.bridge.run(self.document.spec)
 
+    def _update_export_actions(self):
+        """Grey out the Export menu entries with nothing to export: field data without a field on the canvas, the
+        animation without a finished run whose build has a mode_shapes result (export_session_animation's input)."""
+        self.export_field_action.setEnabled(self.canvas.current_field is not None)
+        bridge = self.bridge
+        build_summary = bridge.last_build_summary
+        self.export_animation_action.setEnabled(
+            not bridge.busy and bridge.results_spec is not None and bridge.last_study_summary is not None
+            and build_summary is not None
+            and any(kind == 'mode_shapes' for _physics, _feature, kind in build_summary.feature_results))
+
     def _toggle_pause(self):
         if self.bridge.paused:
             self.bridge.resume()
@@ -763,7 +778,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compute_action.setEnabled(not busy)
         self.save_run_action.setEnabled(not busy and self.bridge.results_spec is not None
                                         and self.bridge.last_study_summary is not None)
-        self.export_animation_action.setEnabled(self.save_run_action.isEnabled())
+        self._update_export_actions()
         self.pause_action.setEnabled(controllable)
         self.stop_action.setEnabled(controllable)
         self.pause_action.setText('&Resume' if paused else '&Pause')
@@ -1113,8 +1128,9 @@ class MainWindow(QtWidgets.QMainWindow):
         page as `python -m open_sol show <run dir> --html`); the session stays open."""
         bridge = self.bridge
         spec, build_summary, study_summary = bridge.results_spec, bridge.last_build_summary, bridge.last_study_summary
-        if bridge.busy or spec is None or study_summary is None:
-            self.show_status('No finished run to export: compute first')
+        self._update_export_actions()                       # the state may have changed since the menu opened
+        if not self.export_animation_action.isEnabled():
+            self.show_status('No mode shapes to export: compute a study with a mode_shapes output feature first')
             return
         model_file = self._job_model_file
         stem = os.path.splitext(os.path.basename(model_file or 'model.json'))[0]

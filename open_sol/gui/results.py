@@ -455,6 +455,16 @@ class ResultsPanel(QtWidgets.QWidget):
         self._message_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)   # error texts may contain '<...>'
         self._message_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self._tabs = QtWidgets.QTabWidget()
+        # Export menu in the tab bar's corner; MainWindow adds its export actions and greys out each one with
+        # nothing to export on aboutToShow (the entries stay visible)
+        self.export_menu = QtWidgets.QMenu('Export', self)
+        self.export_menu.setToolTipsVisible(True)
+        export_button = QtWidgets.QToolButton()
+        export_button.setText('Export')
+        export_button.setToolTip('Export the shown field, the canvas figure or the computed modes as an animation')
+        export_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        export_button.setMenu(self.export_menu)
+        self._tabs.setCornerWidget(export_button, QtCore.Qt.Corner.TopRightCorner)
         self._probes_tab = self._build_probes_tab()
         self._spectra_tab = self._build_spectra_tab()
         self._far_field_tab = self._build_far_field_tab()
