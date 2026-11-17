@@ -17,6 +17,12 @@ import numpy as np
 from ...core.backend import to_host
 
 BAND_MARGIN = 1.25   # Ritz vectors are formed within this x the sampled band (the Rayleigh polish moves a value a little)
+# DFT window (dft_window): a rectangular DFT over the run resolves 1 / T (1 % of f0 at 100 periods) while the samples sit
+# 2 bandwidth / (count - 1) apart (4 % at +-0.4, 20 samples), so each sampled field was the sinc sidelobes (~1 / (pi df
+# T)) of every excited mode, hundreds of them, at the in-band modes' level: residuals ~1e-4, band-edge modes lost. A
+# Gaussian over the source-free part (pulse end to run end, sigma = length / (2 x this)) weights a mode by exp(-(pi
+# sigma df)^2): out-of-band modes 0.1 f0 away drop below 1e-7 at 100 periods, and its negative-frequency image too.
+DFT_WINDOW_SIGMAS = 4.0
 from ...solvers.time_filter import wanted_pairs
 from .eigenfrequency import (EigenSolve, _energy_weights, _filtered_candidates, _PencilMass, _resonance,
                              _ResonanceFilter, region_filter)
@@ -71,12 +77,29 @@ def run_steps(target_frequency, dt, bandwidth, periods=0.0) -> tuple:
     return pulse_steps, pulse_steps + tf.periods_steps(tf.run_periods(bandwidth, periods), target_frequency, dt)
 
 
+def dft_window(start_time, end_time):
+    """Weight w(t) of the DFT samples: a Gaussian centred on [start_time, end_time] [s], sigma = length /
+    (2 DFT_WINDOW_SIGMAS), its edge value subtracted (continuous, peak 1) and 0 outside."""
+    start_time, end_time = float(start_time), float(end_time)
+    if not end_time > start_time:
+        raise ValueError(f'time-filter DFT window needs end > start, got [{start_time}, {end_time}] s')
+    centre = 0.5 * (start_time + end_time)
+    sigma = (end_time - start_time) / (2.0 * DFT_WINDOW_SIGMAS)
+    pedestal = math.exp(-DFT_WINDOW_SIGMAS ** 2)
+
+    def weight(t):
+        if not start_time < t < end_time:
+            return 0.0
+        return (math.exp(-((t - centre) / sigma) ** 2) - pedestal) / (1.0 - pedestal)
+    return weight
+
+
 def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
     """(basis (capacity, n) complex128 rows of the run backend: the m sampled fields in its first rows, the rest
     spare rows for ritz_pairs' polish steps (basis_columns), details) of one FDTD run: seeded point sources (ez: filament
     currents, hz: magnetic line currents) with a Gaussian pulse centred on the target, the DFT of every cell at the
-    sampled frequencies accumulated from step 0 over run_periods target periods (+ the pulse); pinned = xp bool (nx,
-    ny) cells of the FDFD identity rows; target_omega [rad/s] = the system's."""
+    sampled frequencies over the run_periods target periods after the pulse, weighted by dft_window; pinned = xp bool
+    (nx, ny) cells of the FDFD identity rows; target_omega [rad/s] = the system's."""
     from ...solvers import time_filter as tf
     from . import EMPhysics
     from .monitors import DFTMonitor
@@ -110,23 +133,26 @@ def filtered_fields(physics, solver, pinned, n_resonances, target_omega):
                                            magnetic_current=amplitude)
     grid = domain.grid
     bc = physics.boundary_config
+    pulse_steps, steps = run_steps(target, float(grid.dt), solver.bandwidth, solver.periods)
+    window = dft_window(pulse_steps * float(grid.dt), steps * float(grid.dt))   # the source-free free ringing only
+    # the one complex128 block of the projection, a field per row: the DFT sums straight into its first rows (float64
+    # sums: complex64 per-cell rounding over the run is ~5e-6 white noise, which the Laplacian lifts to ~1e-4 residuals;
+    # hz: H_z only, the Ex / Ey spectra are never read)
+    capacity = tf.basis_columns(n_resonances, solver.sampled_frequencies, solver.polish_steps)
+    basis = xp.empty((capacity, int(pinned.size)), dtype=np.complex128)
     monitor = DFTMonitor(slice(0, grid.nx), slice(0, grid.ny), frequencies, float(grid.dt), polarization=polarization,
-                         periodic_x=bc.periodic_x, periodic_y=bc.periodic_y, xp=xp)
+                         periodic_x=bc.periodic_x, periodic_y=bc.periodic_y, xp=xp, double_sums=True,
+                         e_faces=polarization != 'hz', window=window,
+                         spectra_out=basis[:count].reshape(count, grid.nx, grid.ny))
     fdtd.monitors.append(monitor)
     fdtd.finalize()
-    pulse_steps, steps = run_steps(target, float(grid.dt), solver.bandwidth, solver.periods)
     stepping = time.perf_counter()
     for _ in range(steps):
         fdtd.step()
-    spectra = monitor.ez_dft if polarization == 'ez' else monitor.hz_dft
-    # the one complex128 block of the projection, a field per row (the accumulators' own layout: no transpose)
-    capacity = tf.basis_columns(n_resonances, solver.sampled_frequencies, solver.polish_steps)
-    basis = xp.empty((capacity, int(pinned.size)), dtype=np.complex128)
-    basis[:count] = spectra.reshape(count, -1)
     to_host(basis[:1, :1])   # wait for the device: the stepping time is complete
     step_seconds = time.perf_counter() - stepping
     solver.count_run(steps, count, step_seconds)
-    del fdtd, monitor, spectra
+    del fdtd, monitor
     return basis, {'steps': steps, 'sampled': count, 'frequencies': frequencies, 'dt': float(grid.dt),
                    'step_seconds': step_seconds, 'setup_seconds': stepping - started,
                    'sources': solver.sources, 'pulse_steps': pulse_steps}

@@ -567,8 +567,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   dispatches before any factor; an EMPhysics on the FDFD Domain itself (it reads the same MaterialGrid: never write
   materials there), PEC cells and dispersive regions copied (a region's box None = everywhere: a full mask), seeded
   point sources inside the window off pinned cells, a whole-grid DFTMonitor (its (nx, ny) box flattened i * ny + j =
-  the FDFD unknown order; pinned unknowns zeroed; the basis is one (basis_columns, n) row block, Ritz vectors formed
-  only within BAND_MARGIN x the sampled band), then `ritz_pairs` on A = L + k_t^2 M and the shared candidate filter
+  the FDFD unknown order; pinned unknowns zeroed; the basis is one (basis_columns, n) row block, the monitor sums into
+  its first rows (`spectra_out`, `double_sums`, hz `e_faces=False`), Ritz vectors formed only within BAND_MARGIN x
+  the sampled band), then `ritz_pairs` on A = L + k_t^2 M and the shared candidate filter
   (theta = -1 / mu). D is `_adjoint_symmetrizer()` (measured complex symmetric), so the polish is the same Rayleigh
   quotient as the shift-invert path. Anything the FDTD would model differently from the FDFD operator is refused by
   `unsupported_reason` (Bloch, polar, subpixel smoothing, conformal PEC, conducting sheets): a new FDFD operator term
@@ -579,9 +580,15 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   Candidates: in the sampled band only, nearest
   first, an O(1)-residual Ritz value (above time_filter.SPURIOUS_RESIDUAL) dropped. Known gaps: hz with eps_xy runs
   the FDTD without it (approximate basis, polish only, not refused); EMPhysics.finalize checks the Courant limit, so
-  strong Drude poles can raise on an FDFD model (it has no courant setting); the hz DFTMonitor also allocates Ex / Ey
-  accumulators the solve never reads (~2/3 of its run phase). The run's step count and pulse bandwidth come from
-  `run_steps` / `source_pulse_bandwidth`, shared with the time estimate: change them there only.
+  strong Drude poles can raise on an FDFD model (it has no courant setting). The run's step count and pulse bandwidth
+  come from `run_steps` / `source_pulse_bandwidth`, shared with the time estimate: change them there only.
+  Span quality (each must hold, else residuals sit at ~1e-4 and weak or band-edge modes fail the spurious gate): the
+  DFT is `dft_window`-weighted (a Gaussian over pulse end to run end; a rectangular sum over the run gives every
+  sample the 1 / (pi df T) sidelobes of all excited modes when the sample spacing exceeds 1 / T); the sums are
+  float64 (complex64 per-cell rounding is white noise the Laplacian lifts by ~3 / (k h)^2 in a residual; polish
+  columns cannot remove grid-scale noise); the stepping is float64 by default (time_filter.DEFAULT_PRECISION: float32
+  rounding is injected every step, so the window cannot filter it, and it gives the same ~1e-4 residuals). A window
+  weight or phase is one scalar per frequency and sample, so it keeps every sample inside the mode span.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
   objectives), zeros while a resonance is shown. `solve_adjoint` uses `self.system`: never call it after

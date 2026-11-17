@@ -873,9 +873,16 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   twice (rank cut RANK_TOLERANCE = 1e-7 of the largest singular value: the Gram route cannot resolve the 1e-10 of
   the former QR + SVD), bilinear projection (D Q)^T A Q with a symmetrizer (the stationary quotient of a complex
   symmetric pencil), else Galerkin; polish steps append the mass-scaled residuals of the wanted pairs (Gram-Schmidt
-  twice, directions already in the span dropped). Non-finite mu
+  twice, directions already in the span dropped). The polish does not stop at an invariant subspace of the start
+  basis: late steps keep finding fresh directions (each one carries the rounding of the residual it came from), so
+  a solve fills its basis_columns. Non-finite mu
   (directions with a singular projected mass) are dropped. Eigenvalue accuracy is the projection's: residuals are
   reported per resonance and warned above RESIDUAL_WARNING (no machine-precision guarantee as ARPACK's).
+- Precision (DEFAULT_PRECISION 'double'): the residual gates (SPURIOUS_RESIDUAL, RESIDUAL_WARNING) assume a
+  noise-free span. float32 stepping leaves ~1e-6 grid-scale noise in every sampled field; the stationary quotient
+  hides it in omega (~1e-12 of ARPACK) but a residual lifts it ~2 / (k h)^2, so real modes read 1e-4 - 1e-3 and fail
+  the gate. A residual far above the eigenvalue error points at the span's noise, not at the projection. The step
+  cost is the complex128 DFT sums, so double costs ~10 %.
 - Counters: eigen_solves, time_steps, sampled_frequencies, basis_columns, operator_applications, step_seconds,
   projection_seconds, eigen_last_residual. Time recipe: work.factorizations = time steps of one run (no factor),
   work.rhs = sampled frequencies; guesses.

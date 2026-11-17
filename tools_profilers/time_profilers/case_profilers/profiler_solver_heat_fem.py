@@ -3,8 +3,10 @@ Kinds: 'triangles' (default) the 'slab' run of heat_fem_transient_slab (P2, Auto
 steps (300 implicit-Euler steps; first estimate ~10 s); 'tetrahedra' the slab of heat_fem3d_transient_slab refined 2x
 with 4x the steps (120 steps); 'steady' heat_fem_cpu_gpu run gpu (the quadratic disc heater, cuDSS) refined 2x,
 repeated 4x; 'radiation' heat_radiation_slab_triangles (P2, cpu: one re-assembly per radiation re-linearisation, the
-ReducedSplit value-gather path) refined 32x, repeated 2x. Run from any folder:
-python profiler_solver_heat_fem.py [--kind triangles|tetrahedra|steady|radiation] [--refine R]
+ReducedSplit value-gather path) refined 32x, repeated 2x; 'tetrahedra_steady' the quadratic heat_fem3d_slab refined
+12x (~2.3e5 P2 dofs, fronts ~2.4e3: one large scalar factor, where block low-rank mumps_blr should win; first
+estimate). Run from any folder:
+python profiler_solver_heat_fem.py [--kind triangles|tetrahedra|steady|radiation|tetrahedra_steady] [--refine R]
 [--steps F] [--repeat N] [--no-cprofile]"""
 import sys
 from pathlib import Path
@@ -25,6 +27,7 @@ KINDS = {
     'tetrahedra': {'case': 'heat_fem3d_transient_slab', 'runs': ['slab'], 'refine': 2.0, 'steps': 4.0},
     'steady': {'case': 'heat_fem_cpu_gpu', 'runs': ['gpu'], 'refine': 2.0, 'repeat': 4},
     'radiation': {'case': 'heat_radiation_slab_triangles', 'runs': ['run'], 'refine': 32.0, 'repeat': 2},
+    'tetrahedra_steady': {'case': 'heat_fem3d_slab', 'runs': ['quadratic'], 'refine': 12.0},
 }
 
 if __name__ == '__main__':

@@ -692,7 +692,8 @@ TIME_FILTER_PARAMS = (
           tip='How many frequency samples build the search space; 0 picks a suitable number.'),
     Param('periods', 'float', 0.0, label='Run periods', unit='1', min=0.0,
           help='Length of the time stepping in periods of the target frequency after the source pulse; 0 = '
-               f'max({time_filter.MIN_PERIODS}, {time_filter.RESOLUTION_PERIODS:g} / bandwidth). Longer runs '
+               f'max({time_filter.MIN_PERIODS}, {time_filter.RESOLUTION_PERIODS:g} / bandwidth). The DFT is '
+               'Gaussian-windowed over these periods, so longer runs suppress modes just outside the band better and '
                'separate close resonances better; very high Q needs no longer run (the Rayleigh-Ritz step, not the '
                'ring-down, sets the accuracy).',
           tip='How long the time-domain run lasts; 0 picks a suitable length.'),
@@ -706,10 +707,13 @@ TIME_FILTER_PARAMS = (
                'between the FDTD fields and the frequency-domain modes; a resonance whose relative residual stays '
                f'above {time_filter.RESIDUAL_WARNING:g} is named in a warning.',
           tip='Extra refinement steps of the found resonances.'),
-    Param('precision', 'choice', 'single', label='Solver precision', choices=time_filter.PRECISIONS,
+    Param('precision', 'choice', time_filter.DEFAULT_PRECISION, label='Solver precision',
+          choices=time_filter.PRECISIONS,
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision')),
-          help='Precision of the FDTD time stepping (fields and coefficients; the DFT accumulators are complex64, '
-               'the projection and residuals float64): single is enough for the search basis.',
+          help='Precision of the FDTD time stepping (fields and coefficients; the DFT sums, the projection and '
+               'residuals are float64). Single steps ~10 % faster and still gives accurate frequencies, but its '
+               'rounding leaves grid-scale noise in the fields: residuals of ~1e-4 - 1e-3, and a weakly excited '
+               'resonance can be dropped as spurious.',
           tip='Number precision of the time-domain run.'),
 )
 

@@ -6,11 +6,13 @@ import argparse
 import cProfile
 import copy
 import functools
+import hashlib
 import importlib
 import inspect
 import io
 import json
 import os
+import platform
 import pstats
 import re
 import sys
@@ -40,6 +42,65 @@ EMPTY_RECORD = (0, 0.0, 0.0, 0.0, 0.0)
 # stdout line of a profile cut short (--time-limit or Ctrl+C): its report holds the parts timed until then
 # (run_all_profilers reads it: keep the text the same there)
 PARTIAL_REPORT_MARKER = 'partial report'
+# --if-changed: stdout lines of a profile that still stands, nothing run (run_all_profilers reads them: keep the texts)
+UNCHANGED_MARKER = 'unchanged since '
+KEPT_REPORT_MARKER = 'kept report: '
+PROFILE_CACHE_FILE = 'profile_cache.json'   # next to report.txt / runs.json: what the last complete profile depended on
+# package code (selftest_cache package paths) whose change re-profiles: the solver engines, solver roles, fem, core and
+# couplings, the per-type study numerics; never model plumbing, io, viz, materials (the case spec is hashed instead)
+PROFILED_CODE = ('solvers/', 'fem/', 'core/', 'physics/', 'coupling/', 'model/study_')
+NOT_PROFILED_FILES = ('definition', 'selftests', '__init__')   # file name prefixes: registry, help texts, cases
+
+
+def _profiled_path(path) -> bool:
+    """True for a package path of PROFILED_CODE outside the NOT_PROFILED_FILES files."""
+    return path.startswith(PROFILED_CODE) and not path.rpartition('/')[2].startswith(NOT_PROFILED_FILES)
+
+
+class ProfileCache:
+    """profile_cache.json of one profile folder: input hash (specs, parts, options), environment and the hashes of the
+    solver code units its last complete profile ran; that profile (report.txt, runs.json) stands while all are equal."""
+
+    def __init__(self, out_dir, case_input, backend):
+        from open_sol.model.selftest_cache import environment_key, package_units
+        self.out_dir = Path(out_dir)
+        self.path = self.out_dir / PROFILE_CACHE_FILE
+        self.input_hash = hashlib.sha1(json.dumps(case_input, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+        # the machine, not the GPU name: a device query would make the CUDA context before the first timed run (out/
+        # is local and git-ignored, so a record only meets another machine when the folder is copied)
+        self.environment = environment_key([backend], platform.node())
+        package_units()   # the snapshot stored with the record: an edit made while the profile runs reruns it next time
+
+    def unchanged_since(self):
+        """Time of the kept profile when it still stands, else None."""
+        from open_sol.model.selftest_cache import unit_hash
+        try:
+            entry = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if (entry.get('units') is None or entry.get('environment') != self.environment
+                or entry.get('input_hash') != self.input_hash or not (self.out_dir / 'report.txt').is_file()
+                or not (self.out_dir / 'runs.json').is_file()
+                or any(unit_hash(unit_id) != digest for unit_id, digest in entry['units'].items())):
+            return None
+        return entry.get('time')
+
+    def write(self, units=None):
+        """Record the units of a complete profile; None: nothing stands (written before a profile starts)."""
+        from open_sol.model.selftest_cache import unit_hash
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        record = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'environment': self.environment,
+                  'input_hash': self.input_hash,
+                  'units': None if units is None else {unit_id: unit_hash(unit_id) for unit_id in sorted(units)}}
+        self.path.write_text(json.dumps(record, indent=1), encoding='utf-8')
+
+
+def _profiled_units(profiler):
+    """Unit ids of the PROFILED_CODE that ran under cProfile, MODULE_UNIT of their files (kernel sources) and the units
+    their code names (memoised getters, numba kernels: no Python frame of their own)."""
+    from open_sol.model.selftest_cache import code_units
+    codes = {entry.code for entry in profiler.getstats() if not isinstance(entry.code, str)}
+    return code_units([(code, None) for code in codes], keep=_profiled_path, module_refs=False, second_hop=False)
 
 
 class _TimeLimit:
@@ -156,6 +217,17 @@ _ROLE_TARGETS = (
 )
 # solver-role runtimes: parts nobody calls stay out of the table
 SOLVER_ROLE_PARTS = tuple((target, 'role: ' + target.split(':', 1)[1]) for target in _ROLE_TARGETS)
+# block low-rank MUMPS (mumps_blr) internals: the compressed analysis / factor are the _MumpsFactor rows above; every
+# solve refines by float64 GMRES-IR (gmres_refine, also cuDSS mixed's; its library solves are sub-parts); a factor that
+# misses is refactored full rank once: _next_attempt calls = rejected factors, the full-rank refactor the second
+# _factorize / _MumpsFactor.__init__ call of that refactorize (summary host_direct_compression_fallbacks)
+SOLVER_ROLE_PARTS += (
+    ('open_sol.solvers.cudss_factor:gmres_refine', 'role: gmres_refine (float64 GMRES-IR, cuDSS and host)'),
+    ('open_sol.solvers.host_direct:HostDirectFactorization._solve_equilibrated',
+     'role: HostDirectFactorization._solve_equilibrated'),
+    ('open_sol.solvers.host_direct:HostDirectFactorization._next_attempt',
+     'role: HostDirectFactorization._next_attempt (rejected factor)'),
+)
 # library clocks: after a call of the target, the float seconds attribute its instance set is a row of its own (a
 # sub-part: out of the target's exclusive time); the attribute must be a new value, so a call that raised first is
 # not counted twice
@@ -387,18 +459,22 @@ def case_specs(case_name, runs=None, variant=None):
 # --compare: the direct-factor setting is back_end on sparse_direct and factorization on arpack_shift_invert (the
 # pair schema.auto_back_end_values resolves alike), so either name sets both
 SETTING_ALIASES = {'back_end': ('back_end', 'factorization'), 'factorization': ('factorization', 'back_end')}
-# run_all's five solver groups: a library back end by its package, every other solver (open_sol's own pcg, explicit
-# kernels, line_block, ...) by array library and precision: cupy double -> cudss, cupy single -> cudss_mixed, numpy
-# (the cpu backend) -> scipy
+# run_all's solver groups: an opt-in solver type of TYPE_GROUPS by its name (--solver-type), a library back end by its
+# package (mumps_blr apart from full-rank MUMPS), every other solver (open_sol's own pcg, explicit kernels, line_block,
+# ...) by array library and precision: cupy double -> cudss, cupy single -> cudss_mixed, numpy (the cpu backend) -> scipy
+TYPE_GROUPS = ('block_eigen', 'batched_direct', 'time_filter')
 LIBRARY_GROUPS = {'cudss': 'cudss', 'cudss_mixed': 'cudss_mixed', 'cusolver_qr': 'cudss', 'pardiso': 'pardiso',
-                  'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps', 'mumps_blr': 'mumps',
+                  'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps', 'mumps_blr': 'mumps_blr',
                   'scipy_splu': 'scipy', 'superlu': 'scipy'}
 SINGLE_PRECISIONS = ('single', 'mixed', 'half_storage')
+SOLVER_TYPE_SETTING = 'solver_type'   # run label '<run> solver_type=<type>' of --solver-type (run_all's token)
 
 
-def solver_group(back_end, precision, backend) -> str:
-    """run_all group of one role's solver: its library back end's package, else numpy on the cpu (scipy) or cupy by
-    precision (single / mixed: cudss_mixed, double or unknown: cudss)."""
+def solver_group(back_end, precision, backend, type_name=None) -> str:
+    """run_all group of one role's solver: its type in TYPE_GROUPS, else its library back end's package, else numpy on
+    the cpu (scipy) or cupy by precision (single / mixed: cudss_mixed, double or unknown: cudss)."""
+    if type_name in TYPE_GROUPS:
+        return type_name
     if back_end in LIBRARY_GROUPS:
         return LIBRARY_GROUPS[back_end]
     if backend == 'cpu':
@@ -450,6 +526,55 @@ def _compared_variant(spec, setting, value, backend, registry, excluded=()):
             variant.solvers.append(SolverSpec(physics_spec.solvers[role], type_name, {**dict(settings), key: value}))
             changed.append((physics_spec.name, role))
     return variant, changed
+
+
+def _typed_variant(spec, type_name, backend, registry, excluded=()):
+    """(spec copy, [(physics, role), ...] changed): every role the study uses (but `excluded`) that solver_misfit lets
+    solver type `type_name` fill on backend and grid gets a new node of that type: the settings of its node when that
+    one is of the type already (a profiler's own block_eigen node), else the type's defaults."""
+    from open_sol.model.schema import fill_defaults, solver_grid, solver_misfit
+    from open_sol.model.spec import SolverSpec
+    variant = copy.deepcopy(spec)
+    nodes = {node.name: node for node in variant.solvers}
+    solver_type = registry.solver_type(type_name)
+    changed = []
+    for physics_spec in variant.physics:
+        physics_type = registry.physics_type(physics_spec.type)
+        for role in physics_type.solver_roles:
+            node = nodes.get((physics_spec.solvers or {}).get(role) or '')
+            settings = dict(node.settings) if node is not None and node.type == type_name else {}
+            if (physics_spec.name, role) in excluded or solver_misfit(
+                    solver_type, fill_defaults(solver_type.params, settings), physics_type, role, variant.study.type,
+                    backend, solver_grid(variant, physics_spec)):
+                continue
+            physics_spec.solvers[role] = _compared_node_name(physics_spec.name, role)
+            variant.solvers.append(SolverSpec(physics_spec.solvers[role], type_name, settings))
+            changed.append((physics_spec.name, role))
+    return variant, changed
+
+
+def solver_type_variants(specs, type_name, backend):
+    """{'<run> solver_type=TYPE': spec copy} of the runs with a role solver type TYPE can fill (_typed_variant; a role
+    whose physics refuses it in validation keeps its node); runs no role of which takes it are dropped (printed)."""
+    from open_sol.model.schema import get_registry
+    registry = get_registry()
+    try:
+        registry.solver_type(type_name)
+    except KeyError:
+        raise SystemExit(f'--solver-type: unknown solver type {type_name!r}') from None
+    variants = {}
+    for run_name, spec in specs.items():
+        variant, changed = _typed_variant(spec, type_name, backend, registry)
+        refused = _refused_roles(variant, changed, backend, registry) if changed else set()
+        if refused:
+            print(f"--solver-type: run {run_name!r}: {', '.join('.'.join(entry) for entry in sorted(refused))} refuse "
+                  f'{type_name} in validation; left as written', flush=True)
+            variant, changed = _typed_variant(spec, type_name, backend, registry, excluded=refused)
+        if not changed:
+            print(f'--solver-type: run {run_name!r}: no solver role takes {type_name}; dropped', flush=True)
+            continue
+        variants[f'{run_name} {SOLVER_TYPE_SETTING}={type_name}'] = variant
+    return variants
 
 
 def automatic_solvers(spec):
@@ -617,7 +742,7 @@ def _run_choices(spec, summary, backend):
             precision = _solver_precision(registry, solver.get('type'), settings)
             choices.append({'role': f'{physics_name}.{role}', 'type': solver.get('type'), 'back_end': back_end,
                             'preconditioner': settings.get('preconditioner'), 'precision': precision,
-                            'group': solver_group(back_end, precision, backend),
+                            'group': solver_group(back_end, precision, backend, solver.get('type')),
                             'factorizations': counters.get('factorizations', counters.get('eigen_factorizations'))})
     return choices
 
@@ -664,7 +789,7 @@ def _automatic_choices(spec, backend=AUTOMATIC_BACKEND, spec_nodes=False):
             precision = _solver_precision(registry, type_name, values)
             choices.append({'role': f'{physics_spec.name}.{role}', 'type': type_name, 'back_end': back_end,
                             'preconditioner': values.get('preconditioner'), 'precision': precision,
-                            'group': solver_group(back_end, precision, backend)})
+                            'group': solver_group(back_end, precision, backend, type_name)})
     return choices
 
 
@@ -759,14 +884,18 @@ def _interrupted_summary(run_dir, status):
 
 
 def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, use_cprofile=True, synchronize=True,
-                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None, time_limit=None):
+                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None, time_limit=None,
+                 cache=None):
     """Run every spec (repeat times, after an optional untimed warm-up) under the part timers and cProfile; writes
     out/<name>/report.txt + profile.prof and returns the report path. timers: from wrapped_timers (else parts are
     wrapped here, too late for registry-held callbacks when the registry exists already). warmup_specs: {run: spec} the
     warm-up runs instead of specs (small runs compiling the same kernels). time_limit (s since PROCESS_START) or Ctrl+C:
-    the run going on is stopped (status 'timed_out' / 'cancelled') and the report holds what was timed until then."""
+    the run going on is stopped (status 'timed_out' / 'cancelled') and the report holds what was timed until then.
+    cache: a ProfileCache, cleared first and given the solver units of a complete profile (needs cProfile)."""
     out_dir = OUT_ROOT / name
     out_dir.mkdir(parents=True, exist_ok=True)
+    if cache is not None:
+        cache.write(None)   # a profile killed half way never stands
     if timers is None:
         timers = wrapped_timers(parts, synchronize)
     profiler = cProfile.Profile() if use_cprofile else None
@@ -859,16 +988,22 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
         sections += ['', _cprofile_text(profiler)]
     report_path = out_dir / 'report.txt'
     report_path.write_text('\n'.join(sections) + '\n', encoding='utf-8')
+    complete = (stopped is None and len(run_memory) == repeat * len(specs)
+                and all(memory['status'] == 'completed' for memory in run_memory.values()))
+    if cache is not None and profiler is not None and complete:   # written last: the report and runs.json stand
+        cache.write(_profiled_units(profiler))
     print(f'\n===== parts =====\n{timers.table(total)}\nreport: {report_path}', flush=True)
     return report_path
 
 
-def output_name(name, backend, compare=None, compare_only=False, assignments=(), automatic=False, precision=None):
+def output_name(name, backend, compare=None, compare_only=False, assignments=(), automatic=False, precision=None,
+                solver_type=None):
     """Folder name of one profile: name + the settings that change its results (backend, --automatic-solvers,
-    --precision, --compare, --set), e.g. 'membrane_film__gpu__back_end-pardiso__only', so runs of different solvers
-    never overwrite each other."""
+    --precision, --compare, --solver-type, --set), e.g. 'membrane_film__gpu__back_end-pardiso__only', so runs of
+    different solvers never overwrite each other."""
     parts = ([name, backend] + (['automatic'] if automatic else []) + ([precision] if precision else [])
-             + ([compare] + (['only'] if compare_only else []) if compare else []) + list(assignments))
+             + ([compare] + (['only'] if compare_only else []) if compare else [])
+             + ([f'{SOLVER_TYPE_SETTING}={solver_type}'] if solver_type else []) + list(assignments))
     return '__'.join(re.sub(r'[^A-Za-z0-9_.+-]', '-', part.replace(',', '+')) for part in parts)
 
 
@@ -907,9 +1042,16 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                         '(e.g. back_end=cudss,cudss_mixed): one column per run in runs.md')
     parser.add_argument('--compare-only', action='store_true',
                         help='drop the runs no --compare value applies to (instead of running them as written)')
+    parser.add_argument('--solver-type', metavar='TYPE', default=None,
+                        help='every role the solver type TYPE can fill gets a node of it (default settings; e.g. '
+                             'block_eigen); runs with no such role are dropped')
     parser.add_argument('--time-limit', type=float, default=None, metavar='S',
                         help='stop the run going on S s after the start of the process and write the report of what '
                              'was timed until then (a long library call ends first; Ctrl+C does the same)')
+    parser.add_argument('--if-changed', action='store_true',
+                        help='profile only when the specs, parts, options, environment or a unit of the solver code '
+                             '(PROFILED_CODE) the last complete profile into this folder ran changed; else keep its '
+                             'report (run_all_profilers passes it unless --reset; never reused after --no-cprofile)')
     options = parser.parse_args()
     timers = wrapped_timers(parts, synchronize=not options.no_sync)   # before the registry exists
     own_specs = specs is not None and options.case == case
@@ -931,15 +1073,37 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         if not run_specs:
             print(f'--compare-only: no run of {name} takes {options.compare}; nothing profiled', flush=True)
             return None
+    if options.solver_type:
+        run_specs = solver_type_variants(run_specs, options.solver_type, options.backend)
+        if not run_specs:
+            print(f'--solver-type: no run of {name} takes {options.solver_type}; nothing profiled', flush=True)
+            return None
     small_warmup = warmup_specs() if own_specs and warmup_specs is not None and options.warmup else None
     if small_warmup is not None and spec_edit is not None:
         small_warmup = {key: spec_edit(spec) for key, spec in small_warmup.items()}
     source = f'specs of {name}' if specs is not None and options.case == case else f'case {options.case}'
     folder = output_name(name, options.backend, options.compare, options.compare_only, options.set,
-                         options.automatic_solvers, options.precision)
+                         options.automatic_solvers, options.precision, options.solver_type)
+    # the case: everything that decides what runs and how it is timed (the folder name holds the rest)
+    case_input = {'specs': {run: spec.to_dict() for run, spec in run_specs.items()},
+                  'warmup_specs': None if small_warmup is None else {run: spec.to_dict()
+                                                                     for run, spec in small_warmup.items()},
+                  'parts': [list(part) if isinstance(part, tuple) else part for part in parts],
+                  'repeat': options.repeat, 'warmup': options.warmup, 'cprofile': not options.no_cprofile,
+                  'sync': not options.no_sync, 'save_arrays': not options.no_arrays,
+                  'parameters': _parameters(options.set)}
+    cache = ProfileCache(OUT_ROOT / folder, case_input, options.backend)
+    since = cache.unchanged_since() if options.if_changed else None
+    if since is not None:
+        timers.restore()
+        report_path = OUT_ROOT / folder / 'report.txt'
+        print(f'{UNCHANGED_MARKER}{since}: no solver code it ran, case spec or option changed; nothing run', flush=True)
+        print(f'{KEPT_REPORT_MARKER}{report_path}', flush=True)
+        return report_path
     return profile_runs(folder, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
                         use_cprofile=not options.no_cprofile, synchronize=not options.no_sync,
                         parameters=_parameters(options.set), save_arrays=not options.no_arrays,
                         note=f'{source}, runs {list(run_specs)}' + (f'; {note}' if note else '')
                         + (f'; warm-up runs {list(small_warmup)}' if small_warmup is not None else ''),
-                        timers=timers, warmup_specs=small_warmup, time_limit=options.time_limit or None)
+                        timers=timers, warmup_specs=small_warmup, time_limit=options.time_limit or None,
+                        cache=cache)

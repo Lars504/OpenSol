@@ -116,9 +116,13 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   'auto' through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores
   the spec's nodes and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
   runs.json `groups` / `automatic_groups`), and a group name is its SOLVERS key, so the ring needs no mapping. The
-  plot draws only `plotted_variants` (auto per backend + the five groups on their backend) and only COMMANDS entries:
+  plot draws only `plotted_variants` (auto per backend + the SOLVERS groups on their backend) and only COMMANDS entries:
   other variants / commands stay in profile_points.json, undrawn; a renamed flag needs RENAMED_VARIANTS to stay drawn. A new library back end needs a `LIBRARY_GROUPS` entry, else it is grouped
-  by array library and precision; a renamed variant needs a RENAMED_VARIANTS entry so `load_points` keeps its points.
+  by array library and precision; a new opt-in solver type needs harness `TYPE_GROUPS` + a run_all `_typed` SOLVERS
+  entry (a group name = its SOLVERS key; one SOLVER_COLORS hue per entry, else colours repeat); a renamed variant
+  needs a RENAMED_VARIANTS entry so `load_points` keeps its points. `--solver-type` keeps the settings of a role's node
+  already of that type, else gives the type's defaults: a case needing others (a batch size, a band, a precision) sets
+  its own node of the type in the profiler's specs.
   One ring per column (`auto_picks`): the column's runs' `run_automatic` groups; exactly one -> that group's line,
   several or the line not run -> auto @gpu when its `chosen` holds them. Ringing every picked group gave two rings.
   SOLVERS `backends` is a flag's default backend, `runs_on` what an explicit `--backend` may pick (and the lines
@@ -154,6 +158,18 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
   `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
   nodes (cuDSS, device line_block) fail at build and those runs are not counted.
+- Reuse (`--if-changed`, passed by run_all unless `--reset` / `--new-first` / `--only`: named commands always profile): `ProfileCache` writes
+  `profile_cache.json` per output folder, cleared (units null) before a profile starts and filled only after a
+  complete one (report.txt and runs.json written, every run 'completed', cProfile on). Its units come from the timed
+  cProfile's code objects (`profiler.getstats()`, no settrace: a tracer would slow the timed runs) through
+  `selftest_cache.code_units(keep=_profiled_path, module_refs=False, second_hop=False)`; code of the warm-up and of
+  other threads is not seen (a kernel factory there counts only when timed code names it). The package snapshot
+  (`package_units()`) is taken in the ProfileCache init, before the runs, so an edit made during a long run_all
+  reruns that command next time. The input hash takes the specs' `to_dict()`: a new option that changes what runs or
+  how it is timed goes into `case_input` in `main` or into `output_name`, else a changed profile is reused. The
+  environment key is the machine name, not the GPU name (a device query would make the CUDA context before the first
+  timed run). run_all reads the `UNCHANGED_MARKER` / `KEPT_REPORT_MARKER` lines (keep the texts the same), copies
+  nothing to the history and leaves the points (a command without one takes it from the kept runs.json).
 - Time limit: `run_all_profilers` passes `--timeout` to the harness as `--time-limit` (seconds since the harness's
   `PROCESS_START`) and kills only `REPORT_GRACE` s later. `profile_runs` arms a `_TimeLimit` timer
   (`_thread.interrupt_main`) and catches the KeyboardInterrupt (also Ctrl+C) per run, so the timed parts unwind
@@ -176,7 +192,19 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   model under that value and is dropped (`_run_key`: the specs' JSON without the displaced nodes).
 - A command's point sums its runs' walls, so a run added to a script doubles the plotted point: a solver twin of a
   model gets its own script (`*_double_factor.py` reuses its sibling's PARTS / example loader), not a run in the
-  existing one.
+  existing one. Likewise an opt-in type's runs at other settings (`*_3d_block_eigen.py`: its own node per run, kept by
+  `--solver-type`); a library group's `--compare` replaces a node lacking `back_end` / `factorization` by the role's
+  Automatic (arpack for an eigen node), so such a command is in those groups' `SOLVER_EXCLUDED_COMMANDS`.
+- batched_direct commands (`profiler_solver_frequency_sweeps.py`) carry no batched node: one would make the auto
+  variant batch too, leaving no per-frequency line to weigh against. Their sweeps are sized for the default batch_size
+  0 (64 = 32 + 32, 201 = seven batches): a new run that needs another batch size gets its own script. Only batched runs
+  call `BATCHED_DIRECT_PARTS` (`profiler_batched_direct_parts.py`); `_UniformPlan` inherits `__init__` / `factorize` /
+  `solve` / `free` from `_BatchPlan`, so those are wrapped on `_BatchPlan` only (a `_UniformPlan.<inherited>` target
+  resolves to the wrapped function: "already timed").
+- `em_fdfd_eigen_tensor` carries no time_filter node either (auto = the shift-invert factor): its runs are sized so
+  the default band (+-`DEFAULT_BANDWIDTH` 0.1) holds their requested resonances (cavities x 3, the 1 um template
+  disk); a changed default bandwidth or n_resonances needs the sizes rechecked, else time_filter finds fewer
+  resonances than arpack (a warning, still 'completed') and the columns compare different work.
 - `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
   `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
   main and its helpers read those globals at call time, never bind them at import. `SOLVER_EXCLUDED_COMMANDS`

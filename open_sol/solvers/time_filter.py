@@ -29,6 +29,11 @@ import math
 import numpy as np
 
 PRECISIONS = ('single', 'double')   # FDTD stepper precision (fields, coefficients); the projection is float64
+# float32 stepping injects rounding every step, which leaks into every sampled field as ~1e-6 grid-scale noise (a
+# window cannot remove it: each injection starts mid-run); the stationary quotient keeps omega near 1e-12 but the
+# Laplacian lifts the noise ~2 / (k h)^2 in a residual (1e-4 - 1e-3: real modes fail SPURIOUS_RESIDUAL, each polish
+# direction is mostly noise). The step cost is the complex128 DFT sums (16 B x sampled per cell), so double adds ~10 %.
+DEFAULT_PRECISION = 'double'
 DEFAULT_BANDWIDTH = 0.1     # half-width of the sampled band, relative to the target frequency
 DEFAULT_SOURCES = 4         # random point sources of the broadband excitation
 DEFAULT_POLISH_STEPS = 2
@@ -88,7 +93,7 @@ class TimeFilterEigenSolver:
     work record."""
 
     def __init__(self, bandwidth=DEFAULT_BANDWIDTH, sampled_frequencies=0, periods=0.0, sources=DEFAULT_SOURCES,
-                 polish_steps=DEFAULT_POLISH_STEPS, precision='single', label=None, backend='gpu'):
+                 polish_steps=DEFAULT_POLISH_STEPS, precision=DEFAULT_PRECISION, label=None, backend='gpu'):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {', '.join(PRECISIONS)}, got {precision!r}")
         if not (0.0 < float(bandwidth) < 1.0):
@@ -294,10 +299,10 @@ def time_estimate(values, work):
     solves = float(work.solves or 1)
     steps = float(work.factorizations) * solves
     sampled = float(work.rhs or MIN_SAMPLED_FREQUENCIES)
-    value_bytes = 4.0 if values.get('precision', 'single') == 'single' else 8.0
+    value_bytes = 4.0 if values.get('precision', DEFAULT_PRECISION) == 'single' else 8.0
     polish = float(values.get('polish_steps', DEFAULT_POLISH_STEPS))
     step_ops = (te.Elementwise(cells * value_bytes * 12.0, cells * value_bytes * 3.0, launches=12),
-                te.Elementwise(cells * sampled * 8.0, cells * sampled * 8.0, launches=2))
+                te.Elementwise(cells * sampled * 16.0, cells * sampled * 16.0, launches=2))   # complex128 DFT sums
     columns = sampled + polish * float(work.eigenpairs or wanted_pairs(1))
     # per column: A q (CSR of work.nnz complex entries), QR / Gram-Schmidt against the basis, the projected rows and
     # its Ritz vector / product / residual columns in each of the (polish + 1) projections (complex: 8 real flops)

@@ -2,12 +2,14 @@
 selftest pressure_acoustics_duct_3d (impedance, PML shell, soft, velocity ends; builtin Kuhn tetrahedra) on a 4x finer
 mesh (dx 6.25 mm: ~3e4 P2 tetrahedra, ~5e4 dofs) at 5 frequencies each, plus a 'background' run (the impedance duct
 under a +x background plane wave: per-frequency background loads and held offsets). Expected ~2-3 s per run, ~12 s.
-Run from any folder:
-python profiler_solver_pressure_acoustics_tetrahedra.py [--repeat N] [--no-cprofile]"""
+--solver-type batched_direct: every run, its 5 frequencies one batch (long tetrahedron sweeps:
+profiler_solver_frequency_sweeps.py --kind tetrahedra). Run from any folder:
+python profiler_solver_pressure_acoustics_tetrahedra.py [--repeat N] [--no-cprofile] [--solver-type batched_direct]"""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_batched_direct_parts import BATCHED_DIRECT_PARTS  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 DUCT_ELEMENT = 0.00625                              # m (selftest: 0.025)
@@ -53,7 +55,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.fem.sampling3d:PointLocator3D.locate', 'fem sampling: PointLocator3D.locate'),
     ('open_sol.fem.sampling3d:evaluate_lagrange_3d', 'fem sampling: evaluate_lagrange_3d'),
     ('open_sol.model.field_access_tetrahedra:TetrahedraAccess._plane', 'session: tetrahedra plane cut'),
-)
+) + BATCHED_DIRECT_PARTS
 
 
 def profiled_specs():

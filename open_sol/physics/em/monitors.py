@@ -82,7 +82,8 @@ _dft_accum_pair = twin('em.dft_accumulate_pair', cp.ElementwiseKernel(
     'dft_accumulate_pair'), _dft_accum_pair_host)
 
 # Line-monitor twins (flux, NF2FF, mode monitor) summing in complex128: (n_freqs, n_cells) is cheap, and float32 running
-# sums over 1e5-1e6 steps lose the near-cancelling net fluxes and deep dips. The large DFTMonitor boxes stay complex64.
+# sums over 1e5-1e6 steps lose the near-cancelling net fluxes and deep dips. The large DFTMonitor boxes stay complex64
+# unless double_sums (the time-filter basis: per-cell rounding is white noise the Laplacian amplifies in a residual).
 _dft_accum_line = twin('em.dft_accumulate_line', cp.ElementwiseKernel(
     'F f, complex64 ph',
     'complex128 acc',
@@ -247,12 +248,16 @@ class _LineSpectra:
 
 class DFTMonitor:
     """Running DFT over the cell box (x_slice, y_slice) at each monitor frequency: Ez ('ez'), or Hz plus Ex / Ey
-    collocated to the cell centres ('hz'; periodic_x / periodic_y wrap the partner face of grid cell 0); downsample
-    s > 1 records only every s-th cell along x and y (x_samples / y_samples, dft_sample_slice); xp = the run backend's
-    array module (None = the default backend)."""
+    collocated to the cell centres ('hz'; periodic_x / periodic_y wrap the partner face of grid cell 0; e_faces=False:
+    Hz only); downsample s > 1 records only every s-th cell along x and y (x_samples / y_samples, dft_sample_slice);
+    double_sums: complex128 spectra (the line kernels), else complex64; window: t [s] -> host float weight of each
+    sample (0 skips it; None = 1); spectra_out: a C-contiguous array of the spectrum's dtype and shape (n_freqs, mx, my)
+    the E_z / H_z spectrum sums into (zeroed here; e.g. rows of a caller's basis block); xp = the run backend's array
+    module (None = the default backend)."""
 
     def __init__(self, x_slice: slice, y_slice: slice, frequencies, dt: float, polarization: str = 'ez',
-                 periodic_x: bool = False, periodic_y: bool = False, downsample: int = 1, xp=None):
+                 periodic_x: bool = False, periodic_y: bool = False, downsample: int = 1, xp=None,
+                 double_sums: bool = False, e_faces: bool = True, window=None, spectra_out=None):
         xp = array_module_or_default(xp)
         for label, cells in (('x_slice', x_slice), ('y_slice', y_slice)):
             if cells.step not in (None, 1) or cells.stop is None or not (cells.start or 0) < cells.stop:
@@ -272,13 +277,28 @@ class DFTMonitor:
         self.mx = len(range(self.x_samples.start, self.x_samples.stop, self.downsample))
         self.my = len(range(self.y_samples.start, self.y_samples.stop, self.downsample))
 
+        if not e_faces and polarization != 'hz':
+            raise ValueError("DFTMonitor e_faces=False drops the Ex / Ey spectra of an 'hz' monitor only")
+        self.e_faces = bool(e_faces)
+        self.double_sums = bool(double_sums)
+        spectrum_dtype = np.complex128 if self.double_sums else np.complex64
         spectrum_shape = (self.n_freqs, self.mx, self.my)
-        if polarization == 'ez':
-            self.ez_dft = xp.zeros(spectrum_shape, dtype=np.complex64)
+        if spectra_out is None:
+            primary = xp.zeros(spectrum_shape, dtype=spectrum_dtype)
         else:
-            self.hz_dft = xp.zeros(spectrum_shape, dtype=np.complex64)
-            self.ex_dft = xp.zeros(spectrum_shape, dtype=np.complex64)
-            self.ey_dft = xp.zeros(spectrum_shape, dtype=np.complex64)
+            if (tuple(spectra_out.shape) != spectrum_shape or spectra_out.dtype != spectrum_dtype
+                    or not spectra_out.flags.c_contiguous):
+                raise ValueError(f'DFTMonitor spectra_out must be a C-contiguous {np.dtype(spectrum_dtype).name} array '
+                                 f'of shape {spectrum_shape}, got {spectra_out.dtype} {tuple(spectra_out.shape)}')
+            spectra_out[...] = 0
+            primary = spectra_out
+        if polarization == 'ez':
+            self.ez_dft = primary
+        else:
+            self.hz_dft = primary
+            if self.e_faces:
+                self.ex_dft = xp.zeros(spectrum_shape, dtype=spectrum_dtype)
+                self.ey_dft = xp.zeros(spectrum_shape, dtype=spectrum_dtype)
             self._phases_h = xp.empty(self.n_freqs, dtype=np.complex64)   # Hz sample time t - dt/2
             # Ex (hi-y faces) is averaged along y, Ey (hi-x faces) along x.
             self._ex_pairs = _centre_pairs(y_slice.start or 0, y_slice.stop, bool(periodic_y), self.downsample)
@@ -287,11 +307,16 @@ class DFTMonitor:
         self._omega_dev = xp.asarray(2.0 * np.pi * self.frequencies)   # float64, on the run backend
         self._phases = xp.empty(self.n_freqs, dtype=np.complex64)
         self.sample_interval = 1   # engine calls update every sample_interval steps (EMPhysics.finalize sets it)
+        self.window = window
         self._launches = None   # (fields, [(kernel, args)]): basic-index views, valid while the arrays live in place
 
     def update(self, fields, t: float):
-        # Phase exp(-i omega t) * m dt from the actual sample time t, computed on the device.
+        # Phase exp(-i omega t) * m dt (x the window weight) from the actual sample time t, computed on the device.
         sample_weight = self.dt * self.sample_interval
+        if self.window is not None:
+            sample_weight *= float(self.window(t))
+            if sample_weight == 0.0:
+                return
         _dft_phase(self._omega_dev, t, sample_weight, self._phases)
         if self.polarization == 'hz':   # Hz holds t - dt/2 when the monitors run (Ex, Ey hold t)
             _dft_phase(self._omega_dev, t - 0.5 * self.dt, sample_weight, self._phases_h)
@@ -305,12 +330,16 @@ class DFTMonitor:
         phases = self._phases[:, None, None]
         xs, ys = self.x_samples, self.y_samples
         launches = []
-        for field_set, (accumulate, accumulate_pair) in _field_sets(fields, _REAL_KERNELS, _IMAG_KERNELS):
+        kernel_sets = ((_REAL_LINE_KERNELS, _IMAG_LINE_KERNELS) if self.double_sums
+                       else (_REAL_KERNELS, _IMAG_KERNELS))
+        for field_set, (accumulate, accumulate_pair) in _field_sets(fields, *kernel_sets):
             if self.polarization == 'ez':
                 launches.append((accumulate, (field_set.ez[xs, ys][None, :, :], phases, self.ez_dft)))
                 continue
             launches.append((accumulate, (field_set.hz[xs, ys][None, :, :], self._phases_h[:, None, None],
                                           self.hz_dft)))
+            if not self.e_faces:
+                continue
             for faces, partners, box in self._ex_pairs:
                 launches.append((accumulate_pair, (field_set.ex[xs, faces][None, :, :],
                                                    field_set.ex[xs, partners][None, :, :], phases,

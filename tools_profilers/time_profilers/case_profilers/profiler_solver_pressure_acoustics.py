@@ -1,12 +1,14 @@
 """Profile pressure_acoustics on triangles (frequency response) on the gpu: selftest pressure_acoustics_rigid_disk run
 (axisymmetric, refined mesh, background + PML, 2 frequencies, ~3.7 s) plus the 4 runs of
 pressure_acoustics_reduced_sweep (duct, 61 frequencies direct / adaptive, velocity and background drives) on a 10x
-finer mesh (dx 2.5 mm, ~2e4 P2 dofs; ~1.5-2 s each). Run from any folder:
-python profiler_solver_pressure_acoustics.py [--repeat N] [--no-cprofile]"""
+finer mesh (dx 2.5 mm, ~2e4 P2 dofs; ~1.5-2 s each). --solver-type batched_direct: every run (the disk's 2
+frequencies one batch, the direct sweeps 31 + 30, the adaptive ones per system on its cuDSS). Run from any folder:
+python profiler_solver_pressure_acoustics.py [--repeat N] [--no-cprofile] [--solver-type batched_direct]"""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_batched_direct_parts import BATCHED_DIRECT_PARTS  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 SWEEP_ELEMENT = 0.0025   # m (selftest: 0.025)
@@ -51,7 +53,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
     ('open_sol.fem.sampling:RasterSampler.sample', 'fem sampling: RasterSampler.sample'),
 ) + tuple((f'{REDUCED}.{method}', f'reduced: {method}') for method in (
     'train', 'evaluate', 'expand', 'add_vectors', 'reduced_coordinates', 'residuals', 'verify',
-))
+)) + BATCHED_DIRECT_PARTS
 
 
 def profiled_specs():

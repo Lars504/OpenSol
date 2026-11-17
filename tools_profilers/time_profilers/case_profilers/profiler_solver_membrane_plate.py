@@ -1,13 +1,16 @@
 """Profile the membrane plate (C0 interior penalty P2, bending_fem; plate PML; plate ports, plate_ports) on the gpu:
 eigen of the simply supported rectangle (h = a / 60), the complex Bloch plate strip cell, the plate PML guide (3
 frequencies) and the plate strip between two plate ports (4 frequencies). Optional large run 'plate_film_limit' (the
-tunnelling model with D -> 0 plate ports, cpu 49 s): add it with --runs. Run from any folder:
-python profiler_solver_membrane_plate.py [--runs ...] [--repeat N] [--no-cprofile]"""
+tunnelling model with D -> 0 plate ports, cpu 49 s): add it with --runs. --solver-type batched_direct: plate_pml and
+plate_port (one batch each; the plate port terms as the batch's extra blocks), the eigen runs dropped (no linear role).
+Run from any folder:
+python profiler_solver_membrane_plate.py [--runs ...] [--repeat N] [--no-cprofile] [--solver-type batched_direct]"""
 import sys
 from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from profiler_batched_direct_parts import BATCHED_DIRECT_PARTS  # noqa: E402
 from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  # noqa: E402
 
 PML_FREQUENCY_FACTORS = (0.99, 1.0, 1.01)            # the PML reference stays the first frequency solved
@@ -85,7 +88,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     ('open_sol.fem.sampling:display_triangulation', 'render: fem.sampling.display_triangulation'),
     ('open_sol.fem.renderer:FEMFieldRenderer.fem_field', 'render: FEMFieldRenderer.fem_field'),
     ('open_sol.fem.renderer:FEMFieldRenderer.device_field', 'render: FEMFieldRenderer.device_field'),
-)
+) + BATCHED_DIRECT_PARTS
 
 if __name__ == '__main__':
     main('membrane_plate', PARTS, __doc__, runs=DEFAULT_RUNS, specs=_specs)

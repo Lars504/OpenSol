@@ -8,9 +8,12 @@ gives the command wall and, in brackets, that of the command's previous recorded
 A command stops after --timeout s (default 60; the harness's --time-limit: the report of what was timed until then is
 kept, its log line says 'partial'; killed REPORT_GRACE s later if a library call holds it); one that was profiling is
 plotted at the '>timeout' tick.
+A command whose last complete profile still stands (harness --if-changed: same case specs and options, no changed unit
+of the solver code it ran) is not rerun and keeps its points; --reset, --new-first and --only (named commands) profile
+every command they run.
 Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...]
 [--cudss --cudss-mixed --scipy --pardiso --mumps | --all]
-[--backend gpu cpu] [--timeout S] [--new-first] [--plot-only]"""
+[--backend gpu cpu] [--timeout S] [--reset] [--new-first] [--plot-only]"""
 import argparse
 import json
 import math
@@ -35,6 +38,8 @@ REPORT_GRACE = 30.0      # seconds after the timeout before the command is kille
 NOTHING_PROFILED = 'nothing profiled'   # the harness's --compare-only line when no run takes the solver
 PLANNED_GROUPS = 'solver groups: '   # the harness's line before the build: the groups the runs' roles take
 PARTIAL_REPORT = 'partial report'       # the harness's PARTIAL_REPORT_MARKER line: stopped at its time limit
+UNCHANGED = 'unchanged since '   # the harness's UNCHANGED_MARKER line (--if-changed): its kept profile stands
+KEPT_REPORT = 'kept report: '    # the harness's KEPT_REPORT_MARKER line: that profile's report.txt
 NEVER_FACTORISED = 'never factorised'   # log mark of a run whose compared solver did no factorisation (not counted)
 TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
 
@@ -54,13 +59,20 @@ def _whole(value, backends, precision=None, runs_on=BACKENDS):
             'token': None, 'backends': backends, 'runs_on': runs_on, 'back_ends': ()}
 
 
+def _typed(type_name, backends):
+    """Opt-in solver type group: harness --solver-type, only the runs a role of which it can fill (all counted)."""
+    return {'arguments': ('--solver-type', type_name), 'token': f'solver_type={type_name}', 'backends': backends,
+            'runs_on': BACKENDS, 'back_ends': ()}
+
+
 GPU, CPU = ('gpu',), ('cpu',)
-# the five solver groups (harness solver_group: every solver is in one), one --<name> flag each, --all: the five; the
+# the solver groups (harness solver_group: every solver is in one), one --<name> flag each, --all: all of them; the
 # order fixes each one's plot colour. cudss: cuDSS + cupy double (pcg, explicit kernels, ... at double precision);
-# cudss_mixed: cuDSS mixed + cupy single; scipy: host SuperLU + numpy (the cpu backend); pardiso / mumps: their host
-# library, cpu backend, only the runs a role of which takes it. No flag: auto, whose log line names the groups it used.
-# backends: each one's default; an explicit --backend runs the host groups on it too (a gpu model factorising on the
-# host), never cuDSS on the cpu
+# cudss_mixed: cuDSS mixed + cupy single; scipy: host SuperLU + numpy (the cpu backend); pardiso / mumps / mumps_blr:
+# their host library, cpu backend, only the runs a role of which takes it; block_eigen / batched_direct / time_filter:
+# the opt-in solver types (harness TYPE_GROUPS), only the runs a role of which they can fill. No flag: auto, whose log
+# line names the groups it used. backends: each one's default; an explicit --backend runs the host groups on it too (a
+# gpu model factorising on the host), never cuDSS on the cpu
 SOLVERS = {
     # the cases' solvers as written; run_all_examples.py adds --automatic-solvers (every role on Automatic)
     'auto': {'arguments': (), 'token': None, 'backends': GPU, 'runs_on': BACKENDS, 'back_ends': ()},
@@ -69,18 +81,28 @@ SOLVERS = {
     'scipy': _whole('scipy_splu', CPU),
     'pardiso': _compared('pardiso', CPU),
     'mumps': _compared('mumps', CPU),
+    'mumps_blr': _compared('mumps_blr', CPU),
+    'block_eigen': _typed('block_eigen', GPU),
+    'batched_direct': _typed('batched_direct', GPU),
+    'time_filter': _typed('time_filter', GPU),
 }
 GROUPS = tuple(solver for solver in SOLVERS if solver != 'auto')
 # {solver group: COMMANDS entries it never runs} (a suite may replace it): a variant whose answer is wrong is no
 # timing point (its earlier points are dropped)
 SOLVER_EXCLUDED_COMMANDS = {}
+# block_eigen's own script: a library group's --compare swaps its block_eigen eigen nodes for arpack's matrix-free
+# Lanczos (no factor on bricks, so no point; minutes at its 1.3e5-dof runs): only auto and --block-eigen run it
+BLOCK_EIGEN_ONLY_COMMANDS = ('solid_mechanics_3d_block_eigen --warmup',)
+for _group in ('cudss', 'cudss_mixed', 'scipy', 'pardiso', 'mumps', 'mumps_blr'):
+    SOLVER_EXCLUDED_COMMANDS[_group] = tuple(SOLVER_EXCLUDED_COMMANDS.get(_group, ())) + BLOCK_EIGEN_ONLY_COMMANDS
 # variants of an older points file under the name that now covers them (load_points)
 RENAMED_VARIANTS = {'scipy_splu @cpu': 'scipy @cpu', 'numpy @cpu': 'scipy @cpu'}
 # solver names of older runs.json (no 'groups') by group
 LEGACY_GROUPS = {'cudss': 'cudss', 'cudss_mixed': 'cudss_mixed', 'scipy_splu': 'scipy', 'superlu': 'scipy',
                  'pardiso': 'pardiso', 'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps'}
-# categorical palette slots in fixed order (8 hues)
-SOLVER_COLORS = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948')
+# categorical palette slots in fixed order, one per SOLVERS entry (10 hues)
+SOLVER_COLORS = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948', '#8a5a00',
+                 '#00a3c4')
 BACKEND_MARKERS = {'gpu': 'o', 'cpu': 's'}
 SERIES_STYLES = {'first': dict(linestyle=':', linewidth=1.2, markersize=5, markerfacecolor='none'),
                  'previous': dict(linestyle='--', linewidth=1.2, markersize=4),
@@ -90,14 +112,19 @@ PICK_RING = dict(s=220, facecolors='none', edgecolors='#0b0b0b', linewidths=1.5,
 
 COMMANDS = (
     'pressure_acoustics', 'pressure_acoustics_tetrahedra',
+    'frequency_sweeps --kind triangles', 'frequency_sweeps --kind tetrahedra',   # long direct sweeps (batched_direct)
     'em_fdfd_triangles', 'em_modes_triangles',
+    'em_fdfd_eigen_tensor --warmup',   # shift-invert factor vs factor-free time_filter (--time-filter)
     'em_fdfd_3d', 'em_fdfd_3d_double_factor', 'em_fdfd_3d_tetrahedra', 'em_fdfd_3d_tetrahedra_double_factor',
     'em_eme_3d',
     'heat_fem --kind triangles', 'heat_fem --kind tetrahedra', 'heat_fem --kind steady',
+    'heat_fem --kind tetrahedra_steady',   # one large 3D factor (block low-rank mumps_blr's case)
     'magnetostatics_3d --kind tensor', 'magnetostatics_3d --kind tetrahedra', 'magnetostatics_3d --kind sphere',
     'magnetostatics_3d --kind coil',
     'solid_mechanics_triangles', 'solid_mechanics_3d_tensor --warmup',
     'solid_mechanics_3d_tetrahedra --warmup', 'solid_mechanics_3d_nonlinear --warmup',   # cuDSS load out of run 1
+    'solid_mechanics_3d_tetrahedra_large --warmup',   # one large P2 elasticity factor (mumps_blr's case)
+    'solid_mechanics_3d_block_eigen --warmup',
     'membrane_plate',
 )
 PLOT_TITLE = 'case profilers per command'
@@ -322,7 +349,7 @@ def _variant_order(variant):
 
 
 def plotted_variants(points) -> dict:
-    """The points of the lines the plot draws: the auto pick and the five groups on each backend they run on; other
+    """The points of the lines the plot draws: the auto pick and the SOLVERS groups on each backend they run on; other
     variants of the points file (older solver flags) stay in it, not drawn."""
     labels = {variant_label(solver, backend) for solver, variant in SOLVERS.items() for backend in variant['runs_on']}
     return {variant: by_series for variant, by_series in points.items() if variant in labels}
@@ -353,6 +380,18 @@ def plot_columns(points, entries) -> list:
     return columns
 
 
+COLUMN_RUNS_CHARACTERS = 32   # a split column naming longer runs shows their count (names printed)
+
+
+def column_label(entry, runs) -> str:
+    """Tick label of a plot column: the command, a split column's runs joined by '+' or, when longer than
+    COLUMN_RUNS_CHARACTERS, their count (a long label squashes the panels)."""
+    if runs is None:
+        return entry
+    joined = '+'.join(runs)
+    return f'{entry}: {joined}' if len(joined) <= COLUMN_RUNS_CHARACTERS else f'{entry}: {len(runs)} runs'
+
+
 def plot_points(points, path):
     """Three panels sharing the column axis (plot_columns: a command, or one of its task sets; run wall s, log; GPU
     peak MiB; RAM peak MiB): one colour per solver, one marker per backend, one line style per series (first dotted,
@@ -369,7 +408,10 @@ def plot_points(points, path):
     variants = sorted(points, key=_variant_order)
     columns = plot_columns(points, entries)
     picks = auto_picks(points, columns)
-    labels = [entry if runs is None else f'{entry}: {"+".join(runs)}' for entry, runs in columns]
+    labels = [column_label(entry, runs) for entry, runs in columns]
+    for (entry, runs), label in zip(columns, labels):   # a shortened label: its runs printed once
+        if runs is not None and '+'.join(runs) not in label:
+            print(f'plot column {label!r}: {", ".join(runs)}')
     unringed = [label for index, label in enumerate(labels) if index not in picks]
     if unringed:   # mostly an auto @gpu point from before per-run fields: a no-flag run gives the ring
         print('no Automatic ring (no point holds its per-run pick on a line that measured it; rerun with no solver '
@@ -438,11 +480,13 @@ def plot_points(points, path):
     series_handles.append(Line2D([], [], linestyle='none', marker='o', markersize=13, markerfacecolor='none',
                                  markeredgecolor=PICK_RING['edgecolors'], markeredgewidth=PICK_RING['linewidths'],
                                  label="Automatic's pick on the gpu (current)"))
+    # solver legend beside the top panel, the profile legend beside the bottom one: the long solver list may run past
+    # its panel without covering the other legend
     solver_legend = axes[0].legend(handles=variant_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0),
-                                   frameon=False, title='solver @backend')
+                                   frameon=False, title='solver @backend', fontsize=8, title_fontsize=9)
     axes[0].add_artist(solver_legend)
-    axes[1].legend(handles=series_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0), frameon=False,
-                   title='profile')
+    axes[-1].legend(handles=series_handles, loc='lower left', bbox_to_anchor=(1.0, 0.0), frameon=False,
+                    title='profile', fontsize=8, title_fontsize=9)
     axes[-1].set_xticks(positions)
     axes[-1].set_xticklabels(labels, rotation=90, fontsize=8)
     figure.tight_layout()
@@ -470,12 +514,13 @@ def _save_figure(figure, path):
 
 def main(description=None):
     parser = argparse.ArgumentParser(description=description or __doc__)
-    parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these')
+    parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these (always profiled, '
+                                                                     'unchanged or not)')
     for solver, variant in SOLVERS.items():
         parser.add_argument(f'--{solver.replace("_", "-")}', dest=f'solver_{solver}', action='store_true',
                             help=f'profile with {" ".join(variant["arguments"]) or "the cases as written"}'
                                  + f' (default backend {variant["backends"][0]})')
-    parser.add_argument('--all', action='store_true', help=f'the five solver groups in turn: {", ".join(GROUPS)}')
+    parser.add_argument('--all', action='store_true', help=f'every solver group in turn: {", ".join(GROUPS)}')
     parser.add_argument('--backend', nargs='+', default=None, choices=BACKENDS,
                         help='backends to run on (default: each flag its own, auto gpu, the host groups cpu); cudss '
                              '/ cudss_mixed run on the gpu only (skipped for a cpu-only --backend)')
@@ -483,8 +528,13 @@ def main(description=None):
                         help=f'seconds per command before it stops with a partial report (default '
                              f'{DEFAULT_TIMEOUT:g}; 0: no limit; killed {REPORT_GRACE:g} s later); a stopped command '
                              'that was profiling is plotted at the timeout tick')
+    parser.add_argument('--reset', action='store_true',
+                        help='profile every command, also those whose solver code and case are unchanged since their '
+                             'last complete profile (needed after an edit outside the harness PROFILED_CODE that '
+                             'changes timings: model plumbing, the harness itself)')
     parser.add_argument('--new-first', action='store_true',
-                        help='this complete profile replaces the first one (commands that fail keep theirs)')
+                        help='this complete profile replaces the first one (commands that fail keep theirs; implies '
+                             '--reset)')
     parser.add_argument('--plot-only', action='store_true', help='redraw the plot from profile_points.json, run nothing')
     options = parser.parse_args()
     points = load_points()
@@ -501,6 +551,8 @@ def main(description=None):
         print(f'--backend {" ".join(options.backend)}: {", ".join(skipped)} run on the gpu only; skipped', flush=True)
     commands = [entry for entry in COMMANDS if not options.only or any(text in entry for text in options.only)]
     complete = not options.only
+    # named commands (--only) always profile, as a named selftest run reruns its cases
+    reuse = () if options.reset or options.new_first or options.only else ('--if-changed',)
     log_path = OUT / 'run_all.log'
     log_path.parent.mkdir(parents=True, exist_ok=True)
     history_folder = OUT / 'history' / time.strftime('%Y-%m-%d_%H%M%S')
@@ -519,7 +571,7 @@ def main(description=None):
                         save_points(points)
                     continue
                 command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments'],
-                           *(('--time-limit', f'{options.timeout:g}') if options.timeout else ())]
+                           *(('--time-limit', f'{options.timeout:g}') if options.timeout else ()), *reuse]
                 if solver != 'auto':   # auto: '>>>' once the harness names the groups its runs take
                     print(f'>>> {entry} [{label}]', flush=True)
 
@@ -532,12 +584,35 @@ def main(description=None):
                 return_code, stdout, stderr = run_command(
                     command, options.timeout + REPORT_GRACE if options.timeout else None, announce)
                 wall = time.perf_counter() - start
+                earlier_point = points.get(label, {}).get('current', {}).get(entry)   # read before it is replaced
+                since = next((line[len(UNCHANGED):].partition(': ')[0] for line in stdout.splitlines()
+                              if line.startswith(UNCHANGED)), None) if return_code == 0 else None
+                if since is not None:   # the kept profile stands: its points stay, nothing copied to the history
+                    kept = next((line[len(KEPT_REPORT):].strip() for line in stdout.splitlines()
+                                 if line.startswith(KEPT_REPORT)), None)
+                    runs_path = None if kept is None else Path(kept).parent / 'runs.json'
+                    used = used_solvers(runs_path, 0.0) if solver == 'auto' and runs_path is not None else None
+                    first = complete and entry not in points.get(label, {}).get('first', {})
+                    if earlier_point is None and runs_path is not None:   # profiled outside run_all: its point now
+                        kept_point, _ = command_point(runs_path, None, 0.0, SOLVERS[solver]['token'],
+                                                      SOLVERS[solver]['back_ends'])
+                        if kept_point is not None:
+                            record_point(points, label, entry, kept_point, first=first)
+                            save_points(points)
+                    elif first and earlier_point is not None:   # unchanged code and case: it counts for this profile
+                        points[label]['first'][entry] = earlier_point
+                        save_points(points)
+                    line = (f'{entry} [{variant_label(used, backend) if used else label}]: unchanged since {since}, '
+                            f'not rerun ({wall:.1f} s check){previous_wall_text(earlier_point, prefix="kept ")}')
+                    print(line, flush=True)
+                    log.write(line + '\n')
+                    log.flush()
+                    continue
                 report = [line for line in stdout.splitlines() if line.startswith('report: ')]
                 partial = return_code is not None and any(line.startswith(PARTIAL_REPORT)
                                                           for line in stdout.splitlines())
                 point, not_completed, shown = None, [], label   # shown: auto replaced by the solvers it used
                 untaken = return_code == 0 and NOTHING_PROFILED in stdout
-                earlier_point = points.get(label, {}).get('current', {}).get(entry)   # read before it is replaced
                 if return_code is None or partial:
                     if NOTHING_PROFILED not in stdout:   # it was profiling this solver when stopped
                         point = timed_out_point(wall, options.timeout)

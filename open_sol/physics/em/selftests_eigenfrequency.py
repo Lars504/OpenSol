@@ -54,9 +54,11 @@ _LINE_BLOCK_RUNS = {'double': ('ez', 'ez_lossy'), 'mixed': ('ez_lossy',)}
 # Rayleigh-Ritz of the FDFD pencil). Bandwidth: the references lie at -25 % (ez / hz (1, 1)), +16 % (hz (3, 0)) and
 # +33 % (ez (3, 1)) of the target, and only resonances inside +-bandwidth are reported. Closed lossless (or uniformly
 # lossy) cavities: the FDTD and FDFD share the Yee Laplacian, so the filtered fields are exact combinations of the
-# discrete modes and only the out-of-band leakage (smooth across the samples: a few span directions) and the float32
-# stepping noise (~1e-6) remain; the bilinear Rayleigh quotient squares them: omega to 1e-8 (as ARPACK's case), Q to
-# 1e-5 (Q ~ 1080: a Q error ~ 2 Q x the omega error), the field (first order in the span error) to 1e-4.
+# discrete modes and only the out-of-band leakage (smooth across the samples: a few span directions) remains; the
+# bilinear Rayleigh quotient squares it: omega to 1e-8 (as ARPACK's case), Q to 1e-5 (Q ~ 1080: a Q error ~ 2 Q x the
+# omega error), the field (first order in the span error) to 1e-4. Both FDFD time-filter cases run the default double
+# FDTD: single (run 2026-11-17) matched ARPACK's omega to 1e-10 - 1e-13 but its ~1e-6 grid noise gave residuals 5e-5 -
+# 9e-4, so the cpu ez (2, 1) mode (weakly excited by the 4 sources) and every disc mode on the gpu failed the 1e-3 gate.
 _TIME_FILTER_NODE = 'time_filter'
 _TIME_FILTER_BANDWIDTH = 0.4
 _TIME_FILTER_TOLERANCES = (1e-8, 1e-5)          # relative complex omega, relative Q
@@ -375,13 +377,14 @@ EIGENFREQUENCY_SELFTEST_CASES = (
         label='EM FDFD: time-filter eigenfrequencies of a PEC cavity',
         description='The em_fdfd_eigenfrequency_pec_cavity runs (ez, hz, ez_lossy) with a time_filter solver node as '
                     f"the 'eigen' solver (bandwidth {_TIME_FILTER_BANDWIDTH:g}: the references lie at -25 % to +33 % "
-                    'of the target; other settings default, FDTD precision single): no factorisation, an FDTD run of '
+                    'of the target; other settings default, FDTD precision double): no factorisation, an FDTD run of '
                     'the cavity from seeded point sources with a whole-grid running DFT at the sampled frequencies, '
                     'the Rayleigh-Ritz projection of the FDFD pencil (bilinear with the stretched-area symmetrizer) '
                     'and its polish steps. The same closed-form references and checks, with projection tolerances: relative '
                     f'complex omega {_TIME_FILTER_TOLERANCES[0]:g} (the FDTD and FDFD share the Yee Laplacian, so '
-                    'only the out-of-band leakage and the float32 stepping noise enter the span, squared by the '
-                    f'stationary quotient), lossy Q {_TIME_FILTER_TOLERANCES[1]:g} (~2 Q x the omega tolerance), the '
+                    'only the out-of-band leakage enters the span, squared by the stationary quotient; single '
+                    'stepping noise passed omega at ~1e-12 of ARPACK but failed the spurious gate on the weakly '
+                    'excited (2, 1) mode), lossy Q {_TIME_FILTER_TOLERANCES[1]:g} (~2 Q x the omega tolerance), the '
                     f'(2, 1) field shape {_TIME_FILTER_FIELD_TOLERANCE:g} (first order in the span error); each run '
                     'summary records the eigen role as time_filter with one solve and time steps > 0. Run on the '
                     'default backend (gpu) and as a cpu variant (the numpy FDTD twins and host projection). measured = '
