@@ -11,7 +11,8 @@ every right-hand side) or the device (cuSOLVER QR 'cusolver_qr', one factorisati
 # solve_host, transposed solves of symmetric factors only, not recyclable: re-solves after a value change refactorise
 # with previous=, reusing the cuDSS plan of an unchanged pattern). The factor lives outside the cupy pool and is guarded
 # by cuDSS's own estimate after planning, so the host size rules do not apply to it.
-# Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed, solvers.host_direct): opt-in like cuDSS (never
+# Host direct back ends (mumps / mumps_mixed / mumps_blr / pardiso / pardiso_mixed, solvers.host_direct; mumps_blr the
+# block low-rank MUMPS factor, GMRES-refined, full rank after a miss): opt-in like cuDSS (never
 # 'auto'), on both backends; factorize / factorize_host / DiffusionDirectSolver return a
 # host_direct.HostDirectFactorization (transposed solves, recyclable, inertia; previous= refactorises on the kept
 # analysis). They keep the SuperLU size rules (library-named texts; uncalibrated, LDL^T / nested dissection usually
@@ -24,7 +25,8 @@ import time
 import numpy as np
 
 from .cudss_factor import csr_rows
-from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS, factor_label, host_direct_available,
+from .host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_COMPRESSED_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS,
+                          factor_label, host_direct_available,
                           host_direct_factorization, host_direct_values_factorization, is_host_direct_factor,
                           missing_text)
 
@@ -42,6 +44,11 @@ HOST_FACTOR_BACK_ENDS = ('scipy_splu',) + HOST_DIRECT_BACK_ENDS        # factors
 HOST_DIRECT_FACTOR_TIME = 1.0
 HOST_DIRECT_SOLVE_TIME = 1.0
 HOST_DIRECT_MIXED_FULL_SOLVES = 4.0
+# compressed (block low-rank) host factors (mumps_blr): factorisation time over the full-rank one, and compressed solves
+# per full-accuracy solve (GMRES-IR from a ~1e-8 backward error: ~2 iterations + the residual products); both
+# uncalibrated guesses
+HOST_DIRECT_COMPRESSED_FACTOR_TIME = 0.6
+HOST_DIRECT_COMPRESSED_FULL_SOLVES = 3.0
 # run-time recipe of the cuDSS back ends (2D: the profile's complex 5-point cudss curves; 3D: the arpack_shift_invert
 # fit of complex 3D curl-curl factors), scaled for real operators by these value-size / flop ratios (uncalibrated
 # guesses: scalar 7-point and FEM fills differ from the curl-curl one), and (3D only; the 2D mixed solve curve holds its
@@ -993,6 +1000,7 @@ class SparseDirectSolver:
         self.host_direct_refinement_steps = 0
         self.host_direct_single_residual = None
         self.n_host_direct_double_fallbacks = 0
+        self.n_host_direct_compression_fallbacks = 0   # mumps_blr factors refactored full rank after a miss
         self.host_direct_threads = None
 
     @property
@@ -1277,6 +1285,7 @@ class SparseDirectSolver:
             self.host_direct_refinement_steps = factor.refinement_steps
             self.host_direct_single_residual = factor.single_residual
             self.n_host_direct_double_fallbacks += int(factor.last_double_fallback)
+            self.n_host_direct_compression_fallbacks += int(factor.last_compression_fallback)
             self.host_direct_threads = factor.threads
         return factor
 
@@ -1309,6 +1318,8 @@ class SparseDirectSolver:
                             host_direct_single_residual=self.host_direct_single_residual,
                             host_direct_double_fallbacks=self.n_host_direct_double_fallbacks,
                             host_direct_threads=self.host_direct_threads)
+        if self._back_end in HOST_DIRECT_COMPRESSED_BACK_ENDS:   # mumps_blr: full-rank refactors after a miss
+            counters['host_direct_compression_fallbacks'] = self.n_host_direct_compression_fallbacks
         return counters
 
 
@@ -1567,9 +1578,14 @@ def time_estimate(values, work):
                                               f"{work.dimensions}D)",))
     host_direct = back_end in HOST_DIRECT_BACK_ENDS
     label = factor_label(back_end)   # 'SuperLU' for scipy_splu
-    factor_scale = work.factor_scale * (HOST_DIRECT_FACTOR_TIME if host_direct else 1.0)
+    compressed = back_end in HOST_DIRECT_COMPRESSED_BACK_ENDS
+    factor_scale = work.factor_scale * ((HOST_DIRECT_FACTOR_TIME
+                                         * (HOST_DIRECT_COMPRESSED_FACTOR_TIME if compressed else 1.0))
+                                        if host_direct else 1.0)
     solve_scale = work.solve_scale * ((HOST_DIRECT_SOLVE_TIME * (HOST_DIRECT_MIXED_FULL_SOLVES
-                                                                 if back_end in MIXED_BACK_ENDS else 1.0))
+                                                                 if back_end in MIXED_BACK_ENDS else
+                                                                 HOST_DIRECT_COMPRESSED_FULL_SOLVES if compressed
+                                                                 else 1.0))
                                       if host_direct else 1.0)
     gpu = work.backend == 'gpu'
     solve = (te.HostSolve(work.unknowns, work.dimensions, work.complex, work.rhs, scale=solve_scale),) + (

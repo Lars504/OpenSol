@@ -532,8 +532,8 @@ SETTING_ALIASES = {'back_end': ('back_end', 'factorization'), 'factorization': (
 # cupy double -> cudss, cupy single -> cudss_mixed, numpy (the cpu backend) -> scipy
 TYPE_GROUPS = ('block_eigen',)
 LIBRARY_GROUPS = {'cudss': 'cudss', 'cudss_mixed': 'cudss_mixed', 'cusolver_qr': 'cudss', 'pardiso': 'pardiso',
-                  'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps', 'scipy_splu': 'scipy',
-                  'superlu': 'scipy'}
+                  'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps', 'mumps_blr': 'mumps',
+                  'scipy_splu': 'scipy', 'superlu': 'scipy'}
 SINGLE_PRECISIONS = ('single', 'mixed', 'half_storage')
 SOLVER_TYPE_SETTING = 'solver_type'   # run label '<run> solver_type=<type>' of --solver-type (run_all's token)
 

@@ -53,12 +53,24 @@ values compared against the baseline run (`dd`; `err` against the model's analyt
 | name | stands for (physics / role / study / grid) | operator |
 |---|---|---|
 | `fdfd_driven` | em_fdfd_ez / linear / stationary / tensor | complex Helmholtz, CPML; MUMPS / PARDISO factor the LDL^T of D A |
-| `fdfd_eigen` | em_fdfd_ez / eigen / eigenfrequency / tensor | `eigenfrequency.solve_resonances`, 3 disc resonances |
+| `fdfd_eigen` | em_fdfd_ez / eigen / eigenfrequency / tensor | `eigenfrequency.solve_resonances`, 3 disc resonances (`time_filter`: `time_filter_eigen.solve_time_filter_resonances`) |
 | `heat_2d` | heat / linear / stationary / tensor | finite-volume 5-point, real SPD, contrast 100 inclusion |
 | `heat_3d` | heat / linear / stationary / tensor_3d | finite-volume 7-point (SuperLU from grid nested dissection) |
 | `heat_fem_3d` | heat / linear / stationary / tetrahedra | P2 FEM on Kuhn tetrahedra, Dirichlet dofs eliminated |
 | `heat_line` | heat / linear / stationary / line | 1D model (tridiagonal): where `banded` applies |
 | `solid_modes_3d` | solid_mechanics_3d / eigen / eigenfrequency / tensor_3d | `ElasticSystem3D.lowest_modes`, 6 lowest modes of a steel roller box, matrix-free (no operator) |
+| `acoustic_sweep_2d` | pressure_acoustics / linear / frequency_response / triangles | P2 `fem.harmonic` sweep of 32 frequencies (air, impedance sides, point load): one factor per frequency, or `batched_direct` batches |
+
+`acoustic_sweep_2d` weighs the opt-in `batched_direct` (every frequency of the sweep factorised in explicitly batched
+cuDSS calls, `fem.harmonic` `plan_batched`; cpu: a SuperLU loop) against the per-frequency `sparse_direct` factors
+(`cudss` / `cudss_mixed` refreshed on one plan, `scipy_splu`, MUMPS / PARDISO) on the same sweep: 32 frequencies over
+200 - 800 Hz of air in a 1 x 0.5 m rectangle (size = cells along x, half as many along y, P2), the impedance rho c on
+every side (the C term), one point load. Each repeat builds a fresh system on the runtime (assembly before the timer)
+and solves every frequency in order, as the frequency_response study does. Phases: `factor` = the first frequency
+(plan, first factor; batched: the whole first batch of up to 32), `solve` = the mean of each later frequency, `total` =
+the sweep (no `refactor` / `sweep` column); the residual is the worst frequency's ||b - A x|| / ||b||; details hold the
+runtime's work counters (`batches`, `batched_systems`, `batch_rejected`, `batch_seconds`, ...). `batch_size` (an int
+setting) is not varied: 0 (up to 32 and the free memory).
 
 `solid_modes_3d` is the point where the factor-free `block_eigen` is weighed against what it replaces: arpack's
 `eigsh_inverse` (shift-invert Lanczos at 0, one inner PCG solve per step) on brick meshes. The box has (n + 1) x n x
@@ -74,11 +86,14 @@ The solver choices are not listed here: `solver_catalog` enumerates them from th
 the role, every combination of its back_end / factorization / precision / preconditioner choices that
 `solvers.roles.solver_misfit` admits on the cpu backend and the SolverType's validate does not refuse; a setting the
 problem class lists in `ignored_settings` is pinned to its resolved default instead: one row). With all
-optional packages: `sparse_direct:{scipy_splu, mumps, mumps_mixed, pardiso, pardiso_mixed}`,
+optional packages: `sparse_direct:{scipy_splu, mumps, mumps_mixed, mumps_blr, pardiso, pardiso_mixed}`,
 `pcg:{double, single, mixed}/jacobi`, `pcg:{double, single}/multigrid`, `banded` (1D), `line_block:{mixed, double}`
-(FDFD), `arpack_shift_invert:{superlu, mumps, mumps_mixed, pardiso, pardiso_mixed}` (eigen; `solid_modes_3d`: only
+(FDFD), `arpack_shift_invert:{superlu, mumps, mumps_mixed, mumps_blr, pardiso, pardiso_mixed}` (eigen; `solid_modes_3d`: only
 `arpack_shift_invert:superlu`, its factorization being ignored on brick meshes), `block_eigen:{mixed, double}/{multigrid,
-jacobi}` (opt-in eigen of solid_mechanics_3d: `solid_modes_3d` only). With `--backends gpu`
+jacobi}` (opt-in eigen of solid_mechanics_3d: `solid_modes_3d` only), `batched_direct:{mixed, double}` (opt-in linear
+of pressure_acoustics / membrane: `acoustic_sweep_2d` only), `time_filter:{single, double}` (opt-in factor-free eigen
+of em_fdfd_ez / _hz: `fdfd_eigen` only; its int / float settings bandwidth, sampled_frequencies, periods, sources and
+polish_steps are not varied: defaults). With `--backends gpu`
 the same enumeration runs on the gpu backend: the cuDSS back ends / factorizations (where the role offers them),
 cuSOLVER QR (FDFD), gpu pcg, line_block and banded, and the host libraries again (their gpu-backend transfers
 included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-python for cuDSS, or a usable GPU is a
@@ -93,7 +108,11 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
   pattern, A x 1.001, the scaled copy made before the timer: kept MUMPS / PARDISO analysis, kept SuperLU ordering,
   kept multigrid aggregates), `total` = factor + solve, `sweep` = refactor + solve (the cost of one more point of a
   sweep on the same pattern; its own speed-up column). Eigen: `factor` the shifted factor, `solve` the ARPACK
-  iterations, `total` the whole `solve_resonances`. Vibration modes (`solid_modes_3d`): `total` the whole
+  iterations, `total` the whole `solve_resonances`; `time_filter` (no factor): `factor` the FDTD run of the disc (an
+  EMPhysics on an FDFDPhysics domain of the problem's grid, float32 cell widths), `solve` the Rayleigh-Ritz, polish
+  and resonance filter on the problem's own float64 operator, `total` the call; its residual is the same eigen-pair
+  residual against the problem's operator, its tolerance the runtime's RESIDUAL_WARNING (1e-6: a projection, not
+  ARPACK's machine precision), details hold the time steps, sampled frequencies, basis columns and counters. Vibration modes (`solid_modes_3d`): `total` the whole
   `lowest_modes` call, `solve` its eigen iterations (arpack: Lanczos with the inner PCG solves), `factor` block_eigen's
   set-up around them (float32 operator copies, the private multigrid hierarchy of preconditioner multigrid when the
   linear solver has none: built in every call, as in every model eigen solve); arpack has no factor there.

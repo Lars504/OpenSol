@@ -1,6 +1,8 @@
 """One timed repeat of a profiler Problem per SolverType, in the child process, through the calls open_sol's own
 consumers make (SparseDirectSolver.factorize like fdfd_2d, DiffusionDirectSolver like DiffusionSystem, PCGSolver,
-BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, ElasticSystem3D.lowest_modes) on
+BandedSolver, LineBlockSolver.factorize_operators, eigenfrequency.solve_resonances, time_filter_eigen (an FDTD run on an
+FDFDPhysics domain + Rayleigh-Ritz), ElasticSystem3D.lowest_modes,
+fem.harmonic frequency sweeps: solve per frequency, batched_direct through plan_batched) on
 the cpu or gpu backend: phase wall times, the relative residual against its tolerance and solver details. open_sol is
 imported inside the runners."""
 # Phases (seconds, None where the solver does not expose them): analysis = MUMPS / PARDISO ordering + symbolic
@@ -25,6 +27,9 @@ imported inside the runners."""
 # (arpack: the Lanczos tolerance it used); reference_error = max relative omega error against the closed form (rank
 # order); gpu_peak_bytes = the cupy pool's high water of the call over its live bytes at the start (cached blocks
 # freed before the timer).
+# Frequency sweeps (problem kind 'sweep', acoustic_sweep_2d): a fresh fem.harmonic system per repeat on the runtime
+# (assembled before the timer), every frequency solved in order; phases factor = the first frequency, solve = the mean
+# of each later one, total = the sweep (refactor None: no sweep column); the residual is the worst frequency's.
 import math
 import time
 from dataclasses import dataclass
@@ -64,7 +69,7 @@ def backend_arrays(problem, backend) -> BackendArrays:
     import cupyx.scipy.sparse as cpsp
     from open_sol.core import gpu_memory
     gpu_memory.set_budget()
-    if problem.kind == 'eigen':   # solve_resonances takes the host operator on both backends
+    if problem.kind in ('eigen', 'sweep'):   # solve_resonances / fem.harmonic take host operators on both backends
         return BackendArrays('gpu', problem.operator, None, cp)
     arrays = BackendArrays('gpu', cpsp.csr_matrix(problem.operator), cp.asarray(problem.rhs), cp)
     cp.cuda.Device().synchronize()
@@ -150,10 +155,65 @@ def _repeat(phases, residual, details, tolerance, status='ok') -> dict:
 
 def run_sparse_direct(problem, values, arrays) -> dict:
     """sparse_direct: a real SPD problem through DiffusionDirectSolver (the diffusion types' consumer), the FDFD drive
-    through SparseDirectSolver.factorize (the LDL^T of the symmetrised D A on cuDSS / MUMPS / PARDISO, as fdfd_2d)."""
+    through SparseDirectSolver.factorize (the LDL^T of the symmetrised D A on cuDSS / MUMPS / PARDISO, as fdfd_2d),
+    an acoustic sweep through fem.harmonic (_run_sweep: one factor per frequency)."""
     if problem.kind == 'spd':
         return _run_diffusion_direct(problem, values, arrays)
+    if problem.kind == 'sweep':
+        from open_sol.solvers.sparse_direct import SparseDirectSolver
+        return _run_sweep(problem, SparseDirectSolver(back_end=values['back_end'], label=_label,
+                                                      backend=arrays.backend), arrays, batched=False)
     return _run_grid_direct(problem, values, arrays)
+
+
+def run_batched_direct(problem, values, arrays) -> dict:
+    """batched_direct ('linear' of pressure_acoustics / membrane, opt-in): the acoustic sweep's frequencies through
+    fem.harmonic plan_batched (as the physics' plan_frequency_response hook) on the runtime the SolverType create
+    makes; the other problems have no batch of same-pattern systems ('refused')."""
+    if problem.kind != 'sweep':
+        raise ValueError(f"batched_direct runs on the frequency sweep problems only, not on a {problem.kind!r} one")
+    from open_sol.solvers.batched_direct import BatchedDirectSolver
+    runtime = BatchedDirectSolver(precision=values['precision'], batch_size=values['batch_size'], label=_label,
+                                  backend=arrays.backend)
+    return _run_sweep(problem, runtime, arrays, batched=True)
+
+
+def _run_sweep(problem, runtime, arrays, batched) -> dict:
+    """Every frequency of a 'sweep' problem through a fresh problems.sweep_system on `runtime` (assembled before the
+    timer): solve(omega) in order, after plan_batched(omegas) when batched (the physics hook's call). Phases: factor =
+    the first frequency (plan, first factor / first batch), solve = the mean of each later one (its refactorisation
+    and solve; batched: mostly taking a solved system, plus the later batches), total = the whole sweep. Residual: the
+    largest ||b - A(omega) x|| / ||b|| over the frequencies (host, after the timer); details: the runtime's work
+    counters."""
+    from tools_profilers.time_profilers.problems import sweep_system
+    backend = arrays.backend
+    system = sweep_system(problem, runtime)
+    pencil = system.pencil
+    omegas = [float(omega) for omega in problem.eigen['omegas']]
+    solutions = []
+    started = _clock(backend)
+    if batched:
+        system.plan_batched(omegas)
+    first = None
+    for omega in omegas:
+        system.solve(omega)
+        solutions.append(system.solution[pencil.free].copy())   # a host copy of n values per frequency
+        if first is None:
+            first = _clock(backend)
+    finished = _clock(backend)
+    load = system.load_vector()[pencil.free]
+    residuals = [relative_residual(pencil.reduced(omega), load, solution) for omega, solution in zip(omegas, solutions)]
+    counters = {name: _number(value) if not isinstance(value, str) else value
+                for name, value in runtime.work_counters().items()}
+    details = {'frequencies': len(omegas), 'counters': counters,
+               'factor_kind': getattr(system.factor, 'description', None) or counters.get('back_end'),
+               'device_bytes': _number(counters.get('cudss_factor_device_bytes') or counters.get('batch_permanent_bytes'))}
+    system.clear_reduced()   # the batched plan's outside-pool memory
+    _release(system.factor)
+    later = len(omegas) - 1
+    phases = {'analysis': None, 'factor': first - started,
+              'solve': (finished - first) / later if later else None, 'refactor': None, 'total': finished - started}
+    return _repeat(phases, max(residuals), details, _direct_tolerance())
 
 
 def _run_grid_direct(problem, values, arrays) -> dict:
@@ -473,5 +533,80 @@ def run_block_eigen(problem, values, arrays) -> dict:
                    _modes_status(problem, solve, counters['eigen_unconverged'] > 0))
 
 
-RUNNERS = {'sparse_direct': run_sparse_direct, 'pcg': run_pcg, 'banded': run_banded, 'line_block': run_line_block,
-           'arpack_shift_invert': run_arpack, 'block_eigen': run_block_eigen}
+def _time_filter_physics(problem, backend, runtime):
+    """FDFDPhysics (em_fdfd_ez, all CPML) on a Domain of the problem's grid with its disc written into eps_r: what
+    time_filter_eigen time-steps (problems.FDFD_* constants; the domain's float32 cell width is the FDTD's own, the
+    projection uses the problem's float64 operator)."""
+    from open_sol.physics.em import FDFDPhysics
+    from open_sol.physics.em.boundaries import BoundaryConfig
+    from tools_profilers.time_profilers.problems import FDFD_DISC_EPS, FDFD_PML_CELLS, FDFD_WAVELENGTH, FDFD_WINDOW
+    from open_sol.core.domain import Domain
+    n = problem.grid_shape[0]
+    cell = FDFD_WINDOW / n
+    config = BoundaryConfig.all_pml(FDFD_PML_CELLS)
+    window = (n - 2 * FDFD_PML_CELLS) * cell
+    domain = Domain.uniform(window, window, cell, boundary_config=config, verbose=False, backend=backend)
+    if (domain.grid.nx, domain.grid.ny) != tuple(problem.grid_shape):
+        raise ValueError(f'time_filter profiler domain {domain.grid.nx} x {domain.grid.ny} differs from the problem '
+                         f'grid {problem.grid_shape}')
+    physics = FDFDPhysics(domain, 'ez', boundary_config=config, wavelength=FDFD_WAVELENGTH, eigen_solver=runtime)
+    disc = domain.xp.asarray(np.asarray(problem.eigen['mass']).reshape(problem.grid_shape).real > 1.0)
+    domain.materials.set_mask(disc, eps_r=FDFD_DISC_EPS)
+    physics.materials_changed(('eps_r',))
+    return physics
+
+
+def run_time_filter(problem, values, arrays) -> dict:
+    """time_filter ('eigen' of em_fdfd_ez / _hz, opt-in): physics.em.time_filter_eigen.solve_time_filter_resonances
+    with the arguments fdfd_2d.solve_eigenfrequencies hands it (pinned cells none: all CPML, cell areas, window rows,
+    the symmetrizer), the runtime the SolverType create makes, an FDFDPhysics on a Domain of the problem's grid for
+    its FDTD run and the problem's own operator / mass as the system (gpu: a cupyx copy made before the timer), so the
+    residual and eigenvalues are measured as the arpack rows'. Phases: factor = the FDTD run (no factorisation), solve
+    = the projection, polish and filter, total = the call. Tolerance: the runtime's RESIDUAL_WARNING."""
+    if problem.kind != 'eigen':
+        raise ValueError(f"time_filter runs on the FDFD eigen problems only, not on a {problem.kind!r} one")
+    from types import SimpleNamespace
+    from open_sol.physics.em.time_filter_eigen import solve_time_filter_resonances
+    from open_sol.solvers import time_filter
+    backend = arrays.backend
+    eigen = problem.eigen
+    runtime = time_filter.TimeFilterEigenSolver(
+        bandwidth=values['bandwidth'], sampled_frequencies=values['sampled_frequencies'], periods=values['periods'],
+        sources=values['sources'], polish_steps=values['polish_steps'], precision=values['precision'], label=_label,
+        backend=backend)
+    physics = _time_filter_physics(problem, backend, runtime)
+    xp = physics.xp
+    operator = problem.operator
+    if backend == 'gpu':
+        import cupyx.scipy.sparse as cpsp
+        operator = cpsp.csr_matrix(problem.operator)
+    system = SimpleNamespace(operator=operator, cell_eps=eigen['mass'], cell_mu=None, polarization='ez',
+                             omega=eigen['omega'])
+    shape = tuple(problem.grid_shape)
+    pinned = xp.zeros(shape, dtype=bool)
+    started = _clock(backend)
+    solve = solve_time_filter_resonances(physics, system, runtime, eigen['n_resonances'], pinned,
+                                         eigen['energy_weights'], eigen['in_window'],
+                                         lambda vector: vector.reshape(shape), symmetrizer=problem.symmetrizer)
+    finished = _clock(backend)
+    info = solve.info
+    residuals = [_eigen_residual(problem, resonance) for resonance in solve.resonances]
+    counters = {name: _number(value) for name, value in runtime.work_counters().items()}
+    details = {'factor_kind': info.get('factor_text'), 'time_steps': info.get('time_steps'),
+               'sampled_frequencies': info.get('sampled_frequencies'), 'basis_columns': counters['basis_columns'],
+               'operator_applications': info['operator_applications'], 'resonances_found': len(solve.resonances),
+               'warnings': list(info['warnings']), 'own_residuals': list(info.get('residuals') or ()),
+               'counters': counters,
+               'eigenvalues': [[float(complex(resonance.omega).real), float(complex(resonance.omega).imag)]
+                               for resonance in solve.resonances]}
+    step_seconds = info.get('step_seconds')
+    phases = {'analysis': None, 'factor': step_seconds,
+              'solve': None if step_seconds is None else max(info['eigen_seconds'] - step_seconds, 0.0),
+              'refactor': None, 'total': finished - started}
+    return _repeat(phases, max(residuals) if residuals else None, details, float(time_filter.RESIDUAL_WARNING),
+                   'ok' if solve.resonances else 'no_resonances')
+
+
+RUNNERS = {'sparse_direct': run_sparse_direct, 'batched_direct': run_batched_direct, 'pcg': run_pcg,
+           'banded': run_banded, 'line_block': run_line_block, 'arpack_shift_invert': run_arpack,
+           'block_eigen': run_block_eigen, 'time_filter': run_time_filter}

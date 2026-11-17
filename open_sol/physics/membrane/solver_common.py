@@ -409,16 +409,22 @@ class MembraneBase(PhysicsSolver):
         """ReducedSweepSolver hook (after reset_frequency_response): options {method, tolerance, moments, max_points,
         modal_count, fields}; 'direct' -> None (only the field policy, R6), else the system's reduced model over
         frequencies [Hz] -> its info dict."""
+        from ...solvers.batched_direct import BatchedDirectSolver
         method = options.get('method', 'direct')
-        if method == 'direct':
+        batched = method == 'direct' and isinstance(self.linear_solver, BatchedDirectSolver)
+        if method == 'direct' and not batched:
             self._field_policy = field_policy(options, frequencies)
             return None
         frequencies = np.asarray(frequencies, dtype=np.float64).ravel()
         if not (frequencies.size and np.all(np.isfinite(frequencies)) and np.all(frequencies > 0.0)):
-            raise ValueError(f'{self._label()}: a reduced frequency sweep needs frequencies > 0 Hz')
+            raise ValueError(f'{self._label()}: a reduced or batched frequency sweep needs frequencies > 0 Hz')
         if self._response_reference is None:   # as solve_frequency_response: the first frequency in solve order
             self._response_reference = self.pml_frequency if self.pml_frequency is not None else float(frequencies[0])
         system = self._ready_system(2.0 * math.pi * self._response_reference)
+        if batched:   # solvers.batched_direct: the frequencies in batches (port terms per frequency at batch time)
+            system.plan_batched(2.0 * math.pi * frequencies)
+            self._field_policy = field_policy(options, frequencies)
+            return None
         self.reduced_sweep = system.plan_reduced(
             2.0 * math.pi * frequencies, method, tolerance=options.get('tolerance', 1e-6),
             moments=options.get('moments', 4), max_points=options.get('max_points', 40),

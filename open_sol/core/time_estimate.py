@@ -197,6 +197,8 @@ class SolverWork:
                                    # ARPACK basis, no vector transfers; arpack_shift_invert.eigs_device)
     run_backend: str = 'gpu'       # the run's backend even where `backend` says 'cpu' for host solves (TimeContext
                                    # fills it): the eigen role's device Krylov-Schur around a host SuperLU
+    batched: bool = False          # batched_direct: the consumer solves the factorisations' systems by solve_batch (a
+                                   # direct frequency sweep): the recipe counts them on the batch counters
 
     @property
     def factor_per_step(self) -> bool:

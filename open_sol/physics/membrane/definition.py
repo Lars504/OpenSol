@@ -19,7 +19,9 @@ from ...fem.harmonic_resonances import resonance_table
 from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZATION_SETTING,
-                                         KEPT_SOLUTION_BYTES_PER_DOF, SQUEEZE_FILM_GAS_PARAMS, cudss_external,
+                                         KEPT_SOLUTION_BYTES_PER_DOF, SQUEEZE_FILM_GAS_PARAMS,
+                                         batched_direct_back_end, batched_direct_items, batched_direct_sweep,
+                                         cudss_external,
                                          eigen_factorization, eigen_role, eigen_search_counts, element_order,
                                          evaluates_to, harmonic_frequency_items, host_direct_back_end, on_triangles,
                                          scalar_harmonic_build_items, optional_material_param,
@@ -55,10 +57,12 @@ _PML_FACE_SETTINGS = tuple(f'pml_{face}' for face in FACES)
 # 'auto' = cudss_mixed there on the gpu backend with nvmath-python, else host SuperLU; cusolver_qr refused (the membrane
 # factorises host matrices only); the opt-in MUMPS / PARDISO back ends factorise the host A(omega) on triangles (LDL^T,
 # analysis reused per frequency); a 1D model keeps the host SuperLU factor (validation refuses cuDSS / MUMPS / PARDISO
-# nodes there; 'auto' stays SuperLU on a line)
+# nodes there; 'auto' stays SuperLU on a line); opt-in batched_direct (triangles: the direct sweep's frequencies in
+# batches, fem.harmonic plan_batched; 'mixed' is listed for it only, sparse_direct offers double alone)
 MEMBRANE_LINEAR_ROLE = SolverRole('general', 'sparse_direct', studies=(FREQUENCY_RESPONSE_STUDY,),
-                                  precisions=('double',), setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
-                                  auto_back_ends={'triangles': 'cudss_mixed'})
+                                  precisions=('double', 'mixed'),
+                                  setting_choices={'back_end': DIFFUSION_DIRECT_BACK_ENDS},
+                                  auto_back_ends={'triangles': 'cudss_mixed'}, opt_in_types=('batched_direct',))
 
 
 # ---- settings ----
@@ -894,6 +898,8 @@ def _solver_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
     solvers = vctx.solvers(physics_spec) or {}
     linear = solvers.get('linear')
     cudss_linear = linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS
+    if not one_d and batched_direct_back_end(solvers, solver_backend(vctx.spec)) in CUDSS_BACK_ENDS:
+        cudss_linear = True   # batched_direct on the gpu: cuDSS batches and per-system cuDSS factors
     if one_d:
         if not cudss_linear and host_direct_back_end(solvers) is None:
             return []
@@ -1144,10 +1150,14 @@ def _complex_pencil(settings_values, context) -> bool:
 
 def _cudss_factor(settings_values, context):
     """(back end / factorization name, value bytes) of the cuDSS factor the study uses (frequency_response: the
-    'linear' back end, eigenfrequency: the 'eigen' factorization), None for a host SuperLU factor."""
+    'linear' back end, eigenfrequency: the 'eigen' factorization), None for a host SuperLU factor and for a
+    batched_direct direct sweep (batched_direct_items; outside one its per-system back end)."""
     study = context.spec.study.type
     if study == FREQUENCY_RESPONSE_STUDY:
-        back_end = resolved_back_end(context.solvers)
+        if batched_direct_sweep(context) is not None:
+            return None
+        back_end = (resolved_back_end(context.solvers)
+                    or batched_direct_back_end(context.solvers, solver_backend(context.spec)))
         return (back_end, COMPLEX128_BYTES) if back_end in CUDSS_BACK_ENDS else None
     if study == EIGENFREQUENCY_STUDY:
         factorization = eigen_factorization(context.solvers)
@@ -1183,7 +1193,14 @@ def _memory_estimate(settings_values, mesh, context):
     complex_pencil = _complex_pencil(settings_values, context)
     run_items, eigen_items, factors = [], [], ()
     host_direct = _host_direct_factor(context) if triangles and cudss is None else None
-    if host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
+    # a batched_direct direct sweep (triangles; K, M terms: the membrane has no damping term): the batch's items
+    batched = batched_direct_items(context, dofs, entries, 2) if triangles else None
+    if batched is not None:
+        host_items = list(batched['host_items'])
+        if solver_backend(context.spec) != 'gpu':   # cpu: one host SuperLU per system, freed after its solve
+            host_items.insert(0, ('complex factor L + U (heuristic, uncalibrated)', factor_bytes))
+        run_items = list(batched['run_items'])
+    elif host_direct is not None:   # MUMPS / PARDISO LDL^T: the SuperLU heuristic x superlu_bytes_scale (uncalibrated)
         label = factor_label(host_direct)
         complex_values = study == FREQUENCY_RESPONSE_STUDY or complex_pencil
         # S5c mirror (factorization_for): a small *_mixed eigen pencil factors in double
@@ -1248,11 +1265,12 @@ def _memory_estimate(settings_values, mesh, context):
         else:
             host_items.append(('ARPACK basis (complex128)', basis_bytes))
     host_items.extend(reduced_sweep_memory_items(context, dofs, entries))
+    external = batched['external'] if batched is not None and batched['external'] else cudss_external(factors)
     # fem.harmonic_resonances releases the shift factor after each solve (a search: its inertia factor too)
     return MemoryEstimate.from_items(
         ((f'element state and coupled slots ({_N_DEVICE_FIELDS} x float32)', _N_DEVICE_FIELDS * FLOAT32_BYTES
           * elements),), host_items=tuple(host_items), run_items=tuple(run_items),
-        transient_items=tuple(('eigen solve', label, size) for label, size in eigen_items), **cudss_external(factors))
+        transient_items=tuple(('eigen solve', label, size) for label, size in eigen_items), **external)
 
 
 def _build_items(settings_values, mesh, context, nnz) -> tuple:
@@ -1326,27 +1344,33 @@ def _time_estimate(settings_values, mesh, context):
     if study == FREQUENCY_RESPONSE_STUDY:   # the factorisations are the study's harmonic_factorizations (sweep_method)
         from ...model.definition_helpers import frequency_sweep_counts, reduced_sweep_time_items
         sweep = frequency_sweep_counts(context)
-        cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS
+        # a batched_direct node: per-system cuDSS / SuperLU at the run backend, batched sweeps on the batch counters
+        batched = batched_direct_sweep(context) is not None
+        per_system = batched_direct_back_end(context.solvers, context.backend)
+        cudss = resolved_back_end(context.solvers) in CUDSS_BACK_ENDS or per_system in CUDSS_BACK_ENDS
         pml = bool(_pml_faces(settings_values)) and triangles
         stiffness_bytes = 16 if pml or context.material_sets(LOSS_ARRAY) else 8
         # ports add their DtN block per frequency (frequency_terms): on a DevicePencil at slots mapped once
         # (factorize_pencil extra=, a few entries), else with the reduced operator by pattern_sum on the host
         ports = _feature_count(context, 'port')
         frequency_items = harmonic_frequency_items(
-            unknowns, nnz, sweep, device_pencil=cudss, term_value_bytes=(stiffness_bytes, 16 if pml else 8),
-            frequency_terms=bool(ports))
+            unknowns, nnz, sweep, device_pencil=cudss and not batched,
+            term_value_bytes=(stiffness_bytes, 16 if pml else 8), frequency_terms=bool(ports), batched=batched)
         port_items = ()
         if triangles and _plate(context) and ports:   # dense strip pencil per port and frequency
             strip = 4.0 * math.sqrt(float(mesh.n_nodes))
+            # batched: the batch's DtN blocks first, the outputs per frequency later (the one-omega cache misses twice)
             port_items = (te.TimeItem('plate port strip modes (per port and frequency)', 'solve',
-                                      ports * sweep['factorizations'], sweep['factorizations_kind'],
+                                      ports * sweep['factorizations'] * (2.0 if batched else 1.0),
+                                      sweep['factorizations_kind'],
                                       (te.DenseFlops((PLATE_STRIP_EIG_FLOPS + PLATE_STRIP_DTN_FLOPS) * strip ** 3,
                                                      host=True), te.PythonCalls(60))),)
         parts = [build, te.TimeEstimate((*frequency_items, *port_items, *reduced_sweep_time_items(sweep, unknowns))),
                  context.solver_work(
             'linear', unknowns=unknowns, nnz=nnz, value_bytes=16, dimensions=2, solves=sweep['solves'],
             solves_kind=sweep['solves_kind'], factorizations=sweep['factorizations'],
-            factorizations_kind=sweep['factorizations_kind'], device_values=cudss, **scales(cudss))]
+            factorizations_kind=sweep['factorizations_kind'], device_values=cudss, batched=batched, pencil_terms=2,
+            **scales(cudss))]
         if sweep['eigenpairs']:   # modal basis: one shift-invert of the 'eigen' role at the band centre
             cudss_eigen = eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS
             parts.append(context.solver_work(

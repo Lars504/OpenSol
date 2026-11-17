@@ -488,10 +488,13 @@ def _cudss_specs():
 
 
 def _host_direct_back_ends() -> tuple:
-    """solvers.host_direct.HOST_DIRECT_BACK_ENDS of every library installed here (python-mumps / pydiso), in order."""
-    from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, library_of
+    """solvers.host_direct.HOST_DIRECT_BACK_ENDS of every library installed here (python-mumps / pydiso), in order,
+    without the compressed ones (mumps_blr: a double MUMPS factor plus GMRES, judged by solver_host_direct_cpu_gpu /
+    solver_arpack_host_direct; 2D FDFD fronts are too small to compress)."""
+    from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS, host_direct_compressed, library_of
     libraries = available_host_direct()
-    return tuple(name for name in HOST_DIRECT_BACK_ENDS if library_of(name) in libraries)
+    return tuple(name for name in HOST_DIRECT_BACK_ENDS
+                 if library_of(name) in libraries and not host_direct_compressed(name))
 
 
 def _host_precision(back_end) -> str:

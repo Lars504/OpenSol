@@ -1,9 +1,9 @@
-"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen',
-'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
+"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'batched_direct', 'banded', 'arpack_shift_invert',
+'block_eigen', 'time_filter', 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
 model.study, before the physics definitions (solver_plan S3.5)."""
 from ..model.schema import Issue, Param, solver_backend
-from . import (arpack_shift_invert, banded, block_eigen, explicit_kernels, host_direct, line_block, multigrid, pcg,
-               sparse_direct)
+from . import (arpack_shift_invert, banded, batched_direct, block_eigen, explicit_kernels, host_direct, line_block,
+               multigrid, pcg, sparse_direct, time_filter)
 from .roles import SolverType
 
 _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
@@ -28,10 +28,12 @@ def _host_direct_choice_labels(names) -> dict:
     """{name: drop-down text} of host direct back ends / factorizations."""
     return {name: f'{_gui_library_name(name)} on the processor'
                   + (', mixed precision' if host_direct.host_direct_precision(name) == 'mixed' else '')
+                  + (', compressed (block low-rank)' if host_direct.host_direct_compressed(name) else '')
             for name in names}
 
 
-_GUI_HOST_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS)
+_GUI_HOST_LIBRARIES = ' / '.join(dict.fromkeys(_gui_library_name(name)
+                                               for name in host_direct.HOST_DIRECT_DOUBLE_BACK_ENDS))
 _GUI_HOST_MIXED_LIBRARIES = ' / '.join(_gui_library_name(name) for name in host_direct.HOST_DIRECT_MIXED_BACK_ENDS)
 _HOST_DIRECT_MIXED_HELP = (
     f' {_HOST_DIRECT_MIXED_NAMES}: the equilibrated operator factorised in single precision (float32 / complex64, '
@@ -42,6 +44,21 @@ _HOST_DIRECT_MIXED_TIP = (
     f'\n- {_GUI_HOST_MIXED_LIBRARIES} on the processor, mixed precision: faster to set up and less memory, with the '
     'same accuracy; switches to double precision by itself when a model needs it.'
     if host_direct.HOST_DIRECT_MIXED_BACK_ENDS else '')
+
+_HOST_DIRECT_COMPRESSED_HELP = (
+    f" {' / '.join(host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS)}: MUMPS's block low-rank factor (ICNTL(35) "
+    f'{host_direct.BLR_ICNTL}, dropping threshold CNTL(7) {host_direct.BLR_TOLERANCE:g}), double precision: the '
+    'off-diagonal blocks of the large fronts stored compressed, roughly half the factor memory and work on large 3D '
+    'models (little gain in 2D: fronts below the block size stay full rank); when its probe misses, every solve is '
+    'refined by float64 GMRES on the compressed factor to 1e-12 (about 2 - 4 compressed solves per solve), and a '
+    'factor that still misses is refactorised full rank for the rest of the run (counter '
+    'host_direct_compression_fallbacks / eigen_compression_fallbacks). Inertia counts from it are marked inexact. '
+    'The memory guard reads MUMPS\'s full-rank estimate.'
+    if host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS else '')
+_HOST_DIRECT_COMPRESSED_TIP = (
+    '\n- MUMPS on the processor, compressed (block low-rank): about half the memory of the exact MUMPS factor on large '
+    '3D models, with the same final accuracy (each solve is polished); slower solves.'
+    if host_direct.HOST_DIRECT_COMPRESSED_BACK_ENDS else '')
 
 PCG_PARAMS = (
     Param('precision', 'choice', 'double', label='Solver precision', choices=('double', 'single', 'mixed'),
@@ -275,7 +292,7 @@ SPARSE_DIRECT_PARAMS = (
                f'analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a probe solve checks each factor '
                '(float64 GMRES refinement on the factor when its residual misses 1e-10); a refusal raises (no '
                'fallback).'
-               f'{_HOST_DIRECT_MIXED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
+               f'{_HOST_DIRECT_MIXED_HELP}{_HOST_DIRECT_COMPRESSED_HELP} Threads: the library defaults (OMP_NUM_THREADS for MUMPS, '
                'MKL_NUM_THREADS for PARDISO; with numba or a threaded BLAS in the same process set them to share the '
                f'cores). Optional packages, a validation error without them: {_HOST_DIRECT_INSTALL}.',
           tip='Where the equations are solved.\n\n'
@@ -296,7 +313,7 @@ SPARSE_DIRECT_PARAMS = (
               f'- {_GUI_HOST_LIBRARIES} on the processor: fast exact solvers using every processor core, for large '
               'models, limited by computer memory; need the optional python-mumps or pydiso package (Intel PARDISO: '
               'Intel / AMD 64-bit processors only); never picked by Automatic.'
-              f'{_HOST_DIRECT_MIXED_TIP}'),
+              f'{_HOST_DIRECT_MIXED_TIP}{_HOST_DIRECT_COMPRESSED_TIP}'),
 )
 
 
@@ -369,6 +386,80 @@ SPARSE_DIRECT = SolverType(
     memory_estimate=_empty_memory_estimate, backend_misfit=sparse_direct.backend_misfit,
     time_estimate=sparse_direct.time_estimate,
     opt_in_settings={'back_end': sparse_direct.CUDSS_BACK_ENDS + host_direct.HOST_DIRECT_BACK_ENDS})
+
+
+BATCHED_DIRECT_PARAMS = (
+    Param('precision', 'choice', 'mixed', label='Solver precision', choices=batched_direct.PRECISIONS,
+          choice_labels=(('mixed', 'Mixed precision'), ('double', 'Double precision')),
+          help='mixed: each batch factorised in complex64 / float32 by cuDSS, every system refined against its own '
+               f'complex128 operator to a relative residual of {batched_direct.REFINEMENT_TOLERANCE:g} (one batched '
+               'solve per step for all systems); a system still above '
+               f'{batched_direct.ACCEPT_TOLERANCE:g} is re-solved on its own (counter batch_rejected). double: '
+               'complex128 factors (slower on consumer GPUs). The per-system solves of the role (other studies, '
+               'rejected systems) use cuDSS of the same precision (cudss_mixed / cudss), host SuperLU after a cuDSS '
+               'refusal; on the CPU backend every solve is host SuperLU.',
+          tip='Number precision of the batched solves.\n\n'
+              '- Mixed precision: fast; every result is checked and polished in double precision.\n'
+              '- Double precision: slower on most graphics cards.'),
+    Param('batch_size', 'int', 0, label='Batch size', min=0,
+          help=f'Systems factorised together (one cuDSS plan for the whole batch); 0 = up to {batched_direct.MAX_BATCH} '
+               f'and what {batched_direct.MEMORY_FRACTION:.0%} of the free memory holds (each system keeps its own '
+               'factor during its batch, so the memory grows with the batch size).',
+          tip='How many frequencies are solved together; 0 picks a suitable number. More can be faster but use more '
+              'graphics card memory.'),
+)
+
+
+def _create_batched_direct(ctx, request):
+    values = request.values
+    return batched_direct.BatchedDirectSolver(precision=values['precision'], batch_size=values['batch_size'],
+                                              label=lambda: f"{request.physics_name} {request.role} solver",
+                                              backend=request.backend)
+
+
+def _validate_batched_direct(vctx, values, path):
+    """The gpu backend without nvmath-python (cuDSS): error; the cpu backend without scipy: error (find_spec only);
+    info when the study does not batch (not a frequency_response study with sweep_method direct: per-system solves)."""
+    issues = []
+    study = vctx.spec.study
+    settings = study.settings if isinstance(study.settings, dict) else {}
+    method = settings.get('sweep_method', 'direct')
+    if study.type != 'frequency_response' or method != 'direct':
+        reason = (f"sweep_method '{method}' factorises its few frequencies one at a time"
+                  if study.type == 'frequency_response' else f"the {study.type} study has no frequency sweep")
+        issues.append(Issue('info', path, f'nothing is batched here ({reason}): every solve of this node runs on its '
+                                          'own, as sparse_direct cuDSS (cpu: SuperLU); batching needs a '
+                                          'frequency_response study with sweep_method direct'))
+    if solver_backend(vctx.spec) == 'gpu':
+        from .cudss_factor import cudss_available
+        if not cudss_available():
+            issues.append(Issue('error', path, 'the batched direct solver needs nvmath-python with cuDSS on the gpu '
+                                               'backend, which is not installed: pip install nvmath-python[cu12] (or '
+                                               '[cu13]), or use sparse_direct'))
+        return issues
+    if not sparse_direct.scipy_available():
+        issues.append(Issue('error', path, 'the batched direct solver on the CPU backend factorises with scipy '
+                                           '(SuperLU), which is not installed: pip install scipy'))
+    return issues
+
+
+BATCHED_DIRECT = SolverType(
+    'batched_direct', 'Batched direct solver', roles=('linear',), params=BATCHED_DIRECT_PARAMS,
+    opt_in_roles=('linear',),
+    description='Many systems on one sparsity pattern factorised and solved together: the frequencies of a direct '
+                'frequency sweep (frequency_response study, sweep_method direct) in batches of up to '
+                f'{batched_direct.MAX_BATCH}, one explicitly batched GPU cuDSS factorisation per batch (planned once, '
+                'its values refreshed for every later batch), each system equilibrated and refined against its own '
+                'double-precision operator; a system missing the accept tolerance is re-solved on its own. Opt-in '
+                'where a physics offers it: pressure_acoustics (triangle and tetrahedron meshes) and membrane '
+                '(triangle meshes) linear role. Every other solve of the role (other studies, rejected systems, an '
+                'nvmath without explicit batching: a warning, then per system) runs as sparse_direct cuDSS of the same '
+                'precision. On the CPU backend a loop of host SuperLU factors (parity with the GPU runs, not speed).',
+    summary='Solves many frequencies of a sweep together on the graphics card: fewer, larger GPU calls than one '
+            'factorisation per frequency.',
+    operators=('complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=batched_direct.PRECISIONS,
+    grids=('triangles', 'tetrahedra'), create=_create_batched_direct, validate=_validate_batched_direct,
+    memory_estimate=_empty_memory_estimate, time_estimate=batched_direct.time_estimate)
 
 
 def _create_banded(ctx, request):
@@ -453,7 +544,8 @@ ARPACK_PARAMS = (
                "the library's LDL^T pivots (a counting SuperLU when pivots were perturbed or the pencil is "
                "Hermitian); the host SuperLU size rules apply, plus the library's own memory estimate after its "
                f"analysis against {_HOST_MEMORY_PERCENT} % of the available RAM; a refusal raises (no fallback)."
-               f"{_HOST_FACTORIZATION_MIXED_HELP} Ignored by solid_mechanics_3d on brick meshes (no factor).",
+               f"{_HOST_FACTORIZATION_MIXED_HELP}{_HOST_DIRECT_COMPRESSED_HELP} Ignored by solid_mechanics_3d on brick "
+               "meshes (no factor).",
           tip='Where the eigenvalue search factorises its matrix.\n\n'
               '- Automatic: host SuperLU, except vibration modes on finite element meshes, which use the GPU cuDSS '
               'solver when nvmath-python is installed (switching to host SuperLU if the graphics card solver refuses '
@@ -467,7 +559,7 @@ ARPACK_PARAMS = (
               f'- {_GUI_HOST_LIBRARIES} on the processor: exact factorisation using every processor core, often '
               'faster than host SuperLU on large models; needs the optional python-mumps or pydiso package; never '
               'picked by Automatic.'
-              f'{_HOST_FACTORIZATION_MIXED_TIP}'),
+              f'{_HOST_FACTORIZATION_MIXED_TIP}{_HOST_DIRECT_COMPRESSED_TIP}'),
 )
 
 
@@ -583,6 +675,70 @@ BLOCK_EIGEN = SolverType(
     create=_create_block_eigen, memory_estimate=_empty_memory_estimate, time_estimate=block_eigen.time_estimate)
 
 
+TIME_FILTER_PARAMS = (
+    Param('bandwidth', 'float', time_filter.DEFAULT_BANDWIDTH, label='Band half-width', unit='1', min=0.001,
+          max=0.9,
+          help='Half-width of the sampled band, relative to the target frequency (the wavelength setting): the '
+               'resonances searched lie within target (1 +- bandwidth); the source pulse covers '
+               f'{time_filter.PULSE_BANDWIDTH_FACTOR:g} x this. Wider finds more resonances per run but needs more '
+               'sampled frequencies.',
+          tip='How far from the target frequency resonances are searched, as a fraction of it.'),
+    Param('sampled_frequencies', 'int', 0, label='Sampled frequencies', min=0,
+          help='Frequencies of the running DFT over the band (one complex accumulator of the grid size each, the '
+               f'search basis); 0 = max({time_filter.MIN_SAMPLED_FREQUENCIES}, {time_filter.SAMPLES_PER_WANTED} x '
+               f'n_resonances + 8), at most {time_filter.MAX_SAMPLED_FREQUENCIES}. More than the resonances in the '
+               'band are needed: modes outside the requested count still occupy the span.',
+          tip='How many frequency samples build the search space; 0 picks a suitable number.'),
+    Param('periods', 'float', 0.0, label='Run periods', unit='1', min=0.0,
+          help='Length of the time stepping in periods of the target frequency after the source pulse; 0 = '
+               f'max({time_filter.MIN_PERIODS}, {time_filter.RESOLUTION_PERIODS:g} / bandwidth). Longer runs '
+               'separate close resonances better; very high Q needs no longer run (the Rayleigh-Ritz step, not the '
+               'ring-down, sets the accuracy).',
+          tip='How long the time-domain run lasts; 0 picks a suitable length.'),
+    Param('sources', 'int', time_filter.DEFAULT_SOURCES, label='Sources', min=1,
+          help='Seeded random point sources inside the window (not on PEC or wall cells) exciting the run: several, '
+               'so a mode with a node at one source is still excited.',
+          tip='How many random sources excite the time-domain run.'),
+    Param('polish_steps', 'int', time_filter.DEFAULT_POLISH_STEPS, label='Polish steps', min=0,
+          help='Rayleigh-Ritz refinements: each appends the scaled residuals of the wanted resonances to the basis and '
+               'projects again (sparse products only), removing the time-stepping and PML-stretch differences '
+               'between the FDTD fields and the frequency-domain modes; a resonance whose relative residual stays '
+               f'above {time_filter.RESIDUAL_WARNING:g} is named in a warning.',
+          tip='Extra refinement steps of the found resonances.'),
+    Param('precision', 'choice', 'single', label='Solver precision', choices=time_filter.PRECISIONS,
+          choice_labels=(('single', 'Single precision'), ('double', 'Double precision')),
+          help='Precision of the FDTD time stepping (fields and coefficients; the DFT accumulators are complex64, '
+               'the projection and residuals float64): single is enough for the search basis.',
+          tip='Number precision of the time-domain run.'),
+)
+
+
+def _create_time_filter(ctx, request):
+    values = request.values
+    return time_filter.TimeFilterEigenSolver(
+        bandwidth=values['bandwidth'], sampled_frequencies=values['sampled_frequencies'], periods=values['periods'],
+        sources=values['sources'], polish_steps=values['polish_steps'], precision=values['precision'],
+        label=lambda: f"{request.physics_name} {request.role} solver", backend=request.backend)
+
+
+TIME_FILTER = SolverType(
+    'time_filter', 'Time-filter eigensolver', roles=('eigen',), params=TIME_FILTER_PARAMS, opt_in_roles=('eigen',),
+    description='Resonances near a target without a factorisation: an FDTD time stepping of the same structure from '
+                'seeded broadband point sources, a running DFT of the whole grid at sampled frequencies of a band '
+                'around the target (one complex accumulator per sampled frequency), then a Rayleigh-Ritz projection '
+                'of the frequency-domain operator onto those fields with residual polish steps (sparse products and '
+                'small dense eigenproblems only); memory: the FDTD fields plus the accumulators. Opt-in where a '
+                'physics offers it: em_fdfd_ez / em_fdfd_hz on tensor meshes (eigenfrequency study; not with a Bloch '
+                'phase, polar coordinates, subpixel smoothing, conformal boundaries or conducting sheets). The '
+                'eigenvalues reach the projection accuracy (a residual per resonance in the log), not ARPACK\'s '
+                'machine precision. Both backends.',
+    summary='Finds resonances of open or lossy light models from a short time-domain run: no matrix factorisation, '
+            'little memory.',
+    operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'), precisions=time_filter.PRECISIONS,
+    grids=('tensor',), create=_create_time_filter, memory_estimate=_empty_memory_estimate,
+    time_estimate=time_filter.time_estimate)
+
+
 EXPLICIT_KERNELS_PARAMS = (
     Param('precision', 'choice', 'single', label='Solver precision', choices=('single', 'double', 'half_storage'),
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision'),
@@ -630,7 +786,8 @@ EXPLICIT_KERNELS = SolverType(
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate)
 
-SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
+SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BATCHED_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, TIME_FILTER,
+                EXPLICIT_KERNELS)
 
 
 def _selftest_cases():

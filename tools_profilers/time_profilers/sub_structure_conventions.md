@@ -60,6 +60,21 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   `.get`: a renamed key silently empties a detail, not the run. The closed-form reference (`_roller_box_reference`)
   parametrises selftests_eigenfrequency's 3D roller box: it is exact only for uniform cells, rollers on all six faces
   and the trilinear consistent mass; a change of geometry or supports there needs a new reference, not a looser one.
+- Frequency sweeps (`Problem.kind` 'sweep', `acoustic_sweep_2d`): the problem holds the mesh and omegas, its
+  `operator` / `rhs` are only the middle frequency's reduced A and load (counts); `runners._run_sweep` builds a fresh
+  `problems.sweep_system` on the runtime per repeat (assembled before the timer) and calls `solve(omega)` in order,
+  after `plan_batched(omegas)` for batched_direct, as the pressure_acoustics hook does: check `sweep_system` against
+  the physics' system build (coefficients, impedance as Robin damping) and the hook when they change. Its phases are
+  not factor / solve / refactor of one system (factor = the first frequency, solve = the mean later one): its
+  rows compare by `total`. batched_direct has no library setting, so `solver_catalog._unavailable` names it by type
+  (gpu without nvmath-python); its `batch_size` is an int and stays at its default.
+- `run_time_filter` calls `time_filter_eigen.solve_time_filter_resonances` with the arguments
+  `fdfd_2d.solve_eigenfrequencies` hands it, a real FDFDPhysics on a `Domain.uniform` of the problem's grid (its FDTD
+  run: the disc is written into eps_r from the problem's mass, so `problems.FDFD_*` and that domain must describe one
+  structure; a grid-shape mismatch raises) and a duck-typed system (operator, cell_eps, polarization, omega) holding
+  the problem's float64 operator, so its residual / eigenvalues are measured as the arpack rows'. A new attribute
+  that time_filter_eigen reads from the system or the physics (or an FDFD operator term the problem lacks) must reach
+  both; the gpu operator copy is made in the runner (before its timer, after the memory baseline).
 - Thread variables are set in the child environment before it starts (pools read them at library load), never by
   the child itself.
 
