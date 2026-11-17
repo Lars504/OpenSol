@@ -23,6 +23,7 @@ from .helpers import (USER_ERRORS, ask_run_directory, ask_save_path, format_dura
                       run_user_operation, start_directory, study_summary_text)
 from .mesh_preview import ElementMeshStore
 from .model_tree import ISSUE_LEVEL_PIXMAPS, ModelTree, decode_node_path, encode_node_path
+from .plot_view import file_stem
 from .preview_3d import Preview3DPanel
 from .results import ResultsPanel
 from .settings_panel import SettingsPanel
@@ -363,11 +364,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_field_action = self._make_action('Export field &data…', self._export_field_data,
                                                      tip='Save the displayed field as a NumPy file (.npz) or a text '
                                                          'table (.csv)')
+        # web pages (api.export_session_html): self-contained, turned and coloured in a browser, for presentations
+        self.export_field_page_action = self._make_action(
+            'Export field &web page (HTML)…', partial(self._export_web_page, 'field'),
+            tip='Save the field chosen in the Field tab as a self-contained web page to turn, zoom and colour in a '
+                'browser: a 2D map (optional relief) or the 3D cut planes in place; stored snapshots become frames '
+                '(time snapshots play). Needs a finished run')
+        self.export_dft_page_action = self._make_action(
+            'Export &DFT web page (HTML)…', partial(self._export_web_page, 'dft'),
+            tip='Save the DFT monitor chosen in the DFT tab as a self-contained web page: its intensity map per '
+                'monitored frequency (slider, log colour scale). Needs a finished run with a DFT fields monitor')
         self.export_animation_action = self._make_action(
-            'Export &animation (HTML)…', self._export_animation,
+            'Export mode &animation (HTML)…', partial(self._export_web_page, 'modes'),
             tip='Save the computed modes as a self-contained web page: animated mode shapes beside the band diagram '
-                '(eigenfrequency studies, also swept over a Bloch wavenumber), for presentations. Needs a finished run with a '
-                'mode_shapes output feature')
+                '(eigenfrequency studies, also swept over a Bloch wavenumber), for presentations. Needs a finished run '
+                'with a mode_shapes output feature')
         self.export_image_action = self._make_action('Export &figure…', self._export_image,
                                                      tip='Save the canvas figure as shown (PDF, SVG, EPS or PNG; style '
                                                          'in the Results Field tab, Figure box)')
@@ -474,7 +485,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # exports live in the Results dock's Export menu, greyed out while there is nothing to export
         export_menu = self.results_panel.export_menu
-        export_menu.addActions([self.export_field_action, self.export_image_action, self.export_animation_action])
+        export_menu.addActions([self.export_field_action, self.export_image_action])
+        export_menu.addSeparator()
+        export_menu.addActions([self.export_field_page_action, self.export_dft_page_action,
+                                self.export_animation_action])
         export_menu.aboutToShow.connect(self._update_export_actions)
 
         edit_menu = menu_bar.addMenu('&Edit')
@@ -754,15 +768,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bridge.run(self.document.spec)
 
     def _update_export_actions(self):
-        """Grey out the Export menu entries with nothing to export: field data without a field on the canvas, the
-        animation without a finished run whose build has a mode_shapes result (export_session_animation's input)."""
+        """Grey out the Export menu entries with nothing to export: field data without a field on the canvas; the web
+        pages without a finished run (export_session_html's input: the Save run state), the field page also without
+        a field chosen in the Field tab, the DFT and mode pages without a dft_fields / mode_shapes result."""
         self.export_field_action.setEnabled(self.canvas.current_field is not None)
+        for action in (self.export_field_page_action, self.export_dft_page_action, self.export_animation_action):
+            action.setEnabled(self._web_page_target(action) is not None)
+
+    def _web_page_target(self, action):
+        """export_session_html's what of a web-page action ('physics.component' / 'physics.feature'), None when
+        there is nothing to export."""
         bridge = self.bridge
         build_summary = bridge.last_build_summary
-        self.export_animation_action.setEnabled(
-            not bridge.busy and bridge.results_spec is not None and bridge.last_study_summary is not None
-            and build_summary is not None
-            and any(kind == 'mode_shapes' for _physics, _feature, kind in build_summary.feature_results))
+        if (bridge.busy or bridge.results_spec is None or bridge.last_study_summary is None
+                or build_summary is None):
+            return None
+        if action is self.export_field_page_action:
+            return self.results_panel.selected_field_key()
+        kind = 'dft_fields' if action is self.export_dft_page_action else 'mode_shapes'
+        keys = [f'{physics}.{feature}' for physics, feature, result_kind in build_summary.feature_results
+                if result_kind == kind]
+        if kind == 'dft_fields':
+            chosen = self.results_panel.selected_dft_key()
+            return chosen if chosen in keys else (keys[0] if keys else None)
+        return keys[0] if len(keys) == 1 else None   # several mode_shapes results: export_html needs one
 
     def _toggle_pause(self):
         if self.bridge.paused:
@@ -1123,36 +1152,43 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_status('Saving the run…')
         bridge.call(save, on_result=saved, on_error=failed)
 
-    def _export_animation(self):
-        """Write the computed modes as the HTML mode player (api.export_session_animation on the worker: the same
-        page as `python -m open_sol show <run dir> --html`); the session stays open."""
+    def _export_web_page(self, target):
+        """Write a web page (api.export_session_html on the worker: the page of `python -m open_sol show <run dir>
+        --html --what ...`) of target 'field' (the Field tab's field), 'dft' (the DFT tab's monitor) or 'modes' (the
+        mode_shapes result); the session stays open."""
+        action = {'field': self.export_field_page_action, 'dft': self.export_dft_page_action,
+                  'modes': self.export_animation_action}[target]
+        what = self._web_page_target(action)   # the state may have changed since the menu opened
+        if what is None:
+            self._update_export_actions()
+            self.show_status(f'Nothing to export as a web page ({action.text().replace("&", "")}): '
+                             'compute first' + ('' if target == 'field' else
+                                                f" with a {'DFT fields monitor' if target == 'dft' else 'mode_shapes output'}"))
+            return
         bridge = self.bridge
         spec, build_summary, study_summary = bridge.results_spec, bridge.last_build_summary, bridge.last_study_summary
-        self._update_export_actions()                       # the state may have changed since the menu opened
-        if not self.export_animation_action.isEnabled():
-            self.show_status('No mode shapes to export: compute a study with a mode_shapes output feature first')
-            return
         model_file = self._job_model_file
         stem = os.path.splitext(os.path.basename(model_file or 'model.json'))[0]
-        path = ask_save_path(self, self.document, 'Export animation', f'{stem}_modes.html', (('Web page', '.html'),))
+        suffix = 'modes' if target == 'modes' else file_stem(what)
+        path = ask_save_path(self, self.document, 'Export web page', f'{stem}_{suffix}.html', (('Web page', '.html'),))
         if not path:
             return
         log_entries = list(self._job_log)
 
         def export(session):
-            from ..api import export_session_animation   # worker thread: reads the modes from the session
-            return export_session_animation(path, spec, session, build_summary, study_summary, log_entries,
-                                            model_file)
+            from ..api import export_session_html   # worker thread: reads fields / results from the session
+            return export_session_html(path, what, spec, session, build_summary, study_summary, log_entries,
+                                       model_file)
 
         def exported(written):
             remember_directory(written)
-            self.show_status(f'Saved the animation to {written}')
-            self.log_message('info', f'Mode animation saved to {written} (open it in a web browser)')
+            self.show_status(f'Saved the web page to {written}')
+            self.log_message('info', f'Web page of {what} saved to {written} (open it in a web browser)')
 
         def failed(message):
-            self._report_file_failure('Export animation failed', f'Could not export the animation:\n{message}')
+            self._report_file_failure('Export web page failed', f'Could not export {what} as a web page:\n{message}')
 
-        self.show_status('Exporting the animation…')
+        self.show_status(f'Exporting {what} as a web page…')
         bridge.call(export, on_result=exported, on_error=failed)
 
     def _export_field_data(self):

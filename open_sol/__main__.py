@@ -3,6 +3,7 @@ command leaves a file.
 Exit codes: 0 success, 1 model errors / run not completed / selftest not passed, 2 usage errors (incl. missing files)."""
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -103,9 +104,14 @@ def _build_parser():
                                   'file: write <out>/figures/scene_3d.png (perspective picture of the objects, no '
                                   'run); a 3D results directory also gets scene_3d.png with the saved cut planes')
     show_parser.add_argument('--html', metavar='FILE', nargs='?', const='',
-                             help='results directory: load results.npz and write the mode animation page (a '
-                                  'self-contained HTML player of the mode_shapes result: animated mode shapes beside '
-                                  'the band diagram); default <out>/<model stem>_modes.html')
+                             help='results directory: load results.npz and write a self-contained web page to turn '
+                                  'and colour in a browser (Results.export_html) of --what; default '
+                                  '<out>/<model stem>_<what>.html (_modes.html for the mode_shapes result)')
+    show_parser.add_argument('--what', metavar='NAME',
+                             help='with --html: a field (physics.component or a unique component: its snapshots as '
+                                  'frames, 3D on its saved cut planes), a dft_fields result (intensity per '
+                                  'frequency) or a mode_shapes result (animated mode shapes beside the band '
+                                  'diagram); default the only mode_shapes result')
     show_parser.add_argument('--series', metavar='NAME',
                              help='with --figures: draw only this series of xy results and of the sweep result '
                                   'overlays (e.g. fraction_positive of a mode monitor)')
@@ -319,13 +325,16 @@ def _show_results(path, args):
         for name, draw in results._figure_jobs(args.series):
             _write_figure(name, draw, out_dir / 'figures' / f'{name}.png', stream)
     status = 0
+    if args.what is not None and args.html is None:
+        print('--what applies with --html only', file=sys.stderr)
     if args.html is not None:
         stem = Path(((summary.get('model') or {}).get('file')) or 'model').stem
-        html_path = Path(args.html) if args.html else out_dir / f'{stem}_modes.html'
+        suffix = 'modes' if args.what is None else re.sub(r'[^\w.-]+', '_', args.what).replace('.', '_')
+        html_path = Path(args.html) if args.html else out_dir / f'{stem}_{suffix}.html'
         try:
-            print(f'  animation {results.export_animation(html_path)}', file=stream)
+            print(f'  web page {results.export_html(html_path, args.what)}', file=stream)
         except (OSError, ValueError, KeyError) as exc:
-            print(f'open_sol: no mode animation: {error_message(exc)}', file=sys.stderr)
+            print(f'open_sol: no web page: {error_message(exc)}', file=sys.stderr)
             status = 1
     _write_show_report(out_dir, _show_report('results', path, None, None, summary), args.json, stream)
     return status

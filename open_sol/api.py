@@ -59,13 +59,15 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.mode_player import mode_player_from_results
+from .viz.field_viewer import (ViewerFrame, ViewerLayer, ViewerQuantity, layer_from_field, plan_frames,
+                               strided_layer, time_label, write_field_viewer)
+from .viz.mode_player import mode_player_from_results, mode_shape_keys
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
 from .viz.scene_figure import DEFAULT_VIEW, scene_figure as new_scene_figure
 
 __all__ = ['API_REFERENCE_PATH', 'API_TEMPLATES_PATH', 'BUILTIN_SELFTESTS', 'describe', 'template', 'load', 'save', 'check', 'run',
-           'save_session_run', 'export_session_animation', 'scene_figure', 'selftest', 'selftest_examples', 'profile_machine', 'Results', 'RunError',
+           'save_session_run', 'export_session_html', 'scene_figure', 'selftest', 'selftest_examples', 'profile_machine', 'Results', 'RunError',
            'ProgressPrinter',
            # run() progress events (open_sol.model.study dataclasses)
            'LogEvent', 'SweepStep', 'SweepValueDone', 'Built', 'BuildFailed', 'StudyStarted', 'Progress',
@@ -769,12 +771,13 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
     return str(directory)
 
 
-def export_session_animation(path, spec, session, build_summary, study_summary, log_entries, model_file=None,
-                             result=None) -> str:
-    """Write the HTML mode player (Results.export_animation) of a live session its caller built and ran (the GUI
-    worker, on its thread); the session stays open. Arguments as save_session_run; returns the written path."""
+def export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None,
+                        physics=None) -> str:
+    """Write the web page of Results.export_html(path, what, physics) for a live session its caller built and ran
+    (the GUI worker, on its thread); the session stays open. Other arguments as save_session_run; returns the
+    written path."""
     with _session_results(spec, session, build_summary, study_summary, log_entries, model_file, False) as results:
-        return results.export_animation(path, result=result)
+        return results.export_html(path, what, physics=physics)
 
 
 @contextlib.contextmanager
@@ -1507,12 +1510,102 @@ class Results:
             raise ValueError(f'no saved cut plane of field {name!r} (an older run directory without plane records)')
         return field_planes
 
-    def export_animation(self, path, result=None, title=None) -> str:
-        """Write the HTML mode player (viz.mode_player: one self-contained page, no network) of a mode_shapes result
-        ('physics.feature'; None = the only one): animated complex mode shapes on the solid surface beside the band
-        diagram, every sweep value on the same mesh (abscissa k a / 2 pi of the Bloch wavenumber, else the swept
-        parameter); live, closed or loaded alike. Returns the written path (.html added when missing)."""
-        return mode_player_from_results(self, path, key=result, title=title)
+    def export_html(self, path, what=None, physics=None, title=None) -> str:
+        """Write a self-contained web page (no network: hand-written WebGL2, data embedded) to turn, zoom and colour
+        in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
+        component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
+        it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current
+        (live) or saved state; a 3D field is shown on its cut planes in place (live state: the middle x, y and z cuts;
+        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts). A dft_fields result
+        'physics.feature': its intensity map per monitored frequency (slider). A mode_shapes result: viz.mode_player
+        (animated mode shapes beside the band diagram). None = the only mode_shapes result. Large data is thinned
+        (grid stride, evenly kept frames; the page subtitle says so). Other result kinds (curves, tables) raise
+        ValueError: they are figures (figure())."""
+        if what is None:
+            keys = mode_shape_keys(self)
+            if len(keys) != 1:
+                raise ValueError('choose what to export: ' + self._html_choices())
+            what = keys[0]
+        field_keys = self._field_matches(what, physics)
+        if not field_keys and what in self.result_names():
+            kind = self.result(what).get('kind')
+            if kind == 'mode_shapes':
+                return mode_player_from_results(self, path, key=what, title=title)
+            if kind == 'dft_fields':
+                return self._dft_viewer(path, what, title)
+            raise ValueError(f'{what!r} is a {kind} result (curves or a table): export it as a figure (figure()); '
+                             'web pages show ' + self._html_choices())
+        if len(field_keys) != 1:
+            raise self._field_lookup_error(what, physics, field_keys)
+        return self._field_viewer(path, field_keys[0], title)
+
+    def _html_choices(self):
+        """'fields ...; results ...' that export_html takes."""
+        results = []
+        for key in self.result_names():
+            try:
+                kind = self.result(key).get('kind')
+            except (KeyError, ValueError, TypeError):
+                continue
+            if kind in ('mode_shapes', 'dft_fields'):
+                results.append(f'{key} ({kind})')
+        return (f"fields {', '.join(self.field_names()) or 'none'}; dft_fields / mode_shapes results "
+                f"{', '.join(results) or 'none'}")
+
+    def _page_title(self, title):
+        model_title = (self._data.summary.get('model') or {}).get('title') or getattr(self.spec, 'title', None)
+        return title or model_title or ''
+
+    def _field_viewer(self, path, key, title):
+        """export_html of the field key ('physics.component')."""
+        stored = [snapshot for snapshot in self._stored_snapshots() if key in snapshot.fields]
+        if len(stored) > 1:
+            frames = []
+            for snapshot in stored:
+                fields = [snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut]
+                label = snapshot.label or fields[0].time_label or time_label(snapshot.time)
+                frames.append(ViewerFrame([layer_from_field(field_data) for field_data in fields], label,
+                                          float(snapshot.time)))
+            frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
+            info = stored[0].fields[key].info
+            source = f'{len(stored)} snapshots'
+        else:
+            fields = self._state_fields(key)
+            frames = [ViewerFrame([layer_from_field(field_data) for field_data in fields],
+                                  fields[0].time_label or '', float(fields[0].time))]
+            frame_kind = 'labelled'
+            info = fields[0].info
+            source = 'current state' if self.is_live else 'saved state'
+        quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed))
+        return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
+                                  subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind)
+
+    def _state_fields(self, key):
+        """FieldData of the field key in the current / saved state: a 2D map, or the 3D cut planes of scene_figure
+        (live: the middle x, y and z cuts; closed / loaded: the saved z cut plus the stored cuts at the same time)."""
+        if self.spec is not None and self.spec.domain.size_z is not None:
+            return self._scene_planes(key, None, None)
+        return [self.field(key)]
+
+    def _dft_viewer(self, path, key, title):
+        """export_html of a dft_fields result: its intensity map per monitored frequency, loaded one at a time (only
+        the frames the page keeps, strided at once)."""
+        meta = self.result(key)
+        wavelengths = np.atleast_1d(np.asarray(meta['wavelength'], dtype=np.float64))
+        x_centres = np.asarray(meta['x_centers'], dtype=np.float64)
+        y_centres = np.asarray(meta['y_centers'], dtype=np.float64)
+        template = ViewerLayer(values=np.empty((x_centres.size, y_centres.size), dtype=np.float32),
+                               u_centres=x_centres, v_centres=y_centres)
+        plan = plan_frames([template], wavelengths.size)
+        frames = []
+        for index in plan.indices:
+            intensity = np.asarray(self.result(key, freq_index=index)['intensity'], dtype=np.float64)
+            layer = ViewerLayer(values=intensity, u_centres=x_centres, v_centres=y_centres)
+            frames.append(ViewerFrame([strided_layer(layer, plan.stride)], wavelength_label(wavelengths[index])))
+        quantity = ViewerQuantity(label=f"{meta.get('quantity', 'intensity')} (DFT)", unit='a.u.', signed=False)
+        return write_field_viewer(path, frames, quantity, title=self._page_title(title) or f'DFT {key}',
+                                  subtitle=f'{key}: {wavelengths.size} monitored frequencies (open_sol)',
+                                  frame_kind='labelled', plan=plan)
 
     def save(self, path, save_arrays=True) -> Path:
         """Write summary.json, log.txt, model.json and (save_arrays) results.npz into the directory path, copying the

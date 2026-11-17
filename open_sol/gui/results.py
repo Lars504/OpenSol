@@ -520,6 +520,16 @@ class ResultsPanel(QtWidgets.QWidget):
         """True while a build or study of the current model left something to show."""
         return self._summary is not None or self._study_summary is not None
 
+    def selected_field_key(self):
+        """'physics.component' of the field chosen in the Field tab, None without one."""
+        selection = self._selected_field()
+        return None if selection is None else f'{selection[0]}.{selection[1]}'
+
+    def selected_dft_key(self):
+        """'physics.feature' of the monitor chosen in the DFT tab, None without one."""
+        key = self._current_key(self._dft_combo, self._dft_keys)
+        return None if key is None else _key_text(key)
+
     def refresh(self):
         """Fetch every feature result of the current session (dft_fields: metadata only) via bridge.call."""
         if self._summary is None:

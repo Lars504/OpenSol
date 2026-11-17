@@ -597,8 +597,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   subsets / reports / backends, templates, describe.
 - `open_sol/io/`: model / results files, curve exports, result kinds.
 - `open_sol/gui/`: GUI (thread rule, result plot views, progress, documents and node paths, canvas, 3D views, forms).
-- `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure, mode_player (the self-contained HTML
-  mode animation page).
+- `open_sol/viz/`: Visualizer, common, result_plots, curve_figure, scene_figure, mode_player and field_viewer (the
+  self-contained HTML pages of Results.export_html: animated mode shapes; field maps / 3D cut planes / DFT
+  intensities).
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `dev_tools/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result

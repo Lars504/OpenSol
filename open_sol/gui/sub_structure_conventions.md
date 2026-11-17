@@ -13,9 +13,11 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   request). The results panel then names that cause in its banner and skips session fetches after a sweep whose last
   value failed. Exports sit in the Results dock's Export menu (`ResultsPanel.export_menu`, the tab bar's corner;
   MainWindow adds its actions and greys out each with nothing to export in `_update_export_actions`, also on
-  aboutToShow: field data needs `canvas.current_field`, the animation the Save run state plus a 'mode_shapes' kind in
-  `last_build_summary.feature_results`). Export animation (`MainWindow._export_animation`) calls
-  `api.export_session_animation` in a `bridge.call` (viz.mode_player page of a mode_shapes result).
+  aboutToShow: field data needs `canvas.current_field`; the web pages (`_web_page_target`) the Save run state plus the
+  Field tab's field (`ResultsPanel.selected_field_key`), a 'dft_fields' kind (the DFT tab's monitor,
+  `selected_dft_key`, else the first) or exactly one 'mode_shapes' kind in `last_build_summary.feature_results`).
+  `MainWindow._export_web_page` calls `api.export_session_html` (Results.export_html: viz.field_viewer /
+  viz.mode_player page) in a `bridge.call`.
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
   definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not

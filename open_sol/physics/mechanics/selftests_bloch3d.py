@@ -302,8 +302,9 @@ BAND_DIAGRAM_3D_DESCRIPTION = (
     '0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = '
     'k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz '
     '(resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between '
-    'them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (Results dock '
-    'Export > Export animation, or show <run dir> --html: animated modes beside the band diagram).')
+    'them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k '
+    '(Results dock Export > Export mode animation, or show <run dir> --html: animated modes beside the band '
+    'diagram).')
 _TEMPLATE_PERIOD = 0.5e-6
 _TEMPLATE_WIDTH = 0.75e-6        # wing width (domain y)
 _TEMPLATE_CORE = 0.25e-6         # core width and the film thickness

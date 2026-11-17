@@ -65,9 +65,9 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   MESH_LINES_MAX_EDGES); `common.tetrahedron_mesh_data` / `tetrahedron_mesh_cut` give a tetrahedron mesh's host nodes /
   elements and the outlines of axis-normal cross-sections (nodes on the plane nudged above it, shared edges once, PML
   shell segments apart).
-- mode_player (HTML mode animation; `Results.export_animation`, CLI `show <run dir> --html`, GUI Results dock
-  Export > Export animation): `mode_player.py` packs numpy data into `mode_player.html` (package data) at `DATA_MARKER`; the page is
-  self-contained on purpose (hand-written WebGL2, no CDN, works offline in a talk): keep it free of external scripts
+- mode_player (HTML mode animation; `Results.export_html` of a mode_shapes result, CLI `show <run dir> --html`, GUI
+  Results dock Export > Export mode animation): `mode_player.py` packs numpy data into `mode_player.html` (package
+  data) at `DATA_MARKER`; the page is self-contained on purpose (hand-written WebGL2, no CDN, works offline in a talk): keep it free of external scripts
   and fonts. Data: positions float32 / triangles uint32 / per mode re + im int16 (base64), each mode phase-aligned (largest
   component real) and scaled to max |u| = 1 (`_aligned`), lengths in the unit `length_scale` picks; '</' escaped in
   the JSON. Animation u = Re[U exp(j (cell_phase n + theta))], theta = omega t, tile n along the lattice axis: open_sol
@@ -78,3 +78,15 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   the page labels it 'mode j of n'. Colour maps come in two kinds: sequential for the magnitudes, diverging (middle stop =
   0) for the signed u_x / u_y / u_z; the menu lists the shown quantity's kind and remembers a choice per kind. Band gaps on the page: intervals no band segment crosses (bands continuous between
   samples, matched across k with an index shift for a moving search window) and inside the window at every k.
+- field_viewer (HTML field page; `Results.export_html` of a field or dft_fields result, CLI `show <run dir> --html
+  --what NAME`, GUI Results dock Export > Export field / DFT web page): `field_viewer.py` packs `ViewerFrame`s of
+  `ViewerLayer`s (grid of cell centres, or a FieldData display triangulation; plane = a 3D cut placed in the scene,
+  None = a 2D map at z = 0) into `field_viewer.html` at its `DATA_MARKER`, self-contained like mode_player (its
+  camera, colour maps, theme, PNG and recording code are copies of mode_player's: change both). Every frame holds the
+  same surfaces (`_check_layers` raises otherwise); values are int16 per frame over that frame's [lo, hi] (-32768 = no
+  value: the page discards triangles and edges touching one). `plan_frames` fits MAX_BYTES / MAX_FRAMES: the smallest
+  grid stride (never below MIN_LAYER_CELLS on the largest layer), then evenly thinned frames, both named in the
+  subtitle; a caller loading frames lazily (api's DFT path, one frequency at a time) plans first and passes `plan=`.
+  frame_kind 'time' plays (Play, Speed, Record = one pass), 'labelled' (wavelengths, modes, DFT frequencies) only steps
+  (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
+  relief. Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.

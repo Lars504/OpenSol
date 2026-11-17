@@ -28,7 +28,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/physics/potential/: lines 713-730
 - open_sol/physics/semiconductor/: lines 732-745
 - open_sol/solvers/: lines 747-761
-- open_sol/viz/: lines 763-771
+- open_sol/viz/: lines 763-772
 
 ## open_sol/
 
@@ -765,6 +765,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `__init__.py`: Visualization package: re-exports Visualizer, plot_field_array (pyplot-free Figures) and the PNG writers save_field_figure / save_result_figure.
 - `common.py`: numpy-only plot helpers shared by viz and the GUI (no matplotlib, no Qt): axis units, colour limits, safe ratios, dB normalisation, the probe FFT, line profiles of native fields, the line sets of triangle meshes and plane cuts of ...
 - `curve_figure.py`: Article-quality export of a 2D curve plot (pyplot-free matplotlib Figure): PlotStyle (fonts, ticks, line widths, legend; the GUI preview follows it on screen) and save_curve_figure of plain curve data at a given physical size, optionally ...
+- `field_viewer.py`: Self-contained HTML field viewer: scalar fields on 2D maps or 3D cut planes, turned and coloured in the browser.
 - `mode_player.py`: Self-contained HTML mode player: animated complex mode shapes on a surface mesh beside their band diagram.
 - `result_plots.py`: PNG report figures of fields and feature-result dicts (pyplot-free Figures); ASCII text, never prints.
 - `scene_figure.py`: Perspective 3D picture of a model.scene_3d.Scene3D on a pyplot-free matplotlib Axes3D (view_3d C): translucent material faces in one depth-sorted collection, rim edges, dashed composite inputs, point / line glyphs; optionally field cut ...
