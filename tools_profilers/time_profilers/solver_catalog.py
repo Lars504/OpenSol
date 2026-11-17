@@ -1,8 +1,9 @@
 """The solver choices of a problem class (or model target) per backend, enumerated from open_sol itself: every
 registered SolverType that fills the class's role, every combination of its choice settings (all of its 'choice'
-params), kept when roles.solver_misfit admits it for that physics type, role, study and grid kind on the backend and
-the SolverType's validate raises no error; host direct / cuDSS names whose package is missing, and every gpu choice
-without a usable GPU, stay listed as unavailable."""
+params; a setting the problem class lists in ignored_settings is pinned to its resolved default instead), kept when
+roles.solver_misfit admits it for that physics type, role, study and grid kind on the backend and the SolverType's
+validate raises no error; host direct / cuDSS names whose package is missing, and every gpu choice without a usable
+GPU, stay listed as unavailable."""
 import dataclasses
 import itertools
 from dataclasses import dataclass
@@ -46,27 +47,36 @@ def _label_names(type_name, values) -> tuple:
         return ('back_end',)
     if type_name == 'arpack_shift_invert':
         return ('factorization',)
-    if type_name == 'pcg':
+    if type_name in ('pcg', 'block_eigen'):
         return ('precision', 'preconditioner')
     return ('precision',) if 'precision' in values else ()
 
 
 def label_of(type_name, values, varied=()) -> str:
-    """'sparse_direct:mumps', 'arpack_shift_invert:pardiso_mixed', 'pcg:double/multigrid', 'line_block:mixed',
-    'banded'; a varied choice the short label does not name is appended as '/name=value'."""
+    """'sparse_direct:mumps', 'arpack_shift_invert:pardiso_mixed', 'pcg:double/multigrid', 'block_eigen:mixed/jacobi',
+    'line_block:mixed', 'banded'; a varied choice the short label does not name is appended as '/name=value'."""
     names = _label_names(type_name, values)
     label = f"{type_name}:{'/'.join(str(values[name]) for name in names)}" if names else type_name
     return label + ''.join(f'/{name}={values[name]}' for name in varied if name not in names)
 
 
-def _value_sets(solver_type):
-    """Every combination of the choice params of a SolverType, the other params at their defaults."""
+def _value_sets(solver_type, pinned=()):
+    """Every combination of the choice params of a SolverType but the pinned ones, the other params (pinned included)
+    at their defaults."""
     defaults = {param.name: param.default for param in solver_type.params}
-    varied = [param for param in solver_type.params if param.kind == 'choice']
+    varied = [param for param in solver_type.params if param.kind == 'choice' and param.name not in pinned]
     for combination in itertools.product(*(param.choices for param in varied)):
         values = dict(defaults)
         values.update(zip((param.name for param in varied), combination))
         yield values
+
+
+def _pinned_values(values, pinned, solver_role, backend, grid) -> dict:
+    """values with each pinned setting (ProblemClass.ignored_settings: the consumer ignores it) at what its default
+    resolves to on the backend and grid kind ('auto' library settings: _resolved_value), so the one row left is labelled
+    like the Automatic choice."""
+    resolved = _resolved_value(values, solver_role, backend, grid)
+    return {**values, **{name: resolved[name] for name in pinned}}
 
 
 def _resolved_value(values, solver_role, backend, grid):
@@ -146,7 +156,10 @@ def solver_candidates(target, backends=('cpu',)):
         for solver_type in registry.solver_types():
             if role not in solver_type.roles:
                 continue
-            for values in _value_sets(solver_type):
+            pinned = tuple((getattr(target, 'ignored_settings', None) or {}).get(solver_type.name, ()))
+            for values in _value_sets(solver_type, pinned):
+                if pinned:
+                    values = _pinned_values(values, pinned, solver_role, backend, target.grid)
                 if any(values.get(name) == 'auto' for name in LIBRARY_SETTINGS):
                     continue   # 'auto' is one of the explicit library choices: the same run as that choice
                 label = label_of(solver_type.name, values, choice_names(solver_type))

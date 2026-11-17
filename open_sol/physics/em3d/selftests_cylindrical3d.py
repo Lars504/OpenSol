@@ -250,5 +250,5 @@ CYLINDRICAL_3D_CASES = (
                      f'{_GROWTH_LIMIT:g}, a failed refusal), tolerance {_TOLERANCE:g}: dr and dt errors are ~4e-4, '
                      'a missing r factor in a curl shifts f by >= 1 %; measured <= 1e-4. cpu backend, plus the gpu '
                      'one when usable.'),
-        specs=lambda: {}, check=_check_cylindrical_sector, heavy=True, max_wall_time=900.0, backends=('cpu', 'gpu')),
+        specs=lambda: {}, check=_check_cylindrical_sector, max_wall_time=900.0, backends=('cpu', 'gpu')),
 )

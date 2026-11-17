@@ -14,8 +14,11 @@ from .backend import array_module_of, cp, ndimage_module, sparse_module, to_host
 from .box_values import BoxValues
 from .constants import DTYPE, FACES, FACES_3D
 from .error_indicators import compliance, face_jump_indicator
-from .fv_diffusion_3d import (FaceGeometry, anchor_link_graph, build_laplacian, edge_extension_views_3d,
-                              face_lower_shares, flux_at_centres)
+from .fv_diffusion_3d import (FACE_AXIS_3D, FaceGeometry, anchor_link_graph, build_laplacian, edge_extension_views_3d,
+                              face_cells, face_lower_shares, flux_at_centres)
+from .fv_diffusion_fused import (face_parameters, geometry_factors, launch_shape, positive_pattern_moved,
+                                 reassemble_elimination, reassemble_entries)
+from .kernels import axis_first_reduce
 from .metric import GRIDS, face_positions, ring_angle, window_metric, window_metric_3d
 from .monitors import FieldProbe
 from .solver_base import PhysicsSolver
@@ -26,6 +29,9 @@ from .solver_base import PhysicsSolver
 # 'multigrid': a block of 2 iterations with its V-cycles (their kernels launched into the block's capture instead of
 # their own graph; the hierarchy is rebuilt only by factorize too).
 CAPTURED_PRECONDITIONERS = ('jacobi', 'multigrid')
+# re-assemblies on the kept 5 / 7-point pattern (no phi wrap, c_xy term or cut cells) run the two fused kernels of
+# core.fv_diffusion_fused instead of ~25 launches (False: always the build_laplacian path)
+FUSED_REASSEMBLY = True
 
 
 class BCSide:
@@ -373,6 +379,9 @@ class DiffusionSystem:
         self.require_anchors = True         # False: no singular-system check (the heat noise solve adds j omega C)
         self.n_diagonal_refreshes = 0       # refresh_diagonal calls that replaced a full assembly
         self.n_held_refreshes = 0           # refresh_held_values calls that replaced a full assembly
+        self.fused_reassembly = FUSED_REASSEMBLY   # False: every assembly through build_laplacian (parity tests)
+        self.n_fused_assemblies = 0         # assemblies by the fused kernels (core.fv_diffusion_fused)
+        self.n_anchor_shortcuts = 0         # anchor checks reduced to the c > 0 pattern test (coefficient-only change)
         self._assembled_held_count = None   # count of fixed_user cells at the last assembly (0-d device / int)
         # owner hook (DiffusionPhysicsBase): called with new / old volume fractions (window device array) whenever the
         # insulated-wall cut cells change cell_area, so perimeter flux densities keep their totals
@@ -389,12 +398,22 @@ class DiffusionSystem:
         self._operator_dirty = bool(value)
         self._diagonal_only_change = False   # True only while the losses alone changed since the last assembly
         self._held_values_only_change = False   # True only while set_fixed alone ran since the last assembly
+        self._coefficients_only_change = False   # True only while coefficient values alone changed since then
 
     def _mark_diagonal_changed(self) -> None:
         """operator_dirty after a loss change; keeps refresh_diagonal possible when nothing else changed."""
         diagonal_only = (not self._operator_dirty or self._diagonal_only_change) and self.operator_full is not None
         self.operator_dirty = True
         self._diagonal_only_change = diagonal_only
+
+    def mark_coefficients_changed(self) -> None:
+        """operator_dirty after a change of coefficient values alone (the owner's materials_changed: k(T), sigma(T));
+        the next assembly checks anchors only when a c > 0 (or C/dt > 0) pattern moved, unless anything else dirtied
+        the operator since (every other setter clears the mark)."""
+        coefficients_only = ((not self._operator_dirty or self._coefficients_only_change)
+                             and self.operator_full is not None)
+        self.operator_dirty = True
+        self._coefficients_only_change = coefficients_only
 
     @property
     def ring_angle(self) -> float:
@@ -511,6 +530,8 @@ class DiffusionSystem:
         self._solution = xp.zeros(self.n_window, dtype=dtype)
 
         self.pattern = None            # CSR index structure, reused across rebuilds
+        self._fused_geometry = None    # (FaceGeometry, packed 1D factors, offsets) of the fused re-assembly
+        self._fused_faces = None       # (host key, device table) of the fused re-assembly's outer-face parameters
         self.operator_full = None      # A_eff CSR (conduction + losses + capacity), rows of fixed cells included
         self._conduction_diagonal = None   # diag(A) of the last assembly without losses / capacity, flat
         self.azimuthal_diagonal = None     # _azimuthal_diagonal of the last assembly (inside the conduction diagonal)
@@ -769,7 +790,9 @@ class DiffusionSystem:
         """Assemble A_eff = A + diag(losses) (+ diag(C/dt)), eliminate fixed cells, check anchors, rebuild Jacobi;
         c arrays window-shaped device arrays (3D: c_zz required, c_xy must be 0), capacity_over_dt a window array [c]
         or None. Held cells are ideal (c -> inf): their value sits on their faces toward free cells, whatever their
-        own coefficient. check_anchors=False skips the anchor check (caller guarantees an unchanged c > 0 pattern)."""
+        own coefficient. check_anchors=False skips the anchor check (caller guarantees an unchanged c > 0 pattern);
+        after mark_coefficients_changed alone it runs only when a c > 0 / C/dt > 0 pattern moved. A re-assembly on the
+        kept plain pattern runs the fused kernels (FUSED_REASSEMBLY)."""
         dtype = self.dtype
         xp = self.xp
         c_xx = xp.array(c_xx, dtype=dtype)   # owned copies: the flux / dissipation post-processing reads them later
@@ -784,6 +807,12 @@ class DiffusionSystem:
                 raise NotImplementedError(f"{self.label()}: xy cross conduction is not available in 3D: set the xy "
                                           "component to 0.")
             c_zz = xp.array(c_zz, dtype=dtype)
+        else:
+            c_zz = None
+        if self._fused_reassembly_applies(c_xx, c_yy, capacity_over_dt):
+            self._assemble_fused(c_xx, c_yy, c_zz, bcs, reference, capacity_over_dt, check_anchors)
+            return
+        if self.dimensions == 3:
             operator, rhs_bc, self.pattern, face_conductances_xy, face_terms, wrap_conductance = build_laplacian(
                 (c_xx, c_yy, c_zz), self._geometry, bcs,
                 pattern=self.pattern, dtype=dtype, reference=reference, held=self._held_cells)
@@ -833,8 +862,7 @@ class DiffusionSystem:
         fixed_values = xp.where(self.fixed_user, self.fixed_user_values,
                                 xp.where(unconnected, self.unknown2d, 0.0)).astype(dtype, copy=False)
         loss_anchor_cells = self.extra_diag > 0
-        if self.require_anchors and check_anchors:
-            self._check_anchors(c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
+        self._run_anchor_check(check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
 
         # CG unknown w = u - u_fix (0 on fixed cells): A_solve = D_free A_eff D_free + D_fixed, rhs_offset = D_free (rhs
         # - A_eff u_fix). Keeping u_fix [u] out of b keeps every entry of b in [c u], so the tolerance relative to ||b||
@@ -855,6 +883,14 @@ class DiffusionSystem:
         self._factorize_solver()
 
         xp.copyto(self.unknown2d, fixed_values, where=fixed)
+        self._keep_assembly(operator, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
+                            loss_anchor_cells, rhs_drive, face_terms, face_conductances_xy, wrap_conductance,
+                            (c_xx, c_yy, c_zz), cross, reference)
+
+    def _keep_assembly(self, operator, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
+                       loss_anchor_cells, rhs_drive, face_terms, face_conductances, wrap_conductance, coefficients,
+                       cross, reference) -> None:
+        """Store what the post-processing and the refresh paths read of an assembly (both assembly paths)."""
         self.fixed_values = fixed_values
         self.free = free
         self.capacity_over_dt = capacity_over_dt
@@ -864,16 +900,139 @@ class DiffusionSystem:
         self._loss_anchor_cells = loss_anchor_cells
         self.rhs_drive = rhs_drive
         self.face_terms = face_terms
-        self.face_conductances = face_conductances_xy
+        self.face_conductances = face_conductances
         self.wrap_conductance = wrap_conductance
-        self.assembled_c_xx = c_xx
-        self.assembled_c_yy = c_yy
-        self.assembled_c_zz = c_zz
+        self.assembled_c_xx, self.assembled_c_yy, self.assembled_c_zz = coefficients
         self.cross = cross
         self.assembled_reference = reference   # the unknown's reference of the face rhs terms (update_face_value)
         self._lower_cell_shares = None
-        self._assembled_held_count = xp.count_nonzero(self.fixed_user)   # refresh_held_values: no sync here
+        self._assembled_held_count = self.xp.count_nonzero(self.fixed_user)   # refresh_held_values: no sync here
         self.operator_dirty = False
+
+    def _fused_reassembly_applies(self, c_xx, c_yy, capacity_over_dt) -> bool:
+        """True for a re-assembly the fused kernels cover: fused_reassembly, a kept plain 5 / 7-point pattern (no phi
+        wrap, c_xy term, cut-cell walls or held edges) and window-shaped coefficients and C/dt."""
+        pattern = self.pattern
+        window_shape = tuple(self.window_shape)
+        return (self.fused_reassembly and pattern is not None and pattern.matches(window_shape)
+                and not self._kxy_active and not self.wrap_sign and self.held_wall is None
+                and self._insulated_wall_test is None and self.apertures is None
+                and tuple(c_xx.shape) == window_shape and tuple(c_yy.shape) == window_shape
+                and (capacity_over_dt is None or tuple(getattr(capacity_over_dt, 'shape', ())) == window_shape))
+
+    def _fused_geometry_factors(self):
+        """(packed 1D face-area / length factors, offsets) of the window (core.fv_diffusion_fused), built once per
+        FaceGeometry."""
+        if self._fused_geometry is None or self._fused_geometry[0] is not self._geometry:
+            metric = self.metric_3d if self.dimensions == 3 else self.metric
+            self._fused_geometry = (self._geometry,) + geometry_factors(metric, self.dimensions, self.dtype, self.xp)
+        return self._fused_geometry[1:]
+
+    def _fused_face_parameters(self, bcs, reference):
+        """Device outer-face table of these BCs and reference (core.fv_diffusion_fused.face_parameters), uploaded
+        only when it changed."""
+        table = face_parameters(bcs, self.faces, float(reference))
+        key = tuple(table.tolist())
+        if self._fused_faces is None or self._fused_faces[0] != key:
+            self._fused_faces = (key, self.xp.asarray(table, dtype=self.dtype))
+        return self._fused_faces[1]
+
+    def _assemble_fused(self, c_xx, c_yy, c_zz, bcs, reference, capacity_over_dt, check_anchors) -> None:
+        """assemble on the kept pattern by the two fused kernels: entries, face terms, fixed cells; anchor check;
+        elimination, Jacobi diagonal, rhs offset and the fixed cells' values. Stores what the reference path stores."""
+        dtype = self.dtype
+        xp = self.xp
+        pattern = self.pattern
+        window_shape = tuple(self.window_shape)
+        n_window = self.n_window
+        ndim = self.dimensions
+        counts = window_shape + ((1,) if ndim == 2 else ())
+        if capacity_over_dt is not None:
+            capacity_over_dt = xp.asarray(capacity_over_dt, dtype=dtype)
+        factors, offsets = self._fused_geometry_factors()
+        parameters = self._fused_face_parameters(bcs, reference)
+        azimuthal_diagonal = self._azimuthal_diagonal(c_xx)   # order m != 0: part of the conduction diagonal
+        faces = self.faces
+        interior_sizes = [n_window // window_shape[axis] * (window_shape[axis] - 1) for axis in range(ndim)]
+        face_sizes = [n_window // window_shape[FACE_AXIS_3D[face]] for face in faces]
+        face_total = sum(face_sizes)
+        data = xp.empty(pattern.indices.shape, dtype=dtype)
+        conduction_diagonal = xp.empty(n_window, dtype=dtype)
+        interior = xp.empty(sum(interior_sizes), dtype=dtype)
+        face_buffer = xp.empty(2 * face_total, dtype=dtype)
+        fixed = xp.empty(window_shape, dtype=xp.bool_)
+        fixed_values = xp.empty(window_shape, dtype=dtype)
+        free = xp.empty(window_shape, dtype=dtype)
+        rhs_drive = xp.empty(window_shape, dtype=dtype)
+        grid, block = launch_shape(n_window)
+        reassemble_entries(grid, block, (
+            c_xx, c_yy, c_yy if c_zz is None else c_zz, self.fixed_user, factors, offsets, parameters,
+            self.extra_diag if azimuthal_diagonal is None else azimuthal_diagonal, self.extra_diag,
+            self.extra_diag if capacity_over_dt is None else capacity_over_dt, self.extra_rhs, self.fixed_user_values,
+            self.unknown, pattern.indptr, data, conduction_diagonal, interior, face_buffer, fixed, fixed_values, free,
+            rhs_drive, np.int32(counts[0]), np.int32(counts[1]), np.int32(counts[2]), np.int32(ndim),
+            np.int32(azimuthal_diagonal is not None), np.int32(capacity_over_dt is not None)))
+        sparse = sparse_module(self.backend)
+        operator = sparse.csr_matrix((data, pattern.indices, pattern.indptr), shape=(n_window, n_window))
+        face_terms = {}
+        start = 0
+        for face, size in zip(faces, face_sizes):   # views of one buffer: conductances, then the rhs terms
+            face_shape = tuple(count for axis, count in enumerate(window_shape) if axis != FACE_AXIS_3D[face])
+            face_terms[face] = (face_cells(face, ndim), face_buffer[start:start + size].reshape(face_shape),
+                                face_buffer[face_total + start:face_total + start + size].reshape(face_shape))
+            start += size
+        face_conductances = []
+        start = 0
+        for axis, size in enumerate(interior_sizes):
+            interior_shape = tuple(count - (axis == other) for other, count in enumerate(window_shape))
+            face_conductances.append(interior[start:start + size].reshape(interior_shape))
+            start += size
+        loss_anchor_cells = self.extra_diag > 0
+        self._run_anchor_check(check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
+
+        solve_data = xp.empty_like(data)
+        inverse_diagonal = xp.empty(n_window, dtype=dtype)
+        rhs_offset = xp.empty(window_shape, dtype=dtype)
+        reassemble_elimination(grid, block, (
+            data, pattern.indptr, pattern.indices, pattern.diagonal_positions, free, fixed, fixed_values, rhs_drive,
+            solve_data, inverse_diagonal, rhs_offset, self.unknown, np.int32(n_window)))
+        self.A_solve = sparse.csr_matrix((solve_data, pattern.indices, pattern.indptr), shape=(n_window, n_window))
+        self.rhs_offset = rhs_offset
+        self.inverse_diagonal = inverse_diagonal
+        self._factorize_solver()
+        self._keep_assembly(operator, conduction_diagonal, azimuthal_diagonal, fixed_values, free, capacity_over_dt,
+                            loss_anchor_cells, rhs_drive, face_terms, tuple(face_conductances), None,
+                            (c_xx, c_yy, c_zz), None, reference)
+        self.n_fused_assemblies += 1
+
+    def _run_anchor_check(self, check_anchors, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz,
+                          loss_anchor_cells) -> None:
+        """The anchor check of an assembly (require_anchors and check_anchors); after a coefficient-only change
+        (mark_coefficients_changed) the full check runs only when a c > 0 or C/dt > 0 cell differs from the last
+        assembly (the gpu with a PCG solver reads that test at the next solve, as _check_anchors)."""
+        if not (self.require_anchors and check_anchors):
+            return
+        arguments = (c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells)
+        kept_capacity = self.capacity_over_dt
+        window_shape = tuple(self.window_shape)
+        shortcut = (self._coefficients_only_change and self.anchor_signature is not None
+                    and self._pending_anchor_check is None and self.assembled_c_xx is not None
+                    and (capacity_over_dt is None) == (kept_capacity is None)
+                    and (capacity_over_dt is None or tuple(capacity_over_dt.shape) == window_shape
+                         == tuple(kept_capacity.shape)))
+        if not shortcut:
+            self._check_anchors(*arguments)
+            return
+        pairs = [(c_xx, self.assembled_c_xx), (c_yy, self.assembled_c_yy)]
+        pairs.append(pairs[0] if c_zz is None else (c_zz, self.assembled_c_zz))
+        pairs.append(pairs[0] if capacity_over_dt is None else (capacity_over_dt, kept_capacity))
+        moved = axis_first_reduce(positive_pattern_moved, *(array for pair in pairs for array in pair),
+                                  combine=lambda partials: partials.any())
+        self.n_anchor_shortcuts += 1
+        if self.backend == 'gpu' and isinstance(self.linear_solver, PCGSolver):
+            self._pending_anchor_check = (self.xp.logical_not(moved), None, arguments)
+        elif bool(moved):
+            self._check_anchors(*arguments)
 
     def update_face_value(self, face, old_bc, new_bc) -> bool:
         """Replace one outer face's rhs term after a value-only change of its BCSide (same kind, h and conductance
@@ -960,9 +1119,10 @@ class DiffusionSystem:
         else:
             solver.factorize(self.A_solve, self.inverse_diagonal)
 
-    def _check_anchors(self, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells):
+    def _check_anchors(self, c_xx, c_yy, fixed, capacity_over_dt, face_terms, c_zz, loss_anchor_cells, defer=True):
         """Anchor check of an assembly: _label_anchors only when the per-cell anchor code differs from the last checked
-        one; on the gpu with a PCG solver the comparison waits for the next solve (whose CG syncs right after)."""
+        one; on the gpu with a PCG solver the comparison waits for the next solve (whose CG syncs right after; defer
+        False: now)."""
         xp = self.xp
         zero = self.dtype(0.0)
         code = xp.empty(fixed.shape, dtype=np.uint8)
@@ -978,13 +1138,18 @@ class DiffusionSystem:
             self._finish_anchor_check(False, code, arguments)
             return
         unchanged = xp.array_equal(cached, code)
-        if self.backend == 'gpu' and isinstance(self.linear_solver, PCGSolver):
+        if defer and self.backend == 'gpu' and isinstance(self.linear_solver, PCGSolver):
             self._pending_anchor_check = (unchanged, code, arguments)
         else:
             self._finish_anchor_check(unchanged, code, arguments)
 
     def _finish_anchor_check(self, unchanged, code, arguments):
-        """Label (raising for a floating region) unless `unchanged` (a device or host bool); then cache `code`."""
+        """Label (raising for a floating region) unless `unchanged` (a device or host bool); then cache `code`. code
+        None (a coefficient-only re-assembly, _run_anchor_check): the full check now unless no c > 0 cell moved."""
+        if code is None:
+            if not bool(unchanged):
+                self._check_anchors(*arguments, defer=False)
+            return
         if not bool(unchanged):
             self._label_anchors(*arguments)
         self.anchor_signature = code

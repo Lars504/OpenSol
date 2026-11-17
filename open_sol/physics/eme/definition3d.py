@@ -15,7 +15,7 @@ from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, arnoldi_basis_b
 from ...solvers.cudss_factor import factor_device_bytes, operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
 from ...solvers.host_direct import HOST_DIRECT_DOUBLE_BACK_ENDS
 from ...solvers.sparse_direct import scipy_available
-from ..em.cross_section_modes import size_issue_for
+from ..em.cross_section_modes import mode_eigen_count, size_issue_for
 from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
                                     PERIODIC_BC_HELP, all_solved_wavelengths, background_permittivity,
                                     boundary_settings_params, em_material_params, first_solved_wavelength, make_pole,
@@ -25,8 +25,10 @@ from ..em.materials import EM_MATERIAL_SCHEMAS
 from ..em.memory_estimates import host_factor_items
 from ..em3d.boundaries3d import BoundaryConfig3D
 from .definition import (OBJECTIVE_FEATURE, PORTS_FEATURE, SCALAR_OUTPUTS_HELP, SECTION_TABLE_DESCRIPTION,
-                         adjoint_time_estimate, apply_ports, apply_section_table, bend_feature, length_sweep_feature,
-                         lossy_materials, other_em_issues, periodic_feature, physics_counter, port_params,
+                         adjoint_time_estimate, apply_ports, apply_section_table, bend_feature,
+                         follow_wavelength_setting, length_sweep_feature,
+                         length_sweep_host_items, lossy_materials, other_em_issues, periodic_feature, physics_counter,
+                         port_params,
                          scalar_outputs, shared_time_estimate, validate_ports)
 from .renderer3d import EME_3D_FIELD_INFOS
 from .solver import MODE_CACHE_BYTES, EME_PERMITTIVITY_ARRAYS, EME_PERMITTIVITY_SLOTS, ports_result, section_table_result
@@ -49,9 +51,11 @@ _BC_HELP = ' '.join((
 ))
 _SETTINGS = (
     Param('wavelength', 'float', DEFAULT_WAVELENGTH, label='Wavelength', unit='m', min=0.0, min_exclusive=True,
+          follows_parameters=True,
           help='Vacuum wavelength lambda0 of a stationary solve (omega = 2 pi C0 / lambda0); a frequency_domain study '
                'solves its own wavelengths instead (one cold solve each). Materials enter at omega (sigma_e and '
-               'Drude / Lorentz poles complex). Typical 1.31e-6 or 1.55e-6 m.',
+               'Drude / Lorentz poles complex). A reused sweep build (sweep reuse_build) follows a value of parameters '
+               'only without rebuilding (not on an auto mesh sized by it). Typical 1.31e-6 or 1.55e-6 m.',
           tip='Vacuum wavelength of the light in metres: 1.55e-6 for 1550 nm. A frequency domain study uses its own '
               'list instead.'),
     Param('n_modes', 'int', 20, label='Modes per section', min=1,
@@ -59,7 +63,10 @@ _SETTINGS = (
                'Re(beta^2) with the PML modes kept and listed after the others). A truncated basis leaves a projection '
                "error that the section table reports as the interfaces' reciprocity defect (a run-log warning above "
                '1e-3); raise n_modes until the port results converge. Each section costs one sparse factorisation of '
-               '2 nx ny unknowns plus about 2 n_modes + 10 Arnoldi vectors. 10-40 typical.',
+               '2 nx ny unknowns plus an eigen-solve for n_modes + 6 eigenvalues when n_eff_guess is unset, the '
+               'section has no bend and eps / mu are real (the shift then lies above every beta^2), else 2 n_modes + '
+               '10; with cpml faces a narrow solve whose n-th mode lies near the edge of the converged range is '
+               'redone at 2 n_modes + 10. 10-40 typical.',
           tip='How many modes describe the light in each slice of the device. More modes are more accurate and '
               'slower.'),
     Param('n_eff_guess', 'float', None, label='Effective index guess', unit='1', min=0.0, min_exclusive=True,
@@ -223,7 +230,7 @@ def _size_issues(vctx, physics_spec, settings_values, path):
     slices = _window_slices(mesh)
     issues.append(Issue('info', path, f'{slices} z slices (at most that many sections, one cross-section solve of '
                                       f'{2 * nx * ny:,} unknowns per distinct section)'))
-    n_wanted = 2 * settings_values['n_modes'] + 10
+    n_wanted = mode_eigen_count(settings_values['n_modes'])   # wide, uncapped (a lossless section may ask fewer)
     if n_wanted > 2 * nx * ny - 2:
         issues.append(Issue('info', path, f'n_modes {settings_values["n_modes"]} asks for {n_wanted} eigenvalues of a '
                                           f'{2 * nx * ny}-unknown cross-section: fewer modes come back'))
@@ -286,6 +293,7 @@ def _create(ctx, physics_spec, settings_values):
             physics.add_dispersive(dispersive_pole, window, mask)
     if written:
         physics.materials_changed(tuple(dict.fromkeys(written)))
+    follow_wavelength_setting(ctx, physics_spec, settings_values, physics)
     return physics
 
 
@@ -298,7 +306,7 @@ def _memory_estimate(settings_values, mesh, context):
     n_cells = int(mesh.n_cells)
     unknowns = 2 * points
     n_modes = int(settings_values['n_modes'])
-    n_eigen = min(2 * n_modes + 10, max(unknowns - 2, 1))
+    n_eigen = max(mode_eigen_count(n_modes, unknowns), 1)   # wide: an upper figure (estimators see no materials)
     arnoldi_vectors = arnoldi_basis_size(n_eigen, unknowns, eigen_subspace_size(context.solvers))
     # e, h (2 P each) and the centred E (3 P) per mode, plus the H_x, H_y start shell of the next wavelength
     mode_set_bytes = COMPLEX128_BYTES * (n_modes * 7 + 2) * points
@@ -353,6 +361,7 @@ def _memory_estimate(settings_values, mesh, context):
         host_items += (('host adjoint gradients and density (4 x float64)', 4 * FLOAT64_BYTES * n_cells),
                        ('adjoint slice products block (complex128)',
                         3 * COMPLEX128_BYTES * FIELD_BLOCK_SLICES * points))
+    host_items += length_sweep_host_items(features, n_modes)
     return MemoryEstimate.from_items(
         (('EME E fields (3 x complex64) and q_abs (float32)', (3 * COMPLEX64_BYTES + FLOAT32_BYTES) * n_cells),),
         host_items=host_items, run_items=run_items, transient_items=transient_items, external_items=external_items,
@@ -393,7 +402,7 @@ def _time_estimate(settings_values, mesh, context):
     mode_set_bytes = COMPLEX128_BYTES * (n_modes * 7 + 2) * points
     shared, (mode_solves, mode_limit) = shared_time_estimate(context, slices, n_modes, unknowns, solve_ops, mode_ops,
                                                              mode_set_bytes)
-    n_wanted = min(2 * n_modes + 10, max(int(unknowns) - 2, 1))
+    n_wanted = max(mode_eigen_count(n_modes, int(unknowns)), 1)   # wide: an upper figure (lossless sections ask n + 6)
     eigen = context.solver_work('eigen', unknowns=unknowns, nnz=nnz, value_bytes=COMPLEX128_BYTES, dimensions=2,
                                 solves=mode_solves, solves_kind='guess', factorizations=mode_solves,
                                 factorizations_kind='guess', eigenpairs=n_wanted)

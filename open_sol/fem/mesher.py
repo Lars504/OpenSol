@@ -1118,16 +1118,20 @@ def smooth(points, triangles, fixed, passes) -> np.ndarray:
         current = _smallest_angle_sines(points, triangles)
         old_local = node_minimum(current)
         moving = free.copy()
+        trial = np.where(moving[:, None], target, points)
+        trial_sines = current.copy()
+        changed = moving[triangles].any(axis=1)   # only these triangles change shape
         for _ in range(20):
-            trial = np.where(moving[:, None], target, points)
-            moved = moving[triangles].any(axis=1)   # only these triangles change shape
-            trial_sines = current.copy()
-            trial_sines[moved] = _smallest_angle_sines(trial, triangles[moved])
+            # trial_sines = sines of the trial nodes on every triangle: re-evaluated only where a node changed since the
+            # last trial (per-row arithmetic, so bit-identical to evaluating every moved triangle again: same meshes)
+            trial_sines[changed] = _smallest_angle_sines(trial, triangles[changed])
             new_local = node_minimum(trial_sines)
             worse = moving & (new_local <= old_local + 1e-11)   # ~1e-9 deg
             if not worse.any():
                 break
             moving &= ~worse
+            trial[worse] = points[worse]
+            changed = worse[triangles].any(axis=1)
         else:
             moving[:] = False
         points = np.where(moving[:, None], target, points)

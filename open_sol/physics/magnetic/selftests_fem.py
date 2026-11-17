@@ -567,5 +567,5 @@ FEM_SELFTEST_CASES = (
                      '|B| in the gap) on triangles (P2, 3 mm, 0.4 mm in the gap) against the graded tensor grid (1 mm, '
                      f'0.25 mm in the gap), relative {_VS_TENSOR_TOLERANCE:g} (first estimate). error = the relative '
                      'difference over its tolerance; tolerance 1. Not run yet.'),
-        specs=_vs_tensor_specs, check=_check_vs_tensor, heavy=True),
+        specs=_vs_tensor_specs, check=_check_vs_tensor),
 )

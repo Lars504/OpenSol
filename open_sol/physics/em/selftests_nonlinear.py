@@ -359,8 +359,7 @@ def nonlinear_case(case, polarization):
                     f'(no linear reflection); the probe 1 um behind it is fitted over the last 10 periods, and '
                     f'{compared} (pump amplitude from a reference run without the slab). {text}',
         specs=specs,
-        check=check,
-        heavy=case == 'carriers')   # the carrier runs took >= 5 s at 450 fs
+        check=check)
 
 
 def nonlinear_silicon_slab_spec():

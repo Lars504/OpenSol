@@ -387,7 +387,7 @@ FEM_3D_SELFTEST_CASES = (
                      'Omega_0 in the held layer. measured = largest deviation of B, H per component (relative to their '
                      f'maxima) and phi_m (relative to Omega_0) on the sample lattice, tolerance {_TOLERANCE:g} (first '
                      'estimate). Not run yet.'),
-        specs=_layered_runs, check=_check_layered),
+        specs=_layered_runs, check=_check_layered, heavy=True),
     SelfTestCase(
         name='magnet3d_fem_saturating_slab',
         label='Magnetostatics 3D on tetrahedra: saturating slab (J_s curve and B-H table)',
@@ -423,7 +423,7 @@ FEM_3D_SELFTEST_CASES = (
                      '1.3): B_abs probes at the centre and at z = a / 2 against B_in = 3 mu_r / (mu_r + 2) B_0. '
                      f'Tolerance {_SPHERE_TOLERANCE:g} (faceted sphere, far boundary ~(1/6)^3; first estimate). Not '
                      'run yet.'),
-        specs=_sphere_runs, check=_check_sphere, heavy=True),
+        specs=_sphere_runs, check=_check_sphere),
     SelfTestCase(
         name='magnet3d_fem_cpu_gpu',
         label='Magnetostatics 3D on tetrahedra: CPU backend vs GPU',

@@ -141,6 +141,17 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             self.hold_face('x_lo', u_x=0.0)
 
     @property
+    def _loads_dirty(self) -> bool:
+        return self._loads_dirty_flag
+
+    @_loads_dirty.setter
+    def _loads_dirty(self, dirty) -> None:
+        """Every load change sets the flag, so it also drops the kept frequency-response drive."""
+        self._loads_dirty_flag = bool(dirty)
+        if dirty:
+            self._harmonic_drive = None
+
+    @property
     def axisymmetric(self) -> bool:
         """True for an (r, z) body of revolution (Session ring-weights field derived values)."""
         return self._axisymmetric
@@ -506,6 +517,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self.frequency_points = []
         self._reduced_harmonic, self.reduced_sweep = None, None
         self._field_policy, self._unpublished_frequency, self._unpublished_solution = None, None, None
+        self._harmonic_drive = None
         if self._piezo_system is not None:
             self._piezo_system.clear_harmonic_plan()
 
@@ -517,14 +529,17 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
                              'generalized plane strain (the uniform eps_zz carries no mass)')
         if system.operator_dirty:
             self._assemble()
-        # the drive: tractions and body forces; the thermal strain is static, never a harmonic drive
-        system.build_rhs(self._total_load(thermal=False))
-        self._loads_dirty = True   # load_full now holds the drive: the next step rebuilds the static load
         if self._harmonic_operators is None:
             self._harmonic_operators = self._build_harmonic_operators()
         operator, loss, mass = self._harmonic_operators
-        load = to_host(system.load_full).astype(np.float64)
-        held = to_host(system.held_values if self.piezoelectric else system.fixed_values).astype(np.float64)
+        if self._harmonic_drive is None:   # kept until a load change (_loads_dirty) or an assembly: one per sweep
+            # the drive: tractions and body forces; the thermal strain is static, never a harmonic drive
+            system.build_rhs(self._total_load(thermal=False))
+            self._loads_dirty = True   # load_full now holds the drive: the next step rebuilds the static load
+            self._harmonic_drive = (
+                to_host(system.load_full).astype(np.float64),
+                to_host(system.held_values if self.piezoelectric else system.fixed_values).astype(np.float64))
+        load, held = self._harmonic_drive
         return operator, loss, mass, load, held
 
     def _harmonic_solve(self, omega, fields=True):
@@ -708,6 +723,7 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         self._solid = stiffness.solid
         self._unit_axial_solve = None
         self._harmonic_operators = None
+        self._harmonic_drive = None   # held / fixed values of the new assembly
         c11, c12, c22, c66, c16, c26 = operator_coefficients(stiffness, self.out_of_plane == PLANE_STRESS)
         if self._axisymmetric:
             self.system.assemble(c11, c12, c22, c66, stiffness.solid,
@@ -882,7 +898,6 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         shear = d_dy[..., 0] + d_dx[..., 1]   # engineering shear g = 2 strain_xy
         strain_xy = 0.5 * shear               # tensor shear strain
         axial = self._axial_nodes if not thermal else None
-        beta_x, beta_y, beta_z, beta_xy = self._thermal_coefficients()
         temperature_change = self._temperature_change() if thermal else 0.0
         if axial is None:   # the out-of-plane (axisymmetric: hoop) strain of the condition
             u_z = 0.0
@@ -891,13 +906,14 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
             u_z = 0.25 * (axial[:-1, :-1] + axial[1:, :-1] + axial[:-1, 1:] + axial[1:, 1:])
             strain_zz = self.axial_wavenumber * u_z
         stress_xx, stress_yy, stress_zz, stress_xy = elastic_stress(stiffness, strain_xx, strain_yy, strain_zz, shear)
-        stress_xx = stress_xx - beta_x * temperature_change
-        stress_yy = stress_yy - beta_y * temperature_change
-        stress_xy = stress_xy - beta_xy * temperature_change
+        if thermal:   # thermal False (modes, harmonic responses): dT = 0, so no C : alpha pass (launch-bound sweeps)
+            beta_x, beta_y, beta_z, beta_xy = self._thermal_coefficients()
+            stress_xx = stress_xx - beta_x * temperature_change
+            stress_yy = stress_yy - beta_y * temperature_change
+            stress_xy = stress_xy - beta_xy * temperature_change
+            stress_zz = stress_zz - beta_z * temperature_change
         if self.out_of_plane == PLANE_STRESS:
             stress_zz = 0.0   # = the expression up to rounding
-        else:
-            stress_zz = stress_zz - beta_z * temperature_change
         electric = self._electric_outputs()
         if electric is not None:   # T_J -= e_kJ E_k (J = xx, yy, xy, zz: the e_k3 column only enters stress_zz)
             _, field_x, field_y = electric
@@ -911,13 +927,17 @@ class SolidMechanicsPhysics(MultiShiftModes, SolidMechanicsBase):
         xp = system.xp
         von_mises = xp.sqrt(0.5 * ((stress_xx - stress_yy) ** 2 + (stress_yy - stress_zz) ** 2
                                    + (stress_zz - stress_xx) ** 2) + 3.0 * stress_xy ** 2)
-        alpha_xx, alpha_yy, alpha_zz = self._expansion_coefficients()
+        if thermal:
+            alpha_xx, alpha_yy, alpha_zz = self._expansion_coefficients()
+            elastic_strains = (strain_xx - alpha_xx * temperature_change, strain_yy - alpha_yy * temperature_change,
+                               strain_zz - alpha_zz * temperature_change)   # axisymmetric: the hoop part
+        else:
+            elastic_strains = (strain_xx, strain_yy, strain_zz)
         outputs = {'u_x': centre[..., 0], 'u_y': centre[..., 1], 'u_z': u_z,
                    'u_abs': xp.sqrt(centre[..., 0] ** 2 + centre[..., 1] ** 2 + u_z ** 2),
                    'strain_xx': strain_xx, 'strain_yy': strain_yy, 'strain_xy': strain_xy,
-                   'elastic_strain_xx': strain_xx - alpha_xx * temperature_change,
-                   'elastic_strain_yy': strain_yy - alpha_yy * temperature_change,
-                   'elastic_strain_zz': strain_zz - alpha_zz * temperature_change,   # axisymmetric: the hoop part
+                   'elastic_strain_xx': elastic_strains[0], 'elastic_strain_yy': elastic_strains[1],
+                   'elastic_strain_zz': elastic_strains[2],
                    'stress_xx': stress_xx, 'stress_yy': stress_yy, 'stress_xy': stress_xy, 'stress_zz': stress_zz,
                    'von_mises': von_mises}
         for name, values in outputs.items():

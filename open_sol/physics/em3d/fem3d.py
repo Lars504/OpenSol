@@ -26,8 +26,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
-from ...fem.assembly import pattern_sum
-from ...fem.assembly3d import assemble_nedelec_3d
+from ...fem.assembly3d import element_blocks_csr, nedelec_blocks_3d
 from ...fem.dofs3d import bloch_masters, nedelec_dofs_3d
 from ...fem.mesh3d import OUTER_FACES_3D
 from ...fem.sampling3d import PointLocator3D, evaluate_nedelec_3d
@@ -135,6 +134,19 @@ class BlochIdentification:
     @property
     def complex_phase(self) -> bool:
         return bool(np.any(self.phase != 1.0))
+
+
+def _shifted_operator(mass, curl, target_squared):
+    """CSR target_squared M - K keeping every stored entry: values only when M and K share one pattern
+    (canonical, element_blocks_csr), else pattern_combination (Bloch P^H A P)."""
+    if (mass.has_canonical_format and curl.has_canonical_format and np.array_equal(mass.indptr, curl.indptr)
+            and np.array_equal(mass.indices, curl.indices)):
+        import scipy.sparse
+        operator = scipy.sparse.csr_matrix((target_squared * mass.data - curl.data, mass.indices.copy(),
+                                            mass.indptr.copy()), shape=mass.shape)
+        operator.has_canonical_format = True
+        return operator
+    return pattern_combination((mass, curl), (target_squared, -1.0))
 
 
 def bloch_identification(dofs, boundary_config):
@@ -246,7 +258,16 @@ class FEMPhysics3D:
         eps, inverse_mu, pec = self._element_materials()
         in_pml = ~mesh.window_elements() if self.pml.active else np.zeros(mesh.n_elements, dtype=bool)
         degree = 2 * self.element_order
-        curl, mass = assemble_nedelec_3d(dofs, inverse_mu, eps, elements=~pec & ~in_pml, degree=degree)
+        energy_eps = np.abs(eps.real)
+        # K, M and W blocks in one element order (window elements, then the PML shell's, as parts: no concatenated
+        # copy): one COO -> CSR slot map and one free restriction for all three (element_blocks_csr; the pattern is
+        # value-free, explicit zeros kept)
+        elements, curl, mass = nedelec_blocks_3d(dofs, inverse_mu, eps, elements=~pec & ~in_pml, degree=degree)
+        if np.array_equal(energy_eps[elements], eps[elements]):   # real eps >= 0: W blocks = M blocks (a view)
+            energy = mass.real
+        else:
+            _, _, energy = nedelec_blocks_3d(dofs, None, energy_eps, elements=elements, degree=degree)
+        curl, mass, energy = [curl], [mass], [energy]
         if in_pml.any():
             def stretched_nu(points, elements):
                 return inverse_mu[elements][:, None, None] / self.pml.tensor(points, omega)
@@ -254,21 +275,26 @@ class FEMPhysics3D:
             def stretched_eps(points, elements):
                 return eps[elements][:, None, :] * self.pml.tensor(points, omega)
 
-            curl_pml, mass_pml = assemble_nedelec_3d(dofs, stretched_nu, stretched_eps, elements=~pec & in_pml,
-                                                     degree=degree + 2)
-            curl, mass = pattern_sum((curl, curl_pml)), pattern_sum((mass, mass_pml))   # value-free pattern
-        _, energy = assemble_nedelec_3d(dofs, None, np.abs(eps.real), elements=~pec, degree=degree)
+            pml_elements, curl_pml, mass_pml = nedelec_blocks_3d(dofs, stretched_nu, stretched_eps,
+                                                                 elements=~pec & in_pml, degree=degree + 2)
+            _, _, energy_pml = nedelec_blocks_3d(dofs, None, energy_eps, elements=pml_elements, degree=degree)
+            elements = np.concatenate([elements, pml_elements])
+            curl.append(curl_pml)
+            mass.append(mass_pml)
+            energy.append(energy_pml)
+        element_dofs = dofs.element_dofs[elements]
         pinned = self._pinned(pec)
         prolongation = None
         if self.bloch is None:
             free = np.setdiff1d(np.arange(dofs.n_dofs), pinned)
-            curl, mass, energy = (matrix[free][:, free].tocsr() for matrix in (curl, mass, energy))
+            curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy), free=free)
         else:
+            curl, mass, energy = element_blocks_csr(dofs.n_dofs, element_dofs, (curl, mass, energy))
             free, prolongation = self._bloch_prolongation(pinned)
             adjoint = prolongation.conj().T.tocsr()
             curl, mass, energy = ((adjoint @ matrix @ prolongation).tocsr() for matrix in (curl, mass, energy))
         target_squared = (omega / C0) ** 2
-        operator = pattern_combination((mass, curl), (target_squared, -1.0))   # cuDSS plan reuse across sweeps
+        operator = _shifted_operator(mass, curl, target_squared)   # every entry kept: cuDSS plan reuse across sweeps
         equilibration = 1.0 / np.sqrt(np.abs(curl.diagonal()) + target_squared * np.abs(mass.diagonal()))
         in_window = mesh.in_window(dofs.dof_points()[free])
         self._counters['assemblies'] += 1

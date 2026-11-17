@@ -8,11 +8,12 @@ import numpy as np
 from ...core.backend import to_host
 
 from ...core.constants import FACES_3D
+from ...solvers.block_eigen import BlockEigenSolver
 from ...solvers.pcg import CG_ITERATIONS_PER_AXIS_CELL, PCGSolver
 from .kernels3d import BrickKernels, FusedBrickIteration
-from .multigrid3d import (CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
+from .multigrid3d import (BlockCycle, CYCLE_COST_IN_JACOBI_ITERATIONS, FALLBACK_ITERATIONS, FALLBACK_MIN_ITERATIONS,
                           BrickMultigrid)
-from .modal import LANCZOS_TOLERANCE_PER_CG, solve_lowest_modes_matrix_free
+from .modal import LANCZOS_TOLERANCE_PER_CG, solve_lowest_modes_block, solve_lowest_modes_matrix_free
 from .solver_common import ElasticSystemBase
 
 # Node index of each outer face on a (nx_nodes, ny_nodes, nz_nodes[, 3]) node array, and the face's normal component.
@@ -433,6 +434,8 @@ class ElasticSystem3D(ElasticSystemBase):
         if self.dtype != np.float64:
             raise ValueError(f"{self.label()}: the eigenfrequency study needs a double-precision 'linear' pcg solver "
                              '(its inner shift-invert solves), got single')
+        if isinstance(eigen_solver, BlockEigenSolver):
+            return self._lowest_modes_block(density, n_resonances, eigen_solver)
         xp = self.xp
         density = xp.ascontiguousarray(density, dtype=self.dtype)
         free_index = xp.flatnonzero(self.free)
@@ -464,6 +467,72 @@ class ElasticSystem3D(ElasticSystemBase):
                 f'{n_unconverged} inner PCG solve(s) did not converge (last: {solver.last_warning}): the modes are '
                 'inaccurate; raise the linear solver max_iterations')
         return modal_solve
+
+    def _lowest_modes_block(self, density, n_resonances, eigen_solver):
+        """lowest_modes by a block_eigen runtime: K (masked brick product), M (consistent mass) and the preconditioner
+        as block callbacks on full dof rows (0 on fixed dofs), each ONE launch for all its rows (BrickKernels *_rows,
+        multigrid3d.BlockCycle: one thread per (row, node)); float64 rows on the assembled operator, float32 rows
+        (mixed) on float32 copies (the mixed linear solver's when it keeps them, else made here and dropped after).
+        Preconditioner 'multigrid': the linear solver's BrickMultigrid of this assembly (even after its CG guard
+        switched it off: the block iteration only needs it SPD), else a private one built here (block Jacobi with a
+        warning when its build fails), cycled on the block by a BlockCycle of the rows of the first call (regrown if
+        more come); 'jacobi': the reduced node blocks. No inner CG solve, rhs / CG unknown untouched."""
+        xp, kernels, free = self.xp, self.kernels, self.free
+        double = np.dtype(np.float64)
+        single = np.dtype(np.float32)
+        operators = {double: (self.lame_lambda, self.mu, self.widths_device, self.inverse_blocks,
+                              xp.ascontiguousarray(density, dtype=double))}
+
+        def operator_set(dtype):   # (lame_lambda, mu, widths, inverse blocks, density) in the rows' dtype
+            dtype = np.dtype(dtype)
+            if dtype not in operators:
+                if self._single_operator is not None and self.widths_single is not None:
+                    lame_lambda, mu, blocks = self._single_operator
+                    widths = self.widths_single
+                else:
+                    lame_lambda, mu, blocks = (values.astype(single)
+                                               for values in (self.lame_lambda, self.mu, self.inverse_blocks))
+                    widths = tuple(xp.asarray(values, dtype=single) for values in self.widths_host)
+                operators[dtype] = (lame_lambda, mu, widths, blocks, operators[double][4].astype(single))
+            return operators[dtype]
+
+        cycle, preconditioner_text = None, 'block Jacobi'
+        if eigen_solver.preconditioner == 'multigrid':
+            cycle = self.multigrid
+            if cycle is None:
+                lame_lambda, mu, widths, blocks, _ = operator_set(single)
+                cycle = BrickMultigrid(self.element_shape, single, xp)
+                try:
+                    cycle.build(lame_lambda, mu, free, blocks, widths, self.widths_host, kernels)
+                except RuntimeError as error:   # a collapsed coarse operator: block Jacobi
+                    warnings.warn(f'{self.label()}: the multigrid preconditioner of the block eigensolver could not '
+                                  f'be built ({error}); the eigen solve continues with block Jacobi', RuntimeWarning,
+                                  stacklevel=3)
+                    cycle = None
+            if cycle is not None:
+                preconditioner_text = 'multigrid V-cycle'
+        block_cycle = [None]   # BlockCycle of the most rows asked so far
+
+        def stiffness(rows_in, rows_out):
+            lame_lambda, mu, widths, _, _ = operator_set(rows_in.dtype)
+            kernels.product_rows(rows_in, rows_out, lame_lambda, mu, widths, free, masked=True)
+
+        def mass(rows_in, rows_out):
+            _, _, widths, _, rho = operator_set(rows_in.dtype)
+            kernels.mass_product_rows(rows_in, rows_out, rho, widths, free)
+
+        def precondition(rows_in, rows_out):
+            if cycle is None:
+                kernels.precondition_rows(operator_set(rows_in.dtype)[3], rows_in, rows_out)
+                return
+            if block_cycle[0] is None or len(rows_in) > block_cycle[0].capacity:
+                block_cycle[0] = None   # the smaller work rows freed first
+                block_cycle[0] = BlockCycle(cycle, len(rows_in))
+            block_cycle[0].precondition(rows_in, rows_out)   # float32 cycle: float64 rows cast in and out
+
+        # no default_max_iterations: the linear CG limit (thousands) is no cap for block iterations
+        return solve_lowest_modes_block(stiffness, mass, precondition, free, n_resonances, 3, eigen_solver, xp,
+                                        preconditioner_text)
 
 
 def _face(face):

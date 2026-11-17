@@ -266,5 +266,5 @@ EIGENFREQUENCY_SELFTEST_CASES = (
                     'would hide the line-block result). measured = error = the worst item in tolerance units, '
                     'tolerance 1.',
         specs=_line_block_cavity_specs,
-        check=_check_line_block_cavity, heavy=True),
+        check=_check_line_block_cavity),
 )

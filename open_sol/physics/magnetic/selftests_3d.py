@@ -784,7 +784,7 @@ SELFTEST_CASES_3D = (
                      'in h (~6 % coarse, ~3 % fine), so measured = the largest relative deviation of the first-order '
                      'Richardson values (2 fine - coarse), inf unless the fine run beats the coarse one; tolerance '
                      f'{_SPHERE_EXTRAPOLATED_TOLERANCE:g} (far ring error ~ (1/6)^3, staircase scatter).'),
-        specs=_permeable_sphere_runs, check=_check_permeable_sphere, heavy=True),
+        specs=_permeable_sphere_runs, check=_check_permeable_sphere),
     SelfTestCase(
         name='magnet3d_magnetized_sphere',
         label='Magnetostatics 3D: uniformly magnetised sphere',
@@ -795,7 +795,7 @@ SELFTEST_CASES_3D = (
                      'fine run\'s largest relative deviation (no contrast: no first-order staircase term), inf unless '
                      f'below the coarse run\'s; tolerance {_SPHERE_TOLERANCE:g}. Pins the remanence face drives in 3D '
                      'and B, H from the face fluxes inside a magnet.'),
-        specs=_magnetized_sphere_runs, check=_check_magnetized_sphere, heavy=True),
+        specs=_magnetized_sphere_runs, check=_check_magnetized_sphere),
     SelfTestCase(
         name='magnet3d_mirror_parity',
         label='Magnetostatics 3D: half models on symmetry and insulation planes',
@@ -866,7 +866,7 @@ SELFTEST_CASES_3D = (
                      f'{_AXI_SENSOR[1] * 1e6:g} um below the core tip; multigrid pcg. error = the largest relative '
                      f'difference over {_AXI_TOLERANCE:g} (staircased core and winding, box vs cylinder outer face; '
                      'first estimate); tolerance 1. Not run yet.'),
-        specs=lambda: {'3d': _axi_3d_spec(), '2d': _axi_2d_spec()}, check=_check_vs_axisymmetric, heavy=True),
+        specs=lambda: {'3d': _axi_3d_spec(), '2d': _axi_2d_spec()}, check=_check_vs_axisymmetric),
 )
 
 

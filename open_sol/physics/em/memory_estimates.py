@@ -21,9 +21,17 @@ from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
 from .eigenfrequency import FILTER_BLOCK_COLUMNS, WIDENING_BASIS_RESERVE
 
-# FDFD assembly peak (operators.helmholtz_operator at the y-product sum): the x product (3 entries per row), the
-# column-scaled dy_e copy (2) and the y product (3) beside their sum (5: the Helmholtz run item's size, not yet made)
-_FDFD_ASSEMBLY_CSR_ROWS = (3, 2, 3)
+# FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
+# 5 operator entries; kept int32: 3 per product term, the first term of each entry, (entry, term) of the other terms
+# and the pattern (indices + indptr)
+_FDFD_PLAN_TERMS, _FDFD_OPERATOR_ROW, _FDFD_PRODUCT_TERMS = 9, 5, 8
+_INT64_BYTES = 8
+_FDFD_PLAN_BYTES = INT32_BYTES * (3 * _FDFD_PRODUCT_TERMS + _FDFD_OPERATOR_ROW
+                                  + 2 * (_FDFD_PLAN_TERMS - _FDFD_OPERATOR_ROW) + _FDFD_OPERATOR_ROW + 1)
+# assembly peak per cell: the plan build's sort (int32 rows / columns, int64 order + argsort result, the gathered rows
+# per term; first assembly) over a later omega's term buffer (complex128 per term + one gathered 4-per-row factor)
+_FDFD_ASSEMBLY_BYTES = max(_FDFD_PLAN_TERMS * (3 * INT32_BYTES + 2 * _INT64_BYTES),
+                           (_FDFD_PLAN_TERMS + 4) * COMPLEX128_BYTES)
 # Run phases (MemoryEstimate.transient_items) of the frequency-domain engines; never alive at the same time
 ASSEMBLY_PHASE = 'assembly'                 # operator assembly temporaries (the system itself is a run item)
 SOLVE_PHASE = 'solve'                       # one solve's material temporaries, an own (not kept) factor's copies
@@ -96,21 +104,42 @@ def _bor_factor_entries(nr, nz, coupled) -> int:
             + element_dissection_pairs(np.vstack((a_r[:, :2], a_z[:, :2])), points))
 
 
-def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec):
+def _arnoldi_item(host_items, transient_items, unknowns, basis, context, device_matvec, real=False):
     """Append an eigs caller's Arnoldi basis: a device EIGEN_PHASE item where the gpu backend runs the device
-    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor), else a host item."""
+    Krylov-Schur (arpack_shift_invert.arnoldi_basis_bytes; device_matvec: a cuDSS factor), else a host item (real: the
+    float64 basis of real ARPACK)."""
     on_device, basis_bytes = arnoldi_basis_bytes(unknowns, basis, solver_backend(context.spec),
-                                                 device_matvec=device_matvec)
+                                                 device_matvec=device_matvec, real=real)
     if on_device:
         transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({basis + 1} complex128 rows + 2 work '
                                              'vectors)', basis_bytes))
     else:
-        host_items.append((f'Arnoldi basis ({basis} vectors)', basis_bytes))
+        host_items.append((f'Arnoldi basis ({basis} {"float64" if real else "complex128"} vectors)', basis_bytes))
 
 
-def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries):
+def real_cross_section_operator(settings_values, context):
+    """True when em_modes' cross-section operator has no imaginary part (estimators, Memory / TimeContext; the solve
+    tests the assembled operator): no cpml face, no Bloch phase, no sigma_e / sigma_m and no Drude / Lorentz poles."""
+    from .cross_section_modes import cpml_cross_section
+    if cpml_cross_section(settings_values) or bloch_active_axes(settings_values):
+        return False
+    if context.material_sets('sigma_e') or context.material_sets('sigma_m'):
+        return False
+    from ...materials import effective_material_data   # lazy: materials imports physics.em
+    for material in context.spec.materials:
+        try:
+            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
+        except (ValueError, KeyError, TypeError):   # reported by validate
+            continue
+        if dispersion:
+            return False
+    return True
+
+
+def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None):
     """(host items, EIGEN_PHASE transient items) of eigenfrequency.solve_resonances: the device Krylov-Schur basis
-    (room for one widening) or ARPACK's host basis, the host eigenvectors, on the gpu the resonance filter's copies."""
+    (room for one widening) or ARPACK's host basis, the host eigenvectors, on the gpu the resonance filter's copies
+    (scaled_block: the D v block of a polished search, None = own_cudss)."""
     gpu = backend == 'gpu'
     vector_bytes = COMPLEX128_BYTES * int(unknowns)
     host_items = [(f'eigenvectors ({n_wanted} x complex128)', n_wanted * vector_bytes)]
@@ -123,20 +152,21 @@ def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filt
         host_items.append((f'Arnoldi basis ({n_basis} vectors)', n_basis * vector_bytes))
     if gpu:   # sparse A, B / W copies; column blocks of at most n_wanted Ritz vectors (+ D v of an own cuDSS factor)
         columns = min(FILTER_BLOCK_COLUMNS, max(int(n_wanted), 1))
-        blocks = _FILTER_BLOCKS + (1 if own_cudss else 0)
+        blocks = _FILTER_BLOCKS + (1 if (own_cudss if scaled_block is None else scaled_block) else 0)
         transient_items.append((EIGEN_PHASE, f'resonance filter: device operator copies (sparse complex128) and '
                                              f'{blocks} column blocks', int(filter_entries) * COMPLEX128_CSR_ENTRY_BYTES
                                 + blocks * columns * vector_bytes))
     return host_items, transient_items
 
 
-def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0):
+def _resonance_search(context, n_resonances, unknowns, own_cudss, filter_entries, basis_per_wanted=0,
+                      scaled_block=None):
     """resonance_search_items on the run backend of a search for n_resonances: 2 n_resonances + 10 wanted (within 1 ..
     unknowns - 2), the Arnoldi basis of the eigen subspace_size, else basis_per_wanted x wanted, else scipy's."""
     n_wanted = max(min(2 * n_resonances + 10, unknowns - 2), 1)
     n_basis = arnoldi_basis_size(n_wanted, unknowns, eigen_subspace_size(context.solvers), basis_per_wanted * n_wanted)
     return resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis, own_cudss=own_cudss,
-                                  filter_entries=filter_entries)
+                                  filter_entries=filter_entries, scaled_block=scaled_block)
 
 
 def cudss_factor_items(label, n_unknowns, entries, dimensions=2, mixed=False, general=False, value_bytes=16):
@@ -363,13 +393,14 @@ def fdfd_memory_estimate(polarization):
                                                for box_cells, n_drude, n_lorentz in _pole_regions(context)))]
         solution_bytes = 3 * COMPLEX128_BYTES * n_cells
         run_items = [('solution and face fields (3 x complex128)', solution_bytes),
-                     ('Yee operators (4 sparse complex128)',
-                      4 * (2 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
+                     ('Yee operators (4 sparse complex128) and their kept kron entry maps (int32)',
+                      4 * (2 * (COMPLEX128_CSR_ENTRY_BYTES + INT32_BYTES) + sparse_row) * n_cells),
+                     ('kept Helmholtz term plan (int32; polar grids have none)', _FDFD_PLAN_BYTES * n_cells),
                      ('Helmholtz operator (sparse complex128)',
                       (5 * COMPLEX128_CSR_ENTRY_BYTES + sparse_row) * n_cells),
                      (f'system arrays ({n_system_arrays} x complex128)', n_system_arrays * COMPLEX128_BYTES * n_cells)]
         # _assemble: the old system is dropped first; a single solve assembles before its solution and factor exist
-        assembly_bytes = sum(COMPLEX128_CSR_ENTRY_BYTES * rows + sparse_row for rows in _FDFD_ASSEMBLY_CSR_ROWS) * n_cells
+        assembly_bytes = _FDFD_ASSEMBLY_BYTES * n_cells
         single_solve = not later_factorisations(context)
         later_bytes = solution_bytes   # run items made after a single solve's assembly
         transient_items = []
@@ -423,7 +454,7 @@ def fdfd_memory_estimate(polarization):
             run_items += line_block_items
         run_items += off_diagonal_run
         host_items += off_diagonal_host if superlu_host else []
-        transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (x / y products, the scaled dy_e copy)'
+        transient_items.append((ASSEMBLY_PHASE, 'Helmholtz assembly (term plan build sort / term buffer)'
                                 + (' before the solution and factor exist' if single_solve else ''),
                                 phase_before_items(assembly_bytes, later_bytes if single_solve else 0)))
         return MemoryEstimate.from_items(items, host_items=host_items, run_items=run_items,
@@ -508,7 +539,9 @@ def _eigen_items(context, n_cells, sparse_row, superlu=True):
     factor = (host_factor_items(factorization, 'eigen SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
                                 n_cells, 5 * n_cells, symmetric=True, eigen=True)
               if superlu and not own_cudss else [])
-    search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells)
+    # any factor may be Rayleigh-polished (E2: a complex A with a measured symmetrizer): the D v block booked always
+    search_host, transient_items = _resonance_search(context, n_resonances, n_cells, own_cudss, 5 * n_cells,
+                                                     scaled_block=True)
     external_items, external_extra = [], 0
     if own_cudss:
         mixed = eigen_mixed(factorization, n_cells)
@@ -531,8 +564,8 @@ def modes_memory_estimate(settings_values, mesh, context):
     n_cells = int(mesh.n_cells)
     unknowns = 2 * n_cells   # mirrors halve it: an upper figure
     n_modes = int(settings_values.get('n_modes', 4))
-    n_eigen = min(2 * n_modes + 10, max(unknowns - 2, 1))
-    from .cross_section_modes import cpml_cross_section, mode_default_basis
+    from .cross_section_modes import cpml_cross_section, mode_default_basis, mode_eigen_count
+    n_eigen = max(mode_eigen_count(n_modes, unknowns), 1)   # wide, an upper figure: lossless solves ask n_modes + 4
     arnoldi_vectors = arnoldi_basis_size(n_eigen, unknowns, eigen_subspace_size(context.solvers),
                                          mode_default_basis(n_eigen, cpml_cross_section(settings_values)))
     factorization = eigen_factorization(context.solvers)
@@ -545,15 +578,18 @@ def modes_memory_estimate(settings_values, mesh, context):
     # mode solve after them (Krylov basis, an own cuDSS factor) never overlaps
     transient_items = [(SOLVE_PHASE, 'material temporaries per solve (one eps component at a time, mu: 3 x '
                                      'complex128)', 3 * COMPLEX128_BYTES * n_cells)]
-    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device)
+    shifted = (context.solvers or {}).get('shifted')
+    line_block = shifted is not None and shifted.solver_type.name == 'line_block'
+    # E1: an own factor of a real operator is float64 and host ARPACK runs real (float64 basis)
+    real = not line_block and real_cross_section_operator(settings_values, context)
+    _arnoldi_item(host_items, transient_items, unknowns, arnoldi_vectors, context, on_device, real=real)
     if on_device:   # cross_section_modes.solve_prepared_modes: an own LU per solve (no plan reuse), dropped after it
         mixed = eigen_mixed(factorization, unknowns)
         transient_items.append((EIGEN_PHASE, 'cuDSS operator copy and solve vectors',
                                 cudss_own_factor_bytes(unknowns, 9 * unknowns, mixed, symmetric=False)))
         external_items, external_extra = cudss_factor_items('the shifted mode operator', unknowns, 9 * unknowns,
                                                             mixed=mixed, general=True)
-    shifted = (context.solvers or {}).get('shifted')
-    if shifted is not None and shifted.solver_type.name == 'line_block':   # ModePhysics line-block batches
+    if line_block:   # ModePhysics line-block batches
         from .cross_section_modes import line_block_bytes
         from .fdfd_line_block import MAX_BATCH_WAVELENGTHS
         per_solve = 3 if settings_values.get('group_index') else 1
@@ -566,7 +602,11 @@ def modes_memory_estimate(settings_values, mesh, context):
         host_items.append((f'kept problems of the batch ({n_operators} x operators A - shift B, A)',
                            (n_operators - 1) * operator_bytes))
     elif not on_device:   # MUMPS / PARDISO: an LU (the Yee cross-section operator is not complex symmetric)
-        host_items[:0] = host_factor_items(factorization, 'SuperLU L + U factors (heuristic)', host_lu_bytes(unknowns),
+        from ...core.memory_estimate import host_real_lu_bytes
+        real_superlu = real and factorization not in HOST_DIRECT_FACTORIZATIONS   # host direct: kept complex (scaled)
+        host_items[:0] = host_factor_items(factorization, 'SuperLU L + U factors (float64, heuristic)' if real_superlu
+                                           else 'SuperLU L + U factors (heuristic)',
+                                           host_real_lu_bytes(unknowns) if real_superlu else host_lu_bytes(unknowns),
                                            unknowns, 9 * unknowns, symmetric=False, eigen=True)
     return MemoryEstimate.from_items((('mode fields (9 x float32)', 9 * FLOAT32_BYTES * n_cells),),
                                      host_items=host_items, run_items=run_items, transient_items=transient_items,
@@ -582,7 +622,8 @@ def _modes_fem_memory_estimate(settings_values, mesh, context):
     n_elements = int(mesh.n_elements)
     unknowns = estimated_unknowns(n_elements, int(mesh.n_edges), int(mesh.n_nodes), order)
     n_modes = int(settings_values.get('n_modes', 4))
-    n_eigen = min(2 * n_modes + 10, max(unknowns - 2, 1))
+    from .cross_section_modes import mode_eigen_count
+    n_eigen = max(mode_eigen_count(n_modes, unknowns), 1)   # fem_modes.solve_fem_modes asks the wide 2 n + 10 too
     arnoldi_vectors = arnoldi_basis_size(n_eigen, unknowns, eigen_subspace_size(context.solvers))
     # candidates of one solve are built as modes before the PML / rank selection: coefficients + 4 sample fields
     mode_bytes = COMPLEX128_BYTES * (unknowns + 4 * SAMPLE_POINTS * n_elements)

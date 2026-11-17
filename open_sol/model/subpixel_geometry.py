@@ -33,6 +33,7 @@ _BUFFER_BYTES_PER_LOCATION = 4 * FLOAT32_BYTES   # physics/em/subpixel_smoothing
 # its float64 distance sum and bool result over its bounding box, here taken as the whole strip)
 _STRIP_BYTES_PER_SAMPLE = 12
 _CHUNK_BYTES_PER_SAMPLE = 40   # normal window: int16 values, bool masks, float32 areas, float64 radii
+_GATHER_BYTES_PER_SAMPLE = 4   # a pending batch's gathered window: int16 values + its rows' x widths / positions
 _SET_FIELDS = {'location': 'int64', 'cell_a': 'int32', 'cell_b': 'int32', 'fill': 'float32',
                'normal_square': 'float32', 'upper_cell': 'int32', 'lower_share': 'float32', 'upper_share': 'float32'}
 # Candidate representative cells per kind: (di, dj) from the location's lower cell, and the centre offset in cells.
@@ -41,6 +42,9 @@ _CANDIDATES = {
     'faces_y': [((di, dj), (di, dj - 0.5)) for di in (0, -1, 1) for dj in (0, 1, -1, 2)],
     'faces_x': [((di, dj), (di - 0.5, dj)) for di in (0, 1, -1, 2) for dj in (0, -1, 1)],
 }
+# Slots of the candidates in a location's flat 4 x 4 coarse neighbourhood (cells -1 .. 2 from its lower cell).
+_NEAR_SLOTS = {kind: np.array([(di + 1) * 4 + dj + 1 for (di, dj), _ in offsets], dtype=np.int64)
+               for kind, offsets in _CANDIDATES.items()}
 
 
 def interface_geometry(ctx):
@@ -58,8 +62,14 @@ def build_interface_geometry(domain, shapes, expanded_selections, coarse_index, 
     """InterfaceGeometry of a 2D Domain from resolved shapes, the materials' expanded selections and the int16 (nx, ny)
     paint_material_index of the build (1 + winning material, 0 none; its array module is the result's); rasters =
     ((sx, sy), ...) even counts; z = the height of a 3D cross-section (None: 2D)."""
+    return build_section_geometries(domain, shapes, expanded_selections, [(z, coarse_index)], rasters)[0]
+
+
+def build_section_geometries(domain, shapes, expanded_selections, sections, rasters=RASTERS) -> list:
+    """[InterfaceGeometry] of cross-sections [(z, int16 coarse index)] of one plane (build_interface_geometry each):
+    every section's locations of one kind and raster share the gather batches (3D one-layer runs hold few each)."""
     from ..physics.em.yee_grid import face_shares, grid_cell_widths
-    xp = array_module_of(coarse_index)
+    xp = array_module_of(sections[0][1])
     nx, ny = domain.grid.nx, domain.grid.ny
     config = domain.boundary_config
     periodic = (bool(getattr(config, 'periodic_x', False)), bool(getattr(config, 'periodic_y', False)))
@@ -74,21 +84,34 @@ def build_interface_geometry(domain, shapes, expanded_selections, coarse_index, 
             raise ValueError(f'raster samples per cell must be even integers >= 2, got {(sx, sy)!r}')
         fine_x = _FineAxis(x_edges, window_x, sx, periodic[0])
         fine_y = _FineAxis(y_edges, window_y, sy, periodic[1])
-        context = _RasterContext(xp, (sx, sy), (nx, ny), periodic, fine_x, fine_y, coarse_index, shares,
+        context = _RasterContext(xp, (sx, sy), (nx, ny), periodic, fine_x, fine_y, shares,
                                  fine_axis=0 if sx >= sy else 1)
         strip_cells = max(1, STRIP_SAMPLES // (sx * sy * ny) - 2 * _HALO_CELLS)
-        for i_start in range(0, nx, strip_cells):
-            i_stop = min(i_start + strip_cells, nx)
-            global_fine = np.arange((i_start - _HALO_CELLS) * sx, (i_stop + _HALO_CELLS) * sx)
-            image = _paint(xp, expanded_selections, shapes, fine_x.wrapped(global_fine), fine_y.coordinates, z)
-            strip = _Strip(context, image, i_start, i_stop, global_fine)
-            for kind in _CANDIDATES:
-                part = strip.locations(kind)
-                if part is not None:
-                    candidates[kind].append(part)
-            del strip, image
-    return InterfaceGeometry(**{kind: _merge(xp, candidates[kind]) for kind in _CANDIDATES},
-                             supersampling=_supersampling(rasters))
+        strip_samples = (min(strip_cells, nx) + 2 * _HALO_CELLS) * sx * fine_y.size
+        limit = LOCATION_CHUNK if len(sections) == 1 else _batch_locations(strip_samples, sx * sy)
+        batches = {kind: _Batch(context, kind, limit, candidates[kind]) for kind in _CANDIDATES}
+        for section, (z, coarse_index) in enumerate(sections):
+            for i_start in range(0, nx, strip_cells):
+                i_stop = min(i_start + strip_cells, nx)
+                global_fine = np.arange((i_start - _HALO_CELLS) * sx, (i_stop + _HALO_CELLS) * sx)
+                image = _paint(xp, expanded_selections, shapes, fine_x.wrapped(global_fine), fine_y.coordinates, z)
+                strip = _Strip(context, image, i_start, i_stop, global_fine, coarse_index, section)
+                for batch in batches.values():
+                    strip.gather(batch)
+                del strip, image
+        for batch in batches.values():
+            batch.flush()
+    merged = {kind: _merge_sections(xp, candidates[kind], len(sections), nx * ny) for kind in _CANDIDATES}
+    supersampling = _supersampling(rasters)
+    return [InterfaceGeometry(**{kind: merged[kind][section] for kind in _CANDIDATES}, supersampling=supersampling)
+            for section in range(len(sections))]
+
+
+def _batch_locations(strip_samples, samples_per_cell) -> int:
+    """Gather batch of several sections: its windows and chunk temporaries stay within one strip's painting bytes
+    (so batching keeps the build peak), at most LOCATION_CHUNK."""
+    window_bytes = (_CHUNK_BYTES_PER_SAMPLE + _GATHER_BYTES_PER_SAMPLE) * 9 * samples_per_cell
+    return int(min(LOCATION_CHUNK, max(1, (_STRIP_BYTES_PER_SAMPLE - 2) * strip_samples // window_bytes)))
 
 
 def _supersampling(rasters) -> tuple:
@@ -132,13 +155,13 @@ class _FineAxis:
 
 
 class _RasterContext:
-    """Grid data shared by the strips of one raster (array module, sampling, run-backend copies of the y axis, coarse
-    index, shares)."""
+    """Grid data shared by the strips of one raster (array module, sampling, run-backend copies of the y axis,
+    shares)."""
 
-    def __init__(self, xp, samples, cells, periodic, fine_x, fine_y, coarse_index, shares, fine_axis):
+    def __init__(self, xp, samples, cells, periodic, fine_x, fine_y, shares, fine_axis):
         self.xp, self.samples, self.cells, self.periodic = xp, samples, cells, periodic
         self.fine_x, self.fine_y = fine_x, fine_y
-        self.coarse_index, self.shares, self.fine_axis = coarse_index, shares, fine_axis
+        self.shares, self.fine_axis = shares, fine_axis
         self.y_widths = xp.asarray(fine_y.sample_widths, dtype=xp.float32)
 
 
@@ -154,19 +177,21 @@ def _paint(xp, expanded_selections, shapes, x_coordinates, y_coordinates, z=None
 
 
 class _Strip:
-    """Fine raster of cells [i_start, i_stop) with _HALO_CELLS on each side and the interface locations it owns."""
+    """Fine raster of cells [i_start, i_stop) of one section with _HALO_CELLS on each side; gathers the normal windows
+    of the mixed locations it owns into the batches."""
 
-    def __init__(self, context, image, i_start, i_stop, global_fine):
+    def __init__(self, context, image, i_start, i_stop, global_fine, coarse_index, section):
         xp = context.xp
         self.context, self.image, self.i_start, self.n_cells = context, image, i_start, i_stop - i_start
+        self.coarse_index, self.section = coarse_index, section
         self.x_widths = xp.asarray(context.fine_x.sample_widths[context.fine_x.index(global_fine)], dtype=xp.float32)
         self.x_unwrapped = xp.asarray(context.fine_x.unwrapped(global_fine))
         self.origin = _HALO_CELLS * context.samples[0]   # fine x index of cell i_start's first sample
 
-    def locations(self, kind):
-        """Candidate arrays (dict of run-backend arrays, 'score' included) of one kind's locations owned by the strip
-        whose averaging volume holds two materials; None when there are none."""
-        context, xp = self.context, self.context.xp
+    def gather(self, batch):
+        """Add to the batch the windows of its kind's locations owned by the strip whose averaging volume holds two
+        materials (the batch computes them when full)."""
+        context, xp, kind = self.context, self.context.xp, batch.kind
         sx, sy = context.samples
         n, (nx, ny) = self.n_cells, context.cells
         x_offset = self.origin + (sx // 2 if kind == 'faces_x' else 0)
@@ -180,111 +205,161 @@ class _Strip:
         if kind == 'faces_x' and not context.periodic[0] and self.i_start + n == nx:
             mixed[-1, :] = False   # the last hi-x face of a non-periodic axis is never updated
         block_i, block_j = xp.nonzero(mixed)
-        chunks = [self._chunk(kind, block_i[start:start + LOCATION_CHUNK], block_j[start:start + LOCATION_CHUNK])
-                  for start in range(0, int(block_i.size), LOCATION_CHUNK)]
-        chunks = [chunk for chunk in chunks if chunk is not None]
-        if not chunks:
-            return None
-        return {name: xp.concatenate([chunk[name] for chunk in chunks]) for name in chunks[0]}
+        block_j_host = to_host(block_j).astype(np.int64, copy=False)   # nonzero has synced already
+        start, total = 0, int(block_i.size)
+        while start < total:
+            stop = min(start + batch.room(), total)
+            batch.add(self._windows(kind, block_i[start:stop], block_j[start:stop], block_j_host[start:stop]))
+            start = stop
 
-    def _chunk(self, kind, block_i, block_j):
-        """Fill fraction, normal, score, representatives and face-mean data of a batch of mixed locations."""
+    def _windows(self, kind, block_i, block_j, block_j_host):
+        """Batch arrays of locations: cells, the 3 x 3 cell normal window (image values, x sample widths and unwrapped
+        positions) and the 4 x 4 coarse materials of cells -1 .. 2 from the lower cell."""
         context, xp = self.context, self.context.xp
-        sx, sy = context.samples
+        sx = context.samples[0]
         nx, ny = context.cells
-        size_y = context.fine_y.size
-        rows = xp.arange(block_i.size)
         x_start = self.origin + block_i * sx + (sx // 2 if kind == 'faces_x' else 0)
-        y_start = block_j * sy + (sy // 2 if kind == 'faces_y' else 0)
-
-        # area fractions of the two leading materials (sample areas weight the halves of a dual volume)
-        volume_x = x_start[:, None] + xp.arange(sx)[None, :]
-        volume_y = (y_start[:, None] + xp.arange(sy)[None, :]) % size_y
-        values = self.image[volume_x[:, :, None], volume_y[:, None, :]]
-        areas = self.x_widths[volume_x][:, :, None] * context.y_widths[volume_y][:, None, :]
-        present = xp.unique(values)
-        counts = xp.stack([(areas * (values == material)).sum(axis=(1, 2)) for material in present.tolist()])
-        del values, areas
-        first = xp.argmax(counts, axis=0)
-        count_a = counts[first, rows]
-        counts[first, rows] = -1.0
-        second = xp.argmax(counts, axis=0)
-        count_b = xp.maximum(counts[second, rows], 0.0)
-        material_a, material_b = present[first], present[second]
-        fill = (count_a / xp.maximum(count_a + count_b, 1e-30)).astype(xp.float32)
-
-        # location centre (between the two middle samples), local cell widths, normal of material a
-        centre_x = 0.5 * (self.x_unwrapped[x_start + sx // 2 - 1] + self.x_unwrapped[x_start + sx // 2])
-        y_middle = to_host(y_start + sy // 2)
-        centre_y = xp.asarray(0.5 * (context.fine_y.unwrapped(y_middle - 1) + context.fine_y.unwrapped(y_middle)))
-        width_x = self.x_widths[x_start] * sx
-        width_y = context.y_widths[y_start % size_y] * sy
-        normal_x, normal_y = self._normal(material_a, x_start, y_start, centre_x, centre_y,
-                                          xp.minimum(width_x, width_y) * _NORMAL_RADIUS_CELLS)
-        score = xp.abs(normal_x if context.fine_axis == 0 else normal_y)
-        if kind == 'cells':
-            normal_square = xp.zeros(block_i.size, dtype=xp.float32)
-        else:
-            normal_square = ((normal_x if kind == 'faces_y' else normal_y) ** 2).astype(xp.float32)
-
-        # representative cells: the nearest candidate whose build material is a (b)
-        cell_i = self.i_start + block_i
-        candidate_i = xp.stack([_wrap_cells(xp, cell_i + di, nx, context.periodic[0])
-                                for (di, _), _ in _CANDIDATES[kind]], axis=1)
-        candidate_j = xp.stack([_wrap_cells(xp, block_j + dj, ny, context.periodic[1])
-                                for (_, dj), _ in _CANDIDATES[kind]], axis=1)
-        distance = xp.stack([(offset_x * width_x) ** 2 + (offset_y * width_y) ** 2
-                             for _, (offset_x, offset_y) in _CANDIDATES[kind]], axis=1)
-        candidate_material = context.coarse_index[candidate_i, candidate_j]
-        cell_a, found_a = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_a[:, None],
-                                   ny)
-        cell_b, found_b = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_b[:, None],
-                                   ny)
-        keep = found_a & found_b & (count_b > 0.0)
-        if not bool(keep.any()):
-            return None
-
-        location = cell_i * ny + block_j
-        if kind == 'cells':
-            upper = location
-            lower_share = xp.ones(block_i.size, dtype=xp.float32)
-            upper_share = xp.zeros(block_i.size, dtype=xp.float32)
-        else:
-            if kind == 'faces_y':
-                upper, along = cell_i * ny + _wrap_cells(xp, block_j + 1, ny, True), block_j
-            else:
-                upper, along = _wrap_cells(xp, cell_i + 1, nx, True) * ny + block_j, cell_i
-            lower_share, upper_share = (share[along] for share in context.shares[kind])
-        chunk = {'location': location, 'cell_a': cell_a, 'cell_b': cell_b, 'fill': fill,
-                 'normal_square': normal_square, 'upper_cell': upper, 'lower_share': lower_share,
-                 'upper_share': upper_share, 'score': score}
-        return {name: array[keep] for name, array in chunk.items()}
-
-    def _normal(self, material_a, x_start, y_start, centre_x, centre_y, radius):
-        """(n_x, n_y) float64 unit normal from the first moment of material a with the radial weight (1 - r^2 / R^2)+
-        over the 3 x 3 cell window of fine samples around the location centre (radial symmetry: exact direction for a
-        straight interface); (sqrt(1/2), sqrt(1/2)) where the moment vanishes."""
-        context, xp = self.context, self.context.xp
-        sx, sy = context.samples
         window_x = (x_start - sx)[:, None] + xp.arange(3 * sx)[None, :]
-        window_y_raw = to_host((y_start - sy)[:, None] + xp.arange(3 * sy)[None, :])
-        window_y = xp.asarray(context.fine_y.index(window_y_raw))
-        offset_x = self.x_unwrapped[window_x] - centre_x[:, None]
-        offset_y = xp.asarray(context.fine_y.unwrapped(window_y_raw)) - centre_y[:, None]
-        radius_square = offset_x[:, :, None] ** 2 + offset_y[:, None, :] ** 2
-        weights = xp.maximum(1.0 - radius_square / (radius ** 2)[:, None, None], 0.0)
-        weights *= self.x_widths[window_x][:, :, None] * context.y_widths[window_y][:, None, :]
-        scale = (weights * xp.sqrt(radius_square)).sum(axis=(1, 2))
-        del radius_square
-        weights *= self.image[window_x[:, :, None], window_y[:, None, :]] == material_a[:, None, None]
-        moment_x = (weights * offset_x[:, :, None]).sum(axis=(1, 2))
-        moment_y = (weights * offset_y[:, None, :]).sum(axis=(1, 2))
-        length = xp.sqrt(moment_x ** 2 + moment_y ** 2)
-        degenerate = length <= _DEGENERATE_MOMENT * scale
-        safe_length = xp.where(degenerate, 1.0, length)
-        diagonal = math.sqrt(0.5)
-        return (xp.where(degenerate, diagonal, moment_x / safe_length),
-                xp.where(degenerate, diagonal, moment_y / safe_length))
+        window_y = _y_window(context, kind, block_j_host)[2]
+        cell_i = self.i_start + block_i
+        near = xp.arange(-1, 3, dtype=xp.int64)[None, :]
+        near_i = _wrap_cells(xp, cell_i[:, None] + near, nx, context.periodic[0])
+        near_j = _wrap_cells(xp, block_j[:, None] + near, ny, context.periodic[1])
+        return {'cell_i': cell_i, 'block_j': block_j, 'block_j_host': block_j_host,
+                'section': xp.full(block_i.size, self.section, dtype=xp.int64),
+                'values': self.image[window_x[:, :, None], window_y[:, None, :]],
+                'x_widths': self.x_widths[window_x], 'x_unwrapped': self.x_unwrapped[window_x],
+                'near_material': self.coarse_index[near_i[:, :, None], near_j[:, None, :]]}
+
+
+def _y_window(context, kind, block_j_host):
+    """(host y_start of the locations, host raw fine y indices of their 3-cell normal window, its stored index on the
+    run backend)."""
+    sy = context.samples[1]
+    y_start = block_j_host * sy + (sy // 2 if kind == 'faces_y' else 0)
+    raw = (y_start - sy)[:, None] + np.arange(3 * sy, dtype=np.int64)[None, :]
+    return y_start, raw, context.xp.asarray(context.fine_y.index(raw))
+
+
+class _Batch:
+    """Gathered windows of at most `limit` mixed locations of one kind and raster (any strips and sections); flush
+    appends their _chunk candidates to the kind's parts."""
+
+    def __init__(self, context, kind, limit, parts):
+        self.context, self.kind, self.limit, self.parts = context, kind, limit, parts
+        self.pending, self.count = [], 0
+
+    def room(self) -> int:
+        return self.limit - self.count
+
+    def add(self, gathered):
+        self.pending.append(gathered)
+        self.count += gathered['block_j_host'].size
+        if self.count >= self.limit:
+            self.flush()
+
+    def flush(self):
+        if not self.pending:
+            return
+        pending, xp = self.pending, self.context.xp
+        self.pending, self.count = [], 0
+        joined = pending[0] if len(pending) == 1 else {
+            name: (np if name == 'block_j_host' else xp).concatenate([part[name] for part in pending])
+            for name in pending[0]}
+        del pending
+        self.parts.append(_chunk(self.context, self.kind, joined))
+
+
+def _chunk(context, kind, batch):
+    """Candidate arrays ('score' and 'section' included) of a batch's locations whose averaging volume holds two
+    materials: fill fraction, normal, score, representatives and face-mean data."""
+    xp = context.xp
+    sx, sy = context.samples
+    nx, ny = context.cells
+    cell_i, block_j = batch['cell_i'], batch['block_j']
+    window_x_widths, window_x_unwrapped = batch['x_widths'], batch['x_unwrapped']
+    rows = xp.arange(cell_i.size)
+    y_start, window_y_raw, window_y = _y_window(context, kind, batch['block_j_host'])
+    window_y_widths = context.y_widths[window_y]
+
+    # area fractions of the two leading materials (sample areas weight the halves of a dual volume)
+    values = batch['values'][:, sx:2 * sx, sy:2 * sy]
+    areas = window_x_widths[:, sx:2 * sx][:, :, None] * window_y_widths[:, sy:2 * sy][:, None, :]
+    present = xp.unique(values)
+    counts = xp.stack([(areas * (values == material)).sum(axis=(1, 2)) for material in present.tolist()])
+    del values, areas
+    first = xp.argmax(counts, axis=0)
+    count_a = counts[first, rows]
+    counts[first, rows] = -1.0
+    second = xp.argmax(counts, axis=0)
+    count_b = xp.maximum(counts[second, rows], 0.0)
+    material_a, material_b = present[first], present[second]
+    fill = (count_a / xp.maximum(count_a + count_b, 1e-30)).astype(xp.float32)
+
+    # location centre (between the two middle samples), local cell widths, normal of material a
+    centre_x = 0.5 * (window_x_unwrapped[:, sx + sx // 2 - 1] + window_x_unwrapped[:, sx + sx // 2])
+    y_middle = y_start + sy // 2
+    centre_y = xp.asarray(0.5 * (context.fine_y.unwrapped(y_middle - 1) + context.fine_y.unwrapped(y_middle)))
+    width_x = window_x_widths[:, sx] * sx
+    width_y = window_y_widths[:, sy] * sy
+    normal_x, normal_y = _normal(context, material_a, batch, window_y_raw, window_y_widths, centre_x, centre_y,
+                                 xp.minimum(width_x, width_y) * _NORMAL_RADIUS_CELLS)
+    score = xp.abs(normal_x if context.fine_axis == 0 else normal_y)
+    if kind == 'cells':
+        normal_square = xp.zeros(cell_i.size, dtype=xp.float32)
+    else:
+        normal_square = ((normal_x if kind == 'faces_y' else normal_y) ** 2).astype(xp.float32)
+
+    # representative cells: the nearest candidate whose build material is a (b)
+    candidate_i = xp.stack([_wrap_cells(xp, cell_i + di, nx, context.periodic[0])
+                            for (di, _), _ in _CANDIDATES[kind]], axis=1)
+    candidate_j = xp.stack([_wrap_cells(xp, block_j + dj, ny, context.periodic[1])
+                            for (_, dj), _ in _CANDIDATES[kind]], axis=1)
+    distance = xp.stack([(offset_x * width_x) ** 2 + (offset_y * width_y) ** 2
+                         for _, (offset_x, offset_y) in _CANDIDATES[kind]], axis=1)
+    candidate_material = batch['near_material'].reshape(cell_i.size, 16)[:, xp.asarray(_NEAR_SLOTS[kind])]
+    cell_a, found_a = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_a[:, None], ny)
+    cell_b, found_b = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_b[:, None], ny)
+    keep = found_a & found_b & (count_b > 0.0)
+
+    location = cell_i * ny + block_j
+    if kind == 'cells':
+        upper = location
+        lower_share = xp.ones(cell_i.size, dtype=xp.float32)
+        upper_share = xp.zeros(cell_i.size, dtype=xp.float32)
+    else:
+        if kind == 'faces_y':
+            upper, along = cell_i * ny + _wrap_cells(xp, block_j + 1, ny, True), block_j
+        else:
+            upper, along = _wrap_cells(xp, cell_i + 1, nx, True) * ny + block_j, cell_i
+        lower_share, upper_share = (share[along] for share in context.shares[kind])
+    chunk = {'location': location, 'cell_a': cell_a, 'cell_b': cell_b, 'fill': fill,
+             'normal_square': normal_square, 'upper_cell': upper, 'lower_share': lower_share,
+             'upper_share': upper_share, 'score': score, 'section': batch['section']}
+    return {name: array[keep] for name, array in chunk.items()}
+
+
+def _normal(context, material_a, batch, window_y_raw, window_y_widths, centre_x, centre_y, radius):
+    """(n_x, n_y) float64 unit normal from the first moment of material a with the radial weight (1 - r^2 / R^2)+
+    over the batch's 3 x 3 cell windows of fine samples around the location centres (radial symmetry: exact direction
+    for a straight interface); (sqrt(1/2), sqrt(1/2)) where the moment vanishes."""
+    xp = context.xp
+    offset_x = batch['x_unwrapped'] - centre_x[:, None]
+    offset_y = xp.asarray(context.fine_y.unwrapped(window_y_raw)) - centre_y[:, None]
+    radius_square = offset_x[:, :, None] ** 2 + offset_y[:, None, :] ** 2
+    weights = xp.maximum(1.0 - radius_square / (radius ** 2)[:, None, None], 0.0)
+    weights *= batch['x_widths'][:, :, None] * window_y_widths[:, None, :]
+    scale = (weights * xp.sqrt(radius_square)).sum(axis=(1, 2))
+    del radius_square
+    weights *= batch['values'] == material_a[:, None, None]
+    moment_x = (weights * offset_x[:, :, None]).sum(axis=(1, 2))
+    moment_y = (weights * offset_y[:, None, :]).sum(axis=(1, 2))
+    length = xp.sqrt(moment_x ** 2 + moment_y ** 2)
+    degenerate = length <= _DEGENERATE_MOMENT * scale
+    safe_length = xp.where(degenerate, 1.0, length)
+    diagonal = math.sqrt(0.5)
+    return (xp.where(degenerate, diagonal, moment_x / safe_length),
+            xp.where(degenerate, diagonal, moment_y / safe_length))
 
 
 def _wrap_cells(xp, index, count, periodic):
@@ -316,6 +391,18 @@ def _merge(xp, parts, fields=None, set_class=None):
     first[1:] = location[1:] != location[:-1]
     chosen = order[first]
     return set_class(**{name: xp.ascontiguousarray(joined[name][chosen].astype(dtype)) for name, dtype in fields.items()})
+
+
+def _merge_sections(xp, parts, n_sections, plane_cells) -> list:
+    """Per section the _merge InterfaceSet of candidate parts carrying a 'section' index (one merge on the key
+    section x plane_cells + location, then split)."""
+    if n_sections == 1:
+        return [_merge(xp, parts)]
+    merged = _merge(xp, [dict(part, location=part['section'] * plane_cells + part['location']) for part in parts])
+    bounds = to_host(xp.searchsorted(merged.location, xp.arange(n_sections + 1, dtype=xp.int64) * plane_cells))
+    return [InterfaceSet(**{name: (merged.location[start:stop] - section * plane_cells if name == 'location'
+                                   else getattr(merged, name)[start:stop]) for name in _SET_FIELDS})
+            for section, (start, stop) in enumerate(zip(bounds[:-1].tolist(), bounds[1:].tolist()))]
 
 
 # ---- 3D (em_fdtd_3d): in-plane geometry per z run + horizontal interfaces sampled across run boundaries ----
@@ -364,26 +451,40 @@ def build_interface_geometry_3d(domain, shapes, expanded_selections, rasters=RAS
                     if name in shapes and GEOMETRY_KINDS[shapes[name].kind].entity_kind == 'domain'})
     candidates = {kind: [] for kind in _KINDS_3D}
     if names:
-        reuse, painted = {}, {}   # painted: the last few images by cross-section key (plain stacks repeat 2)
+        # painted: the last few images by (box, cross-section key) (plain stacks repeat 2); box_reuse: rasterizer reuse
+        # of the current box only
+        reuse, painted, box_reuse = {}, {}, {'box': None, 'reuse': {}}
 
-        def coarse_at(z):
+        def coarse_at(z, box=None):
+            """int16 coarse paint index of the cross-section at height z: (nx, ny), or of box = (i0, i1, j0, j1)
+            only (the box's centres rasterised; a cached full image is sliced)."""
             key = tuple(cross_section_key(name, shapes, float(z)) for name in names)
-            if key not in painted:
-                object_mask = domain_object_rasterizer(shapes, x_centres, y_centres, xp, z=float(z), reuse=reuse)
-                if len(painted) >= _PAINTED_KEPT:
-                    painted.pop(next(iter(painted)))
-                painted[key] = paint_material_index(expanded_selections, object_mask, (nx, ny), xp)
-            return painted[key]
+            if (box, key) in painted:
+                return painted[(box, key)]
+            if box is not None and (None, key) in painted:
+                return painted[(None, key)][box[0]:box[1], box[2]:box[3]]
+            if box is None:
+                centres, shape, object_reuse = (x_centres, y_centres), (nx, ny), reuse
+            else:
+                if box_reuse['box'] != box:
+                    box_reuse['box'], box_reuse['reuse'] = box, {}
+                centres = (x_centres[box[0]:box[1]], y_centres[box[2]:box[3]])
+                shape, object_reuse = (box[1] - box[0], box[3] - box[2]), box_reuse['reuse']
+            object_mask = domain_object_rasterizer(shapes, *centres, xp, z=float(z), reuse=object_reuse)
+            if len(painted) >= _PAINTED_KEPT:
+                painted.pop(next(iter(painted)))
+            painted[(box, key)] = paint_material_index(expanded_selections, object_mask, shape, xp)
+            return painted[(box, key)]
 
         periodic_z = _periodic(domain.boundary_config, 'z')
         plane = _PlaneView(domain)
         runs = cross_section_runs(names, shapes, z_centres)
-        run_data = []   # per run: (coarse int16 (nx, ny) at the run's centres, 2D InterfaceGeometry)
-        for k_start, k_stop in runs:
-            z = float(z_centres[k_start])
-            coarse = coarse_at(z)
-            geometry = build_interface_geometry(plane, shapes, expanded_selections, coarse, rasters, z=z)
-            run_data.append((coarse, geometry))
+        sections = [(float(z_centres[k_start]), coarse_at(float(z_centres[k_start]))) for k_start, _ in runs]
+        geometries = build_section_geometries(plane, shapes, expanded_selections, sections, rasters)
+        # per run: (coarse int16 (nx, ny) at the run's centres, 2D InterfaceGeometry)
+        run_data = [(coarse, geometry) for (_, coarse), geometry in zip(sections, geometries)]
+        del sections, geometries
+        for (k_start, k_stop), (_, geometry) in zip(runs, run_data):
             layers = xp.arange(k_start, k_stop, dtype=xp.int64)
             z_layers = layers if periodic_z or k_stop < nz else layers[:-1]   # the last z face is never updated
             for kind, part, layer_set, complement in (('faces_x', geometry.faces_x, layers, True),
@@ -432,21 +533,38 @@ def _boundary_candidates(xp, domain, coarse_at, runs, data, z_samples, candidate
     centre_hi = float(z_centres[ku]) + (period if ku <= kb else 0.0)
     clamp = (float(z_centres[window.start]), float(z_centres[window.stop - 1]))
     periodic_z = _periodic(domain.boundary_config, 'z')
+    # every face below reads the fractions only at columns whose two runs differ (pairs: both columns): sample their
+    # bounding box, zeros elsewhere
+    differ = coarse_a != coarse_b
+    rows_cols = to_host(xp.concatenate((differ.any(axis=1), differ.any(axis=0))))
+    rows, cols = np.flatnonzero(rows_cols[:nx]), np.flatnonzero(rows_cols[nx:])
+    if rows.size == 0:   # no column changes material: only the upper run's in-plane cells on the boundary face
+        candidates['faces_z'].append(_lifted(xp, geometry_b.cells, xp.full(1, kb, dtype=xp.int64),
+                                             xp.full(1, ku, dtype=xp.int64), nz, False, _SCORES['in_plane_upper']))
+        return
+    box = (int(rows[0]), int(rows[-1]) + 1, int(cols[0]), int(cols[-1]) + 1)
+    box_window = (slice(box[0], box[1]), slice(box[2], box[3]))
+    box_a, box_b = coarse_a[box_window], coarse_b[box_window]
 
     def fractions(start, length):
-        """Fractions (nx, ny) of the samples in [start, start + length] holding the lower / upper run's material."""
-        share_a = xp.zeros((nx, ny), dtype=xp.float32)
-        share_b = xp.zeros((nx, ny), dtype=xp.float32)
+        """Fractions (nx, ny) of the samples in [start, start + length] holding the lower / upper run's material (on
+        the box)."""
+        share_a = xp.zeros(box_a.shape, dtype=xp.float32)
+        share_b = xp.zeros(box_a.shape, dtype=xp.float32)
         for sample in range(z_samples):
             height = start + length * (sample + 0.5) / z_samples
             if periodic_z:
                 height = height - period if height > float(z_edges[-1]) else height
             else:
                 height = min(max(height, clamp[0]), clamp[1])
-            image = coarse_at(height)
-            share_a += image == coarse_a
-            share_b += image == coarse_b
-        return share_a / z_samples, share_b / z_samples
+            image = coarse_at(height, box)
+            share_a += image == box_a
+            share_b += image == box_b
+        full_a = xp.zeros((nx, ny), dtype=xp.float32)
+        full_b = xp.zeros((nx, ny), dtype=xp.float32)
+        full_a[box_window] = share_a / z_samples
+        full_b[box_window] = share_b / z_samples
+        return full_a, full_b
 
     length_lo, length_hi = edge - centre_lo, centre_hi - edge
     lower_a, lower_b = fractions(centre_lo, length_lo)   # upper half of cell kb
@@ -565,15 +683,18 @@ _REFRESH_BYTES_PER_LOCATION = 48      # re-quantisation temporaries of a refresh
 
 def _memory_estimate_3d(n_locations, mesh, n_physics) -> MemoryEstimate:
     """3D: interface geometry + per honouring physics the full-grid face index and its per-location arrays; build extra =
-    one cross-section's 2D geometry build (its gather batch: one kind's locations of one z layer, at most
-    LOCATION_CHUNK), both runs' z-sample fractions, the lifted candidates, a refresh."""
+    one cross-section's 2D geometry build (its gather batch: one kind's locations of every run, at most
+    _batch_locations), both runs' z-sample fractions, the lifted candidates, a refresh."""
     n_plane = int(mesh.nx) * int(mesh.ny)
     samples_per_cell = SAMPLES_FINE * SAMPLES_COARSE
     strip_samples = min(STRIP_SAMPLES + 2 * _HALO_CELLS * samples_per_cell * int(mesh.ny), n_plane * samples_per_cell)
-    section_locations = min(LOCATION_CHUNK, max(n_locations // (3 * max(int(mesh.nz), 1)), 1))
-    build_extra = (_STRIP_BYTES_PER_SAMPLE * strip_samples + 4 * n_plane + 6 * FLOAT32_BYTES * n_plane
+    batch_locations = min(_batch_locations(strip_samples, samples_per_cell), max(n_locations // 3, 1))
+    # painting and the gather batch (strip image + windows + chunk temporaries) do not overlap
+    build_extra = (max(_STRIP_BYTES_PER_SAMPLE * strip_samples,
+                       2 * strip_samples + (_CHUNK_BYTES_PER_SAMPLE + _GATHER_BYTES_PER_SAMPLE) * batch_locations * 9
+                       * samples_per_cell)
+                   + 4 * n_plane + 6 * FLOAT32_BYTES * n_plane
                    + 2 * (BYTES_PER_LOCATION_3D + FLOAT32_BYTES) * n_locations
-                   + _CHUNK_BYTES_PER_SAMPLE * section_locations * 9 * samples_per_cell
                    + _REFRESH_BYTES_PER_LOCATION * n_locations)
     face_bytes = _FACE_INDEX_BYTES_PER_CELL * int(mesh.n_cells) + _FACE_BYTES_PER_LOCATION * n_locations
     return MemoryEstimate.from_items((

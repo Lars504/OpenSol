@@ -252,5 +252,5 @@ FREQUENCY_RESPONSE_CASES = (
                     'tolerance 1: this pins the complex host solve, both loss models, the electrode charge and '
                     'current, the admittance sign and the snapshot outputs. Not yet run with 201 frequencies on the '
                     'narrower band (was 601 from 0.85 f_short to f_open + 0.15 f_short; the BVD fit start is the risk).',
-        specs=_bar_specs, check=_check_bar, heavy=True),
+        specs=_bar_specs, check=_check_bar),
 )

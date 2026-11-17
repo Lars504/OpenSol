@@ -42,13 +42,15 @@ _POLE_ITEM_LABEL = 'dispersive poles (weights, cb, J / P)'
 # run-time recipe (calibrate from the selftest time_check of em3d_fdtd_cpu_gpu*, em3d_conformal_pec_cavity): a field
 # kernel launch (~40 arguments) costs ~3 profile launches of host overhead (gpu ~20 us vs the 6.7 us fused floor)
 _FIELD_LAUNCH_WEIGHT = 3
-# per-step launches of a feature (flux DFT: phase + 2 pairs x (E, H) per plane, a box 6 planes; pec_domain none)
-_FEATURE_LAUNCHES = {'flux_plane': 5, 'flux_box': 30, 'far_field': 30, 'mode_monitor': 5, 'mode_source': 6,
+# per-step launches of a feature (flux DFT: phase + 2 pairs x (E, H) per plane, a box 6 planes; mode source: one H and
+# one E pair launch of ~15 arguments; pec_domain none)
+_FEATURE_LAUNCHES = {'flux_plane': 5, 'flux_box': 30, 'far_field': 30, 'mode_monitor': 5, 'mode_source': 3,
                      'plane_wave_source': 10, 'dft_plane': 4, 'pec_domain': 0}
 _DEFAULT_FEATURE_LAUNCHES = 2
 _POLE_LAUNCHES = 6                     # per field set with poles: 3 drive + 3 correction kernels (one pole assumed)
 # numpy field twins (cpu backend without numba), counted from kernels3d with the cached coefficients: numpy passes
-# per field set and step over the grid (update_h ~31, update_e ~34) and per CPML slab cell (cpml_h ~19, cpml_e ~21)
+# per field set and step over the grid (update_h ~31, update_e ~34) and per CPML layer cell (their layer passes:
+# H ~19, E ~21)
 _NUMPY_FIELD_PASSES = 65
 _NUMPY_CPML_PASSES = 40
 _NUMPY_PASSES_PER_LAUNCH = 4           # the cpu 'fused' profile call: 4 numpy passes over 5 float32 arrays
@@ -605,18 +607,22 @@ def _pole_box_cells(region, shape, periodic):
 
 
 def _step_launches(settings_values, context, n_sets):
-    """(kernel launches per step, those of the numba-twinned Yee / CPML kernels): Yee / CPML / conformal field kernels
-    (x their host overhead weight), pole kernels and the features' kernels."""
+    """(kernel launches per step, those of the numba-twinned Yee kernels): Yee (CPML fused in) / conformal field
+    kernels (x their host overhead weight), pole kernels and the features' kernels."""
     features = [feature for feature in context.physics_spec.features if feature.enabled]
     kinds = {feature.type for feature in features}
-    cpml_faces = sum(1 for face in FACES_3D if settings_values.get(f'bc_{face}') == 'cpml')
     conformal = context.spec.solver_defaults.conformal_boundaries is True and 'pec_domain' in kinds
-    # gpu: the field kernels replay from two CUDA graphs (engine3d.STEP_GRAPHS), so they lose their argument overhead
+    # gpu: the field kernels replay from two CUDA graphs (engine3d.STEP_GRAPHS), so they lose their argument overhead;
+    # the CPML psi update runs inside update_h_3d / update_e_3d (kernels3d): no launch of its own, its psi slabs are
+    # streamed once like the fields (memory item 'CPML psi slabs')
     weight = 1 if context.backend == 'gpu' and STEP_GRAPHS else _FIELD_LAUNCH_WEIGHT
-    numba_launches = weight * n_sets * (2 + 2 * cpml_faces)
+    numba_launches = weight * n_sets * 2
     memory_items = context.memory.items if context.memory is not None else ()
     poles = any(label.endswith(_POLE_ITEM_LABEL) and size > 0 for label, size in memory_items)
-    feature_launches = sum(0 if feature.type == 'far_field' and 'flux_box' in kinds   # shares the box's DFTs
+    # gpu: field probes / resonance monitors (FieldProbes) are recorded inside the E graph (core.monitors.FieldProbeRows;
+    # the eager re-sample after an active source, pole or mirror row is not booked)
+    graphed = ('field_probe', 'resonance_monitor') if context.backend == 'gpu' and STEP_GRAPHS else ()
+    feature_launches = sum(0 if (feature.type == 'far_field' and 'flux_box' in kinds) or feature.type in graphed
                            else _FEATURE_LAUNCHES.get(feature.type, _DEFAULT_FEATURE_LAUNCHES) for feature in features)
     launches = (numba_launches + weight * n_sets * (1 if conformal else 0)
                 + (n_sets * _POLE_LAUNCHES if poles else 0) + feature_launches)

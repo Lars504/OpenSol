@@ -437,8 +437,11 @@ class _LineCorrection:
         self.incident_im = xp.asarray(np.imag(scaled_incident), dtype=DTYPE)
 
     def add(self, fields, temporal, time):
-        _port_correction(self.coefficient, self.incident_re, self.incident_im, DTYPE(temporal(time)),
-                         DTYPE(temporal.quadrature(time)), getattr(fields, self.component)[self.index])
+        in_phase, quadrature = DTYPE(temporal(time)), DTYPE(temporal.quadrature(time))
+        if in_phase == 0 and quadrature == 0:   # exact no-op (a pulse past its envelope): skip the launch
+            return
+        _port_correction(self.coefficient, self.incident_re, self.incident_im, in_phase, quadrature,
+                         getattr(fields, self.component)[self.index])
 
 
 class ModeSource:

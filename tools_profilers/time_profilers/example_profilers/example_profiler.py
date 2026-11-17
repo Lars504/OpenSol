@@ -42,6 +42,13 @@ MODES = (f'{PHYSICS}.em.solvers.modes_2d:ModePhysics', False)
 HEAT = (f'{PHYSICS}.heat.solver:HeatPhysics', False)
 POTENTIAL = (f'{PHYSICS}.potential.solver:PotentialPhysics', False)
 DRIFT_DIFFUSION = (f'{PHYSICS}.semiconductor.solver:DriftDiffusionPhysics', False)
+EME_PARTS = (
+    (f'{PHYSICS}.eme.solver:EMEPhysics._solve_section', 'modes: EMEPhysics._solve_section'),
+    (f'{PHYSICS}.eme.interfaces:interface_smatrix', 'cascade: interface_smatrix'),
+    (f'{PHYSICS}.eme.solver:EMEPhysics._reconstruct', 'field: EMEPhysics._reconstruct'),
+    (f'{PHYSICS}.eme.solver:EMELengthSweepMonitor.record', 'monitor: EMELengthSweepMonitor.record'),
+    (f'{PHYSICS}.eme.solver:EMEPeriodicMonitor.record', 'monitor: EMEPeriodicMonitor.record'),
+)
 
 
 def _group(examples, engines=(), parts=(), loader=None, note=''):
@@ -64,7 +71,7 @@ GROUPS = {
                           ((f'{PHYSICS}.em.solvers.fdfd_bor:BORPhysics', False),),
                           BOR_TENSOR_PARTS + BOR_OPERATOR_PARTS, note='m = 1 mode ports, frequency_domain'),
     'em_eme': _group((('em/analytic_eme_bragg_periodic_block', 2.7),),
-                     ((f'{PHYSICS}.eme.solver:EMEPhysics', False),), note='periodic block, length sweep'),
+                     ((f'{PHYSICS}.eme.solver:EMEPhysics', False),), EME_PARTS, note='periodic block, length sweep'),
     'em_nlfd': _group((('em/analytic_nlfd_shg_depleted_tanh', 1.3), ('em/analytic_nlfd_thg_dispersive_slab', 1.5)),
                       ((f'{PHYSICS}.nlfd.solver:NonlinearHarmonicPhysics', False), FDFD),
                       NLFD_PARTS + FDFD_TENSOR + TENSOR_READS, note='pump-depleted Newton SHG, chi3 THG'),

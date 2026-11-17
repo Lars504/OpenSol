@@ -721,8 +721,7 @@ FDTD_CASE = SelfTestCase(
                 'E_abs in J/m. Not covered: the effect of the refreshed H_z coefficients on the fields, and the '
                 'flushed Q value itself. Not yet run at 140 / 100 fs.',
     specs=_fdtd_specs,
-    check=_check_fdtd_energy,
-    heavy=True)
+    check=_check_fdtd_energy)
 
 # CASE and CURRENTS_CASE run only inside coupling_cpu_gpu (selftests_backend): examples/multiphysics
 # analytic_lossy_slab_heating (em_heat_joule balance and profile) and analytic_thermo_optic_phase_shifter

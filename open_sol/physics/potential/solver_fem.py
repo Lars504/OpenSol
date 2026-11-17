@@ -18,7 +18,8 @@ from ...fem.indicators import diffusion_indicator
 from ...fem.mesher import MERGE_TOLERANCE
 from ...fem.renderer import FEMFieldRenderer
 from .electrolyte import ION_CONCENTRATION_FIELDS, number_densities, screening_coefficient, species_concentration
-from .solver import ELECTROLYTE_SCALAR_PREFIXES, KINDS, REMEDY_TEXT, RENDERERS, IonicMedium, _face_held_by
+from .solver import (ELECTROLYTE_SCALAR_PREFIXES, KINDS, REMEDY_TEXT, RENDERERS, IonicMedium, _face_held_by,
+                     held_face_bc)
 
 
 
@@ -99,11 +100,26 @@ class FEMPotentialMixin:
     def state_revision(self) -> int:
         return self.system.n_solves
 
-    def add_fixed_potential(self, mask, V, waveform=None, inside=None) -> None:
-        """Hold V [V] (a number) on every dof of the masked elements (a terminal); no waveforms on element meshes."""
+    def add_fixed_potential(self, mask, V, waveform=None, inside=None) -> int:
+        """Hold V [V] (a number) on every dof of the masked elements (a terminal); no waveforms on element meshes.
+        Returns the hold index for set_held_voltage."""
         if waveform is not None:
             raise ValueError(f"{self.spec.label} '{self.name}': driven terminals (waveform) need a 2D tensor mesh")
-        self.add_fixed_value(mask, V)
+        return self.add_fixed_value(mask, V)
+
+    def set_held_voltage(self, region, voltage, hold=None, outline=None) -> None:
+        """New voltage [V] of a voltage / terminal region (a reused sweep build): its outer faces still holding its BC,
+        its outline / interface condition (outline: the add_edge_potential / add_surface_potential handle) and its
+        held elements (hold: add_fixed_potential's index) take it; values only, the factor is kept."""
+        voltage = float(voltage)
+        for face in region.faces:
+            if _face_held_by(self.bcs[face], region):
+                self.set_face_value(face, held_face_bc(voltage, region.stern_capacitance))
+        if outline is not None:
+            self._set_outline_potential(outline, voltage)
+        if hold is not None:
+            self.set_fixed_value(hold, voltage)
+        region.voltage = voltage
 
     def add_source(self, mask, density) -> None:
         """Add a volumetric source density (number or per-element array) to source_ext on the masked elements."""
@@ -174,10 +190,11 @@ class FEMPotentialMixin:
         self.fields['V'][...] = self.xp.asarray(self.system.centroid_values(), dtype=DTYPE)
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(eq=False)
 class FEMHeldRegion:
     """Runtime object of a voltage / terminal feature on triangles: held outer faces, outline edges (int64) and / or
-    held elements (host bool mask) at one voltage; faces behind a Stern layer when stern_capacitance > 0."""
+    held elements (host bool mask) at one voltage; faces behind a Stern layer when stern_capacitance > 0; not frozen:
+    set_held_voltage re-sets voltage."""
     name: str
     voltage: float
     faces: tuple
@@ -235,11 +252,15 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
         """Mirror planes of the model on the window edge: held fluxes join their images (x 2 per touched face)."""
         self.mirror_faces = frozenset(faces)
 
-    def add_edge_potential(self, edges, V, stern_capacitance: float = 0.0) -> None:
-        """V [V] on mesh edges (an object outline: Dirichlet; no Stern layer on outlines)."""
+    def add_edge_potential(self, edges, V, stern_capacitance: float = 0.0) -> int:
+        """V [V] on mesh edges (an object outline: Dirichlet; no Stern layer on outlines); handle for
+        set_held_voltage."""
         if stern_capacitance > 0.0:
             raise ValueError('a Stern layer applies to outer faces only')
-        self.add_edge_condition(edges, BCSide('dirichlet', value=V))
+        return self.add_edge_condition(edges, BCSide('dirichlet', value=V))
+
+    def _set_outline_potential(self, handle, V) -> None:
+        self.set_edge_condition(handle, BCSide('dirichlet', value=V))
 
     def add_edge_flux(self, edges, value) -> int:
         """Inward current density / surface charge on mesh edges (a line source on an outline); handle for

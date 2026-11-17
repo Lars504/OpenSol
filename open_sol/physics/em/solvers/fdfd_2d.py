@@ -21,6 +21,7 @@ from ..conformal_pec import build_conformal_fdfd
 from ..design_density import DesignRegion, paint_regions
 from ..eigenfrequency import solve_resonances
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, ArpackShiftInvertSolver
+from ....solvers.cudss_factor import CudssAccuracyError
 from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ....solvers.line_block import (LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve,
                                     operator_shift_bytes)
@@ -34,8 +35,8 @@ from ..fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWa
 from ..harmonic import HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity
 from ..index_reference import OFF_DIAGONAL_ARRAY
 from ..materials import DrudePole, LorentzPole, register_em_arrays, tfsf_outline_warnings
-from ..operators import (active_coupling_faces, bloch_wrap_phases, helmholtz_operator, off_diagonal_face_couplings,
-                         pin_image_cells, stretched_cell_areas, yee_operators)
+from ..operators import (KeptYeeOperators, active_coupling_faces, bloch_wrap_phases, helmholtz_operator,
+                         off_diagonal_face_couplings, pin_image_cells, stretched_cell_areas, yee_operators)
 from ..placement import (PERMITTIVITY_ARRAYS, box_window_faces, electric_dipole_faces,
                          flux_line_cells, line_mirror_factor, mirror_planes, near_to_far_box_cells, point_source_cell,
                          port_cells, probe_cell, require_polarization, sheet_line, tfsf_box_cells, tfsf_open_faces)
@@ -46,6 +47,7 @@ from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
+from .host_fdfd import fell_back_to_superlu
 
 # Wall / mirror faces: outermost cell = sign x its inner neighbour, as the FDTD BoundaryManager writes the row (sign 0:
 # pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current there drops.
@@ -182,7 +184,9 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._transposed_factorization = None
         self._transposed_previous = None
         self._yee_ops = None          # (omega, YeeOperators2D): materials-independent, reused while omega is unchanged
+        self._kept_yee = None         # operators.KeptYeeOperators of a Cartesian grid (its kron patterns, first assembly)
         self._face_fields = None      # cached face_fields() of the last solve
+        self._pending_state_system = None   # system of a solve whose q_abs / state arrays are not written yet (lazy)
         self._sensitivity = None      # ((n_solves, objectives), EpsSensitivity): eps_sensitivity() cache
         self._system_dirty = True
         self._solution_dirty = True
@@ -279,8 +283,11 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         in_window = np.zeros(shape, dtype=bool)
         in_window[self.domain.physical_window()] = True
         arguments = (_host_sparse(system.operator), mass, system.omega, cell_areas, in_window, n_resonances)
+        # E2: D A measured complex symmetric (none with a Bloch phase or eps_xy): ARPACK to 1e-6 + float64 Rayleigh
+        # quotients on any factor when A is complex (PML / loss)
         options = {'field_of': lambda vector: vector.reshape(shape), 'eigen_solver': self.eigen_solver,
-                   'symmetrizer': self._eigen_symmetrizer(system.omega)}
+                   'symmetrizer': self._eigen_symmetrizer(system.omega),
+                   'rayleigh_symmetrizer': self._adjoint_symmetrizer()}
         if self.resonance_region is not None:
             options.update(in_region=self.resonance_region.cells.ravel(),
                            min_region_fraction=self.resonance_region.min_fraction)
@@ -461,13 +468,25 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         """Record the last solve in every monitor (after _solve(record_monitors=False), e.g. a converged NLFD channel)."""
         if self.solution is None or self.system is None:
             raise ValueError("not solved yet: FDFDPhysics.record_monitors needs a solve first")
+        self._refresh_pending_state()
         for monitor in self.monitors:
             monitor.record(self, self.system)
+
+    def state(self) -> dict:
+        """HarmonicEMShell.state after a pending state refresh (_solve(record_monitors=False) defers it)."""
+        self._refresh_pending_state()
+        return super().state()
+
+    def take_absorbed_power(self, merge_previous: bool = False):
+        """HarmonicEMShell.take_absorbed_power after a pending state refresh."""
+        self._refresh_pending_state()
+        return super().take_absorbed_power(merge_previous)
 
     def _solve(self, record_monitors=True):
         """Solve at self.omega: reassemble and refactorise only when the system changed, sum the source currents,
         refresh the solution, q_abs and the state arrays, then record every monitor (unless record_monitors is False:
-        an iterate of the nonlinear physics; n_solves counts it anyway)."""
+        an iterate of the nonlinear physics; n_solves counts it anyway, q_abs / state arrays wait for their first read:
+        _refresh_pending_state)."""
         solve_start = time.perf_counter()
         xp = self.xp
         system = self._refresh_system(check_driven_size=True)
@@ -489,7 +508,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         xp.copyto(self.solution, solution)
         del solution
         self.selected_resonance = None
-        self._refresh_state(system)
+        self._refresh_state(system, lazy=not record_monitors)
         self._solution_dirty = False
         self.n_solves += 1
         if record_monitors:
@@ -500,6 +519,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         """HarmonicSystem at self.omega, reassembled when dirty (old system and any non-recyclable factor freed first);
         check_driven_size: the back end's size rule per factorisation (scripts skip finalize, free memory changes)."""
         if self._system_dirty:
+            self._refresh_pending_state()   # it reads this system's face fields
             self.system = None
             self._face_fields = None
             factorization = self._factorization
@@ -518,11 +538,22 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             self._system_dirty = False
         return self.system
 
-    def _refresh_state(self, system):
-        """Wall rows of self.solution, then q_abs and the float32 state arrays from it (face-field cache reset)."""
+    def _refresh_state(self, system, lazy=False):
+        """Wall rows of self.solution (face-field cache reset), then q_abs and the float32 state arrays from it; lazy:
+        those wait for _refresh_pending_state (state(), take_absorbed_power, record_monitors, a reassembly)."""
         self._fill_wall_rows(system.pec_cells)
         self._face_fields = None
         self.solved_omega = system.omega
+        self._pending_state_system = system
+        if not lazy:
+            self._refresh_pending_state()
+
+    def _refresh_pending_state(self):
+        """Write q_abs and the float32 state arrays of the solution whose refresh _refresh_state deferred (else no-op)."""
+        system = self._pending_state_system
+        if system is None:
+            return
+        self._pending_state_system = None
         if system.polarization == 'ez':
             power_density = absorbed_power_ez(system.omega, system.cell_eps, self.solution)
         else:
@@ -718,8 +749,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if self._factorization is None:
             options = {}
             if self.linear_solver.back_end in CUDSS_BACK_ENDS:   # LDL^T of D A (LU when not symmetric), plan reused
-                options = {'previous': self._cudss_previous, 'symmetric': True,
-                           'symmetrizer': self._symmetrizer(self.system.omega)}
+                options = {'previous': self._cudss_previous, 'symmetric': True,   # K1: checked by the solve below
+                           'symmetrizer': self._symmetrizer(self.system.omega), 'defer_check': True}
                 self._cudss_previous = None
             elif self.linear_solver.back_end in HOST_DIRECT_BACK_ENDS:   # host LDL^T of D A (LU when not symmetric):
                 self._release_kept_cudss()   # recyclable and transposes natively, like SuperLU
@@ -732,9 +763,25 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             self.host_factor_bytes = self._factorization.host_bytes
             self._factored_omega = self.system.omega
             self._factorization_current = True
-        if transpose and _is_cudss(self._factorization) and not self._factorization.symmetric:
-            return self._transposed_solve(flat_rhs)
-        return self._factorization.solve(flat_rhs, transpose=transpose)
+        try:
+            if transpose and _is_cudss(self._factorization) and not self._factorization.symmetric:
+                return self._transposed_solve(flat_rhs)
+            return self._factorization.solve(flat_rhs, transpose=transpose)
+        except CudssAccuracyError as error:   # a refreshed factor's deferred check missed at this, its first solve
+            if not fell_back_to_superlu(self.linear_solver, error, flat_rhs.size):   # B1b: 'auto' -> SuperLU for good
+                raise
+            self._drop_cudss_factors()
+            return self._solve_linear(flat_rhs, transpose)   # refactorised on SuperLU (fall_back changed back_end)
+
+    def _drop_cudss_factors(self):
+        """Release every cuDSS factor of this physics (driven, transposed, kept for a plan) after an 'auto' fall_back."""
+        for name in ('_factorization', '_transposed_factorization'):
+            factorization = getattr(self, name)
+            if _is_cudss(factorization):
+                factorization.release()   # idempotent: a failed deferred check released it already
+                setattr(self, name, None)
+        self._factorization_current = False
+        self._release_kept_cudss()
 
     def _release_kept_cudss(self):
         """Release the cuDSS factors kept only for their plan (_cudss_previous, _transposed_previous)."""
@@ -750,7 +797,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if self._transposed_factorization is None:
             previous, self._transposed_previous = self._transposed_previous, None
             self._transposed_factorization = self.linear_solver.factorize(
-                self.system.operator.T.tocsr(), *self._grid_shape_and_periodicity(), previous=previous)
+                self.system.operator.T.tocsr(), *self._grid_shape_and_periodicity(), previous=previous,
+                defer_check=True)   # K1: solved inside _solve_linear's catch
         return self._transposed_factorization.solve(flat_rhs)
 
     def solve_summary(self):
@@ -817,9 +865,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if self._yee_ops is None or self._yee_ops[0] != omega:
             self._yee_ops = None   # free the previous omega's operators first
             polar = self.metric is not None   # polar: PML cells graded on the outermost r width (no mesh_config)
-            pml_dx = float(cell_dx[-1]) if polar else cpml_grading_cell_size(domain)
-            self._yee_ops = (omega, yee_operators((cell_dx, cell_dy), bc, pml_dx, omega=omega, xp=xp,
-                                                  polar_radius_min=domain.coordinates.radius_min if polar else None))
+            if polar:
+                self._yee_ops = (omega, yee_operators((cell_dx, cell_dy), bc, float(cell_dx[-1]), omega=omega, xp=xp,
+                                                      polar_radius_min=domain.coordinates.radius_min))
+            else:   # kept kron patterns: a new omega rebuilds only the 1D differences (wavelength scans)
+                if self._kept_yee is None:
+                    self._kept_yee = KeptYeeOperators((cell_dx, cell_dy), bc, cpml_grading_cell_size(domain), xp=xp)
+                self._yee_ops = (omega, self._kept_yee.at(omega))
         ops = self._yee_ops[1]
         k0_squared = (omega / C0) ** 2
         cell_mu = cell_permeability(materials, omega, xp=xp)
@@ -841,7 +893,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             cell_term = k0_squared * cell_eps
             for sheet in self.conducting_sheets:   # diagonal -j omega mu0 sigma_s / w_perp on the line cells
                 cell_term[sheet.line] += k0_squared * sheet.permittivity_change(omega)
-            operator = helmholtz_operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term, xp=xp)
+            operator = self._helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
             del cell_term
             operator = self._pin_outer_cells(operator, pec_cells)
             return HarmonicSystem(
@@ -890,11 +942,10 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                       where=face_pec(pec_cells, 1, periodic_y, xp=xp))
         self._zero_even_wall_faces(weight_hi_x_faces, weight_hi_y_faces)
         if conformal is None:
-            operator = helmholtz_operator(ops, weight_hi_x_faces, weight_hi_y_faces, k0_squared * cell_mu, xp=xp)
+            operator = self._helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, k0_squared * cell_mu)
         else:   # area-scaled: K (free lengths l / L on the faces) - k0^2 mu diag(A_free), so still complex symmetric
-            operator = helmholtz_operator(ops, weight_hi_x_faces * face_fractions[0],
-                                          weight_hi_y_faces * face_fractions[1],
-                                          k0_squared * cell_mu * cell_area_fractions, xp=xp)
+            operator = self._helmholtz(ops, weight_hi_x_faces * face_fractions[0],
+                                       weight_hi_y_faces * face_fractions[1], k0_squared * cell_mu * cell_area_fractions)
         off_diagonal = None
         if eta_xy is not None:   # E faces with weight 0 (PEC, even walls) and never-updated last faces carry no E
             active_hi_x_faces, active_hi_y_faces = active_coupling_faces(weight_hi_x_faces, weight_hi_y_faces,
@@ -945,6 +996,12 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             if extra is not None:
                 region = cell_eps if box is None else cell_eps[box]   # a view: += writes into cell_eps
                 region += extra
+
+    def _helmholtz(self, ops, weight_hi_x_faces, weight_hi_y_faces, cell_term):
+        """helmholtz_operator; Cartesian: on the kept term plan of _kept_yee (one fixed pattern for every omega)."""
+        if self._kept_yee is not None:   # falls back itself for ops it did not make
+            return self._kept_yee.helmholtz(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term)
+        return helmholtz_operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term, xp=self.xp)
 
     def _zero_even_wall_faces(self, weight_hi_x_faces, weight_hi_y_faces):
         """Face weight 0 on the inner face of each even (sign +1) wall / mirror row: zero flux, E (hz) / H (ez) = 0."""
@@ -1129,7 +1186,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             elif component == 'ex' and j > iy:
                 current_density /= self.lower_wrap_factors[1]
             phased_faces.append((component, i, j, current_density))
-        return self._add_source(ElectricDipolePhasor(ix, iy, phased_faces, phase))
+        return self._add_source(ElectricDipolePhasor(ix, iy, phased_faces, phase, dipole_moment=dipole_moment))
 
     def add_line_source(self, axis, position, amplitude=1.0, phase=0.0, span=None):
         """Sheet current radiating `amplitude` [V/m] to each side in the local medium; axis 'x' = line along x at

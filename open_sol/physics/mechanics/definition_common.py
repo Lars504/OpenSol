@@ -52,9 +52,10 @@ def background_context(context, physics_spec):
 
 # ---- solver ----
 def solid_linear_solver(ctx, physics_spec):
-    """The build's 'linear' pcg solver of the physics; max_iterations 0 (auto) = twice the DiffusionSystem limit."""
+    """The build's 'linear' solver of the physics (pcg: max_iterations 0 (auto) = twice the DiffusionSystem limit;
+    sparse_direct: its SparseDirectSolver, wrapped by the 2D ElasticSystem)."""
     built = ctx.solver_records[physics_spec.name]['linear']
-    if not built.resolved.values['max_iterations']:
+    if built.resolved.values.get('max_iterations', 1) == 0:
         built.runtime.max_iterations = 2 * resolve_max_iterations(0, ctx.domain)
     return built.runtime
 

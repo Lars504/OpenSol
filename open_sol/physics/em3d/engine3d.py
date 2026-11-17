@@ -15,8 +15,8 @@ poles on region boxes and the J.E loss accounting (q_accum) of the EM loss proto
 # window edge = the hi face of the lo ghost / of the last window cell. symmetric (E even): the tangential H and the
 # normal E on that face are pinned to 0; antisymmetric (E odd): the ghost's tangential E = -its inner neighbour's, so
 # the plane's tangential H and normal E update with the PEC image. Re-pinned after the H injections and the E sources.
-# Step: H Yee (+ the sparse Dey-Mittra faces of conformal PEC, conformal_pec3d) + H CPML, source inject_magnetic at t (TFSF / mode-port H corrections), H mirror rows, pole J / P from
-# E^n (+ their E^n work half), E Yee + E CPML, pole corrections, E sources at t + dt/2, E mirror rows, loss accounting
+# Step: H Yee with the fused H CPML (+ the sparse Dey-Mittra faces of conformal PEC, conformal_pec3d), source inject_magnetic at t (TFSF / mode-port H corrections), H mirror rows, pole J / P from
+# E^n (+ their E^n work half), E Yee with the fused E CPML, pole corrections, E sources at t + dt/2, E mirror rows, loss accounting
 # (pole E^{n+1} work half, ohmic sigma E^2), monitors at t + dt (E at t + dt, H at t + dt/2).
 # Bloch k != 0 on a periodic axis (symmetry 2.8, as 2D A6): F(x + L) = F(x) e^{-j k L}, L = the meshed period; a second,
 # imaginary set fields.imag (own CPML psi and pole states) steps with the same kernels, the wraps mix the two
@@ -43,6 +43,7 @@ from ...core.constants import C0, DTYPE, ETA0
 from ...core.grid3d import finest_physical_widths_3d
 from ...core.half_storage import half_bits
 from ...core.metric import yee_radii
+from ...core.monitors import FieldProbe, FieldProbeRows
 from ..em.solvers.fdtd_conformal_kernels import sparse_launch
 from ..em.solvers.fdtd_ez_2d_kernels import drude_e_correction, lorentz_e_correction
 from ..em.materials import DrudePole, LorentzPole
@@ -52,8 +53,8 @@ from .kernels3d import (box_face_cb_3d, drude_j_weighted, field_kernels, launch,
 from .material_index3d import build_material_index
 
 MAX_MATERIAL_IDS = 65535       # uint16 index; the last id is the PEC entry
-# gpu: the fixed-argument launches of a step (H Yee + conformal + H CPML; E Yee + E CPML) replay as two CUDA graphs
-# after one eager step per input key (a field kernel launch with ~40 arguments costs ~15 us of host time)
+# gpu: the fixed-argument launches of a step (H Yee with its CPML + conformal; E Yee with its CPML) replay as two
+# CUDA graphs after one eager step per input key (a field kernel launch with ~40 arguments costs ~15 us of host time)
 STEP_GRAPHS = True
 _MAX_STEP_GRAPHS = 8           # graph keys kept (stale ones belong to replaced tables / scales)
 _INDEX_CHUNK_CELLS = 1 << 22   # x-slab size of the material index build (bounds its int64 temporaries)
@@ -61,12 +62,8 @@ _INDEX_CHUNK_CELLS = 1 << 22   # x-slab size of the material index build (bounds
 # optional eps_xx, eps_yy, sigma_m only when the model allocated them (em3d definition: optional_material_schema)
 REQUIRED_ARRAYS = ('eps_r', 'sigma_e', 'mu_r')
 OPTIONAL_ARRAYS = ('eps_xx', 'eps_yy', 'sigma_m')
-# CPML rows per axis: (first, second) field component, source component and correction sign (H rows / E rows)
-_H_PSI = {0: (('hy', 'ez', 1.0), ('hz', 'ey', -1.0)), 1: (('hx', 'ez', -1.0), ('hz', 'ex', 1.0)),
-          2: (('hx', 'ey', 1.0), ('hy', 'ex', -1.0))}
-_E_PSI = {0: (('ey', 'hz', -1.0), ('ez', 'hy', 1.0)), 1: (('ex', 'hz', 1.0), ('ez', 'hx', -1.0)),
-          2: (('ex', 'hy', -1.0), ('ey', 'hx', 1.0))}
 COMPONENT_AXES = {'ex': 0, 'ey': 1, 'ez': 2, 'hx': 0, 'hy': 1, 'hz': 2}
+_E_PROBE_COMPONENTS = frozenset({'ex', 'ey', 'ez'})   # written after the E graph (probe re-sample)
 # stepper precision -> field storage dtype (half_storage: fp16 in memory, float32 arithmetic in the kernels)
 FIELD_DTYPES = {'single': np.float32, 'half_storage': np.float16}
 
@@ -204,7 +201,7 @@ class FDTDEngine3D:
                            for (_, inverse_h), kappa in zip(bulk, kappa_h))
         self.shares = tuple(tuple(xp.asarray(share) for share in face_shares(widths, periodic, np.float32))
                             for widths, periodic in zip(self.widths, self.periodic))
-        self._radial_h, self._radial_e, self._cpml_weights = self._radial_factors()
+        self._radial_h, self._radial_e = self._radial_factors()
         self.fields = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
         # Bloch k != 0 (symmetry 2.8): the imaginary set (own CPML psi, pole states), wraps mixing the two (kernels3d);
         # a sector whose phases are all 0 or pi steps the real set alone
@@ -213,10 +210,13 @@ class FDTDEngine3D:
         self.cpml_imag = []
         if config.has_bloch_phase and not real_wrap:
             self.fields.imag = Fields3D(self.shape, FIELD_DTYPES[precision], xp)
-            self.cpml_imag = [replace(slab, psi_first=xp.zeros_like(slab.psi_first),
-                                      psi_second=xp.zeros_like(slab.psi_second)) for slab in self.cpml]
+            self.cpml_imag = [replace(layer, psi_first=xp.zeros_like(layer.psi_first),
+                                      psi_second=xp.zeros_like(layer.psi_second)) for layer in self.cpml]
         self._wrap_args = {set_sign: _wrap_arguments(self.bloch_angles, set_sign, real=real_wrap)
                            for set_sign in (1, -1)}
+        # set sign -> {'h' / 'e': the trailing CPML arguments of update_h_3d / update_e_3d}: fixed for the engine's
+        # life (psi rewritten in place), so no step-graph key part
+        self._cpml_args = {1: self._cpml_kernel_args(self.cpml), -1: self._cpml_kernel_args(self.cpml_imag)}
         self.material_id = xp.zeros(self.shape, dtype=np.uint16)
         # float32 per material id (last id = PEC: eps -1, sigma 0, mu 1, sigma_m 0)
         self.table_eps_x = self.table_eps_y = self.table_eps_z = None
@@ -243,14 +243,15 @@ class FDTDEngine3D:
         self._mirror_h_zero, self._mirror_e_zero, self._mirror_e_images = _mirror_rows(domain, config)
         self._e_to_h = DTYPE(1.0)    # e_scale / h_scale and its inverse: the curl factors of the stored fields
         self._h_to_e = DTYPE(1.0)
-        # (kind, slab, field set, ids of the tables / face arrays, curl factor) -> (grid, block, args, kept arrays) of
-        # the CPML slab launches: rebuilt only when rebuild_materials / set_field_scale / smoothing replaced an input
-        self._cpml_launches = {}
         # (phase 'h' / 'e', ids of the replaceable inputs, curl factor) -> [graph or None after its eager run, kept
         # inputs] (_fixed_block; gpu only); n_step_graphs = captures made
         self.use_step_graphs = STEP_GRAPHS and xp is not np
         self._step_graphs = {}
         self.n_step_graphs = 0
+        # gpu: the FieldProbes among the monitors (real set), sampled by one launch at the end of the E graph (taken
+        # over at their first step; (id, length) of the monitor list last scanned)
+        self._probe_rows = None
+        self._probe_scan = None
         # igor 1.5: subpixel_smoothing3d.SubpixelSmoothing3D (EMPhysics3D.set_subpixel_smoothing), refreshed by every
         # rebuild_materials; the kernels read its face index through _face_args (1-element placeholders when off; the
         # face id one is 3D like the real index, else the numba twins indexing fid[i, j, k] fail to type)
@@ -262,23 +263,38 @@ class FDTDEngine3D:
         self._conformal = None
 
     def _radial_factors(self):
-        """Device float32 (r_c, 1 / r_c, 1 / r_link) of the H kernel, (r_f[i + 1], 1 / r_f[i + 1], 1 / r_c) of the E
-        kernel and {(axis, kind): (source weights, out factors)} of the CPML slabs (kernels3d header): ones on a
-        Cartesian grid and off the r axis."""
+        """Device float32 (r_c, 1 / r_c, 1 / r_link) of the H kernel and (r_f[i + 1], 1 / r_f[i + 1], 1 / r_c) of the
+        E kernel (kernels3d header; the r axis' CPML psi reads them too): ones on a Cartesian grid."""
         xp = self.xp
 
         def device(values):
             return xp.asarray(np.asarray(values, dtype=np.float32))
-        ones = [device(np.ones(count)) for count in self.shape]
-        weights = {(axis, kind): (ones[axis], ones[axis]) for axis in range(3) for kind in ('h', 'e')}
         if not self.polar:
-            return (ones[0],) * 3, (ones[0],) * 3, weights
+            ones = device(np.ones(self.nx))
+            return (ones,) * 3, (ones,) * 3
         radii = self.radii
         centre, inverse_centre, face_hi = device(radii.centre), device(1.0 / radii.centre), device(radii.face[1:])
         inverse_link = device(1.0 / radii.link)
-        weights[(0, 'h')] = (centre, inverse_link)
-        weights[(0, 'e')] = (face_hi, inverse_centre)
-        return (centre, inverse_centre, inverse_link), (face_hi, device(1.0 / radii.face[1:]), inverse_centre), weights
+        return (centre, inverse_centre, inverse_link), (face_hi, device(1.0 / radii.face[1:]), inverse_centre)
+
+    def _cpml_kernel_args(self, layers):
+        """{'h' / 'e': the trailing CPML arguments of update_h_3d / update_e_3d}: per axis row map, b, gain, psi first /
+        second and int32 psi rows (kernels3d CPML_AXIS_PARAMS); 1-element placeholders and 0 rows on axes without CPML
+        (the numba twins type them: 1D int32 / float32, 3D float32 psi)."""
+        xp = self.xp
+        no_rows, no_values = xp.full(1, -1, dtype=np.int32), xp.zeros(1, dtype=DTYPE)
+        no_psi = xp.zeros((1, 1, 1), dtype=DTYPE)
+        by_axis_kind = {(layer.axis, layer.kind): layer for layer in layers}
+        arguments = {}
+        for kind in ('h', 'e'):
+            values = []
+            for axis in range(3):
+                layer = by_axis_kind.get((axis, kind))
+                values += ((no_rows, no_values, no_values, no_psi, no_psi, np.int32(0)) if layer is None else
+                           (layer.row_map, layer.b, layer.gain, layer.psi_first, layer.psi_second,
+                            np.int32(layer.n_rows)))
+            arguments[kind] = tuple(values)
+        return arguments
 
     def face_dual_volume(self, axis, cell) -> float:
         """Dual volume [m^3] of the E face along axis of cell (i, j, k): the edge between its two centres times the
@@ -394,7 +410,7 @@ class FDTDEngine3D:
             self._dt32, self._e_to_h))
 
     def coefficient_args(self):
-        """Material and share arguments of box_face_cb_3d / cpml_e_3d after the comp / origin arguments."""
+        """Material and share arguments of box_face_cb_3d after the comp / origin arguments."""
         return (self.material_id, self.table_eps_x, self.table_eps_y, self.table_eps_z, self.table_sigma,
                 *self._face_args(), *self.shares[0], *self.shares[1], *self.shares[2], *self._ints,
                 *self._periodic_ints, self._dt32)
@@ -484,10 +500,12 @@ class FDTDEngine3D:
         t = self.time
         accumulate = self._enable_q_accum
         face_args = self._face_args()
-        # (set, partner, CPML slabs, wrap scalars): the real set alone (partner itself), or both under Bloch k != 0
-        sets = (((fields, fields, self.cpml, self._wrap_args[1]),) if fields.imag is None else
-                ((fields, fields.imag, self.cpml, self._wrap_args[1]),
-                 (fields.imag, fields, self.cpml_imag, self._wrap_args[-1])))
+        probe_launch = self._take_probe_launch(monitors)   # recorded at the end of the E graph
+        # (set, partner, CPML kernel arguments, wrap scalars): the real set alone (partner itself), or both under Bloch
+        # k != 0
+        sets = (((fields, fields, self._cpml_args[1], self._wrap_args[1]),) if fields.imag is None else
+                ((fields, fields.imag, self._cpml_args[1], self._wrap_args[1]),
+                 (fields.imag, fields, self._cpml_args[-1], self._wrap_args[-1])))
         self._fixed_block(('h', id(self.table_mu), id(self.table_sigma_m), id(self._conformal), float(self._e_to_h)),
                           (self.table_mu, self.table_sigma_m, self._conformal), lambda: self._h_block(sets))
         for source in sources:   # H-type injections (TFSF / mode-port corrections) at the H update centre t
@@ -502,8 +520,10 @@ class FDTDEngine3D:
             if accumulate:
                 self._pole_work(region)
         e_tables = (self.table_eps_x, self.table_eps_y, self.table_eps_z, self.table_sigma)
+        # the probe launch (None without probes) joins the key and the kept inputs (replaced when its table grows)
         self._fixed_block(('e', *map(id, e_tables), id(face_args[0]), id(face_args[1]), int(face_args[2]),
-                           float(self._h_to_e)), (*e_tables, face_args), lambda: self._e_block(sets, face_args))
+                           float(self._h_to_e), id(probe_launch)), (*e_tables, face_args, probe_launch),
+                          lambda: self._e_block(sets, face_args, probe_launch))
         for region in self.pole_regions:
             self._pole_correct(region)
         for source in sources:
@@ -522,44 +542,76 @@ class FDTDEngine3D:
             self._accumulate_e_new()
         self.time = t + self.dt
         self.n_step += 1
+        if probe_launch is not None:
+            if self._probes_need_resample(sources, t + 0.5 * self.dt):
+                self._probe_rows.rewrite_last_row()
+            self._probe_rows.stamp(self.time)
         for monitor in monitors:
             if hasattr(monitor, 'update'):
                 if self.n_step % monitor.sample_interval == 0:
                     monitor.update(fields, self.time)
-            else:
+            elif not getattr(monitor, 'recorded_by_rows', False):
                 monitor.record(fields, self.time)
 
+    def _take_probe_launch(self, monitors):
+        """This step's probe_rows launch over the FieldProbes among monitors (gpu: taken over at their first step, the
+        real set's float32 / float16 fields), None without."""
+        if self.xp is np:
+            return None
+        scan = (id(monitors), len(monitors))
+        if scan != self._probe_scan:
+            self._probe_scan = scan
+            for monitor in monitors:
+                if isinstance(monitor, FieldProbe) and not monitor.recorded_by_rows:
+                    if self._probe_rows is None:
+                        self._probe_rows = FieldProbeRows(self.fields, self.fields.ex.dtype)
+                    if self._probe_rows.accepts(monitor):
+                        self._probe_rows.add(monitor)
+        return None if self._probe_rows is None else self._probe_rows.next_launch()
+
+    def _probes_need_resample(self, sources, t_half) -> bool:
+        """Whether this step's probe record (end of the E graph) may be stale: a probe reads E and an eager write after
+        the graph may have changed it (pole corrections, E mirror rows, a source; a DipoleSource3D only while
+        DTYPE(temporal(t_half)) != 0: at 0 its add leaves every value equal)."""
+        if self._probe_rows.components.isdisjoint(_E_PROBE_COMPONENTS):
+            return False
+        if self.pole_regions or self._mirror_e_zero or self._mirror_e_images:
+            return True
+        from .sources3d import DipoleSource3D   # it imports this module
+        return not all(type(source) is DipoleSource3D and DTYPE(source.temporal(t_half)) == 0 for source in sources)
+
     def _h_block(self, sets):
-        """H Yee (+ the conformal faces) of every field set, then their H CPML slabs: fixed arguments only."""
+        """H Yee with the fused H CPML (+ the conformal faces, outside the layers: additive, so the order is free) of
+        every field set: fixed arguments only (E is not written in the H phase, so the set order does not matter)."""
         nx, ny, nz = self._ints
         grid, block = self._grid_launch
-        for field_set, partner, _, (h_wrap, _) in sets:
+        for field_set, partner, cpml_args, (h_wrap, _) in sets:
             self.kernels['update_h_3d'](grid, block, (
                 field_set.hx, field_set.hy, field_set.hz, field_set.ex, field_set.ey, field_set.ez, partner.ex,
                 partner.ey, partner.ez, self.material_id, self.table_mu, self.table_sigma_m, *self.inv_h,
-                *self._radial_h, nx, ny, nz, self._dt32, self._e_to_h, *h_wrap))
+                *self._radial_h, nx, ny, nz, self._dt32, self._e_to_h, *h_wrap, *cpml_args['h']))
             if self._conformal is not None:
                 self._conformal_h(field_set)
-        for field_set, _, slabs, _ in sets:   # E is not written in the H phase, so the set order does not matter
-            for slab in slabs:
-                if slab.kind == 'h':
-                    self._cpml_h(slab, field_set)
 
-    def _e_block(self, sets, face_args):
-        """E Yee of every field set, then their E CPML slabs: fixed arguments only."""
+    def _e_block(self, sets, face_args, probe_launch=None):
+        """E Yee with the fused E CPML of every field set, then the probe record (real set fields): fixed arguments
+        only."""
+        self._e_updates(sets, face_args)
+        if probe_launch is not None:
+            kernel, grid, block, args = probe_launch
+            kernel(grid, block, args)
+
+    def _e_updates(self, sets, face_args):
+        """E Yee with the fused E CPML of every field set."""
         nx, ny, nz = self._ints
         grid, block = self._grid_launch
-        for field_set, partner, _, (_, e_wrap) in sets:
+        for field_set, partner, cpml_args, (_, e_wrap) in sets:
             self.kernels['update_e_3d'](grid, block, (
                 field_set.ex, field_set.ey, field_set.ez, field_set.hx, field_set.hy, field_set.hz, partner.hx,
                 partner.hy, partner.hz, self.material_id, self.table_eps_x, self.table_eps_y, self.table_eps_z,
                 self.table_sigma, *face_args, *self.inv_e, *self._radial_e, *self.shares[0], *self.shares[1],
                 *self.shares[2], nx, ny, nz,
-                *self._periodic_ints, self._dt32, self._h_to_e, *e_wrap))
-        for field_set, _, slabs, _ in sets:
-            for slab in slabs:
-                if slab.kind == 'e':
-                    self._cpml_e(slab, field_set)
+                *self._periodic_ints, self._dt32, self._h_to_e, *e_wrap, *cpml_args['e']))
 
     def _fixed_block(self, key, kept, block):
         """Run block() (launches with fixed arguments, no sync, no allocation): eagerly on the cpu, on the first step of
@@ -602,56 +654,6 @@ class FDTDEngine3D:
             return None
         self.n_step_graphs += 1
         return graph
-
-    def _slab_dims(self, slab):
-        dims = list(self.shape)
-        dims[slab.axis] = slab.n_rows
-        return dims
-
-    def _cpml_launch(self, key, inputs, build):
-        """(grid, block, args) of a CPML slab launch, built once per key (the id()s in it stay valid: the kept inputs
-        hold their arrays alive)."""
-        cached = self._cpml_launches.get(key)
-        if cached is None:
-            if len(self._cpml_launches) >= 4 * (len(self.cpml) + len(self.cpml_imag)):
-                self._cpml_launches.clear()   # stale entries of replaced tables / scales
-            cached = self._cpml_launches[key] = (*build(), inputs)
-        return cached
-
-    def _cpml_h(self, slab, fields):
-        tables = (self.table_mu, self.table_sigma_m)
-        key = ('h', id(slab), id(fields), *map(id, tables), self._e_to_h)
-
-        def build():
-            (first, first_source, first_sign), (second, second_source, second_sign) = _H_PSI[slab.axis]
-            grid, block = launch(self._slab_dims(slab))
-            return grid, block, (getattr(fields, first), getattr(fields, second), getattr(fields, first_source),
-                                 getattr(fields, second_source), slab.psi_first, slab.psi_second, slab.b, slab.a,
-                                 slab.inv_spacing, *self._cpml_weights[(slab.axis, 'h')], self.material_id, *tables,
-                                 np.int32(slab.axis), np.int32(slab.row0), np.int32(slab.n_rows), *self._ints,
-                                 DTYPE(first_sign), DTYPE(second_sign), self._dt32, self._e_to_h)
-        grid, block, args, _ = self._cpml_launch(key, (slab, fields, tables), build)
-        self.kernels['cpml_h_3d'](grid, block, args)
-
-    def _cpml_e(self, slab, fields):
-        tables = (self.table_eps_x, self.table_eps_y, self.table_eps_z, self.table_sigma)
-        face_args = self._face_args()
-        key = ('e', id(slab), id(fields), *map(id, tables), id(face_args[0]), id(face_args[1]), int(face_args[2]),
-               self._h_to_e)
-
-        def build():
-            (first, first_source, first_sign), (second, second_source, second_sign) = _E_PSI[slab.axis]
-            grid, block = launch(self._slab_dims(slab))
-            return grid, block, (getattr(fields, first), getattr(fields, second), getattr(fields, first_source),
-                                 getattr(fields, second_source), slab.psi_first, slab.psi_second, slab.b, slab.a,
-                                 slab.inv_spacing, *self._cpml_weights[(slab.axis, 'e')], self.material_id, *tables,
-                                 *face_args, *self.shares[0], *self.shares[1], *self.shares[2],
-                                 np.int32(COMPONENT_AXES[first]), np.int32(COMPONENT_AXES[second]),
-                                 np.int32(slab.axis), np.int32(slab.row0), np.int32(slab.n_rows), *self._ints,
-                                 *self._periodic_ints, DTYPE(first_sign), DTYPE(second_sign), self._dt32,
-                                 self._h_to_e)
-        grid, block, args, _ = self._cpml_launch(key, (slab, fields, tables, face_args), build)
-        self.kernels['cpml_e_3d'](grid, block, args)
 
     def _e_views(self, region, fields=None):
         fields = self.fields if fields is None else fields

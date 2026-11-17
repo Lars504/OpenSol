@@ -36,6 +36,11 @@ SOLVED_FIELDS = tuple(name for name in SEMICONDUCTOR_FIELD_INFOS if not name.sta
 _SMALLER_MODEL = 'coarsen the mesh or shrink the domain'
 
 
+def _is_number(value) -> bool:
+    """True for a plain real number (a followed parameter value), False for None, arrays and field expressions."""
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
+
+
 def linear_size_issue(back_end, window_cells_x, window_cells_y):
     """sparse_direct.size_issue of the coupled system (3 unknowns per window cell; cusolver_qr sized as a (wx, 3 wy)
     grid, the interleaved index order; MUMPS / PARDISO take the SuperLU rule, uncalibrated); None, ('warning', text) or
@@ -87,6 +92,7 @@ class DriftDiffusionPhysics(PhysicsSolver):
         self._newton_settings = (float(tolerance), int(max_newton_iterations), float(max_bias_step))
         self.contacts = []
         self.gates = []
+        self._doping_parts = []   # per add_doping: [flat window mask, donors, acceptors, net] (host; set_doping)
         self.n_solves = 0
         self.fields = None
         self._dirty = True
@@ -151,11 +157,33 @@ class DriftDiffusionPhysics(PhysicsSolver):
 
     # --- feature API ------------------------------------------------------------
 
-    def add_doping(self, mask, donors, acceptors) -> None:
-        """Add donors - acceptors [1/m^3] (scalars or full-grid arrays) on the window cells under mask."""
-        mask_window = self._host_window_mask(mask, 'doping')
-        net = self._host_window_values(donors) - self._host_window_values(acceptors)
-        self.system.add_doping(np.where(mask_window, net, 0.0).ravel())
+    def add_doping(self, mask, donors, acceptors) -> int:
+        """Add donors - acceptors [1/m^3] (scalars or full-grid arrays) on the window cells under mask; returns the
+        handle for set_doping."""
+        mask_window = self._host_window_mask(mask, 'doping').ravel()
+        donors, acceptors = self._host_window_values(donors), self._host_window_values(acceptors)
+        net = np.where(mask_window, np.ravel(donors - acceptors), 0.0)
+        self.system.add_doping(net)
+        self._doping_parts.append([mask_window, donors, acceptors, net])   # host data (set_doping)
+        self._dirty = True
+        return len(self._doping_parts) - 1
+
+    def set_doping(self, handle, donors=None, acceptors=None) -> None:
+        """New uniform donors / acceptors [1/m^3] of an add_doping handle (a reused sweep build; None or a non-number
+        keeps the build value): the net doping is summed again in feature order (as the build) and the next solve
+        starts cold (the equilibrium moved)."""
+        part = self._doping_parts[handle]
+        mask_window, old_donors, old_acceptors, _ = part
+        donors = float(donors) if _is_number(donors) else old_donors
+        acceptors = float(acceptors) if _is_number(acceptors) else old_acceptors
+        if not all(np.all(np.isfinite(value) & (np.asarray(value) >= 0.0)) for value in (donors, acceptors)):
+            raise ValueError(f"drift_diffusion '{self.name}': donors and acceptors must be finite and >= 0 [1/m^3], "
+                             f'got {donors!r}, {acceptors!r}')
+        part[1:] = [donors, acceptors, np.where(mask_window, np.ravel(np.asarray(donors) - acceptors), 0.0)]
+        self.system.clear_doping()
+        for _, _, _, net in self._doping_parts:
+            self.system.add_doping(net)
+        self.system.forget_converged_state()
         self._dirty = True
 
     def set_auger_recombination(self, mask, electron_coefficient, hole_coefficient) -> None:

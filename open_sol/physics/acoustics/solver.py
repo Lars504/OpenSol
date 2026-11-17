@@ -4,6 +4,7 @@ thermoelastic slot and the piezoelectric electric-field slots (the stress of a c
 charge and the stiffened time step). Arrays live on the Domain's backend (`domain.xp`): every kernel is a core.kernels
 twin, so the gpu and cpu backends share one code path (half_storage: gpu only)."""
 import math
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -15,8 +16,21 @@ from ...core.solver_base import PhysicsSolver
 from . import kernels as _kernels
 from .axisymmetric import density_shares, kernel_rows, radial_stability_factor
 from .cpml import AcousticAxisLayers, psi_array
-from .sources import VELOCITY_COMPONENTS, HeatPulseSource, ProbeRecorder, VelocitySource, VolumeSource
+from .sources import (NEGLIGIBLE_AMPLITUDE, VELOCITY_COMPONENTS, HeatPulseSource, ProbeRecorder, VelocitySource,
+                      VolumeSource)
 
+# gpu: each step's runs of fixed-argument launches (velocity, stress, monoclinic, the pulse-table scatters, probe record)
+# replay as CUDA graphs (_run_fixed); unbounded (cw) waveforms, the heat pulse and the coupled heating stay eager
+# between them
+STEP_GRAPHS = True
+_MAX_STEP_GRAPHS = 12   # graph keys kept (stale ones belong to a replaced dt / configuration / probe buffer / tables)
+# advance_ticks (the runner hand-off): this many fixed steps in a row replay as ONE graph (gpu). Measure first: the
+# acoustics example profiler with 8 / 32 / 128 (larger = fewer replays, longer captures); 1 = one graph per step
+STEP_GRAPH_TICKS = 32
+# gpu: a pulsed velocity / volume source whose active window ends within this many steps gets a device table of its
+# per-step values (fixed scatter launches inside the step graphs); later or unbounded windows inject eagerly
+PULSE_TABLE_MAX_STEPS = 1 << 18
+_MAX_TABLE_REBUILDS = 4   # steps not continuing the tables' clock (t_n+1 = t_n + dt) beyond this: tables off for good
 BOUNDARY_TYPES = ('absorbing', 'rigid', 'periodic')
 HEATING_SLOT = 'heating_power'
 # stepper precision -> field storage dtype (half_storage: fp16 in stored units, float32 arithmetic in the kernels)
@@ -69,6 +83,17 @@ class AcousticFields:
     syy: cp.ndarray
     sxy: cp.ndarray
     stt: cp.ndarray = None
+
+
+@dataclass(frozen=True, eq=False)
+class _StepLaunches:
+    """Persistent (kernel, grid, block, args) launches of one (dt, configuration): velocity, stress without the
+    heating slot, monoclinic (or None); stress_head / flags frame the thermal triple of an eager heated stress launch."""
+    velocity: tuple
+    stress: tuple
+    stress_head: tuple
+    flags: tuple
+    monoclinic: tuple = None
 
 
 class _PhysicalFieldState(Mapping):
@@ -215,7 +240,19 @@ class AcousticPhysics(PhysicsSolver):
         self._rigid_keep = None                      # float32 (nx, ny), 0 in rigid cells; allocated by add_rigid
         self._no_keep = xp.ones(1, dtype=DTYPE)
         self._no_thermal = (self._no_keep, self._no_keep, DTYPE(0.0))   # stress kernel tail without a heating slot
-        self._launch_cache = None                    # (dt, _launch_arguments) of the per-step launches
+        self._launch_cache = None                    # (dt, _StepLaunches) of the per-step launches
+        # (ids of a run of fixed launches) -> [CUDA graph or None after its eager run, the launches] (_run_fixed; gpu)
+        self.use_step_graphs = STEP_GRAPHS and xp is not np
+        self._step_graphs = {}
+        self.n_step_graphs = 0                       # graph captures made
+        # pulse tables (gpu): (key, {id(source): fixed launches, None = eager}, any launches) for the clock
+        # _table_clock = (n_step, t) of the next step they expect; the device step counter they read (= n_step)
+        self._pulse_tables_on = self.use_step_graphs
+        self._pulse_tables = None
+        self._table_clock = None
+        self._table_rebuilds = 0
+        self._step_counter = xp.zeros(1, dtype=np.int32)
+        self._step_count_launch = (self.kernels['step_count'], *_kernels.STEP_COUNT_LAUNCH, (self._step_counter,))
 
         self._k_grid, self._k_block = _kernels.launch(nx, ny)
         self._nx_i32, self._ny_i32 = np.int32(nx), np.int32(ny)
@@ -301,6 +338,11 @@ class AcousticPhysics(PhysicsSolver):
     def step(self, t: float = None, dt: float = None) -> None:
         """One staggered step of length dt (default the stable dt; a shorter runner step rebuilds the coefficients
         once)."""
+        self.advance(self.time if t is None else float(t), self._checked_dt(dt))
+
+    def _checked_dt(self, dt) -> float:
+        """The step length of a runner step dt (None / inf: the stable dt): ValueError above the stable dt, the
+        coefficients rebuilt for a new one."""
         limit = self.dt_limit()
         if dt is None or not math.isfinite(dt):
             dt = limit
@@ -308,7 +350,104 @@ class AcousticPhysics(PhysicsSolver):
             raise ValueError(f'acoustic step {dt:.4e} s exceeds the stable time step {self.stable_dt:.4e} s')
         if abs(dt - self.dt) > 1e-12 * self.dt:
             self._configure(dt)
-        self.advance(self.time if t is None else float(t), float(dt))
+        return float(dt)
+
+    def advance_ticks(self, n_ticks, t, dt, stop_time):
+        """MultiphysicsRunner hand-off (one solver, stride 1, no coupling): its tick loop in one call, step(t, dt) per
+        tick while fewer than n_ticks ran and t < stop_time, t += dt; on the gpu runs of STEP_GRAPH_TICKS fixed steps
+        (no eager source or heating scalar) replay as one graph. Returns (ticks run, t after them)."""
+        times = []
+        while len(times) < n_ticks and t < stop_time:
+            times.append(t)
+            t = t + dt
+        if not times:
+            return 0, t
+        dt = self._checked_dt(dt)
+        block = STEP_GRAPH_TICKS if self.use_step_graphs else 1
+        index, count = 0, len(times)
+        while index < count:
+            quiet = self._quiet_steps(times, index, min(block, count - index), dt) if block > 1 else 0
+            if quiet >= block:
+                self._advance_block(times[index], dt, block)
+                index += block
+                continue
+            for step_time in times[index:index + quiet + 1]:   # the quiet ones, then the first eager one
+                self.advance(step_time, dt)
+            index += quiet + 1
+        return count, t
+
+    def _quiet_steps(self, times, index, limit, dt) -> int:
+        """How many steps from times[index] on (at most limit) run fixed launches only: no coupled heating at its
+        envelope, no eager source with a non-negligible value (tabled sources are fixed launches)."""
+        if self._heating is not None:
+            if self.heating_envelope is None:
+                return 0
+        entry = self._step_tables(times[index], dt)
+        tables = entry[1] if entry is not None else {}
+        eager_velocity = [source for source in self._velocity_sources if tables.get(id(source)) is None]
+        eager_stress = [source for source in self._stress_sources if tables.get(id(source)) is None]
+        for count, t in enumerate(times[index:index + limit]):
+            t_half = t + 0.5 * dt
+            if self._heating is not None and self.heating_envelope(t_half) > NEGLIGIBLE_AMPLITUDE:
+                return count
+            if any(source.amplitude(t) for source in eager_velocity) or any(source.amplitude(t_half)
+                                                                            for source in eager_stress):
+                return count
+        return limit
+
+    def _advance_block(self, t, dt, block) -> None:
+        """`block` fixed steps from t (_quiet_steps) as one graph of the step's launches repeated: velocity, tabled
+        velocity sources, stress, monoclinic, tabled stress sources, probe record, step count (advance's order)."""
+        launches = self._launch_arguments(dt)
+        entry = self._step_tables(t, dt)
+        tables, counting = (entry[1], entry[2]) if entry is not None else ({}, False)
+        step = [launches.velocity]
+        for source in self._velocity_sources:
+            step.extend(tables.get(id(source)) or ())
+        step.append(launches.stress)
+        if launches.monoclinic is not None:
+            step.append(launches.monoclinic)
+        for source in self._stress_sources:
+            step.extend(tables.get(id(source)) or ())
+        recorder = self._probe_recorder
+        probe_launch = recorder.next_launch(self.kernels['probe_record'], self.fields, rows=block)
+        if probe_launch is not None:
+            step.append(probe_launch)
+        if counting:
+            step.append(self._step_count_launch)
+        self._run_fixed(step, repeats=block)
+        for _ in range(block):   # the host clock of each step, as advance
+            t = t + dt
+            self.n_step += 1
+            recorder.stamp(t, dt)
+        self.time = t
+        self._table_clock = (self.n_step, t)
+
+    def _step_tables(self, t, dt):
+        """(key, {id(source): fixed table launches or None = eager}, any launches) for a step at (n_step, t) of dt;
+        built for the clock t_n+1 = t_n + dt (device step counter set to n_step) and rebuilt when a step does not
+        continue it (tables off after _MAX_TABLE_REBUILDS); None when off."""
+        if not self._pulse_tables_on:
+            return None
+        key = (dt, self.velocity_scale, self.stress_scale, tuple(map(id, self._velocity_sources)),
+               tuple(map(id, self._stress_sources)))
+        entry = self._pulse_tables
+        if entry is not None and entry[0] == key:
+            if self._table_clock == (self.n_step, t):
+                return entry
+            self._table_rebuilds += 1
+            if self._table_rebuilds > _MAX_TABLE_REBUILDS:   # e.g. a strided runner: eager injection from now on
+                self._pulse_tables_on, self._pulse_tables = False, None
+                return None
+        tables = {}
+        for source in self._velocity_sources + self._stress_sources:
+            builder = getattr(source, 'table_launches', None)
+            tables[id(source)] = (None if builder is None else
+                                  builder(self, self.n_step, t, dt, self._step_counter, PULSE_TABLE_MAX_STEPS))
+        self._step_counter.fill(np.int32(self.n_step))
+        self._pulse_tables = entry = (key, tables, any(tables.values()))
+        self._table_clock = (self.n_step, t)
+        return entry
 
     def state(self):
         return _PhysicalFieldState(self)   # lazy: couplings and materials read single entries every step
@@ -343,32 +482,115 @@ class AcousticPhysics(PhysicsSolver):
 
     def advance(self, t, dt) -> None:
         """v^(n+1/2) from s^n (+ forces at t_n), s^(n+1) from v^(n+1/2) (+ volume / thermoelastic sources at t_n +
-        dt/2; piezo / monoclinic: the strain accumulator too; monoclinic: the c16 / c26 terms), then the probes."""
-        velocity_kernel, velocity_args, stress_kernel, stress_head, flags, monoclinic_args = self._launch_arguments(dt)
+        dt/2; piezo / monoclinic: the strain accumulator too; monoclinic: the c16 / c26 terms), then the probes. Runs
+        of fixed launches between the active eager sources go through _run_fixed (a quiet step: one graph); a tabled
+        source (_step_tables) is a fixed launch of its own, the step count the last one."""
+        launches = self._launch_arguments(dt)
+        entry = self._step_tables(t, dt)
+        tables, counting = (entry[1], entry[2]) if entry is not None else (None, False)
         t_half = t + 0.5 * dt
-        # the coupled heating slot at t_n + dt/2, fused into the stress kernel (thermal scale 0: no slot, dummies)
-        thermal = self._no_thermal
+        # the coupled heating slot at t_n + dt/2, fused into the stress kernel (no slot: the cached launch, dummies)
+        thermal = None
         if self._heating is not None:
             envelope = 1.0 if self.heating_envelope is None else self.heating_envelope(t_half)
-            if envelope > 1e-30:
+            if envelope > NEGLIGIBLE_AMPLITUDE:
                 thermal = (self.materials.gruneisen, self._heating, DTYPE(dt * envelope / self.stress_scale))
-        grid, block = self._k_grid, self._k_block
-        velocity_kernel(grid, block, velocity_args)
+        pending = [launches.velocity]
         for source in self._velocity_sources:
-            source.inject_velocity(self, t)
-        stress_kernel(grid, block, stress_head + thermal + flags)
-        if monoclinic_args is not None:   # c16 / c26 terms from the rates the stress kernel wrote
-            self.kernels['monoclinic_stress'](grid, block, monoclinic_args)
+            table = None if tables is None else tables.get(id(source))
+            if table is not None:
+                pending.extend(table)
+                continue
+            value = source.amplitude(t)
+            if value:
+                self._run_fixed(pending)
+                pending = []
+                source.inject_velocity(self, value)
+        if thermal is None:
+            pending.append(launches.stress)
+        else:   # a per-step scalar: eager
+            self._run_fixed(pending)
+            pending = []
+            kernel, grid, block, _ = launches.stress
+            kernel(grid, block, launches.stress_head + thermal + launches.flags)
+        if launches.monoclinic is not None:   # c16 / c26 terms from the rates the stress kernel wrote
+            pending.append(launches.monoclinic)
         for source in self._stress_sources:
-            source.inject_stress(self, t_half, dt)
+            table = None if tables is None else tables.get(id(source))
+            if table is not None:
+                pending.extend(table)
+                continue
+            value = source.amplitude(t_half)
+            if value:
+                self._run_fixed(pending)
+                pending = []
+                source.inject_stress(self, value, dt)
+        recorder = self._probe_recorder
+        probe_launch = recorder.next_launch(self.kernels['probe_record'], self.fields)
+        if probe_launch is not None:
+            pending.append(probe_launch)
+        if counting:
+            pending.append(self._step_count_launch)
+        self._run_fixed(pending)
         self.n_step += 1
         self.time = t + dt
-        self._probe_recorder.record(self, self.fields, self.time, dt)
+        recorder.stamp(self.time, dt)
+        self._table_clock = (self.n_step, self.time)
+
+    def _run_fixed(self, launches, repeats=1):
+        """Launch the persistent (kernel, grid, block, args) tuples in order, `repeats` times over (advance_ticks'
+        multi-step blocks): eagerly on the cpu, at the first use of their run (loads the kernels outside a capture) and
+        when capture failed, else replayed from a CUDA graph keyed by the tuples' ids and repeats (the entry keeps them
+        alive; their arrays are rewritten in place, never reassigned)."""
+        if not launches:
+            return
+        if not self.use_step_graphs:
+            for _ in range(repeats):
+                for kernel, grid, block, args in launches:
+                    kernel(grid, block, args)
+            return
+        key = (tuple(map(id, launches)), repeats)
+        entry = self._step_graphs.get(key)
+        if entry is None or entry[0] is None:
+            if entry is None:
+                if len(self._step_graphs) >= _MAX_STEP_GRAPHS:
+                    self._step_graphs.clear()
+                self._step_graphs[key] = [None, tuple(launches)]
+            else:
+                entry[0] = self._capture(launches, repeats)
+            if entry is None or entry[0] is None:
+                for _ in range(repeats):
+                    for kernel, grid, block, args in launches:
+                        kernel(grid, block, args)
+                return
+        entry[0].launch(self.xp.cuda.get_current_stream())
+
+    def _capture(self, launches, repeats=1):
+        """CUDA graph of the launches repeated (None, with a warning and eager launches from now on, when capture
+        fails)."""
+        cupy = self.xp
+        stream = cupy.cuda.Stream(non_blocking=True)
+        try:
+            with stream:
+                stream.begin_capture()
+                try:
+                    for _ in range(repeats):
+                        for kernel, grid, block, args in launches:
+                            kernel(grid, block, args)
+                finally:
+                    graph = stream.end_capture()
+        except Exception as error:   # capture unsupported here: the same kernels launched one by one
+            self.use_step_graphs = False
+            self._step_graphs.clear()
+            warnings.warn(f'elastic_waves: CUDA graph capture of the step kernels failed ({type(error).__name__}: '
+                          f'{error}); launching them one by one from now on', RuntimeWarning, stacklevel=4)
+            return None
+        self.n_step_graphs += 1
+        return graph
 
     def _launch_arguments(self, dt):
-        """(velocity kernel, its args, stress kernel, its args before the thermal triple, the flags after it, monoclinic
-        args or None) for step dt, built once per (dt, configuration): every array in them is persistent (rewritten in
-        place); _configure, the storage scales and material changes drop them."""
+        """_StepLaunches for step dt, built once per (dt, configuration): every array in them is persistent (rewritten
+        in place); _configure, the storage scales and material changes drop them (new tuples: new graph keys)."""
         cached = self._launch_cache
         if cached is not None and cached[0] == dt:
             return cached[1]
@@ -394,14 +616,18 @@ class AcousticPhysics(PhysicsSolver):
                          *radial, psi_x[0], psi_x[1], psi_y[0], psi_y[1], self._stress_to_velocity, *flags)
         stress_head = (*stresses, *hoop, fields.vx, fields.vy, self.c11, self.c12, self.c22, self.c66c, *strain, *rates,
                        *common, *radial, psi_x[2], psi_x[3], psi_y[2], psi_y[3], DTYPE(dt), self._velocity_to_stress)
-        monoclinic_args = None
+        grid, block = self._k_grid, self._k_block
+        monoclinic = None
         if self.monoclinic:
-            monoclinic_args = (*stresses, *rates, self.materials.c16, self.materials.c26, self.c66c,
-                               DTYPE(dt * float(self._velocity_to_stress)), self._nx_i32, self._ny_i32,
-                               self._periodic_x_i32, self._periodic_y_i32)
-        arguments = (velocity_kernel, velocity_args, stress_kernel, stress_head, flags, monoclinic_args)
-        self._launch_cache = (dt, arguments)
-        return arguments
+            monoclinic = (kernels['monoclinic_stress'], grid, block,
+                          (*stresses, *rates, self.materials.c16, self.materials.c26, self.c66c,
+                           DTYPE(dt * float(self._velocity_to_stress)), self._nx_i32, self._ny_i32,
+                           self._periodic_x_i32, self._periodic_y_i32))
+        launches = _StepLaunches(velocity=(velocity_kernel, grid, block, velocity_args),
+                                 stress=(stress_kernel, grid, block, stress_head + self._no_thermal + flags),
+                                 stress_head=stress_head, flags=flags, monoclinic=monoclinic)
+        self._launch_cache = (dt, launches)
+        return launches
 
     def _apply_field_component(self, slot, field):
         """Stress of one field component's change since its last transfer: sxx / syy at the centres, sxy at the

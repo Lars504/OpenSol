@@ -42,7 +42,8 @@ WEIGHTS = np.array([4 / 9] + [1 / 9] * 4 + [1 / 36] * 4)
 # Bouzidi links run out of line (__noinline__, __constant__ tables) so their dynamic indexing never spills a bulk cell
 # to local memory; periodic wraps compare-and-add, no integer modulo. Same arithmetic as the numpy / numba twins.
 # Bytes per cell (the kernel is bandwidth-bound on large windows): relaxation_stride 0 reads omega_plus / _minus[0]
-# (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force: all zero); store_mode
+# (one fluid viscosity: a 1-element array), force_stride 0 force_x / _y[0] (no force, or one force on every fluid
+# cell: a 1-element array; forces are read on fluid cells only); store_mode
 # (STORE_*) skips the interior macros between host reads and fuses lattice_to_physical into the last step of a call
 # (published_* full-grid (nx, field_ny) arrays at window origin (window_x0, window_y0); 0 in solid cells).
 _STEP_SOURCE = r'''
@@ -557,23 +558,14 @@ def _step_host(precision, bouzidi):
     return lbm_trt_step_host
 
 
-def _step_numba(bouzidi):
-    """numba factory of lbm_trt_step at precision 'single': a per-cell loop transcribing the CUDA source (float32
-    constants and tables, so the arithmetic stays float32), prange over i."""
-    def factory(numba):
-        cx_int, cy_int = np.array(_CX, dtype=np.int64), np.array(_CY, dtype=np.int64)
-        cx_real, cy_real = cx_int.astype(np.float32), cy_int.astype(np.float32)
-        opposite_table = np.array(_OPPOSITE, dtype=np.int64)
-        mirror_x_table, mirror_y_table = np.array(_MIRROR_X, dtype=np.int64), np.array(_MIRROR_Y, dtype=np.int64)
-        weight_table = np.array(_WEIGHTS32, dtype=np.float32)
-        pair_table = np.array(_PAIR_FIRST, dtype=np.int64)
-        zero, half, one, two = np.float32(0.0), np.float32(0.5), np.float32(1.0), np.float32(2.0)
-        three, four, six, nine = np.float32(3.0), np.float32(4.0), np.float32(6.0), np.float32(9.0)
-        c45, c15 = np.float32(4.5), np.float32(1.5)
-        bouzidi_links = bool(bouzidi)
+def _numba_step_helpers(numba):
+    """Builds once the module globals _numba_neighbour_velocity / _numba_face_velocity_gradient the numba step calls."""
+    # globals, not closure cells: numba's cache key pickles the closure cells and a dispatcher pickles with a
+    # per-process uuid, so a kernel closing over a dispatcher missed the cache (~9 s compile) in every new process
+    if '_numba_face_velocity_gradient' not in globals():
+        zero, half = np.float32(0.0), np.float32(0.5)
+        three, four = np.float32(3.0), np.float32(4.0)
 
-        # cache=True: an uncached compile (~9 s) lands in whichever case first steps on the cpu (bouzidi True / False
-        # are separate cache entries: numba keys closures by their cell values)
         @numba.njit(cache=True)
         def neighbour_velocity(g_in, fluid, force_x, force_y, i, j, wx, wy, periodic_x, periodic_y):
             if periodic_x:
@@ -602,42 +594,42 @@ def _step_numba(bouzidi):
             side_f, inward_f = np.float32(side), np.float32(inward)
             has_side, side_x, side_y = False, zero, zero
             if side != 0:
-                has_side, side_x, side_y = neighbour_velocity(g_in, fluid, force_x, force_y, i + side * ti,
-                                                              j + side * tj, wx, wy, periodic_x, periodic_y)
+                has_side, side_x, side_y = _numba_neighbour_velocity(
+                    g_in, fluid, force_x, force_y, i + side * ti, j + side * tj, wx, wy, periodic_x, periodic_y)
             has_plus, plus_x, plus_y = False, zero, zero
             has_minus, minus_x, minus_y = False, zero, zero
             if not has_side:
-                has_plus, plus_x, plus_y = neighbour_velocity(g_in, fluid, force_x, force_y, i + ti, j + tj, wx, wy,
-                                                              periodic_x, periodic_y)
-                has_minus, minus_x, minus_y = neighbour_velocity(g_in, fluid, force_x, force_y, i - ti, j - tj, wx,
-                                                                 wy, periodic_x, periodic_y)
+                has_plus, plus_x, plus_y = _numba_neighbour_velocity(
+                    g_in, fluid, force_x, force_y, i + ti, j + tj, wx, wy, periodic_x, periodic_y)
+                has_minus, minus_x, minus_y = _numba_neighbour_velocity(
+                    g_in, fluid, force_x, force_y, i - ti, j - tj, wx, wy, periodic_x, periodic_y)
             tangential_x, tangential_y, normal_x, normal_y = zero, zero, zero, zero
             if has_side:
                 tangential_x, tangential_y = side_f * (side_x - u0x), side_f * (side_y - u0y)
             elif has_plus and has_minus:
                 tangential_x, tangential_y = half * (plus_x - minus_x), half * (plus_y - minus_y)
             elif has_plus:
-                ok, far_x, far_y = neighbour_velocity(g_in, fluid, force_x, force_y, i + 2 * ti, j + 2 * tj, wx, wy,
-                                                      periodic_x, periodic_y)
+                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i + 2 * ti, j + 2 * tj,
+                                                             wx, wy, periodic_x, periodic_y)
                 if ok:
                     tangential_x = half * (-three * u0x + four * plus_x - far_x)
                     tangential_y = half * (-three * u0y + four * plus_y - far_y)
                 else:
                     tangential_x, tangential_y = plus_x - u0x, plus_y - u0y
             elif has_minus:
-                ok, far_x, far_y = neighbour_velocity(g_in, fluid, force_x, force_y, i - 2 * ti, j - 2 * tj, wx, wy,
-                                                      periodic_x, periodic_y)
+                ok, far_x, far_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i - 2 * ti, j - 2 * tj,
+                                                             wx, wy, periodic_x, periodic_y)
                 if ok:
                     tangential_x = half * (three * u0x - four * minus_x + far_x)
                     tangential_y = half * (three * u0y - four * minus_y + far_y)
                 else:
                     tangential_x, tangential_y = u0x - minus_x, u0y - minus_y
-            ok, inward_x, inward_y = neighbour_velocity(g_in, fluid, force_x, force_y, i + ni, j + nj, wx, wy,
-                                                        periodic_x, periodic_y)
+            ok, inward_x, inward_y = _numba_neighbour_velocity(g_in, fluid, force_x, force_y, i + ni, j + nj, wx, wy,
+                                                               periodic_x, periodic_y)
             if ok:
                 normal_x, normal_y = inward_f * (inward_x - u0x), inward_f * (inward_y - u0y)
                 if has_side:
-                    corner_ok, corner_x, corner_y = neighbour_velocity(
+                    corner_ok, corner_x, corner_y = _numba_neighbour_velocity(
                         g_in, fluid, force_x, force_y, i + ni + side * ti, j + nj + side * tj, wx, wy, periodic_x,
                         periodic_y)
                     if corner_ok:
@@ -647,6 +639,28 @@ def _step_numba(bouzidi):
                 return -tangential_y, normal_y, tangential_x, tangential_y
             return tangential_x, tangential_y, normal_x, -tangential_x
 
+        globals()['_numba_neighbour_velocity'] = neighbour_velocity
+        globals()['_numba_face_velocity_gradient'] = face_velocity_gradient
+
+
+def _step_numba(bouzidi):
+    """numba factory of lbm_trt_step at precision 'single': a per-cell loop transcribing the CUDA source (float32
+    constants and tables, so the arithmetic stays float32), prange over i."""
+    def factory(numba):
+        _numba_step_helpers(numba)
+        cx_int, cy_int = np.array(_CX, dtype=np.int64), np.array(_CY, dtype=np.int64)
+        cx_real, cy_real = cx_int.astype(np.float32), cy_int.astype(np.float32)
+        opposite_table = np.array(_OPPOSITE, dtype=np.int64)
+        mirror_x_table, mirror_y_table = np.array(_MIRROR_X, dtype=np.int64), np.array(_MIRROR_Y, dtype=np.int64)
+        weight_table = np.array(_WEIGHTS32, dtype=np.float32)
+        pair_table = np.array(_PAIR_FIRST, dtype=np.int64)
+        half, one, two = np.float32(0.5), np.float32(1.0), np.float32(2.0)
+        three, six, nine = np.float32(3.0), np.float32(6.0), np.float32(9.0)
+        c45, c15 = np.float32(4.5), np.float32(1.5)
+        bouzidi_links = bool(bouzidi)
+
+        # cache=True: an uncached compile (~9 s) lands in whichever case first steps on the cpu (bouzidi True / False
+        # are separate cache entries: numba keys closures by their pickled cell values, so no dispatcher in a cell)
         @numba.njit(parallel=True, cache=True)
         def kernel(g_in, g_out, velocity_x, velocity_y, density_deviation, fluid, omega_plus, omega_minus, force_x,
                    force_y, face_kind, face_values, wx, wy, wall_row, wall_fraction):
@@ -710,7 +724,7 @@ def _step_numba(bouzidi):
                                 g[q] = g_in[mirrored, i, j]
                         elif kind == FACE_PRESSURE:
                             side = -cy_int[q] if face < 2 else -cx_int[q]
-                            gradient_0, gradient_1, gradient_2, gradient_3 = face_velocity_gradient(
+                            gradient_0, gradient_1, gradient_2, gradient_3 = _numba_face_velocity_gradient(
                                 g_in, fluid, force_x, force_y, face, i, j, side, old_x, old_y, wx, wy, periodic_x,
                                 periodic_y)
                             cxq, cyq, weight = cx_real[q], cy_real[q], weight_table[q]
@@ -823,6 +837,55 @@ def _to_physical_host(lattice_x, lattice_y, deviation, fluid, mass_density, velo
 
 
 to_physical = twin('fluid.lattice_to_physical', _to_physical_gpu, _to_physical_host)
+
+# Steady / health check of FluidPhysics in one pass: maxima (uint32 bits of non-negative float32: their order is the
+# float order, NaN above inf, so atomicMax keeps a NaN) = (max |u_x - saved_x|, max |u_y - saved_y|, max u^2), then
+# saved = lattice velocity; maxima must be zero before the launch (grid-stride, warp shuffle, 3 atomics per warp).
+_VELOCITY_CHECK_SOURCE = r'''
+__device__ __forceinline__ unsigned int larger_bits(const unsigned int a, const unsigned int b) { return a > b ? a : b; }
+
+extern "C" __global__
+void lattice_velocity_check(const float* __restrict__ lattice_x, const float* __restrict__ lattice_y,
+                            float* __restrict__ saved_x, float* __restrict__ saved_y,
+                            unsigned int* __restrict__ maxima, const int n_cells)
+{
+    unsigned int change_x = 0u, change_y = 0u, speed_squared = 0u;
+    for (int cell = blockIdx.x * blockDim.x + threadIdx.x; cell < n_cells; cell += gridDim.x * blockDim.x) {
+        const float velocity_x = lattice_x[cell], velocity_y = lattice_y[cell];
+        change_x = larger_bits(change_x, __float_as_uint(fabsf(velocity_x - saved_x[cell])));
+        change_y = larger_bits(change_y, __float_as_uint(fabsf(velocity_y - saved_y[cell])));
+        speed_squared = larger_bits(speed_squared,
+                                    __float_as_uint(fabsf(velocity_x * velocity_x + velocity_y * velocity_y)));
+        saved_x[cell] = velocity_x;
+        saved_y[cell] = velocity_y;
+    }
+    for (int offset = 16; offset > 0; offset >>= 1) {   // every lane reaches this (no early return)
+        change_x = larger_bits(change_x, __shfl_down_sync(0xffffffffu, change_x, offset));
+        change_y = larger_bits(change_y, __shfl_down_sync(0xffffffffu, change_y, offset));
+        speed_squared = larger_bits(speed_squared, __shfl_down_sync(0xffffffffu, speed_squared, offset));
+    }
+    if ((threadIdx.x & 31) == 0) {
+        atomicMax(maxima, change_x);
+        atomicMax(maxima + 1, change_y);
+        atomicMax(maxima + 2, speed_squared);
+    }
+}
+'''
+VELOCITY_CHECK_BLOCKS = 64   # grid-stride blocks of BLOCK_SIZE threads (few atomics; the check runs per interval)
+
+
+def _velocity_check_host(lattice_x, lattice_y, saved_x, saved_y, maxima, n_cells):
+    """numpy twin of lattice_velocity_check: the three maxima as float32 into the uint32 maxima, saved = lattice."""
+    maxima_values = maxima.view(np.float32)
+    maxima_values[0] = np.abs(lattice_x - saved_x).max()
+    maxima_values[1] = np.abs(lattice_y - saved_y).max()
+    maxima_values[2] = np.abs(lattice_x * lattice_x + lattice_y * lattice_y).max()
+    saved_x[...] = lattice_x
+    saved_y[...] = lattice_y
+
+
+velocity_check = raw_twin('fluid.lattice_velocity_check',
+                          cp.RawKernel(_VELOCITY_CHECK_SOURCE, 'lattice_velocity_check'), _velocity_check_host)
 
 # SI force density [N/m^3] -> lattice force (acceleration dt^2 / dx): scale = dt^2 / dx; 0 in solid cells.
 _force_to_lattice_gpu = cp.ElementwiseKernel(

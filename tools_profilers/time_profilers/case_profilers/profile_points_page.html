@@ -512,6 +512,8 @@ function hover(event, panelIndex) {
   }
   const command = layout.commands[index];
   tip.replaceChildren(textNode('div', command, 'head'));
+  const columnRuns = (DATA.column_runs || {})[command];   // a split column: the runs it compares on
+  if (columnRuns) tip.appendChild(textNode('div', 'runs: ' + columnRuns.join(', '), 'meta'));
   const series = shownSeries();
   const metas = [];
   let rows = 0;
@@ -614,7 +616,9 @@ function drawLegend() {
   notes.className = 'notes';
   notes.appendChild(textNode('li', 'marker: ● gpu, ■ cpu'));
   if (timeout) notes.appendChild(textNode('li', `run wall: timed-out commands sit at the >${fmt(timeout.largest)} tick`));
-  if (DATA.dropped.length) notes.appendChild(textNode('li', `no longer in COMMANDS (shown last): ${DATA.dropped.join(', ')}`));
+  const notDrawn = DATA.not_drawn || [], notDrawnLines = DATA.not_drawn_lines || [];
+  if (notDrawn.length) notes.appendChild(textNode('li', `in the points file, not drawn (no longer in COMMANDS): ${notDrawn.join(', ')}`));
+  if (notDrawnLines.length) notes.appendChild(textNode('li', `older lines in the points file, not drawn: ${notDrawnLines.join(', ')}`));
   legend.appendChild(notes);
 }
 
@@ -698,7 +702,7 @@ function refresh() {
 
 document.getElementById('title').textContent = DATA.title;
 document.getElementById('subtitle').textContent =
-  `first complete profile ${DATA.first_when}; drawn ${DATA.written}; ${DATA.commands.length} commands, ` +
+  `first complete profile ${DATA.first_when}; drawn ${DATA.written}; ${DATA.commands.length} columns, ` +
   `${DATA.variants.length} solver @backend lines. Hover a panel for the values.`;
 const filter = document.getElementById('filter');
 filter.value = state.filter;

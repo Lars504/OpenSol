@@ -173,7 +173,8 @@ class SpecEstimates:
             by_mesh = {}
             try:
                 memory, plain_roles = fitted_memory_estimate(self.spec, self.parameters(), self.registry, estimates,
-                                                             self.memory_budget, by_mesh=by_mesh)
+                                                             self.memory_budget, by_mesh=by_mesh,
+                                                             host_budget=self.host_memory_budget)
                 return memory, by_mesh, plain_roles
             except MESH_ESTIMATE_ERRORS:
                 return None, {}, None
@@ -482,7 +483,7 @@ class ModelDocument(QtCore.QObject, SpecEstimates):
             self.host_memory_budget = int(host_budget)
         self.estimate_inputs_version += 1
         self._cache.pop('issues', None)
-        self._cache.pop('memory_estimate', None)   # fitted against the GPU budget (meshing.fitted_memory_estimate)
+        self._cache.pop('memory_estimate', None)   # fitted against both budgets (meshing.fitted_memory_estimate)
         self.issues_invalidated.emit()
         return True
 

@@ -5,7 +5,9 @@ and a dense coarsest pseudo-inverse; every launch a core.kernels twin, no host s
 # the widths per axis (an odd count keeps its last cell single), volume-mean Lame values (void children count 0, so a
 # half-void coarse cell is half as stiff; void only when every child is), held dofs by injection at coincident nodes
 # (holds at other fine nodes are lost there; the prolonged correction is masked by the fine free dofs, and a coarse
-# rigid motion that results falls into the pseudo-inverse's dropped null space). Pre- and post-smoothing are the same
+# rigid motion that results falls into the pseudo-inverse's dropped null space). The coarsest dense operator alone is
+# Galerkin (P^T A P of the level above, probed): a rediscretised one over-stiffened thin plates in void (bending ~ t^3
+# of the averaged thickness) and multigrid fell back on solid_3d_multigrid_void. Pre- and post-smoothing are the same
 # Chebyshev polynomial in B^-1 A and R = P^T, so the cycle is symmetric (plain PCG).
 import itertools
 import time
@@ -14,7 +16,7 @@ import numpy as np
 
 from ...core.backend import to_host
 from ...core.kernels import real_raw_twin
-from .kernels3d import BrickKernels
+from .kernels3d import BrickKernels, rows_host
 
 COARSEST_DOFS = 1500        # no further coarsening at or below this many dofs (dense eigh of the coarsest operator)
 MAX_LEVELS = 16
@@ -38,15 +40,15 @@ _RESIDUAL, _SMOOTH, _ASSIGN, _ADD = 1, 2, 4, 8   # mg3_chebyshev mode bits
 
 _SOURCES = {
     # fine (n0, n1, n2, 3) = trilinear prolongation along `axis` of coarse (n_coarse along it): fine node f between
-    # coarse left[f] and left[f] + 1 at weight[f]; mode 1 zeroes the fixed dofs of the output
+    # coarse left[f] and left[f] + 1 at weight[f]; mode 1 zeroes the fixed dofs of the output. Every kernel here has a
+    # _rows entry (BlockCycle): its vectors are n_rows C rows of two-dimensional arrays, one thread per (row, item),
+    # the operator arrays and tables shared
     'mg3_axis_prolong': r"""
-extern "C" __global__
-void mg3_axis_prolong(const real_t* __restrict__ coarse, real_t* __restrict__ fine, const int* __restrict__ left,
-                      const real_t* __restrict__ weight, const bool* __restrict__ free_dofs,
-                      int n0, int n1, int n2, int axis, int n_coarse, int mode)
+__device__ __forceinline__ void mg3_axis_prolong_at(
+    idx_t index, const real_t* __restrict__ coarse, real_t* __restrict__ fine, const int* __restrict__ left,
+    const real_t* __restrict__ weight, const bool* __restrict__ free_dofs,
+    int n0, int n1, int n2, int axis, int n_coarse, int mode)
 {
-    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= (idx_t)n0 * n1 * n2 * 3) return;
     const int component = (int)(index % 3);
     idx_t rest = index / 3;
     int c[3];
@@ -66,17 +68,39 @@ void mg3_axis_prolong(const real_t* __restrict__ coarse, real_t* __restrict__ fi
     }
     fine[index] = (mode == 1 && !free_dofs[index]) ? (real_t)0 : value;
 }
+
+extern "C" __global__
+void mg3_axis_prolong(const real_t* __restrict__ coarse, real_t* __restrict__ fine, const int* __restrict__ left,
+                      const real_t* __restrict__ weight, const bool* __restrict__ free_dofs,
+                      int n0, int n1, int n2, int axis, int n_coarse, int mode)
+{
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= (idx_t)n0 * n1 * n2 * 3) return;
+    mg3_axis_prolong_at(index, coarse, fine, left, weight, free_dofs, n0, n1, n2, axis, n_coarse, mode);
+}
+
+extern "C" __global__
+void mg3_axis_prolong_rows(const real_t* __restrict__ coarse, real_t* __restrict__ fine, const int* __restrict__ left,
+                           const real_t* __restrict__ weight, const bool* __restrict__ free_dofs,
+                           int n0, int n1, int n2, int axis, int n_coarse, int mode, int n_rows)
+{
+    const idx_t count = (idx_t)n0 * n1 * n2 * 3;   // values of one fine row
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count * n_rows) return;
+    const idx_t row = index / count;
+    const int along = axis == 0 ? n0 : (axis == 1 ? n1 : n2);
+    mg3_axis_prolong_at(index % count, coarse + row * (count / along * n_coarse), fine + row * count, left, weight,
+                        free_dofs, n0, n1, n2, axis, n_coarse, mode);
+}
 """,
     # coarse (n0, n1, n2, 3) = transpose of mg3_axis_prolong along `axis` of fine (n_fine along it), gathered over the
     # fine nodes fine_node[c] - 1 .. + 1; masked zeroes the fixed dofs of the output
     'mg3_axis_restrict': r"""
-extern "C" __global__
-void mg3_axis_restrict(const real_t* __restrict__ fine, real_t* __restrict__ coarse, const int* __restrict__ left,
-                       const real_t* __restrict__ weight, const int* __restrict__ fine_node,
-                       const bool* __restrict__ free_dofs, int n0, int n1, int n2, int axis, int n_fine, int masked)
+__device__ __forceinline__ void mg3_axis_restrict_at(
+    idx_t index, const real_t* __restrict__ fine, real_t* __restrict__ coarse, const int* __restrict__ left,
+    const real_t* __restrict__ weight, const int* __restrict__ fine_node,
+    const bool* __restrict__ free_dofs, int n0, int n1, int n2, int axis, int n_fine, int masked)
 {
-    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= (idx_t)n0 * n1 * n2 * 3) return;
     const int component = (int)(index % 3);
     idx_t rest = index / 3;
     int c[3];
@@ -99,17 +123,40 @@ void mg3_axis_restrict(const real_t* __restrict__ fine, real_t* __restrict__ coa
     }
     coarse[index] = (masked && !free_dofs[index]) ? (real_t)0 : sum;
 }
+
+extern "C" __global__
+void mg3_axis_restrict(const real_t* __restrict__ fine, real_t* __restrict__ coarse, const int* __restrict__ left,
+                       const real_t* __restrict__ weight, const int* __restrict__ fine_node,
+                       const bool* __restrict__ free_dofs, int n0, int n1, int n2, int axis, int n_fine, int masked)
+{
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= (idx_t)n0 * n1 * n2 * 3) return;
+    mg3_axis_restrict_at(index, fine, coarse, left, weight, fine_node, free_dofs, n0, n1, n2, axis, n_fine, masked);
+}
+
+extern "C" __global__
+void mg3_axis_restrict_rows(const real_t* __restrict__ fine, real_t* __restrict__ coarse, const int* __restrict__ left,
+                            const real_t* __restrict__ weight, const int* __restrict__ fine_node,
+                            const bool* __restrict__ free_dofs, int n0, int n1, int n2, int axis, int n_fine,
+                            int masked, int n_rows)
+{
+    const idx_t count = (idx_t)n0 * n1 * n2 * 3;   // values of one coarse row
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count * n_rows) return;
+    const idx_t row = index / count;
+    const int along = axis == 0 ? n0 : (axis == 1 ? n1 : n2);
+    mg3_axis_restrict_at(index % count, fine + row * (count / along * n_fine), coarse + row * count, left, weight,
+                         fine_node, free_dofs, n0, n1, n2, axis, n_fine, masked);
+}
 """,
     # one Chebyshev step per node: r -= q (RESIDUAL), d = c1 d + c2 B^-1 r (SMOOTH), x = d (ASSIGN) or x += d (SMOOTH /
     # ADD)
     'mg3_chebyshev': r"""
-extern "C" __global__
-void mg3_chebyshev(real_t* __restrict__ residual, const real_t* __restrict__ product,
-                   const real_t* __restrict__ inverse, real_t* __restrict__ direction, real_t* __restrict__ solution,
-                   real_t c1, real_t c2, int mode, int n_nodes)
+__device__ __forceinline__ void mg3_chebyshev_node(
+    int node, real_t* __restrict__ residual, const real_t* __restrict__ product,
+    const real_t* __restrict__ inverse, real_t* __restrict__ direction, real_t* __restrict__ solution,
+    real_t c1, real_t c2, int mode)
 {
-    const int node = blockIdx.x * blockDim.x + threadIdx.x;
-    if (node >= n_nodes) return;
     const idx_t dof = 3 * (idx_t)node;
     real_t r[3], d[3];
     for (int a = 0; a < 3; ++a) {
@@ -134,6 +181,28 @@ void mg3_chebyshev(real_t* __restrict__ residual, const real_t* __restrict__ pro
     if (mode & 10)
         for (int a = 0; a < 3; ++a) solution[dof + a] = (mode & 4) ? d[a] : solution[dof + a] + d[a];
 }
+
+extern "C" __global__
+void mg3_chebyshev(real_t* __restrict__ residual, const real_t* __restrict__ product,
+                   const real_t* __restrict__ inverse, real_t* __restrict__ direction, real_t* __restrict__ solution,
+                   real_t c1, real_t c2, int mode, int n_nodes)
+{
+    const int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= n_nodes) return;
+    mg3_chebyshev_node(node, residual, product, inverse, direction, solution, c1, c2, mode);
+}
+
+extern "C" __global__
+void mg3_chebyshev_rows(real_t* __restrict__ residual, const real_t* __restrict__ product,
+                        const real_t* __restrict__ inverse, real_t* __restrict__ direction,
+                        real_t* __restrict__ solution, real_t c1, real_t c2, int mode, int n_nodes, int n_rows)
+{
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= (idx_t)n_nodes * n_rows) return;
+    const idx_t row_start = (index / n_nodes) * 3 * n_nodes;
+    mg3_chebyshev_node((int)(index % n_nodes), residual + row_start, product + row_start, inverse,
+                       direction + row_start, solution + row_start, c1, c2, mode);
+}
 """,
     # coarsest y = M x of a row-major n x n matrix, one warp per row
     'mg3_dense_product': r"""
@@ -148,6 +217,25 @@ void mg3_dense_product(const real_t* __restrict__ matrix, const real_t* __restri
         for (int column = lane; column < n; column += 32) sum += matrix[(long long)row * n + column] * x[column];
     for (int offset = 16; offset > 0; offset >>= 1) sum += __shfl_down_sync(0xffffffffu, sum, offset);
     if (row < n && lane == 0) y[row] = sum;
+}
+
+// y[v] = M x[v] of n_rows vectors (C rows of x, y), one warp per (vector, matrix row)
+extern "C" __global__
+void mg3_dense_product_rows(const real_t* __restrict__ matrix, const real_t* __restrict__ x, real_t* __restrict__ y,
+                            int n, int n_rows)
+{
+    const long long thread = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    const long long item = thread / 32;
+    const bool inside = item < (long long)n * n_rows;
+    const int row = (int)(item % n);
+    const long long vector_start = inside ? (item / n) * n : 0;
+    const int lane = threadIdx.x & 31;
+    real_t sum = (real_t)0;
+    if (inside)
+        for (int column = lane; column < n; column += 32)
+            sum += matrix[(long long)row * n + column] * x[vector_start + column];
+    for (int offset = 16; offset > 0; offset >>= 1) sum += __shfl_down_sync(0xffffffffu, sum, offset);
+    if (inside && lane == 0) y[vector_start + row] = sum;
 }
 """,
 }
@@ -219,6 +307,12 @@ def _dense_product_host(matrix, x, y, n):
 _TWINS = {name: real_raw_twin(f'mechanics3d_multigrid.{name}', 'typedef long long idx_t;\n' + _SOURCES[name], name, host)
           for name, host in (('mg3_axis_prolong', _axis_prolong_host), ('mg3_axis_restrict', _axis_restrict_host),
                              ('mg3_chebyshev', _chebyshev_host), ('mg3_dense_product', _dense_product_host))}
+# block twins (BlockCycle; kernels3d.rows_host: the one-vector twin per row): name -> row-array positions
+_TWINS.update({f'{name}_rows': real_raw_twin(f'mechanics3d_multigrid.{name}_rows',
+                                             'typedef long long idx_t;\n' + _SOURCES[name], f'{name}_rows',
+                                             rows_host(_TWINS, name, vectors), dtype_argument=min(vectors))
+               for name, vectors in (('mg3_axis_prolong', (0, 1)), ('mg3_axis_restrict', (0, 1)),
+                                     ('mg3_chebyshev', (0, 1, 3, 4)), ('mg3_dense_product', (1, 2)))})
 
 
 def _grid(count):
@@ -265,6 +359,18 @@ def hierarchy_bytes(element_shape, item_bytes) -> int:
             total += sum(_transfer_sizes(shape, shapes[index + 1])) * item_bytes
     coarsest = 3 * _node_count(shapes[-1])
     return total + coarsest * coarsest * item_bytes
+
+
+def block_cycle_bytes(element_shape, rows, item_bytes, cast_rows=True) -> int:
+    """Device bytes of a BlockCycle of `rows` vectors: per row the level vectors (fine: residual, direction, product;
+    coarse + solution) and the transfer intermediates (+ cast_rows: the fine solution rows of rows in another dtype)."""
+    shapes = level_element_shapes(element_shape)
+    values = 3 * _node_count(shapes[0]) if cast_rows else 0
+    for index, shape in enumerate(shapes):
+        values += (4 if index else 3) * 3 * _node_count(shape)
+        if index + 1 < len(shapes):
+            values += sum(_transfer_sizes(shape, shapes[index + 1]))
+    return int(rows) * values * int(item_bytes)
 
 
 def coarsest_host_bytes(element_shape) -> int:
@@ -444,9 +550,25 @@ class BrickMultigrid:
             rho = rho_next
         return tuple(coefficients)
 
+    def _coarsest_product(self, level, probe):
+        """Host float64 image of a coarsest probe: Galerkin P^T A P through the level above (exact fine-cell energy, so
+        thin solids in void keep their bending stiffness), or the level's own operator when it is the only one."""
+        xp = self.xp
+        if len(self.levels) == 1:
+            level.direction[...] = xp.asarray(probe, dtype=self.dtype)
+            level.product_of(level.direction, level.product)
+            return np.asarray(to_host(level.product), dtype=np.float64)
+        fine = self.levels[-2]
+        level.solution[...] = xp.asarray(probe, dtype=self.dtype)
+        self._prolong(fine, level)                          # fine.direction = P probe (fixed fine dofs zeroed)
+        fine.product_of(fine.direction, fine.residual)      # A P probe into the restriction's input
+        self._restrict(fine, level)                         # level.residual = P^T A P probe (fixed coarse dofs zeroed)
+        return np.asarray(to_host(level.residual), dtype=np.float64)
+
     def _dense_inverse(self, level):
-        """Pseudo-inverse (cycle dtype, on the backend) of the coarsest masked operator, probed with 27 node colours x 3
-        components (colour nodes 3 apart: their 27-node stencils never overlap), eigh of the free block on the host."""
+        """Pseudo-inverse (cycle dtype, on the backend) of the coarsest masked Galerkin operator, probed with 27 node
+        colours x 3 components (colour nodes 3 apart: the nested Q1 coarse basis keeps 27-node stencils, never
+        overlapping), eigh of the free block on the host."""
         xp = self.xp
         n0, n1, n2 = level.node_shape
         n = level.n_dofs
@@ -465,9 +587,7 @@ class BrickMultigrid:
                     continue
                 probe = np.zeros(n)
                 probe[columns] = 1.0
-                level.direction[...] = xp.asarray(probe, dtype=self.dtype)
-                level.product_of(level.direction, level.product)
-                image = np.asarray(to_host(level.product), dtype=np.float64)
+                image = self._coarsest_product(level, probe)
                 owner = columns // 3   # every stencil node (27 offsets) x component of every probed column at once
                 mi = node_i[owner][:, None] + offsets[:, 0]
                 mj = node_j[owner][:, None] + offsets[:, 1]
@@ -568,6 +688,127 @@ class BrickMultigrid:
         return {'multigrid_levels': len(self.levels), 'multigrid_coarsest_dofs': int(self.levels[-1].n_dofs),
                 'multigrid_builds': self.n_builds, 'multigrid_fallbacks': self.fallbacks,
                 'multigrid_build_seconds': self.build_seconds}
+
+
+class _BlockWork:
+    """(capacity, n) work rows of one level of a BlockCycle (the _Level / _Transfer vectors, one row per vector)."""
+
+    def __init__(self, level, capacity, dtype, xp, coarse):
+        rows = (capacity, level.n_dofs)
+        self.residual = xp.zeros(rows, dtype=dtype)
+        self.direction = xp.zeros(rows, dtype=dtype)
+        self.product = xp.zeros(rows, dtype=dtype)
+        self.solution = xp.zeros(rows, dtype=dtype) if coarse else None   # level 0: the caller's rows
+        self.first = self.second = None
+        if level.transfer is not None:
+            self.first = xp.zeros((capacity, level.transfer.first.size), dtype=dtype)
+            self.second = xp.zeros((capacity, level.transfer.second.size), dtype=dtype)
+
+
+class BlockCycle:
+    """V-cycles of a BrickMultigrid on a block of vectors at once (solvers.block_eigen): precondition(rows_in, rows_out)
+    = BrickMultigrid.precondition of every C row, each step ONE launch of the kernels' _rows entries over (row, item),
+    so a launch carries the whole block. The hierarchy's operator arrays, tables, Chebyshev coefficients and coarsest
+    inverse are shared and read at each call (a rebuilt hierarchy is followed); the work rows (capacity, n) per level
+    are allocated here once (block_cycle_bytes). No host sync and no allocation inside a cycle."""
+
+    def __init__(self, multigrid, capacity):
+        self.multigrid = multigrid
+        self.capacity = int(capacity)
+        self.xp, self.dtype = multigrid.xp, multigrid.dtype
+        self._work = [_BlockWork(level, self.capacity, self.dtype, self.xp, coarse=index > 0)
+                      for index, level in enumerate(multigrid.levels)]
+        self._cast_rows = None   # fine solution rows of the cycle dtype for rows of another dtype (first such call)
+
+    def precondition(self, rows_in, rows_out) -> None:
+        """rows_out[r] = V-cycle(rows_in[r]) of every row (at most `capacity` rows; rows_in is not modified; rows of
+        another real dtype are cast into and out of the cycle)."""
+        xp = self.xp
+        rows = len(rows_in)
+        if rows > self.capacity:
+            raise ValueError(f'BlockCycle: {rows} rows asked of a cycle built for {self.capacity}')
+        xp.copyto(self._work[0].residual[:rows], rows_in)
+        if rows_out.dtype == self.dtype:
+            self._cycle(0, rows_out, rows)
+            return
+        if self._cast_rows is None:
+            self._cast_rows = xp.zeros((self.capacity, self.multigrid.levels[0].n_dofs), dtype=self.dtype)
+        solution = self._cast_rows[:rows]
+        self._cycle(0, solution, rows)
+        xp.copyto(rows_out, solution)
+
+    def _cycle(self, index, solution, rows):
+        multigrid = self.multigrid
+        level, work = multigrid.levels[index], self._work[index]
+        if index == len(multigrid.levels) - 1:
+            n = int(level.n_dofs)
+            _TWINS['mg3_dense_product_rows'](((32 * n * rows + _BLOCK - 1) // _BLOCK,), (_BLOCK,),
+                                             (multigrid._dense, work.residual[:rows], solution, np.int32(n),
+                                              np.int32(rows)))
+            return
+        self._smooth(level, work, solution, rows, first=True)
+        self._restrict(index, rows)
+        self._cycle(index + 1, self._work[index + 1].solution[:rows], rows)
+        self._prolong(index, rows)
+        self._product(level, work, rows)
+        self._chebyshev(level, work, solution, rows, _RESIDUAL | _ADD, (self.dtype.type(0), self.dtype.type(0)))
+        self._smooth(level, work, solution, rows, first=False)
+
+    def _product(self, level, work, rows):
+        """work.product = masked A work.direction of the level, every row."""
+        level.kernels.product_rows(work.direction[:rows], work.product[:rows], level.lame_lambda, level.mu,
+                                   level.widths, level.free, masked=True)
+
+    def _chebyshev(self, level, work, solution, rows, mode, coefficients):
+        c1, c2 = coefficients
+        _TWINS['mg3_chebyshev_rows'](_grid(level.n_nodes * rows), (_BLOCK,),
+                                     (work.residual[:rows], work.product[:rows], level.inverse_blocks,
+                                      work.direction[:rows], solution, c1, c2, np.int32(mode), level.n_nodes_i32,
+                                      np.int32(rows)))
+
+    def _smooth(self, level, work, solution, rows, first):
+        """BrickMultigrid._smooth on the rows."""
+        steps = level.coefficients
+        self._chebyshev(level, work, solution, rows, _SMOOTH | (_ASSIGN if first else 0), steps[0])
+        for coefficients in steps[1:]:
+            self._product(level, work, rows)
+            self._chebyshev(level, work, solution, rows, _RESIDUAL | _SMOOTH, coefficients)
+        if first:
+            self._product(level, work, rows)
+            self._chebyshev(level, work, solution, rows, _RESIDUAL, steps[0])
+
+    def _restrict(self, index, rows):
+        """Coarse residual rows = P^T fine residual rows (BrickMultigrid._restrict)."""
+        fine, work, coarse_work = self.multigrid.levels[index], self._work[index], self._work[index + 1]
+        coarse = self.multigrid.levels[index + 1]
+        transfer = fine.transfer
+        f0, f1, f2 = transfer.fine_nodes
+        c0, c1, c2 = transfer.coarse_nodes
+        passes = ((2, work.residual, work.second, (f0, f1, c2), f2, 0),
+                  (1, work.second, work.first, (f0, c1, c2), f1, 0),
+                  (0, work.first, coarse_work.residual, (c0, c1, c2), f0, 1))
+        for axis, source, target, dims, n_fine, masked in passes:
+            left, weight, fine_nodes = transfer.tables[axis]
+            _TWINS['mg3_axis_restrict_rows'](_grid(3 * int(np.prod(dims)) * rows), (_BLOCK,),
+                                             (source[:rows], target[:rows], left, weight, fine_nodes, coarse.free,
+                                              *(np.int32(n) for n in dims), np.int32(axis), np.int32(n_fine),
+                                              np.int32(masked), np.int32(rows)))
+
+    def _prolong(self, index, rows):
+        """Fine direction rows = P coarse solution rows (BrickMultigrid._prolong)."""
+        fine, work, coarse_work = self.multigrid.levels[index], self._work[index], self._work[index + 1]
+        transfer = fine.transfer
+        f0, f1, f2 = transfer.fine_nodes
+        c0, c1, c2 = transfer.coarse_nodes
+        passes = ((0, coarse_work.solution, work.first, (f0, c1, c2), c0, 0),
+                  (1, work.first, work.second, (f0, f1, c2), c1, 0),
+                  (2, work.second, work.direction, (f0, f1, f2), c2, 1))
+        for axis, source, target, dims, n_coarse, mode in passes:
+            left, weight, _ = transfer.tables[axis]
+            _TWINS['mg3_axis_prolong_rows'](_grid(3 * int(np.prod(dims)) * rows), (_BLOCK,),
+                                            (source[:rows], target[:rows], left, weight, fine.free,
+                                             *(np.int32(n) for n in dims), np.int32(axis), np.int32(n_coarse),
+                                             np.int32(mode), np.int32(rows)))
 
 
 def _pair_sums(values, axis, xp):

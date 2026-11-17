@@ -118,10 +118,22 @@ class DeviceSolve:
 
 @dataclass(frozen=True)
 class DenseFlops:
-    """Dense linear algebra (batched block inverses, Arnoldi orthogonalisation) priced at the gemm rate; host=True on
-    the host whatever the backend."""
+    """Dense products (block products, Arnoldi orthogonalisation) in real flops, priced at the gemm rate; host=True on
+    the host whatever the backend; single: complex64 / float32 work of the run backend ('gemm_single')."""
     flops: float
     host: bool = False
+    single: bool = False
+
+
+@dataclass(frozen=True)
+class BlockInverse:
+    """Inverses of `batch` dense complex (block, block) matrices on the run backend: one batched call (curves
+    'block_inverse[_single]_<b>' over the batch, interpolated in the block size) or, looped, one call per matrix
+    ('matrix_inverse[_single]' over the block size); single: complex64."""
+    block: float
+    batch: float = 1.0
+    single: bool = False
+    looped: bool = False
 
 
 @dataclass(frozen=True)
@@ -169,6 +181,7 @@ class SolverWork:
     rhs: float = 1.0              # right-hand sides per solve (line_block: per shift; eigen: solves per application)
     backend: str = 'gpu'
     block_size: int = 0            # line_block: unknowns per grid line (0: sqrt of unknowns)
+    batch_shifts: float = 1.0      # line_block: shifts of one solve_shifted chunk (they share its calls and launches)
     eigenpairs: int = 0            # eigen role: eigenpairs per eigen solve (solves = eigen solves)
     default_basis: int = 0         # eigen role: the physics' Arnoldi basis when the node's subspace_size is 0
     factor_scale: float = 1.0      # HostLU / 2D DevicePlan / DeviceFactor scale (operators off the 5- / 7-point curve)
@@ -292,7 +305,14 @@ def diffusion_time_estimate(context, window_cells, dimensions=2, cross_term=Fals
         solves, kind = solves * guess, 'guess'
         limit = None if iteration_limit is None else (limit or 1.0) * iteration_limit
         assemblies *= guess
-    assembly = (Elementwise(6.0 * nnz * value_bytes, 2.0 * nnz * value_bytes, launches=30), PythonCalls(60))
+    # the first assembly through build_laplacian; re-assemblies on the kept plain pattern (no c_xy term; FEM operators
+    # aside) through core.fv_diffusion_fused: two kernels plus the copies, masks and the anchor pattern test
+    fused_share = 0.0
+    if entries_per_row is None and not cross_term and assemblies > 0.0:
+        fused_share = 1.0 if assemblies_per_step else max(assemblies - 1.0, 0.0) / assemblies
+    assembly = (Elementwise((6.0 - 3.0 * fused_share) * nnz * value_bytes, 2.0 * nnz * value_bytes,
+                            launches=int(round(30 - fused_share * (30 - 8)))),
+                PythonCalls(60 - fused_share * (60 - 30)))
     rhs = (elementwise(cells, 6, 2, value_bytes, launches=6), PythonCalls(15))
     # DiffusionSystem.solve's w = u - u_fix and u = w + u_fix around the linear solve, then the physics' float32 field
     # from the unknown (heat: T from the rise); each probe stores one device scalar (index view + store)
@@ -389,13 +409,36 @@ def price(op, profile, backend) -> float:
         seconds = profile.seconds(curve, max(op.unknowns, 1.0)) * op.scale
         return seconds * (op.rhs if isinstance(op, DeviceSolve) else 1.0)
     if isinstance(op, DenseFlops):
-        curve = 'host_gemm' if op.host or not on_gpu else 'gemm'
+        if op.single and not op.host:
+            curve = 'gemm_single'
+        else:
+            curve = 'host_gemm' if op.host or not on_gpu else 'gemm'
         return profile.seconds(curve, op.flops) if op.flops > 0 else 0.0
+    if isinstance(op, BlockInverse):
+        suffix = '_single' if op.single else ''
+        if op.looped:
+            return op.batch * profile.seconds(f'matrix_inverse{suffix}', op.block)
+        return _block_inverse_seconds(profile, f'block_inverse{suffix}_', op.block, op.batch)
     if isinstance(op, HostStream):
         return profile.seconds('host_stream', op.bytes) if op.bytes > 0 else 0.0
     if isinstance(op, PythonCalls):
         return op.count * profile.scalar('python_call')
     raise TypeError(f'unknown time op {type(op).__name__}')
+
+
+def _block_inverse_seconds(profile, prefix, block, batch) -> float:
+    """Seconds of one batched inverse of `batch` (block, block) matrices: the curves '<prefix><b>' of the two measured
+    block sizes nearest `block`, each at that batch, log-log interpolated in the block size (below the smallest: its
+    seconds; above the largest: the last pair's slope); KeyError without such curves."""
+    sizes = sorted(int(name[len(prefix):]) for name in profile.curves if name.startswith(prefix))
+    if not sizes:
+        raise KeyError(f'{prefix}<block>')
+    if block <= sizes[0] or len(sizes) == 1:
+        return profile.seconds(f'{prefix}{sizes[0]}', batch)
+    low, high = next(((low, high) for low, high in zip(sizes, sizes[1:]) if block <= high), tuple(sizes[-2:]))
+    seconds_low, seconds_high = (profile.seconds(f'{prefix}{size}', batch) for size in (low, high))
+    slope = math.log(seconds_high / seconds_low) / math.log(high / low)
+    return seconds_low * (block / low) ** slope
 
 
 def price_ops(ops, profile, backend) -> float:

@@ -394,25 +394,63 @@ def cg_solver_issues(vctx, physics_spec, path, all_cell_sink=False):
     if resolved is not None and resolved.solver_type.name == 'sparse_direct':
         if linear_solver_cudss(solvers):
             return []
-        return _direct_diffusion_size_issues(vctx, path, host_direct_back_end(solvers) or 'scipy_splu')
+        role = vctx.registry.physics_type(physics_spec.type).solver_roles.get('linear')
+        return _direct_diffusion_size_issues(vctx, path, host_direct_back_end(solvers) or 'scipy_splu',
+                                             role.direct_components if role is not None else 1)
     if resolved is None or resolved.node is None or resolved.solver_type.name != 'pcg':
         return []
     return [Issue(issue.level, issue.path, f"linear solver '{resolved.node}': {issue.message}")
             for issue in cg_iteration_issues(vctx, resolved.values, path, all_cell_sink=all_cell_sink)]
 
 
-def _direct_diffusion_size_issues(vctx, path, back_end='scipy_splu'):
-    """[] or the sparse_direct.diffusion_size_issue of the meshed window (3D: its voxels) for back_end ('scipy_splu'
-    or a host direct one: the same limits) as an Issue at path."""
+# coefficient contrast from which a 'single' (float32) CG answer drifts: magnetostatics with iron at mu_dc 100 came out
+# ~8 % off (measured); single_precision_contrast_issues warns from here
+SINGLE_PRECISION_CONTRAST = 100.0
+
+
+def single_precision_contrast_issues(vctx, physics_spec, path, property_names, label):
+    """Warning when the physics' resolved 'linear' solver runs 'single' and the constant property_names of the selected
+    materials span max / min >= SINGLE_PRECISION_CONTRAST, unset cells counting 1 (expression values are skipped)."""
+    resolved = (vctx.solvers(physics_spec) or {}).get('linear')
+    if resolved is None or resolved_precision(resolved.solver_type, resolved.values) != 'single':
+        return []
+    values = [1.0]
+    for _, properties, _ in selected_material_data(vctx.spec):
+        for name in property_names:
+            value = plain_number(properties.get(name), vctx.parameters)
+            if value is not None and value > 0.0:
+                values.append(value)
+    contrast = max(values) / min(values)
+    if contrast < SINGLE_PRECISION_CONTRAST:
+        return []
+    solver = (f"linear solver '{resolved.node}'" if resolved.node is not None
+              else "the Automatic linear solver (solver_defaults.precision 'single')")
+    return [Issue('warning', path, f'{solver} runs single precision on a {label} contrast of {contrast:.3g} (>= '
+                                   f'{SINGLE_PRECISION_CONTRAST:g}): float32 CG stops at a biased answer there (mu_dc '
+                                   "100 iron: ~8 % error); use precision 'double' or 'mixed'")]
+
+
+def direct_unknowns(mesh, components=1) -> int:
+    """Unknowns of a direct 'linear' operator on a MeshEstimate (SolverRole.direct_components): element meshes
+    components x (nodes + edges) (P2, an upper figure for P1); tensor meshes the window cells (components 1, cell-centred)
+    or components x the window nodes (2D solid Q1)."""
+    if mesh.kind in ('triangles', 'tetrahedra'):
+        return components * (int(mesh.n_nodes) + int(mesh.n_edges))
+    if components == 1:
+        return math.prod(mesh.window_axis_cells)
+    return components * math.prod(count + 1 for count in mesh.window_axis_cells)
+
+
+def _direct_diffusion_size_issues(vctx, path, back_end='scipy_splu', components=1):
+    """[] or the sparse_direct.diffusion_size_issue of direct_unknowns on the physics' mesh (3D: its voxels) for back_end
+    ('scipy_splu' or a host direct one: the same limits) as an Issue at path."""
     from ..solvers.sparse_direct import diffusion_size_issue   # numpy only at module level
     mesh = vctx.mesh
     if mesh is None:
         return []
-    if mesh.kind in ('triangles', 'tetrahedra'):   # P2 unknowns ~ nodes + edges (FEM, an upper figure for P1)
-        window_cells = int(mesh.n_nodes) + int(mesh.n_edges)
-    else:
-        window_cells = math.prod(mesh.window_axis_cells)
-    issue = diffusion_size_issue(window_cells, dimensions=3 if vctx.spec.is_3d else 2, back_end=back_end)
+    label = None if components == 1 else f'unknowns ({components} per node)'
+    issue = diffusion_size_issue(direct_unknowns(mesh, components), dimensions=3 if vctx.spec.is_3d else 2,
+                                 back_end=back_end, unknowns_label=label)
     return [] if issue is None else [Issue(issue[0], path, issue[1])]
 
 
@@ -420,11 +458,7 @@ def _direct_diffusion_size_issues(vctx, path, back_end='scipy_splu'):
 # The host direct back ends (solvers.host_direct: MUMPS / PARDISO, opt-in, never 'auto') join every role whose
 # consumers hold a generic factor (solve / solve_host, transposed solves, recycling, inertia: all supported); tuples
 # derive from host_direct.HOST_DIRECT_* only, so dropping a value there needs no edit here.
-# 'linear' of the sparse direct users without cuDSS (em_fdfd_nonlinear: host factors, recycled by the channels)
-DIRECT_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
-                                setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
-                                                 + HOST_DIRECT_BACK_ENDS})
-# ... of magnetic_fields_ac: host SuperLU, MUMPS / PARDISO or a cuDSS LDL^T of the complex symmetric bordered system
+# 'linear' of magnetic_fields_ac: host SuperLU, MUMPS / PARDISO or a cuDSS LDL^T of the complex symmetric bordered system
 # (circuit.RecycledFactor, plan reused across operator changes); back_end 'auto' = cudss on triangles on the gpu
 # backend (B1a: double, mu contrasts and circuit rows make complex64 doubtful, so no mixed back end; 1.7e5 P2 unknowns
 # took 7 s per SuperLU factor)
@@ -448,14 +482,22 @@ FDFD_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double', 
 CUDSS_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
                                setting_choices={'back_end': FDFD_DIRECT_BACK_ENDS},
                                auto_back_ends={'tensor': 'cudss', 'triangles': 'cudss'})
+# ... of em_fdfd_nonlinear: the FDFD back ends, but no auto_back_ends: 'auto' stays host SuperLU (each channel keeps
+# its factor, recycled by GMRES across picard Kerr / carrier sweeps; ~1e4-unknown strips: a SuperLU solve ~0.2 ms beats
+# cuDSS's per-solve overhead and ~15 ms plan per channel). cudss / cudss_mixed are opt-in for large grids (a device
+# factor pays from ~1e5 cells, unmeasured): no recycling, so picard Kerr channels refactorise per sweep
+DIRECT_LINEAR_ROLE = SolverRole('general', 'sparse_direct', precisions=('double',),
+                                setting_choices={'back_end': FDFD_DIRECT_BACK_ENDS})
 # 'stepper' of the explicit time-stepping engines: em_fdtd_ez / _hz single or double (float64 fields); em_fdtd_3d,
 # elastic_waves and laminar_flow single or fp16 field storage
 STEPPER_ROLE = SolverRole('general', 'explicit_kernels', precisions=('single', 'double'))
 HALF_STORAGE_STEPPER_ROLE = SolverRole('general', 'explicit_kernels', precisions=('single', 'half_storage'))
 
 
-def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None):
-    """'eigen' SolverRole (arpack_shift_invert by default) used in `studies` (() = every study); factorization
+def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None, block_eigen=False):
+    """'eigen' SolverRole (arpack_shift_invert by default) used in `studies` (() = every study); block_eigen: a real
+    symmetric pencil whose physics also runs the factor-free 'block_eigen' solver (opt-in, precisions double / mixed:
+    operator class 'spd'; solid_mechanics_3d on brick meshes); factorization
     cudss_mixed only with mixed_factorization (callers of solve_resonances with a symmetrizer: em_fdfd_3d, em_fdfd,
     em_fdfd_bor, em_fdfd_conical; the real symmetric eigsh_shifted pencils of solid_mechanics (2D) and
     solid_mechanics_3d on tetrahedra, refined to full accuracy; em_modes, whose triangle pencil is Rayleigh-polished:
@@ -464,9 +506,14 @@ def eigen_role(studies=(), mixed_factorization=False, auto_factorizations=None):
     factorization becomes on the gpu with nvmath-python (the runtime falls back to superlu, B1b); other grids: superlu."""
     factorizations = (('auto', 'superlu', 'cudss') + HOST_DIRECT_DOUBLE_BACK_ENDS
                       + ((('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS) if mixed_factorization else ()))
-    return SolverRole('general', 'arpack_shift_invert', studies=tuple(studies), precisions=('double',),
+    return SolverRole('spd' if block_eigen else 'general', 'arpack_shift_invert', studies=tuple(studies),
+                      precisions=('double', 'mixed') if block_eigen else ('double',),
                       setting_choices={'factorization': factorizations},
-                      auto_back_ends=dict(auto_factorizations or {}))
+                      auto_back_ends=dict(auto_factorizations or {}),
+                      opt_in_types=('block_eigen',) if block_eigen else (),
+                      # block_eigen mixed runs the physics' own float32 multigrid (solver_misfit / resolved_solvers
+                      # would else refuse it or drop it to jacobi); arpack has no preconditioner setting
+                      mixed_preconditioners=('jacobi', 'multigrid') if block_eigen else ('jacobi',))
 
 
 def resolved_back_end(solvers):

@@ -293,7 +293,7 @@ FDTD_BOR_SELFTEST_CASES = (
             'peak field energy in the details), not yet confirmed by a run.'),
         specs=lambda: {},
         check=_check_radiation,
-        max_wall_time=300.0, heavy=True),
+        max_wall_time=300.0),
     SelfTestCase(
         name='em_fdtd_bor_model_ringdown',
         label='EM body-of-revolution FDTD: model ring-down (CPU backend)',

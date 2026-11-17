@@ -130,6 +130,13 @@ class ChannelFieldStore:
         self.xp.copyto(self.values, values)
         self.versions = [version + 1 for version in self.versions]
 
+    def clear(self):
+        """Zero every stored field (the fresh-build start) and bump every version, so caches keyed on versions stay
+        valid; nothing before the first capture."""
+        if self.values is not None:
+            self.values.fill(0)
+            self.versions = [version + 1 for version in self.versions]
+
     def key(self, indices):
         """Versions of channels `indices`: the cache key of what the sources computed from them."""
         return tuple(self.versions[index] for index in indices)
