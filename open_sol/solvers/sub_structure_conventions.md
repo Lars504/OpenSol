@@ -768,6 +768,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   may be the runtime's scratch (the preconditioner's input rows are overwritten afterwards). With a `mask` every row is
   0 outside it and K / M must keep that (masked products); the runtime masks the preconditioner output itself. The
   preconditioner must be SPD (a symmetric V-cycle, block Jacobi), not exact: no inner solves, no tolerance coupling.
+  A callback gets every row of a step in one call and must run them in ONE launch (a per-row loop of single-vector
+  launches is latency-bound and leaves the GPU idle: the reason the Lanczos path does not load it): solid_mechanics_3d
+  uses the `*_rows` kernel entries (one thread per (row, node)) and `multigrid3d.BlockCycle`.
+- Only the wanted rows must converge; the guard rows widen the search space. A consumer asks exactly the eigenpairs
+  it keeps (no ARPACK-style margin such as EXTRA_EIGENVALUES on top: that only adds pairs to converge).
 - Memory: 9 b n values of the phase dtype (S, KS, MS of (3 b, n); b = wanted + guards) + CHUNK_BYTES scratch, nothing
   else of that size: every block product runs by column chunks in place (`_rotate`, the W projection), compaction is
   forward row copies, the start rows are drawn row by row on the gpu. Mixed frees the float32 stores before the
@@ -775,12 +780,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   transient of the eigen solve; the consumer adds its own copies, e.g. float32 operator copies and a private
   multigrid hierarchy). Host: the k eigenvectors only.
 - Syncs per iteration: two host reads (residual norms, Gram pair) and one small upload (the rotation coefficients);
-  the per-row callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
+  the block callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
   (3 b)^2 (diag(B)^-1/2 scaled, B eigenvalues below DROP dropped: dependent W / P directions near convergence).
 - Mixed: float32 to max(tolerance, SINGLE_PHASE_TOLERANCE) or a STALL_ITERATIONS stall (the float32 floor of the
   products is ~eps32 lambda_max / lambda: ~1e-3 on fine 3D elasticity, so the float64 phase is always needed for tight
   tolerances; it starts from the float32 X with a fresh P). Double stalls over DOUBLE_STALL_ITERATIONS stop
-  unconverged (tolerance below the float64 floor), with a warning.
+  unconverged (tolerance below the float64 floor), with a warning. A stall counts only once the worst wanted residual
+  has been below STALL_ARMED_RESIDUAL: the O(1) start-up plateau of a weak preconditioner is no rounding floor (it
+  runs to the iteration cap instead). The cap is the node's max_iterations, else DEFAULT_MAX_ITERATIONS (never a
+  linear CG limit).
 - Fewer free unknowns than DENSE_MAX_RATIO x b: a dense scipy eigh of the applied K and M (`eigen_dense_solves`).
 - Counters: eigen_solves, eigen_iterations / _single_ / _double_iterations, operator_applications (K rows),
   mass_applications, preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves,
@@ -789,11 +797,30 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   iterations a priori (multigrid: MULTIGRID_ITERATIONS_PER_DECADE x decades, flagged by work.setup_ops; Jacobi:
   sqrt(kappa) or CG_ITERATIONS_PER_AXIS_CELL x longest axis): uncalibrated guesses.
 - Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
-  norm kernel, block (multi-vector) brick kernels (today one launch per row), FEM pencils (tetrahedra / triangles:
-  SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space preconditioner).
+  norm kernel, dropping unconverged pairs from the result (today returned with a warning), FEM pencils (tetrahedra /
+  triangles: SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space
+  preconditioner).
 - Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
   callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
   model runs: mechanics sub file "Self-tests".
+- Open estimator gaps (profiled 2026-11-17): mixed under-books the device peak by ~3·3b·n·4 B on large meshes (the
+  float32 stores stay cached in the pool when `_to_double` allocates the float64 ones: reuse one flat float64 buffer
+  per store instead); the chunk scratch is booked as a flat 2·CHUNK_BYTES whatever n (over-books small meshes); the
+  time recipe never prices a private multigrid build (`work.setup_ops` is only a flag), only the shared one through pcg.
+
+## Tried and dropped (tag `archive/four-new-solvers`)
+Three opt-in solvers were built, profiled on 2026-11-17 and dropped; their code is on that tag. Do not rebuild them
+without a reason that answers these findings.
+- batched_direct (same-pattern frequency sweeps factorised in cuDSS uniform / explicit batches): the cuDSS uniform
+  batch factorised at ~2x (up to 3x) the per-system numeric cost and solved at the same per-system cost at every
+  tested size (0.35M-1.8M stored entries), so direct sweeps ran 1.1-2.2x slower than per-system cudss_mixed, which
+  already keeps one analysis and refreshes values per frequency. Only the smallest pattern reached parity.
+- time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): missed resonances on open (CPML) disks
+  (0-3 of 6), residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells.
+- mumps_blr (block low-rank MUMPS refined by GMRES): MUMPS compressed 2-10 % of the entries on the profiled 3D
+  cases, the factor took 1.4-2.1x longer and no memory was saved (only ICNTL(35) / CNTL(7) were set, so MUMPS
+  allocated for the full-rank factor). A retry needs the memory flags, a looser drop threshold and a case much larger
+  than solid_mechanics_3d_tetrahedra_large.
 
 ## batched_direct (`BatchedDirectSolver`; role 'linear', opt-in)
 - A SparseDirectSolver subclass (per-system solves on cudss_mixed / cudss by precision, SuperLU after a cuDSS refusal;

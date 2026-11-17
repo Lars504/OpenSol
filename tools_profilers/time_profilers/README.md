@@ -182,18 +182,18 @@ included). A missing python-mumps / pydiso (or PARDISO off x86-64), nvmath-pytho
 Whole selftest runs per solver engine (gpu by default), to find host work (numpy / scipy / Python, device-host
 round trips) around the solves. They cover the engines and mesh kinds that no analytic example covers (pressure
 acoustics, em_eme_3d, magnetostatics_3d, 3D tensor / tetrahedra / nonlinear solid mechanics, the triangle and
-tetrahedra FEM engines, the membrane plate), plus the example-based em_fdfd_3d and sin_square scripts; the per-module
+tetrahedra FEM engines, the membrane plate, the opt-in block_eigen eigensolver), plus the example-based em_fdfd_3d and sin_square scripts; the per-module
 performance set is `example_profilers/` below. Run from any folder:
 
 ```
 python tools_profilers/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
-python tools_profilers/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--cudss --cudss-mixed --scipy --pardiso --mumps | --all] [--backend gpu cpu]
-    [--timeout S] [--new-first] [--plot-only]
+python tools_profilers/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--cudss --cudss-mixed --scipy --pardiso --mumps --block-eigen | --all] [--backend gpu cpu]
+    [--timeout S] [--reset] [--new-first] [--plot-only]
 ```
 
 Common options (`profiler_harness.main`): `--case`, `--runs`, `--variant`, `--backend gpu|cpu`, `--repeat`,
 `--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`, `--compare NAME=v1,v2`,
-`--automatic-solvers` (every role on Automatic), `--precision single|double|mixed` (solver_defaults); some scripts
+`--automatic-solvers` (every role on Automatic), `--precision single|double|mixed` (solver_defaults), `--if-changed`; some scripts
 add `--kind` / `--refine`. Output `out/<name>__<backend>[__<compare>[__only]][__<set>]/report.txt` + `profile.prof`
 (the settings are in the folder name, e.g. `membrane_film__gpu__back_end-pardiso__only`, so a pardiso profile never
 overwrites a cudss one): per part calls, inclusive / exclusive wall, cpu/wall (> 1 threaded BLAS; a blocking device sync spins a core, so a part waiting on the GPU shows ~1 too) and
@@ -211,6 +211,17 @@ time of open_sol functions, callers of the largest outside functions and of ever
   `aggregate_strong_links` (host), `_build_level`, `_coarsest_solver`, and `precondition` (one V-cycle per iteration).
   The cases run these only when a role asks for them: `--compare back_end=cudss,pardiso_mixed` or
   `--compare preconditioner=jacobi,multigrid`.
+- block_eigen (solid_mechanics_3d on bricks): `--block-eigen` turns the tensor script's `modes` / `modes_fine` (the
+  roller box as is and 3x finer) into block_eigen runs at its defaults (mixed, multigrid), in the columns of their
+  arpack runs. `profiler_solver_solid_mechanics_3d_block_eigen.py` covers the rest, each run with its own node: the
+  3x box at precision double and with preconditioner jacobi, the 6x box (~1.3e5 dofs, four multigrid levels) mixed and
+  double on the private hierarchy and mixed on the linear pcg's own multigrid (`modes_levels_shared_multigrid`). Only
+  auto and `--block-eigen` run that command (`SOLVER_EXCLUDED_COMMANDS`: a library group's `--compare` would swap its
+  nodes for arpack). Parts (`BLOCK_EIGEN_PARTS` of the tensor script): `lowest`, the `_Lobpcg` phases (`_initial`,
+  `_phase`, `_to_double`), per iteration `_apply` (K and M rows), `_residual_norms` and `_gram_pair` (the two host
+  reads), `_expand` (preconditioner, projection), `_rayleigh_ritz` (host eigh), `_rotate`, the brick `*_rows` kernels
+  and `BlockCycle.precondition` (the block V-cycle). The per-iteration parts sync at their edges: `--no-sync` for the
+  bare wall.
 - `runs.md` / `runs.json`: one column per run (each repeat its own), cells `inclusive ms per call x calls`; the
   report repeats the table when there is more than one run. `runs.json` also holds per run `gpu_peak_bytes` (the
   larger of the build peak and the pool high-water + cuDSS factors outside the pool; null on the cpu backend, where the
@@ -233,13 +244,60 @@ run). After a change, `python profile_delta.py <report folder name>` (e.g. `soli
 lists per run the parts whose exclusive time moved by more than `--min-ms` (20) and `--min-percent` (30) between the
 two newest kept profiles of that folder (`--before` / `--after`: any two `runs.json`).
 
-**Solver groups and backends.** Every solver is in one of five groups (harness `solver_group`): a library back end by
-its package, every other solver (open_sol's own pcg with jacobi / multigrid, explicit kernels, line_block, ...) by
-array library and precision. One flag per group, `--all` runs the five in turn:
+**Solver groups and backends.** Every solver is in one group (harness `solver_group`): an opt-in solver type of
+`TYPE_GROUPS` by its name, a library back end by its package, every other solver (open_sol's own pcg with jacobi /
+multigrid, explicit kernels, line_block, ...) by array library and precision. One flag per group, `--all` runs them
+all in turn:
 - `--cudss`: cuDSS + cupy double, gpu backend: harness `--precision double --compare back_end=cudss`.
 - `--cudss-mixed`: cuDSS mixed + cupy single, gpu backend: `--precision single --compare back_end=cudss_mixed`.
 - `--scipy`: host SuperLU + numpy, cpu backend: `--compare back_end=scipy_splu`.
 - `--pardiso`, `--mumps`: their host library, cpu backend: `--compare back_end=<value> --compare-only`.
+- `--block-eigen`: the opt-in solver type, gpu backend: harness `--solver-type block_eigen` gives every role it can
+  fill (`solver_misfit`, then the physics' validation) a node of it (the settings of the role's node when that one is
+  of the type already, else the defaults) and drops the runs with none (`skipped: no run takes this solver`); run
+  label `<run> solver_type=block_eigen`, so its column lines up with the other solvers' runs of the same task.
+
+**Reuse.** `run_all_profilers.py` reruns only the commands whose solver or case changed: each script gets
+`--if-changed`, and a profile folder whose last complete profile (every run `completed`, cProfile on) still stands
+logs `unchanged since <time>, not rerun (2.1 s check) (kept 15.2 s)` and keeps its points. It stands while
+`profile_cache.json` beside its report matches: the case (the specs' JSON, warm-up specs, parts list, repeat / warmup /
+sync / arrays options, `--set`), the environment (Python, numpy / scipy / cupy versions, backend, machine) and every
+code unit (top-level function or class, a file's module-level code) of the solver code that ran under cProfile in
+`solvers/`, `fem/`, `core/`, `physics/`, `coupling/` and `model/study_*.py`, plus the units that code names (numba
+kernels, memoised getters); `definition*` / `selftests*` / `__init__` files, model plumbing, io, viz and materials are
+no dependency. Commands named with `--only` always profile (as a named selftest run reruns its cases); `--reset`
+(and `--new-first`) reruns everything: do it after an edit outside that set that changes timings (the builder,
+meshing orchestration, the harness itself). Timed-out, failed and `--no-cprofile` profiles are never reused; a
+profile run by hand records its folder too, so run_all reuses it (and takes its point when it has none).
+**Partial runs.** Each completed run is saved as it finishes (`pieces.json` and `pieces/<run>.prof` beside the
+report: its parts, wall, memory peaks, run text, cProfile dump and the solver units it ran). With `--if-changed` a
+profile that did not finish (stopped at `--timeout`, killed, a run failed) or whose solver code changed takes the
+pieces of the same case and environment whose units are unchanged (`run X: kept from <time>`) and runs only the
+others; the report, runs.json, profile.prof and the point are merged from all runs, so a long command completes over
+a few run_all passes. A kept run keeps the process-start costs it had (CUDA context, library load) and a new run in
+the resumed process takes them anew: use `--warmup` where that matters, or `--reset` for a profile in one process.
+The harness check starts Python, open_sol and the case specs (~9 s per command), so run_all also remembers each
+outcome that stands (a kept or complete profile, or no run taking the solver) in `out/run_all_memory.json` with a
+snapshot of every `.py` / `.json` under `open_sol/`, `tools_profilers/` and `examples/` (no `out` / `*_out` folders),
+the interpreter, library versions and machine. While that is unchanged the command is not started at all
+(`not rerun (remembered)`). When the only edits are solver code (PROFILED_CODE files) run_all re-hashes just those
+files and compares the units the kept profile ran: none changed -> `remembered: N solver file(s) edited, no unit it
+ran`, else the command runs (and re-profiles). Any other edit (a selftest, the harness, an example, model plumbing)
+needs the harness check: before anything runs, `check_profiles.py` does it for all those commands in one process
+(open_sol, registry and package snapshot loaded once; one `batch check: K of N unchanged (T s)` line, those log
+plain `not rerun`), refreshing their memory;
+only the commands it finds changed are started on their own. An edit to solver code that changes a
+case spec (a selftest building its mesh from a solver helper) is not seen there: `--reset` after one.
+
+**Solution check.** After the timed runs (untimed, outside cProfile) the harness reads the first repeat's runs back
+from their run folders and passes them to the `check()` of the selftest case each spec came from (`case_specs` tags
+it), one group per case, variant and `--compare` value; a variant's tolerance replaces the check's. Each group is
+`passed` / `failed` (error against tolerance) / `error` (check raised) / `unchecked` (why: specs not from a case, such
+as the examples; a case run the check reads was not profiled; the check needs live Results; a run did not complete;
+`--no-arrays`). The verdicts go to `solution_check.json`, a report.txt section and stdout; run_all puts the counts on
+the command's line, logs each failed / error group under it and lists them all at the end (the points are still
+recorded). Profilers that refine a case keep its check: a finer mesh should pass the same tolerance. A partial
+profile (stopped at its `--time-limit`) skips the check: it is past its limit and never stands.
 
 The backends above are each flag's default; `--backend gpu` (or `gpu cpu`) runs the host groups on those instead (a
 gpu model factorising on the host: `pardiso @gpu`, its own line). cudss / cudss_mixed run on the gpu only. No flag
@@ -258,10 +316,10 @@ named in the log. Two runs that differ only by the node the value replaces run o
 
 The points keep each counted run's wall and peaks (`run_walls`, `run_gpu_peaks`, `run_host_peaks`). When the solvers
 of a command measured different runs, the plot splits it into one column per set of runs the same solvers measured
-(`command: runA+runB`), so every column compares solvers on the same tasks; a solver that did not do a column's runs
-has no point there.
+(`command: runA+runB`; a longer list shows `command: N runs`, its run names printed when the plot is drawn), so every
+column compares solvers on the same tasks; a solver that did not do a column's runs has no point there.
 
-The plot draws the auto pick and the five groups only (older variants and commands stay in `profile_points.json`,
+The plot draws the auto pick and the SOLVERS groups only (older variants and commands stay in `profile_points.json`,
 undrawn).
 
 **Timeout.** Each command stops after `--timeout` seconds (default 60; `0`: no limit), counted from its process

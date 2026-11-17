@@ -116,9 +116,13 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   'auto' through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores
   the spec's nodes and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
   runs.json `groups` / `automatic_groups`), and a group name is its SOLVERS key, so the ring needs no mapping. The
-  plot draws only `plotted_variants` (auto per backend + the five groups on their backend) and only COMMANDS entries:
+  plot draws only `plotted_variants` (auto per backend + the SOLVERS groups on their backend) and only COMMANDS entries:
   other variants / commands stay in profile_points.json, undrawn; a renamed flag needs RENAMED_VARIANTS to stay drawn. A new library back end needs a `LIBRARY_GROUPS` entry, else it is grouped
-  by array library and precision; a renamed variant needs a RENAMED_VARIANTS entry so `load_points` keeps its points.
+  by array library and precision; a new opt-in solver type needs harness `TYPE_GROUPS` + a run_all `_typed` SOLVERS
+  entry (a group name = its SOLVERS key; one SOLVER_COLORS hue per entry, else colours repeat); a renamed variant
+  needs a RENAMED_VARIANTS entry so `load_points` keeps its points. `--solver-type` keeps the settings of a role's node
+  already of that type, else gives the type's defaults: a case needing others sets its own node of the type in the
+  profiler's specs.
   One ring per column (`auto_picks`): the column's runs' `run_automatic` groups; exactly one -> that group's line,
   several or the line not run -> auto @gpu when its `chosen` holds them. Ringing every picked group gave two rings.
   SOLVERS `backends` is a flag's default backend, `runs_on` what an explicit `--backend` may pick (and the lines
@@ -176,12 +180,56 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   model under that value and is dropped (`_run_key`: the specs' JSON without the displaced nodes).
 - A command's point sums its runs' walls, so a run added to a script doubles the plotted point: a solver twin of a
   model gets its own script (`*_double_factor.py` reuses its sibling's PARTS / example loader), not a run in the
-  existing one.
+  existing one. Likewise an opt-in type's runs at other settings (`*_3d_block_eigen.py`: its own node per run, kept by
+  `--solver-type`); a library group's `--compare` replaces a node lacking `back_end` / `factorization` by the role's
+  Automatic (arpack for an eigen node), so such a command is in those groups' `SOLVER_EXCLUDED_COMMANDS`.
 - `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
   `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
   main and its helpers read those globals at call time, never bind them at import. `SOLVER_EXCLUDED_COMMANDS`
   {group: entries} skips a variant whose answer is wrong and drops its points (examples: cudss_mixed's single
   precision on 'magnetic', ~8 % off with iron).
+- Reuse (`--if-changed`, passed by run_all unless `--reset` / `--new-first` / `--only`: named commands always profile):
+  `ProfileCache` writes `profile_cache.json` per output folder, cleared (units null) before a profile starts and
+  filled only after a complete one (report.txt and runs.json written, every run 'completed', cProfile on). Its units
+  come from the timed cProfile's code objects (`profiler.getstats()`, no settrace: a tracer would slow the timed runs)
+  through `selftest_cache.code_units(keep=_profiled_path, module_refs=False, second_hop=False)`; code of the warm-up
+  and of other threads is not seen (a kernel factory there counts only when timed code names it). The package
+  snapshot (`package_units()`) is taken in the ProfileCache init, before the runs, so an edit made during a long
+  run_all reruns that command next time. The input hash takes the specs' `to_dict()`: a new option that changes what
+  runs or how it is timed goes into `case_input` in `main` or into `output_name`, else a changed profile is reused.
+  The environment key is the machine name, not the GPU name (a device query would make the CUDA context before the
+  first timed run). run_all reads the `UNCHANGED_MARKER` / `KEPT_REPORT_MARKER` lines (keep the texts the same),
+  copies nothing to the history and leaves the points (a command without one takes it from the kept runs.json).
+  Partial runs: `profile_runs` uses one cProfile per run and saves each completed run as a `RunPieces` entry at once
+  (pieces.json through a sibling + replace, `pieces/<label>.prof`); the report, runs.json and profile.prof are built
+  from the pieces (`_summed_records`, `parts_table`, `pstats.Stats(*paths)`), never from the live timers / profiler,
+  so kept and new runs merge alike. A piece is kept only with resume (`--if-changed`), the same input hash and
+  environment and unchanged unit hashes; the units of a complete profile are the union of its pieces'. A new
+  per-run quantity goes into the piece, else a resumed profile loses it. The `--time-limit` interrupt
+  (`_TimeLimit`) stops the run going on inside that per-run loop: the stopped run gets a dump but no piece, and a
+  partial profile skips the solution check (it is past its limit, run_all kills it `REPORT_GRACE` s later).
+  In front of it run_all keeps `run_all_memory.json` (key: script + arguments): a remembered command replays its
+  stored stdout lines (UNCHANGED / KEPT_REPORT / SOLUTION_CHECK, or the nothing-profiled line) through the same code
+  path, only while the folder's profile_cache.json still holds the same complete profile, the environment is equal
+  and the source snapshot (taken before the command starts) is equal or differs only in PROFILED_CODE files whose
+  units of that profile keep their hashes (`_solver_edits_stand`). run_all must not import open_sol (seconds): it
+  loads `open_sol/model/selftest_cache.py` and `profiler_harness.py` on their own (`_standalone`), so both keep their
+  module level free of package imports (selftest_cache imports results_io inside SelftestCache). The memory keeps
+  one file-hash table per snapshot still referred to. `precheck` decides every command before the loop: memory, then
+  one `check_profiles.py` process that runpy-runs each script as `__main__` with its argv under harness
+  `CHECK_ONLY` (main() builds the case input and raises `ProfileChecked(lines | None)` before wrapping or
+  profiling). So a script's `__main__` block must reach harness `main()` without other work, read its options from
+  sys.argv at call time, and keep module state that survives the next script in the same process harmless; a check
+  that raises leaves that command to its own subprocess (the error shows there). A source run_all must see goes under
+  `FINGERPRINT_FOLDERS`; a file a run writes must not (it would defeat the memory, not break it).
+- Solution check: `case_specs` sets `ORIGIN_ATTRIBUTE` (a `SelftestOrigin`) on each spec; deepcopy, `refined` and
+  in-place edits keep it, a spec rebuilt from `to_dict()` or loaded from an example loses it (listed as 'no
+  selftest'). `setting_variants` adds the compared value, so each value is its own group. `solution_checks` runs after
+  `timers.restore()` and the profiler, on `Results.load` of the run folders (so host / GPU peaks are not changed by
+  results held for the check): a check that calls a live-only Results method (`field(plane=)`, `result(**options)`)
+  is 'unchecked', not an error. A kept profile needs `solution_check.json` and reprints it; the check() code units
+  (`_check_units`) join the cache units, as selftests* files are no PROFILED_CODE. run_all reads the
+  `SOLUTION_CHECK_MARKER` lines by their first word (the status): keep that layout.
 - Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
   callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
   every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).

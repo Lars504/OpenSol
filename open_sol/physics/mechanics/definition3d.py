@@ -51,7 +51,8 @@ from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, PIEZO_DEFAULTS_3D,
                         PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
-from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, coarsest_host_bytes, hierarchy_bytes,
+from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
+                          hierarchy_bytes,
                           level_element_shapes)
 from .pml3d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, PMLPadding
 from .renderer3d import SolidRenderer3D
@@ -1180,7 +1181,7 @@ def _time_estimate(settings_values, mesh, context):
                       setup_counters=('multigrid_builds', 'multigrid_build_seconds'))
     block = _block_eigen_values(context) if context.study.type == EIGENFREQUENCY_STUDY else None
     if block is not None:   # block_eigen: per active row a K and an M product and one preconditioner application
-        eigenpairs = int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
+        eigenpairs = int(context.count('eigenpairs', 1) or 1)   # no EXTRA_EIGENVALUES (modal.solve_lowest_modes_block)
         item_bytes = FLOAT32_BYTES if block['precision'] == 'mixed' else FLOAT64_BYTES
         mass = te.Elementwise(3 * dofs * item_bytes, dofs * item_bytes, launches=1, numba=True,
                               flops=_BRICK_VISITS_PER_ELEMENT * _BRICK_MASS_VISIT_FLOPS * elements,
@@ -1633,16 +1634,17 @@ def _memory_estimate(settings_values, mesh, context):
     if context.spec.study.type == EIGENFREQUENCY_STUDY and block is not None:
         # system3d._lowest_modes_block: density copies (+ float32), the block stores (block_eigen.block_bytes), the
         # float32 operator copies when the linear solver keeps none (mixed), a private multigrid hierarchy when the
-        # linear solver has none (preconditioner multigrid) and its float32 cycle output
-        from ...solvers.block_eigen import block_bytes
-        n_wanted = max(min(modal_resonance_count(context) + EXTRA_EIGENVALUES, dofs - 1), 1)
+        # linear solver has none (preconditioner multigrid) and the BlockCycle work rows of the block
+        from ...solvers.block_eigen import block_bytes, block_size
+        n_wanted = max(min(modal_resonance_count(context), dofs - 1), 1)
         mixed_block = block['precision'] == 'mixed'
         eigen_bytes = ((2 * FLOAT64_BYTES + BOOL_BYTES + FLOAT32_BYTES) * elements
                        + block_bytes(dofs, n_wanted, block['guard_vectors'], block['precision']))
         if mixed_block and not (mixed or double_cycle):
             eigen_bytes += 2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes
         if block['preconditioner'] == 'multigrid':
-            eigen_bytes += FLOAT32_BYTES * dofs
+            eigen_bytes += block_cycle_bytes(_window_shape(mesh), block_size(n_wanted, block['guard_vectors']),
+                                             FLOAT32_BYTES)
             if not multigrid:
                 eigen_bytes += hierarchy_bytes(_window_shape(mesh), FLOAT32_BYTES)
                 host_items = (('multigrid coarsest build (float64, transient)',

@@ -3,8 +3,10 @@ production solver settings (never the selftest's double, tolerance 1e-12 exact_c
 (stationary; as is and 4x finer on Automatic = pcg mixed jacobi 1e-8), the solid_3d_multigrid block (4x finer; mixed
 and double) and bilayer (4x finer, mixed) on a default pcg node with preconditioner multigrid,
 solid_3d_eigenfrequency_roller_box (eigenfrequency; as is, 3x finer) and solid_3d_column_z_expressions (BoxValues
-loads, probes). --warmup runs only the small as-is cases (both kernel precisions compile). Run from any folder:
-python profiler_solver_solid_mechanics_3d_tensor.py [--warmup] [--no-cprofile]"""
+loads, probes). --warmup runs only the small as-is cases (both kernel precisions compile) and the two-level block_eigen
+box (its block kernels compile, so --solver-type block_eigen's modes runs do not carry them). BLOCK_EIGEN_PARTS time the
+block_eigen internals (also profiler_solver_solid_mechanics_3d_block_eigen.py). Run from any folder:
+python profiler_solver_solid_mechanics_3d_tensor.py [--warmup] [--no-cprofile] [--solver-type block_eigen]"""
 import copy
 import sys
 from pathlib import Path
@@ -14,6 +16,7 @@ from profiler_harness import SOLVER_ROLE_PARTS, STUDY_PARTS, case_specs, main  #
 
 BLOCK_CASE = 'solid_3d_uniaxial_block_graded'
 MODES_CASE = 'solid_3d_eigenfrequency_roller_box'
+BLOCK_EIGEN_LEVELS_CASE = 'solid_3d_eigenfrequency_block_eigen_levels'   # 18 x 10 x 8 cells, two multigrid levels
 COLUMN_CASE = 'solid_3d_column_z_expressions'
 MULTIGRID_CASE = 'solid_3d_multigrid'   # its block / bilayer runs on pcg preconditioner multigrid
 BLOCK_REFINEMENT = 4      # cell widths / 4: ~2e5 cells, ~6e5 dofs (one large static CG solve)
@@ -62,12 +65,14 @@ def _specs():
 
 def _warmup_specs():
     """{run: ModelSpec} of --warmup: the small as-is runs, mixed and double (compiles the float and double brick
-    kernels, the multigrid kernels, the mass kernel and the outputs) without the refined runs."""
+    kernels, the multigrid kernels, the mass kernel and the outputs) without the refined runs, plus the two-level
+    block_eigen box (mixed: the float32 and float64 *_rows kernels and the BlockCycle transfers)."""
     multigrid_block = case_specs(MULTIGRID_CASE)['block']
     return {'block': _production(case_specs(BLOCK_CASE)['run']),
             'block_multigrid': _production(multigrid_block, 'multigrid'),
             'block_multigrid_double': _production(multigrid_block, 'multigrid', 'double'),
             'modes': _production(case_specs(MODES_CASE)['lowest']),
+            'modes_block_eigen': _production(case_specs(BLOCK_EIGEN_LEVELS_CASE)['block']),
             'column': _production(case_specs(COLUMN_CASE)['run'])}
 
 
@@ -75,6 +80,23 @@ PHYSICS = 'open_sol.physics.mechanics.solver3d:SolidMechanics3DPhysics'
 SYSTEM = 'open_sol.physics.mechanics.system3d:ElasticSystem3D'
 KERNELS = 'open_sol.physics.mechanics.kernels3d:BrickKernels'
 MULTIGRID = 'open_sol.physics.mechanics.multigrid3d:BrickMultigrid'
+BLOCK_EIGEN = 'open_sol.solvers.block_eigen'
+# block_eigen internals: the solve, its float32 / float64 phases, per iteration the block products (_apply: K and M
+# rows), the residual norms (host read 1), the W expansion (preconditioner + projection + products), the Gram pair (host
+# read 2), the host Rayleigh-Ritz and the chunked rotation; the brick *_rows callbacks and the block V-cycle. Per
+# iteration parts sync at their edges (a few per iteration besides the two host reads): --no-sync for the bare wall
+BLOCK_EIGEN_PARTS = tuple((f'{BLOCK_EIGEN}:{target}', f'block_eigen: {target}') for target in (
+    'BlockEigenSolver.lowest', 'BlockEigenSolver._dense', '_Lobpcg.run', '_Lobpcg._start', '_Lobpcg._initial',
+    '_Lobpcg._phase', '_Lobpcg._to_double', '_Lobpcg._apply', '_Lobpcg._residual_norms', '_Lobpcg._expand',
+    '_Lobpcg._gram_pair', '_Lobpcg._ritz', '_rayleigh_ritz', '_Lobpcg._rotate',
+)) + (
+    (f'{SYSTEM}._lowest_modes_block', 'system: _lowest_modes_block'),
+    ('open_sol.physics.mechanics.modal:solve_lowest_modes_block', 'modal: solve_lowest_modes_block'),
+) + tuple((f'{KERNELS}.{method}', f'kernels: {method}') for method in (
+    'product_rows', 'mass_product_rows', 'precondition_rows',
+)) + tuple((f'open_sol.physics.mechanics.multigrid3d:BlockCycle.{method}', f'block cycle: {method}') for method in (
+    '__init__', 'precondition',
+))
 PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physics: {method}') for method in (
     'prepare', 'finalize', 'step', '_assemble', '_element_lame', '_build_rhs', '_solve_system', '_write_outputs',
     'solve_eigenfrequencies', 'select_resonance', 'reaction', 'state', 'add_body_force', 'add_temperature_change',
@@ -100,7 +122,7 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + tuple((f'{PHYSICS}.{method}', f'physic
     ('open_sol.model.session:Session.field', 'session: Session.field'),
     ('open_sol.model.field_access_tensor:TensorAccess.field', 'field access: TensorAccess.field'),
     ('open_sol.model.field_access_tensor:TensorAccess.display_field', 'field access: TensorAccess.display_field'),
-)
+) + BLOCK_EIGEN_PARTS
 
 if __name__ == '__main__':
     main('solid_mechanics_3d_tensor', PARTS, __doc__, case=None, specs=_specs, warmup_specs=_warmup_specs)

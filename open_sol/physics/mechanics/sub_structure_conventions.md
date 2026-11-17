@@ -292,15 +292,22 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   restarts forever (capped `MAX_LANCZOS_RESTARTS`). Validation errors on a single-precision 'linear' node here.
 - An eigen node of type block_eigen (opt-in, `eigen_role(block_eigen=True)`; tensor grids only, so tetrahedra misfit
   it) takes `ElasticSystem3D._lowest_modes_block` -> `modal.solve_lowest_modes_block` (info 'method' 'block_eigen'):
-  full-dof rows masked by `free`, one brick product / mass product / preconditioner launch per row; float32 rows on
-  float32 copies (the mixed linear solver's `_single_operator` + widths_single when kept, else made per solve); the
-  'multigrid' preconditioner reuses `self.multigrid` even after its CG guard fell back (LOBPCG only needs it SPD),
-  else builds a private BrickMultigrid on the float32 copies (block Jacobi + warning when the build raises); float64
-  rows through it cast in (multigrid copyto) and out (`cycle_out`). No inner CG, rhs / CG unknown untouched. Still
-  needs a float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D
-  memory items (block_eigen.block_bytes + copies + private hierarchy, transient 'eigen solve') and the time recipe
-  (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either. Self-tests:
-  section "Self-tests" (solid_3d_eigenfrequency_block_eigen).
+  full-dof rows masked by `free`, ONE launch for all rows of a brick product / mass product / block Jacobi
+  (`BrickKernels.product_rows` / `mass_product_rows` / `precondition_rows`: the kernels' `_rows` entries, one thread
+  per (row, node), the one-vector body shared as a __device__ function; numpy twin `kernels3d.rows_host` = the
+  one-vector twin per row); float32 rows on float32 copies (the mixed linear solver's `_single_operator` +
+  widths_single when kept, else made per solve); the 'multigrid' preconditioner reuses `self.multigrid` even after its
+  CG guard fell back (LOBPCG only needs it SPD), else builds a private BrickMultigrid on the float32 copies (block
+  Jacobi + warning when the build raises), and cycles the block through `multigrid3d.BlockCycle` (the V-cycle of every
+  row per launch of the mg3 `_rows` entries; own (rows, n) work rows per level = `block_cycle_bytes`, the hierarchy's
+  operators / tables / coarsest inverse shared; float64 rows cast in and out through its float32 rows; sized by the
+  first call's rows, regrown if more come). A change of a one-vector kernel body or of `BrickMultigrid._cycle` /
+  `_smooth` / transfers must keep the `_rows` entry and `BlockCycle` in step. Exactly n_resonances pairs are asked
+  (no EXTRA_EIGENVALUES: the guard vectors are the margin). No inner CG, rhs / CG unknown untouched. Still needs a
+  float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D memory items
+  (block_eigen.block_bytes + copies + private hierarchy + block_cycle_bytes, transient 'eigen solve') and the time
+  recipe (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either.
+  Self-tests: section "Self-tests" (solid_3d_eigenfrequency_block_eigen, _block_eigen_levels).
 - Inner solves count in `n_solves`: `reaction` raises after an eigen solve / shown mode until the next static
   re-solve (`_shows_mode`), and `rhs` / the CG unknown are scratch (`_rhs_built` cleared).
 - Exact 3D roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give
@@ -768,6 +775,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   solid_3d_uniaxial_block_graded, solid_3d_column_z_expressions, solid_3d_eigenfrequency_roller_box;
   solid_3d_eigenfrequency_block_eigen (`selftests_eigenfrequency.py`) is the same box by a block_eigen eigen node
   (variant 'double' on the eigen role; its cpu run: the wrapper solid_mechanics_3d_block_eigen_cpu of
-  `selftests_backend.py`, a case of its own so the cpu block callbacks time apart). Examples
+  `selftests_backend.py`, a case of its own so the cpu block callbacks time apart); that box is below
+  multigrid3d.COARSEST_DOFS (one level: the dense coarsest inverse only), so solid_3d_eigenfrequency_block_eigen_levels
+  runs the block on half-size cells (two levels: the full block V-cycle) against the Lanczos run of the same model.
+  Examples
   thermal_inclusion_sphere_3d (mean-stress identities exact: centre strains x V are the element integrals),
   rotating_disk_3d.
