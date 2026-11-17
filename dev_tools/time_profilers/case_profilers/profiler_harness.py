@@ -1,9 +1,10 @@
 """Shared harness of the profiler_solver_*.py scripts: runs selftest case specs with GPU-synchronised part timers and
-cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites) and runs.md
-(one column per run, e.g. per --compare value)."""
+cProfile, then writes out/<name>/report.txt (parts, untimed rest, host hot spots, sync / transfer sites), runs.md
+(one column per run, e.g. per --compare value) and solution_check.json (the selftest check() of the profiled runs)."""
 import argparse
 import cProfile
 import copy
+import dataclasses
 import functools
 import hashlib
 import importlib
@@ -37,7 +38,20 @@ EMPTY_RECORD = (0, 0.0, 0.0, 0.0, 0.0)
 # --if-changed: stdout lines of a profile that still stands, nothing run (run_all_profilers reads them: keep the texts)
 UNCHANGED_MARKER = 'unchanged since '
 KEPT_REPORT_MARKER = 'kept report: '
+# one stdout line per checked group: '<marker><status> <group>: <detail>' (run_all_profilers reads the status word)
+SOLUTION_CHECK_MARKER = 'solution check: '
+SOLUTION_CHECK_FILE = 'solution_check.json'   # next to report.txt: the check records of the profile
 PROFILE_CACHE_FILE = 'profile_cache.json'   # next to report.txt / runs.json: what the last complete profile depended on
+ORIGIN_ATTRIBUTE = '_selftest_origin'   # ModelSpec attribute case_specs sets (deepcopy, refined and in-place edits keep it)
+
+
+@dataclasses.dataclass(frozen=True)
+class SelftestOrigin:
+    """The selftest case run a profiled spec was taken from; its runs are checked by that case's check()."""
+    case: str
+    run: str
+    variant: str | None = None   # SelfTestVariant name: its tolerance replaces the check's
+    setting: str | None = None   # 'NAME=value' of a --compare variant: those runs are checked as a group of their own
 # package code (selftest_cache package paths) whose change re-profiles: the solver engines, solver roles, fem, core and
 # couplings, the per-type study numerics; never model plumbing, io, viz, materials (the case spec is hashed instead)
 PROFILED_CODE = ('solvers/', 'fem/', 'core/', 'physics/', 'coupling/', 'model/study_')
@@ -72,7 +86,7 @@ class ProfileCache:
             return None
         if (entry.get('units') is None or entry.get('environment') != self.environment
                 or entry.get('input_hash') != self.input_hash or not (self.out_dir / 'report.txt').is_file()
-                or not (self.out_dir / 'runs.json').is_file()
+                or not (self.out_dir / 'runs.json').is_file() or not (self.out_dir / SOLUTION_CHECK_FILE).is_file()
                 or any(unit_hash(unit_id) != digest for unit_id, digest in entry['units'].items())):
             return None
         return entry.get('time')
@@ -93,6 +107,38 @@ def _profiled_units(profiler):
     from open_sol.model.selftest_cache import code_units
     codes = {entry.code for entry in profiler.getstats() if not isinstance(entry.code, str)}
     return code_units([(code, None) for code in codes], keep=_profiled_path, module_refs=False, second_hop=False)
+
+
+PIECES_FILE = 'pieces.json'   # next to report.txt: every completed run of the profile so far, saved as it finishes
+PIECES_FOLDER = 'pieces'      # beside it: the per-run cProfile dumps <run label>.prof
+RESUMED_MARKER = 'resumed: '  # stdout line of a profile that takes runs of an unfinished one
+
+
+class RunPieces:
+    """pieces.json of one profile folder: each completed run's parts, wall, memory, run text, cProfile dump and the
+    solver units it ran (hashes at its time); with resume, the pieces of the same case input and environment whose
+    units are unchanged are kept (a profile killed at a timeout continues where it stopped), else it starts empty."""
+
+    def __init__(self, out_dir, cache, resume):
+        from open_sol.model.selftest_cache import unit_hash
+        self.path = Path(out_dir) / PIECES_FILE
+        self.key = {'input_hash': cache.input_hash, 'environment': cache.environment}
+        try:
+            stored = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            stored = {}
+        same_case = all(stored.get(name) == value for name, value in self.key.items())
+        self.kept = {label: piece for label, piece in (stored.get('runs') or {}).items()
+                     if resume and same_case and piece.get('profile') and Path(piece['profile']).is_file()
+                     and all(unit_hash(unit_id) == digest for unit_id, digest in piece['units'].items())}
+        self.runs = dict(self.kept)   # rewritten from these on the first save: stale pieces drop out of the file
+
+    def save(self, label, piece):
+        """Add one completed run and rewrite the file (through a sibling and a replace: a kill never leaves half)."""
+        self.runs[label] = piece
+        partial = self.path.with_name(self.path.name + '.partial')
+        partial.write_text(json.dumps({**self.key, 'runs': self.runs}, indent=1, default=str), encoding='utf-8')
+        os.replace(partial, self.path)
 
 # parts every profiler times: (target 'module:qualname', label)
 STUDY_PARTS = (
@@ -187,6 +233,7 @@ LIBRARY_CLOCKS = {
     'open_sol.solvers.cudss_factor:CudssFactorization._factorize_and_probe': (
         ('factorize_seconds', 'library: cuDSS numeric factorize (open_sol host clock)'),),
 }
+LIBRARY_LABELS = frozenset(label for clocks in LIBRARY_CLOCKS.values() for _, label in clocks)
 
 
 def _no_sync():
@@ -341,26 +388,42 @@ class PartTimers:
 
     def table(self, total):
         """Parts by exclusive seconds, then the untimed rest of total."""
-        total = max(total, 1e-12)
-        lines = [f'{"part":64s} {"calls":>7s} {"incl s":>9s} {"excl s":>9s} {"excl %":>7s} {"cpu/wall":>8s} '
-                 f'{"wait s":>8s}']
-        timed = 0.0
-        for label, (calls, inclusive, exclusive, cpu, wait) in sorted(self.records.items(),
-                                                                       key=lambda item: -item[1][2]):
-            timed += exclusive
-            library = label in self.library_labels
-            share = '-' if library else f'{cpu / inclusive if inclusive > 0.0 else 0.0:.2f}'
-            waited = '-' if library or self._synchronize is _no_sync else f'{wait:.3f}'
-            lines.append(f'{label[:64]:64s} {calls:7d} {inclusive:9.3f} {exclusive:9.3f} '
-                         f'{100.0 * exclusive / total:6.1f}% {share:>8s} {waited:>8s}')
-        rest = total - timed
-        lines.append(f'{"untimed rest (run wall - timed exclusive)":64s} {"":7s} {"":9s} {rest:9.3f} '
-                     f'{100.0 * rest / total:6.1f}%')
-        return '\n'.join(lines)
+        return parts_table(self.records, total, self._synchronize is not _no_sync)
 
     def snapshot(self):
         """Copy of the records (per-run parts are the difference of two snapshots)."""
         return {label: list(record) for label, record in self.records.items()}
+
+
+def parts_table(records, total, synchronized):
+    """Parts {label: EMPTY_RECORD layout} by exclusive seconds, then the untimed rest of total (wait s only with GPU
+    synchronisation at part edges; library clock rows have no cpu share or wait)."""
+    total = max(total, 1e-12)
+    lines = [f'{"part":64s} {"calls":>7s} {"incl s":>9s} {"excl s":>9s} {"excl %":>7s} {"cpu/wall":>8s} '
+             f'{"wait s":>8s}']
+    timed = 0.0
+    for label, (calls, inclusive, exclusive, cpu, wait) in sorted(records.items(), key=lambda item: -item[1][2]):
+        timed += exclusive
+        library = label in LIBRARY_LABELS
+        share = '-' if library else f'{cpu / inclusive if inclusive > 0.0 else 0.0:.2f}'
+        waited = '-' if library or not synchronized else f'{wait:.3f}'
+        lines.append(f'{label[:64]:64s} {calls:7d} {inclusive:9.3f} {exclusive:9.3f} '
+                     f'{100.0 * exclusive / total:6.1f}% {share:>8s} {waited:>8s}')
+    rest = total - timed
+    lines.append(f'{"untimed rest (run wall - timed exclusive)":64s} {"":7s} {"":9s} {rest:9.3f} '
+                 f'{100.0 * rest / total:6.1f}%')
+    return '\n'.join(lines)
+
+
+def _summed_records(run_parts):
+    """{part: EMPTY_RECORD layout} summed over the runs' parts (the whole profile's table, kept pieces included)."""
+    summed = {}
+    for parts in run_parts.values():
+        for label, record in parts.items():
+            total = summed.setdefault(label, list(EMPTY_RECORD))
+            for position, value in enumerate(record):
+                total[position] += value
+    return summed
 
 
 def _records_since(records, before):
@@ -387,7 +450,7 @@ def run_columns_table(run_parts, run_walls):
 
 def case_specs(case_name, runs=None, variant=None):
     """{run name: ModelSpec} of a registered selftest case (runs: only those names; variant: that SelfTestVariant's
-    moved specs, as api.selftest runs them)."""
+    moved specs, as api.selftest runs them), each tagged with its SelftestOrigin (the solution check)."""
     from open_sol import api
     registry = api.get_registry()
     cases = {case.name: case for case in registry.selftests()}
@@ -405,6 +468,8 @@ def case_specs(case_name, runs=None, variant=None):
         if unknown:
             raise KeyError(f"case {case_name!r} has no runs {unknown} (has: {', '.join(specs)})")
         specs = {name: specs[name] for name in runs}
+    for run_name, spec in specs.items():
+        setattr(spec, ORIGIN_ATTRIBUTE, SelftestOrigin(case_name, run_name, variant or None))
     return specs
 
 
@@ -501,6 +566,9 @@ def setting_variants(specs, assignment, backend, keep_unchanged=True):
             if twin != label:
                 print(f'--compare: run {label!r} is the same model as {twin!r}; dropped', flush=True)
                 continue
+            origin = getattr(variant, ORIGIN_ATTRIBUTE, None)
+            if origin is not None:   # each compared value is checked on its own
+                setattr(variant, ORIGIN_ATTRIBUTE, dataclasses.replace(origin, setting=f'{setting}={value}'))
             variants[label] = variant
         if len(skipped) == len(values):
             if keep_unchanged:
@@ -636,6 +704,87 @@ def _run_text(label, wall, summary):
     return '\n'.join(lines)
 
 
+def _check_units(case):
+    """Unit ids of the case's check() code (its top-level function and the units it names): an edited check re-profiles."""
+    from open_sol.model.selftest_cache import code_units
+    function = case.check
+    while isinstance(function, functools.partial):
+        function = function.func
+    return code_units([(function.__code__, function.__module__)], module_refs=False, second_hop=False)
+
+
+def solution_checks(profiled, save_arrays):
+    """([record], check unit ids): the selftest check() of the profiled runs [(label, spec, run folder, status)] of one
+    repeat per (case, variant, --compare value), on Results read back from the run folders (api selftest record keys,
+    'runs' {case run: profiled run}); runs with no SelftestOrigin get one 'unchecked' record."""
+    from open_sol import api
+    groups, records, units = {}, [], set()
+    own = [label for label, spec, _, _ in profiled if getattr(spec, ORIGIN_ATTRIBUTE, None) is None]
+    if own:
+        records.append({'group': 'no selftest', 'status': 'unchecked', 'runs': {label: label for label in own},
+                        'message': 'specs not taken from a selftest case (examples, own specs)'})
+    for label, spec, run_dir, status in profiled:
+        origin = getattr(spec, ORIGIN_ATTRIBUTE, None)
+        if origin is not None:
+            groups.setdefault((origin.case, origin.variant, origin.setting), []).append(
+                (origin.run, label, run_dir, status))
+    cases = {case.name: case for case in api.get_registry().selftests()}
+    for (case_name, variant_name, setting), members in groups.items():
+        case = cases[case_name]
+        units |= _check_units(case)
+        group = case_name + (f'/{variant_name}' if variant_name else '') + (f' {setting}' if setting else '')
+        record = {**api._case_record(case_name, case.label, ''), 'group': group, 'variant': variant_name,
+                  'setting': setting, 'runs': {case_run: label for case_run, label, _, _ in members}}
+        del record['description']
+        names = [case_run for case_run, _, _, _ in members]
+        twice = sorted({name for name in names if names.count(name) > 1})
+        not_completed = [f'{label} ({status})' for _, label, _, status in members if status != 'completed']
+        absent = [name for name in case.specs() if name not in names]
+        start = time.perf_counter()
+        if twice:
+            record.update(status='unchecked', message=f'case runs {twice} profiled more than once')
+        elif not_completed:
+            record.update(status='unchecked', message=f"runs not completed: {', '.join(not_completed)}")
+        elif not save_arrays:
+            record.update(status='unchecked', message='--no-arrays: the run folders hold no fields')
+        else:
+            try:
+                results_by_name = {case_run: api.Results.load(run_dir) for case_run, _, run_dir, _ in members}
+                outcome = case.check(results_by_name)
+                missing = [key for key in api._CHECK_KEYS if key not in outcome]
+                if missing:
+                    raise ValueError(f"check() of '{case_name}' returned no {', '.join(missing)}")
+                tolerance = (float(outcome['tolerance']) if variant_name is None else
+                             next(entry.tolerance for entry in case.variants if entry.name == variant_name))
+                api._set_outcome(record, outcome['measured'], outcome['expected'], float(outcome['error']),
+                                 tolerance, outcome['details'])
+            except Exception as exc:   # one broken group is reported; the other groups are still checked
+                if isinstance(exc, KeyError) and absent:
+                    record.update(status='unchecked', message=f'check() needs case runs not profiled {absent} '
+                                                              f'(KeyError {exc})')
+                elif isinstance(exc, ValueError) and 'live' in str(exc):   # Results.field(plane=) / result(**options)
+                    record.update(status='unchecked', message=f'check() needs live Results: {exc}')
+                else:
+                    api._set_error(record, exc)
+        record['wall_time'] = time.perf_counter() - start
+        records.append(record)
+    return records, units
+
+
+def solution_check_lines(records) -> list:
+    """SOLUTION_CHECK_MARKER line per check record: status, group, error against tolerance or why, runs."""
+    lines = []
+    for record in records:
+        if record['status'] in ('passed', 'failed'):
+            relation = '<=' if record['status'] == 'passed' else '>'
+            detail = f"error {record['error']:.4g} {relation} tolerance {record['tolerance']:.4g}"
+        else:
+            detail = record['message'].splitlines()[0] if record['message'] else ''
+        runs = ', '.join(name if name == label else f'{name}={label}' for name, label in record['runs'].items())
+        lines.append(f"{SOLUTION_CHECK_MARKER}{record['status']} {record['group']}: {detail} (runs {runs})")
+    return lines
+
+
 def _caller_lines(stats, function, min_seconds) -> list:
     """Lines of one cProfile entry and its callers (calls, own s, cumulative s of the calls from each, largest first);
     callers below min_seconds in both fold into one count line."""
@@ -658,11 +807,11 @@ def _caller_lines(stats, function, min_seconds) -> list:
     return lines
 
 
-def _cprofile_text(profiler):
+def _cprofile_text(profile_paths):
     """Own / cumulative time of open_sol functions, own time of all, callers of the top non-open_sol host functions
-    (those above CALLER_MIN_SECONDS) and every caller of the sync / transfer entries."""
+    (those above CALLER_MIN_SECONDS) and every caller of the sync / transfer entries, over the runs' cProfile dumps."""
     stream = io.StringIO()
-    stats = pstats.Stats(profiler, stream=stream)
+    stats = pstats.Stats(*profile_paths, stream=stream)
     stream.write('===== own time (tottime), open_sol functions: python-level host work incl. numpy operators =====\n')
     stats.sort_stats('tottime').print_stats(PACKAGE_PATTERN, N_ROWS)
     stream.write('===== cumulative, open_sol functions =====\n')
@@ -699,29 +848,43 @@ def wrapped_timers(parts, synchronize=True):
 
 
 def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, use_cprofile=True, synchronize=True,
-                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None, cache=None):
+                 parameters=None, save_arrays=True, note='', timers=None, warmup_specs=None, cache=None, resume=False):
     """Run every spec (repeat times, after an optional untimed warm-up) under the part timers and cProfile; writes
     out/<name>/report.txt + profile.prof and returns the report path. timers: from wrapped_timers (else parts are
     wrapped here, too late for registry-held callbacks when the registry exists already). warmup_specs: {run: spec} the
     warm-up runs instead of specs (small runs compiling the same kernels). cache: a ProfileCache, cleared first and
-    given the solver units of a complete profile (needs cProfile)."""
+    given the solver units of a complete profile (needs cProfile); each completed run is saved as a piece as it
+    finishes, and resume takes the still-valid pieces of an unfinished profile instead of running them again. The
+    first repeat's runs are then checked against their selftest cases, untimed (solution_checks ->
+    solution_check.json, a report section, stdout lines)."""
+    from open_sol.model.selftest_cache import unit_hash
     out_dir = OUT_ROOT / name
     out_dir.mkdir(parents=True, exist_ok=True)
     if cache is not None:
-        cache.write(None)   # a profile killed half way never stands
+        cache.write(None)   # a profile killed half way never stands (its finished runs are pieces)
+    pieces = RunPieces(out_dir, cache, resume) if cache is not None and use_cprofile else None
+    kept = {} if pieces is None else pieces.kept
     if timers is None:
         timers = wrapped_timers(parts, synchronize)
-    if warmup:
+    labels = [(index, run_name, run_name if repeat == 1 else f'{run_name}_{index + 1}')
+              for index in range(repeat) for run_name in specs]
+    if kept:
+        print(f'{RESUMED_MARKER}{sum(label in kept for _, _, label in labels)} of {len(labels)} runs kept from an '
+              'unfinished profile (same case, solver code unchanged); the rest run now', flush=True)
+    if warmup and any(label not in kept for _, _, label in labels):
         for run_name, spec in (specs if warmup_specs is None else warmup_specs).items():
             _run_one(spec, out_dir / f'warmup_{run_name}', backend, parameters, save_arrays)
         timers.records.clear()
-    profiler = cProfile.Profile() if use_cprofile else None
     run_texts, total = [], 0.0
     run_parts, run_walls, run_memory = {}, {}, {}   # per run: its parts (records difference), wall and memory peaks
+    profile_paths, profiled_units = [], set()   # per-run cProfile dumps and unit ids of the pieces, merged at the end
+    profiled = []   # (label, spec, run folder, status) of the first repeat: what the solution check reads back
     try:
-        for index in range(repeat):
-            for run_name, spec in specs.items():
-                label = run_name if repeat == 1 else f'{run_name}_{index + 1}'
+        for index, run_name, label in labels:
+            spec = specs[run_name]
+            piece = kept.get(label)
+            if piece is None:
+                profiler = cProfile.Profile() if use_cprofile else None   # one per run: a run is a piece
                 before = timers.snapshot()
                 start = time.perf_counter()
                 if profiler is not None:
@@ -732,15 +895,44 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
                     if profiler is not None:
                         profiler.disable()
                 wall = time.perf_counter() - start
-                total += wall
-                run_parts[label], run_walls[label] = _records_since(timers.records, before), wall
-                run_memory[label] = {'status': summary.get('status'), **_run_memory(summary, backend),
-                                     'solvers': _run_choices(spec, summary, backend),
-                                     'automatic': _automatic_choices(spec)}
-                run_texts.append(_run_text(label, wall, summary))
-                print(run_texts[-1].splitlines()[0], flush=True)
+                piece = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'wall_seconds': wall,
+                         'parts': _records_since(timers.records, before),
+                         'memory': {'status': summary.get('status'), **_run_memory(summary, backend),
+                                    'solvers': _run_choices(spec, summary, backend),
+                                    'automatic': _automatic_choices(spec)},
+                         'text': _run_text(label, wall, summary), 'profile': None, 'units': {}}
+                if profiler is not None:
+                    profile_path = out_dir / PIECES_FOLDER / f'{label}.prof'
+                    profile_path.parent.mkdir(parents=True, exist_ok=True)
+                    profiler.dump_stats(str(profile_path))
+                    piece['profile'] = str(profile_path)
+                    if pieces is not None and piece['memory']['status'] == 'completed':
+                        piece['units'] = {unit_id: unit_hash(unit_id) for unit_id in _profiled_units(profiler)}
+                        pieces.save(label, piece)   # at once: a kill at the timeout keeps it
+                print(piece['text'].splitlines()[0], flush=True)
+            else:
+                print(f"run {label}: kept from {piece['time']} ({piece['wall_seconds']:.2f} s, unfinished profile "
+                      'resumed)', flush=True)
+            total += piece['wall_seconds']
+            run_parts[label], run_walls[label] = piece['parts'], piece['wall_seconds']
+            run_memory[label] = piece['memory']
+            run_texts.append(piece['text'] + (f"\n  (kept from the unfinished profile of {piece['time']})"
+                                              if label in kept else ''))
+            if piece['profile'] is not None:
+                profile_paths.append(piece['profile'])
+            profiled_units |= set(piece['units'])
+            if index == 0:
+                profiled.append((label, spec, out_dir / label, piece['memory']['status']))
     finally:
         timers.restore()
+    records = _summed_records(run_parts)
+    synchronized = timers._synchronize is not _no_sync
+    # after the timers and cProfile: the check's reads are no part of the profile
+    checks, check_units = solution_checks(profiled, save_arrays)
+    (out_dir / SOLUTION_CHECK_FILE).write_text(json.dumps(checks, indent=1, default=str), encoding='utf-8')
+    check_lines = solution_check_lines(checks)
+    for line in check_lines:
+        print(line, flush=True)
     header = (f'profiler {name}: backend {backend}, repeat {repeat}, warmup {warmup}, cprofile {use_cprofile}, '
               f'gpu sync at part edges {synchronize}, total run wall {total:.2f} s\n'
               'Exclusive = own wall minus timed sub-parts; cpu/wall = process CPU / inclusive wall (> 1 threaded BLAS; '
@@ -749,8 +941,10 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
               'its exit: ~0 on host-bound parts and also on device-bound parts that end in a host read (a solve '
               'reading its residual waits inside, not at exit). cProfile inflates python-heavy parts: compare with '
               '--no-cprofile.\n')
-    sections = [header + (note + '\n' if note else ''), '\n'.join(run_texts), '', '===== parts =====',
-                timers.table(total)]
+    sections = [header + (note + '\n' if note else ''), '\n'.join(run_texts), '',
+                '===== solution check (selftest check() of the first repeat, read back from the run folders; '
+                f'{SOLUTION_CHECK_FILE}) =====', '\n'.join(line[len(SOLUTION_CHECK_MARKER):] for line in check_lines)
+                or 'no runs', '', '===== parts =====', parts_table(records, total, synchronized)]
     columns = run_columns_table(run_parts, run_walls)
     (out_dir / 'runs.md').write_text(columns + '\n', encoding='utf-8')
     (out_dir / 'runs.json').write_text(json.dumps(
@@ -763,16 +957,16 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
         sections += ['', '===== parts per run (inclusive ms per call x calls; also runs.md / runs.json) =====', columns]
     if timers.missing:
         sections += ['', '===== parts that did not resolve (fix the target) =====', '\n'.join(timers.missing)]
-    if profiler is not None:
-        profiler.dump_stats(str(out_dir / 'profile.prof'))
-        sections += ['', _cprofile_text(profiler)]
+    if profile_paths:   # the runs' dumps merged (kept pieces and this process alike)
+        pstats.Stats(*profile_paths).dump_stats(str(out_dir / 'profile.prof'))
+        sections += ['', _cprofile_text(profile_paths)]
     report_path = out_dir / 'report.txt'
     report_path.write_text('\n'.join(sections) + '\n', encoding='utf-8')
     complete = (len(run_memory) == repeat * len(specs)
                 and all(memory['status'] == 'completed' for memory in run_memory.values()))
-    if cache is not None and profiler is not None and complete:   # written last: the report and runs.json stand
-        cache.write(_profiled_units(profiler))
-    print(f'\n===== parts =====\n{timers.table(total)}\nreport: {report_path}', flush=True)
+    if pieces is not None and complete:   # written last: the report and runs.json stand
+        cache.write(profiled_units | check_units)
+    print(f'\n===== parts =====\n{parts_table(records, total, synchronized)}\nreport: {report_path}', flush=True)
     return report_path
 
 
@@ -818,7 +1012,8 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                         help='profile only when the specs, parts, options, environment or a unit of the solver code '
                              '(PROFILED_CODE) the last complete profile into this folder ran changed; else keep its '
                              'report (run_all_profilers passes it unless --reset / --only; never reused after '
-                             '--no-cprofile)')
+                             '--no-cprofile). An unfinished profile (killed, timed out) resumes: its completed runs '
+                             'whose solver code is unchanged are kept, only the others run')
     options = parser.parse_args()
     timers = wrapped_timers(parts, synchronize=not options.no_sync)   # before the registry exists
     own_specs = specs is not None and options.case == case
@@ -856,10 +1051,13 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         report_path = OUT_ROOT / folder / 'report.txt'
         print(f'{UNCHANGED_MARKER}{since}: no solver code it ran, case spec or option changed; nothing run', flush=True)
         print(f'{KEPT_REPORT_MARKER}{report_path}', flush=True)
+        kept_checks = json.loads((OUT_ROOT / folder / SOLUTION_CHECK_FILE).read_text(encoding='utf-8'))
+        for line in solution_check_lines(kept_checks):   # the kept profile's verdicts (its check code is unchanged too)
+            print(line, flush=True)
         return report_path
     return profile_runs(folder, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
                         use_cprofile=not options.no_cprofile, synchronize=not options.no_sync,
                         parameters=_parameters(options.set), save_arrays=not options.no_arrays,
                         note=f'{source}, runs {list(run_specs)}' + (f'; {note}' if note else '')
                         + (f'; warm-up runs {list(small_warmup)}' if small_warmup is not None else ''),
-                        timers=timers, warmup_specs=small_warmup, cache=cache)
+                        timers=timers, warmup_specs=small_warmup, cache=cache, resume=options.if_changed)

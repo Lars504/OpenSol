@@ -191,6 +191,27 @@ no dependency. Commands named with `--only` always profile (as a named selftest 
 (and `--new-first`) reruns everything: do it after an edit outside that set that changes timings (the builder,
 meshing orchestration, the harness itself). Timed-out, failed and `--no-cprofile` profiles are never reused; a
 profile run by hand records its folder too, so run_all reuses it (and takes its point when it has none).
+**Partial runs.** Each completed run is saved as it finishes (`pieces.json` and `pieces/<run>.prof` beside the
+report: its parts, wall, memory peaks, run text, cProfile dump and the solver units it ran). With `--if-changed` a
+profile that did not finish (killed at `--timeout`, stopped, a run failed) or whose solver code changed takes the
+pieces of the same case and environment whose units are unchanged (`run X: kept from <time>`) and runs only the
+others; the report, runs.json, profile.prof and the point are merged from all runs, so a long command completes over
+a few run_all passes. A kept run keeps the process-start costs it had (CUDA context, library load) and a new run in
+the resumed process takes them anew: use `--warmup` where that matters, or `--reset` for a profile in one process.
+The harness check starts Python, open_sol and the case specs (~9 s per command), so run_all also remembers each
+outcome that stands (a kept or complete profile, or no run taking the solver) in `out/run_all_memory.json` with a
+fingerprint of every `.py` / `.json` under `open_sol/`, `dev_tools/` and `examples/` (no `out` / `*_out` folders),
+the interpreter, library versions and machine: while that is unchanged the command is not started at all
+(`not rerun (remembered)`); after any edit each command falls back to the harness check once, which refreshes it.
+
+**Solution check.** After the timed runs (untimed, outside cProfile) the harness reads the first repeat's runs back
+from their run folders and passes them to the `check()` of the selftest case each spec came from (`case_specs` tags
+it), one group per case, variant and `--compare` value; a variant's tolerance replaces the check's. Each group is
+`passed` / `failed` (error against tolerance) / `error` (check raised) / `unchecked` (why: specs not from a case, such
+as the examples; a case run the check reads was not profiled; the check needs live Results; a run did not complete;
+`--no-arrays`). The verdicts go to `solution_check.json`, a report.txt section and stdout; run_all puts the counts on
+the command's line, logs each failed / error group under it and lists them all at the end (the points are still
+recorded). Profilers that refine a case keep its check: a finer mesh should pass the same tolerance.
 
 **Solvers and backends.** Each solver flag runs every command once more:
 - `--auto` (the default when no flag is given) runs the cases' solvers as written.

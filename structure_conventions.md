@@ -601,7 +601,7 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `experiments/`: paper experiments (`<paper><year>/`, run_all), link to `build_experiments_guide.md` (layout, time
   estimates, cuDSS, model gotchas).
 - `dev_tools/time_profilers/`: solver_profiler (parent / child layout, imports, solver enumeration rule, result
-  line), case_profilers (script layout, wrap before the registry, unresolved parts, reuse of unchanged profiles),
+  line), case_profilers (script layout, wrap before the registry, unresolved parts, reuse of unchanged profiles, selftest solution check),
   example_profilers (choice rule,
   what it imports from case_profilers, engine parts); usage in its README.md.
 - `dev_tools/memory_profilers/`: vram_profile (usage, what it measures, the private names it patches).

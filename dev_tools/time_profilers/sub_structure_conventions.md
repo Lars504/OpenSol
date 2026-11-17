@@ -126,6 +126,25 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   The environment key is the machine name, not the GPU name (a device query would make the CUDA context before the
   first timed run). run_all reads the `UNCHANGED_MARKER` / `KEPT_REPORT_MARKER` lines (keep the texts the same),
   copies nothing to the history and leaves the points (a command without one takes it from the kept runs.json).
+  Partial runs: `profile_runs` uses one cProfile per run and saves each completed run as a `RunPieces` entry at once
+  (pieces.json through a sibling + replace, `pieces/<label>.prof`); the report, runs.json and profile.prof are built
+  from the pieces (`_summed_records`, `parts_table`, `pstats.Stats(*paths)`), never from the live timers / profiler,
+  so kept and new runs merge alike. A piece is kept only with resume (`--if-changed`), the same input hash and
+  environment and unchanged unit hashes; the units of a complete profile are the union of its pieces'. A new
+  per-run quantity goes into the piece, else a resumed profile loses it.
+  In front of it run_all keeps `run_all_memory.json` (key: script + arguments): a remembered command replays its
+  stored stdout lines (UNCHANGED / KEPT_REPORT / SOLUTION_CHECK, or the nothing-profiled line) through the same code
+  path, only while the source fingerprint (taken before the command starts) is equal and the folder's
+  profile_cache.json still holds the same complete profile. A source run_all must see goes under
+  `FINGERPRINT_FOLDERS`; a file a run writes must not (it would defeat the memory, not break it).
+- Solution check: `case_specs` sets `ORIGIN_ATTRIBUTE` (a `SelftestOrigin`) on each spec; deepcopy, `refined` and
+  in-place edits keep it, a spec rebuilt from `to_dict()` or loaded from an example loses it (listed as 'no
+  selftest'). `setting_variants` adds the compared value, so each value is its own group. `solution_checks` runs after
+  `timers.restore()` and the profiler, on `Results.load` of the run folders (so host / GPU peaks are not changed by
+  results held for the check): a check that calls a live-only Results method (`field(plane=)`, `result(**options)`)
+  is 'unchecked', not an error. A kept profile needs `solution_check.json` and reprints it; the check() code units
+  (`_check_units`) join the cache units, as selftests* files are no PROFILED_CODE. run_all reads the
+  `SOLUTION_CHECK_MARKER` lines by their first word (the status): keep that layout.
 - Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
   callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
   every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).
