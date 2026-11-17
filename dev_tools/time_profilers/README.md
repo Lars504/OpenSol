@@ -137,11 +137,11 @@ performance set is `example_profilers/` below. Run from any folder:
 ```
 python dev_tools/time_profilers/case_profilers/profiler_solver_pressure_acoustics.py [--repeat N] [--warmup]
 python dev_tools/time_profilers/case_profilers/run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...] [--backend gpu cpu]
-    [--timeout S] [--new-first] [--plot-only]
+    [--timeout S] [--reset] [--new-first] [--plot-only]
 ```
 
 Common options (`profiler_harness.main`): `--case`, `--runs`, `--variant`, `--backend gpu|cpu`, `--repeat`,
-`--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`, `--compare NAME=v1,v2`; some scripts
+`--warmup`, `--no-cprofile`, `--no-sync`, `--no-arrays`, `--set NAME=EXPR`, `--compare NAME=v1,v2`, `--if-changed`; some scripts
 add `--kind` / `--refine`. Output `out/<name>__<backend>[__<compare>[__only]][__<set>]/report.txt` + `profile.prof`
 (the settings are in the folder name, e.g. `membrane_film__gpu__back_end-pardiso__only`, so a pardiso profile never
 overwrites a cudss one): per part calls, inclusive / exclusive wall, cpu/wall (> 1 threaded BLAS; a blocking device sync spins a core, so a part waiting on the GPU shows ~1 too) and
@@ -178,6 +178,19 @@ time of open_sol functions, callers of the largest outside functions and of ever
 started). After a change, `python profile_delta.py <report folder name>` (e.g. `solid_mechanics_3d_nonlinear__gpu`)
 lists per run the parts whose exclusive time moved by more than `--min-ms` (20) and `--min-percent` (30) between the
 two newest kept profiles of that folder (`--before` / `--after`: any two `runs.json`).
+
+**Reuse.** `run_all_profilers.py` reruns only the commands whose solver or case changed: each script gets
+`--if-changed`, and a profile folder whose last complete profile (every run `completed`, cProfile on) still stands
+logs `unchanged since <time>, not rerun (2.1 s check) (kept 15.2 s)` and keeps its points. It stands while
+`profile_cache.json` beside its report matches: the case (the specs' JSON, warm-up specs, parts list, repeat / warmup /
+sync / arrays options, `--set`), the environment (Python, numpy / scipy / cupy versions, backend, machine) and every
+code unit (top-level function or class, a file's module-level code) of the solver code that ran under cProfile in
+`solvers/`, `fem/`, `core/`, `physics/`, `coupling/` and `model/study_*.py`, plus the units that code names (numba
+kernels, memoised getters); `definition*` / `selftests*` / `__init__` files, model plumbing, io, viz and materials are
+no dependency. Commands named with `--only` always profile (as a named selftest run reruns its cases); `--reset`
+(and `--new-first`) reruns everything: do it after an edit outside that set that changes timings (the builder,
+meshing orchestration, the harness itself). Timed-out, failed and `--no-cprofile` profiles are never reused; a
+profile run by hand records its folder too, so run_all reuses it (and takes its point when it has none).
 
 **Solvers and backends.** Each solver flag runs every command once more:
 - `--auto` (the default when no flag is given) runs the cases' solvers as written.

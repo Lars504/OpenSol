@@ -207,27 +207,40 @@ class DependencyTrace:
         Code of the untracked files is skipped (no unit, its names not followed) and their units are dropped."""
         if not self.available:
             return None
-        files = package_units()
-        executed, named, touched = set(), set(), {}
-        for code, module_name in self._codes:
-            path = _package_path(code.co_filename)
-            if path is None or _untracked(path):
-                continue
-            touched[path] = module_name
-            top = code.co_qualname.partition('.')[0]
-            file_units = files.get(path)
-            executed.add((path, top if file_units is not None and top in file_units.hashes else MODULE_UNIT))
-            named |= _unit_refs(path, module_name, frozenset(code.co_names + code.co_varnames + code.co_freevars))
-        for path, module_name in touched.items():
-            named.add((path, MODULE_UNIT))
-            if path in files:
-                named |= _unit_refs(path, module_name, files[path].refs[MODULE_UNIT])
-        module_names = _module_names()
-        second = set()
+        return code_units(self._codes)
+
+
+def code_units(codes, keep=None, module_refs=True, second_hop=True):
+    """Unit ids 'path::name' of run code objects [(code, module name of its globals, None: looked up)]: the units whose
+    code ran, MODULE_UNIT of every touched file and the units the run code names; module_refs: also the units a touched
+    file's MODULE_UNIT names; second_hop: those named units name in turn. keep(path) False drops a file like the
+    untracked ones (no unit, its names not followed); the case profilers' narrower dependency set."""
+    files = package_units()
+    module_names = _module_names()
+
+    def kept(path):
+        return path is not None and not _untracked(path) and (keep is None or keep(path))
+    executed, named, touched = set(), set(), {}
+    for code, module_name in codes:
+        path = _package_path(code.co_filename)
+        if not kept(path):
+            continue
+        module_name = module_name or module_names.get(path)
+        touched[path] = module_name
+        top = code.co_qualname.partition('.')[0]
+        file_units = files.get(path)
+        executed.add((path, top if file_units is not None and top in file_units.hashes else MODULE_UNIT))
+        named |= _unit_refs(path, module_name, frozenset(code.co_names + code.co_varnames + code.co_freevars))
+    for path, module_name in touched.items():
+        named.add((path, MODULE_UNIT))
+        if module_refs and path in files:
+            named |= _unit_refs(path, module_name, files[path].refs[MODULE_UNIT])
+    second = set()
+    if second_hop:
         for path, unit in named - executed:
-            if unit != MODULE_UNIT and path in files and unit in files[path].refs and not _untracked(path):
+            if unit != MODULE_UNIT and path in files and unit in files[path].refs and kept(path):
                 second |= _unit_refs(path, module_names.get(path), files[path].refs[unit])
-        return {f'{path}::{unit}' for path, unit in executed | named | second if not _untracked(path)}
+    return {f'{path}::{unit}' for path, unit in executed | named | second if kept(path)}
 
 
 def _module_names():

@@ -5,8 +5,11 @@ point in out/profile_points.json and the plot out/profile_points.png (run wall, 
 line per solver and backend for the first complete profile, the previous and the current one; a ring on the solver
 Automatic picks on the gpu, worked out by the harness from each case's roles whichever solver was run).
 A command is killed after --timeout s (default 60); one that was profiling is plotted at the '>timeout' tick.
+A command whose last complete profile still stands (harness --if-changed: same case specs and options, no changed unit
+of the solver code it ran) is not rerun and keeps its points; --reset, --new-first and --only (named commands) profile
+every command they run.
 Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...]
-[--backend gpu cpu] [--timeout S] [--new-first] [--plot-only]"""
+[--backend gpu cpu] [--timeout S] [--reset] [--new-first] [--plot-only]"""
 import argparse
 import json
 import math
@@ -27,6 +30,8 @@ BACKENDS = ('gpu', 'cpu')
 DEFAULT_TIMEOUT = 60.0   # seconds per command (subprocess killed); the harness's api.run has no limit of its own
 NOTHING_PROFILED = 'nothing profiled'   # the harness's --compare-only line when no run takes the solver
 NEVER_FACTORISED = 'never factorised'   # log mark of a run whose compared solver did no factorisation (not counted)
+UNCHANGED = 'unchanged since '   # the harness's UNCHANGED_MARKER line (--if-changed): its kept profile stands
+KEPT_REPORT = 'kept report: '    # the harness's KEPT_REPORT_MARKER line: that profile's report.txt
 TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
 
 
@@ -315,7 +320,8 @@ def _save_figure(figure, path):
 
 def main(description=None):
     parser = argparse.ArgumentParser(description=description or __doc__)
-    parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these')
+    parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these (always '
+                                                                     'profiled, unchanged or not)')
     for solver, variant in SOLVERS.items():
         parser.add_argument(f'--{solver.replace("_", "-")}', dest=f'solver_{solver}', action='store_true',
                             help=f'profile with {" ".join(variant["arguments"][:2]) or "the cases as written"}'
@@ -326,8 +332,13 @@ def main(description=None):
     parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
                         help=f'seconds per command before it is killed (default {DEFAULT_TIMEOUT:g}; 0: no limit); a '
                              'killed command that was profiling is plotted at the timeout tick')
+    parser.add_argument('--reset', action='store_true',
+                        help='profile every command, also those whose solver code and case are unchanged since their '
+                             'last complete profile (needed after an edit outside the harness PROFILED_CODE that '
+                             'changes timings: model plumbing, the harness itself)')
     parser.add_argument('--new-first', action='store_true',
-                        help='this complete profile replaces the first one (commands that fail keep theirs)')
+                        help='this complete profile replaces the first one (commands that fail keep theirs; implies '
+                             '--reset)')
     parser.add_argument('--plot-only', action='store_true', help='redraw the plot from profile_points.json, run nothing')
     options = parser.parse_args()
     points = load_points()
@@ -338,6 +349,8 @@ def main(description=None):
     variants = [(solver, backend) for solver in solvers for backend in SOLVERS[solver]['backends'] or options.backend]
     commands = [entry for entry in COMMANDS if not options.only or any(text in entry for text in options.only)]
     complete = not options.only
+    # named commands (--only) always profile, as a named selftest run reruns its cases
+    reuse = () if options.reset or options.new_first or options.only else ('--if-changed',)
     log_path = OUT / 'run_all.log'
     log_path.parent.mkdir(parents=True, exist_ok=True)
     history_folder = OUT / 'history' / time.strftime('%Y-%m-%d_%H%M%S')
@@ -350,7 +363,8 @@ def main(description=None):
         for solver, backend in variants:
             label = variant_label(solver, backend)
             for entry in commands:
-                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments']]
+                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments'],
+                           *reuse]
                 print(f'>>> {entry} [{label}]', flush=True)
                 started = time.time()
                 start = time.perf_counter()
@@ -361,6 +375,31 @@ def main(description=None):
                 except subprocess.TimeoutExpired as expired:   # run() has killed the command
                     return_code, stdout, stderr = None, _text(expired.stdout), _text(expired.stderr)
                 wall = time.perf_counter() - start
+                since = next((line[len(UNCHANGED):].partition(': ')[0] for line in stdout.splitlines()
+                              if line.startswith(UNCHANGED)), None) if return_code == 0 else None
+                if since is not None:   # the kept profile stands: its points stay, nothing copied to the history
+                    earlier_point = points.get(label, {}).get('current', {}).get(entry)
+                    kept = next((line[len(KEPT_REPORT):].strip() for line in stdout.splitlines()
+                                 if line.startswith(KEPT_REPORT)), None)
+                    runs_path = None if kept is None else Path(kept).parent / 'runs.json'
+                    used = used_solvers(runs_path, 0.0) if solver == 'auto' and runs_path is not None else None
+                    first = complete and entry not in points.get(label, {}).get('first', {})
+                    if earlier_point is None and runs_path is not None:   # profiled outside run_all: its point now
+                        kept_point, _ = command_point(runs_path, None, 0.0, SOLVERS[solver]['token'])
+                        if kept_point is not None:
+                            record_point(points, label, entry, kept_point, first=first)
+                            save_points(points)
+                    elif first and earlier_point is not None:   # unchanged code and case: it counts for this profile
+                        points[label]['first'][entry] = earlier_point
+                        save_points(points)
+                    kept_wall = ('' if earlier_point is None or earlier_point.get('command_seconds') is None
+                                 else f" (kept {earlier_point['command_seconds']:.1f} s)")
+                    line = (f'{entry} [{variant_label(used, backend) if used else label}]: unchanged since {since}, '
+                            f'not rerun ({wall:.1f} s check){kept_wall}')
+                    print(line, flush=True)
+                    log.write(line + '\n')
+                    log.flush()
+                    continue
                 report = [line for line in stdout.splitlines() if line.startswith('report: ')]
                 point, not_completed, shown = None, [], label   # shown: auto replaced by the solvers it used
                 if return_code is None:

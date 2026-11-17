@@ -114,6 +114,18 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
 - `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
   `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
   main and its helpers read those globals at call time, never bind them at import.
+- Reuse (`--if-changed`, passed by run_all unless `--reset` / `--new-first` / `--only`: named commands always profile):
+  `ProfileCache` writes `profile_cache.json` per output folder, cleared (units null) before a profile starts and
+  filled only after a complete one (report.txt and runs.json written, every run 'completed', cProfile on). Its units
+  come from the timed cProfile's code objects (`profiler.getstats()`, no settrace: a tracer would slow the timed runs)
+  through `selftest_cache.code_units(keep=_profiled_path, module_refs=False, second_hop=False)`; code of the warm-up
+  and of other threads is not seen (a kernel factory there counts only when timed code names it). The package
+  snapshot (`package_units()`) is taken in the ProfileCache init, before the runs, so an edit made during a long
+  run_all reruns that command next time. The input hash takes the specs' `to_dict()`: a new option that changes what
+  runs or how it is timed goes into `case_input` in `main` or into `output_name`, else a changed profile is reused.
+  The environment key is the machine name, not the GPU name (a device query would make the CUDA context before the
+  first timed run). run_all reads the `UNCHANGED_MARKER` / `KEPT_REPORT_MARKER` lines (keep the texts the same),
+  copies nothing to the history and leaves the points (a command without one takes it from the kept runs.json).
 - Report caller lists are the harness's own (`_caller_lines`: calls, own s, cumulative s per caller, largest first):
   callers of the outside functions below `CALLER_MIN_SECONDS` fold into one line, the sync / transfer section keeps
   every caller (a sync site matters at 0 s; callers of `syncdetect._declare_synchronize` are the implicit syncs).
