@@ -134,8 +134,17 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   per-run quantity goes into the piece, else a resumed profile loses it.
   In front of it run_all keeps `run_all_memory.json` (key: script + arguments): a remembered command replays its
   stored stdout lines (UNCHANGED / KEPT_REPORT / SOLUTION_CHECK, or the nothing-profiled line) through the same code
-  path, only while the source fingerprint (taken before the command starts) is equal and the folder's
-  profile_cache.json still holds the same complete profile. A source run_all must see goes under
+  path, only while the folder's profile_cache.json still holds the same complete profile, the environment is equal
+  and the source snapshot (taken before the command starts) is equal or differs only in PROFILED_CODE files whose
+  units of that profile keep their hashes (`_solver_edits_stand`). run_all must not import open_sol (seconds): it
+  loads `open_sol/model/selftest_cache.py` and `profiler_harness.py` on their own (`_standalone`), so both keep their
+  module level free of package imports (selftest_cache imports results_io inside SelftestCache). The memory keeps
+  one file-hash table per snapshot still referred to. `precheck` decides every command before the loop: memory, then
+  one `check_profiles.py` process that runpy-runs each script as `__main__` with its argv under harness
+  `CHECK_ONLY` (main() builds the case input and raises `ProfileChecked(lines | None)` before wrapping or
+  profiling). So a script's `__main__` block must reach harness `main()` without other work, read its options from
+  sys.argv at call time, and keep module state that survives the next script in the same process harmless; a check
+  that raises leaves that command to its own subprocess (the error shows there). A source run_all must see goes under
   `FINGERPRINT_FOLDERS`; a file a run writes must not (it would defeat the memory, not break it).
 - Solution check: `case_specs` sets `ORIGIN_ATTRIBUTE` (a `SelftestOrigin`) on each spec; deepcopy, `refined` and
   in-place edits keep it, a spec rebuilt from `to_dict()` or loaded from an example loses it (listed as 'no

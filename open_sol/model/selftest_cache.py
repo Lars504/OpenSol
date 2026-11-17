@@ -14,8 +14,6 @@ import threading
 import time
 from pathlib import Path
 
-from ..io.results_io import read_json, write_json
-
 CACHE_FILE = 'selftest_cache.json'
 SECTIONS = ('cases', 'examples')
 # per section the record statuses kept for reuse: 'failed' and 'error' always rerun (a failure stays visible until fixed,
@@ -343,6 +341,7 @@ class SelftestCache:
         package_units()   # the snapshot this run's records are compared and stored against
         self.entries = {section: {} for section in SECTIONS}
         self.wall_times = {section: {} for section in SECTIONS}
+        from ..io.results_io import read_json   # here, not at import: run_all_profilers loads this file on its own
         if self.path.is_file():
             try:
                 saved = read_json(self.path)
@@ -388,4 +387,5 @@ class SelftestCache:
             'record': record}
 
     def write(self):
+        from ..io.results_io import write_json
         write_json(self.path, {**self.entries, 'wall_times': self.wall_times})

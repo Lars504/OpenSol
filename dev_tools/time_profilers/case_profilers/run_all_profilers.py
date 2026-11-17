@@ -7,8 +7,10 @@ Automatic picks on the gpu, worked out by the harness from each case's roles whi
 A command is killed after --timeout s (default 60); one that was profiling is plotted at the '>timeout' tick.
 A command whose last complete profile still stands (harness --if-changed: same case specs and options, no changed unit
 of the solver code it ran) is not rerun and keeps its points; --reset, --new-first and --only (named commands) profile
-every command they run. run_all remembers each kept outcome (out/run_all_memory.json) with a fingerprint of the
-sources: while no .py / .json under open_sol/, dev_tools/ or examples/ changed, the command is not even started. A
+every command they run. run_all remembers each kept outcome (out/run_all_memory.json) with a snapshot of the
+sources: while no .py / .json under open_sol/, dev_tools/ or examples/ changed, or only solver code (harness
+PROFILED_CODE) in units the kept profile never ran, the command is not even started; the others are checked
+together first (check_profiles.py, one process) and only those found changed are started. A
 command killed at the timeout keeps its completed runs (harness pieces): the next run_all runs only the rest.
 Each command's runs are checked by the check() of the selftest case they came from (harness solution check): the
 counts go on its log line, a failed / error group is logged under it and listed again at the end (points still recorded).
@@ -17,6 +19,7 @@ Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...] [--par
 import argparse
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import math
 import os
@@ -46,6 +49,9 @@ MEMORY_FILE = 'run_all_memory.json'   # in OUT: per command line, its kept outco
 FINGERPRINT_FOLDERS = ('open_sol', 'dev_tools', 'examples')
 FINGERPRINT_SUFFIXES = ('.py', '.json')
 _file_digests = {}   # path -> ((mtime_ns, size), sha1): a file is read again only after it changed
+_unit_hashes = {}    # (path, sha1) -> {unit name: hash} of a changed solver file (parsed once per run_all)
+_loaded = {}         # file stem -> module loaded on its own (selftest_cache, profiler_harness: no open_sol import)
+BATCH_CHECK_MIN_SECONDS = 120.0   # timeout floor of the one-process check of all commands (check_profiles.py)
 TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
 
 
@@ -165,10 +171,10 @@ def check_summary(stdout):
             [line for line, status in zip(lines, statuses) if status in CHECK_NOT_PASSED])
 
 
-def source_fingerprint() -> str:
-    """sha1 of every FINGERPRINT_FOLDERS source file, the interpreter, numpy / scipy / cupy versions and the machine:
-    equal -> nothing a command reads has changed (any edit anywhere falls back to the harness --if-changed check)."""
-    digest = hashlib.sha1()
+def source_snapshot():
+    """(snapshot id, {repository path: sha1} of every FINGERPRINT_FOLDERS source file, environment text: interpreter,
+    numpy / scipy / cupy versions, machine); an equal id -> nothing a command reads has changed."""
+    files = {}
     for name in FINGERPRINT_FOLDERS:
         for folder, subfolder_names, file_names in os.walk(REPOSITORY / name):
             subfolder_names[:] = sorted(sub for sub in subfolder_names if sub not in ('__pycache__', 'out')
@@ -183,38 +189,85 @@ def source_fingerprint() -> str:
                     with open(path, 'rb') as handle:
                         known = _file_digests[path] = ((status.st_mtime_ns, status.st_size),
                                                        hashlib.sha1(handle.read()).hexdigest())
-                digest.update(f'{os.path.relpath(path, REPOSITORY)}\0{known[1]}\n'.encode('utf-8'))
+                files[os.path.relpath(path, REPOSITORY).replace(os.sep, '/')] = known[1]
     versions = []
     for module_name in ('numpy', 'scipy', 'cupy'):
         try:
             versions.append(importlib.metadata.version(module_name))
         except importlib.metadata.PackageNotFoundError:
             versions.append(None)
-    digest.update(json.dumps([sys.executable, sys.version, versions, platform.node()]).encode('utf-8'))
-    return digest.hexdigest()
+    environment = json.dumps([sys.executable, sys.version, versions, platform.node()])
+    snapshot = hashlib.sha1(json.dumps(sorted(files.items())).encode('utf-8')).hexdigest()
+    return snapshot, files, environment
 
 
 def load_memory() -> dict:
-    """{command line: {fingerprint, lines, cache, cache_time}} of OUT / MEMORY_FILE ({} when missing or unreadable:
-    the memory only saves time, the harness check stands behind it)."""
+    """{'commands': {command line: {snapshot, environment, lines, cache, cache_time}}, 'snapshots': {snapshot id:
+    files}} of OUT / MEMORY_FILE (empty when missing, unreadable or of an older layout: the memory only saves time,
+    the harness check stands behind it)."""
     try:
-        return json.loads((OUT / MEMORY_FILE).read_text(encoding='utf-8'))
+        memory = json.loads((OUT / MEMORY_FILE).read_text(encoding='utf-8'))
     except (OSError, ValueError):
-        return {}
+        memory = {}
+    if not isinstance(memory.get('commands'), dict) or not isinstance(memory.get('snapshots'), dict):
+        memory = {'commands': {}, 'snapshots': {}}
+    return memory
 
 
 def save_memory(memory):
+    """Write the memory (snapshots no command refers to dropped) through a sibling file and a replace."""
+    used = {record.get('snapshot') for record in memory['commands'].values()}
+    memory['snapshots'] = {key: files for key, files in memory['snapshots'].items() if key in used}
     path = OUT / MEMORY_FILE
     partial = path.with_name(path.name + '.partial')
-    partial.write_text(json.dumps(memory, indent=1), encoding='utf-8')
+    partial.write_text(json.dumps(memory), encoding='utf-8')
     os.replace(partial, path)
 
 
-def remembered_lines(record, fingerprint):
-    """The command's kept stdout lines when its memory record stands: same fingerprint and, for a kept profile, its
-    profile_cache.json still complete and from the same profile (not replaced by a run by hand); else None."""
-    if record is None or record.get('fingerprint') != fingerprint:
+def _standalone(stem, path):
+    """Module of one file loaded on its own (cached): selftest_cache's unit hashing and the harness's PROFILED_CODE
+    rule, without importing open_sol (seconds) into run_all."""
+    if stem not in _loaded:
+        spec = importlib.util.spec_from_file_location(f'_run_all_{stem}', path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module   # as an import does (dataclasses look their module up)
+        spec.loader.exec_module(module)
+        _loaded[stem] = module
+    return _loaded[stem]
+
+
+def _solver_edits_stand(changed, files, cache_units):
+    """True when every changed repository path is a PROFILED_CODE .py file of open_sol (the harness's solver code,
+    no case spec source) and no unit of cache_units (the kept profile's) in those files has another hash now."""
+    hasher = _standalone('selftest_cache', REPOSITORY / 'open_sol' / 'model' / 'selftest_cache.py')
+    harness = _standalone('profiler_harness', HERE / 'profiler_harness.py')
+    by_file = {}
+    for unit_id, digest in cache_units.items():
+        package_path, _, name = unit_id.partition('::')
+        by_file.setdefault(package_path, []).append((name, digest))
+    for path in changed:
+        full_path = str(REPOSITORY / path)
+        package_path = hasher._package_path(full_path) if path.startswith('open_sol/') else None
+        if package_path is None or not harness._profiled_path(package_path):
+            return False   # a case, harness, example or plumbing source: only the harness can judge it
+        units = by_file.get(package_path)
+        if not units:
+            continue   # solver code this profile never ran
+        key = (path, files.get(path))
+        if key not in _unit_hashes:
+            _unit_hashes[key] = hasher._file_units(full_path).hashes if key[1] is not None else {}
+        if any(_unit_hashes[key].get(name) != digest for name, digest in units):
+            return False
+    return True
+
+
+def remembered_lines(record, snapshot, files, environment, snapshots):
+    """(the command's kept stdout lines, how) when its memory record stands, else None: its kept profile's
+    profile_cache.json still complete and the same (not replaced by a run by hand), the same environment, and the same
+    sources or only solver-code edits that leave every unit the profile ran unchanged (_solver_edits_stand)."""
+    if record is None or record.get('environment') != environment:
         return None
+    cache = None
     if record.get('cache') is not None:
         try:
             cache = json.loads(Path(record['cache']).read_text(encoding='utf-8'))
@@ -222,10 +275,70 @@ def remembered_lines(record, fingerprint):
             return None
         if cache.get('units') is None or cache.get('time') != record.get('cache_time'):
             return None
-    return record['lines']
+    if record.get('snapshot') == snapshot:
+        return record['lines'], 'remembered'
+    earlier = snapshots.get(record.get('snapshot'))
+    if earlier is None or cache is None:   # a nothing-profiled outcome has no units to compare: the harness decides
+        return None
+    changed = sorted(path for path in earlier.keys() | files.keys() if earlier.get(path) != files.get(path))
+    if not _solver_edits_stand(changed, files, cache['units']):
+        return None
+    return record['lines'], f'remembered: {len(changed)} solver file(s) edited, no unit it ran'
 
 
-def memory_record(stdout, return_code, fingerprint):
+def precheck(commands, memory):
+    """{memory key: (stdout lines, how)} of the commands {key: command} whose kept outcome stands: from the memory, the
+    rest by one check_profiles.py process (the harness --if-changed check of all of them, open_sol loaded once);
+    memory refreshed and saved. A failed batch leaves its commands to check themselves."""
+    snapshot, files, environment = source_snapshot()
+    standing, batch = {}, {}
+    for key, command in commands.items():
+        remembered = remembered_lines(memory['commands'].get(key), snapshot, files, environment, memory['snapshots'])
+        if remembered is None:
+            batch[key] = command[1:]
+            continue
+        standing[key] = remembered
+        memory['commands'][key]['snapshot'] = snapshot   # it stands for these sources too
+        memory['snapshots'][snapshot] = files
+    if batch:
+        print(f'checking {len(batch)} of {len(commands)} commands in one process (solver code, case specs, '
+              'options) ...', flush=True)
+        commands_path, results_path = OUT / 'check_commands.json', OUT / 'check_results.json'
+        commands_path.write_text(json.dumps(batch, indent=1), encoding='utf-8')
+        started, start = time.time(), time.perf_counter()
+        try:   # a check is a spec build, no run: a hang (>= 10 s per command) leaves them to check themselves
+            completed = subprocess.run([sys.executable, str(HERE / 'check_profiles.py'), str(commands_path),
+                                        str(results_path)], cwd=REPOSITORY, capture_output=True, text=True,
+                                       timeout=max(BATCH_CHECK_MIN_SECONDS, 10.0 * len(batch)))
+            return_code, stderr = completed.returncode, completed.stderr
+        except subprocess.TimeoutExpired as expired:
+            return_code, stderr = None, _text(expired.stderr)
+        seconds = time.perf_counter() - start
+        try:   # never a results file of an earlier batch
+            results = (json.loads(results_path.read_text(encoding='utf-8'))
+                       if results_path.stat().st_mtime >= started else {})
+        except (OSError, ValueError):
+            results = {}
+        if return_code != 0 or not results:
+            print(f'batch check failed ({"timed out" if return_code is None else f"exit {return_code}"}): each '
+                  'command checks itself\n    ' + '\n    '.join(stderr.splitlines()[-8:]), flush=True)
+        broken = [f'{key}: {result["error"]}' for key, result in results.items() if result.get('error')]
+        if broken:   # those commands run on their own and show the error in full
+            print('batch check could not judge:\n    ' + '\n    '.join(broken), flush=True)
+        for key, result in results.items():
+            if result.get('lines'):
+                standing[key] = (result['lines'], None)   # its time is in the one summary line below
+                record = memory_record('\n'.join(result['lines']), 0, snapshot, environment)
+                if record is not None:
+                    memory['commands'][key] = record
+                    memory['snapshots'][snapshot] = files
+        print(f'batch check: {sum(key in standing for key in batch)} of {len(batch)} unchanged ({seconds:.1f} s)',
+              flush=True)
+    save_memory(memory)
+    return standing
+
+
+def memory_record(stdout, return_code, snapshot, environment):
     """Memory record of a finished command whose outcome stands until a source changes: a kept profile (harness
     unchanged line), a complete profile (its profile_cache.json filled) or no run taking the solver; else None."""
     if return_code != 0:
@@ -236,7 +349,8 @@ def memory_record(stdout, return_code, fingerprint):
     report = next((line[len('report: '):].strip() for line in reversed(lines) if line.startswith('report: ')), None)
     if kept is None and report is None:
         nothing = [line for line in lines if NOTHING_PROFILED in line]
-        return {'fingerprint': fingerprint, 'lines': nothing, 'cache': None} if nothing else None
+        return ({'snapshot': snapshot, 'environment': environment, 'lines': nothing, 'cache': None} if nothing
+                else None)
     report_path = Path(kept or report)
     cache_path = report_path.parent / 'profile_cache.json'
     try:
@@ -245,7 +359,7 @@ def memory_record(stdout, return_code, fingerprint):
         return None
     if cache.get('units') is None:   # incomplete, failed or --no-cprofile: never kept
         return None
-    return {'fingerprint': fingerprint, 'cache': str(cache_path), 'cache_time': cache.get('time'),
+    return {'snapshot': snapshot, 'environment': environment, 'cache': str(cache_path), 'cache_time': cache.get('time'),
             'lines': [f"{UNCHANGED}{cache.get('time')}: remembered by run_all", f'{KEPT_REPORT}{report_path}',
                       *checks]}
 
@@ -467,24 +581,31 @@ def main(description=None):
     if POINTS_PATH.is_file():   # the points as they were before this run, to restore from
         shutil.copyfile(POINTS_PATH, history_folder / 'profile_points_before.json')
     checks_not_passed = []   # 'command [variant]: group line' of every failed / error solution check
-    memory = load_memory() if reuse else {}
+    memory = load_memory() if reuse else {'commands': {}, 'snapshots': {}}
+    # every command line (script and arguments: entry, backend, solver and reuse; the memory key from command[1:])
+    command_lines = {(solver, backend, entry): [sys.executable, *command_line(entry), '--backend', backend,
+                                                 *SOLVERS[solver]['arguments'], *reuse]
+                     for solver, backend in variants for entry in commands}
+    # the kept outcomes, decided before anything runs: memory first, the rest in one batch process
+    standing = precheck({' '.join(command[1:]): command for command in command_lines.values()}, memory) if reuse else {}
     with log_path.open('a', encoding='utf-8') as log:
         log.write(f'\n===== {time.strftime("%Y-%m-%d %H:%M:%S")}: {len(commands)} commands x '
                   f'{[variant_label(*variant) for variant in variants]}, reports kept in {history_folder} =====\n')
         for solver, backend in variants:
             label = variant_label(solver, backend)
             for entry in commands:
-                command = [sys.executable, *command_line(entry), '--backend', backend, *SOLVERS[solver]['arguments'],
-                           *reuse]
+                command = command_lines[(solver, backend, entry)]
                 print(f'>>> {entry} [{label}]', flush=True)
                 started = time.time()
                 start = time.perf_counter()
-                memory_key = ' '.join(command[1:])   # script and arguments: entry, backend, solver and reuse
-                fingerprint = source_fingerprint() if reuse else None   # before the run: an edit during it counts
-                lines = remembered_lines(memory.get(memory_key), fingerprint) if reuse else None
-                if lines is not None:   # no source changed since its outcome: not even started
+                memory_key = ' '.join(command[1:])
+                remembered = standing.get(memory_key)
+                if remembered is not None:   # nothing it depends on changed: not started
+                    lines, checking = remembered
                     return_code, stdout, stderr = 0, '\n'.join(lines) + '\n', ''
                 else:
+                    if reuse:   # taken before the run: an edit during it counts
+                        snapshot, files, environment = source_snapshot()
                     try:
                         completed = subprocess.run(command, cwd=REPOSITORY, capture_output=True, text=True,
                                                    timeout=options.timeout or None)
@@ -492,13 +613,15 @@ def main(description=None):
                     except subprocess.TimeoutExpired as expired:   # run() has killed the command
                         return_code, stdout, stderr = None, _text(expired.stdout), _text(expired.stderr)
                     if reuse:   # saved at once, as the points: a later command that hangs loses nothing
-                        record = memory_record(stdout, return_code, fingerprint)
-                        if record is not None or memory.pop(memory_key, None) is not None:
+                        record = memory_record(stdout, return_code, snapshot, environment)
+                        if record is not None or memory['commands'].pop(memory_key, None) is not None:
                             if record is not None:
-                                memory[memory_key] = record
+                                memory['commands'][memory_key] = record
+                                memory['snapshots'][snapshot] = files
                             save_memory(memory)
                 wall = time.perf_counter() - start
-                checking = 'remembered' if lines is not None else f'{wall:.1f} s check'
+                if remembered is None:
+                    checking = f'{wall:.1f} s check'
                 checked, not_passed = check_summary(stdout)   # the profiled runs against their selftest checks
                 checks_not_passed += [f'{entry} [{label}]: {text}' for text in not_passed]
                 check_tail = ''.join(f'\n    solution check {text}' for text in not_passed)
@@ -522,7 +645,7 @@ def main(description=None):
                     kept_wall = ('' if earlier_point is None or earlier_point.get('command_seconds') is None
                                  else f" (kept {earlier_point['command_seconds']:.1f} s)")
                     line = (f'{entry} [{variant_label(used, backend) if used else label}]: unchanged since {since}, '
-                            f'not rerun ({checking}){kept_wall}{checked}{check_tail}')
+                            f'not rerun{f" ({checking})" if checking else ""}{kept_wall}{checked}{check_tail}')
                     print(line, flush=True)
                     log.write(line + '\n')
                     log.flush()

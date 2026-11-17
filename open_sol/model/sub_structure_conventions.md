@@ -140,7 +140,8 @@ templates, describe. Current state, no changelog.
   factories). Gap: a plain class used only through attributes of an instance built outside the trace. That set is
   `code_units(codes)`; the case profilers call it on cProfile's code objects with a path filter and without the
   MODULE_UNIT references and the second level (dev_tools/time_profilers sub file "Reuse"): keep its keyword
-  defaults the selftest's.
+  defaults the selftest's. run_all_profilers loads selftest_cache.py as a lone file (no open_sol import) for
+  `_package_path` / `_file_units`: no package import at its module level.
   `package_units` is one snapshot per process (an edit mid-run makes a case stale next time, never falsely fresh);
   unit ids 'normcase'd path::name'; its own file is in no dependency set. Overhead: one Python callback per Python call
   (3.11 has no sys.monitoring). `wall_times` keep every key's last run time (any status) for the progress estimate:

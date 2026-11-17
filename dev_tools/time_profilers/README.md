@@ -200,9 +200,16 @@ a few run_all passes. A kept run keeps the process-start costs it had (CUDA cont
 the resumed process takes them anew: use `--warmup` where that matters, or `--reset` for a profile in one process.
 The harness check starts Python, open_sol and the case specs (~9 s per command), so run_all also remembers each
 outcome that stands (a kept or complete profile, or no run taking the solver) in `out/run_all_memory.json` with a
-fingerprint of every `.py` / `.json` under `open_sol/`, `dev_tools/` and `examples/` (no `out` / `*_out` folders),
-the interpreter, library versions and machine: while that is unchanged the command is not started at all
-(`not rerun (remembered)`); after any edit each command falls back to the harness check once, which refreshes it.
+snapshot of every `.py` / `.json` under `open_sol/`, `dev_tools/` and `examples/` (no `out` / `*_out` folders),
+the interpreter, library versions and machine. While that is unchanged the command is not started at all
+(`not rerun (remembered)`). When the only edits are solver code (PROFILED_CODE files) run_all re-hashes just those
+files and compares the units the kept profile ran: none changed -> `remembered: N solver file(s) edited, no unit it
+ran`, else the command runs (and re-profiles). Any other edit (a selftest, the harness, an example, model plumbing)
+needs the harness check: before anything runs, `check_profiles.py` does it for all those commands in one process
+(open_sol, registry and package snapshot loaded once; one `batch check: K of N unchanged (T s)` line, those log
+plain `not rerun`), refreshing their memory;
+only the commands it finds changed are started on their own. An edit to solver code that changes a
+case spec (a selftest building its mesh from a solver helper) is not seen there: `--reset` after one.
 
 **Solution check.** After the timed runs (untimed, outside cProfile) the harness reads the first repeat's runs back
 from their run folders and passes them to the `check()` of the selftest case each spec came from (`case_specs` tags

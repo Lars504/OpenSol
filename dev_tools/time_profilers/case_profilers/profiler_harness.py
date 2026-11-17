@@ -43,6 +43,18 @@ SOLUTION_CHECK_MARKER = 'solution check: '
 SOLUTION_CHECK_FILE = 'solution_check.json'   # next to report.txt: the check records of the profile
 PROFILE_CACHE_FILE = 'profile_cache.json'   # next to report.txt / runs.json: what the last complete profile depended on
 ORIGIN_ATTRIBUTE = '_selftest_origin'   # ModelSpec attribute case_specs sets (deepcopy, refined and in-place edits keep it)
+# check_profiles.py sets it: main() only runs the --if-changed check of a command, then raises ProfileChecked (many
+# commands checked in one process, open_sol and the registry loaded once)
+CHECK_ONLY = False
+
+
+class ProfileChecked(Exception):
+    """Outcome of a CHECK_ONLY main(): lines = the stdout lines of a kept profile (or of no run taking the compared
+    solver), None = the command needs profiling."""
+
+    def __init__(self, lines):
+        super().__init__('checked' if lines else 'needs profiling')
+        self.lines = lines
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1015,7 +1027,8 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                              '--no-cprofile). An unfinished profile (killed, timed out) resumes: its completed runs '
                              'whose solver code is unchanged are kept, only the others run')
     options = parser.parse_args()
-    timers = wrapped_timers(parts, synchronize=not options.no_sync)   # before the registry exists
+    # before the registry exists; a CHECK_ONLY batch never profiles, so nothing is wrapped
+    timers = None if CHECK_ONLY else wrapped_timers(parts, synchronize=not options.no_sync)
     own_specs = specs is not None and options.case == case
     if own_specs:
         run_specs = specs()
@@ -1029,7 +1042,10 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         run_specs = setting_variants(run_specs, options.compare, options.backend,
                                      keep_unchanged=not options.compare_only)
         if not run_specs:
-            print(f'--compare-only: no run of {name} takes {options.compare}; nothing profiled', flush=True)
+            line = f'--compare-only: no run of {name} takes {options.compare}; nothing profiled'
+            if CHECK_ONLY:
+                raise ProfileChecked([line])
+            print(line, flush=True)
             return None
     small_warmup = warmup_specs() if own_specs and warmup_specs is not None and options.warmup else None
     if small_warmup is not None and spec_edit is not None:
@@ -1046,13 +1062,18 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                   'parameters': _parameters(options.set)}
     cache = ProfileCache(OUT_ROOT / folder, case_input, options.backend)
     since = cache.unchanged_since() if options.if_changed else None
+    if since is None and CHECK_ONLY:
+        raise ProfileChecked(None)   # it needs profiling: the caller runs the command itself
     if since is not None:
-        timers.restore()
         report_path = OUT_ROOT / folder / 'report.txt'
-        print(f'{UNCHANGED_MARKER}{since}: no solver code it ran, case spec or option changed; nothing run', flush=True)
-        print(f'{KEPT_REPORT_MARKER}{report_path}', flush=True)
         kept_checks = json.loads((OUT_ROOT / folder / SOLUTION_CHECK_FILE).read_text(encoding='utf-8'))
-        for line in solution_check_lines(kept_checks):   # the kept profile's verdicts (its check code is unchanged too)
+        lines = [f'{UNCHANGED_MARKER}{since}: no solver code it ran, case spec or option changed; nothing run',
+                 f'{KEPT_REPORT_MARKER}{report_path}',
+                 *solution_check_lines(kept_checks)]   # the kept profile's verdicts (its check code is unchanged too)
+        if CHECK_ONLY:
+            raise ProfileChecked(lines)
+        timers.restore()
+        for line in lines:
             print(line, flush=True)
         return report_path
     return profile_runs(folder, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
