@@ -95,11 +95,12 @@ aside h3 { font-size: 12px; font-weight: 600; margin: 4px 0 6px; color: var(--te
 .legend-actions { display: flex; gap: 4px; margin-bottom: 6px; }
 .legend-item {
   display: flex; width: 100%; align-items: center; gap: 8px; border-radius: 6px; padding: 2px 6px;
-  background: transparent; text-align: left;
+  cursor: pointer; user-select: none;
 }
-.legend-item[aria-pressed="false"] { opacity: 0.4; }
-.legend-item[aria-pressed="true"] { background: transparent; color: var(--text-primary); }
-.legend-item.off-backend { opacity: 0.25; }
+.legend-item:hover { background: var(--chip); }
+.legend-item input { margin: 0; accent-color: var(--text-primary); cursor: pointer; }
+.legend-item:has(input:not(:checked)) > :not(input) { opacity: 0.4; }
+.legend-item.off-backend { opacity: 0.35; }
 .legend-item svg, .key svg, .tip svg { width: auto; flex: none; }
 .key { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); margin: 2px 0; }
 .notes { color: var(--text-muted); font-size: 12px; margin: 8px 0 0; padding-left: 16px; }
@@ -167,6 +168,8 @@ const SERIES_STYLE = {   // dash, width, hollow marker
   previous: { dash: '7 4', width: 1.5, hollow: false },
   current: { dash: null, width: 2, hollow: false },
 };
+const SERIES_TITLES = { first: 'the first complete profile (a run without --only)',
+                        previous: 'the point before the current one', current: 'the latest point' };
 const PANELS = [
   { key: 'run_seconds', label: 'run wall', unit: 's', scale: 1, log: true,
     note: 'sum of the counted runs’ walls' },
@@ -550,6 +553,26 @@ function unhover() {
 }
 
 // ---- legend
+function checkRow(parent, keySvg, text, title, onChange) {
+  // one legend row: a tick box, the line key and the name; the whole row toggles the box
+  const row = document.createElement('label');
+  row.className = 'legend-item';
+  row.title = title;
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.addEventListener('change', () => { onChange(box.checked); save(); refresh(); });
+  row.append(box, keySvg, textNode('span', text));
+  parent.appendChild(row);
+  return { row, box };
+}
+const legendRows = { variants: [], series: [] };   // built once; refresh only syncs them (a rebuilt row loses dblclick)
+function syncLegend() {
+  for (const { variant, row, box } of legendRows.variants) {
+    box.checked = !state.hidden.includes(variant.name);
+    row.classList.toggle('off-backend', state.backends[variant.backend] === false);
+  }
+  for (const { series, box } of legendRows.series) box.checked = !!state.series[series];
+}
 function drawLegend() {
   const legend = document.getElementById('legend');
   legend.replaceChildren(textNode('h3', 'solver @backend'));
@@ -561,30 +584,23 @@ function drawLegend() {
   actions.append(all, none);
   legend.appendChild(actions);
   for (const variant of DATA.variants) {
-    const item = document.createElement('button');
-    item.className = 'legend-item' + (state.backends[variant.backend] === false ? ' off-backend' : '');
-    item.setAttribute('aria-pressed', String(!state.hidden.includes(variant.name)));
-    item.title = 'Click: show / hide. Double-click: only this one.';
-    item.appendChild(lineKey(variant, 'current'));
-    item.appendChild(textNode('span', variant.name));
-    item.addEventListener('click', () => {
-      const at = state.hidden.indexOf(variant.name);
-      if (at >= 0) state.hidden.splice(at, 1); else state.hidden.push(variant.name);
-      save(); refresh();
-    });
-    item.addEventListener('dblclick', () => {
+    const { row, box } = checkRow(legend, lineKey(variant, 'current'), variant.name,
+      'Tick: show / hide. Double-click: only this one.', checked => {
+        state.hidden = state.hidden.filter(name => name !== variant.name);
+        if (!checked) state.hidden.push(variant.name);
+      });
+    row.addEventListener('dblclick', event => {
+      event.preventDefault();
       state.hidden = DATA.variants.filter(other => other !== variant).map(other => other.name);
       save(); refresh();
     });
-    legend.appendChild(item);
+    legendRows.variants.push({ variant, row, box });
   }
   legend.appendChild(textNode('h3', 'profile'));
   for (const series of SERIES) {
-    const key = document.createElement('div');
-    key.className = 'key';
-    key.appendChild(lineKey(null, series));
-    key.appendChild(textNode('span', series));
-    legend.appendChild(key);
+    const { box } = checkRow(legend, lineKey(null, series), series, SERIES_TITLES[series],
+                             checked => { state.series[series] = checked; });
+    legendRows.series.push({ series, box });
   }
   const ring = document.createElement('div');
   ring.className = 'key';
@@ -652,11 +668,9 @@ function drawControls() {
   }
   const seriesChips = document.getElementById('seriesChips');
   seriesChips.replaceChildren(textNode('span', 'Profile', 'name'));
-  const titles = { first: 'the first complete profile (a run without --only)', previous: 'the point before the current one',
-                   current: 'the latest point' };
   for (const series of SERIES) {
     chip(seriesChips, series, !!state.series[series], () => { state.series[series] = !state.series[series]; },
-         titles[series]);
+         SERIES_TITLES[series]);
   }
   const backendChips = document.getElementById('backendChips');
   backendChips.replaceChildren(textNode('span', 'Backend', 'name'));
@@ -678,7 +692,7 @@ function drawControls() {
 }
 function refresh() {
   drawControls();
-  drawLegend();
+  syncLegend();
   draw();
 }
 
@@ -703,6 +717,7 @@ document.getElementById('themeButton').addEventListener('click', () => {
   save(); applyTheme();
 });
 applyTheme();
+drawLegend();
 refresh();
 let resizeTimer = null, drawnWidth = document.getElementById('panels').clientWidth;
 new ResizeObserver(() => {   // width only: a redraw changes the height, which must not redraw again

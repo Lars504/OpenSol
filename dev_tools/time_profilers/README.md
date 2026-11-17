@@ -207,8 +207,9 @@ line at the timeout, and has no memory point. A command killed before it found a
 **The plot.** Each command that finishes is a point in `out/profile_points.json`, plotted in
 `out/profile_points.html`, a self-contained page (no network) to open in a browser. Its panels share the command x
 axis: run wall (the counted runs only, log scale), command wall (the whole subprocess; off at first), GPU peak and
-RAM peak. On the page you choose the panels (and a log axis per panel), the solver @backend lines (click a legend
-entry; double-click shows only that one), the profiles, the backends and the commands (a filter: `em_ heat` keeps
+RAM peak. On the page you choose the panels (and a log axis per panel), the solver @backend lines and the first /
+previous / current profiles (tick boxes in the legend; double-click a solver to show only that one), the backends and
+the commands (a filter: `em_ heat` keeps
 commands holding either, `-tetra` drops those holding it). Hovering a panel shows every shown value at that command,
 with the runs counted, the solvers used and when; `Table` lists the same values. The page remembers these choices
 in the browser, so a redrawn page opens the same way. Each solver @backend has its own line: a colour per solver, a marker per
