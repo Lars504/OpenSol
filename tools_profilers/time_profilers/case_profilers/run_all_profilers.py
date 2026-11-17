@@ -1,0 +1,926 @@
+"""Run every profiler_solver_*.py command in turn, once per chosen solver group (SOLVERS; no flag: auto, per
+--backend; a failing one is logged, the rest continue) -> out/run_all.log; each report is also
+kept in out/history/<timestamp>/ (with the points file as it was before the run). Each finished command updates its
+point in out/profile_points.json and the plot out/profile_points.png (run wall, GPU peak and RAM peak per command; one
+line per solver and backend for the first complete profile, the previous and the current one; a ring on the solver
+Automatic picks on the gpu, worked out by the harness from each case's roles whichever solver was run). A log line
+gives the command wall and, in brackets, that of the command's previous recorded point: '15.2 s (14.9 s)'.
+A command stops after --timeout s (default 60; the harness's --time-limit: the report of what was timed until then is
+kept, its log line says 'partial'; killed REPORT_GRACE s later if a library call holds it); one that was profiling is
+plotted at the '>timeout' tick.
+A command whose last complete profile still stands (harness --if-changed: same case specs and options, no changed unit
+of the solver code it ran) is not rerun and keeps its points; --reset, --new-first and --only (named commands) profile
+every command they run. run_all remembers each kept outcome (out/run_all_memory.json) with a snapshot of the
+sources: while no .py / .json under open_sol/, tools_profilers/ or examples/ changed, or only solver code (harness
+PROFILED_CODE) in units the kept profile never ran, the command is not even started; the others are checked
+together first (check_profiles.py, one process) and only those found changed are started. A
+command stopped at the timeout keeps its completed runs (harness pieces): the next run_all runs only the rest.
+Each command's runs are checked by the check() of the selftest case they came from (harness solution check): the
+counts go on its log line, a failed / error group is logged under it and listed again at the end (points still recorded).
+Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...]
+[--cudss --cudss-mixed --scipy --pardiso --mumps --block-eigen | --all]
+[--backend gpu cpu] [--timeout S] [--reset] [--new-first] [--plot-only]"""
+import argparse
+import hashlib
+import importlib.metadata
+import importlib.util
+import json
+import math
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPOSITORY = HERE.parents[2]
+OUT = HERE / 'out'
+POINTS_PATH = OUT / 'profile_points.json'
+PLOT_PATH = OUT / 'profile_points.png'
+SERIES = ('first', 'previous', 'current')   # first: the first complete profile (all commands, no --only)
+BACKENDS = ('gpu', 'cpu')
+DEFAULT_TIMEOUT = 60.0   # seconds per command: the harness's --time-limit (it stops and writes a partial report)
+REPORT_GRACE = 30.0      # seconds after the timeout before the command is killed (a long library call, the report)
+NOTHING_PROFILED = 'nothing profiled'   # the harness's --compare-only line when no run takes the solver
+PLANNED_GROUPS = 'solver groups: '   # the harness's line before the build: the groups the runs' roles take
+PARTIAL_REPORT = 'partial report'       # the harness's PARTIAL_REPORT_MARKER line: stopped at its time limit
+NEVER_FACTORISED = 'never factorised'   # log mark of a run whose compared solver did no factorisation (not counted)
+UNCHANGED = 'unchanged since '   # the harness's UNCHANGED_MARKER line (--if-changed): its kept profile stands
+KEPT_REPORT = 'kept report: '    # the harness's KEPT_REPORT_MARKER line: that profile's report.txt
+SOLUTION_CHECK = 'solution check: '   # the harness's SOLUTION_CHECK_MARKER lines: '<status> <group>: <detail>'
+CHECK_NOT_PASSED = ('failed', 'error')
+MEMORY_FILE = 'run_all_memory.json'   # in OUT: per command line, its kept outcome and the sources it stands for
+# folders under REPOSITORY whose .py / .json bytes make the source fingerprint (out, *_out, __pycache__, hidden skipped)
+FINGERPRINT_FOLDERS = ('open_sol', 'tools_profilers', 'examples')
+FINGERPRINT_SUFFIXES = ('.py', '.json')
+_file_digests = {}   # path -> ((mtime_ns, size), sha1): a file is read again only after it changed
+_unit_hashes = {}    # (path, sha1) -> {unit name: hash} of a changed solver file (parsed once per run_all)
+_loaded = {}         # file stem -> module loaded on its own (selftest_cache, profiler_harness: no open_sol import)
+BATCH_CHECK_MIN_SECONDS = 120.0   # timeout floor of the one-process check of all commands (check_profiles.py)
+TIMEOUT_CAP = 1.5        # a timed-out point is drawn at this many times the largest timeout shown
+
+
+def _compared(value, backends):
+    """Host library group: --compare back_end=value --compare-only, so only the runs a role of which takes it are
+    profiled and counted (and only those in which it factorised: back_ends); backends: its default backend (an
+    explicit --backend: any, a gpu model factorising on the host)."""
+    return {'arguments': ('--compare', f'back_end={value}', '--compare-only'), 'token': f'back_end={value}',
+            'backends': backends, 'runs_on': BACKENDS, 'back_ends': (value,)}
+
+
+def _whole(value, backends, precision=None, runs_on=BACKENDS):
+    """Array-library group: every run on its backend (at the precision), the roles taking back_end on value; all runs
+    counted. backends: default; runs_on: those an explicit --backend may pick."""
+    return {'arguments': (('--precision', precision) if precision else ()) + ('--compare', f'back_end={value}'),
+            'token': None, 'backends': backends, 'runs_on': runs_on, 'back_ends': ()}
+
+
+def _typed(type_name, backends):
+    """Opt-in solver type group: harness --solver-type, only the runs a role of which it can fill (all counted)."""
+    return {'arguments': ('--solver-type', type_name), 'token': f'solver_type={type_name}', 'backends': backends,
+            'runs_on': BACKENDS, 'back_ends': ()}
+
+
+GPU, CPU = ('gpu',), ('cpu',)
+# the solver groups (harness solver_group: every solver is in one), one --<name> flag each, --all: all of them; the
+# order fixes each one's plot colour. cudss: cuDSS + cupy double (pcg, explicit kernels, ... at double precision);
+# cudss_mixed: cuDSS mixed + cupy single; scipy: host SuperLU + numpy (the cpu backend); pardiso / mumps: their host
+# library, cpu backend, only the runs a role of which takes it; block_eigen: the opt-in solver type (harness
+# TYPE_GROUPS), only the runs a role of which it can fill. No flag: auto, whose log line names the groups it used.
+# backends: each one's default; an explicit --backend runs the host groups on it too (a gpu model factorising on the
+# host), never cuDSS on the cpu
+SOLVERS = {
+    # the cases' solvers as written; run_all_examples.py adds --automatic-solvers (every role on Automatic)
+    'auto': {'arguments': (), 'token': None, 'backends': GPU, 'runs_on': BACKENDS, 'back_ends': ()},
+    'cudss': _whole('cudss', GPU, 'double', runs_on=GPU),
+    'cudss_mixed': _whole('cudss_mixed', GPU, 'single', runs_on=GPU),
+    'scipy': _whole('scipy_splu', CPU),
+    'pardiso': _compared('pardiso', CPU),
+    'mumps': _compared('mumps', CPU),
+    'block_eigen': _typed('block_eigen', GPU),
+}
+GROUPS = tuple(solver for solver in SOLVERS if solver != 'auto')
+# {solver group: COMMANDS entries it never runs} (a suite may replace it): a variant whose answer is wrong is no
+# timing point (its earlier points are dropped)
+SOLVER_EXCLUDED_COMMANDS = {}
+# block_eigen's own script: a library group's --compare swaps its block_eigen eigen nodes for arpack's matrix-free
+# Lanczos (no factor on bricks, so no point; minutes at its 1.3e5-dof runs): only auto and --block-eigen run it
+BLOCK_EIGEN_ONLY_COMMANDS = ('solid_mechanics_3d_block_eigen --warmup',)
+for _group in ('cudss', 'cudss_mixed', 'scipy', 'pardiso', 'mumps'):
+    SOLVER_EXCLUDED_COMMANDS[_group] = tuple(SOLVER_EXCLUDED_COMMANDS.get(_group, ())) + BLOCK_EIGEN_ONLY_COMMANDS
+# variants of an older points file under the name that now covers them (load_points)
+RENAMED_VARIANTS = {'scipy_splu @cpu': 'scipy @cpu', 'numpy @cpu': 'scipy @cpu'}
+# solver names of older runs.json (no 'groups') by group
+LEGACY_GROUPS = {'cudss': 'cudss', 'cudss_mixed': 'cudss_mixed', 'scipy_splu': 'scipy', 'superlu': 'scipy',
+                 'pardiso': 'pardiso', 'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps'}
+# categorical palette slots in fixed order (8 hues)
+SOLVER_COLORS = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948')
+BACKEND_MARKERS = {'gpu': 'o', 'cpu': 's'}
+SERIES_STYLES = {'first': dict(linestyle=':', linewidth=1.2, markersize=5, markerfacecolor='none'),
+                 'previous': dict(linestyle='--', linewidth=1.2, markersize=4),
+                 'current': dict(linestyle='-', linewidth=2.0, markersize=6)}
+# ring around the current point of the solver variant Automatic picks on the gpu (auto_picks)
+PICK_RING = dict(s=220, facecolors='none', edgecolors='#0b0b0b', linewidths=1.5, zorder=5)
+
+COMMANDS = (
+    'pressure_acoustics', 'pressure_acoustics_tetrahedra',
+    'em_fdfd_triangles', 'em_modes_triangles',
+    'em_fdfd_3d', 'em_fdfd_3d_double_factor', 'em_fdfd_3d_tetrahedra', 'em_fdfd_3d_tetrahedra_double_factor',
+    'em_eme_3d',
+    'heat_fem --kind triangles', 'heat_fem --kind tetrahedra', 'heat_fem --kind steady',
+    'magnetostatics_3d --kind tensor', 'magnetostatics_3d --kind tetrahedra', 'magnetostatics_3d --kind sphere',
+    'magnetostatics_3d --kind coil',
+    'solid_mechanics_triangles', 'solid_mechanics_3d_tensor --warmup',
+    'solid_mechanics_3d_tetrahedra --warmup', 'solid_mechanics_3d_nonlinear --warmup',   # cuDSS load out of run 1
+    'solid_mechanics_3d_block_eigen --warmup',
+    'membrane_plate',
+)
+PLOT_TITLE = 'case profilers per command'
+
+
+def command_line(entry) -> list:
+    """[script path, arguments...] of one COMMANDS entry (a suite reusing main replaces this, COMMANDS, OUT,
+    POINTS_PATH, PLOT_PATH and PLOT_TITLE: example_profilers/run_all_examples.py)."""
+    script, *arguments = entry.split()
+    return [str(HERE / f'profiler_solver_{script}.py'), *arguments]
+
+
+def variant_label(solver, backend) -> str:
+    return f'{solver} @{backend}'
+
+
+def command_point(runs_path, command_seconds, started, token, back_ends=()):
+    """({run_seconds (sum of the counted runs' walls), command_seconds, gpu_peak_bytes / host_peak_bytes (largest over
+    them), runs, run_walls / run_gpu_peaks / run_host_peaks ({run: value} of the counted runs, by base_run name: the
+    plot's split columns), when} or None, names of the token's runs not counted) of one command; counted: the runs
+    whose name holds token (all for None) that completed and in which a role taking the token's value factorised (a
+    matrix-free eigen solve never does: that run measures another solver). None when runs.json is missing, older than
+    the command or has no counted run; a run not counted is a task this solver did not do (its own plot column)."""
+    if not runs_path.is_file() or runs_path.stat().st_mtime < started:
+        return None, []
+    named = {name: run for name, run in json.loads(runs_path.read_text(encoding='utf-8')).items()
+             if token is None or token in name}
+    values = set(back_ends)   # the back end names the compared value reports (none: every completed run counts)
+
+    def idle(run):   # every role holding the compared value reports 0 factorisations (None: no counter, counted)
+        taken = [choice for choice in run.get('solvers') or ()
+                 if {choice.get('back_end'), choice.get('preconditioner')} & values]
+        return bool(taken) and all(choice.get('factorizations') == 0 for choice in taken)
+    completed = {name: run for name, run in named.items() if run.get('status') == 'completed'}
+    counted = {name: run for name, run in completed.items() if not idle(run)}
+    runs = list(counted.values())
+    not_completed = ([f"{name} ({run.get('status')})" for name, run in named.items() if name not in completed]
+                     + [f"{name} ({'/'.join(sorted(values))} {NEVER_FACTORISED})"
+                        for name, run in completed.items() if idle(run)])
+    if not runs:
+        return None, not_completed
+
+    def largest(key):
+        values = [run[key] for run in runs if run.get(key) is not None]
+        return max(values) if values else None
+    def per_run(key):
+        return {base_run(name): run.get(key) for name, run in counted.items()}
+    # chosen: the groups the runs used; automatic: the groups Automatic picks on the gpu (ringed in the plot)
+    return {'run_seconds': sum(run['wall_seconds'] for run in runs), 'command_seconds': command_seconds,
+            'gpu_peak_bytes': largest('gpu_peak_bytes'), 'host_peak_bytes': largest('host_peak_bytes'),
+            'runs': len(runs), 'run_walls': per_run('wall_seconds'), 'run_gpu_peaks': per_run('gpu_peak_bytes'),
+            'run_host_peaks': per_run('host_peak_bytes'),
+            'run_automatic': {base_run(name): run_groups([run], 'automatic_groups', 'automatic')
+                              for name, run in counted.items()},
+            'chosen': run_groups(runs, 'groups', 'solvers'),
+            'automatic': run_groups(runs, 'automatic_groups', 'automatic'),
+            'when': time.strftime('%Y-%m-%d %H:%M:%S')}, not_completed
+
+
+def base_run(name) -> str:
+    """Run name without the harness's ' SETTING=value' --compare suffix (a repeat's '_N' kept): the same task under
+    every solver."""
+    match = re.fullmatch(r'(.*?) \S+?=\S+?(_\d+)?', name)
+    return match.group(1) + (match.group(2) or '') if match else name
+
+
+def run_groups(runs, field, legacy_field) -> list:
+    """Sorted solver groups of runs (the harness's runs.json `field`; an older one without it: the LEGACY_GROUPS of
+    its `legacy_field` back ends)."""
+    groups = set()
+    for run in runs:
+        if field in run:
+            groups.update(run[field])
+        else:
+            groups.update(LEGACY_GROUPS[choice['back_end']] for choice in run.get(legacy_field) or ()
+                          if choice.get('back_end') in LEGACY_GROUPS)
+    return sorted(groups)
+
+
+def used_solvers(runs_path, started) -> str | None:
+    """'+'-joined solver groups the command's runs used, or None when runs.json is missing or older than the
+    command."""
+    if not runs_path.is_file() or runs_path.stat().st_mtime < started:
+        return None
+    runs = json.loads(runs_path.read_text(encoding='utf-8')).values()
+    return '+'.join(run_groups(runs, 'groups', 'solvers')) or None
+
+
+def check_summary(stdout):
+    """('; solution check <count> <status>, ...' or '', [lines of the failed / error groups]) of a command's output."""
+    lines = [line[len(SOLUTION_CHECK):] for line in stdout.splitlines() if line.startswith(SOLUTION_CHECK)]
+    statuses = [line.partition(' ')[0] for line in lines]
+    counts = ', '.join(f'{statuses.count(status)} {status.upper() if status in CHECK_NOT_PASSED else status}'
+                       for status in dict.fromkeys(statuses))
+    return (f'; solution check {counts}' if lines else '',
+            [line for line, status in zip(lines, statuses) if status in CHECK_NOT_PASSED])
+
+
+def source_snapshot():
+    """(snapshot id, {repository path: sha1} of every FINGERPRINT_FOLDERS source file, environment text: interpreter,
+    numpy / scipy / cupy versions, machine); an equal id -> nothing a command reads has changed."""
+    files = {}
+    for name in FINGERPRINT_FOLDERS:
+        for folder, subfolder_names, file_names in os.walk(REPOSITORY / name):
+            subfolder_names[:] = sorted(sub for sub in subfolder_names if sub not in ('__pycache__', 'out')
+                                        and not sub.endswith('_out') and not sub.startswith('.'))
+            for file_name in sorted(file_names):
+                if not file_name.endswith(FINGERPRINT_SUFFIXES):
+                    continue
+                path = os.path.join(folder, file_name)
+                status = os.stat(path)
+                known = _file_digests.get(path)
+                if known is None or known[0] != (status.st_mtime_ns, status.st_size):
+                    with open(path, 'rb') as handle:
+                        known = _file_digests[path] = ((status.st_mtime_ns, status.st_size),
+                                                       hashlib.sha1(handle.read()).hexdigest())
+                files[os.path.relpath(path, REPOSITORY).replace(os.sep, '/')] = known[1]
+    versions = []
+    for module_name in ('numpy', 'scipy', 'cupy'):
+        try:
+            versions.append(importlib.metadata.version(module_name))
+        except importlib.metadata.PackageNotFoundError:
+            versions.append(None)
+    environment = json.dumps([sys.executable, sys.version, versions, platform.node()])
+    snapshot = hashlib.sha1(json.dumps(sorted(files.items())).encode('utf-8')).hexdigest()
+    return snapshot, files, environment
+
+
+def load_memory() -> dict:
+    """{'commands': {command line: {snapshot, environment, lines, cache, cache_time}}, 'snapshots': {snapshot id:
+    files}} of OUT / MEMORY_FILE (empty when missing, unreadable or of an older layout: the memory only saves time,
+    the harness check stands behind it)."""
+    try:
+        memory = json.loads((OUT / MEMORY_FILE).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        memory = {}
+    if not isinstance(memory.get('commands'), dict) or not isinstance(memory.get('snapshots'), dict):
+        memory = {'commands': {}, 'snapshots': {}}
+    return memory
+
+
+def save_memory(memory):
+    """Write the memory (snapshots no command refers to dropped) through a sibling file and a replace."""
+    used = {record.get('snapshot') for record in memory['commands'].values()}
+    memory['snapshots'] = {key: files for key, files in memory['snapshots'].items() if key in used}
+    path = OUT / MEMORY_FILE
+    partial = path.with_name(path.name + '.partial')
+    partial.write_text(json.dumps(memory), encoding='utf-8')
+    os.replace(partial, path)
+
+
+def _standalone(stem, path):
+    """Module of one file loaded on its own (cached): selftest_cache's unit hashing and the harness's PROFILED_CODE
+    rule, without importing open_sol (seconds) into run_all."""
+    if stem not in _loaded:
+        spec = importlib.util.spec_from_file_location(f'_run_all_{stem}', path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module   # as an import does (dataclasses look their module up)
+        spec.loader.exec_module(module)
+        _loaded[stem] = module
+    return _loaded[stem]
+
+
+def _solver_edits_stand(changed, files, cache_units):
+    """True when every changed repository path is a PROFILED_CODE .py file of open_sol (the harness's solver code,
+    no case spec source) and no unit of cache_units (the kept profile's) in those files has another hash now."""
+    hasher = _standalone('selftest_cache', REPOSITORY / 'open_sol' / 'model' / 'selftest_cache.py')
+    harness = _standalone('profiler_harness', HERE / 'profiler_harness.py')
+    by_file = {}
+    for unit_id, digest in cache_units.items():
+        package_path, _, name = unit_id.partition('::')
+        by_file.setdefault(package_path, []).append((name, digest))
+    for path in changed:
+        full_path = str(REPOSITORY / path)
+        package_path = hasher._package_path(full_path) if path.startswith('open_sol/') else None
+        if package_path is None or not harness._profiled_path(package_path):
+            return False   # a case, harness, example or plumbing source: only the harness can judge it
+        units = by_file.get(package_path)
+        if not units:
+            continue   # solver code this profile never ran
+        key = (path, files.get(path))
+        if key not in _unit_hashes:
+            _unit_hashes[key] = hasher._file_units(full_path).hashes if key[1] is not None else {}
+        if any(_unit_hashes[key].get(name) != digest for name, digest in units):
+            return False
+    return True
+
+
+def remembered_lines(record, snapshot, files, environment, snapshots):
+    """(the command's kept stdout lines, how) when its memory record stands, else None: its kept profile's
+    profile_cache.json still complete and the same (not replaced by a run by hand), the same environment, and the same
+    sources or only solver-code edits that leave every unit the profile ran unchanged (_solver_edits_stand)."""
+    if record is None or record.get('environment') != environment:
+        return None
+    cache = None
+    if record.get('cache') is not None:
+        try:
+            cache = json.loads(Path(record['cache']).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return None
+        if cache.get('units') is None or cache.get('time') != record.get('cache_time'):
+            return None
+    if record.get('snapshot') == snapshot:
+        return record['lines'], 'remembered'
+    earlier = snapshots.get(record.get('snapshot'))
+    if earlier is None or cache is None:   # a nothing-profiled outcome has no units to compare: the harness decides
+        return None
+    changed = sorted(path for path in earlier.keys() | files.keys() if earlier.get(path) != files.get(path))
+    if not _solver_edits_stand(changed, files, cache['units']):
+        return None
+    return record['lines'], f'remembered: {len(changed)} solver file(s) edited, no unit it ran'
+
+
+def precheck(commands, memory):
+    """{memory key: (stdout lines, how)} of the commands {key: command} whose kept outcome stands: from the memory, the
+    rest by one check_profiles.py process (the harness --if-changed check of all of them, open_sol loaded once);
+    memory refreshed and saved. A failed batch leaves its commands to check themselves."""
+    snapshot, files, environment = source_snapshot()
+    standing, batch = {}, {}
+    for key, command in commands.items():
+        remembered = remembered_lines(memory['commands'].get(key), snapshot, files, environment, memory['snapshots'])
+        if remembered is None:
+            batch[key] = command[1:]
+            continue
+        standing[key] = remembered
+        memory['commands'][key]['snapshot'] = snapshot   # it stands for these sources too
+        memory['snapshots'][snapshot] = files
+    if batch:
+        print(f'checking {len(batch)} of {len(commands)} commands in one process (solver code, case specs, '
+              'options) ...', flush=True)
+        commands_path, results_path = OUT / 'check_commands.json', OUT / 'check_results.json'
+        commands_path.write_text(json.dumps(batch, indent=1), encoding='utf-8')
+        started, start = time.time(), time.perf_counter()
+        try:   # a check is a spec build, no run: a hang (>= 10 s per command) leaves them to check themselves
+            completed = subprocess.run([sys.executable, str(HERE / 'check_profiles.py'), str(commands_path),
+                                        str(results_path)], cwd=REPOSITORY, capture_output=True, text=True,
+                                       timeout=max(BATCH_CHECK_MIN_SECONDS, 10.0 * len(batch)))
+            return_code, stderr = completed.returncode, completed.stderr
+        except subprocess.TimeoutExpired as expired:
+            return_code, stderr = None, _text(expired.stderr)
+        seconds = time.perf_counter() - start
+        try:   # never a results file of an earlier batch
+            results = (json.loads(results_path.read_text(encoding='utf-8'))
+                       if results_path.stat().st_mtime >= started else {})
+        except (OSError, ValueError):
+            results = {}
+        if return_code != 0 or not results:
+            print(f'batch check failed ({"timed out" if return_code is None else f"exit {return_code}"}): each '
+                  'command checks itself\n    ' + '\n    '.join(stderr.splitlines()[-8:]), flush=True)
+        broken = [f'{key}: {result["error"]}' for key, result in results.items() if result.get('error')]
+        if broken:   # those commands run on their own and show the error in full
+            print('batch check could not judge:\n    ' + '\n    '.join(broken), flush=True)
+        for key, result in results.items():
+            if result.get('lines'):
+                standing[key] = (result['lines'], None)   # its time is in the one summary line below
+                record = memory_record('\n'.join(result['lines']), 0, snapshot, environment)
+                if record is not None:
+                    memory['commands'][key] = record
+                    memory['snapshots'][snapshot] = files
+        print(f'batch check: {sum(key in standing for key in batch)} of {len(batch)} unchanged ({seconds:.1f} s)',
+              flush=True)
+    save_memory(memory)
+    return standing
+
+
+def memory_record(stdout, return_code, snapshot, environment):
+    """Memory record of a finished command whose outcome stands until a source changes: a kept profile (harness
+    unchanged line), a complete profile (its profile_cache.json filled) or no run taking the solver; else None."""
+    if return_code != 0:
+        return None
+    lines = stdout.splitlines()
+    checks = [line for line in lines if line.startswith(SOLUTION_CHECK)]
+    kept = next((line[len(KEPT_REPORT):].strip() for line in lines if line.startswith(KEPT_REPORT)), None)
+    report = next((line[len('report: '):].strip() for line in reversed(lines) if line.startswith('report: ')), None)
+    if kept is None and report is None:
+        nothing = [line for line in lines if NOTHING_PROFILED in line]
+        return ({'snapshot': snapshot, 'environment': environment, 'lines': nothing, 'cache': None} if nothing
+                else None)
+    report_path = Path(kept or report)
+    cache_path = report_path.parent / 'profile_cache.json'
+    try:
+        cache = json.loads(cache_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if cache.get('units') is None:   # incomplete, failed or --no-cprofile: never kept
+        return None
+    return {'snapshot': snapshot, 'environment': environment, 'cache': str(cache_path), 'cache_time': cache.get('time'),
+            'lines': [f"{UNCHANGED}{cache.get('time')}: remembered by run_all", f'{KEPT_REPORT}{report_path}',
+                      *checks]}
+
+
+def _text(output) -> str:
+    """Captured output of a killed command as text (bytes off Windows, str on it, None when there was none)."""
+    if output is None:
+        return ''
+    return output.decode(errors='replace') if isinstance(output, bytes) else output
+
+
+def timed_out_point(command_seconds, timeout):
+    """Point of a command killed at the timeout: no run wall or memory, drawn at the timeout tick."""
+    return {'run_seconds': None, 'timed_out': True, 'timeout_seconds': timeout, 'command_seconds': command_seconds,
+            'gpu_peak_bytes': None, 'host_peak_bytes': None, 'runs': None, 'when': time.strftime('%Y-%m-%d %H:%M:%S')}
+
+
+def previous_wall_text(point, prefix='') -> str:
+    """' (14.9 s)': the command wall of the previous recorded point of a command (' (timed out)' for a stopped one),
+    '' without one."""
+    if point is None or point.get('command_seconds') is None:
+        return ''
+    return f' ({prefix}timed out)' if point.get('timed_out') else f" ({prefix}{point['command_seconds']:.1f} s)"
+
+
+def run_command(command, timeout, on_line):
+    """(return code, None when killed after `timeout` s; stdout; stderr) of `command` run from the repository;
+    on_line sees each stdout line as it arrives (the harness flushes its lines)."""
+    process = subprocess.Popen(command, cwd=REPOSITORY, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                               errors='replace')
+    stderr_lines = []
+    stderr_reader = threading.Thread(target=lambda: stderr_lines.extend(process.stderr), daemon=True)
+    stderr_reader.start()
+    killed = threading.Event()
+
+    def kill():
+        killed.set()
+        process.kill()
+    timer = threading.Timer(timeout, kill) if timeout else None
+    if timer is not None:
+        timer.start()
+    stdout_lines = []
+    try:
+        for line in process.stdout:
+            stdout_lines.append(line)
+            on_line(line)
+        process.wait()
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if process.poll() is None:   # run_all itself stopped (Ctrl+C): the command goes with it
+            process.kill()
+    stderr_reader.join()
+    return (None if killed.is_set() else process.returncode), ''.join(stdout_lines), ''.join(stderr_lines)
+
+
+def load_points():
+    """{variant: {series: {command: point}}} of POINTS_PATH (empty when there is none yet). Never drops points: an
+    unreadable file raises (restore it from out/history/<run>/profile_points_before.json), the first one-solver layout
+    {series: {command: point}} is read as 'auto @gpu'."""
+    if not POINTS_PATH.is_file():
+        return {}
+    try:
+        points = json.loads(POINTS_PATH.read_text(encoding='utf-8'))
+    except ValueError as error:
+        raise SystemExit(f'{POINTS_PATH} is unreadable ({error}): restore it from a profile_points_before.json in '
+                         f'{OUT / "history"} before running again') from None
+    if any(series in points for series in SERIES):
+        points = {variant_label('auto', 'gpu'): points}
+    loaded = {}
+    for variant, by_series in points.items():   # a renamed variant merges into its new name (the new name's wins)
+        merged = loaded.setdefault(RENAMED_VARIANTS.get(variant, variant), {series: {} for series in SERIES})
+        for series in SERIES:
+            merged[series] = ({**by_series.get(series, {}), **merged[series]} if variant in RENAMED_VARIANTS
+                              else {**merged[series], **by_series.get(series, {})})
+    return loaded
+
+
+def save_points(points):
+    """Write POINTS_PATH through a sibling file and a replace, so a killed run never leaves half a file."""
+    POINTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    partial = POINTS_PATH.with_name(POINTS_PATH.name + '.partial')
+    partial.write_text(json.dumps(points, indent=1), encoding='utf-8')
+    os.replace(partial, POINTS_PATH)
+
+
+def record_point(points, variant, entry, point, first=False):
+    """The command's current point of this variant becomes its previous one, the new point its current one; first:
+    also its first point (a complete profile and no first one yet, or --new-first)."""
+    by_series = points.setdefault(variant, {series: {} for series in SERIES})
+    if entry in by_series['current']:
+        by_series['previous'][entry] = by_series['current'][entry]
+    by_series['current'][entry] = point
+    if first:
+        by_series['first'][entry] = point
+
+
+def auto_picks(points, columns) -> dict:
+    """{column index: variant} to ring, one per column: the groups Automatic picks on the gpu for the column's runs
+    (any variant's current point); one group: its line, several (roles in different groups) or that line not run: the
+    auto @gpu point, which ran that mix, when it used those groups."""
+    auto = variant_label('auto', 'gpu')
+    # one source per column: auto @gpu (Automatic itself), else a variant that left the model's precision alone (the
+    # cudss / cudss_mixed runs' --precision changes what Automatic would pick)
+    def precision_forced(variant):
+        return '--precision' in SOLVERS[variant.partition(' @')[0]]['arguments']
+    sources = [auto] + sorted((variant for variant in points if variant != auto),
+                              key=lambda variant: (precision_forced(variant), _variant_order(variant)))
+    def covers(point, runs, field='run_walls'):   # the point holds `field` for every run of the column
+        return runs is None or all(run in (point.get(field) or {}) for run in runs)
+    picks = {}
+    for index, (entry, runs) in enumerate(columns):
+        candidates = [points[variant]['current'][entry] for variant in sources
+                      if variant in points and entry in points[variant]['current']
+                      and not points[variant]['current'][entry].get('timed_out')]
+        # a split column: first a point with per-run picks for its runs, then one that measured them (older points,
+        # e.g. an auto @gpu point from before per-run fields, hold whole-command back end names only)
+        candidates.sort(key=lambda point: (not covers(point, runs, 'run_automatic'), not covers(point, runs)))
+        point = candidates[0] if candidates else {}
+        per_run = point.get('run_automatic')
+        names = ([name for run in runs for name in per_run[run]] if runs is not None and covers(point, runs,
+                                                                                                'run_automatic')
+                 else point.get('automatic') or ())
+        groups = {LEGACY_GROUPS.get(name, name) for name in names}   # older points hold back end names
+        if len(groups) == 1 and next(iter(groups)) in GROUPS:
+            group = next(iter(groups))
+            # gpu first (BACKENDS order): Automatic's pick on the gpu model, else the group's other line; only a
+            # line that measured the column's runs can carry its ring
+            labels = [variant_label(group, backend) for backend in SOLVERS[group]['runs_on']]
+            target = next((label for label in labels if label in points and entry in points[label]['current']
+                           and covers(points[label]['current'][entry], runs)), None)
+            if target is not None:
+                picks[index] = target
+                continue
+        auto_point = points.get(auto, {}).get('current', {}).get(entry)
+        auto_used = {LEGACY_GROUPS.get(name, name) for name in (auto_point or {}).get('chosen') or ()}
+        if auto_point is not None and groups <= auto_used and covers(auto_point, runs):
+            picks[index] = auto
+    return picks
+
+
+def _variant_order(variant):
+    solver, _, backend = variant.partition(' @')
+    return list(SOLVERS).index(solver), backend
+
+
+def plotted_variants(points) -> dict:
+    """The points of the lines the plot draws: the auto pick and the five groups on each backend they run on; other
+    variants of the points file (older solver flags) stay in it, not drawn."""
+    labels = {variant_label(solver, backend) for solver, variant in SOLVERS.items() for backend in variant['runs_on']}
+    return {variant: by_series for variant, by_series in points.items() if variant in labels}
+
+
+RUN_FIELDS = {'run_seconds': 'run_walls', 'gpu_peak_bytes': 'run_gpu_peaks', 'host_peak_bytes': 'run_host_peaks'}
+
+
+def plot_columns(points, entries) -> list:
+    """[(command, runs)]: runs None for a command every solver measured on the same runs (current points), else one
+    column per set of runs the same solvers measured (sorted run names), so a solver that takes only part of a
+    command's tasks (or failed one) is compared with the others on that part alone. A point without per-run walls
+    (older, timed out) does not split a command."""
+    columns = []
+    for entry in entries:
+        measured_by = {}   # run -> the variants whose current point measured it
+        for variant, by_series in points.items():
+            for run in (by_series['current'].get(entry) or {}).get('run_walls') or ():
+                measured_by.setdefault(run, set()).add(variant)
+        tasks = {}
+        for run, variants in measured_by.items():
+            tasks.setdefault(frozenset(variants), []).append(run)
+        if len(tasks) <= 1:
+            columns.append((entry, None))
+            continue
+        columns += [(entry, tuple(sorted(runs))) for runs in sorted(tasks.values(), key=lambda runs: (-len(runs),
+                                                                                                    sorted(runs)))]
+    return columns
+
+
+COLUMN_RUNS_CHARACTERS = 32   # a split column naming longer runs shows their count (names printed)
+
+
+def column_label(entry, runs) -> str:
+    """Tick label of a plot column: the command, a split column's runs joined by '+' or, when longer than
+    COLUMN_RUNS_CHARACTERS, their count (a long label squashes the panels)."""
+    if runs is None:
+        return entry
+    joined = '+'.join(runs)
+    return f'{entry}: {joined}' if len(joined) <= COLUMN_RUNS_CHARACTERS else f'{entry}: {len(runs)} runs'
+
+
+def plot_points(points, path):
+    """Three panels sharing the column axis (plot_columns: a command, or one of its task sets; run wall s, log; GPU
+    peak MiB; RAM peak MiB): one colour per solver, one marker per backend, one line style per series (first dotted,
+    previous dashed, current solid), a ring on the solver Automatic picks."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    points = plotted_variants(points)
+    measured = {entry for by_series in points.values() for series in SERIES for entry in by_series[series]}
+    entries = [entry for entry in COMMANDS if entry in measured]   # a command dropped from COMMANDS is not drawn
+    if not entries:
+        return None
+    variants = sorted(points, key=_variant_order)
+    columns = plot_columns(points, entries)
+    picks = auto_picks(points, columns)
+    labels = [column_label(entry, runs) for entry, runs in columns]
+    for (entry, runs), label in zip(columns, labels):   # a shortened label: its runs printed once
+        if runs is not None and '+'.join(runs) not in label:
+            print(f'plot column {label!r}: {", ".join(runs)}')
+    unringed = [label for index, label in enumerate(labels) if index not in picks]
+    if unringed:   # mostly an auto @gpu point from before per-run fields: a no-flag run gives the ring
+        print('no Automatic ring (no point holds its per-run pick on a line that measured it; rerun with no solver '
+              f'flag, unless Automatic fails it): {", ".join(unringed)}')
+
+    def color(variant):
+        return SOLVER_COLORS[list(SOLVERS).index(variant.partition(' @')[0]) % len(SOLVER_COLORS)]
+    panels = (('run_seconds', 1.0, 'run wall (s)', True), ('gpu_peak_bytes', 2.0 ** -20, 'GPU peak (MiB)', False),
+              ('host_peak_bytes', 2.0 ** -20, 'RAM peak (MiB)', False))
+    timeouts = [point['timeout_seconds'] for by_series in points.values() for series in SERIES
+                for entry, point in by_series[series].items() if point.get('timed_out') and entry in entries]
+    largest_timeout = max(timeouts, default=None)
+    cap = None if largest_timeout is None else TIMEOUT_CAP * largest_timeout   # height of every timed-out point
+
+    def value(point, key, variant, runs):
+        if point is None or (key == 'gpu_peak_bytes' and variant.endswith(' @cpu')):   # cpu: VRAM not measured
+            return None
+        if point.get('timed_out'):
+            return cap if key == 'run_seconds' else None
+        if runs is None:
+            return point.get(key)
+        per_run = point.get(RUN_FIELDS[key]) or {}   # a split column: only a point that measured all its runs
+        found = [per_run.get(run) for run in runs]
+        if any(item is None for item in found):
+            return None
+        return sum(found) if key == 'run_seconds' else max(found)
+    figure, axes = plt.subplots(len(panels), 1, sharex=True, figsize=(max(11.0, 0.3 * len(columns)), 11.0))
+    positions = list(range(len(columns)))
+    for axis, (key, scale, label, logarithmic) in zip(axes, panels):
+        for variant in variants:
+            marker = BACKEND_MARKERS.get(variant.partition(' @')[2], 'o')
+            for series in SERIES:
+                values = [value(points[variant][series].get(entry), key, variant, runs) for entry, runs in columns]
+                if all(item is None for item in values):
+                    continue
+                heights = [math.nan if item is None else item * scale for item in values]   # gaps break the line
+                axis.plot(positions, heights, color=color(variant), marker=marker, **SERIES_STYLES[series])
+        for position, variant in picks.items():   # one ring per column, on the current point of Automatic's pick
+            entry, runs = columns[position]
+            height = value(points[variant]['current'].get(entry), key, variant, runs)
+            if height is not None:
+                axis.scatter([position], [height * scale], **PICK_RING)
+        axis.set_ylabel(label)
+        if logarithmic:
+            axis.set_yscale('log')
+        if key == 'run_seconds' and cap is not None:   # one tick '>timeout' above the timeout line
+            from matplotlib.ticker import NullFormatter
+            bottom = axis.get_ylim()[0]
+            axis.set_ylim(bottom, cap * 1.3)
+            ticks = [tick for tick in axis.get_yticks() if bottom <= tick < largest_timeout]
+            axis.set_yticks(ticks + [cap])
+            axis.set_yticklabels([f'{tick:g}' for tick in ticks] + [f'>{largest_timeout:g}'])
+            axis.yaxis.set_minor_formatter(NullFormatter())
+            axis.axhline(largest_timeout, color='#c3c2b7', linewidth=0.8)
+        axis.grid(True, color='#e4e3df', linewidth=0.8)
+        axis.set_axisbelow(True)
+        for side in ('top', 'right'):
+            axis.spines[side].set_visible(False)
+    first_when = min((point['when'] for by_series in points.values() for point in by_series['first'].values()),
+                     default='none yet')
+    axes[0].set_title(f'{PLOT_TITLE} (first complete profile {first_when}; GPU peak: pool high-water '
+                      '+ cuDSS factors; RAM peak: the process)', fontsize=10, loc='left')
+    variant_handles = [Line2D([], [], color=color(variant), marker=BACKEND_MARKERS.get(variant.partition(' @')[2], 'o'),
+                              linewidth=2.0, label=variant) for variant in variants]
+    series_handles = [Line2D([], [], color='#52514e', label=series, **SERIES_STYLES[series]) for series in SERIES]
+    series_handles.append(Line2D([], [], linestyle='none', marker='o', markersize=13, markerfacecolor='none',
+                                 markeredgecolor=PICK_RING['edgecolors'], markeredgewidth=PICK_RING['linewidths'],
+                                 label="Automatic's pick on the gpu (current)"))
+    # solver legend beside the top panel, the profile legend beside the bottom one: the long solver list may run past
+    # its panel without covering the other legend
+    solver_legend = axes[0].legend(handles=variant_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0),
+                                   frameon=False, title='solver @backend', fontsize=8, title_fontsize=9)
+    axes[0].add_artist(solver_legend)
+    axes[-1].legend(handles=series_handles, loc='lower left', bbox_to_anchor=(1.0, 0.0), frameon=False,
+                    title='profile', fontsize=8, title_fontsize=9)
+    axes[-1].set_xticks(positions)
+    axes[-1].set_xticklabels(labels, rotation=90, fontsize=8)
+    figure.tight_layout()
+    saved = _save_figure(figure, path)
+    plt.close(figure)
+    return saved
+
+
+def _save_figure(figure, path):
+    """Save to a timestamped sibling, then replace path with it; a path a viewer holds open (Windows: EINVAL /
+    PermissionError) keeps the new plot beside it instead of failing the whole run."""
+    fresh = path.with_name(f'{path.stem}_{time.strftime("%Y%m%d_%H%M%S")}{path.suffix}')
+    try:
+        figure.savefig(fresh, dpi=120, bbox_inches='tight')
+    except OSError as error:
+        print(f'plot not saved ({error}); redraw with --plot-only', flush=True)
+        return None
+    try:
+        os.replace(fresh, path)
+    except OSError as error:
+        print(f'{path} is held open ({error}): the new plot is {fresh}', flush=True)
+        return fresh
+    return path
+
+
+def main(description=None):
+    parser = argparse.ArgumentParser(description=description or __doc__)
+    parser.add_argument('--only', nargs='*', default=None, help='run only commands containing one of these (always '
+                                                                     'profiled, unchanged or not)')
+    for solver, variant in SOLVERS.items():
+        parser.add_argument(f'--{solver.replace("_", "-")}', dest=f'solver_{solver}', action='store_true',
+                            help=f'profile with {" ".join(variant["arguments"]) or "the cases as written"}'
+                                 + f' (default backend {variant["backends"][0]})')
+    parser.add_argument('--all', action='store_true', help=f'every solver group in turn: {", ".join(GROUPS)}')
+    parser.add_argument('--backend', nargs='+', default=None, choices=BACKENDS,
+                        help='backends to run on (default: each flag its own, auto gpu, the host groups cpu); cudss '
+                             '/ cudss_mixed run on the gpu only (skipped for a cpu-only --backend)')
+    parser.add_argument('--timeout', type=float, default=DEFAULT_TIMEOUT,
+                        help=f'seconds per command before it stops with a partial report (default '
+                             f'{DEFAULT_TIMEOUT:g}; 0: no limit; killed {REPORT_GRACE:g} s later); a stopped command '
+                             'that was profiling is plotted at the timeout tick')
+    parser.add_argument('--reset', action='store_true',
+                        help='profile every command, also those whose solver code and case are unchanged since their '
+                             'last complete profile (needed after an edit outside the harness PROFILED_CODE that '
+                             'changes timings: model plumbing, the harness itself)')
+    parser.add_argument('--new-first', action='store_true',
+                        help='this complete profile replaces the first one (commands that fail keep theirs; implies '
+                             '--reset)')
+    parser.add_argument('--plot-only', action='store_true', help='redraw the plot from profile_points.json, run nothing')
+    options = parser.parse_args()
+    points = load_points()
+    if options.plot_only:
+        print(f'plot: {plot_points(points, PLOT_PATH)}')
+        return
+    solvers = (list(GROUPS) if options.all
+               else [solver for solver in SOLVERS if getattr(options, f'solver_{solver}')] or ['auto'])
+    variants = [(solver, backend) for solver in solvers
+                for backend in (SOLVERS[solver]['backends'] if options.backend is None else
+                                [backend for backend in options.backend if backend in SOLVERS[solver]['runs_on']])]
+    skipped = [solver for solver in solvers if solver not in {solver for solver, _ in variants}]
+    if skipped:
+        print(f'--backend {" ".join(options.backend)}: {", ".join(skipped)} run on the gpu only; skipped', flush=True)
+    commands = [entry for entry in COMMANDS if not options.only or any(text in entry for text in options.only)]
+    complete = not options.only
+    # named commands (--only) always profile, as a named selftest run reruns its cases
+    reuse = () if options.reset or options.new_first or options.only else ('--if-changed',)
+    log_path = OUT / 'run_all.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    history_folder = OUT / 'history' / time.strftime('%Y-%m-%d_%H%M%S')
+    history_folder.mkdir(parents=True, exist_ok=True)
+    if POINTS_PATH.is_file():   # the points as they were before this run, to restore from
+        shutil.copyfile(POINTS_PATH, history_folder / 'profile_points_before.json')
+    checks_not_passed = []   # 'command [variant]: group line' of every failed / error solution check
+    memory = load_memory() if reuse else {'commands': {}, 'snapshots': {}}
+    # every command line (script and arguments: entry, backend, solver, time limit and reuse; the memory key from
+    # command[1:]) but the SOLVER_EXCLUDED_COMMANDS
+    time_limit = ('--time-limit', f'{options.timeout:g}') if options.timeout else ()
+    command_lines = {(solver, backend, entry): [sys.executable, *command_line(entry), '--backend', backend,
+                                                 *SOLVERS[solver]['arguments'], *time_limit, *reuse]
+                     for solver, backend in variants for entry in commands
+                     if entry not in SOLVER_EXCLUDED_COMMANDS.get(solver, ())}
+    # the kept outcomes, decided before anything runs: memory first, the rest in one batch process
+    standing = precheck({' '.join(command[1:]): command for command in command_lines.values()}, memory) if reuse else {}
+    with log_path.open('a', encoding='utf-8') as log:
+        log.write(f'\n===== {time.strftime("%Y-%m-%d %H:%M:%S")}: {len(commands)} commands x '
+                  f'{[variant_label(*variant) for variant in variants]}, reports kept in {history_folder} =====\n')
+        for solver, backend in variants:
+            label = variant_label(solver, backend)
+            for entry in commands:
+                if entry in SOLVER_EXCLUDED_COMMANDS.get(solver, ()):
+                    print(f'>>> {entry} [{label}]: excluded (SOLVER_EXCLUDED_COMMANDS)', flush=True)
+                    if [series for series in SERIES if points.get(label, {}).get(series, {}).pop(entry, None)]:
+                        save_points(points)
+                    continue
+                command = command_lines[(solver, backend, entry)]
+                memory_key = ' '.join(command[1:])
+                remembered = standing.get(memory_key)
+                if solver != 'auto' or remembered is not None:   # auto: '>>>' once the harness names its groups
+                    print(f'>>> {entry} [{label}]', flush=True)
+
+                def announce(line, entry=entry, backend=backend, solver=solver):
+                    if solver == 'auto' and line.startswith(PLANNED_GROUPS):
+                        groups = line[len(PLANNED_GROUPS):].strip() or solver
+                        print(f'>>> {entry} [{variant_label(groups, backend)}]', flush=True)
+                started = time.time()
+                start = time.perf_counter()
+                if remembered is not None:   # nothing it depends on changed: not started
+                    lines, checking = remembered
+                    return_code, stdout, stderr = 0, '\n'.join(lines) + '\n', ''
+                else:
+                    if reuse:   # taken before the run: an edit during it counts
+                        snapshot, files, environment = source_snapshot()
+                    return_code, stdout, stderr = run_command(
+                        command, options.timeout + REPORT_GRACE if options.timeout else None, announce)
+                    if reuse:   # saved at once, as the points: a later command that hangs loses nothing
+                        record = memory_record(stdout, return_code, snapshot, environment)
+                        if record is not None or memory['commands'].pop(memory_key, None) is not None:
+                            if record is not None:
+                                memory['commands'][memory_key] = record
+                                memory['snapshots'][snapshot] = files
+                            save_memory(memory)
+                wall = time.perf_counter() - start
+                if remembered is None:
+                    checking = f'{wall:.1f} s check'
+                checked, not_passed = check_summary(stdout)   # the profiled runs against their selftest checks
+                checks_not_passed += [f'{entry} [{label}]: {text}' for text in not_passed]
+                check_tail = ''.join(f'\n    solution check {text}' for text in not_passed)
+                since = next((line[len(UNCHANGED):].partition(': ')[0] for line in stdout.splitlines()
+                              if line.startswith(UNCHANGED)), None) if return_code == 0 else None
+                if since is not None:   # the kept profile stands: its points stay, nothing copied to the history
+                    earlier_point = points.get(label, {}).get('current', {}).get(entry)
+                    kept = next((line[len(KEPT_REPORT):].strip() for line in stdout.splitlines()
+                                 if line.startswith(KEPT_REPORT)), None)
+                    runs_path = None if kept is None else Path(kept).parent / 'runs.json'
+                    used = used_solvers(runs_path, 0.0) if solver == 'auto' and runs_path is not None else None
+                    first = complete and entry not in points.get(label, {}).get('first', {})
+                    if earlier_point is None and runs_path is not None:   # profiled outside run_all: its point now
+                        kept_point, _ = command_point(runs_path, None, 0.0, SOLVERS[solver]['token'])
+                        if kept_point is not None:
+                            record_point(points, label, entry, kept_point, first=first)
+                            save_points(points)
+                    elif first and earlier_point is not None:   # unchanged code and case: it counts for this profile
+                        points[label]['first'][entry] = earlier_point
+                        save_points(points)
+                    kept_wall = ('' if earlier_point is None or earlier_point.get('command_seconds') is None
+                                 else f" (kept {earlier_point['command_seconds']:.1f} s)")
+                    line = (f'{entry} [{variant_label(used, backend) if used else label}]: unchanged since {since}, '
+                            f'not rerun{f" ({checking})" if checking else ""}{kept_wall}{checked}{check_tail}')
+                    print(line, flush=True)
+                    log.write(line + '\n')
+                    log.flush()
+                    continue
+                report = [line for line in stdout.splitlines() if line.startswith('report: ')]
+                partial = return_code is not None and any(line.startswith(PARTIAL_REPORT)
+                                                          for line in stdout.splitlines())
+                point, not_completed, shown = None, [], label   # shown: auto replaced by the solvers it used
+                untaken = return_code == 0 and NOTHING_PROFILED in stdout
+                earlier_point = points.get(label, {}).get('current', {}).get(entry)   # read before it is replaced
+                if return_code is None or partial:
+                    if NOTHING_PROFILED not in stdout:   # it was profiling this solver when stopped
+                        point = timed_out_point(wall, options.timeout)
+                if return_code is not None and report:
+                    report_path = Path(report[-1][len('report: '):].strip())
+                    if report_path.is_file():   # the folder name holds the backend and --compare settings
+                        shutil.copyfile(report_path, history_folder / f'{report_path.parent.name}.txt')
+                    runs_path = report_path.parent / 'runs.json'   # per-part seconds: what profile_delta.py compares
+                    if runs_path.is_file() and runs_path.stat().st_mtime >= started:
+                        shutil.copyfile(runs_path, history_folder / f'{report_path.parent.name}.runs.json')
+                    used = used_solvers(runs_path, started) if solver == 'auto' else None
+                    if used:
+                        shown = variant_label(used, backend)
+                    if return_code == 0 and not partial:
+                        point, not_completed = command_point(report_path.parent / 'runs.json', wall, started,
+                                                             SOLVERS[solver]['token'], SOLVERS[solver]['back_ends'])
+                if point is not None:   # saved at once: a later command that hangs or crashes loses nothing
+                    first = complete and (options.new_first or entry not in points.get(label, {}).get('first', {}))
+                    record_point(points, label, entry, point, first=first)
+                    save_points(points)
+                elif untaken or (not_completed and all(NEVER_FACTORISED in text for text in not_completed)):
+                    # no run takes this solver (found from the specs, before any build) or every run of it measured
+                    # another one: its earlier points of the command go too
+                    if [series for series in SERIES if points.get(label, {}).get(series, {}).pop(entry, None)]:
+                        save_points(points)
+                tail ='' if return_code in (0, None) else '\n    ' + '\n    '.join(stderr.splitlines()[-8:])
+                if return_code is None or partial:
+                    reported = (f'timed out after {options.timeout:g} s'
+                                + previous_wall_text(earlier_point, prefix='previous ')
+                                + (' (plotted at the timeout tick)' if point is not None else '')
+                                + (f', partial {report[-1]}' if partial and report else
+                                   ', killed: no report' if return_code is None else ''))
+                elif untaken:   # the harness found no role taking the value in any spec and built nothing
+                    reported = f'skipped, {wall:.1f} s: no run takes this solver'
+                else:   # pass: the script exited 0 and every run of the solver completed
+                    run_failed = any(NEVER_FACTORISED not in text for text in not_completed)
+                    verdict = (f'FAIL (exit {return_code})' if return_code else
+                               'FAIL (no report)' if not report else
+                               'FAIL (a run did not complete: the plot splits it off as a task this solver did not do)'
+                               if run_failed else 'pass')
+                    reported = (f'{verdict}, {wall:.1f} s{previous_wall_text(earlier_point)}'
+                                + (f', {report[-1]}' if report else ''))
+                failed_runs = f', not counted: {", ".join(not_completed)}' if not_completed else ''
+                line = f'{entry} [{shown}]: {reported}{failed_runs}{checked}{check_tail}{tail}'
+                print(line, flush=True)
+                log.write(line + '\n')
+                log.flush()
+        if checks_not_passed:   # repeated at the end: a profile of a wrong solution must not pass unseen
+            line = (f'SOLUTION CHECK NOT PASSED ({len(checks_not_passed)}; the points are recorded):\n    '
+                    + '\n    '.join(checks_not_passed))
+            print(line, flush=True)
+            log.write(line + '\n')
+    print(f'log: {log_path}\npoints: {POINTS_PATH}\nplot: {plot_points(points, PLOT_PATH)}')
+
+
+if __name__ == '__main__':
+    main()

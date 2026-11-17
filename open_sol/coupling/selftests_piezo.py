@@ -721,7 +721,7 @@ PIEZO_CASES = (
                      'and sign of the bound charge, the electrode-face rule and the re-solve after the last step. Not '
                      f'yet run at {_CHARGE_RICKER:g} Hz / {_CHARGE_DURATION * 1e9:g} ns (heavy flag to re-time: '
                      '42.8 s at 1e7 Hz / 450 ns, ~3.5x fewer steps now).'),
-        specs=_bound_charge_specs, check=_check_bound_charge, heavy=True),
+        specs=_bound_charge_specs, check=_check_bound_charge),
     SelfTestCase(
         name='piezo_stiffened_bar_resonance',
         label='Piezoelectric (two-way): stiffened resonances of a shorted bar',
@@ -744,7 +744,7 @@ PIEZO_CASES = (
                      f'dt_expected - 1| / {_BAR_DT_TOLERANCE:g}; tolerance 1. Pins the stiffening without lag (a '
                      'one-step lag damps or grows the modes), the adjoint stress / charge pair and the stiffened dt. '
                      f'Not yet run at {_BAR_DURATION * 1e6:g} us (at 3 us: 1/Q <= 3e-9, discrete errors <= 6e-8).'),
-        specs=_bar_specs, check=_check_bar_resonances, heavy=True),
+        specs=_bar_specs, check=_check_bar_resonances),
 )
 
 

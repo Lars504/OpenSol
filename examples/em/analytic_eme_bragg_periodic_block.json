@@ -67,7 +67,8 @@
             "sweep": {"parameter": "lambda0",
                       "values": [1.0e-6, 1.05e-6, 1.1e-6, 1.15e-6, 1.2e-6, 1.25e-6, 1.3e-6, 1.35e-6, 1.4e-6, 1.45e-6,
                                  1.55e-6, 1.6e-6, 1.65e-6, 1.7e-6, 1.75e-6, 1.8e-6, 1.85e-6, 1.9e-6, 1.95e-6, 2.0e-6,
-                                 2.05e-6, 2.1e-6, 2.15e-6, 2.2e-6, 1.5e-6]}},
+                                 2.05e-6, 2.1e-6, 2.15e-6, 2.2e-6, 1.5e-6],
+                      "reuse_build": true}},
   "derived_values": [
     {"name": "T_bragg", "expression": "eme_transmission_1", "selection": [], "operation": "mean",
      "reference": "T_ref", "tolerance": 1e-5},

@@ -718,7 +718,8 @@ _PORT_STRIP_ROWS = 3   # bor_ports._STRIP_ROWS
 
 
 def _port_mode_estimate(mesh, context, assemblies, kind):
-    """bor_ports.solve_port_modes per enabled port and assembly (it re-solves per omega and assembly): the three-row
+    """bor_ports.solve_port_modes per enabled port and assembly (it re-solves per omega and assembly; ports on
+    identical lines share one solve, which needs the line materials: counted per port, an upper bound): the three-row
     strip BORAssembly, the host LU of the 2 n_slice companion pencil (n_slice = 3 n_line + 1, n_line <= the r cells)
     and scipy eigs on it (2 max(mode_number + 2, 4) + 8 wanted, scipy's basis, APPLICATIONS_PER_BASIS_GUESS); None
     without ports. Not a role: no counters, the items join 'study'."""

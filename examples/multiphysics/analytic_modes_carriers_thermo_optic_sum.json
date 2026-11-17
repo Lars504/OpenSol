@@ -96,7 +96,8 @@
             "stored_fields": ["modes.sz", "modes.eps_r", "modes.sigma_e", "heat.T", "semiconductor.N",
                               "semiconductor.P"],
             "sweep": {"parameter": "N_net",
-                      "values": [-1e25, -3e24, -1e24, -3e23, -1e23, 1e23, 3e23, 1e24, 3e24, 1e25]}},
+                      "values": [-1e25, -3e24, -1e24, -3e23, -1e23, 1e23, 3e23, 1e24, 3e24, 1e25],
+                      "reuse_build": true}},
   "derived_values": [
     {"name": "n_eff_1", "expression": "n_eff", "selection": [], "operation": "at", "source": "modes.table", "at": 0,
      "reference": "n_eff_ref", "tolerance": 3e-6},

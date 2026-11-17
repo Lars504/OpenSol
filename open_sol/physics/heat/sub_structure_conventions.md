@@ -77,7 +77,8 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   back end (`fem.diffusion.cudss_back_end`), `refactorizes` = k (transient: rho, cp) follows a state or t
   (`_operator_follows_state`), and the active share `_active_fraction` (k > 0, transient rho and cp; all with an
   out-of-plane convection loss); tensor: the DiffusionSystem + `cudss_diffusion_estimate(input_copy=False)`, the
-  thermal_noise line_block chunk a transient phase. heat_fem_cpu_gpu (gpu, cuDSS, 31 % of the window not conducting):
+  thermal_noise line_block chunk a transient phase of ONE shift (chunk_size fits the chunk to MEMORY_FRACTION of the
+  free budget, so booking min(shifts, MAX_CHUNK_SHIFTS) refused models whose run fits). heat_fem_cpu_gpu (gpu, cuDSS, 31 % of the window not conducting):
   triangles carry no material_elements yet, so operator and factor are sized on all dofs (~1.8x the measured reduced
   system): the estimate is high until the TriangleMeshEstimate gets them.
 - Gap (not built): azimuthal_order (an m^2 / r mass term, axis dofs held at m != 0); the thermal_noise study on
@@ -128,6 +129,14 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
   rhs rows); rejected shifts go through `spectral_densities` on a private SparseDirectSolver. Device state is released
   after `solve_thermal_noise`; rejected_shifts = fallbacks in the summary 'solvers' record. Mixed precision rejects very
   ill-conditioned shifts (low f on an insulated region: the static null mode).
+- Time estimate (`definition._noise_time_estimate`): shifts = sum over noise features of collected modes (te_and_tm: 2)
+  x frequencies x axial samples (`_noise_shifts`: gaussian = axial_points, halved at q0 = 0), grouped by operator: the
+  heat window (rhs = the spec materials as contribution parts), or for particle_noise the window cells of the
+  selection's bounding box (`TimeContext.selection_window_cells`, rhs 1). line_block: blocks along the shorter axis,
+  `batch_shifts` = shifts over the chunks of MAX_CHUNK_SHIFTS per channel (a memory-bound chunk is not counted), items
+  in the seconds group of the role's `shift_seconds`; sparse_direct: one host factorisation per shift (backend 'cpu').
+  The role runtime is shared, so each item takes its share of the role counter (`counter_scale`). Not counted:
+  rejected shifts, operator set-up and re-binding between features, the progress events per shift.
 - Heat in the thermal_noise study: `require_anchor=False`, never stepped (not a background physics); T0 is the
   (uniform) fluctuation temperature (a heated background is refused: couplings reading heat are errors).
 - Mode pair: w = omega eps0 / 4 sum_i 2 n_i dndT_i E_inc,i E_partner,i with UNconjugated 1 W centre fields, the partner

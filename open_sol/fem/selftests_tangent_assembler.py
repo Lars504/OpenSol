@@ -312,15 +312,16 @@ _ROW_SUM_SPEED_CALLS = (2, 10)
 
 
 def _row_sum_case(rng, elements):
-    """(FixedPatternCsr block 3 of `elements` random distinct-node elements, its zero data)."""
+    """(FixedPatternCsr block 3 of `elements` random distinct-node elements, its zero data, the element dofs)."""
     from .fixed_pattern import FixedPatternCsr
     dofs = np.array([rng.choice(_ROW_SUM_NODES, _ROW_SUM_LOCAL, replace=False) for _ in range(elements)])
     pattern = FixedPatternCsr(3 * _ROW_SUM_NODES, [dofs], block=3)
-    return pattern, pattern.zeros()
+    return pattern, pattern.zeros(), dofs
 
 
 def _check_row_sum_numba(_):
-    """numba row sum vs bincount of FixedPatternCsr.add on random real / complex P2-sized blocks."""
+    """numba row sum vs bincount of FixedPatternCsr.add, and the numba block scatter vs bincount of add_elements, on
+    random real / complex P2-sized blocks."""
     from ..core.kernels import numba_available
     from ..model.selftest_helpers import NUMBA_MISSING_DETAILS, numba_twin_result
     if not numba_available():
@@ -330,12 +331,17 @@ def _check_row_sum_numba(_):
     rng = np.random.default_rng(20261112)
     width = 3 * _ROW_SUM_LOCAL
     comparisons, timings = {}, {}
-    pattern, data = _row_sum_case(rng, _ROW_SUM_ELEMENTS)
+    pattern, data, dofs = _row_sum_case(rng, _ROW_SUM_ELEMENTS)
 
     def twins(target_pattern):
         return (lambda values, blocks: target_pattern.add(values, 0, blocks, numba=False),
                 lambda values, blocks: target_pattern.add(values, 0, blocks, numba=True))
+
+    def scatter_twins(target_pattern, element_dofs):   # add_elements: slots searched per call
+        return (lambda values, blocks: target_pattern.add_elements(values, element_dofs, blocks, numba=False),
+                lambda values, blocks: target_pattern.add_elements(values, element_dofs, blocks, numba=True))
     numpy_twin, numba_twin = twins(pattern)
+    numpy_scatter, numba_scatter = scatter_twins(pattern, dofs)
     comparisons['real'] = (numpy_twin, numba_twin, (data, rng.standard_normal((_ROW_SUM_ELEMENTS, width, width))))
     complex_blocks = (rng.standard_normal((_ROW_SUM_ELEMENTS, width, width))
                       + 1j * rng.standard_normal((_ROW_SUM_ELEMENTS, width, width)))
@@ -347,13 +353,64 @@ def _check_row_sum_numba(_):
         return run
     comparisons['complex'] = (as_float(numpy_twin), as_float(numba_twin),
                               (data.astype(np.complex128), complex_blocks, np.zeros(2 * data.size)))
-    speed_pattern, speed_data = _row_sum_case(rng, _ROW_SUM_SPEED_ELEMENTS)
-    timings['P2 tangent sum'] = (*twins(speed_pattern),
-                                 (speed_data, rng.standard_normal((_ROW_SUM_SPEED_ELEMENTS, width, width))),
-                                 *_ROW_SUM_SPEED_CALLS)
+    comparisons['scatter real'] = (numpy_scatter, numba_scatter,
+                                   (data.copy(), rng.standard_normal((_ROW_SUM_ELEMENTS, width, width))))
+    comparisons['scatter complex'] = (as_float(numpy_scatter), as_float(numba_scatter),
+                                      (data.astype(np.complex128), complex_blocks, np.zeros(2 * data.size)))
+    speed_pattern, speed_data, speed_dofs = _row_sum_case(rng, _ROW_SUM_SPEED_ELEMENTS)
+    speed_blocks = rng.standard_normal((_ROW_SUM_SPEED_ELEMENTS, width, width))
+    timings['P2 tangent sum'] = (*twins(speed_pattern), (speed_data, speed_blocks), *_ROW_SUM_SPEED_CALLS)
+    timings['P2 block scatter'] = (*scatter_twins(speed_pattern, speed_dofs), (speed_data.copy(), speed_blocks),
+                                   *_ROW_SUM_SPEED_CALLS)
     result = numba_twin_result(comparisons, timings, _NUMBA_TOLERANCE, numba)
     result['details']['speed_block_entries'] = _ROW_SUM_SPEED_ELEMENTS * width * width
     return result
+
+
+# ---- fem_elastic_assembly_numba: the numba pattern build and the numba element kernel of the elastic stiffness
+_PATTERN_NODES = 20_000        # scalar nodes of the random pattern of the timed build
+_PATTERN_ELEMENTS = 60_000     # random distinct-node P2-sized elements of it
+
+
+def _check_elastic_assembly_numba(_):
+    """fixed_pattern.scalar_pattern numba vs COO -> CSR (the box's P1 / P2 dofs and a random P2-sized set: identical
+    patterns), assemble_elastic_stiffness_3d element_kernel True vs False (same pattern, values within tolerance)."""
+    import time
+    from ..core.kernels import numba_available
+    from ..model.selftest_helpers import NUMBA_MISSING_DETAILS
+    from .dofs3d import lagrange_dofs_3d
+    from .elasticity3d import assemble_elastic_stiffness_3d
+    from .fixed_pattern import scalar_pattern
+    if not numba_available():
+        return {'measured': 0.0, 'expected': 0.0, 'error': 0.0, 'tolerance': 0.0,
+                'details': dict(NUMBA_MISSING_DETAILS)}
+    checks, details = SubChecks(), {}
+    rng = np.random.default_rng(20261113)
+    mesh, material, solid, _ = _box_problem(rng)
+
+    def same_pattern(name, n, group_dofs):
+        numpy_pattern = scalar_pattern(n, group_dofs, numba=False)
+        numba_pattern = scalar_pattern(n, group_dofs, numba=True)
+        same = all(np.array_equal(a, b) for a, b in zip(numpy_pattern, numba_pattern))
+        checks.add_bound(f'{name} pattern numba = COO', 0.0 if same else 1.0, 0.0)
+    for order in (1, 2):
+        dofs = lagrange_dofs_3d(mesh, order)
+        same_pattern(f'box P{order}', dofs.n_dofs, [dofs.element_dofs[solid]])
+        kernel = assemble_elastic_stiffness_3d(dofs, material, elements=solid, element_kernel=True)
+        batched = assemble_elastic_stiffness_3d(dofs, material, elements=solid, element_kernel=False)
+        same = np.array_equal(kernel.indptr, batched.indptr) and np.array_equal(kernel.indices, batched.indices)
+        checks.add_bound(f'box P{order} K pattern kernel = batched', 0.0 if same else 1.0, 0.0)
+        checks.add_bound(f'box P{order} K kernel vs batched', _relative_vector(kernel.data, batched.data),
+                         _NUMBA_TOLERANCE)
+    # distinct nodes per element: increasing gaps of 1 - 7 from a random start
+    starts = rng.integers(0, _PATTERN_NODES - 7 * _ROW_SUM_LOCAL, _PATTERN_ELEMENTS)
+    dofs = starts[:, None] + np.cumsum(rng.integers(1, 8, (_PATTERN_ELEMENTS, _ROW_SUM_LOCAL)), axis=1)
+    same_pattern('random P2-sized', _PATTERN_NODES, [dofs[: _PATTERN_ELEMENTS // 2], dofs[_PATTERN_ELEMENTS // 2:]])
+    for numba_flag in (False, True):
+        started = time.perf_counter()
+        scalar_pattern(_PATTERN_NODES, [dofs], numba=numba_flag)
+        details[f'build ms ({"numba" if numba_flag else "COO"})'] = 1e3 * (time.perf_counter() - started)
+    return checks.result(**details)
 
 
 TANGENT_ASSEMBLER_SELFTEST_CASES = (
@@ -411,12 +468,28 @@ TANGENT_ASSEMBLER_SELFTEST_CASES = (
         description='fem.fixed_pattern.FixedPatternCsr.add with numba=True (prange over global rows, each thread adding '
                     'the block rows of its rows at their kept slots) against numba=False (one bincount) on a random '
                     f'block-3 pattern of {_ROW_SUM_ELEMENTS} elements of {_ROW_SUM_LOCAL} distinct nodes out of '
-                    f'{_ROW_SUM_NODES}, real and complex blocks; measured = error = the worst max |numba - bincount| '
+                    f'{_ROW_SUM_NODES}, real and complex blocks, and add_elements with numba=True (the block scatter: '
+                    'a slot search per dof pair, no kept slots) against numba=False (searchsorted + bincount) on the '
+                    'same blocks; measured = error = the worst max |numba - bincount| '
                     f'relative to the peak, tolerance {_NUMBA_TOLERANCE:g}. Details: ms per call of both on '
                     f'{_ROW_SUM_SPEED_ELEMENTS} elements (5.5e6 block entries). Without numba nothing is compared. '
                     'Not yet run.',
         specs=lambda: {},
         check=_check_row_sum_numba,
+        backends=('cpu',),
+        max_wall_time=300.0),
+    SelfTestCase(
+        name='fem_elastic_assembly_numba',
+        label='FEM: numba pattern build and element kernel of the 3D elastic stiffness (CPU)',
+        description='fem.fixed_pattern.scalar_pattern with numba=True (row-parallel build from node -> element lists) '
+                    'against numba=False (COO -> CSR) on the fem3d_tangent_assembler box (P1 / P2 dofs of the solid '
+                    f'elements) and on {_PATTERN_ELEMENTS} random elements of {_ROW_SUM_LOCAL} distinct nodes (random '
+                    f'gaps) out of {_PATTERN_NODES} in two groups: identical patterns; assemble_elastic_stiffness_3d with '
+                    'element_kernel=True (tangent_kernel3d at u = 0, no S0) against element_kernel=False (batched '
+                    f'B^T C B): same pattern, values within {_NUMBA_TOLERANCE:g} relative. error = failed sub-checks. '
+                    'Details: ms of both builds on the random set. Without numba nothing is compared. Not yet run.',
+        specs=lambda: {},
+        check=_check_elastic_assembly_numba,
         backends=('cpu',),
         max_wall_time=300.0),
 )

@@ -105,7 +105,7 @@ BACKEND_SELFTEST_CASES = (
                      'regions, add_bh_curve), the origin row, the interpolated secant nu(|H|), the saturated '
                      'extension and the loop on a table. Without a usable GPU the gpu run is skipped. Not run yet '
                      'with the cpu sheet on SuperLU (was numpy pcg) and the gpu sheet closed-form check.'),
-        specs=_backend_runs, check=_check_backends, heavy=True),
+        specs=_backend_runs, check=_check_backends),
 )
 
 

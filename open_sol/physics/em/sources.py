@@ -460,6 +460,8 @@ class ElectricDipoleSource(PointSource):
 
     def inject_electric(self, fields, t: float):
         scale = DTYPE(self.amplitude * self.temporal(t))
+        if scale == 0:   # exact no-op (a pulse past its envelope)
+            return
         for (component, i, j, _), weight in zip(self.faces, self._face_weight_views):
             _add_scaled_profile(weight, scale, getattr(fields, component)[i:i + 1, j])
 

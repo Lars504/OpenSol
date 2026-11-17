@@ -235,18 +235,16 @@ __device__ __forceinline__ real_t partials_total(const real_t* __restrict__ part
 
 _SOURCES = {
     # y = K u per node (gather over the <= 8 adjacent solid elements, Walsh basis); use_mask zeroes the rows of fixed
-    # dofs.
+    # dofs. elastic_product_rows: the same on n_rows vectors stored as C rows (n_rows, 3 n_nodes), one thread per
+    # (row, node).
     'elastic_product': r"""
-extern "C" __global__
-void elastic_product(
-    const real_t* __restrict__ u, real_t* __restrict__ y,
+__device__ __forceinline__ void elastic_product_node(
+    int node, const real_t* __restrict__ u, real_t* __restrict__ y,
     const real_t* __restrict__ lam, const real_t* __restrict__ mu,
     const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
     const bool* __restrict__ free_dofs, int use_mask, int ex, int ey, int ez)
 {
     const int nyn = ey + 1, nzn = ez + 1;
-    const int node = blockIdx.x * blockDim.x + threadIdx.x;
-    if (node >= (ex + 1) * nyn * nzn) return;
     int i, j, k;
     node_ijk(node, nyn, nzn, &i, &j, &k);
     real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
@@ -256,19 +254,44 @@ void elastic_product(
         y[dof] = (use_mask && !free_dofs[dof]) ? (real_t)0 : acc[a];
     }
 }
+
+extern "C" __global__
+void elastic_product(
+    const real_t* __restrict__ u, real_t* __restrict__ y,
+    const real_t* __restrict__ lam, const real_t* __restrict__ mu,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    const bool* __restrict__ free_dofs, int use_mask, int ex, int ey, int ez)
+{
+    const int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= (ex + 1) * (ey + 1) * (ez + 1)) return;
+    elastic_product_node(node, u, y, lam, mu, wx, wy, wz, free_dofs, use_mask, ex, ey, ez);
+}
+
+extern "C" __global__
+void elastic_product_rows(
+    const real_t* __restrict__ u, real_t* __restrict__ y,
+    const real_t* __restrict__ lam, const real_t* __restrict__ mu,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    const bool* __restrict__ free_dofs, int use_mask, int ex, int ey, int ez, int n_rows)
+{
+    const idx_t n_nodes = (idx_t)(ex + 1) * (ey + 1) * (ez + 1);
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= n_nodes * n_rows) return;
+    const idx_t row_start = (index / n_nodes) * 3 * n_nodes;
+    elastic_product_node((int)(index % n_nodes), u + row_start, y + row_start, lam, mu, wx, wy, wz, free_dofs,
+                         use_mask, ex, ey, ez);
+}
 """,
     # y = M u per node of the consistent trilinear mass (rho N_k N_l per component, diagonal in the Walsh basis; rho <= 0
-    # elements skipped), 0 on the rows of fixed dofs.
+    # elements skipped), 0 on the rows of fixed dofs. elastic_mass_product_rows: on n_rows C rows as
+    # elastic_product_rows.
     'elastic_mass_product': r"""
-extern "C" __global__
-void elastic_mass_product(
-    const real_t* __restrict__ u, real_t* __restrict__ y, const real_t* __restrict__ rho,
+__device__ __forceinline__ void elastic_mass_product_node(
+    int node, const real_t* __restrict__ u, real_t* __restrict__ y, const real_t* __restrict__ rho,
     const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
     const bool* __restrict__ free_dofs, int ex, int ey, int ez)
 {
     const int nyn = ey + 1, nzn = ez + 1;
-    const int node = blockIdx.x * blockDim.x + threadIdx.x;
-    if (node >= (ex + 1) * nyn * nzn) return;
     int i, j, k;
     node_ijk(node, nyn, nzn, &i, &j, &k);
     real_t acc[3] = {(real_t)0, (real_t)0, (real_t)0};
@@ -304,6 +327,31 @@ void elastic_mass_product(
         const int dof = 3 * node + a;
         y[dof] = free_dofs[dof] ? acc[a] : (real_t)0;
     }
+}
+
+extern "C" __global__
+void elastic_mass_product(
+    const real_t* __restrict__ u, real_t* __restrict__ y, const real_t* __restrict__ rho,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    const bool* __restrict__ free_dofs, int ex, int ey, int ez)
+{
+    const int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= (ex + 1) * (ey + 1) * (ez + 1)) return;
+    elastic_mass_product_node(node, u, y, rho, wx, wy, wz, free_dofs, ex, ey, ez);
+}
+
+extern "C" __global__
+void elastic_mass_product_rows(
+    const real_t* __restrict__ u, real_t* __restrict__ y, const real_t* __restrict__ rho,
+    const real_t* __restrict__ wx, const real_t* __restrict__ wy, const real_t* __restrict__ wz,
+    const bool* __restrict__ free_dofs, int ex, int ey, int ez, int n_rows)
+{
+    const idx_t n_nodes = (idx_t)(ex + 1) * (ey + 1) * (ez + 1);
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= n_nodes * n_rows) return;
+    const idx_t row_start = (index / n_nodes) * 3 * n_nodes;
+    elastic_mass_product_node((int)(index % n_nodes), u + row_start, y + row_start, rho, wx, wy, wz, free_dofs,
+                              ex, ey, ez);
 }
 """,
     # Own 3 x 3 block of every node (xx, yy, zz, xy, xz, yz) of the full stiffness.
@@ -369,20 +417,37 @@ void reduce_invert_blocks(real_t* __restrict__ blocks, const bool* __restrict__ 
     }
 }
 """,
-    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz).
+    # z = B_solve^-1 r per node (symmetric inverse blocks xx, yy, zz, xy, xz, yz). block_precondition3_rows: r, z of
+    # n_rows C rows (n_rows, 3 n_nodes), one thread per (row, node), the blocks shared.
     'block_precondition3': r"""
-extern "C" __global__
-void block_precondition3(
-    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
+__device__ __forceinline__ void block_precondition3_node(
+    int node, const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z)
 {
-    const int node = blockIdx.x * blockDim.x + threadIdx.x;
-    if (node >= n_nodes) return;
     const real_t* b = inverse + 6 * (idx_t)node;
     const int dof = 3 * node;
     const real_t r0 = r[dof], r1 = r[dof + 1], r2 = r[dof + 2];
     z[dof] = b[0] * r0 + b[3] * r1 + b[4] * r2;
     z[dof + 1] = b[3] * r0 + b[1] * r1 + b[5] * r2;
     z[dof + 2] = b[4] * r0 + b[5] * r1 + b[2] * r2;
+}
+
+extern "C" __global__
+void block_precondition3(
+    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes)
+{
+    const int node = blockIdx.x * blockDim.x + threadIdx.x;
+    if (node >= n_nodes) return;
+    block_precondition3_node(node, inverse, r, z);
+}
+
+extern "C" __global__
+void block_precondition3_rows(
+    const real_t* __restrict__ inverse, const real_t* __restrict__ r, real_t* __restrict__ z, int n_nodes, int n_rows)
+{
+    const idx_t index = (idx_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= (idx_t)n_nodes * n_rows) return;
+    const idx_t row_start = (index / n_nodes) * 3 * n_nodes;
+    block_precondition3_node((int)(index % n_nodes), inverse, r + row_start, z + row_start);
 }
 """,
     # Fused CG step, first launch (speed plan A3): alpha = rho / (p . q) from the p . q block partials of the last
@@ -1086,6 +1151,25 @@ _TWINS = {name: real_raw_twin(f'mechanics3d.{name}', _PREAMBLE + _SOURCES[name],
           for name, host in _HOST_TWINS.items()}
 
 
+def rows_host(twins, name, vectors):
+    """numpy twin of a block kernel `name`_rows (trailing n_rows): twins[name] on each of the n_rows rows of the
+    (rows, n) arguments at the positions `vectors`, the other arguments shared."""
+    def run(*args):
+        *shared, n_rows = args
+        for row in range(int(n_rows)):
+            twins[name](None, None, tuple(value[row] if position in vectors else value
+                                          for position, value in enumerate(shared)))
+    return run
+
+
+# block twins (one launch for n_rows vectors stored as C rows; solvers.block_eigen): name -> row-array positions
+_ROWS_TWINS = {'elastic_product': (0, 1), 'elastic_mass_product': (0, 1), 'block_precondition3': (1, 2)}
+_TWINS.update({f'{name}_rows': real_raw_twin(f'mechanics3d.{name}_rows', _PREAMBLE + _SOURCES[name], f'{name}_rows',
+                                             rows_host(_TWINS, name, vectors),
+                                             dtype_argument=min(vectors))
+               for name, vectors in _ROWS_TWINS.items()})
+
+
 class BrickKernels:
     """Launchers of the 3D elasticity kernels for one window (element shape, origin in the full grid) and solve dtype;
     every array argument is a C-contiguous array of one backend (cupy: the RawKernel, numpy: its twin; full-grid inputs /
@@ -1135,6 +1219,27 @@ class BrickKernels:
 
     def precondition(self, inverse_blocks, residual, out):
         self._launch('block_precondition3', self._node_blocks, (inverse_blocks, residual, out, self._n_nodes_i32))
+
+    # block launches: u / out (or residual / out) = the same number of C rows (rows, 3 n_nodes) of two C-contiguous
+    # arrays, every row its own vector; one thread per (row, node)
+    def _row_blocks(self, rows) -> tuple:
+        return ((self.n_nodes * int(rows) + _BLOCK - 1) // _BLOCK,)
+
+    def product_rows(self, u, out, lame_lambda, mu, widths, free_dofs, masked: bool):
+        """out[r] = K u[r] of every row (product per row)."""
+        self._launch('elastic_product_rows', self._row_blocks(len(u)),
+                     (u, out, lame_lambda, mu, *widths, free_dofs, _MASK_ON if masked else _MASK_OFF,
+                      *self._element_args, np.int32(len(u))))
+
+    def mass_product_rows(self, u, out, density, widths, free_dofs):
+        """out[r] = M u[r] of every row (mass_product per row)."""
+        self._launch('elastic_mass_product_rows', self._row_blocks(len(u)),
+                     (u, out, density, *widths, free_dofs, *self._element_args, np.int32(len(u))))
+
+    def precondition_rows(self, inverse_blocks, residual, out):
+        """out[r] = B^-1 residual[r] of every row (precondition per row)."""
+        self._launch('block_precondition3_rows', self._row_blocks(len(residual)),
+                     (inverse_blocks, residual, out, self._n_nodes_i32, np.int32(len(residual))))
 
     def update_precondition(self, grid, direction, product, solution, residual, preconditioned, inverse_blocks, rho,
                             pq_partials, rz_partials, update: bool):
@@ -1217,3 +1322,10 @@ class FusedBrickIteration:
         self.kernels.direction_product(self._grid, preconditioned, direction, next_direction, product, lame_lambda, mu,
                                        widths, free_dofs, rho, rho_next, self._rz_partials, self._pq_partials,
                                        restart=False)
+
+    def rescale(self, direction, product, factor):
+        """direction, product = A direction and its p . q partials x factor (pcg mixed residual replacement)."""
+        dtype = self._pq_partials.dtype.type
+        direction *= dtype(factor)
+        product *= dtype(factor)
+        self._pq_partials *= dtype(factor * factor)

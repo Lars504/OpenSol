@@ -8,7 +8,12 @@ functions."""
 # the build.
 # FixedPatternCsr.add on the host: with numba a row-parallel sum (next-gains N2; each thread owns whole rows, so it is
 # race-free and in a fixed order: the per-group (element, local row) pairs sorted by global row once), else bincount.
-# The numba loops (row sum, block expansion, restriction) are core.kernels.host_twin twins of their numpy forms.
+# FixedPatternCsr.add_elements (no kept slot map): with numba a serial scatter that finds each dof pair's scalar slot by
+# a binary search in its row and adds the block x block entries there (no slot arrays, cost ~ the block entries); the
+# numpy form sums one bincount over the chunk's slot window, which spans most of the matrix when a chunk's rows are far
+# apart (P2 numbering: nodes first, edge dofs last; 72k P2 tetrahedra: 9.7 s against ~0.5 s).
+# The numba loops (row sum, block scatter, block expansion, restriction) are core.kernels.host_twin twins of their
+# numpy forms.
 import copy
 import hashlib
 import weakref
@@ -23,7 +28,10 @@ EXPAND_ENTRIES = 4_000_000    # expanded entries per batch of the block expansio
 # pattern entries from which the numba expansion / restriction loops run although numba is not imported yet (its
 # import + cache load ~0.2-0.3 s against ~15 ns per entry saved); below, they run only once numba is loaded anyway
 PATTERN_KERNEL_COLD_ENTRIES = 20_000_000
-KEPT_BASE_PATTERNS = 2        # slot-free patterns kept per owner (kept_pattern; a PML shell splits the solid in two)
+# pattern entries from which add_elements runs the numba scatter although numba is not imported yet: an assembly of
+# such a pattern sums ~2.5 block entries per pattern entry at ~40 ns each by bincount (+ its window per chunk)
+SCATTER_COLD_ENTRIES = 2_000_000
+KEPT_BASE_PATTERNS = 2       # slot-free patterns kept per owner (kept_pattern; a PML shell splits the solid in two)
 KEPT_GROUPED_PATTERNS = 1     # patterns with group slot maps / free restriction kept per owner (the latest)
 _KEPT = weakref.WeakKeyDictionary()   # owner -> ({digest: base pattern}, {key: grouped pattern}), oldest first
 
@@ -93,6 +101,87 @@ def _summed_pattern(n, group_dofs) -> tuple:
     return np.asarray(total.indptr, dtype=np.int64), np.asarray(total.indices, dtype=np.int64)
 
 
+def _summed_host(n, dofs) -> tuple:
+    """numpy form of the row-parallel pattern build (its arguments): _summed_pattern of one element-dof array."""
+    return _summed_pattern(int(n), [dofs])
+
+
+def _summed_numba(numba):
+    """Pattern build of one element-dof array (m, r): node -> element lists by a counting pass, then per row (prange)
+    the sorted distinct dofs of its elements, counted in a first pass and written in a second."""
+    @numba.njit(parallel=True, cache=True)
+    def summed(n, dofs):
+        m, r = dofs.shape
+        starts = np.zeros(n + 1, dtype=np.int64)
+        for element in range(m):
+            for local in range(r):
+                starts[dofs[element, local] + 1] += 1
+        for row in range(n):
+            starts[row + 1] += starts[row]
+        fill = starts[:-1].copy()
+        members = np.empty(m * r, dtype=np.int64)
+        for element in range(m):
+            for local in range(r):
+                node = dofs[element, local]
+                members[fill[node]] = element
+                fill[node] += 1
+        lengths = np.zeros(n, dtype=np.int64)
+        for prange_row in numba.prange(n):
+            row = np.int64(prange_row)
+            candidates = np.empty((starts[row + 1] - starts[row]) * r, dtype=np.int64)
+            count = 0
+            for position in range(starts[row], starts[row + 1]):
+                for local in range(r):
+                    candidates[count] = dofs[members[position], local]
+                    count += 1
+            candidates.sort()
+            distinct = 0
+            for index in range(count):
+                if index == 0 or candidates[index] != candidates[index - 1]:
+                    distinct += 1
+            lengths[row] = distinct
+        indptr = np.zeros(n + 1, dtype=np.int64)
+        for row in range(n):
+            indptr[row + 1] = indptr[row] + lengths[row]
+        indices = np.empty(indptr[n], dtype=np.int64)
+        for prange_row in numba.prange(n):
+            row = np.int64(prange_row)
+            candidates = np.empty((starts[row + 1] - starts[row]) * r, dtype=np.int64)
+            count = 0
+            for position in range(starts[row], starts[row + 1]):
+                for local in range(r):
+                    candidates[count] = dofs[members[position], local]
+                    count += 1
+            candidates.sort()
+            out = indptr[row]
+            for index in range(count):
+                if index == 0 or candidates[index] != candidates[index - 1]:
+                    indices[out] = candidates[index]
+                    out += 1
+        return indptr, indices
+    return summed
+
+
+def scalar_pattern(n, group_dofs, numba=None) -> tuple:
+    """Canonical (indptr, indices) int64 of the n x n sum of square element blocks over element dofs (m, r) per group:
+    the row-parallel numba build (host twin 'fem.pattern_summed'; groups of one width, stacked) once numba is loaded or
+    from PATTERN_KERNEL_COLD_ENTRIES / 4 block entries, else COO -> CSR (_summed_pattern); numba True / False forces."""
+    import sys
+    group_dofs = [np.ascontiguousarray(dofs, dtype=np.int64) for dofs in group_dofs]
+    widths = {dofs.shape[1] for dofs in group_dofs if dofs.size}
+    entries = sum(dofs.shape[0] * dofs.shape[1] ** 2 for dofs in group_dofs)
+    if numba is None:
+        numba = len(widths) == 1 and ('numba' in sys.modules or 4 * entries >= PATTERN_KERNEL_COLD_ENTRIES)
+    if not numba or len(widths) != 1:
+        if numba:
+            raise ValueError('scalar_pattern(numba=True) needs element dofs of one width')
+        return _summed_pattern(n, group_dofs)
+    from ..core.kernels import host_twin
+    twin = host_twin('fem.pattern_summed', _summed_host, _summed_numba)
+    stacked = np.concatenate([dofs for dofs in group_dofs if dofs.size]) if len(group_dofs) > 1 else group_dofs[0]
+    return twin(np.int64(n), stacked)
+
+
 def _expand_host(scalar_indptr, scalar_indices, block, indptr, indices) -> None:
     """Fill the expanded column indices by numpy, in batches of scalar rows of at most EXPAND_ENTRIES entries."""
     n_scalar = len(scalar_indptr) - 1
@@ -122,28 +211,34 @@ def _expand_numba(numba):
     return expand
 
 
-def _restrict_host(indptr, indices, free, renumber, n_free) -> tuple:
-    """(row starts, take of the data slots, renumbered columns), int64, of the free rows / columns of a pattern."""
+def _restrict_host(indptr, indices, free, renumber, n_free, index_like) -> tuple:
+    """(row starts, take of the data slots, renumbered columns) in index_like's dtype (an empty array: int32 below 2^31
+    entries), of the free rows / columns of a pattern."""
+    index = index_like.dtype
     rows_of_slots = np.repeat(np.arange(free.size, dtype=np.int64), np.diff(indptr))
     kept = free[rows_of_slots] & free[indices]
     counts = np.bincount(renumber[rows_of_slots[kept]], minlength=n_free)
-    return np.concatenate([[0], np.cumsum(counts)]), np.flatnonzero(kept), renumber[indices[kept]]
+    reduced_indptr = np.zeros(int(n_free) + 1, dtype=index)
+    np.cumsum(counts, dtype=index, out=reduced_indptr[1:])
+    return reduced_indptr, np.flatnonzero(kept).astype(index), renumber[indices[kept]].astype(index)
 
 
 def _restrict_numba(numba):
+    """Restriction loop writing its three arrays in index_like's dtype (no int64 outputs and casts afterwards)."""
     @numba.njit(cache=True)
-    def restrict(indptr, indices, free, renumber, n_free):
-        counts = np.zeros(n_free + 1, dtype=np.int64)
+    def restrict(indptr, indices, free, renumber, n_free, index_like):
+        reduced_indptr = np.zeros(n_free + 1, dtype=index_like.dtype)
         for row in range(indptr.size - 1):
             if free[row]:
                 kept = 0
                 for slot in range(indptr[row], indptr[row + 1]):
                     if free[indices[slot]]:
                         kept += 1
-                counts[renumber[row] + 1] = kept
-        reduced_indptr = np.cumsum(counts)
-        take = np.empty(reduced_indptr[-1], dtype=np.int64)
-        reduced_indices = np.empty(reduced_indptr[-1], dtype=np.int64)
+                reduced_indptr[renumber[row] + 1] = kept
+        for row in range(n_free):
+            reduced_indptr[row + 1] += reduced_indptr[row]
+        take = np.empty(reduced_indptr[n_free], dtype=index_like.dtype)
+        reduced_indices = np.empty(reduced_indptr[n_free], dtype=index_like.dtype)
         position = 0
         for row in range(indptr.size - 1):
             if free[row]:
@@ -189,6 +284,73 @@ def _sum_into(data, low, span, slots, blocks) -> None:
         _add_bincount(data[low:low + span], slots.ravel(), blocks, 'FixedPatternCsr')
 
 
+def _block_slots(scalar_indptr, keys, n_scalar, block, dofs, check) -> tuple:
+    """(int64 data slots (m, block r, block r) of the element blocks over scalar element dofs (m, r), dof pairs outside
+    the pattern (counted with check only: searchsorted alone gives them a wrong slot)); keys: ascending row * n_scalar +
+    column of the scalar pattern, scalar_indptr its row starts (read for block > 1)."""
+    query = dofs[:, :, None] * n_scalar + dofs[:, None, :]
+    scalar_slots = np.searchsorted(keys, query)
+    missing = 0
+    if check and scalar_slots.size:
+        missing = (scalar_slots.size if not len(keys) else
+                   int(np.count_nonzero(keys[np.minimum(scalar_slots, len(keys) - 1)] != query)))
+    if block == 1:
+        return scalar_slots, missing
+    starts = scalar_indptr[dofs]                                          # (m, r) scalar row starts
+    lengths = scalar_indptr[dofs + 1] - starts
+    component = np.arange(block)
+    # slot(block i + a, block j + b) = block^2 P_i + block a r_i + block (s - P_i) + b, s the scalar slot of (i, j)
+    base = (block * block - block) * starts[:, :, None] + block * scalar_slots   # (m, r, r)
+    slots = (base[:, :, None, :, None] + (block * lengths)[:, :, None, None, None] * component[:, None, None]
+             + component)                                                  # (m, r, block, r, block)
+    return slots.reshape(len(dofs), block * dofs.shape[1], block * dofs.shape[1]), missing
+
+
+def _scatter_host(data, scalar_indptr, keys, n_scalar, block, dofs, blocks) -> int:
+    """numpy form of the block scatter (its arguments): slots by one searchsorted, one bincount over their window;
+    returns the dof pairs outside the pattern (> 0: nothing was added)."""
+    slots, missing = _block_slots(scalar_indptr, keys, int(n_scalar), int(block), dofs, check=True)
+    if not missing and slots.size:
+        low = int(slots.min())
+        _sum_into(data, low, int(slots.max()) - low + 1, slots - low, blocks)
+    return missing
+
+
+def _scatter_numba(numba):
+    """Block scatter data[slot(block i + a, block j + b)] += blocks[e, block p + a, block q + b] over the dof pairs
+    (i, j) = dofs[e, (p, q)], the scalar slot of each pair by a binary search in row i; returns the pairs outside the
+    pattern (skipped; the caller raises)."""
+    @numba.njit(cache=True)
+    def scatter(data, scalar_indptr, keys, n_scalar, block, dofs, blocks):
+        n_local = dofs.shape[1]
+        missing = 0
+        for element in range(dofs.shape[0]):
+            for local_row in range(n_local):
+                row = dofs[element, local_row]
+                first = scalar_indptr[row]
+                length = scalar_indptr[row + 1] - first
+                for local_column in range(n_local):
+                    key = row * n_scalar + dofs[element, local_column]
+                    low, high = first, first + length
+                    while low < high:
+                        middle = (low + high) >> 1
+                        if keys[middle] < key:
+                            low = middle + 1
+                        else:
+                            high = middle
+                    if low >= first + length or keys[low] != key:
+                        missing += 1
+                        continue
+                    base = block * block * first + block * (low - first)
+                    for row_component in range(block):
+                        slot = base + block * row_component * length
+                        for column_component in range(block):
+                            data[slot + column_component] += blocks[element, block * local_row + row_component,
+                                                                    block * local_column + column_component]
+        return missing
+    return scatter
+
+
 def _row_sum_host(data, low, slots, blocks, order, starts) -> None:
     """numpy form of the row sum (its arguments): one bincount over the slots."""
     _sum_into(data, int(low), int(slots.max()) + 1 if slots.size else 0, slots, blocks)
@@ -223,7 +385,7 @@ class FixedPatternCsr:
             raise ValueError(f'FixedPatternCsr: {self.n} rows are not a multiple of the block size {self.block}')
         group_dofs = [np.asarray(dofs, dtype=np.int64) for dofs in group_dofs]
         n_scalar = self.n // self.block
-        scalar_indptr, scalar_indices = _summed_pattern(n_scalar, group_dofs)
+        scalar_indptr, scalar_indices = scalar_pattern(n_scalar, group_dofs)
         # ascending keys row * n_scalar + column of the scalar pattern (row-major, sorted): searched for slots
         keys = np.repeat(np.arange(n_scalar, dtype=np.int64), np.diff(scalar_indptr)) * n_scalar + scalar_indices
         if self.block == 1:
@@ -254,23 +416,10 @@ class FixedPatternCsr:
     def _element_slots(self, dofs, keys, check) -> np.ndarray:
         """Int64 data slots (m, block r, block r) of the element blocks over scalar element dofs (m, r); check: refuse
         dofs pairs outside the pattern (searchsorted alone would give a wrong slot)."""
-        n_scalar = self.n // self.block
-        query = dofs[:, :, None] * n_scalar + dofs[:, None, :]
-        scalar_slots = np.searchsorted(keys, query)
-        if check and scalar_slots.size and (
-                not len(keys) or not np.array_equal(keys[np.minimum(scalar_slots, len(keys) - 1)], query)):
+        slots, missing = _block_slots(self._scalar_indptr, keys, self.n // self.block, self.block, dofs, check)
+        if missing:
             raise ValueError('FixedPatternCsr: element dofs couple entries outside the pattern')
-        if self.block == 1:
-            return scalar_slots
-        block = self.block
-        starts = self._scalar_indptr[dofs]                                    # (m, r) scalar row starts
-        lengths = self._scalar_indptr[dofs + 1] - starts
-        component = np.arange(block)
-        # slot(block i + a, block j + b) = block^2 P_i + block a r_i + block (s - P_i) + b, s the scalar slot of (i, j)
-        base = (block * block - block) * starts[:, :, None] + block * scalar_slots   # (m, r, r)
-        slots = (base[:, :, None, :, None] + (block * lengths)[:, :, None, None, None] * component[:, None, None]
-                 + component)                                                  # (m, r, block, r, block)
-        return slots.reshape(len(dofs), block * dofs.shape[1], block * dofs.shape[1])
+        return slots
 
     def _scatter_maps(self, group_dofs, keys, check) -> list:
         """Per group (first slot, span, slots - first slot (m, block r, block r)) of every block entry."""
@@ -290,11 +439,9 @@ class FixedPatternCsr:
         self.free = free
         renumber = np.cumsum(free) - 1
         self.n_free = int(free.sum())
-        reduced_indptr, self.reduced_take, reduced_indices = _pattern_loop('restrict', self.nnz)(
-            self.indptr, self.indices, free, renumber, np.int64(self.n_free))
-        reduced_index = self._index_dtype if max(self.n_free, self.reduced_take.size) < 2 ** 31 else np.int64
-        self.reduced_indices = reduced_indices.astype(reduced_index)
-        self.reduced_indptr = reduced_indptr.astype(reduced_index)
+        # written in the pattern's index dtype (int32 below 2^31 rows / entries, which bounds the slots too)
+        self.reduced_indptr, self.reduced_take, self.reduced_indices = _pattern_loop('restrict', self.nnz)(
+            self.indptr, self.indices, free, renumber, np.int64(self.n_free), np.empty(0, dtype=self._index_dtype))
 
     def with_groups(self, group_dofs, free=None):
         """Copy sharing this pattern's index arrays with the slot maps of other groups (scalar element dofs (m, r) each,
@@ -366,14 +513,66 @@ class FixedPatternCsr:
             found = self._row_orders[group] = (order, starts)
         return found
 
-    def add_elements(self, data, element_dofs, blocks, check=True) -> None:
+    def add_elements(self, data, element_dofs, blocks, check=True, numba=None) -> None:
         """data += element blocks (m, block r, block r) over scalar element dofs (m, r) within the pattern, their slots
-        searched per call (no kept slot map: one-off assemblies); complex blocks need complex data. check=False only
-        for element dofs (rows of) those the pattern was built from: a pair outside it would give a wrong slot."""
-        slots = self._element_slots(np.asarray(element_dofs, dtype=np.int64), self._slot_keys()[1], check=check)
-        if slots.size:
+        searched per call (no kept slot map: one-off assemblies); complex blocks need complex data. numba None: the
+        scatter kernel (always checked) once numba is loaded or from SCATTER_COLD_ENTRIES pattern entries, else one
+        bincount over the slot window (check=False there only for element dofs (rows of) those the pattern was built
+        from: a pair outside it would give a wrong slot); True / False force one."""
+        import sys
+        element_dofs = np.ascontiguousarray(element_dofs, dtype=np.int64)
+        if not element_dofs.size:
+            return
+        blocks = np.asarray(blocks)
+        scalar_indptr, keys = self._slot_keys()
+        use_kernel = ('numba' in sys.modules or self.nnz >= SCATTER_COLD_ENTRIES) if numba is None else bool(numba)
+        if use_kernel:
+            from ..core.kernels import host_twin
+            scatter = host_twin('fem.block_scatter', _scatter_host, _scatter_numba)
+            if scatter.host_kind != 'numba':
+                if numba:
+                    raise RuntimeError('FixedPatternCsr.add_elements(numba=True): the numba scatter is not available')
+                use_kernel = False
+        if not use_kernel:
+            slots = self._element_slots(element_dofs, keys, check=check)
             low = int(slots.min())
             _sum_into(data, low, int(slots.max()) - low + 1, slots - low, blocks)
+            return
+        if np.iscomplexobj(blocks) and not np.iscomplexobj(data):
+            raise TypeError('FixedPatternCsr: complex blocks into real data would drop their imaginary part')
+        n_scalar = self.n // self.block
+        if int(element_dofs.min()) < 0 or int(element_dofs.max()) >= n_scalar:   # the kernel reads rows unchecked
+            raise ValueError('FixedPatternCsr: element dofs couple entries outside the pattern')
+        missing = scatter(data, scalar_indptr, keys, np.int64(n_scalar), np.int64(self.block), element_dofs,
+                          np.ascontiguousarray(blocks))
+        if missing:
+            raise ValueError('FixedPatternCsr: element dofs couple entries outside the pattern')
+
+    def scalar_csr(self, element_dofs, blocks, check=True):
+        """Host canonical CSR (n / block, n / block) of scalar element blocks (m, r, r) over scalar element dofs (m, r)
+        summed on this pattern's scalar pattern (add_elements of a block-1 view: no COO -> CSR, explicit zeros kept;
+        complex blocks give complex data; check as add_elements)."""
+        blocks = np.asarray(blocks)
+        view = self if self.block == 1 else self._scalar_view()
+        data = np.zeros(view.nnz, dtype=np.complex128 if np.iscomplexobj(blocks) else np.float64)
+        view.add_elements(data, element_dofs, blocks, check=check)
+        matrix = view.full(data, copy_pattern=view is self)
+        matrix.has_canonical_format = True
+        return matrix
+
+    def _scalar_view(self):
+        """Slot-free block-1 FixedPatternCsr of the scalar pattern of a block pattern (shares its scalar row starts and
+        keys; own int32 / int64 indptr and indices, built per call and never kept)."""
+        n_scalar = self.n // self.block
+        view = object.__new__(FixedPatternCsr)
+        view.n, view.block = n_scalar, 1
+        view.nnz = int(self._scalar_indptr[-1])
+        view._index_dtype = np.int32 if max(n_scalar, view.nnz) < 2 ** 31 else np.int64
+        view.indptr = self._scalar_indptr.astype(view._index_dtype)
+        view.indices = (self._keys % n_scalar).astype(view._index_dtype)
+        view._scalar_indptr, view._keys = self._scalar_indptr, self._keys
+        view._scatter, view._row_orders, view.free = [], {}, None
+        return view
 
     def summed(self, group, blocks) -> np.ndarray:
         """Data (nnz,) of the element blocks (m, r, r) of group index `group` alone, float64 or complex128 as blocks
@@ -443,6 +642,64 @@ def kept_pattern(owner, n, element_dofs, block=1, groups=None, free=None):
         found = base.with_groups(groups, free=free)
     _keep(grouped, key, found, KEPT_GROUPED_PATTERNS)
     return found
+
+
+def kept_pattern_if_any(owner, n, element_dofs, block=1):
+    """The slot-free pattern kept_pattern(owner, n, element_dofs, block) holds already, None when it holds none (nothing
+    is built: callers whose terms fit an assembled K's pattern, else their own COO -> CSR)."""
+    try:
+        state = _KEPT.get(owner)
+    except TypeError:
+        return None
+    if state is None:
+        return None
+    return state[0].get(_digest(np.array([n, block], dtype=np.int64), np.asarray(element_dofs, dtype=np.int64)))
+
+
+KEPT_FREE_RESTRICTIONS = 2   # latest free restrictions kept (free_restriction: K_ff, then the pencil's K and M)
+_FREE_RESTRICTIONS = []      # [(weakref indptr, weakref indices, free mask, (indptr, take, indices, n_free))]
+
+
+def _kept_restriction(indptr, indices, free):
+    """The kept restriction of an equal pattern (the very arrays first, else np.array_equal) and mask, else None;
+    entries whose pattern arrays are gone are dropped."""
+    _FREE_RESTRICTIONS[:] = [entry for entry in _FREE_RESTRICTIONS if entry[0]() is not None and entry[1]() is not None]
+    for kept_indptr, kept_indices, kept_free, restriction in reversed(_FREE_RESTRICTIONS):
+        kept_indptr, kept_indices = kept_indptr(), kept_indices()
+        if kept_free.shape != free.shape or kept_indices.size != indices.size or not np.array_equal(kept_free, free):
+            continue
+        if (indptr is kept_indptr and indices is kept_indices) or (np.array_equal(indptr, kept_indptr)
+                                                                   and np.array_equal(indices, kept_indices)):
+            return restriction
+    return None
+
+
+def free_restriction(matrix, free):
+    """Host canonical CSR of the free rows / columns (bool mask (n,)) of a square sparse matrix by the restriction
+    loop (R3: no scipy fancy indexing and re-sort); an equal pattern and mask (K_ff, then K + K_sigma) only take values."""
+    import scipy.sparse
+    matrix = matrix.tocsr()
+    if not matrix.has_canonical_format:
+        matrix = matrix.copy()
+        matrix.sum_duplicates()
+    free = np.asarray(free, dtype=bool).reshape(-1)
+    if matrix.shape != (free.size, free.size):
+        raise ValueError(f'free_restriction: a mask of {free.size} entries for a matrix of shape {matrix.shape}')
+    restriction = _kept_restriction(matrix.indptr, matrix.indices, free)
+    if restriction is None:
+        renumber = np.cumsum(free) - 1
+        n_free = int(free.sum())
+        index = np.int32 if max(n_free, matrix.nnz) < 2 ** 31 else np.int64
+        reduced_indptr, take, reduced_indices = _pattern_loop('restrict', matrix.nnz)(
+            matrix.indptr, matrix.indices, free, renumber, np.int64(n_free), np.empty(0, dtype=index))
+        restriction = (reduced_indptr, take, reduced_indices, n_free)
+        _FREE_RESTRICTIONS.append((weakref.ref(matrix.indptr), weakref.ref(matrix.indices), free.copy(), restriction))
+        del _FREE_RESTRICTIONS[:-KEPT_FREE_RESTRICTIONS]
+    reduced_indptr, take, reduced_indices, n_free = restriction
+    # the kept index arrays are shared (callers never modify a pattern in place: factors match patterns by identity)
+    reduced = scipy.sparse.csr_matrix((matrix.data[take], reduced_indices, reduced_indptr), shape=(n_free, n_free))
+    reduced.has_canonical_format = True   # a canonical pattern's rows / columns kept in order
+    return reduced
 
 
 class DevicePatternCsr:

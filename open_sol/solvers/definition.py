@@ -1,8 +1,9 @@
-"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'explicit_kernels')
-and register(registry). Imports no cupy at module level; get_registry() imports it after model.study, before the
-physics definitions (solver_plan S3.5)."""
+"""SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen',
+'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
+model.study, before the physics definitions (solver_plan S3.5)."""
 from ..model.schema import Issue, Param, solver_backend
-from . import arpack_shift_invert, banded, explicit_kernels, host_direct, line_block, multigrid, pcg, sparse_direct
+from . import (arpack_shift_invert, banded, block_eigen, explicit_kernels, host_direct, line_block, multigrid, pcg,
+               sparse_direct)
 from .roles import SolverType
 
 _TOLERANCE_FLOOR = pcg.FLOAT32_TOLERANCE_FLOOR
@@ -50,10 +51,11 @@ PCG_PARAMS = (
                f'single saves solver memory but CG stalls near a relative residual of {_TOLERANCE_FLOOR:g}: use '
                f'tolerance >= {_TOLERANCE_FLOOR:g} with it (validation warns). mixed (heat, electric_currents, '
                'electrostatics, magnetostatics: Jacobi on the assembled operator): the system is assembled in '
-               'float64, each CG pass runs in float32 (vectors and a float32 copy of the operator values, ~1.5-2x '
-               f'faster per iteration) and reduces the float64 residual by up to {pcg.MIXED_INNER_TOLERANCE:g}, '
-               'then the residual is refreshed in float64 and corrected again, so any tolerance double reaches is '
-               'reached (each pass restarts CG: up to ~1.5x the iterations of double; +~30 B per cell for the float32 copies). '
+               'float64, CG runs in float32 (vectors and a float32 copy of the operator values, ~1.5-2x '
+               'faster per iteration) and each time its residual fell by '
+               f'{pcg.MIXED_REPLACEMENT_RATIO:g} the float64 residual replaces it (the search direction is kept, '
+               'no restart), so any tolerance double reaches is reached in about the iterations of double '
+               '(+~30 B per cell for the float32 copies). '
                'solid_mechanics_3d: float32 copies of the element Lame pair and the block-Jacobi inverses drive a '
                'float32 matrix-free product, which on GPUs with slow float64 arithmetic (most consumer cards) is '
                'several times cheaper than the float64 one (the stiffness product is compute bound). Not for 2D '
@@ -245,7 +247,9 @@ SPARSE_DIRECT_PARAMS = (
                '(thermal noise) and magnetic_fields_ac always factorise on the host. cudss (GPU backend, needs '
                "nvmath-python with cuDSS; only where the physics offers it: heat, electric_currents, electrostatics, "
                'magnetostatics, solid_mechanics and solid_mechanics_3d, em_fdfd_ez / em_fdfd_hz, em_fdfd_bor, '
-               'em_fdfd_conical and drift_diffusion (real LU of every Newton Jacobian) linear solves): NVIDIA\'s sparse '
+               'em_fdfd_conical, drift_diffusion (real LU of every Newton Jacobian) and em_fdfd_nonlinear (opt-in '
+               'only: its channels keep one factor each; picard Kerr / free-carrier channels then refactorise every '
+               'sweep, no recycled GMRES) linear solves): NVIDIA\'s sparse '
                'direct solver '
                'factorises on the GPU in double precision (real symmetric positive definite systems by Cholesky, '
                'LDL^T if that fails; its own nested-dissection ordering) and keeps the factor in GPU memory outside '
@@ -516,6 +520,69 @@ ARPACK_SHIFT_INVERT = SolverType(
     time_estimate=arpack_shift_invert.time_estimate)
 
 
+BLOCK_EIGEN_PARAMS = (
+    Param('tolerance', 'float', block_eigen.DEFAULT_TOLERANCE, label='Residual tolerance', unit='1', min=0.0,
+          help='Relative residual ||K x - lambda M x|| / (|lambda| ||M x||) every wanted eigenpair must reach; 0 = '
+               f'the default {block_eigen.DEFAULT_TOLERANCE:g}. The eigenvalue error is about the square of it (a '
+               'symmetric pencil), so 1e-8 gives frequencies to ~1e-15 unless two modes nearly coincide. Below ~1e-12 '
+               'the float64 rounding floor of stiff 3D operators stops the iteration (a warning).',
+          tip='How accurately the vibration modes are converged.'),
+    Param('guard_vectors', 'int', 0, label='Guard vectors', min=0,
+          help='Extra block rows searched beside the wanted eigenpairs (they speed up the convergence of the highest '
+               f'wanted ones); 0 = max({block_eigen.MIN_GUARD_VECTORS}, {block_eigen.GUARD_FRACTION:g} x wanted). The '
+               'solve holds 9 vectors of the system size per block row.',
+          tip='Extra search vectors; 0 picks a suitable number. More can converge in fewer iterations but use more '
+              'memory.'),
+    Param('max_iterations', 'int', 0, label='Max iterations', min=0,
+          help='Block iterations before the solve stops unconverged (a warning); 0 = the physics\' default (the '
+               "'linear' CG iteration limit of solid_mechanics_3d), else "
+               f'{block_eigen.DEFAULT_MAX_ITERATIONS}.',
+          tip='Upper limit of search iterations; 0 picks a suitable number.'),
+    Param('precision', 'choice', 'mixed', label='Solver precision', choices=block_eigen.PRECISIONS,
+          choice_labels=(('mixed', 'Mixed precision'), ('double', 'Double precision')),
+          help='mixed: float32 blocks, products and preconditioner until the residual reaches '
+               f'{block_eigen.SINGLE_PHASE_TOLERANCE:g} or stalls at the float32 rounding floor, then float64 from '
+               'there to the tolerance (consumer GPUs run float32 products and the dense block products 32-64x '
+               'faster than float64). double: float64 throughout. Both end at the same float64 accuracy.',
+          tip='Number precision of the search.\n\n'
+              '- Mixed precision: fast; the result is finished in double precision.\n'
+              '- Double precision: slower on most graphics cards.'),
+    Param('preconditioner', 'choice', 'multigrid', label='Preconditioner', choices=block_eigen.PRECONDITIONERS,
+          choice_labels=(('multigrid', 'Multigrid'), ('jacobi', 'Block Jacobi')),
+          help="multigrid: one V-cycle of the physics' multigrid per vector and iteration (solid_mechanics_3d: the "
+               "geometric brick multigrid of its 'linear' solver, built for the eigen solve when that solver runs "
+               'block Jacobi; a hierarchy that cannot be built falls back to block Jacobi with a warning): '
+               'iterations nearly independent of the mesh size. jacobi: the 3 x 3 node block Jacobi of the linear '
+               'solver (no hierarchy memory; iterations grow with the longest mesh axis).',
+          tip='How each search step is accelerated.\n\n'
+              '- Multigrid: few iterations on any mesh size.\n'
+              '- Block Jacobi: no extra memory, many more iterations on fine meshes.'),
+)
+
+
+def _create_block_eigen(ctx, request):
+    values = request.values
+    return block_eigen.BlockEigenSolver(tolerance=values['tolerance'], guard_vectors=values['guard_vectors'],
+                                        max_iterations=values['max_iterations'], precision=values['precision'],
+                                        preconditioner=values['preconditioner'],
+                                        label=lambda: f"{request.physics_name} {request.role} solver",
+                                        backend=request.backend)
+
+
+BLOCK_EIGEN = SolverType(
+    'block_eigen', 'Block eigensolver', roles=('eigen',), params=BLOCK_EIGEN_PARAMS, opt_in_roles=('eigen',),
+    description='The lowest eigenpairs of a symmetric pencil without a factorisation: preconditioned block '
+                'iterations (LOBPCG with soft locking) on the physics\' own matrix-free products and preconditioner, '
+                'every vector of the search block in device memory (9 vectors of the system size per block row, '
+                'nothing else of that size), dense block products on cuBLAS / BLAS; mixed precision (a float32 phase '
+                'finished in float64) or double. Opt-in where a physics offers it: solid_mechanics_3d on brick '
+                "(tensor) meshes, eigenfrequency study (the lowest modes; arpack_shift_invert's Lanczos there runs "
+                'one inner PCG solve per step). Both backends.',
+    summary='Finds the lowest vibration modes without a factorisation: fast and memory-light on large 3D meshes.',
+    operators=('spd',), backends=('gpu', 'cpu'), precisions=block_eigen.PRECISIONS, grids=('tensor',),
+    create=_create_block_eigen, memory_estimate=_empty_memory_estimate, time_estimate=block_eigen.time_estimate)
+
+
 EXPLICIT_KERNELS_PARAMS = (
     Param('precision', 'choice', 'single', label='Solver precision', choices=('single', 'double', 'half_storage'),
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision'),
@@ -563,7 +630,7 @@ EXPLICIT_KERNELS = SolverType(
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate)
 
-SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, EXPLICIT_KERNELS)
+SOLVER_TYPES = (PCG, LINE_BLOCK, SPARSE_DIRECT, BANDED, ARPACK_SHIFT_INVERT, BLOCK_EIGEN, EXPLICIT_KERNELS)
 
 
 def _selftest_cases():

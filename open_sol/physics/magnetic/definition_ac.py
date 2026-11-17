@@ -34,11 +34,12 @@ _SHARED_FEATURE_NAMES = ('magnetic_insulation', 'symmetry', 'external_field', 'f
 
 # ---- settings ----
 _FREQUENCY_PARAM = Param(
-    'frequency', 'float', 50.0, label='Frequency', unit='Hz', min=0.0, min_exclusive=True,
+    'frequency', 'float', 50.0, label='Frequency', unit='Hz', min=0.0, min_exclusive=True, follows_parameters=True,
     help='Frequency f of the time-harmonic solve (omega = 2 pi f, phasors exp(+j omega t), peak amplitudes). One '
-         'frequency per build: sweep it with a parameter (each value refactorises). Skin depth delta = sqrt(2 / '
-         '(omega mu0 mu_dc sigma_dc)): copper 9.3 mm at 50 Hz, 0.66 mm at 10 kHz, 66 um at 1 MHz; resolve delta '
-         'with >= 3 cells near conductor surfaces. Quasi-static: displacement current neglected (sizes << the '
+         'frequency per build: sweep it with a parameter (each value refactorises; a reused sweep build, sweep '
+         'reuse_build, follows a value of parameters only on the kept build and reuses the factor plan). Skin '
+         'depth delta = sqrt(2 / (omega mu0 mu_dc sigma_dc)): copper 9.3 mm at 50 Hz, 0.66 mm at 10 kHz, 66 um '
+         'at 1 MHz; resolve delta with >= 3 cells near conductor surfaces. Quasi-static: displacement current neglected (sizes << the '
          'wavelength c / f).',
     tip='Frequency of the alternating currents and fields.\n\n'
         'Higher frequencies push the current to conductor surfaces (skin effect): copper about 9 mm deep at 50 Hz, '
@@ -239,11 +240,16 @@ def _create(ctx, physics_spec, values):
     host_solver = ctx.solvers(physics_spec.name)['linear']
     if ctx.domain.grid_kind == 'triangles':
         from .solver_ac_fem import MagneticACFEMPhysics   # lazy: no solver code at definition import time
-        return MagneticACFEMPhysics(ctx.domain, values['frequency'], axisymmetric=is_axisymmetric(values),
-                                    discretization=values[DISCRETIZATION_SETTING], host_solver=host_solver)
-    from .solver_ac import MagneticACPhysics   # lazy: no solver code at definition import time
-    return MagneticACPhysics(ctx.domain, values['frequency'], axisymmetric=is_axisymmetric(values),
-                             host_solver=host_solver)
+        solver = MagneticACFEMPhysics(ctx.domain, values['frequency'], axisymmetric=is_axisymmetric(values),
+                                      discretization=values[DISCRETIZATION_SETTING], host_solver=host_solver)
+    else:
+        from .solver_ac import MagneticACPhysics   # lazy: no solver code at definition import time
+        solver = MagneticACPhysics(ctx.domain, values['frequency'], axisymmetric=is_axisymmetric(values),
+                                   host_solver=host_solver)
+    # a reused sweep build re-sets the frequency (both grid kinds are RerunSolvers)
+    ctx.follow_parameters(physics_spec.settings, values, ('frequency',), solver.set_frequency, solver,
+                          f"physics '{physics_spec.name}' frequency")
+    return solver
 
 
 _N_FIELDS = len(MAGNETIC_AC_FIELD_INFOS) - 3   # fields.AC_FIELD_NAMES (the infos add mu_dc_xx / _yy, sigma_dc_xx)

@@ -59,11 +59,17 @@ class SolverRole:
     # {(study type name, grid kind): (type name, settings)}: Automatic in that study on that grid kind on every backend,
     # read first (fixed-dt 2D diffusion transients: a kept direct factor)
     study_defaults: dict = field(default_factory=dict)
+    # backends study_defaults apply on (() = every backend)
+    study_default_backends: tuple = ()
+    # unknowns of the role's direct operator per window cell (1: cell-centred diffusion) or, above 1, per mesh node (2D
+    # solid Q1: 2); the host direct size rule and the fit guard count with it (definition_helpers.direct_unknowns)
+    direct_components: int = 1
 
     def automatic(self, backend='gpu', grid='tensor', study=None) -> tuple:
         """(SolverType name, settings dict) Automatic resolves to in the study (None: any) on the backend and grid
         kind."""
-        found = self.study_defaults.get((study, grid)) if study is not None else None
+        by_study = study is not None and (not self.study_default_backends or backend in self.study_default_backends)
+        found = self.study_defaults.get((study, grid)) if by_study else None
         type_name, settings = found if found is not None else self.grid_defaults.get(
             grid, self.backend_defaults.get(backend, (self.default_type, self.default_settings)))
         return type_name, dict(settings)
@@ -83,7 +89,10 @@ class SolverRole:
         _require_keys(owner, 'auto_back_ends keys', tuple(self.auto_back_ends), GRID_KINDS, allow_empty=True)
         _require_keys(owner, 'study_defaults grid kinds', tuple(grid for _, grid in self.study_defaults), GRID_KINDS,
                       allow_empty=True)
-        key = 'back_end' if 'back_end' in self.setting_choices else 'factorization'
+        _require_keys(owner, 'study_default_backends', self.study_default_backends, BACKENDS, allow_empty=True)
+        if not isinstance(self.direct_components, int) or self.direct_components < 1:
+            raise ValueError(f'{owner}: direct_components must be an int >= 1, got {self.direct_components!r}')
+        key ='back_end' if 'back_end' in self.setting_choices else 'factorization'
         offered = self.setting_choices.get(key, ())
         for grid, back_end in self.auto_back_ends.items():
             if back_end == 'auto' or back_end not in offered:

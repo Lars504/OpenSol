@@ -1,9 +1,9 @@
-# dev_tools/memory_profilers — conventions & gotchas
+# tools_profilers/memory_profilers — conventions & gotchas
 
 Root rules: structure_conventions.md.
 
 ## vram_profile.py
-- Run from any folder (gpu, cupy and nvmath imported at module level): `python dev_tools/memory_profilers/vram_profile.py
+- Run from any folder (gpu, cupy and nvmath imported at module level): `python tools_profilers/memory_profilers/vram_profile.py
   <case> [more cases] [--depth 3] [--top 25] [--tag _x]`; each case runs through `api.selftest` (named, so never
   reused from the selftest cache) into `out/runs/` (run directories overwritten per case), the report goes to
   `out/<case><tag>.md` + `.json` (git-ignored; same tag = overwritten) and a verdict table per run to the console.

@@ -254,7 +254,7 @@ EM_MODES_SELFTEST_CASES = (
                     'rejection redoes that eigen-solve on SuperLU). measured = error = the worst item in tolerance '
                     'units, tolerance 1. Not yet confirmed by a run.',
         specs=_line_block_specs,
-        check=_check_line_block, heavy=True),
+        check=_check_line_block),
 )
 
 

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .backend import array_module_of
+
 _LSTSQ_RCOND = 1e-10   # Anderson least squares: singular values below this x the largest are dropped
 
 
@@ -45,6 +47,17 @@ class AndersonHistory:
         self._dx = self._df = self._weighted = None
         self._x_previous = self._f_previous = None
         self._count = self._next = 0
+        self._weighted_scale = None   # the scale the kept weighted df rows were divided by (None: none kept)
+
+    def _same_scale(self, scale):
+        """True when scale is the one the kept weighted rows used: the same array object (never changed in place
+        during a run), or an equal plain number."""
+        kept = self._weighted_scale
+        if kept is None:
+            return False
+        if hasattr(scale, 'shape') or hasattr(kept, 'shape'):
+            return scale is kept
+        return float(scale) == float(kept)
 
     def step(self, state, update, scale, relaxation):
         """Applied change of state for the undamped update f = proposal - state (one host transfer)."""
@@ -66,13 +79,21 @@ class AndersonHistory:
         count = self._count
         if count == 0:
             return step
-        shape = (count,) + state.shape
-        self._weighted[:count] = (self._df[:count].reshape(shape) / scale).reshape(count, -1)
+        if self._same_scale(scale):   # only the newest df row is new (the update slot is rewritten below)
+            newest = (self._next - 1) % self.depth
+            self._weighted[newest] = (self._df[newest].reshape(state.shape) / scale).ravel()
+        else:
+            shape = (count,) + state.shape
+            self._weighted[:count] = (self._df[:count].reshape(shape) / scale).reshape(count, -1)
+            self._weighted_scale = scale
         self._weighted[count] = (update / scale).ravel()
         products = np.asarray((self._weighted[:count + 1] @ self._weighted[:count].T).tolist())
         gamma = np.linalg.lstsq(products[:count], products[count], rcond=_LSTSQ_RCOND)[0]
-        for row, weight in enumerate(gamma.tolist()):
-            step -= weight * (self._dx[row] + relaxation * self._df[row]).reshape(state.shape)
+        # step -= (dX + beta dF)^T gamma as two GEMVs over the ring rows (one small upload, no per-row loop)
+        xp = array_module_of(self._dx)
+        weights = xp.asarray(gamma, dtype=self._dx.dtype)
+        step -= (weights @ self._dx[:count]).reshape(state.shape)
+        step -= (weights @ self._df[:count]).reshape(state.shape) * relaxation
         return step
 
 

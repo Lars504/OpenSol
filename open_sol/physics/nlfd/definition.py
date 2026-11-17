@@ -60,6 +60,12 @@ _FDFD_TYPES = {'ez': EM_FDFD_EZ, 'hz': EM_FDFD_HZ}
 # unknown-feature error; design_region acts on the shared arrays, not per channel)
 _CHANNEL_FEATURE_NAMES = ('point_source', 'line_source', 'gaussian_beam', 'plane_wave_tfsf', 'mode_source',
                           'field_probe', 'flux_monitor', 'mode_monitor', 'far_field', 'adjoint_objective')
+# channel source params that follow a reused sweep build (Param.follows_parameters): the FDFD source re-set in place by
+# its set_amplitude(*values of its amplitude_params) (fdfd_sources / fdfd_ports phasors; point_source: the names of every
+# excitation, the built phasor follows its own)
+_FOLLOWING_SOURCE_PARAMS = {'line_source': ('amplitude', 'phase'), 'gaussian_beam': ('amplitude', 'phase'),
+                            'point_source': ('current', 'magnetic_current', 'dipole_moment', 'phase'),
+                            'plane_wave_tfsf': ('amplitude', 'phase'), 'mode_source': ('power', 'phase')}
 OPTIMIZATION_STUDY = 'optimization'   # = model.study_optimization.STUDY_NAME
 _SLOT_ARRAYS = {**PERMITTIVITY_SLOTS['ez'], **PERMITTIVITY_SLOTS['hz']}
 _LOW_ORDER_INFO_TERMS = 3   # near misses / off-set products listed by validation
@@ -400,6 +406,8 @@ def _channel_feature_params(name):
             merged.append(replace(hz_param, help=f'H_z channels only: {hz_param.help}'))
         else:
             merged.append(_merged_param(ez_param, hz_param))
+    following = _FOLLOWING_SOURCE_PARAMS.get(name, ())
+    merged = [replace(param, follows_parameters=True) if param.name in following else param for param in merged]
     return (_CHANNEL_PARAM,) + tuple(merged)
 
 
@@ -438,6 +446,9 @@ def _make_channel_apply(name):
         fdfd_apply = _fdfd_feature(polarization, name).apply
         target = fdfd_apply(ctx, solver.channel(channel), _channel_feature_spec(feature_spec, polarization, name),
                             _channel_values(values, polarization, name), selection)
+        if name in _FOLLOWING_SOURCE_PARAMS:   # a reused sweep build re-sets the source in place (no rebuild, kept factors)
+            ctx.follow_parameters(feature_spec.params, values, target.amplitude_params, target.set_amplitude, solver,
+                                  f"feature '{feature_spec.name}'")
         return ChannelFeature(channel, target)
     return apply
 
@@ -1370,6 +1381,8 @@ def _time_estimate(settings_values, mesh, context):
         solves, solves_limit = evaluations * n_channels, evaluations_limit * n_channels
     recycled = len(kerr) * max(passes - 1.0, 0.0)   # the first sweep factorises
     recycled_limit = len(kerr) * max(passes_limit - 1.0, 0.0)
+    # SuperLU / MUMPS / PARDISO factors are recycled by GMRES; a cuDSS / QR factor refactorises each Kerr re-solve
+    recycles = resolved_back_end(context.solvers) in (None, 'auto', 'scipy_splu') + HOST_DIRECT_BACK_ENDS
 
     optimization = context.study.type == OPTIMIZATION_STUDY
     outer = optimization_evaluations(context) if optimization else context.static_solves()
@@ -1405,6 +1418,10 @@ def _time_estimate(settings_values, mesh, context):
     if recycled:
         kerr_ops = assembly_ops + (te.elementwise(n_cells, 6, 2, COMPLEX128_BYTES, launches=8),   # Kerr operator update
                                    te.Transfer(nnz * (COMPLEX128_BYTES + 4) + 2.0 * COMPLEX128_BYTES * n_cells))
+    if recycled and not recycles:   # the role's recipe prices the refactorisation and solve of each re-solve
+        items.append(te.TimeItem('Kerr re-solves (reassembly, refactorisation)', 'solve', recycled_count, 'guess',
+                                 kerr_ops, limit=recycled_total_limit))
+    elif recycled:
         items.append(te.TimeItem('Kerr re-solves (reassembly, recycled GMRES)', 'solve', recycled_count, 'guess',
                                  kerr_ops, limit=recycled_total_limit, counter=role_counter + ('recycled_solves',)))
         gmres = (te.HostSolve(n_cells, 2, True),
@@ -1428,9 +1445,11 @@ def _time_estimate(settings_values, mesh, context):
                                      counter=physics_counter + ('adjoint_sweeps',)))
     elif _enabled_features(physics_spec, 'adjoint_objective'):
         not_estimated = ('adjoint sensitivity (computed when eps_sensitivity is read)',)
+    refactorized = 0.0 if recycles else recycled_count   # Kerr re-solves on a factor GMRES cannot recycle
     linear = context.solver_work('linear', unknowns=n_cells, nnz=nnz, value_bytes=COMPLEX128_BYTES,
-                                 solves=channel_solves - recycled_count + adjoint_solves, solves_kind=kind,
-                                 factorizations=outer[0] * n_channels, factorizations_kind=outer[1])
+                                 solves=channel_solves - recycled_count + refactorized + adjoint_solves,
+                                 solves_kind=kind, factorizations=outer[0] * n_channels + refactorized,
+                                 factorizations_kind=outer[1] if not refactorized else 'guess')
     return te.combine((te.TimeEstimate(tuple(items), not_estimated), linear))
 
 

@@ -147,6 +147,8 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
         self.system = None            # body_of_revolution.BORSystem of the assembly at azimuthal_order
         self.last_materials = None    # BORMaterials (host) of the last assembly
         self.assembly_count = 0       # systems built (assembly or order changes): ports re-solve their modes
+        # bor_ports: ((omega, order, assembly_count), {line key: PortModes}): ports on identical lines share one solve
+        self.port_mode_solves = (None, {})
         self.last_linear_text = None   # 'host SuperLU' / 'line-block' of the last driven solve
         self._line_factor = None      # line_block.LineBlockFactorization of system, 'rejected', or None
         # Wavelength batches: the planned omegas in solve order, the _material_serial they were planned at, and the
@@ -330,7 +332,9 @@ class BORPhysics(HostFDFDBase, PhysicsSolver):
             if issue is not None and issue[0] == 'error':
                 raise ValueError(f'the line-block solve was rejected and its host SuperLU fallback is too '
                                  f'large: {issue[1]}')
-        return self._factorize_operator(system.operator, lambda: {'row_scale': bor_row_scale(system)})
+        # C^T W C - k0^2 M: complex symmetric by construction (unconjugated transpose, diagonal W and M)
+        return self._factorize_operator(system.operator, lambda: {'row_scale': bor_row_scale(system)},
+                                        symmetric_by_construction=True)
 
     def _order_factorizations(self, assembly, orders):
         """(order, line-block factorization) per order of `orders`, batched per axis class when the shifted solver is a
@@ -597,8 +601,9 @@ class _OrderFactor:
     def solve_host(self, rhs):
         if self.factorization is None:
             self.factorization = self.physics._factorize_host(self.system)
-        try:
-            solution = self.factorization.solve_host(rhs)
+        try:   # a deferred cuDSS check missed: SuperLU on an 'auto' runtime (HostFDFDBase._checked_solve_host)
+            solution, self.factorization = self.physics._checked_solve_host(
+                self.factorization, rhs, lambda: self.physics._factorize_host(self.system))
         except RejectedLineBlockSolve as exc:
             self.physics.runtime_warnings.append(f'm = {self.system.azimuthal_order}: {exc}; solved by the linear '
                                                  'solver instead')

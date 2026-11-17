@@ -25,27 +25,53 @@ PRECISION_DTYPES = {'single': np.float32, 'double': np.float64, 'mixed': np.floa
 DTYPE_PRECISIONS = {'float32': 'single', 'float64': 'double'}
 SOLVER_DTYPE_NAMES = {'single': 'float32', 'double': 'float64', 'mixed': 'float64'}   # system dtype per precision
 FLOAT32_TOLERANCE_FLOOR = 1e-6         # single-precision CG stalls near this relative residual
-# mixed: each float32 inner CG reduces the float64 residual by this factor at most (well above the float32 floor);
-# an outer step that does not shrink ||r|| by MIXED_STALL_RATIO stops the solve (float32 operator floor reached)
-MIXED_INNER_TOLERANCE = 1e-4
+# mixed (one float32 CG with residual replacement): the float64 residual replaces the float32 recurrence one whenever
+# that fell by this factor since the last replacement ("reliable updates"; the usual single / double choice keeps the
+# recurrence drift far above the float32 floor); a replacement that does not shrink ||r|| by MIXED_STALL_RATIO while
+# the recurrence did stops the solve (float32 operator floor reached)
+MIXED_REPLACEMENT_RATIO = 0.1
 MIXED_STALL_RATIO = 0.5
-MIXED_MAX_REFINEMENTS = 20
+# a replacement keeps the direction only while the true residual norm is within this factor of the recurrence one;
+# beyond it CG restarts from the true residual (the pre-replacement scheme, always safe)
+MIXED_DRIFT_LIMIT = 2.0
 CG_ITERATIONS_PER_AXIS_CELL = 10       # Jacobi-PCG cold start: ~10 iterations per cell along the longest window axis
 AUTO_CG_MAX_ITERATIONS_FLOOR = 5000
 # run-time estimate, a priori (never fitted to run counters: a deviation is a lead on the solver or the model):
 # multigrid PCG reduces the residual by this factor per iteration whatever the mesh (textbook smoothed aggregation
 # V(1,1) on a diffusion operator), so a cold solve takes ln(1 / tol) / ln(1 / factor) iterations; Jacobi PCG takes the
 # CG bound sqrt(kappa) ln(2 / tol) / 2 of the condition number its physics estimates (SolverWork.jacobi_condition),
-# at most SolverWork.distinct_modes (finite termination). Guesses: warm-started solves (time steps, fixed-point and
-# nonlinear re-solves) as a fraction of a cold one, mixed outer refinements per solve
+# at most SolverWork.distinct_modes (finite termination). Guess: warm-started solves (time steps, fixed-point and
+# nonlinear re-solves) as a fraction of a cold one (iterations and mixed residual replacements)
 MULTIGRID_RESIDUAL_REDUCTION = 0.2
 WARM_START_ITERATION_FRACTION = 0.25
-MIXED_REFINEMENTS_GUESS = 3
 # Stop reference of a solve: 'rhs' = ||b|| (steady solves: cheap warm-started re-solves); 'initial_residual' = ||b -
 # A x0|| of the warm start (implicit time steps: x0 = previous step, so the tolerance is relative to the step's change;
 # against ||b|| the capacity term C/dt u_old dominates and CG stops before the step moves: PHY-1)
 STOP_REFERENCES = ('rhs', 'initial_residual')
 ROUNDOFF_FLOOR_EPSILONS = 16           # 'initial_residual' never asks for less than this x eps(dtype) x ||b||
+
+# 'multigrid' on an assembled CSR binds the Jacobi inverse diagonal where a hierarchy cannot pay (counter
+# multigrid_jacobi_binds; residual read every CG_CHECK_INTERVAL): (a) the setup found no strong link on a fine level
+# above multigrid.COARSEST_DENSE_LIMIT (C/dt- or loss-dominated rows: negative couplings < FLOOR_ROW_SUM_RATIO a_ii, so
+# Jacobi kappa <= ~3; the hierarchy would be 8 l1-Jacobi sweeps of the full operator per iteration); (b) fewer than
+# MULTIGRID_MIN_UNKNOWNS unknowns on the solver's first factorize, where one setup costs more than a Jacobi solve: no
+# setup there, the hierarchy is built at the binding's second solve (a fixed operator solved many times) or at the next
+# factorize (sweeps, nonlinear loops: then rebound, a rebind + solve is ~4x below a Jacobi solve). A Jacobi solve still
+# open after CG_ITERATIONS_PER_AXIS_CELL x sqrt(n) iterations (more than a uniform 2D mesh needs: graded cells,
+# contrasts) continues on the hierarchy, and that solver binds no Jacobi again.
+# MULTIGRID_MIN_UNKNOWNS: the Jacobi / multigrid crossover of setup + one solve (solver_profiler heat_2d, gpu, warm:
+# Jacobi 13.1 / multigrid 16.5 ms at 4096 unknowns, 21.1 / 18.0 ms at 1e4: crossover ~6.5e3), kept below it so the
+# outer-graded heated-dot selftest (~5.6e3 cells) keeps testing the hierarchy (<= 3 ms per solve lost up to 6.5e3)
+MULTIGRID_JACOBI_BINDS = True          # False: always the hierarchy
+MULTIGRID_MIN_UNKNOWNS = 4000
+# A same-pattern factorize of a 'multigrid' CSR keeps the earlier hierarchy (lagged setup; counter
+# multigrid_lagged_binds): level 0 takes the new operator and its smoother weights (the V-cycle stays SPD), while the
+# last solve on it took at most LAGGED_SETUP_ITERATION_RATIO x the first solve after its setup. A kept solve stops at
+# that ratio x the fresh count + LAGGED_SETUP_SLACK and continues from its iterate on a fresh setup (a setup costs
+# ~100 V-cycle iterations, so up to 2x a solve's iterations is still cheaper)
+LAGGED_MULTIGRID_SETUP = True          # False: a setup per factorize
+LAGGED_SETUP_ITERATION_RATIO = 2.0
+LAGGED_SETUP_SLACK = 4
 
 # gpu, callers opting in (factorize capture_blocks): each full check block (no host sync inside: alpha / beta / rho are
 # device scalars, every launch a RawKernel or cupy kernel) runs once eagerly per (operator, solution, length), then as
@@ -491,11 +517,11 @@ def workspace_bytes(n_unknowns, precision, jacobi=True, csr_entries=0, fused=Fal
     float32 copy of the csr_entries operator values. No solution vector; a matrix-free mixed caller counts its own
     float32 operator copy (and a fused caller its partial sums)."""
     n_vectors = 3 + int(not jacobi) + int(fused)
-    if precision == 'mixed':
-        return (n_vectors * int(n_unknowns) * 4 + 3 * 4
+    if precision == 'mixed':   # + the two float32 / float64 start-norm slots
+        return (n_vectors * int(n_unknowns) * 4 + 5 * 4 + 2 * 8
                 + (8 + 8 + 4 + 4 * int(jacobi)) * int(n_unknowns) + 4 * int(csr_entries))
     item_bytes = np.dtype(PRECISION_DTYPES[precision]).itemsize
-    return n_vectors * int(n_unknowns) * item_bytes + 3 * item_bytes
+    return n_vectors * int(n_unknowns) * item_bytes + 5 * item_bytes   # 3 CG scalars + 2 start norms
 
 
 def mixed_extra_bytes(n_unknowns, csr_entries) -> int:
@@ -629,7 +655,7 @@ class PCGWorkspace:
     scalars."""
 
     __slots__ = ('n_unknowns', 'dtype', 'residual', 'direction', 'next_direction', 'product', 'preconditioned',
-                 'scalars')
+                 'scalars', 'start_norms', 'start_slots')
 
     def __init__(self, n_unknowns, dtype, matrix_free, jacobi, backend='gpu', fused=False):
         cp = _array_module(backend)
@@ -641,6 +667,8 @@ class PCGWorkspace:
         self.product = cp.zeros(self.n_unknowns, dtype=self.dtype) if matrix_free or backend == 'cpu' else None
         self.preconditioned = None if jacobi else cp.zeros(self.n_unknowns, dtype=self.dtype)
         self.scalars = tuple(cp.zeros((), dtype=self.dtype) for _ in range(3))
+        self.start_norms = cp.zeros(2, dtype=self.dtype)   # ||b||^2, ||r0||^2 of a solve start: one read
+        self.start_slots = (self.start_norms[0, ...], self.start_norms[1, ...])   # 0-d views (reduction outs)
 
     def fits(self, n_unknowns, dtype, matrix_free, jacobi, fused=False) -> bool:
         return (self.n_unknowns == n_unknowns and self.dtype == np.dtype(dtype)
@@ -711,10 +739,10 @@ class _BlockGraphs:
 # --- runtime object -----------------------------------------------------------------------------------------------
 
 class _MixedWorkspace:
-    """Outer vectors of a 'mixed' solve: float64 residual, float32 correction (the inner CG solution) and, matrix-free,
-    the float64 product."""
+    """Float64 side of a 'mixed' solve: the replacing residual, the float32 correction (the CG's own solution, folded
+    into x at each replacement) and, matrix-free, the float64 product."""
 
-    __slots__ = ('n_unknowns', 'residual', 'correction', 'product')
+    __slots__ = ('n_unknowns', 'residual', 'correction', 'product', 'start_norms', 'start_slots')
 
     def __init__(self, n_unknowns, matrix_free, backend='gpu'):
         cp = _array_module(backend)
@@ -722,6 +750,8 @@ class _MixedWorkspace:
         self.residual = cp.zeros(self.n_unknowns, dtype=np.float64)
         self.correction = cp.zeros(self.n_unknowns, dtype=np.float32)
         self.product = cp.zeros(self.n_unknowns, dtype=np.float64) if matrix_free else None
+        self.start_norms = cp.zeros(2, dtype=np.float64)   # ||b||^2, ||r0||^2 of a solve start: one read
+        self.start_slots = (self.start_norms[0, ...], self.start_norms[1, ...])   # 0-d views (reduction outs)
 
     def fits(self, n_unknowns, matrix_free) -> bool:
         return self.n_unknowns == n_unknowns and (self.product is not None or not matrix_free)
@@ -735,8 +765,9 @@ PRECONDITIONERS = ('jacobi', 'multigrid')
 # no host sync and no allocation (CUDA graph capture): start(residual, preconditioned, direction, product, scratch,
 # rho): z = M^-1 r, rho = r . z, direction = z, product = A direction; step(solution, residual, preconditioned,
 # direction, next_direction, product, rho, rho_next): alpha = rho / (p . q of the last product), x += alpha p, r -=
-# alpha q, z = M^-1 r, rho_next = r . z, next_direction = z + (rho_next / rho) direction, product = A next_direction
-FUSED_ITERATION_PROTOCOL = ('start', 'step')
+# alpha q, z = M^-1 r, rho_next = r . z, next_direction = z + (rho_next / rho) direction, product = A next_direction;
+# rescale(direction, product, factor) (mixed residual replacement): direction, product and its p . q partials x factor
+FUSED_ITERATION_PROTOCOL = ('start', 'step', 'rescale')
 
 
 class PCGSolver:
@@ -773,7 +804,20 @@ class PCGSolver:
         self._mixed = None                  # mixed: _MixedWorkspace
         self._fused = None                  # the caller's fused_iteration of the CG loop (mixed: the float32 one)
         self._block_graphs = None           # gpu, capture_blocks: _BlockGraphs
+        self._capture_blocks = False        # the last factorize's capture_blocks (a hierarchy bound at solve)
         self._multigrid_bound = False       # the bound preconditioner is self._multigrid.precondition
+        # 'multigrid' on a CSR (module header): how the binding may change at solve. 'jacobi_small' (no setup yet),
+        # 'jacobi_no_links' (Jacobi on a smoother-only hierarchy), 'lagged' (a kept hierarchy), None
+        self._binding = None
+        self._binding_solves = 0            # solves on the current binding
+        self._jacobi_binds_off = False      # a Jacobi bind missed its budget: always the hierarchy from now on
+        self._fresh_iterations = None       # CG iterations of the first solve after the last fresh setup
+        self._hierarchy_iterations = None   # CG iterations of the last solve on the own hierarchy
+        self._solve_setup_seconds = 0.0     # setups run inside the current solve (factorize seconds, not solve)
+        self._last_stop = None              # (threshold ||r||^2, reference norm) of the current solve's first attempt
+        self.n_jacobi_binds = 0             # 'multigrid' factorizes that bound the Jacobi inverse diagonal
+        self.n_jacobi_fallbacks = 0         # Jacobi solves that missed their budget and continued on the hierarchy
+        self.n_lagged_fallbacks = 0         # kept-hierarchy solves that missed their cap and continued on a fresh one
         self.n_solves = 0
         self.last_iters = 0
         self.total_iters = 0
@@ -800,9 +844,12 @@ class PCGSolver:
         start = time.perf_counter()
         self._fused = None
         self._multigrid_bound = False   # _factorize: the bound preconditioner is self._multigrid's V-cycle
+        self._binding, self._binding_solves = None, 0
         self._factorize(operator, preconditioner, n_unknowns, single_operator, single_preconditioner, fused_iteration,
                         single_fused_iteration)
-        # an own multigrid hierarchy (rebuilt only here, so the new _BlockGraphs never replays its old vectors) joins
+        # an own multigrid hierarchy (rebuilt or rebound only here or by _bind_hierarchy, which make new _BlockGraphs,
+        # so none replays its old vectors) joins
+        self._capture_blocks = bool(capture_blocks)
         participants = (self._multigrid,) if self._multigrid_bound else ()
         self._block_graphs = (_BlockGraphs(participants) if capture_blocks and self.backend == 'gpu' else None)
         self.total_factorize_seconds += time.perf_counter() - start
@@ -839,7 +886,8 @@ class PCGSolver:
             self._operator = _MatrixOperator(operator, self.backend)
         if self.preconditioner == 'multigrid':
             preconditioner = self._multigrid_preconditioner(operator, preconditioner)
-            self._multigrid_bound = self._multigrid is not None and preconditioner == self._multigrid.precondition
+            self._multigrid_bound = (callable(preconditioner) and self._multigrid is not None
+                                     and preconditioner == self._multigrid.precondition)
         if preconditioner is None:
             if self._operator.matrix_free:
                 raise TypeError(f'{self.label()}: a matrix-free operator needs a preconditioner (its inverse diagonal '
@@ -858,9 +906,10 @@ class PCGSolver:
             self._workspace = PCGWorkspace(*shape_key, backend=self.backend, fused=fused)
 
     def _multigrid_preconditioner(self, operator, preconditioner):
-        """precondition callback of the (re)built multigrid hierarchy of a CSR operator; the inverse diagonal a
-        DiffusionSystem passes is not needed. A matrix-free operator brings its own multigrid callback
-        (ElasticSystem3D: multigrid3d), used as given; a block preconditioner of a CSR raises TypeError."""
+        """precondition callback of the multigrid hierarchy of a CSR operator (set up, or kept: lagged setup), or the
+        inverse diagonal (preconditioner; None: from the diagonal) where a hierarchy cannot pay (module header). A
+        matrix-free operator brings its own multigrid callback (ElasticSystem3D: multigrid3d), used as given; a block
+        preconditioner of a CSR raises TypeError."""
         if callable(operator) and callable(preconditioner):
             return preconditioner
         if callable(operator) or callable(preconditioner):
@@ -869,11 +918,37 @@ class PCGSolver:
                             'or a block preconditioner')
         if operator.dtype != self.dtype:
             raise ValueError(f'{self.label()}: operator must be {self.dtype.name}, got {operator.dtype}')
+        jacobi_binds = MULTIGRID_JACOBI_BINDS and not self._jacobi_binds_off
+        if jacobi_binds and self.n_factorizations == 0 and operator.shape[0] < MULTIGRID_MIN_UNKNOWNS:
+            return self._bind_jacobi('jacobi_small', preconditioner)   # a refactorize (sweep, nonlinear) sets up
         if self._multigrid is None:
             from .multigrid import MultigridPreconditioner
             self._multigrid = MultigridPreconditioner(self.backend)
+        if self._lag_keeps(operator):
+            self._multigrid.rebind(operator)
+            self._binding = 'lagged'
+            return self._multigrid.precondition
         self._multigrid.setup(operator)
+        self._fresh_iterations = self._hierarchy_iterations = None
+        if jacobi_binds and self._multigrid.smoother_only:
+            return self._bind_jacobi('jacobi_no_links', preconditioner)
         return self._multigrid.precondition
+
+    def _bind_jacobi(self, binding, inverse_diagonal):
+        """The Jacobi bind of 'multigrid' (binding 'jacobi_small' / 'jacobi_no_links'); the kept hierarchy's lag
+        record is dropped."""
+        self._binding = binding
+        self.n_jacobi_binds += 1
+        self._fresh_iterations = self._hierarchy_iterations = None
+        return inverse_diagonal
+
+    def _lag_keeps(self, operator) -> bool:
+        """Lagged setup: the hierarchy bound last stays for this same-pattern operator while the last solve on it took
+        at most LAGGED_SETUP_ITERATION_RATIO x the first solve after its setup."""
+        return (LAGGED_MULTIGRID_SETUP and self._fresh_iterations is not None
+                and self._hierarchy_iterations is not None
+                and self._hierarchy_iterations <= LAGGED_SETUP_ITERATION_RATIO * self._fresh_iterations
+                and self._multigrid.can_rebind(operator))
 
     def _require_backend_array(self, name, array):
         """TypeError unless `array` lives on this solver's backend (numpy on the cpu, cupy on the gpu)."""
@@ -945,32 +1020,108 @@ class PCGSolver:
                 raise ValueError(f'{self.label()}: {name} must be C-contiguous on the gpu backend')
         start = time.perf_counter()
         self._non_finite = False   # set by the loops when a residual norm is NaN / inf: they stop at once
-        iterate = self._iterate_mixed if self.precision == 'mixed' else self._iterate
+        self._solve_setup_seconds = 0.0
+        iterate = self._iterate_mixed if self.precision == 'mixed' else self._iterate_binding
         converged, iterations, reference_norm = iterate(rhs, solution, reference)
         self._record_convergence(converged, iterations, rhs, solution, reference_norm)
-        self.total_solve_seconds += time.perf_counter() - start
+        self.total_solve_seconds += time.perf_counter() - start - self._solve_setup_seconds
         return converged
 
-    def _iterate(self, rhs, solution, reference):
-        """The CG loop; returns (converged, iterations, reference norm)."""
+    def _iterate_binding(self, rhs, solution, reference):
+        """_iterate on the current binding (module header): 'jacobi_small' sets the hierarchy up at the binding's second
+        solve; a Jacobi bind or a kept hierarchy iterates within its budget, then continues from its iterate on the
+        (fresh) hierarchy. Returns (converged, iterations, reference norm)."""
+        binding = self._binding
+        if binding == 'jacobi_small' and self._binding_solves:   # the operator is solved again: the setup pays
+            self._bind_hierarchy(setup=True)
+            binding = None
+        self._binding_solves += 1
+        budget = self._binding_budget(binding)
+        limited = budget is not None and budget < self.max_iterations
+        converged, iterations, reference_norm = self._iterate(rhs, solution, reference,
+                                                              budget if limited else self.max_iterations)
+        if limited and not converged and not self._non_finite:
+            if binding == 'lagged':
+                self.n_lagged_fallbacks += 1
+            else:   # graded cells / contrasts: Jacobi needs more than a uniform mesh, so keep the hierarchy
+                self.n_jacobi_fallbacks += 1
+                self._jacobi_binds_off = True
+            self._bind_hierarchy(setup=binding != 'jacobi_no_links')
+            converged, more, _ = self._iterate(rhs, solution, reference, self.max_iterations - iterations,
+                                               stop=self._last_stop)
+            iterations += more
+            return converged, iterations, reference_norm   # no lag record: the next factorize sets up afresh
+        if self._multigrid_bound and binding in (None, 'lagged') and iterations > 0:
+            if self._fresh_iterations is None and binding is None:
+                self._fresh_iterations = iterations
+            self._hierarchy_iterations = iterations
+        return converged, iterations, reference_norm
+
+    def _binding_budget(self, binding):
+        """Iteration budget of a solve on the binding (None: max_iterations), a multiple of the check interval: a
+        Jacobi bind CG_ITERATIONS_PER_AXIS_CELL x sqrt(n), a kept hierarchy LAGGED_SETUP_ITERATION_RATIO x the fresh
+        solve's + LAGGED_SETUP_SLACK."""
+        if binding in ('jacobi_small', 'jacobi_no_links'):
+            iterations = CG_ITERATIONS_PER_AXIS_CELL * math.sqrt(self._operator.n_unknowns)
+        elif binding == 'lagged' and self._fresh_iterations is not None:
+            iterations = LAGGED_SETUP_ITERATION_RATIO * self._fresh_iterations + LAGGED_SETUP_SLACK
+        else:
+            return None
+        interval = self._check_interval()
+        return interval * max(1, math.ceil(iterations / interval))
+
+    def _bind_hierarchy(self, setup) -> None:
+        """Inside a solve: bind the own hierarchy of the bound CSR (set up first when `setup`; its time is factorize
+        time) with new block graphs; the workspace gains the preconditioned vector."""
+        started = time.perf_counter()
+        if self._multigrid is None:
+            from .multigrid import MultigridPreconditioner
+            self._multigrid = MultigridPreconditioner(self.backend)
+        if setup:
+            self._multigrid.setup(self._operator.matrix)
+        self._fresh_iterations = self._hierarchy_iterations = None
+        self._binding = None
+        self._preconditioner = _CallbackPreconditioner(self._multigrid.precondition, self.backend)
+        shape_key = (self._operator.n_unknowns, self.dtype, False, False)
+        if not self._workspace.fits(*shape_key):
+            self._workspace = PCGWorkspace(*shape_key, backend=self.backend)
+        self._multigrid_bound = True
+        if self._capture_blocks and self.backend == 'gpu':
+            self._block_graphs = _BlockGraphs((self._multigrid,))
+        elapsed = time.perf_counter() - started
+        self.total_factorize_seconds += elapsed
+        self._solve_setup_seconds += elapsed
+
+    def _check_interval(self) -> int:
+        """CG iterations between residual reads of the bound preconditioner: the 'multigrid' interval only for a
+        callback bound under that setting (a Jacobi bind of 'multigrid' reads like Jacobi)."""
+        setting = 'jacobi' if self._preconditioner.jacobi else self.preconditioner
+        return check_interval(setting, self.backend)
+
+    def _iterate(self, rhs, solution, reference, max_iterations, stop=None):
+        """The CG loop of at most max_iterations; stop = (threshold ||r||^2, reference norm) of an earlier attempt of
+        this solve, else from ||b|| / ||r0|| (both read at once); returns (converged, iterations, reference norm)."""
         cp = _array_module(self.backend)
         vector_dot = _kernels(self.backend)['vector_dot']
         operator, workspace = self._operator, self._workspace
         residual = workspace.residual
-        rhs_squared = float(vector_dot(rhs, rhs))
+        vector_dot(rhs, rhs, out=workspace.start_slots[0])
+        cp.subtract(rhs, operator.product(solution, workspace.product), out=residual)
+        vector_dot(residual, residual, out=workspace.start_slots[1])
+        rhs_squared, initial_residual_squared = workspace.start_norms.tolist()   # one host read
         if rhs_squared == 0.0:   # b = 0: the solution of the nonsingular system is 0
             solution.fill(0)
             return True, 0, 0.0
-        cp.subtract(rhs, operator.product(solution, workspace.product), out=residual)
-        initial_residual_squared = float(vector_dot(residual, residual))
-        threshold_squared, reference_norm = stop_threshold_squared(
-            self.tolerance, rhs_squared, initial_residual_squared, reference, self.dtype)
+        if stop is None:
+            stop = stop_threshold_squared(self.tolerance, rhs_squared, initial_residual_squared, reference, self.dtype)
+        self._last_stop = stop
+        threshold_squared, reference_norm = stop
         converged = initial_residual_squared <= threshold_squared
         iterations = 0
         if not math.isfinite(initial_residual_squared):   # NaN / inf rhs, material or start: nothing to iterate
             self._non_finite = True
         elif not converged:
-            converged, iterations = self._cg_loop(operator, solution, threshold_squared, self.max_iterations)
+            converged, iterations = self._cg_loop(operator, solution, threshold_squared, max_iterations)
         return converged, iterations, reference_norm
 
     def _cg_loop(self, operator, solution, threshold_squared, max_iterations):
@@ -978,26 +1129,13 @@ class PCGSolver:
         Blocks of an even length start with the scalars (and fused directions) in their initial order, so a captured
         block replays from any block start."""
         vector_dot = _kernels(self.backend)['vector_dot']
-        workspace = self._workspace
-        residual, scalars = workspace.residual, workspace.scalars
-        fused = self._fused
-        if fused is not None:   # z0, rho = r0 . z0, p0 = z0, q0 = A p0 (+ its p . q partials)
-            fused.start(residual, workspace.preconditioned, workspace.direction, workspace.product, scalars[1],
-                        scalars[0])
-        else:
-            self._preconditioner.start(residual, scalars[0], workspace.direction, workspace)
-        interval = check_interval(self.preconditioner, self.backend)
-        graphs = self._block_graphs
+        residual = self._workspace.residual
+        self._cg_start()
+        interval = self._check_interval()
         iterations, converged, parity = 0, False, 0
         while not converged and iterations < max_iterations:
             n_block = min(interval, max_iterations - iterations)
-            run_block = self._fused_block if fused is not None else self._plain_block
-            if graphs is not None and n_block % 2 == 0 and parity == 0:
-                graphs.run((id(operator), id(fused), solution.data.ptr, solution.size, n_block),
-                           lambda: run_block(operator, solution, n_block, 0))
-            else:
-                run_block(operator, solution, n_block, parity)
-            parity = (parity + n_block) % 2
+            parity = self._cg_block(operator, solution, n_block, parity)
             iterations += n_block
             residual_squared = float(vector_dot(residual, residual))
             if not math.isfinite(residual_squared):   # a collapsed preconditioner / NaN operator: stop now
@@ -1005,6 +1143,26 @@ class PCGSolver:
                 break
             converged = residual_squared <= threshold_squared
         return converged, iterations
+
+    def _cg_start(self):
+        """From the workspace residual: z0, rho = r0 . z0, p0 = z0 (fused: and q0 = A p0 with its p . q partials)."""
+        workspace = self._workspace
+        if self._fused is not None:
+            self._fused.start(workspace.residual, workspace.preconditioned, workspace.direction, workspace.product,
+                              workspace.scalars[1], workspace.scalars[0])
+        else:
+            self._preconditioner.start(workspace.residual, workspace.scalars[0], workspace.direction, workspace)
+
+    def _cg_block(self, operator, solution, n_block, parity) -> int:
+        """n_block CG iterations from parity (a full even block from parity 0 replays its CUDA graph); the new parity."""
+        fused, graphs = self._fused, self._block_graphs
+        run_block = self._fused_block if fused is not None else self._plain_block
+        if graphs is not None and n_block % 2 == 0 and parity == 0:
+            graphs.run((id(operator), id(fused), solution.data.ptr, solution.size, n_block),
+                       lambda: run_block(operator, solution, n_block, 0))
+        else:
+            run_block(operator, solution, n_block, parity)
+        return (parity + n_block) % 2
 
     def _plain_block(self, operator, solution, n_block, parity):
         """n_block CG iterations: product, p . q, then the preconditioner's update (solution / residual, rho_next = r .
@@ -1032,49 +1190,100 @@ class PCGSolver:
                              directions[1 - current], workspace.product, scalars[current], scalars[1 - current])
 
     def _iterate_mixed(self, rhs, solution, reference):
-        """Mixed: float64 residual r = b - A x, float32 PCG on A d = r / ||r|| (unit scale: float32 dots of small
-        residuals cannot underflow; to MIXED_INNER_TOLERANCE, or less when that suffices), x += ||r|| d; repeated until
-        the float64 residual meets the stop reference, the iteration limit, or an outer step that no longer shrinks
-        ||r|| by MIXED_STALL_RATIO."""
-        cp = _array_module(self.backend)
+        """Mixed: one float32 PCG on A d = r / s (r = b - A x in float64, s = ||r||: unit scale, so float32 dots of small
+        residuals cannot underflow) with residual replacement: when the recurrence residual fell by
+        MIXED_REPLACEMENT_RATIO (or met the stop), x += s d, r is recomputed in float64 and replaces it (direction kept
+        within MIXED_DRIFT_LIMIT, else a restart). Stops at the float64 reference, the iteration limit, or a stall."""
         vector_dot = _kernels(self.backend)['vector_dot']
         mixed, inner = self._mixed, self._workspace
-        rhs_squared = float(vector_dot(rhs, rhs))
+        vector_dot(rhs, rhs, out=mixed.start_slots[0])
+        mixed.correction.fill(0)
+        self._fold_correction(rhs, solution, 1.0, out=mixed.start_slots[1])
+        rhs_squared, residual_squared = mixed.start_norms.tolist()   # one host read
         if rhs_squared == 0.0:
             solution.fill(0)
             return True, 0, 0.0
-        cp.subtract(rhs, self._operator.product(solution, mixed.product), out=mixed.residual)
-        residual_squared = float(vector_dot(mixed.residual, mixed.residual))
         threshold_squared, reference_norm = stop_threshold_squared(
             self.tolerance, rhs_squared, residual_squared, reference, self.dtype)
-        iterations, refinements = 0, 0
         converged = residual_squared <= threshold_squared
         if not math.isfinite(residual_squared):
             self._non_finite = True
-        while (not converged and not self._non_finite and iterations < self.max_iterations
-               and refinements < MIXED_MAX_REFINEMENTS):
-            inner_tolerance = max(MIXED_INNER_TOLERANCE, 0.5 * math.sqrt(threshold_squared / residual_squared))
-            residual_norm = math.sqrt(residual_squared)
-            cp.multiply(mixed.residual, 1.0 / residual_norm, out=inner.residual)   # float64 -> float32, unit norm
-            mixed.correction.fill(0)
+        if converged or self._non_finite:
+            return converged, 0, reference_norm
+        scale = math.sqrt(residual_squared)
+        _array_module(self.backend).multiply(mixed.residual, 1.0 / scale, out=inner.residual)   # float32, unit norm
+        if not float(vector_dot(inner.residual, inner.residual)) > 0.0:   # nothing representable to correct
+            return False, 0, reference_norm
+        self._cg_start()
+        interval = self._check_interval()
+        iterations, refinements, parity, pending = 0, 0, 0, False
+        replaced_squared = 1.0   # unit-scale recurrence residual at the last replacement
+        while iterations < self.max_iterations:
+            n_block = min(interval, self.max_iterations - iterations)
+            parity = self._cg_block(self._inner_operator, mixed.correction, n_block, parity)
+            iterations += n_block
+            pending = True
             inner_squared = float(vector_dot(inner.residual, inner.residual))
-            if not inner_squared > 0.0:   # non-finite residual: nothing to correct
+            if not math.isfinite(inner_squared):
+                self._non_finite = True
                 break
-            _, inner_iterations = self._cg_loop(self._inner_operator, mixed.correction,
-                                                inner_tolerance ** 2 * inner_squared, self.max_iterations - iterations)
-            iterations += inner_iterations
+            met = inner_squared <= threshold_squared / residual_squared
+            if not met and inner_squared > MIXED_REPLACEMENT_RATIO ** 2 * replaced_squared:
+                continue
+            updated_squared = self._fold_correction(rhs, solution, scale)
+            refinements, pending = refinements + 1, False
+            if not math.isfinite(updated_squared):
+                self._non_finite = True
+                break
+            converged = updated_squared <= threshold_squared
+            # float32 floor: the true residual no longer follows a recurrence that kept shrinking
+            stalled = (not updated_squared < MIXED_STALL_RATIO ** 2 * residual_squared
+                       and inner_squared <= MIXED_STALL_RATIO ** 2 * replaced_squared)
+            if converged or stalled:
+                break
+            new_scale = math.sqrt(updated_squared)
+            # true / recurrence residual norm in the old unit: a drifted recurrence (float32 operator error on a stiff
+            # or nearly singular system) leaves the direction meaningless, so CG restarts from the true residual
+            recurrence_norm = math.sqrt(inner_squared)
+            drift = new_scale / (scale * recurrence_norm) if recurrence_norm > 0.0 else math.inf
+            keep_direction = 1.0 / MIXED_DRIFT_LIMIT <= drift <= MIXED_DRIFT_LIMIT
+            parity = self._replace_inner_residual(new_scale, scale / new_scale, parity, keep_direction)
+            scale, residual_squared, replaced_squared = new_scale, updated_squared, 1.0
+        if pending:   # the iteration limit (or a non-finite read) left a correction outside x
+            residual_squared = self._fold_correction(rhs, solution, scale)
             refinements += 1
-            mixed.correction *= np.float32(residual_norm)   # back to the units of the residual (float32 range)
-            cp.add(solution, mixed.correction, out=solution)
-            cp.subtract(rhs, self._operator.product(solution, mixed.product), out=mixed.residual)
-            updated_squared = float(vector_dot(mixed.residual, mixed.residual))
-            stalled = not updated_squared < MIXED_STALL_RATIO ** 2 * residual_squared
-            residual_squared = updated_squared
             converged = residual_squared <= threshold_squared
-            if stalled:
-                break
         self.total_refinements += refinements
         return converged, iterations, reference_norm
+
+    def _fold_correction(self, rhs, solution, scale, out=None):
+        """x += scale d (the float32 correction, then zeroed), r = b - A x in float64; returns ||r||^2 (out: written
+        into that 0-d float64 array instead, no read, returns None)."""
+        cp = _array_module(self.backend)
+        mixed = self._mixed
+        mixed.correction *= np.float32(scale)   # into the units of the residual (float32 range)
+        cp.add(solution, mixed.correction, out=solution)
+        mixed.correction.fill(0)
+        cp.subtract(rhs, self._operator.product(solution, mixed.product), out=mixed.residual)
+        squared = _kernels(self.backend)['vector_dot'](mixed.residual, mixed.residual, out=out)
+        return None if out is not None else float(squared)
+
+    def _replace_inner_residual(self, scale, factor, parity, keep_direction) -> int:
+        """Float32 residual := r / scale. keep_direction: the recurrence state (current direction, rho; fused: its
+        product and p . q too) x factor (rho x factor^2) into that unit, the CG coefficients stay consistent (van der
+        Vorst-Ye residual replacement); else CG restarts from r. Returns the parity to continue from."""
+        inner = self._workspace
+        _array_module(self.backend).multiply(self._mixed.residual, 1.0 / scale, out=inner.residual)
+        if not keep_direction:
+            self._cg_start()   # p = z, rho = r . z in the first slot
+            return 0
+        if self._fused is not None:
+            self._fused.rescale((inner.direction, inner.next_direction)[parity], inner.product, factor)
+        else:
+            inner.direction *= np.float32(factor)
+        rho = inner.scalars[parity]   # 0-d device array inside a tuple: scale in place, no tuple item assignment
+        rho *= np.float32(factor * factor)
+        return parity
 
     def relative_residual(self, rhs, solution, reference_norm) -> float:
         """||rhs - A solution|| / reference_norm (absolute when it is 0), recomputed through the operator; overwrites the
@@ -1113,6 +1322,10 @@ class PCGSolver:
                     'solve_seconds': self.total_solve_seconds, 'factorize_seconds': self.total_factorize_seconds}
         if self.precision == 'mixed':
             counters['refinements'] = self.total_refinements
+        if self._multigrid is not None or self.n_jacobi_binds:   # the summary's 'multigrid' that ran Jacobi
+            counters.update({'multigrid_jacobi_binds': self.n_jacobi_binds,
+                             'multigrid_jacobi_fallbacks': self.n_jacobi_fallbacks,
+                             'multigrid_lagged_fallbacks': self.n_lagged_fallbacks})
         if self._multigrid is not None:
             counters.update(self._multigrid.work_counters())
         if self.preconditioner_counters is not None:
@@ -1127,6 +1340,18 @@ def check_interval(preconditioner, backend='gpu') -> int:
     return MULTIGRID_CHECK_INTERVAL if preconditioner == 'multigrid' else CG_CHECK_INTERVAL
 
 
+def bound_preconditioner(values, work) -> str:
+    """The preconditioner a pcg role runs (time recipe): 'jacobi' for the own CSR 'multigrid' below
+    MULTIGRID_MIN_UNKNOWNS with one factorization and one solve (PCGSolver binds Jacobi there; the no-strong-link
+    bind depends on values, so it is priced as multigrid), else the setting."""
+    preconditioner = values.get('preconditioner')
+    if (preconditioner == 'multigrid' and MULTIGRID_JACOBI_BINDS and not (work.preconditioner_ops or work.setup_ops)
+            and work.unknowns < MULTIGRID_MIN_UNKNOWNS and not work.per_step and not work.factor_per_step
+            and work.factorizations <= 1 and work.solves <= 1):
+        return 'jacobi'
+    return preconditioner
+
+
 def cold_solve_iterations(values, work, fraction=1.0) -> int:
     """A priori CG iterations of a cold solve to the node's tolerance (times fraction: a warm start shrinks the
     residual, not the modes in it, so it applies before the cap), rounded up to the residual check block: multigrid
@@ -1135,7 +1360,7 @@ def cold_solve_iterations(values, work, fraction=1.0) -> int:
     tolerance = float(values.get('tolerance') or 1e-8)
     if values.get('precision') == 'single':
         tolerance = max(tolerance, FLOAT32_TOLERANCE_FLOOR)
-    preconditioner = values.get('preconditioner')
+    preconditioner = bound_preconditioner(values, work)
     if preconditioner == 'multigrid':
         iterations = math.log(1.0 / tolerance) / math.log(1.0 / MULTIGRID_RESIDUAL_REDUCTION)
     elif work.jacobi_condition > 0.0:
@@ -1156,7 +1381,8 @@ def time_estimate(values, work):
     precision = values.get('precision', 'double')
     n_unknowns = float(work.unknowns)
     item_bytes = 4 if precision in ('single', 'mixed') else 8   # mixed iterates in float32
-    multigrid = values.get('preconditioner') == 'multigrid'
+    preconditioner = bound_preconditioner(values, work)
+    multigrid = preconditioner == 'multigrid'
     product = work.product_ops or (te.Spmv(n_unknowns, work.nnz, item_bytes),)
     update = (te.elementwise(n_unknowns, 4, 2, item_bytes),)   # x += alpha p, r -= alpha q
     # preconditioner.start of a solve: z0 = M^-1 r0, rho = r0 . z0, the first direction (Jacobi: z0 into it)
@@ -1181,12 +1407,12 @@ def time_estimate(values, work):
     if work.iteration_ops:   # the physics' fused iteration (fused_iteration: product, dots, updates in its launches)
         iteration = work.iteration_ops
         start = work.iteration_ops
-    iteration = iteration + ((1.0 / check_interval(values.get('preconditioner'), work.backend),
+    iteration = iteration + ((1.0 / check_interval(preconditioner, work.backend),
                               te.Reduction(n_unknowns, item_bytes, read_back=True)),)
-    # ||b||^2 and ||r0||^2 read back, r0 = b - A x0, then the preconditioner start (the solve's first iteration
-    # follows only when r0 is above the stop threshold: counted always, an upper bound)
+    # ||b||^2 and ||r0||^2 (read back together), r0 = b - A x0, then the preconditioner start (the solve's first
+    # iteration follows only when r0 is above the stop threshold: counted always, an upper bound)
     per_solve = product + (te.Reduction(n_unknowns, item_bytes, read_back=True),
-                           te.Reduction(n_unknowns, item_bytes, read_back=True),
+                           te.Reduction(n_unknowns, item_bytes),
                            te.elementwise(n_unknowns, 2, 1, item_bytes)) + start
     limit = int(values.get('max_iterations') or 0) or auto_max_iterations(work.longest_axis)
     cold = min(cold_solve_iterations(values, work), limit)
@@ -1202,14 +1428,20 @@ def time_estimate(values, work):
     if precision == 'mixed':   # the float64 residual refresh: the matrix-free double product, else a CSR Spmv
         refinement = (work.refinement_ops or (te.Spmv(n_unknowns, work.nnz, 8),)) + (
             te.Reduction(n_unknowns, 8, read_back=True), te.elementwise(n_unknowns, 4, 3, 8))
-        items.append(te.TimeItem('mixed CG refinements', 'refinement', solves * MIXED_REFINEMENTS_GUESS, 'guess',
-                                 refinement, limit=solves * MIXED_MAX_REFINEMENTS, per_step=work.per_step,
+        # one replacement per MIXED_REPLACEMENT_RATIO of the tolerance (warm: a fraction), at most one per check block
+        tolerance = float(values.get('tolerance') or 1e-8)
+        cold_replacements = max(1, math.ceil(math.log(tolerance) / math.log(MIXED_REPLACEMENT_RATIO)))
+        warm_replacements = max(1, math.ceil(WARM_START_ITERATION_FRACTION * cold_replacements))
+        replacements = cold_solves * cold_replacements + (solves - cold_solves) * warm_replacements
+        per_solve_limit = limit // check_interval(preconditioner, work.backend) + 1
+        items.append(te.TimeItem('mixed CG refinements', 'refinement', replacements, 'guess',
+                                 refinement, limit=solves * per_solve_limit, per_step=work.per_step,
                                  counter=work.counter('refinements'), seconds_counter=work.counter('solve_seconds')))
     if work.setup_ops:   # a caller-built preconditioner's setup (solid_mechanics_3d geometric multigrid)
         setup = work.setup_ops
     elif multigrid:
         from .multigrid import setup_ops
-        setup = setup_ops(n_unknowns, work.nnz, item_bytes)
+        setup = setup_ops(n_unknowns, work.nnz, item_bytes, work.backend)
     else:
         setup = (te.elementwise(n_unknowns, 1, 1, item_bytes),)
     count_name, seconds_name = work.setup_counters or ('factorizations', 'factorize_seconds')

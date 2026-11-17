@@ -388,5 +388,5 @@ PRESTRESS_3D_CASES = (
                      'stress (probes u = (-S0 x, nu S0 y, nu S0 z) / E, stress_xx and von_mises 0) within '
                      f'{_EXACT_TOLERANCE:g}. measured = error in tolerance units, tolerance 1 (first estimates, not yet '
                      'run).'),
-        specs=_prestressed_3d_specs, check=_check_prestressed_3d),
+        specs=_prestressed_3d_specs, check=_check_prestressed_3d, heavy=True),
 )

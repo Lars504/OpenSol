@@ -277,12 +277,14 @@ def spread_to_corners(node_component, element_values):
 
 class ElasticSystem(ElasticSystemBase):
     """Window system of the 2D displacement: node grid, held dofs (eliminated), rigid-mode check, block-Jacobi PCG
-    (PCGSolver on the CSR) and the reaction / gradient post-processing; the physics supplies coefficients and loads.
-    axisymmetric (set before prepare): (r, z) ring weights and the hoop terms. `bloch` (bloch2d BlochCell3D over the
-    window nodes, set by the physics) makes the rigid-mode check periodic; with `rigid_motions_allowed` the free
-    translations of a trivial-phase cell are counted in n_rigid_motions instead of refused."""
+    (PCGSolver on the CSR) or a direct factor of A_solve (sparse_direct, made by the first solve after an assembly) and
+    the reaction / gradient post-processing; the physics supplies coefficients and loads. axisymmetric (set before
+    prepare): (r, z) ring weights and the hoop terms. `bloch` (bloch2d BlochCell3D over the window nodes, set by the
+    physics) makes the rigid-mode check periodic; with `rigid_motions_allowed` the free translations of a
+    trivial-phase cell are counted in n_rigid_motions instead of refused."""
 
     axisymmetric = False
+    accepts_direct = True
     bloch = None                    # bloch3d.BlochCell3D of the periodic window sides (bloch2d.tensor_bloch_cell)
     rigid_motions_allowed = False   # a Bloch cell about a target > 0: its free translations are counted
     n_rigid_motions = 0             # free rigid motions of the last assembly (rigid_motions_allowed only)
@@ -351,6 +353,7 @@ class ElasticSystem(ElasticSystemBase):
         self.fixed_coupling = None  # operator_full . fixed_values
         self.inverse_blocks = None  # (inverse_xx, inverse_xy, inverse_yy) per node
         self._single_products = None   # pcg 'mixed': (float64 apply, float32 apply, float32 inverse blocks)
+        self._factor_stale = False     # sparse_direct: A_solve changed since its factor (the next solve factorises)
         self._rigid_signature = None
         self.operator_dirty = True
 
@@ -506,9 +509,13 @@ class ElasticSystem(ElasticSystemBase):
     def _bind_linear_solver(self) -> None:
         """Factorize the PCGSolver on the new A_solve with gpu check blocks captured as CUDA graphs (a factorize starts
         new graphs); 'mixed': float32 copies of A_solve and the inverse blocks run the inner CG, the float64 A_solve
-        refreshes the outer residual."""
+        refreshes the outer residual. sparse_direct: the factor waits for the next solve (piezoelectric and modal
+        solves never ask), which refreshes the kept one on its plan."""
         solver = self.linear_solver
         self._single_products = None   # free the previous float32 copies first
+        if self.direct:
+            self._factor_stale = True
+            return
         if solver.precision != 'mixed':
             solver.factorize(self.A_solve, self._precondition, capture_blocks=True)
             return
@@ -622,11 +629,24 @@ class ElasticSystem(ElasticSystemBase):
     def _precondition_single(self, residual, preconditioned):
         _apply_inverse_blocks(self._single_products[2], residual, preconditioned)
 
+    def _factorize_if_stale(self) -> None:
+        """sparse_direct: factorise A_solve of the last assembly (a kept cuDSS factor is refreshed on its plan)."""
+        if self._factor_stale:
+            self.linear_solver.factorize(self.A_solve)
+            self._factor_stale = False
+
+    def solve(self) -> None:
+        """The base solve (PCG, or the direct factor made first when stale)."""
+        if self._solvable():
+            self._factorize_if_stale()
+        super().solve()
+
     def solve_homogeneous(self, load_nodes, solution) -> None:
         """PCG of K w = f on the free dofs of the last assembly with every held dof at 0 (flat solution: the warm start
         in, w out); the generalized plane-strain unit axial-strain solve."""
         if self.A_solve is None:
             raise RuntimeError('assemble before solve_homogeneous')
+        self._factorize_if_stale()
         self.xp.multiply(solution, self.free, out=solution)
         self.linear_solver.solve(self.free * load_nodes.reshape(-1), solution)
 

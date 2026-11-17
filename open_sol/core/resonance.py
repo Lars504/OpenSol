@@ -28,7 +28,7 @@ AMPLITUDE_FLOOR = 1e-4    # in-band resonances below this fraction of the strong
 _MAX_GROWTH = 2.0         # poles growing by more than this over the analysed window are dropped
 BAND_KINDS = ('wavelength', 'frequency')   # band in vacuum wavelengths [m] (EM) or in frequencies [Hz]
 # per analysed step: float64 trace, arange, complex128 mix / baseband and three FFT arrays of ~2x the length (a rough
-# upper figure); the matrix pencil: Hankel <= MAX_SAMPLES^2 / 4 complex128 entries, x 3 for the SVD
+# upper figure); the matrix pencil: Hankel <= MAX_SAMPLES^2 / 4 complex128 entries, x 3 for the QR copy and the SVD
 _HOST_BYTES_PER_STEP = 160
 _PENCIL_BYTES = 3 * COMPLEX128_BYTES * MAX_SAMPLES ** 2 // 4
 
@@ -86,7 +86,10 @@ def _pencil_poles(channels, pencil):
     `pencil`; model order from the singular values of the stacked Hankel matrices."""
     hankel = np.concatenate([np.lib.stride_tricks.sliding_window_view(samples, pencil + 1)
                              for samples in channels])   # (n_channels (N - pencil), pencil + 1)
-    _, singular, right = np.linalg.svd(hankel, full_matrices=False)
+    # hankel = Q R with orthonormal Q: R has the singular values and right vectors of the tall Hankel, and its SVD
+    # never forms the tall U (only V and the values are read)
+    upper = np.linalg.qr(hankel, mode='r')
+    _, singular, right = np.linalg.svd(upper, full_matrices=False)
     if singular.size == 0 or not singular[0] > 0.0:
         return np.zeros(0, dtype=np.complex128)
     order = min(int(np.count_nonzero(singular > _SINGULAR_TOLERANCE * singular[0])), _MAX_MODEL_ORDER, pencil - 1)

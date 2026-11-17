@@ -197,6 +197,11 @@ class DriftDiffusionCore:
         self._converged = {key: np.array(converged[key], dtype=np.float64) for key in shapes}
         return True
 
+    def forget_converged_state(self) -> None:
+        """The next solve starts cold from equilibrium (a doping change moves the equilibrium itself, so no
+        continuation of the voltages / generation reaches it)."""
+        self._converged = None
+
     def _scaled_state(self, psi, n, p):
         """(N, 3) scaled state of physical psi [V], n, p [1/m^3]; carriers reset to equilibrium where non-positive."""
         state = np.empty((self.n_cells, COMPONENTS))
@@ -337,9 +342,16 @@ class DriftDiffusionCore:
         return residual, self._layout_values(_POISSON_LAYOUT, (g_lo, -g_lo, g_hi, -g_hi, fraction * (electrons + holes)))
 
     def _layout_values(self, layout, blocks):
-        """Concatenated COO values of `blocks` (an array or scalar per layout block: per face, or per site)."""
+        """Concatenated COO values of `blocks` (an array or scalar per layout block: per face, or per site), written by
+        slice into one buffer (no broadcast views: ~9 us each of 27 per coupled call)."""
         sizes = (self.face_lo.size, self.face_lo.size, self.n_cells)   # indexed by the row side _LO / _HI / _SITE
-        return np.concatenate([np.broadcast_to(values, (sizes[block[0]],)) for block, values in zip(layout, blocks)])
+        values = np.empty(sum(sizes[block[0]] for block in layout))
+        start = 0
+        for block, block_values in zip(layout, blocks):
+            stop = start + sizes[block[0]]
+            values[start:stop] = block_values
+            start = stop
+        return values
 
     def _newton(self, state, targets, generation, max_iterations=None):
         """(converged, state) of Newton on the coupled system from `state`: log-damped potential updates, carrier
@@ -482,7 +494,7 @@ class DriftDiffusionCore:
         data = pattern.csr_values(values)
         row_norm = np.add.reduceat(np.abs(data), pattern.indptr[:-1])   # every row holds an entry
         row_norm = np.where(row_norm > 0.0, row_norm, 1.0)
-        data /= np.repeat(row_norm, pattern.row_counts)
+        data /= row_norm[pattern.slot_rows]   # a take: np.repeat by per-row counts was ~2x slower
         rhs = rhs / row_norm
         try:
             try:
@@ -522,9 +534,11 @@ class DriftDiffusionCore:
         back_end = self.linear_solver.back_end
         if back_end in KEPT_FACTOR_BACK_ENDS:
             previous = self._kept_factors.pop(size, None)
-            # values on the canonical pattern (identity-matched): no host CSR canonicalising / asymmetry check per step
+            # values on the canonical pattern (identity-matched): no host CSR canonicalising / asymmetry check per step;
+            # defer_check: a refactorisation on the kept plan / analysis skips its probe solve, the Newton solve below is
+            # the check (an accuracy refusal then comes from solve_host: _linear_solve handles it as at the factorisation)
             factor = self.linear_solver.factorize_values(data, pattern.indptr, pattern.indices, real=True,
-                                                         previous=previous, defer_check=False)
+                                                         previous=previous, defer_check=True)
             if self.linear_solver.back_end in KEPT_FACTOR_BACK_ENDS:
                 self._kept_factors[size] = factor
             else:   # B1b: factorize_values of an 'auto' runtime fell back to SuperLU: free every cuDSS factor
@@ -659,6 +673,10 @@ class DriftDiffusionSystem(DriftDiffusionCore):
     def add_doping(self, net_doping):
         """Add N_D - N_A [1/m^3] (flat window array, 0 outside the feature)."""
         self.net_doping += np.asarray(net_doping, dtype=np.float64)
+
+    def clear_doping(self):
+        """Net doping 0 everywhere (DriftDiffusionPhysics.set_doping adds every feature again)."""
+        self.net_doping[...] = 0.0
 
     def set_auger(self, mask, electron_coefficient, hole_coefficient):
         """Auger coefficients C_n, C_p [m^6/s] on the flat window mask (a later feature takes shared cells)."""
@@ -872,6 +890,8 @@ class _PinnedPattern:
         indices[self.pinned_slots] = pinned_index
         index_dtype = np.int32 if max(self.size, self.nnz) < 2 ** 31 else np.int64
         self.indices, self.indptr = indices.astype(index_dtype), indptr.astype(index_dtype)
+        # row of every CSR slot (the L1 equilibration's take of the row norms)
+        self.slot_rows = np.repeat(np.arange(self.size, dtype=index_dtype), self.row_counts)
         slots = []   # CSR slot of every COO value in layout order
         for side, row, column_side, component in layout:
             sites = all_sites if side == _SITE else (graph.face_lo if side == _LO else graph.face_hi)

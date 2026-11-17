@@ -27,7 +27,7 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   twin that needs another kernel calls its registered twin (`_TWINS[name]`), never its factory, so each kernel is
   compiled / cache-loaded once per process.
 - Parity cases (`selftests_backend.py`, `solid_parity_case`: solid_mechanics_cpu, solid_mechanics_3d_cpu,
-  solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
+  solid_mechanics_3d_block_eigen_cpu, solid_optics_cpu_gpu) wrap exact cases: the case's own check grades the cpu runs; named fields must match the gpu
   runs within FIELD_TOLERANCE relative to the max of the gpu fields of the same kind (u / strain / stress + von_mises),
   so name a NONZERO field of each kind (a zero u_x under rollers would be graded by its own round-off); a field only
   the parity reads needs a closed-form item in the case's check; every cpu run must record the solid 'linear' role on
@@ -99,9 +99,18 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `definition_common.solid_linear_solver`; elastic conditioning ~2-4x worse than diffusion). The role is
   `definition.SOLID_LINEAR_ROLE` (local, not definition_helpers'). gpu check blocks are CUDA graphs (capture_blocks;
   every `assemble` factorizes again, which starts new graphs: anything replacing A_solve / the inverse blocks without
-  `_bind_linear_solver` must call `release_block_graphs`). 'mixed' (Automatic on the gpu): float32 copies of A_solve
-  and the inverse blocks per assembly, products through `system._CsrApply` (pcg's CSR RawKernel: a cupyx SpMV cannot
-  be captured), the float64 A_solve refreshes the outer residual.
+  `_bind_linear_solver` must call `release_block_graphs`). 'mixed' (Automatic on the gpu outside the study defaults):
+  float32 copies of A_solve and the inverse blocks per assembly, products through `system._CsrApply` (pcg's CSR
+  RawKernel: a cupyx SpMV cannot be captured), the float64 A_solve refreshes the outer residual.
+- sparse_direct (Automatic in stationary / time_dependent on both backends, `study_defaults`; back_end 'auto' = cudss
+  on the gpu with nvmath, else host SuperLU; its size rule and the fit guard count 2 unknowns per node,
+  `direct_components=2`): `ElasticSystemBase` wraps the SparseDirectSolver in `DiffusionDirectSolver` (3D refuses
+  it, `accepts_direct`); `_bind_linear_solver` only marks `_factor_stale`, and the next `solve` / `solve_homogeneous`
+  factorises A_solve (cuDSS: `factorize_device_csr`, the kept factor refreshed on its plan), so piezoelectric and modal
+  solves never factorise it. Over the GPU budget (host factor: the available RAM or 2e6 unknowns) the fit guard falls
+  back to pcg (gpu: mixed; estimator: no PCG workspace,
+  `fem.diffusion.cudss_diffusion_estimate`; time recipe at `_Q1_FILL_SCALE`). A pcg node with no precision still takes
+  'mixed' (`schema.with_node_precision`).
 - Reactions: `ElasticSystem.reaction(dof_mask)` = sum of K u - f (float64) over the held dofs (N/m); needs
   `load_full` of the last build_rhs, so loads must not change between solve and read (they change only through
   features / inject_source, which mark dirty).
@@ -223,7 +232,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   (counters harmonic_* / piezo_harmonic_*; the 'linear' pcg assembled, unused); triangles and tetrahedra: their
   'linear' sparse_direct runtime (3D operator class 'spd' is nominal there). Loads, held values, electrode voltages and
   floating charges are phase-0 amplitudes (dead loads only: the thermal and initial-stress loads are static, never a
-  drive; tensor: `_total_load(thermal=False)`, FEM: `_external_load()`). Planar and axisymmetric; generalized plane
+  drive; tensor: `_total_load(thermal=False)`, kept as host copies in `_harmonic_drive` until `_loads_dirty` is set or
+  an assembly, so a new load mutation must set `_loads_dirty`; FEM: `_external_load()`). Planar and axisymmetric; generalized plane
   strain and guided modes raise.
 - Losses (`OPTIONAL_LOSS_SCHEMA`, read only here): mechanical_loss_factor (c -> c (1 + j eta), L = eta K of solid
   cells), piezo dielectric_loss_tangent (eps -> eps (1 - j tan delta)): loss operator `coupled_operator(eta c, 0, -tan
@@ -319,6 +329,24 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   kernels3d mass product) on host vectors of the free dofs. Lanczos tolerance = max(node tolerance,
   `LANCZOS_TOLERANCE_PER_CG` x CG tolerance): with 0 the inexact inner solves floor the Ritz residual and ARPACK
   restarts forever (capped `MAX_LANCZOS_RESTARTS`). Validation errors on a single-precision 'linear' node here.
+- An eigen node of type block_eigen (opt-in, `eigen_role(block_eigen=True)`; tensor grids only, so tetrahedra misfit
+  it) takes `ElasticSystem3D._lowest_modes_block` -> `modal.solve_lowest_modes_block` (info 'method' 'block_eigen'):
+  full-dof rows masked by `free`, ONE launch for all rows of a brick product / mass product / block Jacobi
+  (`BrickKernels.product_rows` / `mass_product_rows` / `precondition_rows`: the kernels' `_rows` entries, one thread
+  per (row, node), the one-vector body shared as a __device__ function; numpy twin `kernels3d.rows_host` = the
+  one-vector twin per row); float32 rows on float32 copies (the mixed linear solver's `_single_operator` +
+  widths_single when kept, else made per solve); the 'multigrid' preconditioner reuses `self.multigrid` even after its
+  CG guard fell back (LOBPCG only needs it SPD), else builds a private BrickMultigrid on the float32 copies (block
+  Jacobi + warning when the build raises), and cycles the block through `multigrid3d.BlockCycle` (the V-cycle of every
+  row per launch of the mg3 `_rows` entries; own (rows, n) work rows per level = `block_cycle_bytes`, the hierarchy's
+  operators / tables / coarsest inverse shared; float64 rows cast in and out through its float32 rows; sized by the
+  first call's rows, regrown if more come). A change of a one-vector kernel body or of `BrickMultigrid._cycle` /
+  `_smooth` / transfers must keep the `_rows` entry and `BlockCycle` in step. Exactly n_resonances pairs are asked
+  (no EXTRA_EIGENVALUES: the guard vectors are the margin). No inner CG, rhs / CG unknown untouched. Still needs a
+  float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D memory items
+  (block_eigen.block_bytes + copies + private hierarchy + block_cycle_bytes, transient 'eigen solve') and the time
+  recipe (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either.
+  Self-tests: section "Self-tests" (solid_3d_eigenfrequency_block_eigen, _block_eigen_levels).
 - Inner solves count in `n_solves`: `reaction` raises after an eigen solve / shown mode until the next static
   re-solve (`_shows_mode`), and `rhs` / the CG unknown are scratch (`_rhs_built` cleared).
 - Exact 3D roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give
@@ -422,7 +450,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   double node with multigrid; a double CG casts the residual in and `_cycle_out` back; float64 cycles were 19x slower
   on a GPU with slow float64). Coarse
   levels are rediscretised, not Galerkin (volume-mean Lame values, injected holds; lost holds become pseudo-inverse
-  null space). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
+  null space), except the coarsest dense operator: P^T A P of the level above, probed by the same 27 colours (nested
+  Q1 basis: 27-node stencil); rediscretised it over-stiffened a thin plate in void (solid_3d_multigrid_void fell back). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
   = the exact transpose (gather form), so pre / post Chebyshev + R = P^T keep the cycle symmetric for plain PCG.
   `_guarded_solve` (static and every Lanczos inner solve) caps max_iterations at `multigrid_budget()` (the block-Jacobi
   estimate CG_ITERATIONS_PER_AXIS_CELL x longest axis over CYCLE_COST_IN_JACOBI_ITERATIONS, within
@@ -452,7 +481,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Shared with tetrahedra: `solver_common.FEMSolidCommon` (records / Newton reporting, element masks and values, dT and
   rho reads, `_loads_dirty`, `_ensure_outputs` over the class's `_output_groups`) on `HostInputCache` (alpha, dT,
   sigma0, beta, rho host copies kept read-only until materials_changed / inject_source / an assembly / a temperature
-  feature: a new mutation of those inputs calls `_drop_host_inputs`).
+  feature: a new mutation of those inputs calls `_drop_host_inputs`). Tetrahedra also keep the sigma0 force
+  -int B^T sigma0 dV there (`_initial_stress_force`: the finalize imbalance check and the static load share it).
 - Outputs are lazy as on tetrahedra (`_OUTPUT_GROUPS` primary: u, u_abs, Im u; derived: strain, stress, energies);
   materials_changed and inject_source compute pending groups first.
 - solid_mechanics dispatches on the mesh kind: `_create_solid` builds SolidMechanicsFEMPhysics on a TriangleDomain.
@@ -625,7 +655,13 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   0. Bloch / PML / free body take sigma0 alone. The frequency response load is the dead loads only
   (`_external_load`). Studies call it via `study._solve_static_states` after their background stage. The hook ends
   with `system.release_factor()`: a kept static factor took the device memory the shift-invert factor then needs
-  (CudssMemoryError, then a ~4.6 min SuperLU retry).
+  (CudssMemoryError, then a ~4.6 min SuperLU retry). Exception (tetrahedra, linear stress stiffening with loads,
+  `_pencil_handover`: 'linear' back end = eigen factorization, cuDSS / MUMPS / PARDISO, no piezo, no loss): K_ff is
+  factored as LDL^T (`DiffusionDirectSolver.positive_definite` False, the pencil's kind) and handed over
+  (`DirectElasticSystem.hand_over_factor`, `_pencil_factor`) as the real ModalPencil's `factor`, so the first shift
+  refactorises it on the kept analysis / plan (same free pattern: K + K_sigma on K's kept pattern) instead of a second
+  one; the pencil releases it, `_drop_harmonic` releases an unused one. One factor at a time either way, so the memory
+  phases ('static state', then the eigen ones) are unchanged.
 - Eigen loss: mechanical_loss_factor -> K + K_sigma + j eta K_el (K_sigma lossless) in a damped ModalPencil;
   info['damped'] adds DAMPED_TABLE_COLUMNS; a damped 2D mode is shown like a response. Piezo modes ignore the loss.
 - Complex records: frequency_probe (`definition_common.frequency_probe_feature`) -> HarmonicProbeRecord filled by
@@ -725,19 +761,28 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 
 ## Memory estimates (definition.py, definition3d.py; model sub file "Memory estimate parts")
 - Phases (transient items, the largest one counts): 'static solve' (tensor solve temporaries), 'stiffness
-  re-assembly', 'static factorisation' (the first factorize's peak beyond the kept arrays), 'static state'
+  re-assembly', 'static factorisation' (FEM: the values of a refactorisation on the kept plan, booked with
+  `refreshed`), 'static state'
   (everything of the 'linear' factor in a modal / response study: `solve_static_state` ends with `release_factor`;
   tetrahedra book it for stress stiffening too, definition3d `_static_state_solved`, memory and time). Both come from
-  `linear_factor_items`, which follows `factorize_device_csr` in allocation order and takes the larger of two moments:
-  the symmetry check (CSR index arrays + pattern maps + `refresh_peak_bytes`, which already counts the uploaded
-  values) and the probe (whole CSR + maps with the transpose map + equilibrated full values + the kept lower values);
-  the planned CSR shares the maps' index arrays, so no `operator_copy_bytes` on a device-values plan,
+  `linear_factor_items`: `DirectElasticSystem._solve_free` (K_ff by `fem.fixed_pattern.free_restriction`, kept per
+  pattern, so `ModalPencil._reduced` of K + K_sigma on that pattern takes values only) plans a cuDSS K_ff factor from the HOST CSR
+  (`factorize_host_operator(symmetric_known=True)`: equilibration and lower take on the host; MUMPS / PARDISO take the
+  same call, so K_ff skips the host asymmetry check there too), so the pool holds
+  `operator_copy_bytes` (lower-triangle CSR, diagonal; mixed: + the float32 copy) + rhs buffer / row scale + a
+  solve's vectors, and no device CSR of K_ff, index maps or symmetry check (they cost ~60 B per K_ff entry and set
+  the pool peak of a prestressed modal study). `refreshed` (2D host Newton tangents on cuDSS: every later
+  `refactorize` on the planned pattern is the device value refresh) adds the index maps and the refresh values; a
+  re-assembled K_ff on an unchanged free set refreshes the same way and is NOT booked (no setting tells it),
   'eigen assembly' (tensor mass / guided temporaries before the host copy), the ModalPencil phases (released after
   each solve / search) in the order `arpack_shift_invert` allocates: 'eigen pencil set-up' (`EIGEN_SETUP_PHASE`:
-  stored terms + the upload transients, before the factor; eigsh_shifted also mirrors M here), 'eigen mass mirror'
-  (`EIGEN_MIRROR_PHASE`, eigs_shifted only: `device_mass()` runs after `_factorize_shift`), 'eigen solve'
-  (`EIGEN_PHASE`: the stored terms, the factor's index maps and equilibrated values, the combined values of the
-  factorisation (eigsh: the mass product is built before it), mass product incl. the kept int64 full take, vectors
+  stored terms; the upload transients only of a pencil that is not vouched symmetric: a vouched one takes its lower
+  triangle on the host), 'eigen factorisation' (`EIGEN_FACTOR_PHASE`, eigs_shifted only: the factor is planned and
+  probed before `device_mass()` and the Arnoldi basis exist), 'eigen solve'
+  (`EIGEN_PHASE`: the stored terms, the factor's index maps (a lower-stored pencil: the lower triangle's alone,
+  `index_map_bytes(lower_only=True)`) and equilibrated values, the combined values of the
+  factorisation (eigsh: M is uploaded before it), the mass product = the host M on its own pattern (`mass_entries`:
+  entries / components for a vector Lagrange mass; the callers pass it), vectors
   and, on the eigs path, the device Krylov-Schur basis); the eigen factor is phase-bound to the last two. Pencil
   items are counted array by array at the stored layout ((entries + dofs) / 2 values per term when lower-stored,
   value size of the pencil), not through `sparse_direct.device_pencil_bytes` (sized for a complex full-pattern
@@ -763,7 +808,9 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   superlu_bytes, n_unknowns, entries, symmetric=, complex_values=)` (definition imports it at module level, as
   `eigen_host_direct`) scales a SuperLU heuristic item by `host_direct.superlu_bytes_scale`, relabels it and adds the
   factor object's own copies (`host_direct.solver_host_bytes`, as `fem_system_estimate`; uncalibrated; any other
-  name keeps the one SuperLU item): static K / Newton tangent / piezo coupled operator and the frequency-response
+  name keeps the one SuperLU item; `fill=` the counted `FactorFill` of `factor_fill`: tetrahedra book the counted
+  triangle instead, as cuDSS: the 3D n^(4/3) heuristic booked 33 GiB for the 2-layer film sin_square_membrane_modes_3d):
+  static K / Newton tangent / piezo coupled operator and the frequency-response
   pencil (LDL^T), the eigen factor (`eigen_host_direct`: S5c, a small *_mixed pencil factors in double; a Bloch
   phase: LU; the 2D caller doubles every item of a complex pencil, copies included). Size rules keep the SPLU / SPLU_3D limits
   (uncalibrated) with the library named; time recipes price them as SuperLU (`backend` 'cpu').
@@ -787,6 +834,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   axisymmetric cases.
 - `selftests_3d.py` (exact trilinear, 1e-6): solid_3d_column_z_expressions expects the discrete solution with the
   solver's LUMPED cell loads f_c V / 8 (not the consistent load for non-constant f). Variant 'mixed' on
-  solid_3d_uniaxial_block_graded, solid_3d_column_z_expressions, solid_3d_eigenfrequency_roller_box. Examples
+  solid_3d_uniaxial_block_graded, solid_3d_column_z_expressions, solid_3d_eigenfrequency_roller_box;
+  solid_3d_eigenfrequency_block_eigen (`selftests_eigenfrequency.py`) is the same box by a block_eigen eigen node
+  (variant 'double' on the eigen role; its cpu run: the wrapper solid_mechanics_3d_block_eigen_cpu of
+  `selftests_backend.py`, a case of its own so the cpu block callbacks time apart); that box is below
+  multigrid3d.COARSEST_DOFS (one level: the dense coarsest inverse only), so solid_3d_eigenfrequency_block_eigen_levels
+  runs the block on half-size cells (two levels: the full block V-cycle) against the Lanczos run of the same model.
+  Examples
   thermal_inclusion_sphere_3d (mean-stress identities exact: centre strains x V are the element integrals),
   rotating_disk_3d.

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ...core.constants import C0, MU0
-from ...solvers.arpack_shift_invert import MAX_RESTARTS
+from ...solvers.arpack_shift_invert import MAX_RESTARTS, guarded_start_vector, host_blas_limit
 from ...solvers.sparse_direct import factorize_host
 from .body_of_revolution import _WALL_KINDS, BORMaterials, _full_offsets, assemble_bor
 from .boundaries import BCType, BoundaryConfig
@@ -126,11 +126,12 @@ def _target_index(line_materials, n_window):
 
 
 def solve_port_modes(dr_cells, row_width, end_kind, boundary_config, pml_dx, line_materials, omega, azimuthal_order,
-                     n_modes, n_window, truncated=False, start=0):
+                     n_modes, n_window, truncated=False, start=0, previous=None):
     """PortModes of a line over r cells [start, len(dr_cells)) (dr_cells from the axis; start > 0: annular, the
     cells below are PEC) with materials BORMaterials (n, 1) (the line row from the axis), end 'cpml' (boundary_config's
     grading) | 'pec' | 'pmc', rows of width row_width [m]; up to n_modes modes, the PML share over the first n_window
-    cells."""
+    cells; previous: an earlier PortModes of the line whose modes ([X; psi X] summed, a random share added) start
+    ARPACK when their slice keys fit (E5), else a seeded random start."""
     import scipy.sparse
     import scipy.sparse.linalg
     dr_cells = np.asarray(dr_cells, dtype=np.float64)
@@ -186,11 +187,18 @@ def solve_port_modes(dr_cells, row_width, end_kind, boundary_config, pml_dx, lin
     linear_operator = scipy.sparse.linalg.LinearOperator(
         (2 * n_slice, 2 * n_slice), matvec=lambda vector: factor.solve_host(pencil_b @ vector), dtype=np.complex128)
     n_wanted = max(1, min(2 * int(n_modes) + 8, 2 * n_slice - 2))
-    random = np.random.default_rng(_START_VECTOR_SEED)
-    start_vector = random.standard_normal(2 * n_slice) + 1j * random.standard_normal(2 * n_slice)
+    start_vector = None
+    if previous is not None and previous.modes and np.array_equal(previous.codes, codes) and np.array_equal(
+            previous.indices, indices):   # linearised eigenvectors [X; psi X] of the earlier solve's modes
+        start_vector = guarded_start_vector(sum(np.concatenate((mode.vector, mode.psi * mode.vector))
+                                                for mode in previous.modes), _START_VECTOR_SEED)
+    if start_vector is None:
+        random = np.random.default_rng(_START_VECTOR_SEED)
+        start_vector = random.standard_normal(2 * n_slice) + 1j * random.standard_normal(2 * n_slice)
     try:
-        theta, vectors = scipy.sparse.linalg.eigs(linear_operator, k=n_wanted, which='LM', v0=start_vector,
-                                                  maxiter=MAX_RESTARTS)
+        with host_blas_limit(2 * n_slice):   # E6 (off by default)
+            theta, vectors = scipy.sparse.linalg.eigs(linear_operator, k=n_wanted, which='LM', v0=start_vector,
+                                                      maxiter=MAX_RESTARTS)
     except scipy.sparse.linalg.ArpackNoConvergence as exc:
         theta, vectors = exc.eigenvalues, exc.eigenvectors
     theta = np.asarray(theta, dtype=np.complex128)
@@ -390,10 +398,24 @@ class _BORPort:
 
         line_materials = BORMaterials(eps=line(materials.eps), mu=line(materials.mu), pec=line(materials.pec),
                                       eps_rr=line(materials.eps_rr), eps_zz=line(materials.eps_zz))
-        port_modes = solve_port_modes(dr_cells, row_width, self.end_kind, physics.boundary_config, physics.pml_dx,
-                                      line_materials, system.omega, system.azimuthal_order,
-                                      max(self.mode_number + 2, 4), self.n_window, truncated=self.truncated,
-                                      start=self.start)
+        n_modes = max(self.mode_number + 2, 4)
+        # ports on identical lines (span, row width, line materials, mode count) share one solve per key
+        line_key = (self.start, self.n_line, self.end_kind, self.n_window, self.truncated, n_modes, row_width) + tuple(
+            None if values is None else (values.dtype.str, np.ascontiguousarray(values).tobytes())
+            for values in (line_materials.eps, line_materials.mu, line_materials.pec, line_materials.eps_rr,
+                           line_materials.eps_zz))
+        solved_key, solved_lines = physics.port_mode_solves
+        if solved_key != key:
+            solved_lines = {}
+            physics.port_mode_solves = (key, solved_lines)
+        port_modes = solved_lines.get(line_key)
+        if port_modes is None:   # E5: an earlier solve of this line at the same order starts ARPACK (omega scans)
+            previous = (self.port_modes if self.port_modes is not None
+                        and self.port_modes.azimuthal_order == system.azimuthal_order else None)
+            port_modes = solve_port_modes(dr_cells, row_width, self.end_kind, physics.boundary_config, physics.pml_dx,
+                                          line_materials, system.omega, system.azimuthal_order, n_modes,
+                                          self.n_window, truncated=self.truncated, start=self.start, previous=previous)
+            solved_lines[line_key] = port_modes
         index = None if self.mode is None else track_mode(self.mode, port_modes)
         if index is None:
             if len(port_modes.modes) < self.mode_number:

@@ -436,8 +436,7 @@ COUPLER_AGREEMENT_CASE = SelfTestCase(
                 'expected = cross / (through + cross) at 1.55 um of FDTD / FDFD. Shorter FDTD run not yet '
                 'confirmed by a run.',
     specs=_coupler_specs,
-    check=_check_coupler,
-    heavy=True)
+    check=_check_coupler)
 
 # E_z plane-wave ports: examples/em/analytic_lorentz_halfspace (R) and analytic_matched_absorber_mu_sigma_m (R ~ 0, T);
 # the H_z surface plasmon: examples/em/analytic_spp_drude.

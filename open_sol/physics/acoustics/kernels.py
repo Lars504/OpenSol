@@ -814,16 +814,34 @@ stability_stiffness = twin('acoustics.stability_stiffness', cp.ElementwiseKernel
     'acoustic_stability_stiffness', preamble=_STIFFENING_PREAMBLE), _stability_stiffness_host)
 
 
+# The scatters' waveform value: a scalar argument, or (VALUE_TABLE: pulse tables, fixed arguments for the step graphs)
+# table[step - table_start] at the device step counter, nothing written outside the table or where it holds 0 (the
+# steps the eager injection skips).
+_VALUE_TABLE = r"""
+#define VALUE_PARAMETERS const float* table, const int* step_counter, int table_start, int table_length
+#define LOAD_VALUE const int table_step = step_counter[0] - table_start; \
+    if (table_step < 0 || table_step >= table_length) return; \
+    const float value = table[table_step]; \
+    if (value == 0.0f) return;
+"""
+_SCALAR_VALUE = r"""
+#ifndef VALUE_PARAMETERS
+#define VALUE_PARAMETERS float value
+#define LOAD_VALUE
+#endif
+"""
+
 # field[index[k]] += coefficient[index[k]] * weight[k] * value (velocity sources: coefficient = vb of the face; value in
 # stored units). Single: atomicAdd; half_storage (HALF_FIELDS) a plain read-modify-write, so the indices of one scatter
 # must be distinct (the solver's face entries are).
-_SCATTER_SOURCE = r"""
+_SCATTER_SOURCE = _SCALAR_VALUE + r"""
 extern "C" __global__
 void acoustic_scatter_add(field_t* field, const float* coefficient, const int* index, const float* weight, int n,
-                          float value)
+                          VALUE_PARAMETERS)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= n) return;
+    LOAD_VALUE
     int c = index[k];
 #ifdef HALF_FIELDS
     field[c] = FSTORE(FLOAD(field[c]) + coefficient[c] * weight[k] * value);
@@ -837,7 +855,7 @@ void acoustic_scatter_add(field_t* field, const float* coefficient, const int* i
 # (c12 + c22) / 2 * q dt; value = dt * waveform (/ stress_scale), weight = volume rate / cell area (a fluid: p += K q
 # dt). Axisymmetric: an isotropic 3D strain rate -q / 3 per axis (c_tt = c11, c_rt = c_zt = c12), so a fluid again gets
 # p += K q dt. One cell per source (distinct indices).
-_VOLUME_SCATTER_SOURCE = r"""
+_VOLUME_SCATTER_SOURCE = _SCALAR_VALUE + r"""
 #ifdef HALF_FIELDS
 #define ADD_STRESS(field, c, value) field[c] = FSTORE(FLOAD(field[c]) + (value))
 #else
@@ -849,10 +867,11 @@ void acoustic_volume_scatter(field_t* sxx, field_t* syy,
                              field_t* stt,
 #endif
                              const float* c11, const float* c12, const float* c22,
-                             const int* index, const float* weight, int n, float value)
+                             const int* index, const float* weight, int n, VALUE_PARAMETERS)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= n) return;
+    LOAD_VALUE
     int c = index[k];
 #ifdef AXISYMMETRIC
     float rate = weight[k] * value / 3.0f;
@@ -871,39 +890,47 @@ void acoustic_volume_scatter(field_t* sxx, field_t* syy,
 
 # Every probe of a physics in one launch per step: samples[row, k] = the stored-unit value of probe k at its cell (codes
 # PROBE_RECORD_CODES: a field, or the pressure -(sxx + syy) / 2, axisymmetric -(srr + szz + stt) / 3, as
-# pressure_from_stress with scale 1); stt is a dummy (sxx) in planar physics, whose probes never read it.
+# pressure_from_stress with scale 1); stt is a dummy (sxx) in planar physics, whose probes never read it. The row is a
+# device counter the kernel advances (fixed arguments: the launch can sit in a step graph), so it runs as ONE block
+# (PROBE_RECORD_LAUNCH): every thread reads the row before thread 0 advances it.
 PROBE_RECORD_CODES = {'vx': 0, 'vy': 1, 'sxx': 2, 'syy': 3, 'sxy': 4, 'stt': 5, 'pressure': 6,
                       'pressure_axisymmetric': 7}
+PROBE_RECORD_LAUNCH = ((1, 1, 1), (128, 1, 1))
 _PROBE_RECORD_SOURCE = r"""
 extern "C" __global__
 void acoustic_probe_record(const field_t* vx, const field_t* vy, const field_t* sxx, const field_t* syy,
                            const field_t* sxy, const field_t* stt, const int* cells, const int* codes, float* samples,
-                           int row, int n_probes)
+                           int* row_counter, int n_probes)
 {
-    int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k >= n_probes) return;
-    int c = cells[k];
-    float value;
-    switch (codes[k]) {
-        case 0: value = FLOAD(vx[c]); break;
-        case 1: value = FLOAD(vy[c]); break;
-        case 2: value = FLOAD(sxx[c]); break;
-        case 3: value = FLOAD(syy[c]); break;
-        case 4: value = FLOAD(sxy[c]); break;
-        case 5: value = FLOAD(stt[c]); break;
-        case 6: value = -0.5f * ((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c])) * 1.0f; break;
-        default: value = -((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c]) + (float)FLOAD(stt[c])) / 3.0f * 1.0f;
+    const long long row = row_counter[0];
+    for (int k = threadIdx.x; k < n_probes; k += blockDim.x) {
+        int c = cells[k];
+        float value;
+        switch (codes[k]) {
+            case 0: value = FLOAD(vx[c]); break;
+            case 1: value = FLOAD(vy[c]); break;
+            case 2: value = FLOAD(sxx[c]); break;
+            case 3: value = FLOAD(syy[c]); break;
+            case 4: value = FLOAD(sxy[c]); break;
+            case 5: value = FLOAD(stt[c]); break;
+            case 6: value = -0.5f * ((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c])) * 1.0f; break;
+            default: value = -((float)FLOAD(sxx[c]) + (float)FLOAD(syy[c]) + (float)FLOAD(stt[c])) / 3.0f * 1.0f;
+        }
+        samples[row * n_probes + k] = value;
     }
-    samples[(long long)row * n_probes + k] = value;
+    __syncthreads();
+    if (threadIdx.x == 0) row_counter[0] = (int)(row + 1);
 }
 """
 
 
-def _probe_record_host(vx, vy, sxx, syy, sxy, stt, cells, codes, samples, row, n_probes):
+def _probe_record_host(vx, vy, sxx, syy, sxy, stt, cells, codes, samples, row_counter, n_probes):
     """numpy twin of acoustic_probe_record (a loop over the few probes; float32 arithmetic as _pressure_host)."""
     fields = tuple(_flat(field) for field in (vx, vy, sxx, syy, sxy, stt))
     target = _flat(samples)
-    base = int(row) * int(n_probes)
+    row = int(row_counter[0])
+    row_counter[0] = row + 1
+    base = row * int(n_probes)
     for k in range(int(n_probes)):
         cell, code = int(cells[k]), int(codes[k])
         if code <= 5:
@@ -920,6 +947,49 @@ def _scatter_add_host(field, coefficient, index, weight, n, value):
     """numpy twin of acoustic_scatter_add (np.add.at: repeated indices add like atomicAdd)."""
     cells = index[:int(n)]
     np.add.at(_flat(field), cells, _flat(coefficient)[cells] * weight[:int(n)] * value)
+
+
+def _table_value(table, step_counter, table_start, table_length):
+    """The float32 value a VALUE_TABLE kernel reads at the step counter; None outside the table or for 0 (no write)."""
+    step = int(step_counter[0]) - int(table_start)
+    if not 0 <= step < int(table_length):
+        return None
+    value = np.float32(table[step])
+    return None if value == 0 else value
+
+
+def _scatter_table_host(field, coefficient, index, weight, n, table, step_counter, table_start, table_length):
+    """numpy twin of acoustic_scatter_add with VALUE_TABLE."""
+    value = _table_value(table, step_counter, table_start, table_length)
+    if value is not None:
+        _scatter_add_host(field, coefficient, index, weight, n, value)
+
+
+def _volume_scatter_table_host(axisymmetric):
+    """numpy twin of acoustic_volume_scatter with VALUE_TABLE (planar or AXISYMMETRIC argument set)."""
+    plain = _volume_scatter_host(axisymmetric)
+
+    def volume_scatter_table(*args):
+        value = _table_value(*args[-4:])
+        if value is not None:
+            plain(*args[:-4], value)
+    return volume_scatter_table
+
+
+# Device step counter of the pulse tables: +1 per step (the last launch of a step that has tables; one thread).
+STEP_COUNT_LAUNCH = ((1, 1, 1), (1, 1, 1))
+_STEP_COUNT_SOURCE = r"""
+extern "C" __global__
+void acoustic_step_count(int* step_counter)
+{
+    step_counter[0] += 1;
+}
+"""
+
+
+def _step_count_host(step_counter):
+    """numpy twin of acoustic_step_count."""
+    step_counter[0] += 1
 
 
 def _volume_scatter_host(axisymmetric):
@@ -955,7 +1025,12 @@ _FIELD_SOURCES = {
     'scatter': ('', _SCATTER_SOURCE, 'acoustic_scatter_add'),
     'volume_scatter': ('', _VOLUME_SCATTER_SOURCE, 'acoustic_volume_scatter'),
     'volume_scatter_axisymmetric': (_AXISYMMETRIC, _VOLUME_SCATTER_SOURCE, 'acoustic_volume_scatter'),
+    'scatter_table': (_VALUE_TABLE, _SCATTER_SOURCE, 'acoustic_scatter_add'),
+    'volume_scatter_table': (_VALUE_TABLE, _VOLUME_SCATTER_SOURCE, 'acoustic_volume_scatter'),
+    'volume_scatter_table_axisymmetric': (_AXISYMMETRIC + _VALUE_TABLE, _VOLUME_SCATTER_SOURCE,
+                                          'acoustic_volume_scatter'),
     'probe_record': ('', _PROBE_RECORD_SOURCE, 'acoustic_probe_record'),
+    'step_count': ('', _STEP_COUNT_SOURCE, 'acoustic_step_count'),
 }
 # key -> numpy twin of the single-precision field kernels (half_storage has none: gpu only)
 _FIELD_HOST_TWINS = {
@@ -969,7 +1044,11 @@ _FIELD_HOST_TWINS = {
     'scatter': _scatter_add_host,
     'volume_scatter': _volume_scatter_host(False),
     'volume_scatter_axisymmetric': _volume_scatter_host(True),
+    'scatter_table': _scatter_table_host,
+    'volume_scatter_table': _volume_scatter_table_host(False),
+    'volume_scatter_table_axisymmetric': _volume_scatter_table_host(True),
     'probe_record': _probe_record_host,
+    'step_count': _step_count_host,
 }
 # key -> numba factory of the per-step velocity / stress updates (single only; the rest stays numpy)
 _FIELD_NUMBA_TWINS = {

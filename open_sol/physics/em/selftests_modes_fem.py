@@ -631,8 +631,7 @@ MODES_FEM_SELFTEST_CASES = (
                     'isoparametric wall, mode table). measured = error = the worst item in tolerance units, tolerance '
                     '1. Not yet run with the 1.3 um window.',
         specs=lambda: {'run': _pipe_spec()},
-        check=_check_pipe,
-        heavy=True),
+        check=_check_pipe),
     SelfTestCase(
         name='em_modes_fem_rib',
         label='EM modes on triangles: TFLN rib (S7.5 gain)',

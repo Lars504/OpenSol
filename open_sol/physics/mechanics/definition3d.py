@@ -9,8 +9,9 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES_3D
-from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES,
-                                     MemoryEstimate, combine, host_real_lu_bytes)
+from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, FLOAT64_BYTES,
+                                     FLOAT64_CSR_ENTRY_BYTES, INT32_BYTES, MemoryEstimate, combine,
+                                     host_counted_lu_bytes, host_real_lu_bytes)
 from ...fem.diffusion import lagrange_entries_per_dof
 from ...core.kernels import numba_available
 from ...fem.elasticity3d import (TANGENT_DEVICE_GRADIENT_CACHE_BYTES, TANGENT_GRADIENT_CACHE_BYTES,
@@ -38,7 +39,8 @@ from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_N
                                 apply_temperature_change, background_context, displacement_param, eigen_search_issues,
                                 electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
-                                material_issues, materials_setting, modal_kept_count, modal_study_issues,
+                                material_issues, materials_setting, modal_kept_count, modal_resonance_count,
+                                modal_study_issues,
                                 nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
                                 stiffness_follows_state, support_holders, support_result,
@@ -51,7 +53,8 @@ from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL
                         OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, OPTIONAL_TED_SCHEMA,
                         PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
-from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, coarsest_host_bytes, hierarchy_bytes,
+from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
+                          hierarchy_bytes,
                           level_element_shapes)
 from .pml3d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, PMLPadding
 from .renderer3d import SolidRenderer3D
@@ -611,9 +614,9 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
         return issues
     if validated_linear_precision(vctx, physics_spec) != 'float64':
         issues.append(Issue('error', path,
-                            "the eigenfrequency study runs one 'linear' PCG solve per Lanczos step and needs it in "
-                            "double precision: set the linear solver's precision to double or mixed (or use "
-                            'Automatic)'))
+                            "the eigenfrequency study runs one 'linear' PCG solve per Lanczos step (block_eigen: the "
+                            "float64 brick operator of the 'linear' solver) and needs it in double precision: set the "
+                            "linear solver's precision to double or mixed (or use Automatic)"))
     if settings_values.get('target_frequency'):
         issues.append(Issue('error', path,
                             'target_frequency is set: on a rectangular-cell mesh the eigenfrequency study finds the '
@@ -627,19 +630,26 @@ def _tensor_issues(vctx, physics_spec, settings_values, path):
 
 
 def host_factor_items(name, superlu_label, superlu_bytes, n_unknowns, entries, symmetric=True,
-                      complex_values=False) -> tuple:
+                      complex_values=False, fill=None) -> tuple:
     """Host items of a factor booked by its SuperLU heuristic: ((superlu_label, bytes),) for any name but a MUMPS /
     PARDISO back end / factorization (host_direct.HOST_DIRECT_BACK_ENDS; eigen names through eigen_host_direct first),
     which gets the bytes x host_direct.superlu_bytes_scale with the library's factor kind in place of 'SuperLU L + U'
     in the label, plus its own copies beside the library factor (host_direct.solver_host_bytes of n_unknowns and the
     stored entries: equilibrated operator, row scale; mixed: GMRES vectors), as fem_system_estimate books them
-    (uncalibrated; also used by definition)."""
+    (uncalibrated; also used by definition). fill: a counted cudss_factor.FactorFill (factor_fill on a built mesh)
+    replaces the SuperLU heuristic bytes for MUMPS / PARDISO (nested-dissection orderings, as the count)."""
     if name not in HOST_DIRECT_BACK_ENDS:
         return ((superlu_label, int(superlu_bytes)),)
     library = factor_label(name)
     kind = f"{library} {'LDL^T' if symmetric else 'LU'}"
     label = superlu_label.replace('SuperLU L + U', kind).replace('SuperLU', kind)
-    return ((f'{label} (SuperLU heuristic scaled, uncalibrated)',
+    counted_entries = getattr(fill, 'entries', None)
+    if counted_entries is not None:
+        superlu_bytes = host_counted_lu_bytes(counted_entries, n_unknowns)   # complex128 L + U of the counted triangle
+        if not complex_values:
+            superlu_bytes = superlu_bytes * FLOAT64_CSR_ENTRY_BYTES / COMPLEX128_CSR_ENTRY_BYTES
+        label = label.replace('heuristic', 'counted fill')
+    return ((f"{label} ({'' if counted_entries is not None else 'SuperLU heuristic '}scaled, uncalibrated)",
              int(superlu_bytes * superlu_bytes_scale(name, symmetric=symmetric, complex_values=complex_values))),
             (f'{library} solver copies (equilibrated operator, row scale; mixed: GMRES vectors)',
              solver_host_bytes(n_unknowns, entries, complex_values=complex_values, symmetric=symmetric,
@@ -1171,6 +1181,21 @@ def _time_estimate(settings_values, mesh, context):
             setup += (te.elementwise(elements, 2, 2, FLOAT32_BYTES), te.elementwise(nodes, 6, 6, FLOAT32_BYTES))
         common.update(preconditioner_ops=cycle, iteration_ops=(), setup_ops=setup,   # built in assemble, timed there
                       setup_counters=('multigrid_builds', 'multigrid_build_seconds'))
+    block = _block_eigen_values(context) if context.study.type == EIGENFREQUENCY_STUDY else None
+    if block is not None:   # block_eigen: per active row a K and an M product and one preconditioner application
+        eigenpairs = int(context.count('eigenpairs', 1) or 1)   # no EXTRA_EIGENVALUES (modal.solve_lowest_modes_block)
+        item_bytes = FLOAT32_BYTES if block['precision'] == 'mixed' else FLOAT64_BYTES
+        mass = te.Elementwise(3 * dofs * item_bytes, dofs * item_bytes, launches=1, numba=True,
+                              flops=_BRICK_VISITS_PER_ELEMENT * _BRICK_MASS_VISIT_FLOPS * elements,
+                              flop_bytes=item_bytes)
+        if block['preconditioner'] == 'multigrid':   # the linear solver's hierarchy, or one built for the solve
+            cycle, setup = _multigrid_ops(_window_shape(mesh), FLOAT32_BYTES, brick_product)
+            preconditioner = dict(preconditioner_ops=cycle, setup_ops=setup)
+        else:
+            preconditioner = dict(preconditioner_ops=(te.elementwise(nodes, 9, 3, item_bytes),))
+        return context.solver_work('eigen', unknowns=float(dofs), dimensions=3, solves=1.0, factorizations=0.0,
+                                   eigenpairs=eigenpairs, longest_axis=context.longest_axis(),
+                                   product_ops=(brick_product(item_bytes), mass), **preconditioner)
     if context.study.type == EIGENFREQUENCY_STUDY:
         eigenpairs = int(context.count('eigenpairs', 1) or 1) + EXTRA_EIGENVALUES
         resolved = context.solvers.get('eigen')
@@ -1254,10 +1279,10 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
         parts = [context.solver_work('eigen', unknowns=unknowns, eigenpairs=eigenpairs, plan_reused=True,
                                      pencil_terms=3 if loaded else 2, **shift_work, **factor)]
         if _static_state_solved(settings_values, context, context.study.type == EIGENFREQUENCY_STUDY):
-            # stress stiffening: solve_static_state factorises K_ff and solves once before the pencils
+            # stress stiffening: solve_static_state factorises K_ff (planned from the host CSR) and solves once
+            # before the pencils
             parts.append(context.solver_work('linear', unknowns=unknowns, solves=1.0, solves_kind='exact',
-                                             factorizations=1.0, factorizations_kind='exact', device_values=True,
-                                             **scales))
+                                             factorizations=1.0, factorizations_kind='exact', **scales))
         films = _squeeze_film_time(mesh, context)
         return te.combine(parts + ([] if films is None else [films]))
     if context.study.type == FREQUENCY_RESPONSE_STUDY:   # the study's harmonic_factorizations (sweep_method)
@@ -1275,12 +1300,12 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     if nonlinear:   # every static solve is a Newton loop: a tangent factor per iteration
         return _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind, per_step)
     refactor = stiffness_follows_state(context)
-    # system_fem3d's DiffusionDirectSolver factorises the device CSR (piezoelectric: PiezoSystem's own route)
+    # system_fem3d's DiffusionDirectSolver factorises the host K_ff: planned from it, later ones upload its values
+    # (piezoelectric: PiezoSystem's own host route)
     return context.solver_work('linear', unknowns=unknowns, solves=solves, **scales,
                                solves_kind=kind, factorizations=solves if refactor else 1.0,
                                factorizations_kind=kind if refactor else 'exact', per_step=per_step,
-                               factorizations_per_step=per_step and refactor,
-                               device_values=not settings_values.get('piezoelectric'))
+                               factorizations_per_step=per_step and refactor)
 
 
 def _squeeze_film_unknowns(mesh) -> int:
@@ -1419,8 +1444,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     # fills far less than a compact 3D mesh), else the 3D growth law
     fill = factor_fill(mesh, order, factored, 4 if piezoelectric else 3, 3)
     if static_solve:
-        # system_fem3d uploads the reduced K_ff (or tangent) CSR with the first solve; in an eigenfrequency study
-        # solve_static_state releases that factor before the pencil's is planned
+        # system_fem3d plans the K_ff factor from the host CSR at the first solve (cuDSS: its lower triangle on the
+        # device); in an eigenfrequency study solve_static_state releases that factor before the pencil's is planned
         held, passing, factors = linear_factor_items(factored, factored_entries, linear_back_end, on_gpu, fill,
                                                      kept=not eigenfrequency)
         run_items += held
@@ -1472,8 +1497,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
              _TET_ELECTRIC_NODAL_OUTPUTS * FLOAT64_BYTES * (scalar_dofs + local * elements))])
     if settings_values.get('geometric_nonlinearity'):   # the Newton tangent replaces K in the 'linear' factor
         # TangentAssembler3D: rule gradients + weights (kept up to its cache limit), the int32 scatter map of every
-        # element-block entry, element vector dofs and the free-free restriction (indices, take) on the stiffness's
-        # kept block pattern; building the restriction: int64 rows of every entry and the gathered renumbering
+        # element-block entry, element vector dofs and the free-free restriction (int32 indices and take, written
+        # directly by the restriction loop) on the stiffness's kept block pattern; building the restriction (numpy
+        # twin): int64 rows of every entry and the gathered renumbering
         rule_points = _TANGENT_RULE_POINTS[order]
         gradient_bytes = 0 if device_tangent else min(FLOAT64_BYTES * elements * rule_points * (3 * local + 1),
                                                       TANGENT_GRADIENT_CACHE_BYTES)   # device: kept on the GPU
@@ -1482,7 +1508,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             6 * FLOAT64_BYTES * 3 * scalar_dofs),
                            ('Newton tangent assembler: rule gradients, scatter map, free restriction',
                             gradient_bytes + INT32_BYTES * coo_entries + _INT64_BYTES * 3 * local * elements
-                            + (INT32_BYTES + _INT64_BYTES) * entries),
+                            + 2 * INT32_BYTES * entries),
                            ('Newton tangent free restriction build (a run item)',
                             (2 * _INT64_BYTES + 3) * entries)])
         if settings_values.get('tangent_update') == 'when_slow':   # modified Newton keeps the factor's tangent values
@@ -1505,7 +1531,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                                                 f'SuperLU factor of {pencil} ({kind}, heuristic)',
                                                 complex_factor * factor_bytes, factored, factored_entries,
                                                 complex_values=complex_factor > 1,
-                                                symmetric=_trivial_bloch_phase(settings_values)))
+                                                symmetric=_trivial_bloch_phase(settings_values), fill=fill))
         # a PML, loss or resistive load: the complex symmetric pencil runs eigs_shifted (device Krylov-Schur on a
         # DevicePencil); a real or Hermitian (Bloch phase) one eigsh_shifted
         pml = bool(_pml_faces(settings_values))
@@ -1518,7 +1544,9 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
             term_bytes=FLOAT64_BYTES if loaded else eigen_bytes,
             # a Bloch phase: Hermitian or not vouched (the device check runs and fails), full terms
             symmetric=_trivial_bloch_phase(settings_values), checked=not _trivial_bloch_phase(settings_values),
-            dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis)
+            dimensions=fill, complex_eigs=complex_eigs, n_basis=n_basis,
+            # the elastic mass couples one component per row (piezoelectric: the pencil's count, an upper bound)
+            mass_entries=None if piezoelectric else factored_entries // 3)
         host_items.extend((name, complex_factor * value) for name, value in _eigen_host_items(
             context, factored, rigid_motions, pml, basis_on_device))
         host_items.extend(eigen_host_items)
@@ -1541,13 +1569,14 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
                             6 * _COMPLEX_BYTES * factored)])
         if host_factor:
             host_items.extend(host_factor_items(linear_back_end, 'complex SuperLU factor of the pencil (heuristic)',
-                                                2 * factor_bytes, factored, factored_entries, complex_values=True))
+                                                2 * factor_bytes, factored, factored_entries, complex_values=True,
+                                                fill=fill))
         host_items.extend(reduced_sweep_memory_items(context, factored, factored_entries))   # adaptive / modal
     elif host_factor:
         what = 'the coupled operator' if piezoelectric else 'K'
         # piezoelectric: the coupled operator is real symmetric indefinite (LDL^T on MUMPS / PARDISO as well)
         host_items.extend(host_factor_items(linear_back_end, f'SuperLU factor of {what} (float64, heuristic)',
-                                            factor_bytes, factored, factored_entries))
+                                            factor_bytes, factored, factored_entries, fill=fill))
     return MemoryEstimate.from_items(device_items, host_items=host_items, run_items=run_items,
                                      transient_items=transient_items, **cudss_external(factors))
 
@@ -1603,7 +1632,30 @@ def _memory_estimate(settings_values, mesh, context):
         # float64 lambda x V, mu x V, V and the solid mask of the fine level while the level means are formed
         transient_items.append(('multigrid build', 'multigrid build (float64 volume-weighted Lame values)',
                                 (3 * FLOAT64_BYTES + BOOL_BYTES) * elements))
-    if context.spec.study.type == EIGENFREQUENCY_STUDY:
+    block = _block_eigen_values(context)
+    if context.spec.study.type == EIGENFREQUENCY_STUDY and block is not None:
+        # system3d._lowest_modes_block: density copies (+ float32), the block stores (block_eigen.block_bytes), the
+        # float32 operator copies when the linear solver keeps none (mixed), a private multigrid hierarchy when the
+        # linear solver has none (preconditioner multigrid) and the BlockCycle work rows of the block
+        from ...solvers.block_eigen import block_bytes, block_size
+        n_wanted = max(min(modal_resonance_count(context), dofs - 1), 1)
+        mixed_block = block['precision'] == 'mixed'
+        eigen_bytes = ((2 * FLOAT64_BYTES + BOOL_BYTES + FLOAT32_BYTES) * elements
+                       + block_bytes(dofs, n_wanted, block['guard_vectors'], block['precision']))
+        if mixed_block and not (mixed or double_cycle):
+            eigen_bytes += 2 * FLOAT32_BYTES * elements + 6 * FLOAT32_BYTES * nodes
+        if block['preconditioner'] == 'multigrid':
+            eigen_bytes += block_cycle_bytes(_window_shape(mesh), block_size(n_wanted, block['guard_vectors']),
+                                             FLOAT32_BYTES)
+            if not multigrid:
+                eigen_bytes += hierarchy_bytes(_window_shape(mesh), FLOAT32_BYTES)
+                host_items = (('multigrid coarsest build (float64, transient)',
+                               coarsest_host_bytes(_window_shape(mesh))),)
+        transient_items.append(('eigen solve', 'block eigen solve (search block, products, copies)', eigen_bytes))
+        host_items = tuple(host_items) + (
+            (f'eigenvectors ({n_wanted} x float64)', n_wanted * FLOAT64_BYTES * dofs),
+            (f'mode shapes ({modal_kept_count(context)} x float64)', modal_kept_count(context) * FLOAT64_BYTES * dofs))
+    elif context.spec.study.type == EIGENFREQUENCY_STUDY:
         # density copy + masked copy, massless mask; free-dof index (int64), Lanczos vector, per-step gathers
         transient_items.append(('eigen solve', 'eigen solve vectors', (2 * FLOAT64_BYTES + BOOL_BYTES) * elements
                                 + 4 * FLOAT64_BYTES * dofs))
@@ -1614,6 +1666,13 @@ def _memory_estimate(settings_values, mesh, context):
     system = MemoryEstimate.from_items(items, build_extra=build_extra, host_items=host_items,
                                        transient_items=transient_items)
     return combine((fields, system))
+
+
+def _block_eigen_values(context):
+    """Resolved values of the 'eigen' role when it is a block_eigen node (MemoryContext / TimeContext solvers), else
+    None."""
+    resolved = (context.solvers or {}).get('eigen')
+    return resolved.values if resolved is not None and resolved.solver_type.name == 'block_eigen' else None
 
 
 def _eigen_host_items(context, dofs, rigid_motions=0, pml=False, basis_on_device=False):
@@ -1958,6 +2017,11 @@ SOLID_MECHANICS_3D = PhysicsType(
                 'factor (memory: a few float64 vectors on the run backend, the Lanczos basis on the host; the cpu '
                 'backend runs numpy versions of the matrix-free kernels, the stiffness product numba-compiled when '
                 'numba is installed, much slower per CG iteration than the GPU). '
+                'An eigen solver node of type block_eigen (opt-in) replaces the Lanczos search by factor-free block '
+                'iterations (LOBPCG) on the stiffness and mass products, preconditioned by one multigrid V-cycle (or '
+                'block Jacobi) per vector and iteration, no inner CG solves: its own residual tolerance sets the '
+                'accuracy (frequency error ~ its square), memory 9 vectors of the system size per block row on the '
+                'run backend, mixed precision by default. '
                 'Supports held at '
                 '0, loads / thermal strain ignored (no prestress); one snapshot per mode labelled "resonance k: f = '
                 '<Hz> Hz" with the mode shape scaled to a peak node |u| of 1 m (strain and stress per that shape, no '
@@ -2038,10 +2102,11 @@ SOLID_MECHANICS_3D = PhysicsType(
     default_study={'type': 'stationary'},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
     # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy). Automatic is the double factor:
-    # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined)
+    # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined).
+    # block_eigen (opt-in, tensor meshes only by its grids): LOBPCG on the brick products and the multigrid3d V-cycle
     solver_roles={'linear': CG_ELASTIC_3D_LINEAR_ROLE,
                   'eigen': eigen_role(MODAL_STUDIES, mixed_factorization=True,
-                                      auto_factorizations={'tetrahedra': 'cudss'})},
+                                      auto_factorizations={'tetrahedra': 'cudss'}, block_eigen=True)},
     frequency_sweep_methods=('direct', 'adaptive', 'modal'),   # tetrahedra: frequency_response.HarmonicSystem
     backends=('gpu', 'cpu'),   # cpu: numpy twins of the kernels3d RawKernels (Gauss points), numba product
     create=_create_solid_3d,

@@ -18,13 +18,14 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
-from ...core.backend import to_host
+from ...core.backend import cp, to_host
+from ...core.kernels import raw_twin
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 
 from ...core.constants import C0, DTYPE, EPS0, MU0
 from ..em.boundaries import BCType
 from ..em.cross_section_modes import CrossSectionMaterials, mode_overlap, solve_cross_section_modes
-from ..em.mode_ports import _port_correction, _quadrature_warnings
+from ..em.mode_ports import _quadrature_warnings
 from ..em.results import _normalizing_spectrum, _per_cw, _shared_waveform_spectrum
 from .boundaries3d import AXES
 from .monitors3d import PlaneFlux3D
@@ -37,6 +38,40 @@ _TRACKING_WARN_OVERLAP = 0.9   # monitor: a followed mode overlapping its neighb
 _PML_WARN_FRACTION = 1e-2      # a selected mode with more of its energy in the transverse PML warns
 _NOT_SOLVED = 'mode not solved yet: finalize or step first'
 AXIS_PERMITTIVITY = ('eps_xx', 'eps_yy', 'eps_r')   # MaterialGrid array of E_x / E_y / E_z (eps_r if not allocated)
+_PAIR_THREADS = 256
+
+# Both corrections of one kind (H_u / H_v or E_u / E_v, same layer) in one launch: plane sample n = a n_v + b sits at
+# base + a stride_u + b stride_v of its float32 field; coefficient / incident planes contiguous in (u, v) order.
+_mode_port_pair_3d_gpu = cp.RawKernel(r'''
+typedef long long idx_t;
+extern "C" __global__
+void mode_port_pair_3d(float* __restrict__ field_a, float* __restrict__ field_b,
+                       const float* __restrict__ coef_a, const float* __restrict__ coef_b,
+                       const float* __restrict__ re_a, const float* __restrict__ im_a,
+                       const float* __restrict__ re_b, const float* __restrict__ im_b,
+                       idx_t base, int n_u, int n_v, idx_t stride_u, idx_t stride_v, float signal, float quadrature)
+{
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= n_u * n_v) return;
+    int a = n / n_v, b = n - a * n_v;
+    idx_t o = base + (idx_t)a * stride_u + (idx_t)b * stride_v;
+    field_a[o] += coef_a[n] * (re_a[n] * signal + im_a[n] * quadrature);
+    field_b[o] += coef_b[n] * (re_b[n] * signal + im_b[n] * quadrature);
+}
+''', 'mode_port_pair_3d')
+
+
+def _mode_port_pair_3d_host(field_a, field_b, coef_a, coef_b, re_a, im_a, re_b, im_b, base, n_u, n_v, stride_u,
+                            stride_v, signal, quadrature):
+    for field, coef, re, im in ((field_a, coef_a, re_a, im_a), (field_b, coef_b, re_b, im_b)):
+        flat = field.reshape(-1)
+        item = flat.itemsize
+        plane = np.lib.stride_tricks.as_strided(flat[int(base):], shape=(int(n_u), int(n_v)),
+                                                strides=(int(stride_u) * item, int(stride_v) * item))
+        plane += coef * (re * signal + im * quadrature)
+
+
+_mode_port_pair_3d = raw_twin('em3d.mode_port_pair', _mode_port_pair_3d_gpu, _mode_port_pair_3d_host)
 
 
 def port_axes(normal_axis):
@@ -191,9 +226,10 @@ def _materials_digest(materials) -> bytes:
     return digest.digest()
 
 
-def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=None):
+def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=None, warm_guard=False):
     """CrossSectionSolve of the layer at the FDTD numerical frequency of omega (materials at omega); within one
-    calibration round (physics.port_mode_solves) ports whose layers hold equal materials share one solve per omega."""
+    calibration round (physics.port_mode_solves) ports whose layers hold equal materials share one solve per omega;
+    warm_guard: a random share joins start_vector (cross_section_modes.solve_prepared_modes, E5)."""
     engine = physics.engine
     u, v = port_axes(normal_axis)
     widths = (engine.widths[u], engine.widths[v])
@@ -209,7 +245,8 @@ def solve_port_modes(physics, normal_axis, layer, omega, n_modes, start_vector=N
     # no 'eigen' role (em3d sub file): a private host SuperLU runtime, its Arnoldi on the device on the gpu backend
     eigen_solver = ArpackShiftInvertSolver(device_arnoldi=engine.xp is not np)
     solve = solve_cross_section_modes(widths, port_boundary(engine.config, normal_axis), pml_dx, materials,
-                                      numerical_omega, n_modes, start_vector=start_vector, eigen_solver=eigen_solver)
+                                      numerical_omega, n_modes, start_vector=start_vector, eigen_solver=eigen_solver,
+                                      warm_guard=warm_guard)
     if solves is not None:
         solves[key] = solve
     return solve
@@ -268,7 +305,8 @@ class ModeSource3D:
         self.beta = None
         self.warnings = []
         self._incident = None       # [(component, layer, coefficient key, re, im)] device float32 planes
-        self._coefficients = {}     # key -> live db / cb plane (u, v)
+        self._coefficients = {}     # key -> live db / cb plane (u, v), contiguous
+        self._launches = {}         # kind 'h' / 'e' -> (fields, grid, block, fixed args) of its pair launch
 
     @property
     def solved(self) -> bool:
@@ -288,16 +326,20 @@ class ModeSource3D:
             origin[d] = self.cell
             box = engine.xp.empty(shape, dtype=DTYPE)
             engine.face_cb_into(box, axis, origin, shape)
-            self._coefficients[key] = _plane(box, d, 0)
+            self._coefficients[key] = engine.xp.ascontiguousarray(_plane(box, d, 0))
         ids = _plane(engine.material_id, d, self.h_layer)   # H edges take their lower cell (kernels3d)
         mu = engine.table_mu[ids] * DTYPE(MU0)
         loss = engine.table_sigma_m[ids] * DTYPE(0.5 * engine.dt) / mu
-        self._coefficients['db'] = ((DTYPE(engine.dt) / mu) / (DTYPE(1.0) + loss)).astype(DTYPE)
+        self._coefficients['db'] = engine.xp.ascontiguousarray(((DTYPE(engine.dt) / mu) / (DTYPE(1.0) + loss))
+                                                               .astype(DTYPE))
+        self._launches = {}   # new coefficient planes (and incident planes after a solve): rebuilt at the next step
 
     def _solve(self, engine):
         d = self.normal_axis
         u, v = port_axes(d)
-        solve = solve_port_modes(self.physics, d, self.cell, self._omega, max(self.mode_number + 2, 4))
+        # E5: a re-solve (a later run's first step) starts from the last solve's modes (random share: missed modes)
+        solve = solve_port_modes(self.physics, d, self.cell, self._omega, max(self.mode_number + 2, 4),
+                                 start_vector=self.modes or None, warm_guard=bool(self.modes))
         if len(solve.modes) < self.mode_number:
             raise ValueError(f'{self.label}: the port plane has {len(solve.modes)} modes, mode_number '
                              f'{self.mode_number} does not exist (enlarge the plane or pick a lower mode)')
@@ -315,8 +357,9 @@ class ModeSource3D:
                        ('h' + AXES[v], self.h_layer, 'db', sign * inverse_h * e_u),
                        ('e' + AXES[u], self.cell, 'cb_u', sign * inverse_e * h_v),
                        ('e' + AXES[v], self.cell, 'cb_v', -sign * inverse_e * h_u))
-        self._incident = [(component, layer, key, engine.xp.asarray(np.real(values), dtype=DTYPE),
-                           engine.xp.asarray(np.imag(values), dtype=DTYPE))
+        self._incident = [(component, layer, key,
+                           engine.xp.ascontiguousarray(engine.xp.asarray(np.real(values), dtype=DTYPE)),
+                           engine.xp.ascontiguousarray(engine.xp.asarray(np.imag(values), dtype=DTYPE)))
                           for component, layer, key, values in corrections]
         self.warnings = (list(solve.info.get('warnings', [])) + _mode_warnings(self.label, mode, self.mode_number)
                          + _quadrature_warnings(self.temporal, self.label))
@@ -331,13 +374,33 @@ class ModeSource3D:
         self._correct(fields, t, 'e')
 
     def _correct(self, fields, t, kind):
+        """Both corrections of `kind` in one launch (fixed arguments cached per field set; fields rewritten in place)."""
         if self._incident is None:
             return
-        signal, quadrature = DTYPE(self.temporal(t)), DTYPE(self.temporal.quadrature(t))
-        for component, layer, key, incident_re, incident_im in self._incident:
-            if component[0] == kind:
-                _port_correction(self._coefficients[key], incident_re, incident_im, signal, quadrature,
-                                 _plane(getattr(fields, component), self.normal_axis, layer))
+        launch = self._launches.get(kind)
+        if launch is None or launch[0] is not fields:
+            launch = self._launches[kind] = (fields, *self._pair_launch(fields, kind))
+        _, grid, block, args = launch
+        _mode_port_pair_3d(grid, block, (*args, DTYPE(self.temporal(t)), DTYPE(self.temporal.quadrature(t))))
+
+    def _pair_launch(self, fields, kind):
+        """(grid, block, fixed args) of the pair launch of `kind` (its two corrections share one layer)."""
+        pair = [entry for entry in self._incident if entry[0][0] == kind]
+        layers = {layer for _, layer, _, _, _ in pair}
+        if len(pair) != 2 or len(layers) != 1:
+            raise ValueError(f'{self.label}: expected two {kind} corrections on one layer, got {len(pair)}')
+        d = self.normal_axis
+        u, v = port_axes(d)
+        target = getattr(fields, pair[0][0])
+        strides = tuple(int(stride) // target.itemsize for stride in target.strides)
+        n_u, n_v = target.shape[u], target.shape[v]
+        arrays = []
+        for component, _, key, incident_re, incident_im in pair:
+            arrays.append((getattr(fields, component), self._coefficients[key], incident_re, incident_im))
+        (field_a, coef_a, re_a, im_a), (field_b, coef_b, re_b, im_b) = arrays
+        args = (field_a, field_b, coef_a, coef_b, re_a, im_a, re_b, im_b, np.int64(layers.pop() * strides[d]),
+                np.int32(n_u), np.int32(n_v), np.int64(strides[u]), np.int64(strides[v]))
+        return ((n_u * n_v + _PAIR_THREADS - 1) // _PAIR_THREADS,), (_PAIR_THREADS,), args
 
     def mode_table(self):
         """Rows per solved mode (MODE_TABLE_COLUMNS); ValueError before the solve."""

@@ -71,8 +71,7 @@
         {"name": "heated_walls", "type": "heat_flux", "selection": ["y_lo", "y_hi"], "params": {"flux": "q_w"},
          "enabled": true}
       ],
-      "every": 1,
-      "solvers": {"linear": "cg"}
+      "every": 1
     }
   ],
   "couplings": [
@@ -81,9 +80,6 @@
   ],
   "mesh": {"mode": "uniform", "dx": "dx_cell", "max_ratio": 1.15, "wavelength_min": null,
            "points_per_wavelength": 20.0, "refinements": []},
-  "solvers": [
-    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-12}}
-  ],
   "study": {"type": "time_dependent",
             "settings": {"duration": "t_end", "output_interval": 0.0},
             "stored_fields": ["heat.T", "heat.T_rise", "fluid.u_x", "fluid.pressure"],

@@ -88,14 +88,14 @@ _SPEC_FIELD_HELP = {
                          'each role). A node no physics uses is a warning.',
     'ModelSpec.solver_defaults': 'Model-wide solver choices (SolverDefaultsSpec).',
     'SolverSpec.name': 'Identifier, unique among solvers; PhysicsSpec.solvers refers to it.',
-    'SolverSpec.type': 'Registered solver type: pcg, line_block, sparse_direct, arpack_shift_invert, explicit_kernels '
-                       '(see solvers: roles, settings and which physics use them).',
+    'SolverSpec.type': 'Registered solver type: pcg, line_block, sparse_direct, arpack_shift_invert, block_eigen, '
+                       'explicit_kernels (see solvers: roles, settings and which physics use them).',
     'SolverSpec.settings': 'Values of the solver type settings by name (see solvers); missing keys take the defaults.',
     'SolverDefaultsSpec.backend': "auto (default) | gpu | cpu: where the run computes (api check / run backend=, CLI "
                                   "--backend override it); auto = gpu when cupy is installed, else cpu. cpu needs "
                                   "every physics type to list it in its backends (the Backends line of each physics "
                                   "type; else a validation error per physics) and every solver to fit it (pcg, line_block, sparse_direct without "
-                                  "cusolver_qr, arpack_shift_invert do; explicit_kernels does not); on cpu the "
+                                  "cusolver_qr, arpack_shift_invert, block_eigen do; explicit_kernels does not); on cpu the "
                                   "device memory estimate counts against the host RAM.",
     'SolverDefaultsSpec.precision': (
         "auto (default) | single | double | mixed | half_storage: model-wide solver precision. auto = each solver's "
@@ -104,7 +104,7 @@ _SPEC_FIELD_HELP = {
         "override): Automatic roles and nodes without a precision setting. Solvers that do not offer it keep their "
         "default (a validation info names them), e.g. double makes pcg and the time steppers double while "
         "sparse_direct / arpack_shift_invert / banded are double anyway; mixed reaches only pcg nodes and Automatic "
-        "pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block nodes. A node with "
+        "pcg of heat, electric_currents, electrostatics and magnetostatics, and line_block and block_eigen nodes. A node with "
         "pcg preconditioner multigrid and no precision of its own fails with mixed (set the node precision). "
         "check.json / summary.json solvers record the precision each role resolved to."),
     'SolverDefaultsSpec.memory_check': (
@@ -465,16 +465,18 @@ _SPEC_FIELD_HELP = {
                              'kept (a warning). false: only the last value keeps its snapshots, earlier values keep '
                              'their derived values and results only.',
     'SweepSpec.reuse_build': 'true: build once and run every value on that build: the swept parameter (and the '
-                             'parameters depending on it) may reach only feature values that follow a reused build '
-                             '(solid_mechanics on triangles / solid_mechanics_3d on tetrahedra: body_force, '
-                             'boundary_load, segment_load, displacement and prescribed_displacement_domain values of '
-                             'parameters only, no x / y / z), derived values, analytic / derived curves and study '
-                             'settings; any other use (geometry, mesh, materials, physics / solver / coupling settings, '
-                             'stored cuts) is a validation error, as are the time_dependent and optimization studies '
-                             'and parity_sectors. Each value then re-sets those loads and reruns the study from the '
-                             'previous state (nonlinear solids start Newton from it; summary sweep builds = 1). A '
-                             'model with a physics that cannot rerun (any other type) is rebuilt per value (an info '
-                             'line). false (default): one build per value.',
+                             'parameters depending on it) may reach only values that follow a reused build, with '
+                             'parameters only (no x / y / z / t): feature values and physics settings whose help says '
+                             'so (loads, held values, voltages, doping, em_eme wavelength, magnetic_fields_ac '
+                             'frequency, ...), material property values read by no EM type (repainted, then every '
+                             'solver of the mesh re-reads them; not on 3D tensor meshes), derived values, analytic / '
+                             'derived curves and study settings; any other use (geometry, mesh, other material values, '
+                             'dispersion, physics / solver / coupling settings, stored cuts) is a validation error, as '
+                             'are the time_dependent and optimization studies and parity_sectors. Each value then '
+                             're-sets those values and reruns the study from the previous state (nonlinear solids start '
+                             'Newton from it; summary sweep builds = 1); followed values are not range-checked per '
+                             'value. A model with a physics that cannot rerun (no reset_records) is rebuilt per value '
+                             '(an info line). false (default): one build per value.',
     'DerivedValueSpec.name': 'Identifier, unique among derived values; its key in summary.json derived.',
     'DerivedValueSpec.expression': 'source null: expression of parameters, x, y (3D models: z), t and output '
                                    'fields (<physics>_<field>, or <field> when one physics alone provides it); over '
@@ -964,7 +966,10 @@ _RESULTS_NOTES = (
         'batched_operators, worst_accepted_residual} (shifted: heat thermal noise, em_fdfd_bor, em_modes; linear: '
         'em_fdfd_ez / _hz), arpack_shift_invert '
         '{eigen_solves, eigen_factorizations, operator_applications (group-index solves included), eigen_unconverged, '
-        'eigen_seconds} (eigen: em_modes, em_fdfd_* in an eigenfrequency study), explicit_kernels {} (stepper); the '
+        'eigen_seconds} (eigen: em_modes, em_fdfd_* in an eigenfrequency study), block_eigen {eigen_solves, '
+        'eigen_iterations, eigen_single_iterations, eigen_double_iterations, operator_applications, mass_applications, '
+        'preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves, eigen_block_size, '
+        'eigen_last_residual} (eigen: solid_mechanics_3d on brick meshes, opt-in), explicit_kernels {} (stepper); the '
         'physics\' own counters (loops and solves outside a role) em_fdfd_* {solves}; em_fdfd_nonlinear {channels, '
         'sweeps, solves}; magnetic_fields_ac {solves}; em_modes {solves, modes_found, solve_seconds, '
         'line_block_fallbacks with a line_block shifted node}; '
@@ -1978,7 +1983,10 @@ def _solvers_section(registry, physics_types):
                                      for backend, (type_name, settings) in solver_role.backend_defaults.items()},
             'automatic_by_grid': {grid: {'type': type_name, 'settings': _plain(settings)}
                                   for grid, (type_name, settings) in solver_role.grid_defaults.items()},
-            'automatic_by_study': {f'{study} study, {grid} mesh': {'type': type_name, 'settings': _plain(settings)}
+            'automatic_by_study': {f"{study} study, {grid} mesh{backends}": {'type': type_name,
+                                                                              'settings': _plain(settings)}
+                                   for backends in [''.join(f', {name} backend'
+                                                            for name in solver_role.study_default_backends)]
                                    for (study, grid), (type_name, settings) in solver_role.study_defaults.items()},
             'auto_back_end_by_grid': dict(solver_role.auto_back_ends),
             'precisions': list(solver_role.precisions),

@@ -460,30 +460,45 @@ def peak_cell(profile):
 
 
 def _normalised_mode(line, active_cells, sqrt_rho, eigenvector, k_tilde, k, omega, omega_tilde, flux_factor):
-    """SlabMode of one eigenvector: 1 W/m of discrete flux (bilinear |1/2 sum g u^2 w s| = 1 for evanescent / strongly
-    lossy modes, unit peak if both vanish), real > 0 at peak_cell (lo-most of mirror-equal peaks)."""
+    """SlabMode of one eigenvector (_normalised_modes of one column)."""
+    return _normalised_modes(line, active_cells, sqrt_rho, np.asarray(eigenvector)[:, None], [k_tilde], [k], omega,
+                             omega_tilde, [flux_factor])[0]
+
+
+def _normalised_modes(line, active_cells, sqrt_rho, eigenvectors, k_tilde, k, omega, omega_tilde, flux_factors):
+    """SlabModes of the (n_active, n) eigenvector columns, one row each in one pass: 1 W/m of discrete flux (bilinear
+    |1/2 sum g u^2 w s| = 1 for evanescent / strongly lossy modes, unit peak if both vanish), real > 0 at peak_cell."""
     widths = np.asarray(line.cell_widths, dtype=np.float64)
-    profile = np.zeros(widths.size, dtype=np.complex128)
-    profile[active_cells] = eigenvector / sqrt_rho
-    transverse_factor = np.zeros(widths.size, dtype=np.complex128)
-    transverse_factor[active_cells] = k_tilde / (
+    k_tilde = np.asarray(k_tilde, dtype=np.complex128)
+    k = np.asarray(k, dtype=np.complex128)
+    n_modes = k_tilde.size
+    profiles = np.zeros((n_modes, widths.size), dtype=np.complex128)   # one mode per row (row sums as 1D sums)
+    profiles[:, active_cells] = (np.asarray(eigenvectors) / np.asarray(sqrt_rho)[:, None]).T
+    transverse_factors = np.zeros((n_modes, widths.size), dtype=np.complex128)
+    transverse_factors[:, active_cells] = k_tilde[:, None] / (
         omega_tilde * _field_constant(line) * np.asarray(line.cell_weight, dtype=np.complex128)[active_cells])
-    flux_weight = np.conj(transverse_factor) * flux_factor
-    intensity = np.abs(profile) ** 2 * widths
-    flux = float(np.real(np.sum(flux_weight * intensity)))
-    if abs(flux) >= _POWER_FLOOR * float(np.sum(np.abs(transverse_factor) * intensity)):
-        norm = 0.5 * abs(flux)
-    else:
-        norm = abs(0.5 * np.sum(transverse_factor * profile ** 2 * _stretched_widths(line)))
-    profile = profile / (math.sqrt(norm) if norm > 0.0 else float(np.max(np.abs(profile))))
-    peak = peak_cell(profile)
-    profile = profile * (np.conj(profile[peak]) / abs(profile[peak]))
-    magnitude = np.abs(profile)
-    power = 0.5 * float(np.real(np.sum(flux_weight * magnitude ** 2 * widths)))
-    edge_amplitude = max(magnitude[active_cells[0]], magnitude[active_cells[-1]]) / magnitude[peak]
-    return SlabMode(n_eff=complex(k * C0 / omega), k_tilde=complex(k_tilde), k=complex(k), omega=omega,
-                    omega_tilde=omega_tilde, profile=profile, transverse_factor=transverse_factor, power=power,
-                    edge_amplitude=float(edge_amplitude))
+    flux_weights = np.conj(transverse_factors) * np.asarray(flux_factors, dtype=np.complex128)[:, None]
+    intensities = np.abs(profiles) ** 2 * widths
+    fluxes = np.real(np.sum(flux_weights * intensities, axis=1))
+    flux_floors = _POWER_FLOOR * np.sum(np.abs(transverse_factors) * intensities, axis=1)
+    bilinear_norms = np.abs(0.5 * np.sum(transverse_factors * profiles ** 2 * _stretched_widths(line), axis=1))
+    norms = np.where(np.abs(fluxes) >= flux_floors, 0.5 * np.abs(fluxes), bilinear_norms)
+    scales = np.where(norms > 0.0, np.sqrt(norms), np.max(np.abs(profiles), axis=1))
+    profiles /= scales[:, None]
+    magnitudes = np.abs(profiles)   # peak_cell per row: lo-most cell within the tie of the row maximum
+    peaks = np.argmax(magnitudes >= (1.0 - _PEAK_TIE_RELATIVE) * np.max(magnitudes, axis=1, keepdims=True), axis=1)
+    rows = np.arange(n_modes)
+    peak_values = profiles[rows, peaks]
+    profiles *= (np.conj(peak_values) / np.abs(peak_values))[:, None]
+    magnitudes = np.abs(profiles)
+    powers = 0.5 * np.real(np.sum(flux_weights * magnitudes ** 2 * widths, axis=1))
+    edge_amplitudes = (np.maximum(magnitudes[:, active_cells[0]], magnitudes[:, active_cells[-1]])
+                       / magnitudes[rows, peaks])
+    return [SlabMode(n_eff=complex(k[index] * C0 / omega), k_tilde=complex(k_tilde[index]), k=complex(k[index]),
+                     omega=omega, omega_tilde=omega_tilde, profile=profiles[index],
+                     transverse_factor=transverse_factors[index], power=float(powers[index]),
+                     edge_amplitude=float(edge_amplitudes[index]))
+            for index in range(n_modes)]
 
 
 def solve_slab_modes(line, omega, n_modes, dt=None, normal_spacing=None, drop_pml_modes=True):
@@ -523,10 +538,10 @@ def solve_slab_modes(line, omega, n_modes, dt=None, normal_spacing=None, drop_pm
     eigenvalues = np.asarray(eigenvalues, dtype=np.complex128)
     k_tilde = _transverse_wavenumber(eigenvalues)
     k = _propagation_constant(k_tilde, normal_spacing)
-    order = _ranking_order(eigenvalues, eigenvalue_scale)[:n_modes]
-    return [_normalised_mode(line, active_cells, sqrt_rho, eigenvectors[:, index], k_tilde[index], k[index], omega,
-                             omega_tilde, _discrete_flux_factor(k[index], omega, normal_spacing, dt))
-            for index in order]
+    order = np.asarray(_ranking_order(eigenvalues, eigenvalue_scale)[:n_modes], dtype=np.intp)
+    flux_factors = [_discrete_flux_factor(k[index], omega, normal_spacing, dt) for index in order]
+    return _normalised_modes(line, active_cells, sqrt_rho, np.asarray(eigenvectors)[:, order], k_tilde[order],
+                             k[order], omega, omega_tilde, flux_factors)
 
 
 def _check_profiles(line, *modes):

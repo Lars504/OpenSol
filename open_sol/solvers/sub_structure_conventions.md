@@ -7,7 +7,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   and imports nothing from open_sol, so model.schema may import it; `__init__` imports only `roles`; model.schema
   re-exports SOLVER_ROLES, ResolvedSolver, SolverRole, SolverType, solver_misfit.
 - Runtimes (`pcg.py` (+ `multigrid.py`, imported inside factorize), `line_block.py`, `sparse_direct.py`, `banded.py`,
-  `arpack_shift_invert.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
+  `arpack_shift_invert.py`, `block_eigen.py`, `explicit_kernels.py`) import numpy only at module level; cupy / scipy / nvmath /
   core.gpu_memory / core.backend / core.host_memory inside functions, kernels built on first use, so core.fv_diffusion,
   model.definition_helpers and GUI-thread checks (`scipy_available`, `size_issue`, `expected_back_end`) may import them.
   `cudss_factor.py` is the one cuDSS wrapper (sparse_direct imports it; arpack_shift_invert reaches it inside
@@ -26,6 +26,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   not thread-safe). nvmath's `cudss_data_ifc` / `cudss_config_ifc` set their thread-local `size_written` buffer only on
   the importing thread, so `_direct_solver` gives the GPU thread its own (`_thread_size_buffers`; a renamed nvmath
   module or attribute is an ImportError / AttributeError there). The handle creation is still in the first plan; measure what is left of speedup B3's 0.65 s.
+  `cudss_library_timing()` gives the thread's perf_counter stamps (started / loaded / joined) and the first join's
+  wait: an earlier start (api / CLI entry) waits on them (the load is GIL-bound: it overlaps only GIL-releasing
+  main-thread work, and an earlier start would cost every gpu process without cuDSS the nvmath import).
 - `host_direct.py` (MUMPS via python-mumps, MKL PARDISO via pydiso) imports numpy and the cudss_factor helpers at module
   level (sparse_direct, arpack_shift_invert, definition_helpers and solvers.definition import it there), the wrappers
   (`mumps`, `pydiso.mkl_solver`), scipy, core and `sparse_direct.recycled_gmres` inside functions only (import
@@ -59,15 +62,21 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   resolves per backend: `SolverRole.backend_defaults` / `SolverRole.automatic(backend, grid, study)` (register_physics
   checks those types too): CG_DIFFUSION_LINEAR_ROLE on the cpu = sparse_direct (host SuperLU via `DiffusionDirectSolver`;
   cusolver_qr refused) in 2D, multigrid pcg on a 3D tensor mesh. `SolverRole.study_defaults` {(study, grid): (type,
-  settings)} is read first on every backend: CG_DIFFUSION_LINEAR_ROLE ('time_dependent', 'tensor') -> sparse_direct
-  (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu through auto_back_ends['tensor']), a fallback-table
-  rule autopick will replace. Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
-  registry, meshes, memory_budget, estimate=None, by_mesh=None)` -> (estimate, plain_roles); when the gpu estimate
-  exceeds the budget, `schema.study_default_roles` (Automatic roles from study_defaults on a cuDSS back end; a node
-  never) resolve with study None if that estimate is lower. `plain_roles` {(physics, role)} goes to
+  settings)} is read first, on every backend unless `study_default_backends` names some: CG_DIFFUSION_LINEAR_ROLE
+  ('time_dependent', 'tensor') -> sparse_direct (a fixed dt keeps one factor; back_end 'auto' -> cudss on the gpu
+  through auto_back_ends['tensor']); the 2D SOLID_LINEAR_ROLE stationary / time_dependent on 'tensor', both backends
+  -> sparse_direct (cpu / no nvmath: host SuperLU); a fallback-table rule autopick will replace. `schema.with_node_precision` reads the plain Automatic
+  when the study default is another type (a 2D solid's pcg node keeps the gpu 'mixed'). Fit guard (no size constant): `meshing.fitted_memory_estimate(spec, parameters,
+  registry, meshes, memory_budget, estimate=None, by_mesh=None, shapes=None, host_budget=None)` -> (estimate,
+  plain_roles); `schema.study_default_roles` (Automatic roles from study_defaults; a node never) resolve with study None
+  if that estimate is lower: cuDSS candidates when the gpu estimate exceeds memory_budget; host candidates
+  (`host=True`: a host factor whose Automatic without the study is another type, so cpu heat transients are none)
+  when the `backend_memory` host estimate exceeds host_budget (None: the available RAM), and regardless of the budget
+  when their `definition_helpers.direct_unknowns` (`SolverRole.direct_components` per cell / node) exceed the host
+  SuperLU limit (SPLU_LIMIT_UNKNOWNS / SPLU_3D_LIMIT_UNKNOWNS: DiffusionDirectSolver refuses it). `plain_roles` {(physics, role)} goes to
   `resolved_solvers(..., plain_roles)`, `estimate_memory(plain_roles=)`, `ValidationContext.plain_roles`,
-  `validate(plain_roles=)` (None: fitted there against memory_budget; one info line per physics), `estimate_time(
-  per_run, plain_roles=)`; the builder fits once against its budget (`_fitted_estimate`) and hands it to all of them,
+  `validate(plain_roles=)` (None: fitted there against memory_budget / host_budget; one info line per physics), `estimate_time(
+  per_run, plain_roles=)`; the builder fits once against its budgets (`_fitted_estimate`) and hands it to all of them,
   api.check (its 'solvers' block) and the GUI document likewise (its memory cache drops on a budget change). Self-test
   `solver_study_default_fit`. Every caller of `automatic` passes the study (resolved_solvers,
   with_node_precision, default_precision_ignored, validate, api `_variant_spec`, GUI combos); a self-test counting CG
@@ -77,7 +86,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   array of the other backend is a TypeError, never a silent transfer. On the cpu `check_memory` counts the device
   estimate against host RAM.
 - Size rules: a sparse_direct diffusion 'linear' solver has `sparse_direct.diffusion_size_issue` (2D SPLU_*, 3D
-  SPLU_3D_* on window voxels; remedy: a pcg node) at the physics via `definition_helpers.cg_solver_issues`;
+  SPLU_3D_* on window voxels; the 2D solid on 2 unknowns per node, `SolverRole.direct_components`; remedy: a pcg
+  node) at the physics via `definition_helpers.cg_solver_issues`;
   DiffusionDirectSolver refuses above SPLU_LIMIT_UNKNOWNS; its host bytes are host items of
   `diffusion_system_estimate(direct=)`. em_fdfd_3d's curl-curl eigen factor: `sparse_direct.vector_3d_size_issue`
   (SPLU_VECTOR_3D_*, first values to lower from measured factors; no iterative remedy) + `host_lu_bytes(n,
@@ -138,7 +148,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   case's node names must not collide with that pattern. A 'cpu' variant of a gpu case is its CPU coverage: without a
   usable GPU it still runs and judges the case (`_judge_by_variants`).
 - `solver_default_precision` (selftests.py, CPU) pins the S9 resolution table and the multigrid resolution: a change of
-  a role's precisions or Automatic type updates its `_PRECISION_CASES` / `_MULTIGRID_CASES` row.
+  a role's precisions or Automatic type updates its `_PRECISION_CASES` / `_MULTIGRID_CASES` / `_EIGEN_ROLE_CASES`
+  ('eigen' roles, opt-in block_eigen) row.
 - Build: its own stage after 'materials', one `MemoryLedger.track("solver '<physics>.<role>'")` per solver (never inside
   a physics create: the ledger does not nest); `BuildContext.solver_records`, `ctx.solvers(name)` -> {role: runtime}.
   `Session.close` clears the records.
@@ -165,7 +176,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Fused iteration (speed plan A3, `FUSED_ITERATION_PROTOCOL`; matrix-free + callback preconditioner only, else
   TypeError; mixed: the float32 `single_fused_iteration`): the caller's object runs `start` (z0, rho, p0, q0) and
   `step` (x / r update, z, rho_next, the next direction into the second direction buffer, its product and p . q) in its
-  own launches, keeping its own partial sums; scalars and directions ping-pong, so CG blocks of an even length start in
+  own launches, keeping its own partial sums, and `rescale(direction, product, factor)` (mixed residual replacement:
+  the p . q partials x factor^2); scalars and directions ping-pong, so CG blocks of an even length start in
   the same order. User: ElasticSystem3D (kernels3d.FusedBrickIteration, 2 launches per step instead of 8).
   `workspace_bytes(fused=True)` books the second direction.
 - CUDA graphs (`capture_blocks`, gpu, `CG_BLOCK_GRAPHS`): each full even-length check block runs once eagerly per
@@ -185,8 +197,11 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   speed plan A6). Workspace reallocated only when size, dtype or kinds change; `workspace_bytes` is what the physics'
   estimator counts (SolverType estimate empty). The solution vector stays physics-owned.
 - `solve(rhs, solution, reference)`: warm start, in place; flat arrays of the solver dtype (ValueError otherwise); b = 0
-  returns 0. The residual is read every `check_interval(preconditioner, backend)` iterations (gpu 16, multigrid 2; cpu
-  4, multigrid 1), so cg_iterations round up to that block (the estimate rounds too, by `SolverWork.backend`). A
+  returns 0 (||b||^2 and ||r0||^2 come back in one read: `start_norms`). The residual is read every
+  `_check_interval()` iterations of the BOUND preconditioner (gpu 16, a callback bound under the 'multigrid' setting 2;
+  cpu 4 / 1): a Jacobi bind of 'multigrid' reads every 16, and magnetic `kept_preconditioner._bind_callback` (binds
+  under 'jacobi', restores 'multigrid') relies on the callback rule. cg_iterations round up to that block (the
+  estimate rounds too, by `SolverWork.backend` and `bound_preconditioner`). A
   NaN / inf residual (start or block read; mixed: the outer residual) stops at once, unconverged, with a 'non-finite
   residual' last_warning (`_non_finite`), never iterating to max_iterations.
 - Stop reference: 'rhs' (tol ||b||) for steady solves (warm re-solves cheap); 'initial_residual' (tol ||b - A x0||,
@@ -196,10 +211,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   dtype ('mixed' -> 'float64').
 - 'mixed' (`_iterate_mixed`): CSR + Jacobi (float32 copy of the values sharing the float64 indices + float32 inverse
   diagonal; a block preconditioner with a CSR: TypeError) or matrix-free (float64 apply + the caller's float32
-  `single_operator` / `single_preconditioner` on its own float32 copy; TypeError without both). Each outer step scales
-  r = b - A x to unit norm before the float32 CG (physical residuals underflow float32 dots at 1e-12), x += ||r|| d;
-  stops at the float64 reference, the iteration limit (inner summed), MIXED_MAX_REFINEMENTS or a step shrinking ||r|| by
-  less than MIXED_STALL_RATIO. `workspace_bytes(..., 'mixed')` / `mixed_extra_bytes` count the solver's copies; a
+  `single_operator` / `single_preconditioner` on its own float32 copy; TypeError without both). One float32 CG on A d = r / s,
+  s = ||r|| (unit scale: physical residuals underflow float32 dots at 1e-12), with residual replacement: when the
+  recurrence residual fell by MIXED_REPLACEMENT_RATIO (or met the stop) at a check-block boundary (never inside a
+  captured block), x += s d and the float64 r = b - A x replaces it at the new unit. Within MIXED_DRIFT_LIMIT of the
+  recurrence norm the direction is kept and the recurrence state (direction, rho x factor^2; fused: product and p . q
+  via `rescale`) rescaled, so the CG coefficients stay consistent (van der Vorst-Ye); beyond it CG restarts from r
+  (recomputing rho against a kept direction diverged on stiff 2D / 3D models). Stops at the float64 reference, the
+  iteration limit, or a replacement shrinking ||r|| by less than MIXED_STALL_RATIO while the recurrence did;
+  `refinements` counts the float64 refreshes. `workspace_bytes(..., 'mixed')` / `mixed_extra_bytes` count the solver's copies; a
   matrix-free caller counts its own float32 operator.
 - Users: the 'linear' role of heat, electric_currents, electrostatics, magnetostatics (`DiffusionSystem(linear_solver=)`)
   and solid_mechanics(_3d) (`ElasticSystemBase(linear_solver=)`: block-Jacobi, 'rhs'; Automatic and max_iterations 0
@@ -211,7 +231,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Smoothed-aggregation AMG, one symmetric V(1,1)-cycle per application (l1-Jacobi, 1 / a_ii on rows without
   off-diagonals: SPD for any SPD A); P = (I - W_F A_F) T with the filtered A_F (`_filtered_rows`: weak entries lumped
   into the diagonal; built by array masks, since cupyx `eliminate_zeros` failed with INSUFFICIENT_RESOURCES); Galerkin
-  R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host dense inverse (raises on a non-finite inverse):
+  R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host dense inverse (densified on the host,
+  `_host_dense`: cupyx toarray always copies and coosorts; raises on a non-finite inverse):
   LAPACK potrf / potri (`_cholesky_inverse`, ~4x cheaper than eigh) when min pivot^2 > PSEUDO_INVERSE_CUTOFF x max
   pivot^2, else the eigh pseudo-inverse (floating regions, pure Neumann; counter multigrid_coarsest_eigh). Rounding
   only weakens the preconditioner (SPD holds for any symmetric A_c).
@@ -243,11 +264,36 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   by scipy's row-local CSR merge S + S^T (int8 ones: no sum cancels; it replaced a np.unique of 2 E int64 keys, 70 %
   of a 3D setup); distance-2 independent-set roots (Luby, fixed seed: deterministic), each round on the edges of rows
   still near an undecided row (the list only shrinks; the same roots as full rounds); rows without negative couplings
-  (held / pinned identity rows) stay out of P. The prolongator filtering keeps the plain threshold rule.
+  (held / pinned identity rows) stay out of P. The prolongator filtering keeps the plain threshold rule. gpu setups
+  run the device twin `device_aggregate_strong_links` (DEVICE_AGGREGATION; RawKernels per row + one cuSPARSE csrgeam
+  union, one sync per Luby round): the same aggregates bit for bit (float64 strength sums per row in CSR order, the
+  same keys / rounds, max-only joins, so union order is free), no host copy of the level CSR. A change of the host rule
+  changes the kernels in the same edit; self-test multigrid_device_aggregation (heat selftests_multigrid) compares
+  both on synthetic operators and every level of a gpu setup. Its transients (~60 B per unknown + ~25 B per entry) stay
+  below the booked setup_extra_bytes; the host 'multigrid aggregation' item is booked only off the gpu
+  (`diffusion_system_estimate(backend=)`: the heat / potential / magnetic estimators pass `solver_backend(spec)`) and
+  `setup_ops(backend=)` prices device passes + LUBY_ROUNDS_GUESS syncs there.
 - Reuse: one host transfer of each level's CSR only when the fine pattern changed (`_pattern_matches`: identity, then
   array_equal); a value-only factorize (re-assembly, Newton / B-H iterations, refresh_diagonal) rebuilds P, R and coarse
   operators on the backend from the cached aggregates; rows whose strong links turned weak get prolongator weight 0
-  (P = T there), which keeps value-only setups converging like fresh aggregation (no re-aggregation needed).
+  (P = T there), which keeps value-only setups converging like fresh aggregation (no re-aggregation needed). An empty
+  fine-level aggregation is never reused: every setup re-tests it (one sync on the gpu when still empty), else a larger
+  dt or a steady solve on the same pattern stayed smoother-only on a Laplacian.
+- Jacobi binds and lagged setups (PCGSolver, own CSR hierarchy only; pcg module header): 'multigrid' binds the passed
+  inverse diagonal when the setup found no strong link on a fine level above COARSEST_DENSE_LIMIT
+  (`MultigridPreconditioner.smoother_only`) or below MULTIGRID_MIN_UNKNOWNS on the solver's first factorize (no setup;
+  the binding's second solve or the next factorize sets it up, later ones rebind); a Jacobi solve over CG_ITERATIONS_PER_AXIS_CELL sqrt(n) iterations continues on the hierarchy and turns the
+  binds off for that solver. A same-pattern factorize keeps the hierarchy (`can_rebind` / `rebind`: level 0 takes the
+  new operator and its l1 weights, the device cycle re-plans when the operator object changed; DiffusionSystem's
+  refresh_diagonal changes A_solve in place) while the last solve took <= LAGGED_SETUP_ITERATION_RATIO x the fresh
+  one; a kept solve over its cap continues on a fresh setup. Mid-solve setups count as factorize seconds and make new
+  _BlockGraphs. Counters multigrid_jacobi_binds / _jacobi_fallbacks / _lagged_binds / _lagged_fallbacks: the summary
+  still says 'multigrid'. The time recipe prices case (b) as Jacobi (`bound_preconditioner`: one factorization
+  and one solve, not stepping); case (a) and the lag are not known a priori (priced as multigrid, every factorize a
+  setup). The memory estimate keeps booking the hierarchy (case (b) builds it on a second solve).
+  MULTIGRID_MIN_UNKNOWNS = 4000 sits below the measured crossover (~6.5e3, solver_profiler heat_2d gpu) so the
+  outer-graded heated-dot selftest keeps the hierarchy. magnetic `KeptPreconditionerSolver` keeps its own hierarchy
+  and binds under 'jacobi', outside all of this.
 - Counters (merged into pcg's): multigrid_setups / aggregations / levels, the last setup's size
   (`_record_size`: calibrate HIERARCHY_ENTRIES_PER_UNKNOWN / SETUP_ENTRIES_PER_UNKNOWN from them) and seconds
   (machine-dependent: never pin them in a selftest). Memory: `hierarchy_bytes` / `setup_extra_bytes` /
@@ -277,7 +323,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   n_blocks b^3; a coupling more than one line apart raises (no wraps along the line axis).
 - `solve_shifted` yields chunks (start, host solutions, residuals, accepted): rejected shifts (above ACCEPT_TOLERANCE or
   non-finite) are the consumer's to re-solve with its reference solver. Chunk = min(n_shifts, MAX_CHUNK_SHIFTS,
-  MEMORY_FRACTION of budget - pool used); consumers estimate `operator_bytes` + chunk x `shift_bytes` as run items.
+  MEMORY_FRACTION of `gpu_memory.pool_room_bytes`: budget - pool used, at most the free device memory, since cuDSS
+  factors of other physics lie outside the pool); consumers estimate `operator_bytes` (run item) + ONE `shift_bytes` (the
+  chunk grows only into free budget, so min(n_shifts, MAX_CHUNK_SHIFTS) x shift_bytes over-books and refuses runs
+  that fit).
 - cpu: the same code on numpy / scipy, inputs and solutions host numpy on both backends; measured 7-9x slower per solve
   than host SuperLU, so the cpu path is for parity, not speed.
 - Refinement keeps the better iterate per shift and stops when no open shift improves by STALL_RATIO; `debug=True`
@@ -294,7 +343,15 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (em_fdfd_ez / _hz eigenfrequency, em_modes, em_fdfd_bor) catches it and redoes that eigen-solve on host SuperLU.
 - Launch-bound on small blocks (Python loops over blocks, ~80 us gemm floor per call on an RTX 3050). The time recipe
   prices each block product per call (FACTOR_DENSE_CALLS_PER_BLOCK, SWEEP_PRODUCTS_PER_BLOCK, *_LAUNCHES_PER_BLOCK,
-  counted from the code: a loop change updates them).
+  counted from the code: a loop change updates them). A solve_shifted chunk shares those calls between its shifts:
+  the caller passes `SolverWork.batch_shifts` (mean shifts per chunk; 1 = a call per shift, kept factors) and the
+  recipe prices one chunk over its shifts (`_factor_ops`, `_sweep_ops`, `_per_shift`); above BATCHED_INVERSE_MAX_BLOCK
+  the block inverses are one call per matrix, as `_invert`. Per block: two complex products (DenseFlops, 8 b^3 real
+  flops per shift each; mixed: `single`, the complex64 curve) and the inverses as `BlockInverse` on the profile's own
+  inverse curves: a chunk does not scale as b^3 (measured on an RTX 3050, thermal noise, whole chunk time per block
+  and shift: 44 us at b <= 67, 59-74 us at b 111, ~0.55 ms at b ~200 with looped inverses), so pricing all three
+  calls as float64 product flops was 3.4x high at b 111 and 1.4x at b 67. solve_shifted times its chunks: work counter `shift_seconds`, the
+  seconds group of the caller's items (heat thermal noise).
 - Kept factors (`factorize`, `factorize_operators`: `_factor(kept=True)`) also store G_k = D_k^-1 L_k and H_k =
   D_k^-1 U_k of the scaled system (`_Chunk.lower / upper`; H_k is the elimination's coupling anyway, G_k one more
   product per block): `_kept_sweep` = y_k = D_k^-1 y_k - G_k y_(k-1), y_k -= H_k y_(k+1), scales only at both ends. A
@@ -316,7 +373,10 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   solve back through `Factorization._lu_solve` (never `_host_lu.solve` directly). `grid_nested_dissection(shape)` (low
   fill only for +-1 cell stencils): em_fdfd_3d and DiffusionDirectSolver on a 3D tensor window (`grid_shape`). SuperLU
   ordering reuse: `SuperLUOrdering` (one per runtime) keeps the last pattern's elimination order; a later factorisation
-  of the same indptr / indices pre-permutes and skips MMD (counters reused_orderings / eigen_reused_orderings).
+  of the same indptr / indices pre-permutes and skips MMD (counters reused_orderings / eigen_reused_orderings). It
+  also keeps the permuted CSC pattern and the CSR entry of every CSC slot (`_permuted_pattern`, made once in
+  `remember`: H2), so a reused factor permutes by one gather (`permuted`, canonical CSC: splu's sum_duplicates is
+  skipped) instead of `symmetric_permutation`'s COO -> CSC sort; a pattern with duplicate entries keeps the COO route.
 - The runtime keeps no factor: consumers hold their own (one runtime serves the NLFD channels or thermal noise).
   `back_end` (auto / scipy_splu / cusolver_qr / cudss / cudss_mixed / mumps / mumps_mixed / pardiso / pardiso_mixed:
   LINEAR_SOLVER_CHOICES, the order solvers.definition's labels follow) resolved on first use; factorize / factorize_host /
@@ -367,19 +427,25 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   SuperLU for good (`fall_back`: RuntimeWarning, counter auto_fallbacks) and redoes the factorisation there (every entry
   point, incl. DiffusionDirectSolver's and fem.harmonic's deferred check at solve). An explicit cuDSS node raises. The em
   FDFD / BOR / conical consumers free their plan-kept cuDSS factor once on SuperLU.
-- Entry points `factorize(..., previous=, symmetric=, symmetrizer=)` (device CSR, pulled to the host once), 
-  `factorize_host(matrix, real, symmetric, positive_definite, symmetrizer, row_scale, previous)` (SuperLU ignores the
-  cuDSS options), module `cudss_factorization(...)`: all return a `cudss_factor.CudssFactorization`; `transpose=True`
-  only with a symmetric factor (x = D (D A)^-1 b for a symmetrizer D), else NotImplementedError; a real factor (also a
-  real SuperLU `solve_host`) takes a complex rhs as two real solves, never a cast; `recyclable` False (decided: a
-  value-only refactorisation skips the plan and is exact).
+- Entry points `factorize(..., previous=, symmetric=, symmetrizer=, defer_check=)` (device CSR, pulled to the host
+  once), `factorize_host(matrix, real, symmetric, positive_definite, symmetrizer, row_scale, previous, symmetric_known,
+  defer_check)` (SuperLU ignores the cuDSS options; symmetric_known reaches cuDSS and the host direct back ends alike:
+  a canonical symmetric CSR whose index arrays are never modified, no canonical copy, no asymmetry check, the planned
+  pattern matched by identity), module `cudss_factorization(...)`: all return a `cudss_factor.CudssFactorization`;
+  `transpose=True` only with a symmetric factor (x = D (D A)^-1 b for a symmetrizer D), else NotImplementedError; a real
+  factor takes a complex rhs without a cast (cuDSS: two real solves; a real SuperLU `solve_host`: one solve of the
+  (n, 2) real / imaginary columns, H1); `recyclable` False (decided: a value-only refactorisation skips the plan and is
+  exact).
 - Plan reuse: pass the factor to replace as `previous=`; same options = refactorised in place (values written into the
   planned device CSR, never nvmath `reset_operands(a=)`, which drops the plan for device operands); a new pattern
   re-plans; other options release it first. A Cholesky is planned only for a double factor (`_requested_kind`): a mixed
   positive_definite request plans float32 LDL^T (float32 Cholesky hung > 175 s), its double fallback is the double
   Cholesky.
 - DiffusionDirectSolver on cuDSS: `factorize_device_csr(operator, real=True, positive_definite=True, previous=)`
-  (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation.
+  (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation, or
+  `detach_factor()` (the caller owns the factor: released or passed as previous= to a factorisation of the same kind;
+  `positive_definite = False` first makes factorize_host_operator ask cuDSS / MUMPS / PARDISO for the LDL^T of a
+  shifted pencil instead of the SPD kind, which can_refactorize would refuse: mechanics stress stiffening).
   `factorize_host_operator(host_csr, symmetric_known=, defer_check=)` (FEM Newton tangents): symmetric_known = a
   canonical symmetric CSR (values copied only, index arrays shared and never modified, asymmetry check skipped; MUMPS /
   PARDISO then refresh by `host_direct_values_factorization`, pattern matched by identity); never pass it for an
@@ -391,7 +457,17 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `host_direct_values_factorization`, else SuperLU of the CSR; no host canonicalising or asymmetry check per call.
   `factorize_device_values(values, indptr, indices)` (cupy
   values on the HOST canonical pattern) -> `refactorize_device_values` / `from_device_values`: equilibration, lower take
-  and refresh or plan on the device by index maps built once per plan (`_device_maps`), no host value copy. Either
+  and refresh or plan on the device by index maps (`_DeviceIndexMaps`, one per plan: each array uploaded at its first
+  read, so `refactorize_device_lower` holds the lower triangle's rows / indices alone, ~4 B per pattern entry against
+  ~18 B on the full-values route; read a new array through `maps[key]`, never assume it exists; its host passes over
+  the pattern are freed by `_finish_refactorize`; a lower-stored DevicePencil hands its rows and lower take over once,
+  `host_passes=` -> `seed_host`, R5), no host value copy. A refresh on the reused plan without symmetrizer or symmetry
+  check runs two kernels (`_fused_refresh`, K2: R and a symmetric kind's diagonal, then E and its factor-dtype copy into
+  the planned buffers); a change of the step-by-step route's scaling rule changes `_row_scale_kernel` /
+  `_scaled_take_kernel` in the same edit. The host route (`refactorize` -> `_equilibrated`) makes the
+  int32 rows once for the scaling and `_lower_triangle`, and scales by `equilibrate_values` (host twin
+  'solvers.cudss_equilibrate': one numba prange pass from EQUILIBRATE_NUMBA_MIN_ENTRIES once numba is imported, K4;
+  case solver_cudss_equilibrate_numba); symmetric_known takes the norm from the row sums alone. Either
   symmetry vouched (pencils, device tangents) or `check_symmetry=True` (device transpose map), which also serves
   `refactorize` of a host operator on the planned pattern without symmetrizer (values uploaded only) and
   `SparseDirectSolver.factorize_device_csr` (non-canonical cupyx CSR canonicalised in a copy). A symmetrizer factor
@@ -401,16 +477,20 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `row_scale=` replaces R = |diag|^-1/2.
 - Device pencils (sweeps): `SparseDirectSolver.device_pencil(indptr, indices, term_values, symmetric,
   symmetric_known=False)` -> `DevicePencil` (None off cuDSS / on the cpu: the caller keeps factorize_host); terms
-  uploaded once, symmetry checked once unless vouched (max |X - X^T| <= SYMMETRY_TOLERANCE max |X| per term). A
+  uploaded once, symmetry checked once unless vouched (max |X - X^T| <= SYMMETRY_TOLERANCE max |X| per term; a vouched
+  pencil of host values takes each lower triangle on the host, so the full terms never reach the device). A
   symmetric pencil stores lower triangles only (`lower_stored`; `full_term(k)` returns a new array per call, its take
-  built once; `combined(c)` in the stored layout). `factorize_pencil(pencil, coefficients, row_scale=, previous=,
+  built once at ~48 B per pattern entry of int64 transients: the SuperLU fallback and self-tests only, never a
+  product; `combined(c)` in the stored layout). `factorize_pencil(pencil, coefficients, row_scale=, previous=,
   extra=)` combines on the device and refreshes `previous` (refactorize_device_lower / refactorize_device_values with
   defer_check); the pattern is matched by identity of the pencil's indptr / indices first: callers never modify those
   arrays in place. `extra=(pencil.slots(rows, columns), values)` adds a small per-frequency block (port DtN) at
   stored-layout slots (lower entries only for a lower-stored pencil, symmetry vouched by the caller; a None slot =
   outside the pattern: keep factorize_host). `device_pencil_bytes(entries, term_value_bytes, symmetric)`; users
   (fem.harmonic, mechanics frequency_response.HarmonicSystem) book it + factor maps + transients as a run item. The
-  operator norm of a device refresh is lazy.
+  operator norm of a device refresh is lazy and summed by one atomic-add kernel (`_magnitude_sums_kernel`: no |E|
+  copy; cupyx.scatter_add of cp.abs(E) and its masked copy held 17 B per stored entry at the probe, which is after
+  the plan returned the pool's cached blocks, so it set the run's pool mark).
 - Host pencils: consumers ask `SparseDirectSolver.pencil(...)` (same arguments): a `HostPencil` on a host direct back
   end (either backend), else device_pencil's answer. HostPencil keeps the terms on the host on the full pattern
   (`lower_stored` False: an extra block gives both triangles; consumers test `pencil.symmetric`, never lower_stored, before
@@ -423,7 +503,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   cuDSS refinement and solves again; a second miss releases the factor and raises CudssAccuracyError from the solve
   (inertia-only factors are never judged: count_below passes defer_check=False). A mixed miss re-plans double in place from the device E (`fallback_listener` ->
   cudss_plans / cudss_reused_orderings / cudss_double_fallbacks): callers translate CudssAccuracyError at solve /
-  solve_host too (fem.harmonic.solve). Fixed-step solves (refinement_steps=) leave a pending check pending.
+  solve_host too (fem.harmonic.solve; FDFD driven solves: fdfd_2d `_solve_linear`, host_fdfd `_checked_solve_host`,
+  physics/em sub file). Fixed-step solves (refinement_steps=) leave a pending check pending. Entry points with
+  defer_check (K1): factorize_pencil / factorize_values / factorize_host_operator, `SparseDirectSolver.factorize`
+  (`_refreshed_on_device`, the FDFD wavelengths) and `factorize_host` (`CudssFactorization.refactorize`, BOR omegas;
+  default False on both): a caller passing it catches CudssAccuracyError at the solve and, when `fall_back(error, n)`
+  is True, drops the factor and factorises again (SuperLU now); a first plan is always probed.
 - solid_mechanics_3d's 'linear' runtime on tetrahedra also factorises the piezo coupled operator (real symmetric
   indefinite) and the complex symmetric frequency-response pencil, although the role's operator class is 'spd'.
 - Counters (cuDSS only): cudss_plans (incl. fallback re-plans of one call: `_counted` adds `last_plans` /
@@ -437,6 +522,24 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (`cudss_orderings_kept()` per study) and the GUI worker; off for selftest checks and scripts, so a case never plans on
   another case's ordering. nvmath has no public setter (DirectSolver.handle / data_ptr): any error plans from scratch
   (logged at INFO).
+- Parked plans (K5, `cudss_factor` header): in the same scope `release()` of an accepted factor parks its planned
+  DirectSolver (KEPT_PLANS, key = ordering key + kind + factor dtype, operand references dropped: the pool arrays go,
+  the outside-pool bytes stay in external_live_bytes), and the next plan of that key by any factor object adopts it
+  (`_adopted_plan`: nvmath's pointer updates, no analysis, no memory check; counted as a plan on a kept ordering,
+  `last_plan_adopted`); a rejected adopted plan re-plans from scratch once. A plan of another key, each build start
+  (`reset_external_high_water`, study.build_session), the scope end and every `cudss_orderings_kept` exit (a GUI study)
+  free the parked plans, so a parked factor outlives its phase only until the next plan of the same build. Self-test:
+  `_ordering_reuse_checks`.
+- On-disk ordering store (K6): `remember_cudss_orderings(store=True)` (default; the GUI worker's call) with a folder
+  in OPEN_SOL_CUDSS_ORDERING_CACHE (unset = off, like OPEN_SOL_MESH_CACHE) also writes each fresh plan's (permutation,
+  tree) there per (key, cuDSS version), pruned by mtime to ORDERING_STORE_MAX_BYTES, and reads a key the in-process
+  store lacks (a bad file plans from scratch). run_study's `cudss_orderings_kept()` turns the scope on without the
+  store, so api / CLI runs and selftests never read it (a GUI run inside the worker's scope does).
+- Measure-first switches (off; `tools_profilers/time_profilers/cudss_phase_profile.py` times each against the nvmath
+  path and writes its results file): REFACTORIZATION_PHASE (K3: refreshes of a plan factorised before run cuDSS's
+  REFACTORIZATION phase by `cudss.execute`), RAW_SOLVE (K7: `cudss.execute(SOLVE)` into one kept solution buffer, no
+  nvmath sync; solve_buffer_bytes books the buffer), REORDERING_ALGORITHM (K10: e.g. 'AMD' for fresh plans; no
+  ordering kept or reused while set). Any raw-phase error uses the nvmath call from then on (`_raw_failed`).
 - Time recipe `_cudss_time_items`: one plan (a work marked `ordering_kept`, read by getattr, at
   CUDSS_KEPT_ORDERING_PLAN_FRACTION) + factorisations + solves (+ the deferred check of device-value refreshes); real
   operators scaled by CUDSS_REAL_BYTES / CUDSS_REAL_FLOPS (uncalibrated). 2D: `cudss_2d_ops` (also arpack's) on the
@@ -474,17 +577,35 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   'double'; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.
 
 ## arpack_shift_invert (`ArpackShiftInvertSolver`; role 'eigen')
-- `eigs(matvec, n, k, v0, tolerance_floor, max_restarts, default_basis)` -> (theta, vectors, applications, converged):
-  tolerance = max(node, floor) (0 = machine precision); subspace_size 0 = the caller's default_basis
-  (`arnoldi_basis_size` for estimators). Time recipe: `SolverWork.rhs` = triangular solves per application,
-  `applications_per_basis` (0: APPLICATIONS_PER_BASIS_GUESS 2.5).
+- `eigs(matvec, n, k, v0, tolerance_floor, max_restarts, default_basis, device_matvec, real)` -> (theta, vectors,
+  applications, converged): tolerance = max(node, floor) (0 = machine precision); subspace_size 0 = the caller's
+  default_basis (`arnoldi_basis_size` for estimators). `real=True` (a real map and v0: cross_section_modes' float64
+  own factor) runs host ARPACK as dnaupd (one real solve per application, `last_arnoldi` 'ARPACK (real)'; ncv >= k + 2
+  holds); the Krylov-Schur paths stay complex and hand the matvec complex vectors. Time recipe: `SolverWork.rhs` =
+  triangular solves per application, `applications_per_basis` (0: APPLICATIONS_PER_BASIS_GUESS 2.5).
+- `eigs_host(...)` = `eigs_device`'s 5-tuple on the host (`_HostKrylovSchur`, a subclass sharing run / Schur ordering /
+  restart test; numpy rows, CGS2 by gemv on the C-contiguous rows, never a conjugated basis copy): solve_resonances
+  around a host-only factor, so a widening resumes (`resume`, `reserve_basis`); below DEVICE_ARNOLDI_MIN_RATIO host
+  ARPACK, state None. Runs inside quiet_openblas like the scipy calls, and inside `host_blas_limit(n)`
+  (HOST_ARPACK_BLAS_THREADS, 0 = off: every BLAS pool at that thread count up to HOST_ARPACK_BLAS_MAX_UNKNOWNS, through
+  `host_direct.limited_blas_threads`, since threadpoolctl lives there; unmeasured, E6) like host ARPACK and the BOR
+  port eigs.
+- Device Krylov-Schur on a device matvec (E4, `_expand_device`): the H column and |w|^2 of every step stay in device
+  rows (`_columns`), read once per expansion (m - keep steps) into a pinned twin; the breakdown test runs on that read
+  and a breakdown redoes the steps after its column on a fresh direction. Around a host matvec the packed read per step
+  stays (the host solve needs the row anyway). The time recipe prices Sync(1 / (m - keep)) per application there.
+- Warm starts (E5): `guarded_start_vector(warm, seed, real)` adds WARM_START_RANDOM_SHARE (by norm) of a seeded random
+  vector to earlier modes used as v0 (em_modes frequency scans, the em3d port source re-solve, BOR ports), so a
+  wanted eigenvector the warm start lacks keeps a component; group-index and monitor-tracking starts take no share.
 - One uninterruptible host call (a GUI stop waits): eigs / eigsh_shifted / eigsh_inverse cap restarts at MAX_RESTARTS
   (300; scipy's 10 n let a shift on a resonance restart for minutes) and return the converged part with converged False
   (callers warn); bor_ports / slab_modes' direct scipy calls take the same cap.
-- Tolerance floors only where nothing needs round-off eigenvalues: em_modes / fem_modes, FDFD / BOR eigenfrequency and
+- Tolerance floors only where nothing needs round-off eigenvalues: fem_modes, FDFD / BOR eigenfrequency and
   mechanics keep machine precision, except cross-section solves dropping PML modes on a CPML cross-section (em_modes,
   mode ports, bends; not EME): 1e-12 (`cross_section_modes.PML_ARPACK_TOLERANCE_FLOOR`; PML-mode clusters hit
-  MAX_RESTARTS at machine precision); em_fdfd_3d with a cpml face 1e-10 (+ a 5 k basis, ARNOLDI_BASIS_PER_WANTED);
+  MAX_RESTARTS at machine precision); em_modes' own solves at the study wavelengths 1e-10
+  (`cross_section_modes.MODE_ARPACK_TOLERANCE_FLOOR`, E3; its group-index, detached and port solves keep machine
+  precision); em_fdfd_3d with a cpml face 1e-10 (+ a 5 k basis, ARNOLDI_BASIS_PER_WANTED);
   physics/em/conical 1e-10. Callers without a runtime get a default one inside `solve_cross_section_modes` /
   `solve_resonances` / `solve_bor_resonances`; BOR port mode solves call scipy eigs directly (no role).
 - `eigsh_inverse(...)`: factor-free symmetric shift-invert at 0 for a possibly inexact inverse (solid_mechanics_3d: one
@@ -520,7 +641,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   entry stay), peak = permanent (CUDSS_PEAK_RATIO 1: cuDSS reports them equal); a `FactorFill(entries)` given as
   `dimensions` replaces the growth law by counted factor entries (fem.dissection on a built element mesh; mechanics
   triangles / tetrahedra: `definition.factor_fill`; em_fdfd_3d tetrahedra: `definition_fdfd3d.nedelec_factor_entries`,
-  also for its host SuperLU via `core.memory_estimate.host_counted_lu_bytes`) x the factor value bytes + the kept matrix copy +
+  also for its host SuperLU via `core.memory_estimate.host_counted_lu_bytes`; 3D tensor grids:
+  `sparse_direct.box_dissection_entries(window shape, unknowns per cell)`, the box nested-dissection count of A5, for
+  which CUDSS_FILL_3D read 48 % / 76 % low) x the factor value bytes + the kept matrix copy +
   CUDSS_ROW_BYTES per row; the growth-law fill fitted to the selftest
   counters (constants, data, the known double count and open points in the cudss_factor notes above it). The pool items are counted from the
   arrays the code makes (an estimate above the measured bytes misreads the code); a wrong entries-per-row count is the
@@ -575,8 +698,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - cudss_mixed only for roles whose `setting_choices['factorization']` accept it (`eigen_role(mixed_factorization=True)`:
   em_fdfd_3d, em_fdfd_ez / _hz), because only `eigenfrequency.solve_resonances` asks for loose solves: with an own mixed
   LDL^T of D A it uses MIXED_EIGS_REFINEMENTS (1), floors ARPACK at MIXED_ARPACK_TOLERANCE (1e-6) and replaces every k^2
-  by the float64 Rayleigh quotient (stationary for the complex symmetric pencil; `info['rayleigh_change']`); without a
-  symmetric D A (Bloch) it refines every solve to 1e-12. Measured on the Mie eighth sphere: factorise 12x faster, half
+  by the float64 Rayleigh quotient (stationary for the complex symmetric pencil; `info['rayleigh_change']`); a double
+  own LDL^T (cuDSS / MUMPS / PARDISO) of a complex A whose caller floored ARPACK (cpml / PML / lossy) takes the same
+  floor and polish, without the refinement steps; without a symmetric D A (Bloch) it refines every solve to 1e-12. Measured on the Mie eighth sphere: factorise 12x faster, half
   the memory, lambda / Q identical to double.
 - Probe gates: a probe after factorize must reach ACCEPT_RESIDUAL (1e-10) or cuDSS refinement (REFINEMENT_STEPS) is
   switched on; still missing = RuntimeError (cuDSS pivots only within supernodes). Every gate and the mixed stop also
@@ -599,15 +723,25 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - 'auto': the role's `auto_back_ends` (`eigen_role(auto_factorizations=)`) on the gpu with nvmath, else superlu (the
   runtime maps an unresolved auto to superlu). A runtime resolved from auto falls back to SuperLU for good on
   CUDSS_REFUSALS (factorize_host, the ShiftPencil device path, the deferred check inside eigsh_shifted / eigs_shifted;
-  counter eigen_auto_fallbacks) and counts a Hermitian pencil by a counting SuperLU (`_superlu_count`). Opted in:
-  solid_mechanics triangles (cudss), solid_mechanics_3d tetrahedra (cudss), em_fdfd_conical (cudss); other em /
+  counter eigen_auto_fallbacks) and counts a Hermitian pencil by a counting SuperLU (`_superlu_count`). A caller's
+  `fallback_refusal` hook (n_unknowns -> '' or a reason, asked only when a fallback would happen) turns that fallback
+  into a RuntimeError with the remedy (A4: em_fdfd_3d tetrahedra above `NEDELEC_SUPERLU_SLOW_BYTES` of counted fill,
+  where SuperLU takes tens of seconds to minutes). Opted in:
+  solid_mechanics triangles (cudss), solid_mechanics_3d tetrahedra (cudss), em_fdfd_conical (cudss), em_fdfd_3d
+  (tensor, tetrahedra: cudss_mixed, the polished path of solve_resonances; Bloch: a general LU refined to 1e-12); other em /
   membrane / eme eigen roles stay superlu (own-factor and SuperLU-inertia consumers, unchecked).
 - Several shifts: eigsh_shifted / eigs_shifted / factorize_host take `previous=` (cuDSS refactorised in place,
   `last_plan_reused`; SuperLU ignores it). Only because the shifted operator is built by `pattern_combination((K, M), (1,
   -sigma))` (root "Solver contract"): any new caller combining a pencil for a reused factor goes through it.
-- `ShiftPencil` (`shift_pencil`): terms on one pattern once; SuperLU one-pass host combination per shift; cuDSS a
-  DevicePencil + `factorize_pencil` on a private SparseDirectSolver (eigen_cudss_plans / eigen_double_fallbacks folded
-  in). count_below / eigsh_shifted / eigs_shifted take `pencil=` to keep it across shifts.
+- `ShiftPencil` (`shift_pencil`): terms on one pattern once (M and the diagonals placed by `merge_positions`, a
+  row-parallel numba merge, host twin 'solvers.pattern_merge', self-test solver_pattern_merge_numba; a global key
+  searchsorted took 1.7 s on a 3D P2 pencil); host route M products for ARPACK by `mass_product` (numba prange CSR
+  product, host twin 'solvers.csr_product', from MASS_PRODUCT_MIN_ENTRIES; scipy's is single-threaded) through
+  `mass_operator`; SuperLU one-pass host combination per shift; cuDSS a
+  DevicePencil + `factorize_pencil` on a private SparseDirectSolver (eigen_cudss_plans / eigen_double_fallbacks /
+  eigen_cudss_reused_orderings / eigen_cudss_plan_seconds folded in; `eigen_reused_orderings` is SuperLU's order count,
+  not cuDSS's). count_below / eigsh_shifted / eigs_shifted take `pencil=` to keep it across shifts. `device_mass()` uploads
+  the host M on its own pattern (a vector FEM mass: a third of the pencil pattern), not the pencil's mirrored M term.
 - Inertia (Sylvester; real symmetric / Hermitian with M positive definite, or semi-definite with a fixed massless block
   such as piezo phi: then only count differences are meaningful): `eigsh_shifted(..., inertia=True)` appends
   `ShiftInertia(sigma, n_below, exact)` at the offset sigma; `count_below(K, M, sigma, previous)` at sigma itself
@@ -619,6 +753,74 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   diag_pivot_thresh 0). A Hermitian pencil on cuDSS has no count. Counting factorisations count in
   eigen_factorizations: a time recipe pricing a band search counts them there.
 
+## block_eigen (`BlockEigenSolver`; role 'eigen', opt-in)
+- Factor-free LOBPCG of the lowest eigenpairs of a symmetric pencil on caller block callbacks (module notes: layout,
+  the five steps of an iteration, mixed phases). Opt-in only: SolverType `opt_in_roles=('eigen',)` and the physics'
+  role from `definition_helpers.eigen_role(block_eigen=True)` (operator 'spd', precisions double / mixed,
+  opt_in_types ('block_eigen',)); grids ('tensor',), so a tetrahedra / triangle physics with that role misfits it.
+  Today: solid_mechanics_3d on brick meshes (`ElasticSystem3D._lowest_modes_block`). A new consumer: an 'spd' eigen
+  role with block_eigen=True, a dispatch on `isinstance(eigen_solver, BlockEigenSolver)` where it calls the eigen
+  runtime, its validation of what LOBPCG cannot do (interior targets, bands, zero eigenvalues: the relative residual
+  divides by |lambda|), and memory / time items (below).
+- Callback contract: `(rows_in, rows_out)` on C-contiguous (m, n) row blocks of the backend array module, float32 or
+  float64 (mixed calls both: keep an operator copy per dtype), rows_out written, never aliased with rows_in; rows_in
+  may be the runtime's scratch (the preconditioner's input rows are overwritten afterwards). With a `mask` every row is
+  0 outside it and K / M must keep that (masked products); the runtime masks the preconditioner output itself. The
+  preconditioner must be SPD (a symmetric V-cycle, block Jacobi), not exact: no inner solves, no tolerance coupling.
+  A callback gets every row of a step in one call and must run them in ONE launch (a per-row loop of single-vector
+  launches is latency-bound and leaves the GPU idle: the reason the Lanczos path does not load it): solid_mechanics_3d
+  uses the `*_rows` kernel entries (one thread per (row, node)) and `multigrid3d.BlockCycle`.
+- Only the wanted rows must converge; the guard rows widen the search space. A consumer asks exactly the eigenpairs
+  it keeps (no ARPACK-style margin such as EXTRA_EIGENVALUES on top: that only adds pairs to converge).
+- Memory: 9 b n values of the phase dtype (S, KS, MS of (3 b, n); b = wanted + guards) + CHUNK_BYTES scratch, nothing
+  else of that size: every block product runs by column chunks in place (`_rotate`, the W projection), compaction is
+  forward row copies, the start rows are drawn row by row on the gpu. Mixed frees the float32 stores before the
+  float64 ones (the float32 X is the only copy held across): `block_eigen.block_bytes` is the estimate item (a
+  transient of the eigen solve; the consumer adds its own copies, e.g. float32 operator copies and a private
+  multigrid hierarchy). Host: the k eigenvectors only.
+- Syncs per iteration: two host reads (residual norms, Gram pair) and one small upload (the rotation coefficients);
+  the block callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
+  (3 b)^2 (diag(B)^-1/2 scaled, B eigenvalues below DROP dropped: dependent W / P directions near convergence).
+- Mixed: float32 to max(tolerance, SINGLE_PHASE_TOLERANCE) or a STALL_ITERATIONS stall (the float32 floor of the
+  products is ~eps32 lambda_max / lambda: ~1e-3 on fine 3D elasticity, so the float64 phase is always needed for tight
+  tolerances; it starts from the float32 X with a fresh P). Double stalls over DOUBLE_STALL_ITERATIONS stop
+  unconverged (tolerance below the float64 floor), with a warning. A stall counts only once the worst wanted residual
+  has been below STALL_ARMED_RESIDUAL: the O(1) start-up plateau of a weak preconditioner is no rounding floor (it
+  runs to the iteration cap instead). The cap is the node's max_iterations, else DEFAULT_MAX_ITERATIONS (never a
+  linear CG limit).
+- Fewer free unknowns than DENSE_MAX_RATIO x b: a dense scipy eigh of the applied K and M (`eigen_dense_solves`).
+- Counters: eigen_solves, eigen_iterations / _single_ / _double_iterations, operator_applications (K rows),
+  mass_applications, preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves,
+  eigen_block_size, eigen_last_residual. Time recipe `block_eigen.time_estimate`: per iteration and row the caller's
+  product_ops (K and M) + preconditioner_ops, block passes, DenseFlops (single for the mixed share), 2 syncs;
+  iterations a priori (multigrid: MULTIGRID_ITERATIONS_PER_DECADE x decades, flagged by work.setup_ops; Jacobi:
+  sqrt(kappa) or CG_ITERATIONS_PER_AXIS_CELL x longest axis): uncalibrated guesses.
+- Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
+  norm kernel, dropping unconverged pairs from the result (today returned with a warning), FEM pencils (tetrahedra /
+  triangles: SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space
+  preconditioner).
+- Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
+  callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
+  model runs: mechanics sub file "Self-tests".
+- Open estimator gaps (profiled 2026-11-17): mixed under-books the device peak by ~3·3b·n·4 B on large meshes (the
+  float32 stores stay cached in the pool when `_to_double` allocates the float64 ones: reuse one flat float64 buffer
+  per store instead); the chunk scratch is booked as a flat 2·CHUNK_BYTES whatever n (over-books small meshes); the
+  time recipe never prices a private multigrid build (`work.setup_ops` is only a flag), only the shared one through pcg.
+
+## Tried and dropped (tag `archive/four-new-solvers`)
+Three opt-in solvers were built, profiled on 2026-11-17 and dropped; their code is on that tag. Do not rebuild them
+without a reason that answers these findings.
+- batched_direct (same-pattern frequency sweeps factorised in cuDSS uniform / explicit batches): the cuDSS uniform
+  batch factorised at ~2x (up to 3x) the per-system numeric cost and solved at the same per-system cost at every
+  tested size (0.35M-1.8M stored entries), so direct sweeps ran 1.1-2.2x slower than per-system cudss_mixed, which
+  already keeps one analysis and refreshes values per frequency. Only the smallest pattern reached parity.
+- time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): missed resonances on open (CPML) disks
+  (0-3 of 6), residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells.
+- mumps_blr (block low-rank MUMPS refined by GMRES): MUMPS compressed 2-10 % of the entries on the profiled 3D
+  cases, the factor took 1.4-2.1x longer and no memory was saved (only ICNTL(35) / CNTL(7) were set, so MUMPS
+  allocated for the full-rank factor). A retry needs the memory flags, a looser drop threshold and a case much larger
+  than solid_mechanics_3d_tetrahedra_large.
+
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or
   the caller's row_scale), entry by entry on an own copy of the canonical pattern, as CudssFactorization: LDL^T when
@@ -628,7 +830,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `back_end` = the library ('mumps' / 'pardiso'), `precision` the request, `factor_precision` what is factored;
   `description` starts with the library label ('MUMPS LDL^T', 'PARDISO LU float32 + float64 GMRES refinement').
   The scaling itself is `scaled_values` (a new array; a core.kernels.host_twin: numba prange over rows from
-  HOST_SCALE_MIN_ENTRIES entries, else the numpy form `_scale_host`; next-gains N6, self-test solver_host_scale_numba).
+  HOST_SCALE_MIN_ENTRIES entries when numba is already in sys.modules, else the numpy form `_scale_host`: it never
+  imports numba, ~1 s per process against ~30 ms of gathers at 3e6 entries; next-gains N6, self-test
+  solver_host_scale_numba).
 - Solves: A x = b as x = R E^-1 R (D) b; A^T x = b as R E^-T R b (no symmetrizer) or D R E^-T R b (symmetrizer;
   E^-T = E^-1 for a symmetric kind); a real factor takes a complex rhs as two real solves; solve() of a cupy rhs moves it
   to the host and the solution back (host_arrays / numpy rhs: numpy). `_lu_solve(rhs, trans)` serves
@@ -654,6 +858,26 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   pydiso's refactor checks only the nnz count, so the pattern is compared here first. The per-entry rows and diagonal
   positions are kept per pattern and ||E|| (`operator_norm`) is lazy: a double probe whose relative residual passes
   ACCEPT_RESIDUAL leaves probe_backward_error None (cuDSS R4).
+- Kept analyses (`host_analyses_kept()`, entered by run_study beside `cudss_orderings_kept`; off for scripts and
+  selftest checks): release() parks the library factor (analysis and factor memory) and a new analysis of another
+  factor object adopts a parked one of the same library, kind, real, factor dtype and canonical pattern (compared
+  entry by entry; pydiso checks only the nnz), so a sweep value or rebuilt session with a known pattern runs the
+  numeric factorisation only (`last_analysis_kept`, counted in host_direct_reused_analyses; no memory guard, the bytes
+  were already held). A miss releases every parked factor before it analyses (a changed mesh never holds a stale
+  factor beside the new one; a pattern released mid-build loses its entry to the next other pattern), at most
+  KEPT_ANALYSES (4) stay parked, a failed factorisation never parks, the block's end releases the rest. The parked
+  bytes are no estimate item: the adopting build's own factor item is that memory; until then
+  `core.host_memory.available_bytes()` (the host budget, the guard) sees them as used (`kept_analysis_bytes()`). MUMPS
+  takes the same path (`_MumpsFactor.refactor` reuses its Context's analysis).
+- PARDISO thread rule (gotcha): phase 22 on a handle whose phase 33 ran on one thread (the serial solve below
+  `_PARDISO_SERIAL_SOLVE_LU_ENTRIES`) gave garbage factors (probe residuals 1e20 - 1e125, "0 perturbed pivots") and
+  access violations (em_fdfd / em_modes / em_nlfd / semiconductor / magnetic example profilers, 2026-11-12); handles that
+  solved on all threads (>= 1e6 entries: potential cylinder, membrane) refactor fine. So `_PardisoFactor.solved_serially`
+  makes the handle not `refactorable` (`refactor` raises): it is neither reused in place nor parked. A factor object
+  that then refactorises in place analyses anew once with `keep_threads` (every phase on the library thread count, no
+  serial solves) and reuses that analysis afterwards; small-factor sweeps of new objects (em wavelengths) analyse per
+  value as before the kept analyses. Checked by solver_host_direct_cpu_gpu (value sweeps at the rule and with every
+  solve on all threads).
 - `refactorize_values(values, indptr, indices, row_scale, symmetric_known, defer_check)` (HostPencil route; no
   symmetrizer): the pattern matched by identity with the last refactorize_values arrays (a plain refactorize clears
   that), so its caller never modifies them in place. defer_check: a double factor on the kept analysis whose last
@@ -676,7 +900,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   (single precision); PardisoError carries only a message (mapped back by `_err_messages`); release = dropping the
   handle (dealloc phase -1). Every library call sits in `_MumpsFactor` / `_PardisoFactor` at the end of the module.
 - PARDISO ordering: the analysis asks for the OpenMP nested dissection (iparm[1] = 3, `_PARDISO_ORDERING`; an older
-  pydiso without the keyword gets the library default METIS): the same fill as METIS at half the analysis time on
+  pydiso without the keyword, 0.2.0 in the conda env, runs `_ordered_pardiso_class`, which sets iparm[1] on the
+  handle before the analysis its constructor runs: without it the analysis was serial METIS, 2.4 s of a 6 s heat
+  profile): the same fill as METIS at half the analysis time on
   2 - 4 threads (with METIS the analysis is 50 - 85 % of a cold PARDISO factorisation up to ~600 000 unknowns), equal
   on one thread, every matrix type and both precisions. Measured and not adopted: minimum degree (iparm[1] = 0: the
   fastest cold factor on 2D grids, 2 - 6 x slower solves and 1.7 x the fill in 3D), the two-level factorisation
@@ -693,7 +919,12 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   ("'<name>' needs ...": back_end and factorization settings alike), `install_hint`, `factor_label` (texts).
 - Threads: library defaults (MUMPS OpenMP / BLAS: OMP_NUM_THREADS, recorded; PARDISO MKL_NUM_THREADS,
   get_mkl_pardiso_max_threads recorded); no open_sol setting, oversubscription with numba / scipy BLAS threads is the
-  user's to set. Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+  user's to set. Exception: a PARDISO solve (phase 33) of a factor below `_PARDISO_SERIAL_SOLVE_LU_ENTRIES` (1e6)
+  runs on one MKL thread, and the count is restored after (fluid heat transient, 57 000 entries: 0.88 ms per solve on
+  16 threads, mostly barriers). Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
+  `_PardisoFactor.solve` sums MKL's own refinement steps (iparm[6]; iparm[7] = 0 still refines twice per solve when the
+  factor has perturbed pivots, iparm[13]) into `solve_text` (solve_resonances' factor text via `library_solve_text`);
+  `OPEN_SOL_PARDISO_SOLVE_PARALLEL` (temporary measurement override) writes iparm[24] before a handle's first solve.
 - PARDISO beside OpenBLAS (pip wheels and conda-forge defaults: numpy / scipy on OpenBLAS, pydiso on MKL): both pools
   spin after a call, so an MKL call right after a threaded BLAS call (a norm, a Gram-Schmidt product, ARPACK's own
   BLAS) shares the cores with spinning OpenBLAS workers (4 cores: a solve 15 -> 70 ms, a mixed solve 75 -> 450 ms, an
@@ -703,6 +934,8 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   `pardiso` extra) or with numpy on MKL (one pool, no conflict). HostDirectFactorization wraps refactorize, solve_host
   and solve_preconditioned* itself (`openblas_pools` = pools held, 0 none); a consumer whose own loop does BLAS work
   between PARDISO solves wraps the loop (arpack_shift_invert: the scipy eigs / eigsh calls, by `self.factorization`).
+  `limited_blas_threads(threads)` (every BLAS pool, MKL included, at `threads`; nothing for 0) is the other
+  threadpoolctl user, for arpack_shift_invert.host_blas_limit (E6; contract direct_wrappers_lazy keeps threadpoolctl here).
   It is process-wide while held: only vector-sized BLAS work belongs inside, never a dense factorisation. BLAS calls
   of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those. The pools
   are looked up once; `refresh=True` (refactorize / refactorize_values) looks again only when a scipy module that loads
@@ -710,7 +943,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   library: 4.5 ms per Newton factorisation). A new lazily loaded BLAS user of scipy joins that list.
 - Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
   a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
-  checks of mixed factors, pydiso >= 0.3 in the conda env (0.2.0 has no fill_reducing_ordering: METIS analysis), PARDISO Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
+  checks of mixed factors, pydiso >= 0.3 in the conda env (needs Python >= 3.12, the env is 3.11; 0.2.0 reaches the
+  same parallel ordering through `_ordered_pardiso_class`: analysis cpu/wall ~5 on 16 threads, measured), PARDISO
+  Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
   calibrated memory / time
   constants and profile curves.
 

@@ -1,10 +1,11 @@
 """Reused sweep builds (SweepSpec.reuse_build): the spec values a swept parameter reaches (what refuses the reuse) and
-the ParameterFollower that re-sets a following feature value on the kept build per sweep value."""
+the ParameterFollower that re-sets a following feature value, physics setting or material value on the kept build
+per sweep value."""
 import dataclasses
 
 from .expressions import COORDINATE_NAMES, ExpressionError, evaluate_scalar, referenced_names
 from .geometry import GEOMETRY_KINDS
-from .schema import known_physics
+from .schema import known_physics, state_field_names
 from .solver_hooks import RerunSolver
 
 REUSE_REFUSED_STUDIES = ('time_dependent', 'optimization')   # their run state is no rerun of a kept build
@@ -46,8 +47,9 @@ def live_parameter_names(spec, parameter) -> frozenset:
 
 def reuse_issues(spec, registry) -> list:
     """[(node path, message)] that refuse SweepSpec.reuse_build: a refused study, parity sectors, mesh refinement levels
-    and every spec value the swept parameter reaches besides following feature values (Param.follows_parameters of
-    parameters only), derived values, curves, references and study settings."""
+    and every spec value the swept parameter reaches besides following values of parameters only (feature values and
+    physics settings flagged Param.follows_parameters, repaintable material values: _material_follows), derived
+    values, curves, references and study settings."""
     sweep = spec.study.sweep
     issues = []
     if spec.study.type in REUSE_REFUSED_STUDIES:
@@ -83,7 +85,8 @@ def reuse_issues(spec, registry) -> list:
 
 def _value_uses(spec, registry):
     """Yield (node path, text, names, following) of every spec value the build reads (derived values, curves and the
-    study settings excluded): following = a feature value flagged Param.follows_parameters."""
+    study settings excluded): following = a feature value or physics setting flagged Param.follows_parameters (a
+    setting the auto mesh sizes by excluded: _auto_wavelength_mesh), or a material value _material_follows."""
     domain = spec.domain
     for item in dataclasses.fields(domain):
         if item.name not in _TEXT_KEYS:
@@ -92,10 +95,13 @@ def _value_uses(spec, registry):
         kind = GEOMETRY_KINDS.get(obj.kind)
         for name, names in _param_uses(None if kind is None else kind.params, obj.params):
             yield ('geometry', obj.name), f'geometry object {obj.name!r} {name}', names, False
+    state_names = state_field_names(spec, registry)
     for material in spec.materials:
         properties = material.properties if isinstance(material.properties, dict) else {}
         for name, raw in properties.items():
-            yield ('material', material.name), f'material {material.name!r} {name}', value_names(raw), False
+            names = value_names(raw)
+            yield (('material', material.name), f'material {material.name!r} {name}', names,
+                   _material_follows(spec, registry, name, names, state_names))
         yield ('material', material.name), f'material {material.name!r} dispersion', value_names(
             material.dispersion), False
     for mesh_spec in spec.meshes:
@@ -103,8 +109,12 @@ def _value_uses(spec, registry):
             if key not in _TEXT_KEYS:
                 yield ('mesh', mesh_spec.name), f'mesh {mesh_spec.name!r} {key}', value_names(raw), False
     for physics_spec, physics_type in known_physics(spec, registry):
+        following = set()
+        if not _auto_wavelength_mesh(spec, physics_spec, physics_type):
+            following = {param.name for param in physics_type.settings if param.follows_parameters}
         for name, names in _param_uses(physics_type.settings, physics_spec.settings):
-            yield ('physics', physics_spec.name), f'physics {physics_spec.name!r} setting {name}', names, False
+            yield ('physics', physics_spec.name), f'physics {physics_spec.name!r} setting {name}', names, \
+                name in following
         for feature_spec in physics_spec.features:
             if not feature_spec.enabled:
                 continue
@@ -133,6 +143,33 @@ def _value_uses(spec, registry):
         for name, names in _param_uses(params, node.settings):
             yield ('solver', node.name), f'solver {node.name!r} {name}', names, False
     yield ('study',), 'stored cut', value_names(spec.study.stored_cuts), False
+
+
+def _material_follows(spec, registry, name, names, state_names) -> bool:
+    """True when a reused build repaints material property `name` (builder._follow_material; x / y / z / t in it are
+    reported by reuse_issues): no state field in it, no 3D tensor mesh, and every type reading it declares it
+    state_dependent (materials_changed re-reads the array) and is no EM type (index references, dispersive
+    backgrounds and subpixel averages are taken from the build's permittivity)."""
+    if not names.isdisjoint(state_names):
+        return False   # a DynamicMaterialUpdate writes it
+    if spec.is_3d and any(mesh_spec.kind != 'tetrahedra' for mesh_spec in spec.meshes):
+        return False   # 3D tensor materials are painted per z-slab run: no region mask is kept
+    for _, physics_type in known_physics(spec, registry):
+        for param in physics_type.material_properties:
+            if param.name == name and (physics_type.family == 'em' or not param.state_dependent):
+                return False
+    return True
+
+
+def _auto_wavelength_mesh(spec, physics_spec, physics_type) -> bool:
+    """True when the physics' mesh is an auto mesh sized by the physics' shortest wavelength (its settings shape the
+    mesh, so none of them follows a reused build)."""
+    try:
+        mesh_spec = spec.mesh_of(physics_spec)
+    except KeyError:
+        return False   # validation reports the unknown mesh
+    return (physics_type.shortest_wavelength is not None and mesh_spec.mode == 'auto'
+            and mesh_spec.wavelength_min is None)
 
 
 def _param_uses(params, raw_values):

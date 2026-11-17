@@ -21,10 +21,11 @@ DIAGONAL_ARRAYS = {'currents': ('sigma_dc_xx', 'sigma_dc_yy', 'sigma_dc_zz'),
 _FLUX_Z_NAMES = {'currents': 'J_z', 'electrostatics': 'D_z'}
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(eq=False)
 class FEMHeldRegion3D:
     """Runtime object of a voltage / terminal feature on tetrahedra: held outer faces, object interface faces (int64
-    mesh faces) and / or held elements (host bool mask) at one voltage."""
+    mesh faces) and / or held elements (host bool mask) at one voltage; not frozen: set_held_voltage re-sets
+    voltage."""
     name: str
     voltage: float
     faces: tuple
@@ -82,9 +83,12 @@ class FEMPotentialPhysics3D(FEMPotentialMixin, FEMDiffusionPhysicsBase3D):
         """Unit of held_flux: whole totals in 3D (A, C)."""
         return self.spec.ring_flux_unit
 
-    def add_surface_potential(self, faces, V) -> None:
-        """V [V] on mesh faces (an object interface: Dirichlet)."""
-        self.add_surface_condition(faces, BCSide('dirichlet', value=V))
+    def add_surface_potential(self, faces, V) -> int:
+        """V [V] on mesh faces (an object interface: Dirichlet); handle for set_held_voltage."""
+        return self.add_surface_condition(faces, BCSide('dirichlet', value=V))
+
+    def _set_outline_potential(self, handle, V) -> None:
+        self.set_surface_condition(handle, BCSide('dirichlet', value=V))
 
     def add_surface_flux(self, faces, value) -> int:
         """Inward current density / surface charge on mesh faces (an interface: a sheet source feeding both sides);
