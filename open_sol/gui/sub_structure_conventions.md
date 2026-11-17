@@ -16,8 +16,9 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   aboutToShow: field data needs `canvas.current_field`; the web pages (`_web_page_target`) the Save run state plus the
   Field tab's field (`ResultsPanel.selected_field_key`), a 'dft_fields' kind (the DFT tab's monitor,
   `selected_dft_key`, else the first) or exactly one 'mode_shapes' kind in `last_build_summary.feature_results`).
-  `MainWindow._export_web_page` calls `api.export_session_html` (Results.export_html: viz.field_viewer /
-  viz.mode_player page) in a `bridge.call`.
+  `MainWindow._export_web_page` (the Open ... in browser entries) calls `api.export_session_html` (Results.export_html:
+  viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing into `web_page_directory()` (temporary folder,
+  one file per model and target, no save dialog), then opens it with QDesktopServices (failure names the file).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
   definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not

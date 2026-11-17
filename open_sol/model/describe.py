@@ -1401,7 +1401,7 @@ _RESULTS_NOTES = (
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
         'export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None, '
         'physics=None) -> the written path: Results.export_html of such a live session (the GUI Results dock, Export '
-        'menu web pages); the session stays open.',
+        'menu Open ... in browser entries); the session stays open.',
         'Never mix api.run with the GUI worker in one process.',
     )),
     ('GPU memory', (
