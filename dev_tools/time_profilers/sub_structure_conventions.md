@@ -94,8 +94,15 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   whose every run of the solver is such a run loses that solver's points of the command (the one case where points
   are dropped; `profile_points_before.json` of the run keeps them). A renamed counter makes every run count again. A timed-out command counts as profiling unless its partial stdout holds the
   harness's 'nothing profiled' line (`NOTHING_PROFILED`): keep the two texts the same. `--compare` leaves out the roles
-  that refuse the value (setting_choices, opt-in values, validation: below), so no run fails for the value itself. The plot is saved to a timestamped sibling
-  and then replaces `profile_points.png`; when a viewer holds the png open the new one stays beside it. A new SOLVERS entry takes the next colour slot (10 in all: 8 hues, 2 neutrals) and names its fixed
+  that refuse the value (setting_choices, opt-in values, validation: below), so no run fails for the value itself. The plot is the page `profile_points.html`:
+  `plot_points` fills `case_profilers/profile_points_page.html` (`PAGE_TEMPLATE`, read from run_all_profilers' own
+  folder by every suite) at `PAGE_DATA_MARKER` with the points JSON (`</` escaped; NaN raises); the page reads the
+  point keys (`run_seconds`, `command_seconds`, `gpu_peak_bytes`, `host_peak_bytes`, `timed_out`, `runs`, `chosen`,
+  `when`) by name, so a renamed key empties its panel there too, and draws the timed-out cap (`TIMEOUT_CAP`) and the
+  rings (`picks` from `auto_picks`) itself. It is written to a timestamped sibling and then replaces the page; a page
+  that cannot be replaced keeps the new one beside it. A new SOLVERS entry takes the next colour slot of
+  `SOLVER_COLORS` ((light, dark) pairs, 10 in all: 8 hues, 2 neutrals; one more SOLVERS entry than slots raises, never
+  a cycled colour) and names its fixed
   `backends` (host libraries cpu, cuDSS gpu) or None to follow `--backend`. On the cpu backend a case's own gpu-only
   nodes (cuDSS, device line_block) fail at build and those runs are not counted.
 - `LIBRARY_CLOCKS` reads a seconds attribute the instance sets inside the wrapped call (cuDSS `factorize_seconds`).

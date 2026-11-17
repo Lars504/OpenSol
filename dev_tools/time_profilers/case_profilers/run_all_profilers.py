@@ -1,15 +1,15 @@
 """Run every profiler_solver_*.py command in turn, once per chosen solver (host libraries on the cpu backend, cuDSS on
 the gpu, the others per --backend; a failing one is logged, the rest continue) -> out/run_all.log; each report is also
 kept in out/history/<timestamp>/ (with the points file as it was before the run). Each finished command updates its
-point in out/profile_points.json and the plot out/profile_points.png (run wall, GPU peak and RAM peak per command; one
-line per solver and backend for the first complete profile, the previous and the current one; a ring on the solver
-Automatic picks on the gpu, worked out by the harness from each case's roles whichever solver was run).
+point in out/profile_points.json and the plot out/profile_points.html (a self-contained page: run wall, command wall,
+GPU peak and RAM peak per command; one line per solver and backend for the first complete profile, the previous and
+the current one; a ring on the solver Automatic picks on the gpu, worked out by the harness from each case's roles
+whichever solver was run; the page chooses the panels, solvers, profiles, backends and commands it draws).
 A command is killed after --timeout s (default 60); one that was profiling is plotted at the '>timeout' tick.
 Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...] [--pardiso --mumps-mixed ...]
 [--backend gpu cpu] [--timeout S] [--new-first] [--plot-only]"""
 import argparse
 import json
-import math
 import os
 import shutil
 import subprocess
@@ -21,7 +21,9 @@ HERE = Path(__file__).resolve().parent
 REPOSITORY = HERE.parents[2]
 OUT = HERE / 'out'
 POINTS_PATH = OUT / 'profile_points.json'
-PLOT_PATH = OUT / 'profile_points.png'
+PLOT_PATH = OUT / 'profile_points.html'
+PAGE_TEMPLATE = HERE / 'profile_points_page.html'   # read from here by every suite (example_profilers too)
+PAGE_DATA_MARKER = '__PROFILE_DATA__'
 SERIES = ('first', 'previous', 'current')   # first: the first complete profile (all commands, no --only)
 BACKENDS = ('gpu', 'cpu')
 DEFAULT_TIMEOUT = 60.0   # seconds per command (subprocess killed); the harness's api.run has no limit of its own
@@ -53,16 +55,11 @@ SOLVERS = {
     'multigrid': _compared('preconditioner', 'multigrid'),
     'jacobi': _compared('preconditioner', 'jacobi'),
 }
-# categorical palette slots in fixed order (8 hues), then two neutrals for the preconditioner variants
-SOLVER_COLORS = ('#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948',
-                 '#52514e', '#a3a29c')
-BACKEND_MARKERS = {'gpu': 'o', 'cpu': 's'}
-SERIES_STYLES = {'first': dict(linestyle=':', linewidth=1.2, markersize=5, markerfacecolor='none'),
-                 'previous': dict(linestyle='--', linewidth=1.2, markersize=4),
-                 'current': dict(linestyle='-', linewidth=2.0, markersize=6)}
-# ring around the current point of the solver variant Automatic picks on the gpu (auto_picks)
-PICK_RING = dict(s=220, facecolors='none', edgecolors='#0b0b0b', linewidths=1.5, zorder=5)
-
+# categorical palette slots in fixed order (8 hues), then two neutrals for the preconditioner variants: (light, dark)
+# steps of each, one per SOLVERS entry (the page draws a solver without a slot, e.g. a renamed one, in text colour)
+SOLVER_COLORS = (('#2a78d6', '#3987e5'), ('#eb6834', '#d95926'), ('#1baf7a', '#199e70'), ('#eda100', '#c98500'),
+                 ('#e87ba4', '#d55181'), ('#008300', '#0ca30c'), ('#6250d6', '#9085e9'), ('#e34948', '#e66767'),
+                 ('#52514e', '#c3c2b7'), ('#a3a29c', '#7c7b76'))
 COMMANDS = (
     'pressure_acoustics', 'pressure_acoustics_tetrahedra',
     'em_fdfd_triangles', 'em_modes_triangles',
@@ -214,94 +211,48 @@ def _variant_order(variant):
 
 
 def plot_points(points, path):
-    """Three panels sharing the command axis (run wall s, log; GPU peak MiB; RAM peak MiB): one colour per solver,
-    one marker per backend, one line style per series (first dotted, previous dashed, current solid), a ring on the
-    solver Automatic picks."""
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    from matplotlib.lines import Line2D
+    """Write the profile page (PAGE_TEMPLATE filled with the points; self-contained, opens in a browser) to path and
+    return the path written (None: nothing measured yet, or not saved). On the page: panels run wall s (log), command
+    wall s, GPU peak MiB, RAM peak MiB sharing the command axis; one colour per solver, one marker per backend, one
+    line style per series (first dotted, previous dashed, current solid), a ring on the solver Automatic picks; which
+    panels, solvers, series, backends and commands are drawn is chosen there (hover / table for the values)."""
     measured = {entry for by_series in points.values() for series in SERIES for entry in by_series[series]}
     entries = [entry for entry in COMMANDS if entry in measured] + sorted(measured - set(COMMANDS))   # dropped last
     if not entries:
         return None
-    variants = sorted(points, key=_variant_order)
-    picks = {(entry, variant) for entry, variant in auto_picks(points) if entry in entries}
-
-    def color(variant):
-        solver = variant.partition(' @')[0]
-        return SOLVER_COLORS[list(SOLVERS).index(solver) % len(SOLVER_COLORS)] if solver in SOLVERS else '#0b0b0b'
-    panels = (('run_seconds', 1.0, 'run wall (s)', True), ('gpu_peak_bytes', 2.0 ** -20, 'GPU peak (MiB)', False),
-              ('host_peak_bytes', 2.0 ** -20, 'RAM peak (MiB)', False))
+    if len(SOLVERS) > len(SOLVER_COLORS):
+        raise ValueError(f'{len(SOLVERS)} SOLVERS but {len(SOLVER_COLORS)} SOLVER_COLORS slots: give the new solver '
+                         'a colour (never a cycled one)')
     timeouts = [point['timeout_seconds'] for by_series in points.values() for series in SERIES
-                for entry, point in by_series[series].items() if point.get('timed_out') and entry in entries]
+                for point in by_series[series].values() if point.get('timed_out')]
     largest_timeout = max(timeouts, default=None)
-    cap = None if largest_timeout is None else TIMEOUT_CAP * largest_timeout   # height of every timed-out point
-
-    def value(point, key, variant):
-        if point is None or (key == 'gpu_peak_bytes' and variant.endswith(' @cpu')):   # cpu: VRAM not measured
-            return None
-        return cap if key == 'run_seconds' and point.get('timed_out') else point.get(key)
-    figure, axes = plt.subplots(len(panels), 1, sharex=True, figsize=(max(11.0, 0.3 * len(entries)), 11.0))
-    positions = list(range(len(entries)))
-    for axis, (key, scale, label, logarithmic) in zip(axes, panels):
-        for variant in variants:
-            marker = BACKEND_MARKERS.get(variant.partition(' @')[2], 'o')
-            for series in SERIES:
-                values = [value(points[variant][series].get(entry), key, variant) for entry in entries]
-                if all(item is None for item in values):
-                    continue
-                heights = [math.nan if item is None else item * scale for item in values]   # gaps break the line
-                axis.plot(positions, heights, color=color(variant), marker=marker, **SERIES_STYLES[series])
-        for entry, variant in picks:   # a ring on the current point of the solver Automatic picks
-            height = value(points[variant]['current'].get(entry), key, variant)
-            if height is not None:
-                axis.scatter([entries.index(entry)], [height * scale], **PICK_RING)
-        axis.set_ylabel(label)
-        if logarithmic:
-            axis.set_yscale('log')
-        if key == 'run_seconds' and cap is not None:   # one tick '>timeout' above the timeout line
-            from matplotlib.ticker import NullFormatter
-            bottom = axis.get_ylim()[0]
-            axis.set_ylim(bottom, cap * 1.3)
-            ticks = [tick for tick in axis.get_yticks() if bottom <= tick < largest_timeout]
-            axis.set_yticks(ticks + [cap])
-            axis.set_yticklabels([f'{tick:g}' for tick in ticks] + [f'>{largest_timeout:g}'])
-            axis.yaxis.set_minor_formatter(NullFormatter())
-            axis.axhline(largest_timeout, color='#c3c2b7', linewidth=0.8)
-        axis.grid(True, color='#e4e3df', linewidth=0.8)
-        axis.set_axisbelow(True)
-        for side in ('top', 'right'):
-            axis.spines[side].set_visible(False)
     first_when = min((point['when'] for by_series in points.values() for point in by_series['first'].values()),
                      default='none yet')
-    axes[0].set_title(f'{PLOT_TITLE} (first complete profile {first_when}; GPU peak: pool high-water '
-                      '+ cuDSS factors; RAM peak: the process)', fontsize=10, loc='left')
-    variant_handles = [Line2D([], [], color=color(variant), marker=BACKEND_MARKERS.get(variant.partition(' @')[2], 'o'),
-                              linewidth=2.0, label=variant) for variant in variants]
-    series_handles = [Line2D([], [], color='#52514e', label=series, **SERIES_STYLES[series]) for series in SERIES]
-    series_handles.append(Line2D([], [], linestyle='none', marker='o', markersize=13, markerfacecolor='none',
-                                 markeredgecolor=PICK_RING['edgecolors'], markeredgewidth=PICK_RING['linewidths'],
-                                 label="Automatic's pick on the gpu (current)"))
-    solver_legend = axes[0].legend(handles=variant_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0),
-                                   frameon=False, title='solver @backend')
-    axes[0].add_artist(solver_legend)
-    axes[1].legend(handles=series_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0), frameon=False,
-                   title='profile')
-    axes[-1].set_xticks(positions)
-    axes[-1].set_xticklabels(entries, rotation=90, fontsize=8)
-    figure.tight_layout()
-    saved = _save_figure(figure, path)
-    plt.close(figure)
-    return saved
+    variants = []
+    for variant in sorted(points, key=_variant_order):
+        solver, _, backend = variant.partition(' @')
+        variants.append({'name': variant, 'solver': solver, 'backend': backend,
+                         'slot': list(SOLVERS).index(solver) if solver in SOLVERS else None,   # None: text colour
+                         'points': {series: points[variant][series] for series in SERIES}})
+    data = {'title': PLOT_TITLE, 'first_when': first_when, 'written': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'commands': entries, 'dropped': sorted(measured - set(COMMANDS)), 'colors': SOLVER_COLORS,
+            'timeout': None if largest_timeout is None else {'largest': largest_timeout,
+                                                             'cap': TIMEOUT_CAP * largest_timeout},
+            'variants': variants, 'picks': sorted([entry, variant] for entry, variant in auto_picks(points))}
+    template = PAGE_TEMPLATE.read_text(encoding='utf-8')
+    if template.count(PAGE_DATA_MARKER) != 1:
+        raise ValueError(f'{PAGE_TEMPLATE} must hold {PAGE_DATA_MARKER} exactly once')
+    payload = json.dumps(data, allow_nan=False, separators=(',', ':')).replace('</', '<\\/')   # no early </script>
+    return _save_page(template.replace(PAGE_DATA_MARKER, payload), path)
 
 
-def _save_figure(figure, path):
-    """Save to a timestamped sibling, then replace path with it; a path a viewer holds open (Windows: EINVAL /
-    PermissionError) keeps the new plot beside it instead of failing the whole run."""
+def _save_page(text, path):
+    """Write a timestamped sibling, then replace path with it; a path that cannot be replaced (Windows: held open)
+    keeps the new page beside it instead of failing the whole run."""
     fresh = path.with_name(f'{path.stem}_{time.strftime("%Y%m%d_%H%M%S")}{path.suffix}')
     try:
-        figure.savefig(fresh, dpi=120, bbox_inches='tight')
+        fresh.parent.mkdir(parents=True, exist_ok=True)
+        fresh.write_text(text, encoding='utf-8')
     except OSError as error:
         print(f'plot not saved ({error}); redraw with --plot-only', flush=True)
         return None

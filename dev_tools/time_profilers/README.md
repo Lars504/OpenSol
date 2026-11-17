@@ -205,15 +205,20 @@ none). A killed command that was profiling becomes a point at the `>60` tick of 
 line at the timeout, and has no memory point. A command killed before it found a run for the solver gives none.
 
 **The plot.** Each command that finishes is a point in `out/profile_points.json`, plotted in
-`out/profile_points.png`. There is one panel each for run wall (the counted runs only, log scale), GPU peak and RAM
-peak, with the commands on the x axis. Each solver @backend has its own line: a colour per solver, a marker per
+`out/profile_points.html`, a self-contained page (no network) to open in a browser. Its panels share the command x
+axis: run wall (the counted runs only, log scale), command wall (the whole subprocess; off at first), GPU peak and
+RAM peak. On the page you choose the panels (and a log axis per panel), the solver @backend lines (click a legend
+entry; double-click shows only that one), the profiles, the backends and the commands (a filter: `em_ heat` keeps
+commands holding either, `-tetra` drops those holding it). Hovering a panel shows every shown value at that command,
+with the runs counted, the solvers used and when; `Table` lists the same values. The page remembers these choices
+in the browser, so a redrawn page opens the same way. Each solver @backend has its own line: a colour per solver, a marker per
 backend. Line style marks the profile:
 - `first` (dotted): from the first complete profile of that solver @backend, a run without `--only`. A command
   added later gets its first point at the next complete run; `--new-first` makes this complete run the first one.
 - `previous` (dashed) and `current` (solid): the command's last two points for that solver @backend. A run with
   `--only` or other solver flags moves only those points; a failed command keeps its old ones.
 
-The plot always shows every solver @backend in the file, not only the ones of this run. A black ring marks, per
+The page lists every solver @backend in the file, not only the ones of this run. A black ring marks, per
 command, the current point of the solver Automatic picks on the gpu backend, whichever solvers were run (no `--auto`
 needed). The harness works that out for every run from the case's roles (`runs.json` `automatic`: the role's
 Automatic type and settings, back_end 'auto' resolved to cuDSS where the role lists it, else SuperLU). The ring sits

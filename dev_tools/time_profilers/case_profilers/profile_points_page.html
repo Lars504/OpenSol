@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile points</title>
+<!-- Template of run_all_profilers.plot_points: the profile points JSON replaces the marker below; self-contained
+     (no network). Panels, solvers, profiles, backends and commands are chosen on the page; the choice is kept per
+     title in localStorage so a redrawn page opens the same way. -->
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f0;
+  --surface-1: #fcfcfb;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7c7b76;
+  --grid: #e4e3df;
+  --axis: #c3c2b7;
+  --border: #dcdbd5;
+  --chip: #ecebe7;
+  --chip-on: #0b0b0b;
+  --chip-on-text: #fcfcfb;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e88;
+    --grid: #2c2c2a;
+    --axis: #4a4a46;
+    --border: #383835;
+    --chip: #2a2a28;
+    --chip-on: #f0efec;
+    --chip-on-text: #1a1a19;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --text-muted: #8f8e88;
+  --grid: #2c2c2a;
+  --axis: #4a4a46;
+  --border: #383835;
+  --chip: #2a2a28;
+  --chip-on: #f0efec;
+  --chip-on-text: #1a1a19;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--surface-0); color: var(--text-primary);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: 16px;
+}
+header h1 { font-size: 17px; margin: 0 0 2px; font-weight: 600; }
+header p { margin: 0 0 12px; color: var(--text-secondary); }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+  margin-bottom: 12px;
+}
+.group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.group > .name { color: var(--text-secondary); margin-right: 2px; }
+button, .chip {
+  font: inherit; color: var(--text-primary); background: var(--chip); border: 1px solid transparent;
+  border-radius: 999px; padding: 2px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--axis); }
+button[aria-pressed="true"] { background: var(--chip-on); color: var(--chip-on-text); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--text-primary); outline-offset: 1px; }
+input[type="search"], select {
+  font: inherit; color: var(--text-primary); background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 6px; padding: 2px 8px;
+}
+input[type="search"] { width: 15em; }
+label.check { display: inline-flex; gap: 4px; align-items: center; color: var(--text-secondary); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 12px; align-items: start; }
+@media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.panel { margin-bottom: 12px; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.panel-head h2 { font-size: 13px; font-weight: 600; margin: 0; }
+.panel-head .note { color: var(--text-muted); font-size: 12px; }
+svg { display: block; width: 100%; overflow: visible; }
+svg text { fill: var(--text-secondary); font-size: 11px; }
+svg .empty-text { fill: var(--text-muted); font-size: 12px; }
+aside h3 { font-size: 12px; font-weight: 600; margin: 4px 0 6px; color: var(--text-secondary); }
+.legend-actions { display: flex; gap: 4px; margin-bottom: 6px; }
+.legend-item {
+  display: flex; width: 100%; align-items: center; gap: 8px; border-radius: 6px; padding: 2px 6px;
+  background: transparent; text-align: left;
+}
+.legend-item[aria-pressed="false"] { opacity: 0.4; }
+.legend-item[aria-pressed="true"] { background: transparent; color: var(--text-primary); }
+.legend-item.off-backend { opacity: 0.25; }
+.legend-item svg, .key svg, .tip svg { width: auto; flex: none; }
+.key { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); margin: 2px 0; }
+.notes { color: var(--text-muted); font-size: 12px; margin: 8px 0 0; padding-left: 16px; }
+.tip {
+  position: fixed; z-index: 10; pointer-events: none; max-width: min(440px, calc(100vw - 32px));
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+.tip[hidden], section[hidden] { display: none; }
+.tip .head { font-weight: 600; margin-bottom: 4px; }
+.tip .row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.tip .row strong { font-variant-numeric: tabular-nums; }
+.tip .row .rest { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tip .meta { color: var(--text-muted); font-size: 12px; margin-top: 4px; white-space: normal; }
+#tableView { margin-top: 12px; }
+.table-head { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 3px 8px; border-bottom: 1px solid var(--grid); text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface-1); }
+th { color: var(--text-secondary); font-weight: 600; }
+td.muted { color: var(--text-muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <p id="subtitle"></p>
+</header>
+<div class="controls" role="toolbar" aria-label="What is plotted">
+  <div class="group" id="panelChips"><span class="name">Panels</span></div>
+  <div class="group" id="seriesChips"><span class="name">Profile</span></div>
+  <div class="group" id="backendChips"><span class="name">Backend</span></div>
+  <div class="group">
+    <span class="name">Commands</span>
+    <input type="search" id="filter" placeholder="filter: em_ heat -tetra" aria-label="Command filter">
+    <label class="check"><input type="checkbox" id="hideEmpty"> hide empty</label>
+  </div>
+  <div class="group">
+    <button id="tableButton" aria-pressed="false">Table</button>
+    <button id="themeButton" title="Light / dark / system">Theme</button>
+  </div>
+</div>
+<div class="layout">
+  <main id="panels"></main>
+  <aside class="card" id="legend" aria-label="Legend"></aside>
+</div>
+<section id="tableView" class="card" hidden>
+  <div class="table-head">
+    <strong>Table</strong>
+    <select id="tableMetric" aria-label="Table quantity"></select>
+    <span class="note" id="tableNote"></span>
+  </div>
+  <div class="table-scroll"><table id="table"></table></div>
+</section>
+<div class="tip" id="tip" hidden></div>
+<script id="profile-data" type="application/json">__PROFILE_DATA__</script>
+<script>
+'use strict';
+const DATA = JSON.parse(document.getElementById('profile-data').textContent);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const SERIES = ['first', 'previous', 'current'];
+const SERIES_STYLE = {   // dash, width, hollow marker
+  first: { dash: '2 3', width: 1.5, hollow: true },
+  previous: { dash: '7 4', width: 1.5, hollow: false },
+  current: { dash: null, width: 2, hollow: false },
+};
+const PANELS = [
+  { key: 'run_seconds', label: 'run wall', unit: 's', scale: 1, log: true,
+    note: 'sum of the counted runs’ walls' },
+  { key: 'command_seconds', label: 'command wall', unit: 's', scale: 1, log: true,
+    note: 'the whole subprocess (imports, every run)' },
+  { key: 'gpu_peak_bytes', label: 'GPU peak', unit: 'MiB', scale: 2 ** -20, log: false,
+    note: 'pool high-water + cuDSS factors (@cpu not measured)' },
+  { key: 'host_peak_bytes', label: 'RAM peak', unit: 'MiB', scale: 2 ** -20, log: false,
+    note: 'the process' },
+];
+const PANEL_HEIGHT = 210;
+const MARGIN = { left: 58, right: 14, top: 8, bottom: 6 };
+
+// ---- colours: one slot per solver (light, dark), as CSS variables so the theme swaps without a redraw
+(function addColours() {
+  const light = DATA.colors.map((pair, i) => `--s${i}: ${pair[0]};`).join(' ');
+  const dark = DATA.colors.map((pair, i) => `--s${i}: ${pair[1]};`).join(' ');
+  const style = document.createElement('style');
+  style.textContent = `:root { ${light} --s-none: var(--text-primary); }
+@media (prefers-color-scheme: dark) { :root:where(:not([data-theme="light"])) { ${dark} } }
+:root[data-theme="dark"] { ${dark} }`;
+  document.head.appendChild(style);
+})();
+const colour = variant => variant.slot === null ? 'var(--s-none)' : `var(--s${variant.slot})`;
+
+// ---- state, kept per title (a redrawn page opens the same way); storage may be unavailable
+const STORE_KEY = 'open_sol-profile-points:' + DATA.title;
+const state = {
+  panels: { run_seconds: true, command_seconds: false, gpu_peak_bytes: true, host_peak_bytes: true },
+  log: Object.fromEntries(PANELS.map(panel => [panel.key, panel.log])),
+  series: { first: true, previous: true, current: true },
+  backends: { gpu: true, cpu: true },
+  hidden: [],
+  filter: '',
+  hideEmpty: true,
+  table: false,
+  tableMetric: 'run_seconds',
+  theme: null,
+};
+try {
+  const saved = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+  if (saved && typeof saved === 'object') {
+    for (const key of Object.keys(state)) {
+      if (!(key in saved)) continue;
+      if (state[key] && typeof state[key] === 'object' && !Array.isArray(state[key])) Object.assign(state[key], saved[key]);
+      else state[key] = saved[key];
+    }
+  }
+} catch (error) { /* no storage: defaults */ }
+function save() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (error) { /* no storage */ }
+}
+function applyTheme() {
+  if (state.theme) document.documentElement.dataset.theme = state.theme;
+  else delete document.documentElement.dataset.theme;
+  const button = document.getElementById('themeButton');
+  button.textContent = 'Theme: ' + (state.theme || 'system');
+}
+
+// ---- data access
+const backends = [...new Set(DATA.variants.map(variant => variant.backend))];
+const picks = new Set(DATA.picks.map(([command, variant]) => command + '\u0000' + variant));
+const timeout = DATA.timeout;   // {largest, cap} or null
+
+function sample(variant, series, command, panel) {
+  // {value, timedOut, point} in display units, or null (missing, not measured, not plottable on a log axis)
+  const point = (variant.points[series] || {})[command];
+  if (!point) return null;
+  if (panel.key === 'gpu_peak_bytes' && variant.backend === 'cpu') return null;   // cpu: VRAM not measured
+  if (panel.key === 'run_seconds' && point.timed_out) {
+    return timeout ? { value: timeout.cap, timedOut: true, point } : null;
+  }
+  const raw = point[panel.key];
+  if (raw === null || raw === undefined || !Number.isFinite(raw)) return null;
+  const value = raw * panel.scale;
+  if (state.log[panel.key] && value <= 0) return null;
+  return { value, timedOut: false, point };
+}
+const shownVariants = () => DATA.variants.filter(variant =>
+  state.backends[variant.backend] !== false && !state.hidden.includes(variant.name));
+const shownSeries = () => SERIES.filter(series => state.series[series]);
+const shownPanels = () => PANELS.filter(panel => state.panels[panel.key]);
+
+function filterMatch(command) {
+  const terms = state.filter.trim().split(/\s+/).filter(Boolean);
+  const include = terms.filter(term => !term.startsWith('-'));
+  const exclude = terms.filter(term => term.startsWith('-') && term.length > 1).map(term => term.slice(1));
+  if (exclude.some(term => command.includes(term))) return false;
+  return !include.length || include.some(term => command.includes(term));
+}
+function shownCommands() {
+  const variants = shownVariants(), series = shownSeries();
+  const panels = shownPanels().length ? shownPanels() : PANELS;
+  return DATA.commands.filter(command => filterMatch(command) && (!state.hideEmpty ||
+    variants.some(variant => series.some(name => panels.some(panel => sample(variant, name, command, panel))))));
+}
+
+// ---- number formatting
+function fmt(value) {
+  if (value === 0) return '0';
+  const size = Math.abs(value);
+  if (size >= 1000) return Math.round(value).toLocaleString('en-US');
+  if (size >= 100) return value.toFixed(0);
+  if (size >= 0.01) return String(Number(value.toPrecision(3)));
+  return value.toExponential(1);
+}
+function valueText(found, panel) {
+  if (!found) return '–';
+  if (found.timedOut) return `>${fmt(timeout.largest)} ${panel.unit} (timed out)`;
+  return `${fmt(found.value)} ${panel.unit}`;
+}
+
+// ---- scales and ticks
+function niceStep(span, count) {
+  const raw = span / Math.max(count, 1);
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const unit = raw / power;
+  return (unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10) * power;
+}
+function linearAxis(values, height) {
+  const top = Math.max(...values, 0);
+  const step = niceStep(top || 1, Math.max(2, Math.floor(height / 40)));
+  const high = Math.ceil((top || 1) / step) * step;
+  const ticks = [];
+  for (let tick = 0; tick <= high + step * 1e-9; tick += step) ticks.push(tick);
+  return { low: 0, high, ticks, map: value => value / high, log: false };
+}
+function logAxis(values) {
+  let low = Math.log10(Math.min(...values)), high = Math.log10(Math.max(...values));
+  if (high - low < 0.6) { const mid = (low + high) / 2; low = mid - 0.3; high = mid + 0.3; }
+  low -= 0.08; high += 0.08;
+  const ticks = [];
+  const decades = high - low;
+  const mantissas = decades < 1.6 ? [1, 2, 5] : decades < 3.2 ? [1, 3] : [1];
+  for (let power = Math.floor(low); power <= Math.ceil(high); power++) {
+    for (const mantissa of mantissas) {
+      const tick = mantissa * 10 ** power;
+      const position = Math.log10(tick);
+      if (position >= low && position <= high) ticks.push(tick);
+    }
+  }
+  return { low, high, ticks, map: value => (Math.log10(value) - low) / (high - low), log: true };
+}
+
+// ---- drawing helpers
+function el(name, attributes = {}, parent = null) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) {
+    if (value !== null && value !== undefined) node.setAttribute(key, value);
+  }
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function marker(parent, backend, x, y, colourValue, hollow, size = 8) {
+  const half = size / 2;
+  const node = backend === 'cpu'
+    ? el('rect', { x: x - half + 0.5, y: y - half + 0.5, width: size - 1, height: size - 1, rx: 1.5 }, parent)
+    : el('circle', { cx: x, cy: y, r: half }, parent);
+  node.style.fill = hollow ? 'var(--surface-1)' : colourValue;
+  node.style.stroke = hollow ? colourValue : 'var(--surface-1)';
+  node.style.strokeWidth = hollow ? '1.5' : '1.5';   // filled: a surface ring keeps overlapping marks apart
+  return node;
+}
+function lineKey(variant, series, width = 28) {
+  const svg = el('svg', { width, height: 12, viewBox: `0 0 ${width} 12`, 'aria-hidden': 'true' });
+  const style = SERIES_STYLE[series];
+  const line = el('line', { x1: 1, y1: 6, x2: width - 1, y2: 6 }, svg);
+  line.style.stroke = variant ? colour(variant) : 'var(--text-secondary)';
+  line.style.strokeWidth = style.width;
+  if (style.dash) line.style.strokeDasharray = style.dash;
+  marker(svg, variant ? variant.backend : 'gpu', width / 2, 6,
+         variant ? colour(variant) : 'var(--text-secondary)', style.hollow, 7);
+  return svg;
+}
+function textNode(tag, text, className) {
+  const node = document.createElement(tag);
+  node.textContent = text;
+  if (className) node.className = className;
+  return node;
+}
+
+// ---- panels
+let layout = null;   // {commands, xs, panels: [{panel, svg, crosshair, plotTop, plotBottom}]}
+
+function labelSpace(commands) {
+  const longest = Math.max(1, ...commands.map(command => command.length));
+  return Math.min(220, 16 + longest * 5.6 * Math.SQRT1_2);
+}
+
+function draw() {
+  const main = document.getElementById('panels');
+  main.replaceChildren();
+  const panels = shownPanels(), commands = shownCommands(), variants = shownVariants(), series = shownSeries();
+  layout = { commands, xs: [], panels: [] };
+  if (!panels.length) {
+    main.appendChild(textNode('div', 'No panel chosen: pick one under Panels.', 'card'));
+    drawTable();
+    return;
+  }
+  if (!commands.length) {
+    main.appendChild(textNode('div', 'No command to show: widen the filter, or show more solvers / profiles.', 'card'));
+    drawTable();
+    return;
+  }
+  const width = Math.max(320, main.clientWidth - 22);
+  const plotWidth = width - MARGIN.left - MARGIN.right;
+  const band = plotWidth / commands.length;
+  layout.xs = commands.map((_, index) => MARGIN.left + band * (index + 0.5));
+  panels.forEach((panel, panelIndex) => {
+    const last = panelIndex === panels.length - 1;
+    const card = document.createElement('section');
+    card.className = 'card panel';
+    const head = document.createElement('div');
+    head.className = 'panel-head';
+    head.appendChild(textNode('h2', `${panel.label} (${panel.unit}${state.log[panel.key] ? ', log' : ''})`));
+    const right = document.createElement('div');
+    right.className = 'group';
+    right.appendChild(textNode('span', panel.note, 'note'));
+    const logButton = textNode('button', 'log');
+    logButton.setAttribute('aria-pressed', String(!!state.log[panel.key]));
+    logButton.title = 'Logarithmic axis';
+    logButton.addEventListener('click', () => { state.log[panel.key] = !state.log[panel.key]; save(); draw(); });
+    right.appendChild(logButton);
+    head.appendChild(right);
+    card.appendChild(head);
+    main.appendChild(card);
+
+    const bottom = last ? labelSpace(commands) : MARGIN.bottom;
+    const height = PANEL_HEIGHT + bottom;
+    const plotTop = MARGIN.top, plotBottom = PANEL_HEIGHT - 10;
+    const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, height, role: 'img',
+                            'aria-label': `${panel.label} per command` });
+    card.appendChild(svg);
+
+    const found = [];   // [variant, series, index, sample]
+    for (const variant of variants) {
+      for (const name of series) {
+        commands.forEach((command, index) => {
+          const hit = sample(variant, name, command, panel);
+          if (hit) found.push([variant, name, index, hit]);
+        });
+      }
+    }
+    const capped = panel.key === 'run_seconds' && timeout && found.some(item => item[3].timedOut);
+    const values = found.filter(item => !item[3].timedOut).map(item => item[3].value);
+    if (capped) values.push(timeout.largest);
+    const grid = el('g', {}, svg);
+    if (!values.length) {
+      el('text', { x: MARGIN.left + plotWidth / 2, y: (plotTop + plotBottom) / 2, 'text-anchor': 'middle',
+                   class: 'empty-text' }, svg).textContent = 'no values for the shown solvers / profiles';
+    }
+    let axis = null;
+    if (values.length) {
+      axis = state.log[panel.key] ? logAxis(capped ? [...values, timeout.cap * 1.3] : values)
+                                  : linearAxis(capped ? [...values, timeout.cap * 1.15] : values, plotBottom - plotTop);
+      const y = value => plotBottom - axis.map(value) * (plotBottom - plotTop);
+      let ticks = axis.ticks;
+      if (capped) ticks = ticks.filter(tick => tick < timeout.largest);
+      for (const tick of ticks) {
+        const position = y(tick);
+        const line = el('line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: position, y2: position }, grid);
+        line.style.stroke = 'var(--grid)';
+        el('text', { x: MARGIN.left - 6, y: position + 3.5, 'text-anchor': 'end' }, grid).textContent = fmt(tick);
+      }
+      if (capped) {   // the timeout line, and one '>timeout' tick where timed-out commands sit
+        const line = el('line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: y(timeout.largest),
+                                  y2: y(timeout.largest) }, grid);
+        line.style.stroke = 'var(--axis)';
+        line.style.strokeDasharray = '3 3';
+        el('text', { x: MARGIN.left - 6, y: y(timeout.cap) + 3.5, 'text-anchor': 'end' }, grid)
+          .textContent = `>${fmt(timeout.largest)}`;
+      }
+      const marks = el('g', {}, svg);
+      for (const variant of variants) {   // lines first (gaps break them), then markers above every line
+        for (const name of series) {
+          const style = SERIES_STYLE[name];
+          let path = '', pen = false;
+          commands.forEach((command, index) => {
+            const hit = sample(variant, name, command, panel);
+            if (!hit) { pen = false; return; }
+            path += `${pen ? 'L' : 'M'}${layout.xs[index].toFixed(1)},${y(hit.value).toFixed(1)}`;
+            pen = true;
+          });
+          if (!path) continue;
+          const line = el('path', { d: path, fill: 'none', 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, marks);
+          line.style.stroke = colour(variant);
+          line.style.strokeWidth = style.width;
+          if (style.dash) line.style.strokeDasharray = style.dash;
+        }
+      }
+      for (const [variant, name, index, hit] of found) {
+        marker(marks, variant.backend, layout.xs[index], y(hit.value), colour(variant), SERIES_STYLE[name].hollow,
+               name === 'current' ? 9 : 8);
+      }
+      if (state.series.current) {   // a ring on the current point of the solver Automatic picks on the gpu
+        for (const variant of variants) {
+          commands.forEach((command, index) => {
+            if (!picks.has(command + '\u0000' + variant.name)) return;
+            const hit = sample(variant, 'current', command, panel);
+            if (!hit) return;
+            const ring = el('circle', { cx: layout.xs[index], cy: y(hit.value), r: 10, fill: 'none' }, marks);
+            ring.style.stroke = 'var(--text-primary)';
+            ring.style.strokeWidth = '1.5';
+          });
+        }
+      }
+    }
+    const baseline = el('line', { x1: MARGIN.left, x2: width - MARGIN.right, y1: plotBottom, y2: plotBottom }, svg);
+    baseline.style.stroke = 'var(--axis)';
+    if (last) {
+      commands.forEach((command, index) => {
+        const x = layout.xs[index], yText = plotBottom + 12;
+        el('text', { x, y: yText, 'text-anchor': 'end', transform: `rotate(-45 ${x} ${yText})` }, svg)
+          .textContent = command;
+      });
+    }
+    const crosshair = el('line', { y1: plotTop, y2: plotBottom, visibility: 'hidden' }, svg);
+    crosshair.style.stroke = 'var(--text-muted)';
+    crosshair.style.strokeWidth = '1';
+    const hitArea = el('rect', { x: MARGIN.left, y: 0, width: plotWidth, height: plotBottom, fill: 'transparent' }, svg);
+    hitArea.addEventListener('pointermove', event => hover(event, panelIndex));
+    hitArea.addEventListener('pointerleave', unhover);
+    layout.panels.push({ panel, svg, crosshair, width });
+  });
+  drawTable();
+}
+
+// ---- hover: a crosshair on every panel at the nearest command, the tooltip for the hovered panel
+const tip = document.getElementById('tip');
+function hover(event, panelIndex) {
+  const { panel, svg, width } = layout.panels[panelIndex];
+  const box = svg.getBoundingClientRect();
+  const x = (event.clientX - box.left) * (width / box.width);
+  let index = 0;
+  layout.xs.forEach((position, i) => { if (Math.abs(position - x) < Math.abs(layout.xs[index] - x)) index = i; });
+  for (const item of layout.panels) {
+    item.crosshair.setAttribute('x1', layout.xs[index]);
+    item.crosshair.setAttribute('x2', layout.xs[index]);
+    item.crosshair.setAttribute('visibility', 'visible');
+  }
+  const command = layout.commands[index];
+  tip.replaceChildren(textNode('div', command, 'head'));
+  const series = shownSeries();
+  const metas = [];
+  let rows = 0;
+  for (const variant of shownVariants()) {
+    const hits = Object.fromEntries(series.map(name => [name, sample(variant, name, command, panel)]));
+    const lead = series.includes('current') && hits.current ? 'current' : series.slice().reverse().find(name => hits[name]);
+    if (!lead) continue;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.appendChild(lineKey(variant, lead, 22));
+    row.appendChild(textNode('strong', valueText(hits[lead], panel)));
+    row.appendChild(textNode('span', variant.name + (lead === 'current' ? '' : ` (${lead})`)));
+    const rest = series.filter(name => name !== lead && hits[name])
+      .map(name => `${name} ${valueText(hits[name], panel)}`);
+    if (rest.length) row.appendChild(textNode('span', rest.join(' · '), 'rest'));
+    if (picks.has(command + '\u0000' + variant.name)) row.appendChild(textNode('span', '◯ pick', 'rest'));
+    tip.appendChild(row);
+    rows++;
+    const point = hits[lead].point;
+    const details = [];
+    if (point.runs !== null && point.runs !== undefined) details.push(`${point.runs} run${point.runs === 1 ? '' : 's'}`);
+    if (point.chosen && point.chosen.length) details.push('used ' + point.chosen.join('+'));
+    if (point.when) details.push(point.when);
+    if (details.length) metas.push(`${variant.name} (${lead}): ${details.join(', ')}`);
+  }
+  if (!rows) tip.appendChild(textNode('div', 'no values here', 'meta'));
+  for (const meta of metas) tip.appendChild(textNode('div', meta, 'meta'));
+  tip.hidden = false;
+  const tipBox = tip.getBoundingClientRect();
+  let left = event.clientX + 16, top = event.clientY + 12;
+  if (left + tipBox.width > window.innerWidth - 8) left = event.clientX - tipBox.width - 16;
+  if (top + tipBox.height > window.innerHeight - 8) top = window.innerHeight - tipBox.height - 8;
+  tip.style.left = Math.max(8, left) + 'px';
+  tip.style.top = Math.max(8, top) + 'px';
+}
+function unhover() {
+  tip.hidden = true;
+  if (layout) for (const item of layout.panels) item.crosshair.setAttribute('visibility', 'hidden');
+}
+
+// ---- legend
+function drawLegend() {
+  const legend = document.getElementById('legend');
+  legend.replaceChildren(textNode('h3', 'solver @backend'));
+  const actions = document.createElement('div');
+  actions.className = 'legend-actions';
+  const all = textNode('button', 'all'), none = textNode('button', 'none');
+  all.addEventListener('click', () => { state.hidden = []; save(); refresh(); });
+  none.addEventListener('click', () => { state.hidden = DATA.variants.map(variant => variant.name); save(); refresh(); });
+  actions.append(all, none);
+  legend.appendChild(actions);
+  for (const variant of DATA.variants) {
+    const item = document.createElement('button');
+    item.className = 'legend-item' + (state.backends[variant.backend] === false ? ' off-backend' : '');
+    item.setAttribute('aria-pressed', String(!state.hidden.includes(variant.name)));
+    item.title = 'Click: show / hide. Double-click: only this one.';
+    item.appendChild(lineKey(variant, 'current'));
+    item.appendChild(textNode('span', variant.name));
+    item.addEventListener('click', () => {
+      const at = state.hidden.indexOf(variant.name);
+      if (at >= 0) state.hidden.splice(at, 1); else state.hidden.push(variant.name);
+      save(); refresh();
+    });
+    item.addEventListener('dblclick', () => {
+      state.hidden = DATA.variants.filter(other => other !== variant).map(other => other.name);
+      save(); refresh();
+    });
+    legend.appendChild(item);
+  }
+  legend.appendChild(textNode('h3', 'profile'));
+  for (const series of SERIES) {
+    const key = document.createElement('div');
+    key.className = 'key';
+    key.appendChild(lineKey(null, series));
+    key.appendChild(textNode('span', series));
+    legend.appendChild(key);
+  }
+  const ring = document.createElement('div');
+  ring.className = 'key';
+  const ringSvg = el('svg', { width: 28, height: 22, viewBox: '0 0 28 22', 'aria-hidden': 'true' });
+  const circle = el('circle', { cx: 14, cy: 11, r: 9, fill: 'none' }, ringSvg);
+  circle.style.stroke = 'var(--text-primary)';
+  circle.style.strokeWidth = '1.5';
+  ring.append(ringSvg, textNode('span', 'Automatic’s pick on the gpu (current)'));
+  legend.appendChild(ring);
+  const notes = document.createElement('ul');
+  notes.className = 'notes';
+  notes.appendChild(textNode('li', 'marker: ● gpu, ■ cpu'));
+  if (timeout) notes.appendChild(textNode('li', `run wall: timed-out commands sit at the >${fmt(timeout.largest)} tick`));
+  if (DATA.dropped.length) notes.appendChild(textNode('li', `no longer in COMMANDS (shown last): ${DATA.dropped.join(', ')}`));
+  legend.appendChild(notes);
+}
+
+// ---- table view (every value the plot shows, reachable without hover)
+function drawTable() {
+  const section = document.getElementById('tableView');
+  section.hidden = !state.table;
+  if (!state.table) return;
+  const panel = PANELS.find(item => item.key === state.tableMetric) || PANELS[0];
+  const commands = layout && layout.commands.length ? layout.commands : shownCommands();
+  const variants = shownVariants(), series = shownSeries();
+  document.getElementById('tableNote').textContent =
+    `${panel.unit}; columns: the shown solvers × profiles; rows: the shown commands`;
+  const table = document.getElementById('table');
+  table.replaceChildren();
+  const head = table.createTHead().insertRow();
+  head.appendChild(textNode('th', 'command'));
+  for (const variant of variants) {
+    for (const name of series) head.appendChild(textNode('th', `${variant.name} ${name}`));
+  }
+  const body = table.createTBody();
+  for (const command of commands) {
+    const row = body.insertRow();
+    row.appendChild(textNode('td', command));
+    for (const variant of variants) {
+      for (const name of series) {
+        const hit = sample(variant, name, command, panel);
+        const cell = textNode('td', hit ? (hit.timedOut ? `>${fmt(timeout.largest)}` : fmt(hit.value)) : '–');
+        if (!hit || name !== 'current') cell.className = 'muted';
+        row.appendChild(cell);
+      }
+    }
+  }
+}
+
+// ---- controls
+function chip(parent, label, pressed, onToggle, title) {
+  const button = textNode('button', label);
+  button.setAttribute('aria-pressed', String(pressed));
+  if (title) button.title = title;
+  button.addEventListener('click', () => { onToggle(); save(); refresh(); });
+  parent.appendChild(button);
+  return button;
+}
+function drawControls() {
+  const panelChips = document.getElementById('panelChips');
+  panelChips.replaceChildren(textNode('span', 'Panels', 'name'));
+  for (const panel of PANELS) {
+    chip(panelChips, panel.label, !!state.panels[panel.key], () => { state.panels[panel.key] = !state.panels[panel.key]; },
+         panel.note);
+  }
+  const seriesChips = document.getElementById('seriesChips');
+  seriesChips.replaceChildren(textNode('span', 'Profile', 'name'));
+  const titles = { first: 'the first complete profile (a run without --only)', previous: 'the point before the current one',
+                   current: 'the latest point' };
+  for (const series of SERIES) {
+    chip(seriesChips, series, !!state.series[series], () => { state.series[series] = !state.series[series]; },
+         titles[series]);
+  }
+  const backendChips = document.getElementById('backendChips');
+  backendChips.replaceChildren(textNode('span', 'Backend', 'name'));
+  for (const backend of backends) {
+    chip(backendChips, backend, state.backends[backend] !== false,
+         () => { state.backends[backend] = state.backends[backend] === false; });
+  }
+  document.getElementById('tableButton').setAttribute('aria-pressed', String(!!state.table));
+  const select = document.getElementById('tableMetric');
+  if (!select.options.length) {
+    for (const panel of PANELS) {
+      const option = document.createElement('option');
+      option.value = panel.key;
+      option.textContent = `${panel.label} (${panel.unit})`;
+      select.appendChild(option);
+    }
+  }
+  select.value = state.tableMetric;
+}
+function refresh() {
+  drawControls();
+  drawLegend();
+  draw();
+}
+
+document.getElementById('title').textContent = DATA.title;
+document.getElementById('subtitle').textContent =
+  `first complete profile ${DATA.first_when}; drawn ${DATA.written}; ${DATA.commands.length} commands, ` +
+  `${DATA.variants.length} solver @backend lines. Hover a panel for the values.`;
+const filter = document.getElementById('filter');
+filter.value = state.filter;
+filter.addEventListener('input', () => { state.filter = filter.value; save(); draw(); });
+const hideEmpty = document.getElementById('hideEmpty');
+hideEmpty.checked = !!state.hideEmpty;
+hideEmpty.addEventListener('change', () => { state.hideEmpty = hideEmpty.checked; save(); draw(); });
+document.getElementById('tableButton').addEventListener('click', () => {
+  state.table = !state.table; save(); drawControls(); drawTable();
+});
+document.getElementById('tableMetric').addEventListener('change', event => {
+  state.tableMetric = event.target.value; save(); drawTable();
+});
+document.getElementById('themeButton').addEventListener('click', () => {
+  state.theme = state.theme === null ? 'light' : state.theme === 'light' ? 'dark' : null;
+  save(); applyTheme();
+});
+applyTheme();
+refresh();
+let resizeTimer = null, drawnWidth = document.getElementById('panels').clientWidth;
+new ResizeObserver(() => {   // width only: a redraw changes the height, which must not redraw again
+  const widthNow = document.getElementById('panels').clientWidth;
+  if (widthNow === drawnWidth) return;
+  drawnWidth = widthNow;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(draw, 80);
+}).observe(document.getElementById('panels'));
+window.profilePoints = { state, refresh, DATA };
+</script>
+</body>
+</html>
