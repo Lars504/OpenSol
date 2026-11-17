@@ -106,7 +106,7 @@ def _build_parser():
     show_parser.add_argument('--html', metavar='FILE', nargs='?', const='',
                              help='results directory: load results.npz and write a self-contained web page to turn '
                                   'and colour in a browser (Results.export_html) of --what; default '
-                                  '<out>/<model stem>_<what>.html (_modes.html for the mode_shapes result)')
+                                  '<out>/<model stem>_<what>.html (<model stem>_modes.html without --what)')
     show_parser.add_argument('--what', metavar='NAME',
                              help='with --html: a field (physics.component or a unique component: its snapshots as '
                                   'frames, 3D on its saved cut planes), a dft_fields result (intensity per '
@@ -297,10 +297,16 @@ def _show(args):
         print(f'open_sol: no such file or directory: {path}', file=sys.stderr)
         return 2
     overrides = dict(args.overrides)   # --set pairs, the last one wins
+    if args.what is not None and args.html is None:
+        print('open_sol: --what applies with --html only', file=sys.stderr)
+        return 2
     if path.is_dir():
         if overrides:
             print('--set applies to model files only', file=sys.stderr)
         return _show_results(path, args)
+    if args.html is not None:
+        print('open_sol: --html applies to results directories only (run the model first)', file=sys.stderr)
+        return 2
     return _show_model(path, args, overrides)
 
 
@@ -325,8 +331,6 @@ def _show_results(path, args):
         for name, draw in results._figure_jobs(args.series):
             _write_figure(name, draw, out_dir / 'figures' / f'{name}.png', stream)
     status = 0
-    if args.what is not None and args.html is None:
-        print('--what applies with --html only', file=sys.stderr)
     if args.html is not None:
         stem = Path(((summary.get('model') or {}).get('file')) or 'model').stem
         suffix = 'modes' if args.what is None else re.sub(r'[^\w.-]+', '_', args.what).replace('.', '_')

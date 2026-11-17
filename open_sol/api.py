@@ -61,7 +61,7 @@ from .model.validate import internal_error_text, refused_on_estimated_counts, va
 from .viz.common import line_profile
 from .viz.field_viewer import (ViewerFrame, ViewerLayer, ViewerQuantity, layer_from_field, plan_frames,
                                strided_layer, time_label, write_field_viewer)
-from .viz.mode_player import mode_player_from_results, mode_shape_keys
+from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
 from .viz.scene_figure import DEFAULT_VIEW, scene_figure as new_scene_figure
@@ -1521,14 +1521,17 @@ class Results:
         (animated mode shapes beside the band diagram). None = the only mode_shapes result. Large data is thinned
         (grid stride, evenly kept frames; the page subtitle says so). Other result kinds (curves, tables) raise
         ValueError: they are figures (figure())."""
+        kinds = self._result_kinds()
         if what is None:
-            keys = mode_shape_keys(self)
+            keys = [key for key, kind in kinds.items() if kind == 'mode_shapes']
             if len(keys) != 1:
                 raise ValueError('choose what to export: ' + self._html_choices())
             what = keys[0]
         field_keys = self._field_matches(what, physics)
-        if not field_keys and what in self.result_names():
-            kind = self.result(what).get('kind')
+        if not field_keys and what not in kinds:
+            raise KeyError(f'no field or result {what!r}; ' + self._html_choices())
+        if not field_keys:
+            kind = kinds[what]
             if kind == 'mode_shapes':
                 return mode_player_from_results(self, path, key=what, title=title)
             if kind == 'dft_fields':
@@ -1539,16 +1542,17 @@ class Results:
             raise self._field_lookup_error(what, physics, field_keys)
         return self._field_viewer(path, field_keys[0], title)
 
+    def _result_kinds(self):
+        """{'physics.feature': result kind} without fetching any result (live: the build summary; else the saved
+        dicts' 'kind')."""
+        if self.is_live and self.build_summary is not None:
+            return {f'{physics}.{feature}': kind for physics, feature, kind in self.build_summary.feature_results}
+        return {key: stored.get('kind') for key, stored in self._data.results.items()}
+
     def _html_choices(self):
         """'fields ...; results ...' that export_html takes."""
-        results = []
-        for key in self.result_names():
-            try:
-                kind = self.result(key).get('kind')
-            except (KeyError, ValueError, TypeError):
-                continue
-            if kind in ('mode_shapes', 'dft_fields'):
-                results.append(f'{key} ({kind})')
+        results = [f'{key} ({kind})' for key, kind in self._result_kinds().items()
+                   if kind in ('mode_shapes', 'dft_fields')]
         return (f"fields {', '.join(self.field_names()) or 'none'}; dft_fields / mode_shapes results "
                 f"{', '.join(results) or 'none'}")
 
@@ -1561,8 +1565,12 @@ class Results:
         stored = [snapshot for snapshot in self._stored_snapshots() if key in snapshot.fields]
         if len(stored) > 1:
             frames = []
+            three_d = self.spec is not None and self.spec.domain.size_z is not None
             for snapshot in stored:
                 fields = [snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut]
+                if three_d and any(field_data.plane is None for field_data in fields):
+                    raise ValueError(f'the snapshots of {key!r} have no cut-plane records (an older run directory): '
+                                     'their planes cannot be placed in 3D')
                 label = snapshot.label or fields[0].time_label or time_label(snapshot.time)
                 frames.append(ViewerFrame([layer_from_field(field_data) for field_data in fields], label,
                                           float(snapshot.time)))

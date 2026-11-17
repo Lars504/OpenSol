@@ -83,10 +83,16 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `ViewerLayer`s (grid of cell centres, or a FieldData display triangulation; plane = a 3D cut placed in the scene,
   None = a 2D map at z = 0) into `field_viewer.html` at its `DATA_MARKER`, self-contained like mode_player (its
   camera, colour maps, theme, PNG and recording code are copies of mode_player's: change both). Every frame holds the
-  same surfaces (`_check_layers` raises otherwise); values are int16 per frame over that frame's [lo, hi] (-32768 = no
-  value: the page discards triangles and edges touching one). `plan_frames` fits MAX_BYTES / MAX_FRAMES: the smallest
-  grid stride (never below MIN_LAYER_CELLS on the largest layer), then evenly thinned frames, both named in the
-  subtitle; a caller loading frames lazily (api's DFT path, one frequency at a time) plans first and passes `plan=`.
+  same surfaces (`_check_layers` raises otherwise); values are int16 per frame over that frame's [lo, hi], linear, or
+  log10-spaced over LOG_DECADES below hi when the frame is non-negative and reaches ~0 (`_log_floor`; frame `log_lo`
+  set; linear int16 would leave the log colour scale a handful of codes per decade); -32768 = no value (the page
+  discards triangles and edges touching one). A display triangulation is clipped to the field extent (the solver's
+  absorbing ring is not shown or counted in the range). `plan_frames` fits MAX_BYTES / MAX_FRAMES: the smallest grid
+  stride (never below MIN_LAYER_CELLS on the largest layer), applied as stride x stride block means (decimation
+  aliases oscillating fields), then evenly thinned frames, both named in the subtitle; a caller loading frames lazily
+  (api's DFT path, one frequency at a time) plans first and passes `plan=`. Maps need >= 2 x 2 samples (a 1D field
+  raises). The hidden `.empty` overlay needs `.empty[hidden] { display: none }` in both pages: its author display
+  would otherwise beat [hidden] and the transparent overlay would take the canvas's pointer input.
   frame_kind 'time' plays (Play, Speed, Record = one pass), 'labelled' (wavelengths, modes, DFT frequencies) only steps
   (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
   relief. Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.

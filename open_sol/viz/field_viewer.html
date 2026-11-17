@@ -103,6 +103,8 @@ input#frame { width: 180px; }
 .spacer { flex: 1; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center;
          padding: 24px; }
+.empty[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
+                                      cover the canvas and take its pointer input */
 body.present .controls, body.present header p, body.present .hint { display: none; }
 body.present .app { padding: 10px; gap: 10px; }
 @media (max-width: 820px) {
@@ -157,7 +159,7 @@ body.present .app { padding: 10px; gap: 10px; }
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
     <div class="group" id="layergroup"></div>
-    <div class="group"><button id="lines" aria-pressed="false" title="Mesh lines (L)">Mesh</button>
+    <div class="group"><button id="lines" aria-pressed="false" title="Lines between the samples: the display grid or triangles, not necessarily the solver mesh (L)">Mesh</button>
       <button id="box" aria-pressed="true" title="Outline of the cut planes' box (B)">Box</button>
       <button id="spin" aria-pressed="false" title="Turn the view (S)">Spin</button></div>
     <div class="spacer"></div>
@@ -292,11 +294,17 @@ const frameCache = new Map();
 function frameValues(f) {
   // per layer Float32Array (value, ok) pairs, decoded from the int16 codes over [lo, hi]
   if (frameCache.has(f)) return frameCache.get(f);
+  // linear codes: lo + (q + 32767) (hi - lo) / 65534; log codes (frame log_lo set: non-negative fields reaching
+  // down to ~0): 10^(log_lo + (q + 32767) (log10 hi - log_lo) / 65534), the lowest code = lo (at or below the floor)
   const F = FRAMES[f], step = (F.hi - F.lo) / 65534;
+  const L0 = F.log_lo, LS = L0 != null ? (Math.log10(Math.max(F.hi, 1e-300)) - L0) / 65534 : 0;
   const out = F.values.map((text) => {
     const q = i16(text), a = new Float32Array(2 * q.length);
     for (let k = 0; k < q.length; k++) {
-      if (q[k] === -32768) { a[2 * k] = 0; a[2 * k + 1] = 0; } else { a[2 * k] = F.lo + (q[k] + 32767) * step; a[2 * k + 1] = 1; }
+      const c = q[k];
+      if (c === -32768) { a[2 * k] = 0; a[2 * k + 1] = 0; continue; }
+      a[2 * k] = L0 == null ? F.lo + (c + 32767) * step : (c === -32767 ? F.lo : Math.pow(10, L0 + (c + 32767) * LS));
+      a[2 * k + 1] = 1;
     }
     return a;
   });
@@ -595,7 +603,9 @@ $('record').onclick = () => {
     const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
     download(URL.createObjectURL(blob), fileStem() + (blob.type.includes('mp4') ? '.mp4' : '.webm'));
     recorder = null; $('rec').classList.remove('on'); $('record').textContent = 'Record';
+    state.spin = spinBefore; syncControls();
   };
+  const spinBefore = state.spin;
   // time frames: one pass from the first frame; otherwise one full turn of the view
   let seconds;
   if (KIND === 'time') { select(0); state.playing = true; seconds = NF / state.fps; }

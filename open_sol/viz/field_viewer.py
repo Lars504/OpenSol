@@ -28,6 +28,9 @@ MIN_LAYER_CELLS = 62_500              # a stride never takes the largest grid la
 MAX_STRIDE = 16
 _Q_SPAN = 65534                       # int16 codes -32767 .. 32767 map lo .. hi; -32768 = no value (NaN)
 _Q_NAN = -32768
+_Q_LOW = -_Q_SPAN // 2                # lowest value code (log codes: at or below the floor, decoded as the frame's lo)
+LOG_DECADES = 9                       # log codes span hi * 10^-9 .. hi (step ~0.03 % of the value)
+LOG_CODE_RATIO = 1e-3                 # non-negative frames with lo <= this * hi get log codes (intensities, |E|)
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 _TIME_UNITS = ((1e-15, 'fs'), (1e-12, 'ps'), (1e-9, 'ns'), (1e-6, 'µs'), (1e-3, 'ms'), (1.0, 's'))
 
@@ -76,16 +79,34 @@ def layer_from_field(field_data) -> ViewerLayer:
     triangulation = getattr(field_data, 'triangulation', None)
     if triangulation is not None:
         nodes, triangles, node_values = triangulation
-        return ViewerLayer(values=np.asarray(node_values, dtype=np.float64).reshape(-1), axes=axes, plane=plane,
-                           triangulation=(np.asarray(nodes, dtype=np.float64), np.asarray(triangles)))
+        nodes, triangles, node_values = _clipped_triangulation(
+            np.asarray(nodes, dtype=np.float64).reshape(-1, 2), np.asarray(triangles).reshape(-1, 3),
+            np.asarray(node_values, dtype=np.float64).reshape(-1), field_data.extent)
+        return ViewerLayer(values=node_values, axes=axes, plane=plane, triangulation=(nodes, triangles))
     values = np.asarray(field_data.values, dtype=np.float64)
-    if values.ndim != 2:
-        raise ValueError(f'field {field_data.physics}.{field_data.component}: a map needs 2D values, got shape '
-                         f'{values.shape}')
+    if values.ndim != 2 or min(values.shape) < 2:
+        raise ValueError(f'field {field_data.physics}.{field_data.component}: a map needs at least 2 x 2 samples, '
+                         f'got shape {values.shape} (a 1D field is a curve: export a figure)')
     u0, u1, v0, v1 = (float(edge) for edge in field_data.extent)
     return ViewerLayer(values=values, axes=axes, plane=plane,
                        u_centres=_centres(field_data.x_centers, u0, u1, values.shape[0]),
                        v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]))
+
+
+def _clipped_triangulation(nodes, triangles, node_values, extent):
+    """The triangles whose centroid lies inside extent (u0, u1, v0, v1): the window, without the absorbing ring
+    the display triangulation also covers (as visualization._draw_triangles clips it); unused nodes dropped."""
+    u0, u1, v0, v1 = (float(edge) for edge in extent)
+    centroids = nodes[triangles].mean(axis=1)
+    inside = ((centroids[:, 0] >= u0) & (centroids[:, 0] <= u1) & (centroids[:, 1] >= v0)
+              & (centroids[:, 1] <= v1))
+    triangles = triangles[inside]
+    if not len(triangles):
+        raise ValueError('no display triangle lies inside the field window')
+    used = np.unique(triangles)
+    renumber = np.full(len(nodes), -1, dtype=np.int64)
+    renumber[used] = np.arange(used.size)
+    return nodes[used], renumber[triangles], node_values[used]
 
 
 def time_label(seconds) -> str:
@@ -131,6 +152,9 @@ def _stride(layers, n_frames, max_bytes):
             return stride
         if max(_layer_samples(layer, stride + 1) for layer in grids) < MIN_LAYER_CELLS:
             return stride
+    if any(_layer_samples(layer, MAX_STRIDE) > MAX_LAYER_CELLS for layer in grids):
+        raise ValueError(f'a grid layer keeps more than {MAX_LAYER_CELLS} samples even at stride {MAX_STRIDE}: '
+                         'export a coarser field')
     return MAX_STRIDE
 
 
@@ -141,20 +165,62 @@ def _layer_samples(layer, stride):
     return (-(-nu // stride)) * (-(-nv // stride))
 
 
+def _block_mean(values, stride, axes):
+    """Mean over stride-wide blocks along the given axes (the last block partial, NaN ignored; NaN where a block has
+    no finite value)."""
+    values = np.asarray(values, dtype=np.float64)
+    pad = [(0, (-size) % stride if axis in axes else 0) for axis, size in enumerate(values.shape)]
+    values = np.pad(values, pad, constant_values=np.nan)
+    shape, block_axes = [], []
+    for axis, size in enumerate(values.shape):
+        if axis in axes:
+            shape.append(size // stride)
+            block_axes.append(len(shape))           # (n0, s, n1, s): block axes 1 and 3
+            shape.append(stride)
+        else:
+            shape.append(size)
+    blocks = values.reshape(shape)
+    block_axes = tuple(block_axes)
+    finite = np.isfinite(blocks)
+    count = finite.sum(axis=block_axes)
+    total = np.where(finite, blocks, 0.0).sum(axis=block_axes)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(count > 0, total / np.maximum(count, 1), np.nan)
+
+
 def _strided(layer, stride):
+    """Grid layer averaged over stride x stride blocks (no aliasing of oscillating fields, edge cells kept; centres
+    = block mean centres); triangulations unchanged."""
     if layer.triangulation is not None or stride == 1:
         return layer
-    return ViewerLayer(values=np.asarray(layer.values)[::stride, ::stride], u_centres=layer.u_centres[::stride],
-                       v_centres=layer.v_centres[::stride], axes=layer.axes, plane=layer.plane)
+    return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
+                       u_centres=_block_mean(layer.u_centres, stride, (0,)),
+                       v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane)
 
 
-def _quantised(values, low, high):
-    """int16 codes of values over [low, high]; NaN / inf -> _Q_NAN."""
+def _log_floor(low, high):
+    """log10 of the log-code floor of a frame over [low, high], None for linear codes (signed values, or a range
+    not reaching down to ~0, e.g. temperatures 300 .. 310 K, whose small differences log codes would blur)."""
+    if low < 0 or high <= 0 or low > LOG_CODE_RATIO * high:
+        return None
+    return math.log10(high) - LOG_DECADES
+
+
+def _quantised(values, low, high, log_low=None):
+    """int16 codes of values: linear over [low, high], or with log_low log10-spaced over [10^log_low, high] (values
+    at or below the floor -> _Q_LOW, decoded as low); NaN / inf -> _Q_NAN."""
     values = np.asarray(values, dtype=np.float64).reshape(-1)
     finite = np.isfinite(values)
-    span = high - low
-    scaled = np.zeros_like(values) if span <= 0 else (np.where(finite, values, low) - low) / span
-    codes = np.round(np.clip(scaled, 0.0, 1.0) * _Q_SPAN) - _Q_SPAN // 2
+    if log_low is not None:
+        span = math.log10(high) - log_low
+        with np.errstate(divide='ignore', invalid='ignore'):
+            scaled = (np.log10(np.where(finite & (values > 0), values, 1.0)) - log_low) / span
+        codes = np.clip(np.round(scaled * _Q_SPAN) + _Q_LOW, _Q_LOW + 1, _Q_LOW + _Q_SPAN)
+        codes = np.where(finite & (values > 10.0 ** log_low), codes, _Q_LOW)
+    else:
+        span = high - low
+        scaled = np.zeros_like(values) if span <= 0 else (np.where(finite, values, low) - low) / span
+        codes = np.round(np.clip(scaled, 0.0, 1.0) * _Q_SPAN) + _Q_LOW
     codes = codes.astype('<i2')
     codes[~finite] = _Q_NAN
     return codes
@@ -231,7 +297,7 @@ class FramePlan:
     @property
     def notes(self):
         notes = [f'{len(self.indices)} of {self.total} frames'] if len(self.indices) < self.total else []
-        return notes + ([f'every {self.stride}th cell'] if self.stride > 1 else [])
+        return notes + ([f'cells averaged in {self.stride} x {self.stride} blocks'] if self.stride > 1 else [])
 
 
 def plan_frames(layers, n_frames, max_bytes=MAX_BYTES, max_frames=MAX_FRAMES) -> FramePlan:
@@ -240,6 +306,10 @@ def plan_frames(layers, n_frames, max_bytes=MAX_BYTES, max_frames=MAX_FRAMES) ->
     fit at MAX_STRIDE."""
     if n_frames < 1:
         raise ValueError('nothing to show: no field frames')
+    geometry = sum(np.size(layer.values) * 8 + np.size(layer.triangulation[1]) * 4 for layer in layers
+                   if layer.triangulation is not None)
+    if geometry > max_bytes:
+        raise ValueError(f'the display triangulation needs {geometry} bytes, above max_bytes {max_bytes}')
     keep = min(n_frames, max_frames)
     stride = _stride(layers, keep, max_bytes)
     per_frame = 2 * sum(_layer_samples(layer, stride) for layer in layers)
@@ -280,9 +350,10 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         if frame_range is not None:
             ranges.append(frame_range)
         low, high = frame_range or (0.0, 0.0)   # no value at all: every code is _Q_NAN
+        log_low = _log_floor(low, high)
         packed.append({'label': frame.label, 'time': None if frame.time is None else float(frame.time),
-                       'lo': low, 'hi': high, 'empty': frame_range is None,
-                       'values': [_b64(_quantised(layer.values, low, high)) for layer in frame.layers]})
+                       'lo': low, 'hi': high, 'empty': frame_range is None, 'log_lo': log_low,
+                       'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers]})
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)

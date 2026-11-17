@@ -195,16 +195,16 @@ def mode_player_from_results(results, path, key=None, title=None, subtitle=None)
     """Write the player page of a mode_shapes result (key 'physics.feature'; None = the only one) of a Results,
     live or loaded: in a sweep every successful value on the same surface mesh, its Bloch wavenumber as the band
     diagram abscissa (another swept parameter otherwise); returns the written path."""
-    keys = mode_shape_keys(results)
     if key is None:
+        keys = mode_shape_keys(results)
         if not keys:
             raise ValueError('the results hold no mode shapes: add a mode_shapes output feature to the solid '
                              'physics (eigenfrequency study on a tetrahedron mesh) and compute again')
         if len(keys) > 1:
             raise ValueError(f"several mode_shapes results ({', '.join(keys)}): choose one")
         key = keys[0]
-    elif key not in keys:
-        raise KeyError(f"no mode_shapes result {key!r}; mode_shapes results: {', '.join(keys) or 'none'}")
+    elif key not in results.result_names() or results.result(key).get('kind') != MODE_SHAPES_KIND:
+        raise KeyError(f'{key!r} is not a mode_shapes result')   # only this key is fetched (live: one GPU read)
     entries = _entries(results, key)
     first = entries[-1][1]
     entries = [(index, entry) for index, entry in entries if _same_mesh(first, entry)]

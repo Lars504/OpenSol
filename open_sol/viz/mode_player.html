@@ -135,6 +135,8 @@ input[type="range"] { width: 110px; accent-color: var(--accent); }
 .spacer { flex: 1; }
 .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-3); text-align: center;
          padding: 24px; }
+.empty[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
+                                      cover the canvas and take its pointer input */
 body.present .controls, body.present header p, body.present .hint { display: none; }
 body.present .app { padding: 10px; gap: 10px; }
 @media (max-width: 820px) {
