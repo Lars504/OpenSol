@@ -101,9 +101,13 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   'auto' through `auto_back_end_values`, then `expected_back_end`), from any variant's point of the command; it ignores
   the spec's nodes and a runtime cuDSS fallback. Points hold solver groups (harness `solver_group` / `run_groups`:
   runs.json `groups` / `automatic_groups`), and a group name is its SOLVERS key, so the ring needs no mapping. The
-  plot draws only `plotted_variants` (auto per backend + the five groups on their backend) and only COMMANDS entries:
+  plot draws only `plotted_variants` (auto per backend + the SOLVERS groups on their backend) and only COMMANDS entries:
   other variants / commands stay in profile_points.json, undrawn; a renamed flag needs RENAMED_VARIANTS to stay drawn. A new library back end needs a `LIBRARY_GROUPS` entry, else it is grouped
-  by array library and precision; a renamed variant needs a RENAMED_VARIANTS entry so `load_points` keeps its points.
+  by array library and precision; a new opt-in solver type needs harness `TYPE_GROUPS` + a run_all `_typed` SOLVERS
+  entry (a group name = its SOLVERS key; one SOLVER_COLORS hue per entry, else colours repeat); a renamed variant
+  needs a RENAMED_VARIANTS entry so `load_points` keeps its points. `--solver-type` keeps the settings of a role's node
+  already of that type, else gives the type's defaults: a case needing others sets its own node of the type in the
+  profiler's specs.
   One ring per column (`auto_picks`): the column's runs' `run_automatic` groups; exactly one -> that group's line,
   several or the line not run -> auto @gpu when its `chosen` holds them. Ringing every picked group gave two rings.
   SOLVERS `backends` is a flag's default backend, `runs_on` what an explicit `--backend` may pick (and the lines
@@ -161,7 +165,9 @@ Usage and what is measured: `README.md` here. Root rules: structure_conventions.
   model under that value and is dropped (`_run_key`: the specs' JSON without the displaced nodes).
 - A command's point sums its runs' walls, so a run added to a script doubles the plotted point: a solver twin of a
   model gets its own script (`*_double_factor.py` reuses its sibling's PARTS / example loader), not a run in the
-  existing one.
+  existing one. Likewise an opt-in type's runs at other settings (`*_3d_block_eigen.py`: its own node per run, kept by
+  `--solver-type`); a library group's `--compare` replaces a node lacking `back_end` / `factorization` by the role's
+  Automatic (arpack for an eigen node), so such a command is in those groups' `SOLVER_EXCLUDED_COMMANDS`.
 - `run_all_profilers.main` is shared: another suite replaces its module globals `COMMANDS`, `OUT`, `POINTS_PATH`,
   `PLOT_PATH`, `PLOT_TITLE` and `command_line(entry)` before calling it (example_profilers/run_all_examples.py), so
   main and its helpers read those globals at call time, never bind them at import. `SOLVER_EXCLUDED_COMMANDS`

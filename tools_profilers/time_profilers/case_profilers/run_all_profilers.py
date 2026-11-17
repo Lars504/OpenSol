@@ -9,7 +9,7 @@ A command stops after --timeout s (default 60; the harness's --time-limit: the r
 kept, its log line says 'partial'; killed REPORT_GRACE s later if a library call holds it); one that was profiling is
 plotted at the '>timeout' tick.
 Run (from any folder): python run_all_profilers.py [--only SUBSTRING ...]
-[--cudss --cudss-mixed --scipy --pardiso --mumps | --all]
+[--cudss --cudss-mixed --scipy --pardiso --mumps --block-eigen | --all]
 [--backend gpu cpu] [--timeout S] [--new-first] [--plot-only]"""
 import argparse
 import json
@@ -54,11 +54,18 @@ def _whole(value, backends, precision=None, runs_on=BACKENDS):
             'token': None, 'backends': backends, 'runs_on': runs_on, 'back_ends': ()}
 
 
+def _typed(type_name, backends):
+    """Opt-in solver type group: harness --solver-type, only the runs a role of which it can fill (all counted)."""
+    return {'arguments': ('--solver-type', type_name), 'token': f'solver_type={type_name}', 'backends': backends,
+            'runs_on': BACKENDS, 'back_ends': ()}
+
+
 GPU, CPU = ('gpu',), ('cpu',)
-# the five solver groups (harness solver_group: every solver is in one), one --<name> flag each, --all: the five; the
+# the solver groups (harness solver_group: every solver is in one), one --<name> flag each, --all: all of them; the
 # order fixes each one's plot colour. cudss: cuDSS + cupy double (pcg, explicit kernels, ... at double precision);
 # cudss_mixed: cuDSS mixed + cupy single; scipy: host SuperLU + numpy (the cpu backend); pardiso / mumps: their host
-# library, cpu backend, only the runs a role of which takes it. No flag: auto, whose log line names the groups it used.
+# library, cpu backend, only the runs a role of which takes it; block_eigen: the opt-in solver type (harness
+# TYPE_GROUPS), only the runs a role of which it can fill. No flag: auto, whose log line names the groups it used.
 # backends: each one's default; an explicit --backend runs the host groups on it too (a gpu model factorising on the
 # host), never cuDSS on the cpu
 SOLVERS = {
@@ -69,11 +76,17 @@ SOLVERS = {
     'scipy': _whole('scipy_splu', CPU),
     'pardiso': _compared('pardiso', CPU),
     'mumps': _compared('mumps', CPU),
+    'block_eigen': _typed('block_eigen', GPU),
 }
 GROUPS = tuple(solver for solver in SOLVERS if solver != 'auto')
 # {solver group: COMMANDS entries it never runs} (a suite may replace it): a variant whose answer is wrong is no
 # timing point (its earlier points are dropped)
 SOLVER_EXCLUDED_COMMANDS = {}
+# block_eigen's own script: a library group's --compare swaps its block_eigen eigen nodes for arpack's matrix-free
+# Lanczos (no factor on bricks, so no point; minutes at its 1.3e5-dof runs): only auto and --block-eigen run it
+BLOCK_EIGEN_ONLY_COMMANDS = ('solid_mechanics_3d_block_eigen --warmup',)
+for _group in ('cudss', 'cudss_mixed', 'scipy', 'pardiso', 'mumps'):
+    SOLVER_EXCLUDED_COMMANDS[_group] = tuple(SOLVER_EXCLUDED_COMMANDS.get(_group, ())) + BLOCK_EIGEN_ONLY_COMMANDS
 # variants of an older points file under the name that now covers them (load_points)
 RENAMED_VARIANTS = {'scipy_splu @cpu': 'scipy @cpu', 'numpy @cpu': 'scipy @cpu'}
 # solver names of older runs.json (no 'groups') by group
@@ -98,6 +111,7 @@ COMMANDS = (
     'magnetostatics_3d --kind coil',
     'solid_mechanics_triangles', 'solid_mechanics_3d_tensor --warmup',
     'solid_mechanics_3d_tetrahedra --warmup', 'solid_mechanics_3d_nonlinear --warmup',   # cuDSS load out of run 1
+    'solid_mechanics_3d_block_eigen --warmup',
     'membrane_plate',
 )
 PLOT_TITLE = 'case profilers per command'
@@ -353,6 +367,18 @@ def plot_columns(points, entries) -> list:
     return columns
 
 
+COLUMN_RUNS_CHARACTERS = 32   # a split column naming longer runs shows their count (names printed)
+
+
+def column_label(entry, runs) -> str:
+    """Tick label of a plot column: the command, a split column's runs joined by '+' or, when longer than
+    COLUMN_RUNS_CHARACTERS, their count (a long label squashes the panels)."""
+    if runs is None:
+        return entry
+    joined = '+'.join(runs)
+    return f'{entry}: {joined}' if len(joined) <= COLUMN_RUNS_CHARACTERS else f'{entry}: {len(runs)} runs'
+
+
 def plot_points(points, path):
     """Three panels sharing the column axis (plot_columns: a command, or one of its task sets; run wall s, log; GPU
     peak MiB; RAM peak MiB): one colour per solver, one marker per backend, one line style per series (first dotted,
@@ -369,7 +395,10 @@ def plot_points(points, path):
     variants = sorted(points, key=_variant_order)
     columns = plot_columns(points, entries)
     picks = auto_picks(points, columns)
-    labels = [entry if runs is None else f'{entry}: {"+".join(runs)}' for entry, runs in columns]
+    labels = [column_label(entry, runs) for entry, runs in columns]
+    for (entry, runs), label in zip(columns, labels):   # a shortened label: its runs printed once
+        if runs is not None and '+'.join(runs) not in label:
+            print(f'plot column {label!r}: {", ".join(runs)}')
     unringed = [label for index, label in enumerate(labels) if index not in picks]
     if unringed:   # mostly an auto @gpu point from before per-run fields: a no-flag run gives the ring
         print('no Automatic ring (no point holds its per-run pick on a line that measured it; rerun with no solver '
@@ -438,11 +467,13 @@ def plot_points(points, path):
     series_handles.append(Line2D([], [], linestyle='none', marker='o', markersize=13, markerfacecolor='none',
                                  markeredgecolor=PICK_RING['edgecolors'], markeredgewidth=PICK_RING['linewidths'],
                                  label="Automatic's pick on the gpu (current)"))
+    # solver legend beside the top panel, the profile legend beside the bottom one: the long solver list may run past
+    # its panel without covering the other legend
     solver_legend = axes[0].legend(handles=variant_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0),
-                                   frameon=False, title='solver @backend')
+                                   frameon=False, title='solver @backend', fontsize=8, title_fontsize=9)
     axes[0].add_artist(solver_legend)
-    axes[1].legend(handles=series_handles, loc='upper left', bbox_to_anchor=(1.0, 1.0), frameon=False,
-                   title='profile')
+    axes[-1].legend(handles=series_handles, loc='lower left', bbox_to_anchor=(1.0, 0.0), frameon=False,
+                    title='profile', fontsize=8, title_fontsize=9)
     axes[-1].set_xticks(positions)
     axes[-1].set_xticklabels(labels, rotation=90, fontsize=8)
     figure.tight_layout()
@@ -475,7 +506,7 @@ def main(description=None):
         parser.add_argument(f'--{solver.replace("_", "-")}', dest=f'solver_{solver}', action='store_true',
                             help=f'profile with {" ".join(variant["arguments"]) or "the cases as written"}'
                                  + f' (default backend {variant["backends"][0]})')
-    parser.add_argument('--all', action='store_true', help=f'the five solver groups in turn: {", ".join(GROUPS)}')
+    parser.add_argument('--all', action='store_true', help=f'every solver group in turn: {", ".join(GROUPS)}')
     parser.add_argument('--backend', nargs='+', default=None, choices=BACKENDS,
                         help='backends to run on (default: each flag its own, auto gpu, the host groups cpu); cudss '
                              '/ cudss_mixed run on the gpu only (skipped for a cpu-only --backend)')

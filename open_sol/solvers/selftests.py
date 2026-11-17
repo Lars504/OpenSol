@@ -2487,7 +2487,7 @@ SOLVER_SELFTEST_CASES = (
                     'applied as a CSR product per row on float32 / float64 copies: (1) the 7-point Dirichlet '
                     'Laplacian of unit spacing on a '
                     f"{' x '.join(str(n) for n in _BLOCK_EIGEN_GRID)} grid (n + 1 = "
-                    f"{', '.join(str(n + 1) for n in _BLOCK_EIGEN_GRID)} pairwise coprime: no degenerate pair) with M = {_BLOCK_EIGEN_MASS:g} I, its {_BLOCK_EIGEN_WANTED} lowest eigenvalues '
+                    f"{', '.join(str(n + 1) for n in _BLOCK_EIGEN_GRID)} pairwise coprime: no degenerate pair) with M = {_BLOCK_EIGEN_MASS:g} I, its {_BLOCK_EIGEN_WANTED} lowest eigenvalues "
                     'against the exact (1 / 2) sum_a 4 sin^2(k_a pi / (2 (n_a + 1))); (2) the same + a random '
                     'diagonal in [0, 1] with a random mass diagonal in [0.5, 2] and a mask fixing the x_lo plane and '
                     f'every {_BLOCK_EIGEN_FIXED_STRIDE}th unknown, against scipy eigh of the dense free pencil, the '

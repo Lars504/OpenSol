@@ -800,6 +800,24 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
 - Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
   callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
   model runs: mechanics sub file "Self-tests".
+- Open estimator gaps (profiled 2026-11-17): mixed under-books the device peak by ~3·3b·n·4 B on large meshes (the
+  float32 stores stay cached in the pool when `_to_double` allocates the float64 ones: reuse one flat float64 buffer
+  per store instead); the chunk scratch is booked as a flat 2·CHUNK_BYTES whatever n (over-books small meshes); the
+  time recipe never prices a private multigrid build (`work.setup_ops` is only a flag), only the shared one through pcg.
+
+## Tried and dropped (tag `archive/four-new-solvers`)
+Three opt-in solvers were built, profiled on 2026-11-17 and dropped; their code is on that tag. Do not rebuild them
+without a reason that answers these findings.
+- batched_direct (same-pattern frequency sweeps factorised in cuDSS uniform / explicit batches): the cuDSS uniform
+  batch factorised at ~2x (up to 3x) the per-system numeric cost and solved at the same per-system cost at every
+  tested size (0.35M-1.8M stored entries), so direct sweeps ran 1.1-2.2x slower than per-system cudss_mixed, which
+  already keeps one analysis and refreshes values per frequency. Only the smallest pattern reached parity.
+- time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): missed resonances on open (CPML) disks
+  (0-3 of 6), residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells.
+- mumps_blr (block low-rank MUMPS refined by GMRES): MUMPS compressed 2-10 % of the entries on the profiled 3D
+  cases, the factor took 1.4-2.1x longer and no memory was saved (only ICNTL(35) / CNTL(7) were set, so MUMPS
+  allocated for the full-rank factor). A retry needs the memory flags, a looser drop threshold and a case much larger
+  than solid_mechanics_3d_tetrahedra_large.
 
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or

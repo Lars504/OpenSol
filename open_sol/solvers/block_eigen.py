@@ -468,7 +468,9 @@ def time_estimate(values, work):
 
     def per_iteration(single):
         item = 4 if single else 8
-        return (tuple((float(rows), op) for op in work.product_ops + work.preconditioner_ops)
+        # the caller's ops once per row; an entry is an op or a (multiplicity, op) pair (a V-cycle's level products)
+        return (tuple((rows * entry[0], entry[1]) if isinstance(entry, tuple) else (float(rows), entry)
+                      for entry in work.product_ops + work.preconditioner_ops)
                 + (te.Elementwise(6.0 * rows * item * n, 3.0 * rows * item * n, launches=4 * rows),
                    te.DenseFlops(flops, host=work.backend == 'cpu', single=single), te.Sync(2)))
     single_share = MIXED_SINGLE_FRACTION if mixed else 0.0

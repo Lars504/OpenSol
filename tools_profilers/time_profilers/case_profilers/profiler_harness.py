@@ -387,18 +387,22 @@ def case_specs(case_name, runs=None, variant=None):
 # --compare: the direct-factor setting is back_end on sparse_direct and factorization on arpack_shift_invert (the
 # pair schema.auto_back_end_values resolves alike), so either name sets both
 SETTING_ALIASES = {'back_end': ('back_end', 'factorization'), 'factorization': ('factorization', 'back_end')}
-# run_all's five solver groups: a library back end by its package, every other solver (open_sol's own pcg, explicit
-# kernels, line_block, ...) by array library and precision: cupy double -> cudss, cupy single -> cudss_mixed, numpy
-# (the cpu backend) -> scipy
+# run_all's solver groups: an opt-in solver type of TYPE_GROUPS by its name (--solver-type), a library back end by its
+# package, every other solver (open_sol's own pcg, explicit kernels, line_block, ...) by array library and precision:
+# cupy double -> cudss, cupy single -> cudss_mixed, numpy (the cpu backend) -> scipy
+TYPE_GROUPS = ('block_eigen',)
 LIBRARY_GROUPS = {'cudss': 'cudss', 'cudss_mixed': 'cudss_mixed', 'cusolver_qr': 'cudss', 'pardiso': 'pardiso',
                   'pardiso_mixed': 'pardiso', 'mumps': 'mumps', 'mumps_mixed': 'mumps', 'scipy_splu': 'scipy',
                   'superlu': 'scipy'}
 SINGLE_PRECISIONS = ('single', 'mixed', 'half_storage')
+SOLVER_TYPE_SETTING = 'solver_type'   # run label '<run> solver_type=<type>' of --solver-type (run_all's token)
 
 
-def solver_group(back_end, precision, backend) -> str:
-    """run_all group of one role's solver: its library back end's package, else numpy on the cpu (scipy) or cupy by
-    precision (single / mixed: cudss_mixed, double or unknown: cudss)."""
+def solver_group(back_end, precision, backend, type_name=None) -> str:
+    """run_all group of one role's solver: its type in TYPE_GROUPS, else its library back end's package, else numpy on
+    the cpu (scipy) or cupy by precision (single / mixed: cudss_mixed, double or unknown: cudss)."""
+    if type_name in TYPE_GROUPS:
+        return type_name
     if back_end in LIBRARY_GROUPS:
         return LIBRARY_GROUPS[back_end]
     if backend == 'cpu':
@@ -450,6 +454,55 @@ def _compared_variant(spec, setting, value, backend, registry, excluded=()):
             variant.solvers.append(SolverSpec(physics_spec.solvers[role], type_name, {**dict(settings), key: value}))
             changed.append((physics_spec.name, role))
     return variant, changed
+
+
+def _typed_variant(spec, type_name, backend, registry, excluded=()):
+    """(spec copy, [(physics, role), ...] changed): every role the study uses (but `excluded`) that solver_misfit lets
+    solver type `type_name` fill on backend and grid gets a new node of that type: the settings of its node when that
+    one is of the type already (a profiler's own block_eigen node), else the type's defaults."""
+    from open_sol.model.schema import fill_defaults, solver_grid, solver_misfit
+    from open_sol.model.spec import SolverSpec
+    variant = copy.deepcopy(spec)
+    nodes = {node.name: node for node in variant.solvers}
+    solver_type = registry.solver_type(type_name)
+    changed = []
+    for physics_spec in variant.physics:
+        physics_type = registry.physics_type(physics_spec.type)
+        for role in physics_type.solver_roles:
+            node = nodes.get((physics_spec.solvers or {}).get(role) or '')
+            settings = dict(node.settings) if node is not None and node.type == type_name else {}
+            if (physics_spec.name, role) in excluded or solver_misfit(
+                    solver_type, fill_defaults(solver_type.params, settings), physics_type, role, variant.study.type,
+                    backend, solver_grid(variant, physics_spec)):
+                continue
+            physics_spec.solvers[role] = _compared_node_name(physics_spec.name, role)
+            variant.solvers.append(SolverSpec(physics_spec.solvers[role], type_name, settings))
+            changed.append((physics_spec.name, role))
+    return variant, changed
+
+
+def solver_type_variants(specs, type_name, backend):
+    """{'<run> solver_type=TYPE': spec copy} of the runs with a role solver type TYPE can fill (_typed_variant; a role
+    whose physics refuses it in validation keeps its node); runs no role of which takes it are dropped (printed)."""
+    from open_sol.model.schema import get_registry
+    registry = get_registry()
+    try:
+        registry.solver_type(type_name)
+    except KeyError:
+        raise SystemExit(f'--solver-type: unknown solver type {type_name!r}') from None
+    variants = {}
+    for run_name, spec in specs.items():
+        variant, changed = _typed_variant(spec, type_name, backend, registry)
+        refused = _refused_roles(variant, changed, backend, registry) if changed else set()
+        if refused:
+            print(f"--solver-type: run {run_name!r}: {', '.join('.'.join(entry) for entry in sorted(refused))} refuse "
+                  f'{type_name} in validation; left as written', flush=True)
+            variant, changed = _typed_variant(spec, type_name, backend, registry, excluded=refused)
+        if not changed:
+            print(f'--solver-type: run {run_name!r}: no solver role takes {type_name}; dropped', flush=True)
+            continue
+        variants[f'{run_name} {SOLVER_TYPE_SETTING}={type_name}'] = variant
+    return variants
 
 
 def automatic_solvers(spec):
@@ -617,7 +670,7 @@ def _run_choices(spec, summary, backend):
             precision = _solver_precision(registry, solver.get('type'), settings)
             choices.append({'role': f'{physics_name}.{role}', 'type': solver.get('type'), 'back_end': back_end,
                             'preconditioner': settings.get('preconditioner'), 'precision': precision,
-                            'group': solver_group(back_end, precision, backend),
+                            'group': solver_group(back_end, precision, backend, solver.get('type')),
                             'factorizations': counters.get('factorizations', counters.get('eigen_factorizations'))})
     return choices
 
@@ -664,7 +717,7 @@ def _automatic_choices(spec, backend=AUTOMATIC_BACKEND, spec_nodes=False):
             precision = _solver_precision(registry, type_name, values)
             choices.append({'role': f'{physics_spec.name}.{role}', 'type': type_name, 'back_end': back_end,
                             'preconditioner': values.get('preconditioner'), 'precision': precision,
-                            'group': solver_group(back_end, precision, backend)})
+                            'group': solver_group(back_end, precision, backend, type_name)})
     return choices
 
 
@@ -863,12 +916,14 @@ def profile_runs(name, specs, parts=(), backend='gpu', repeat=1, warmup=False, u
     return report_path
 
 
-def output_name(name, backend, compare=None, compare_only=False, assignments=(), automatic=False, precision=None):
+def output_name(name, backend, compare=None, compare_only=False, assignments=(), automatic=False, precision=None,
+                solver_type=None):
     """Folder name of one profile: name + the settings that change its results (backend, --automatic-solvers,
-    --precision, --compare, --set), e.g. 'membrane_film__gpu__back_end-pardiso__only', so runs of different solvers
-    never overwrite each other."""
+    --precision, --compare, --solver-type, --set), e.g. 'membrane_film__gpu__back_end-pardiso__only', so runs of
+    different solvers never overwrite each other."""
     parts = ([name, backend] + (['automatic'] if automatic else []) + ([precision] if precision else [])
-             + ([compare] + (['only'] if compare_only else []) if compare else []) + list(assignments))
+             + ([compare] + (['only'] if compare_only else []) if compare else [])
+             + ([f'{SOLVER_TYPE_SETTING}={solver_type}'] if solver_type else []) + list(assignments))
     return '__'.join(re.sub(r'[^A-Za-z0-9_.+-]', '-', part.replace(',', '+')) for part in parts)
 
 
@@ -907,6 +962,9 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
                         '(e.g. back_end=cudss,cudss_mixed): one column per run in runs.md')
     parser.add_argument('--compare-only', action='store_true',
                         help='drop the runs no --compare value applies to (instead of running them as written)')
+    parser.add_argument('--solver-type', metavar='TYPE', default=None,
+                        help='every role the solver type TYPE can fill gets a node of it (default settings; e.g. '
+                             'block_eigen); runs with no such role are dropped')
     parser.add_argument('--time-limit', type=float, default=None, metavar='S',
                         help='stop the run going on S s after the start of the process and write the report of what '
                              'was timed until then (a long library call ends first; Ctrl+C does the same)')
@@ -931,12 +989,17 @@ def main(name, parts, description, case=None, runs=None, variant=None, specs=Non
         if not run_specs:
             print(f'--compare-only: no run of {name} takes {options.compare}; nothing profiled', flush=True)
             return None
+    if options.solver_type:
+        run_specs = solver_type_variants(run_specs, options.solver_type, options.backend)
+        if not run_specs:
+            print(f'--solver-type: no run of {name} takes {options.solver_type}; nothing profiled', flush=True)
+            return None
     small_warmup = warmup_specs() if own_specs and warmup_specs is not None and options.warmup else None
     if small_warmup is not None and spec_edit is not None:
         small_warmup = {key: spec_edit(spec) for key, spec in small_warmup.items()}
     source = f'specs of {name}' if specs is not None and options.case == case else f'case {options.case}'
     folder = output_name(name, options.backend, options.compare, options.compare_only, options.set,
-                         options.automatic_solvers, options.precision)
+                         options.automatic_solvers, options.precision, options.solver_type)
     return profile_runs(folder, run_specs, parts, backend=options.backend, repeat=options.repeat, warmup=options.warmup,
                         use_cprofile=not options.no_cprofile, synchronize=not options.no_sync,
                         parameters=_parameters(options.set), save_arrays=not options.no_arrays,
