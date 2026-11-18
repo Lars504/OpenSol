@@ -321,8 +321,12 @@ def _memory_estimate(settings_values, mesh, context):
     general = config.has_bloch_phase   # a Bloch phase: an LU of the whole matrix
     # A5: counted fill of the box nested dissection (SuperLU factors in that order, operators3d
     # nested_dissection_ordering; cuDSS's own ND as FactorFill) instead of the n^(4/3) growth laws; MUMPS / PARDISO:
-    # the LDL^T of D A (LU with a Bloch phase) at that SuperLU count x superlu_bytes_scale
-    counted = _box_fill((int(mesh.nx), int(mesh.ny), int(mesh.nz)), unknowns / max(n_cells, 1))
+    # the LDL^T of D A (LU with a Bloch phase) at that SuperLU count x superlu_bytes_scale. cuDSS orders the unknowns
+    # itself: its plane separators hold the two tangential E components only (yee_faces; the cell-wise count read the
+    # nanobeam eighth model's factor 54 % high)
+    grid_shape = (int(mesh.nx), int(mesh.ny), int(mesh.nz))
+    counted = _box_fill(grid_shape, unknowns / max(n_cells, 1))
+    cudss_counted = _box_fill(grid_shape, unknowns / max(n_cells, 1), True)
     factor_items = () if factorization in CUDSS_FACTORIZATIONS else tuple(host_factor_items(
         factorization, 'eigen SuperLU L + U factors (3D curl-curl, counted box nested dissection)',
         host_counted_lu_bytes(counted, unknowns), unknowns, _ROW_ENTRIES * unknowns, symmetric=not general,
@@ -330,8 +334,8 @@ def _memory_estimate(settings_values, mesh, context):
     from ...solvers.cudss_factor import FactorFill
     cudss_items, external_items, external_extra = _cudss_eigen_items(factorization, unknowns, _ROW_ENTRIES * unknowns,
                                                                      general, 'the curl-curl operator',
-                                                                     fill=FactorFill(counted))
-    # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's device A copy
+                                                                     fill=FactorFill(cudss_counted))
+    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only) and the filter's device A copy
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=_ROW_ENTRIES * unknowns)
@@ -385,10 +389,10 @@ def live_unknowns_estimate(mesh, config) -> int:
 
 
 @lru_cache(maxsize=16)
-def _box_fill(shape, unknowns_per_cell):
+def _box_fill(shape, unknowns_per_cell, yee_faces=False):
     """sparse_direct.box_dissection_entries of a grid shape (cached: a Python loop over the dissection boxes)."""
     from ...solvers.sparse_direct import box_dissection_entries
-    return box_dissection_entries(shape, unknowns_per_cell)
+    return box_dissection_entries(shape, unknowns_per_cell, yee_faces=yee_faces)
 
 
 def _arnoldi_sizes(context, unknowns):
@@ -488,7 +492,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     # a Bloch phase makes A nonsymmetric: the LU keeps the whole matrix, not the LDL^T lower triangle
     cudss_items, external_items, external_extra = _cudss_eigen_items(
         factorization, unknowns, row_entries * unknowns, not symmetric, 'the Nedelec curl-curl operator', fill)
-    # the Arnoldi basis (device Krylov-Schur with room for one widening where it runs) and the filter's A, M, W copies
+    # the Arnoldi basis (device Krylov-Schur where it runs, first pass only) and the filter's A, M, W copies
     search_host, search_transient = resonance_search_items(solver_backend(context.spec), unknowns, n_wanted, n_basis,
                                                            own_cudss=factorization in CUDSS_FACTORIZATIONS,
                                                            filter_entries=3 * row_entries * unknowns)

@@ -6,7 +6,8 @@ triangulation, each a 2D map or a cut plane placed in 3D) into `field_viewer.htm
 plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider, no playback). `layer_from_field`
 reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
 optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
-`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button).
+`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button). `figure_settings`
+checks the Plot settings a page opens with (font sizes, colour and axis limits, colour bar and label places).
 """
 
 import json
@@ -21,7 +22,7 @@ from .mode_player import _b64, length_scale
 TEMPLATE_FILE = 'field_viewer.html'
 DATA_MARKER = '/*__FIELD_DATA__*/null'
 FORMAT = 'open_sol.field_viewer'
-FORMAT_VERSION = 1
+FORMAT_VERSION = 3                    # 2: length_scale, figure (Plot settings); 3: inward directions in line rows
 FRAME_KINDS = ('time', 'labelled')    # time: snapshots the page can play; labelled: wavelengths, modes, frequencies
 MAX_BYTES = 24_000_000                # quantised values of every frame and layer (the page is ~4/3 of this, base64)
 MAX_FRAMES = 200
@@ -41,6 +42,22 @@ NO_MATERIAL_COLOR = '#b0b0b0'
 GLYPH_ARM = 0.012                     # half length of a point object's cross, fraction of the largest layer span
 MAX_GEOMETRY_BYTES = 8_000_000        # packed outline segments and surface triangles (float32)
 _OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
+# Plot settings of the page (its panel edits the same keys; field_viewer.html FIGURE_CHOICES / FIGURE_RANGES)
+FIGURE_CHOICES = {
+    'title': ('top_left', 'top_center', 'top_right', 'off'),                     # heading: frame label and field
+    'colorbar': ('bottom_right', 'bottom_left', 'top_right', 'top_left', 'right', 'left', 'top', 'bottom', 'off'),
+    'horizontal_axis': ('bottom', 'top'),                                        # axis labels of a face-on map
+    'vertical_axis': ('left', 'right'),
+    'scale_bar': ('off', 'on'),                                                  # on: in place of the axes
+    'scale_bar_color': ('auto', 'white', 'black'),
+    'legend_color': ('auto', 'white', 'black'),                                  # material legend text
+    'background': ('theme', 'white'),
+    'export_scale': (1, 2, 4),                                                   # PNG pixels per screen pixel
+}
+FIGURE_RANGES = {'font_size': (6.0, 40.0), 'title_size': (8.0, 72.0),            # CSS px
+                 'colorbar_length': (0.1, 1.0)}                                  # fraction of the view side
+FIGURE_LIMITS = ('color', 'x', 'y', 'z')   # <name>_min / <name>_max: colour limits (field unit), axis limits (m)
+FIGURE_LENGTHS = ('scale_bar_length',)     # positive lengths (m)
 
 
 @dataclass(eq=False)
@@ -374,22 +391,58 @@ def _layer_extent(layer):
     return tuple(float(edge) for edge in bounds)
 
 
-def _segments(polylines):
-    """float64 (n, 7) rows (start xyz, end xyz, arc length at the start) of (N, 3) polylines (m)."""
+def _segments(polylines, sides=None):
+    """float64 (n, 10) rows (start xyz, end xyz, arc length at the start, unit direction into the object) of (N, 3)
+    polylines (m); sides: `_ring_sides` of the polylines, None = zeros (lines drawn centred on their segments)."""
     rows = []
-    for polyline in polylines:
+    for index, polyline in enumerate(polylines):
         points = np.asarray(polyline, dtype=np.float64).reshape(-1, 3)
         if len(points) < 2:
             continue
         lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
         starts = np.concatenate([[0.0], np.cumsum(lengths)[:-1]])
-        rows.append(np.column_stack([points[:-1], points[1:], starts]))
-    return np.vstack(rows) if rows else np.empty((0, 7))
+        inward = np.zeros((len(points) - 1, 3)) if sides is None else sides[index]
+        rows.append(np.column_stack([points[:-1], points[1:], starts, inward]))
+    return np.vstack(rows) if rows else np.empty((0, 10))
+
+
+def _ring_holds(ring, point):
+    """True when the closed (N, 2) ring holds the point (even-odd rule)."""
+    low, high = ring[:-1], ring[1:]
+    crossing = (low[:, 1] > point[1]) != (high[:, 1] > point[1])
+    with np.errstate(divide='ignore', invalid='ignore'):
+        at = low[:, 0] + (point[1] - low[:, 1]) * (high[:, 0] - low[:, 0]) / (high[:, 1] - low[:, 1])
+    return bool(np.count_nonzero(crossing & (point[0] < at)) % 2)
+
+
+def _ring_sides(polylines, layer):
+    """Per polyline of one object its (N - 1, 3) unit directions from each segment into the object, in the layer
+    plane: closed rings by their turning sense, reversed for a ring inside another ring of the object (a hole); open
+    polylines zeros."""
+    first, second = _AXIS_INDEX[layer.axes[0]], _AXIS_INDEX[layer.axes[1]]
+    rings = [np.asarray(polyline, dtype=np.float64).reshape(-1, 3)[:, [first, second]] for polyline in polylines]
+    closed = [len(ring) > 3 and float(np.abs(ring[0] - ring[-1]).max()) <= 1e-9 * float(np.ptp(ring, axis=0).max())
+              for ring in rings]
+    sides = []
+    for index, ring in enumerate(rings):
+        inward = np.zeros((max(len(ring) - 1, 0), 3))
+        if closed[index]:
+            step = np.diff(ring, axis=0)
+            signed_area = 0.5 * float(np.sum(ring[:-1, 0] * ring[1:, 1] - ring[1:, 0] * ring[:-1, 1]))
+            around = sum(_ring_holds(rings[other], ring[0]) for other in range(len(rings))
+                         if other != index and closed[other])
+            sense = (1.0 if signed_area > 0.0 else -1.0) * (-1.0 if around % 2 else 1.0)
+            length = np.linalg.norm(step, axis=1)
+            length[length == 0.0] = 1.0
+            inward[:, first] = -sense * step[:, 1] / length   # left of a counter-clockwise ring's direction
+            inward[:, second] = sense * step[:, 0] / length
+        sides.append(inward)
+    return sides
 
 
 def _clipped_segments(segments, layer):
     """Segment rows clipped to the layer's extent in its (u, v) axes (Liang-Barsky, edges inclusive); misses and
-    zero-length pieces dropped, arc lengths moved with the start."""
+    zero-length pieces dropped, arc lengths moved with the start, inward directions kept."""
     start, delta = segments[:, 0:3], segments[:, 3:6] - segments[:, 0:3]
     t_low, t_high = np.zeros(len(segments)), np.ones(len(segments))
     u0, u1, v0, v1 = _layer_extent(layer)
@@ -404,7 +457,8 @@ def _clipped_segments(segments, layer):
     keep = (t_high > t_low) & np.any(delta != 0.0, axis=1)
     start, delta, t_low, t_high = start[keep], delta[keep], t_low[keep], t_high[keep]
     arc = segments[keep, 6] + t_low * np.linalg.norm(delta, axis=1)
-    return np.column_stack([start + t_low[:, None] * delta, start + t_high[:, None] * delta, arc])
+    return np.column_stack([start + t_low[:, None] * delta, start + t_high[:, None] * delta, arc,
+                            segments[keep, 7:]])
 
 
 def _glyph_segments(glyphs, arm, three_d):
@@ -466,7 +520,8 @@ def _polygon_triangles(polygon):
 
 def _geometry_data(geometry, layers, scale):
     """JSON of the model objects: materials, line groups (kind 'outline' per layer, 'edge', 'glyph'; segment rows
-    float32 in length units) and surface triangles per material (3D solids)."""
+    float32: positions and arc length in length units, then the unit direction into the object, zeros = none) and
+    surface triangles per material (3D solids)."""
     if len(geometry.outlines) != len(layers):
         raise ValueError(f'geometry has outlines for {len(geometry.outlines)} layers, the frames have {len(layers)}')
     lines, faces, used, total = [], [], set(), 0
@@ -474,8 +529,10 @@ def _geometry_data(geometry, layers, scale):
     def add_lines(kind, layer, material, solid, rows):
         nonlocal total
         if len(rows):
+            packed = rows.copy()
+            packed[:, :7] /= scale   # the inward directions stay unit vectors
             lines.append({'kind': kind, 'layer': layer, 'material': material, 'dashed': not solid,
-                          'count': int(len(rows)), 'segments': _b64((rows / scale).astype('<f4'))})
+                          'count': int(len(rows)), 'segments': _b64(packed.astype('<f4'))})
             total += rows.size * 4
             if material is not None:
                 used.add(material)
@@ -483,9 +540,12 @@ def _geometry_data(geometry, layers, scale):
     for index, (layer, items) in enumerate(zip(layers, geometry.outlines)):
         groups = {}
         for item in items:
-            groups.setdefault((item.material, bool(item.solid)), []).extend(item.polylines)
-        for (material, solid), polylines in groups.items():
-            add_lines('outline', index, material, solid, _clipped_segments(_segments(polylines), layer))
+            # solid objects know their inside (the page draws material-coloured outlines on that side, so two
+            # objects meeting on a line show both colours); subtracted / intersected inputs stay centred
+            sides = _ring_sides(item.polylines, layer) if item.solid else None
+            groups.setdefault((item.material, bool(item.solid)), []).append(_segments(item.polylines, sides))
+        for (material, solid), rows in groups.items():
+            add_lines('outline', index, material, solid, _clipped_segments(np.vstack(rows), layer))
     groups, triangles = {}, {}
     for solid in geometry.solids:
         groups.setdefault((solid.material, bool(solid.solid)), []).extend(solid.edges)
@@ -616,18 +676,56 @@ def _mirror_data(mirrors, scale):
     return data
 
 
+def figure_settings(figure) -> dict:
+    """The checked Plot settings {key: value} of a page (FIGURE_CHOICES / _RANGES / _LIMITS / _LENGTHS keys; None
+    values = automatic, dropped); ValueError for an unknown key, a value outside its choices / range or min >= max."""
+    figure = dict(figure or {})
+    limit_keys = tuple(f'{name}_{end}' for name in FIGURE_LIMITS for end in ('min', 'max'))
+    known = (*FIGURE_CHOICES, *FIGURE_RANGES, *limit_keys, *FIGURE_LENGTHS)
+    unknown = sorted(set(figure) - set(known))
+    if unknown:
+        raise ValueError(f"unknown figure setting(s) {', '.join(map(repr, unknown))}; known: {', '.join(known)}")
+    checked = {}
+    for key, value in figure.items():
+        if value is None:
+            continue
+        if key in FIGURE_CHOICES:
+            if isinstance(value, bool) or value not in FIGURE_CHOICES[key]:
+                raise ValueError(f'figure setting {key} = {value!r} is not one of {FIGURE_CHOICES[key]}')
+            checked[key] = value if isinstance(value, str) else int(value)
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f'figure setting {key} = {value!r} is not a number') from None
+        if not math.isfinite(number):
+            raise ValueError(f'figure setting {key} = {value!r} is not finite')
+        if key in FIGURE_RANGES and not FIGURE_RANGES[key][0] <= number <= FIGURE_RANGES[key][1]:
+            raise ValueError(f'figure setting {key} = {number:g} is outside {FIGURE_RANGES[key]}')
+        if key in FIGURE_LENGTHS and not number > 0.0:
+            raise ValueError(f'figure setting {key} = {number:g} is not a positive length')
+        checked[key] = number
+    for name in FIGURE_LIMITS:
+        low, high = checked.get(f'{name}_min'), checked.get(f'{name}_max')
+        if low is not None and high is not None and not low < high:
+            raise ValueError(f'figure settings {name}_min = {low:g} is not below {name}_max = {high:g}')
+    return checked
+
+
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
-                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None):
+                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None, figure=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
     frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
     mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
     sample row on it). plan None: frames are thinned and grid layers strided here (plan_frames over max_bytes /
     max_frames); a plan: frames already follow it (picked and strided by the caller). The subtitle names any
-    thinning or stride."""
+    thinning or stride. figure: the page's Plot settings (`figure_settings` keys) it opens with, over the ones the
+    browser remembers."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
         raise ValueError(f'frame_kind {frame_kind!r} is not one of {FRAME_KINDS}')
+    figure = figure_settings(figure)
     _check_layers(frames)
     if plan is None:
         plan = plan_frames(frames[0].layers, len(frames), max_bytes, max_frames)
@@ -659,7 +757,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'format': FORMAT, 'version': FORMAT_VERSION,
         'title': title, 'subtitle': ' · '.join(part for part in (subtitle, *plan.notes) if part),
         'dimensions': 3 if any(layer.plane is not None for layer in first) else 2,
-        'length_unit': unit,
+        'length_unit': unit, 'length_scale': float(scale),   # m per length unit of the page
+        'figure': figure or None,
         'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed),
                      'phase': bool(quantity.phase)},
         'layers': [_layer_geometry(layer, scale) for layer in first],

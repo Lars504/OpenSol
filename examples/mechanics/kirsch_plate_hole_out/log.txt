@@ -1,0 +1,9 @@
+[0.00] [info] CPU backend: 29.11 GiB host memory available
+[0.64] [info] Build time by stage: parameters, geometry + memory record 0.11 s, physics 'solid' finalize 0.32 s; total 0.44 s (stages under 0.05 s not listed)
+[0.82] [info] Build estimate: whole build estimated 1.77 s (guess; 589 ms - 5.3 s), took 441 ms
+[0.82] [warning] Host (cpu backend, traced numpy) memory estimate: kept: 225.3 MiB estimated but 224.3 MiB held (-0%): an item booked that the run did not hold (not there, not held at the same time, or smaller); build peak: 376.1 MiB estimated but 302.9 MiB held (-19%): an item booked that the run did not hold (not there, not held at the same time, or smaller). The memory_estimate of a physics or feature type misreads its solver (summary.json build.gpu_breakdown and build.gpu_estimate list both sides)
+[0.83] [info] estimated run time 15.2 s, largest: physics 'solid': SuperLU factorisations 14.9 s x 1 factorisations (exact); physics 'solid': SuperLU solves 167 ms x 1 solves (exact); physics 'solid': stiffness assembly 88.8 ms x 1 assemblys (exact)
+[0.83] [info] built 384 x 384 = 147,456 cells, no time stepping, 0.44 s, GPU 0 B
+[0.83] [info] study started
+[45.79] [info] run time 45 s, estimated 15.2 s (3x)
+[45.79] [info] study finished (completed): 1 iteration, wall 45.63 s

@@ -707,7 +707,9 @@ def refresh_bytes(n_unknowns, entries, value_bytes=16, symmetry_check=True) -> i
 # float64 LDL^T permanent bytes / factor entry 10.5).
 # CUDSS_FILL_3D reads the 3D tensor-grid factors 48 % (mixed) / 76 % (double) low (em3d_fdfd): a 3D tensor caller
 # passes FactorFill(sparse_direct.box_dissection_entries(window shape, unknowns per cell)) instead (A5: the box
-# nested-dissection count, no refit to measured entries); the law stays for callers without a grid shape.
+# nested-dissection count, no refit to measured entries); the law stays for callers without a grid shape. The Yee
+# curl-curl passes yee_faces=True: cuDSS orders unknowns, not cells, and a plane's two tangential E components separate
+# the grid (the cell-wise count booked the 240 x 33 x 29 nanobeam eighth model 5.74 GiB, cuDSS held 3.72 GiB).
 CUDSS_FILL_2D = 3.4                   # factor values per n log2 n at CUDSS_REFERENCE_ROWS[2] stored entries per row
 CUDSS_FILL_3D = 6.0                   # factor values per n^(4/3) at CUDSS_REFERENCE_ROWS[3] entries per row
 CUDSS_REFERENCE_ROWS = {2: 5.0, 3: 13.0}

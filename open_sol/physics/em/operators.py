@@ -10,6 +10,7 @@ numpy / scipy or cupy / cupyx. Flat index i*ny + j; 'e' derivatives land on cell
 # csr + csr, csr @ vector and tocsr (which sums duplicates). Products with a diagonal are never sparse products here:
 # _column_scaled / _kept_entries scale or select the stored entries (cuSPARSE SpGEMM workspaces grow with the rows).
 import math
+import weakref
 from dataclasses import dataclass
 
 import numpy as np
@@ -247,6 +248,8 @@ class KeptYeeOperators:
     differences are rebuilt and gathered into the kept 2D CSR (same pattern and values as yee_operators, no kron)."""
     # Kept per part (dx_e, dx_h, dy_e, dy_h): the 1D (indptr, indices) host pattern, the xp int32 map 2D entry -> 1D
     # entry, and the xp 2D indices / indptr, shared by the ops of every omega (never modified in place: consumers copy).
+    # Ops of the current parts are recognised by identity of the YeeOperators2D (_issued_ops), never of their index
+    # arrays: scipy's csr constructor re-slices indices (prune), so `ops.dx_e.indices is kept` never holds on the host.
 
     def __init__(self, cell_widths, boundary_config, pml_dx, xp=np):
         self.cell_widths = tuple(cell_widths)   # as given: yee_operators' inverse spacings follow their dtype
@@ -255,6 +258,7 @@ class KeptYeeOperators:
         self.xp = xp
         self.nx, self.ny = (len(widths) for widths in self.cell_widths)
         self._parts = None
+        self._issued_ops = weakref.WeakSet()   # YeeOperators2D that `at` gathered on the current parts
         self._helmholtz_plan = None   # _HelmholtzPlan of the current parts (first helmholtz call)
 
     def at(self, omega):
@@ -267,20 +271,23 @@ class KeptYeeOperators:
                                           and np.array_equal(matrix.indices, part[0][1])
                                           for matrix, part in zip(differences, self._parts)):
             self._parts = self._helmholtz_plan = None   # free the old maps and term plan first
+            self._issued_ops = weakref.WeakSet()       # ops of the old parts no longer match the plan
             self._parts = tuple(self._kron_part(matrix, identity_first) for matrix, identity_first in
                                 zip(differences, (False, False, True, True)))
         n_unknowns = self.nx * self.ny
         csr_matrix = _sparse_module(self.xp).csr_matrix
-        ops = [csr_matrix((self.xp.asarray(matrix.data)[entry_map], indices, indptr), shape=(n_unknowns, n_unknowns))
-               for matrix, (_, entry_map, indices, indptr) in zip(differences, self._parts)]
-        return YeeOperators2D(self.nx, self.ny, omega, *ops)
+        matrices = [csr_matrix((self.xp.asarray(matrix.data)[entry_map], indices, indptr),
+                               shape=(n_unknowns, n_unknowns))
+                    for matrix, (_, entry_map, indices, indptr) in zip(differences, self._parts)]
+        ops = YeeOperators2D(self.nx, self.ny, omega, *matrices)
+        self._issued_ops.add(ops)
+        return ops
 
     def helmholtz(self, ops, weight_hi_x_faces, weight_hi_y_faces, cell_term):
         """helmholtz_operator of ops from `at` on a kept term plan (one fixed pattern per grid, zero weights kept as
-        explicit zeros, no sparse products); ops of another source: helmholtz_operator itself."""
+        explicit zeros, no sparse products); ops of another source or older parts: helmholtz_operator itself."""
         parts = self._parts
-        if parts is None or not all(matrix.indices is part[2] for matrix, part in
-                                    zip((ops.dx_e, ops.dx_h, ops.dy_e, ops.dy_h), parts)):
+        if parts is None or ops not in self._issued_ops:
             return helmholtz_operator(ops, weight_hi_x_faces, weight_hi_y_faces, cell_term, xp=self.xp)
         if self._helmholtz_plan is None or self._helmholtz_plan.parts is not parts:
             self._helmholtz_plan = None   # free the old plan first

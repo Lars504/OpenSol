@@ -14,173 +14,174 @@ Topics (describe(topic) or python -m open_sol describe <topic>): spec, expressio
 
 Line ranges in api_reference.md (Read with offset / limit; Grep '^## ' lists the same headings). Sections over 400 lines also list their subsections. A line "Help: shared `<key>`" stands for the text under "#### `<key>`" in Shared help texts (Grep it); every occurrence of a repeated long text, the first included, points there.
 
-- lines 185-528: Model spec
-- lines 530-647: Expressions
-- lines 649-914: Geometry
-- lines 916-1085: Materials
-- lines 1087-1133: Mesh
-- lines 1135-1272: Solvers
-- lines 1274-2140: Shared help texts
-- lines 2142-2307: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
-- lines 2309-2562: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
-- lines 2564-2695: Physics type `electric_currents` - Electric Currents
-- lines 2697-2899: Physics type `electrostatics` - Electrostatics
-- lines 2901-3125: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
-- lines 3127-3315: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
-- lines 3317-3430: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
-- lines 3432-3629: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
-- lines 3631-3803: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
-- lines 3805-4147: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
-- lines 4149-4513: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
-- lines 4515-5035: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
-  - lines 4527-4554: Settings (PhysicsSpec.settings)
-  - lines 4556-4571: Material properties (MaterialSpec.properties)
-  - lines 4573-4614: Fields
-  - lines 4616-4620: Source slots
-  - lines 4622-4642: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
-  - lines 4644-4704: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
-  - lines 4706-4754: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
-  - lines 4756-4776: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
-  - lines 4778-4812: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
-  - lines 4814-4823: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
-  - lines 4825-4845: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
-  - lines 4847-4867: Feature `em_fdfd_nonlinear.design_region` - Design region
-  - lines 4869-4891: Feature `em_fdfd_nonlinear.point_source` - Point source
-  - lines 4893-4907: Feature `em_fdfd_nonlinear.line_source` - Line source
-  - lines 4909-4927: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
-  - lines 4929-4943: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 4945-4963: Feature `em_fdfd_nonlinear.mode_source` - Mode source
-  - lines 4965-4977: Feature `em_fdfd_nonlinear.field_probe` - Field probe
-  - lines 4979-4989: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
-  - lines 4991-5003: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
-  - lines 5005-5017: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
-  - lines 5019-5035: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
-- lines 5037-5344: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
-- lines 5346-5579: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
-- lines 5581-5984: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
-  - lines 5593-5614: Settings (PhysicsSpec.settings)
-  - lines 5616-5627: Material properties (MaterialSpec.properties)
-  - lines 5629-5659: Fields
-  - lines 5661-5664: Source slots
-  - lines 5666-5682: Feature `em_fdtd_ez.point_source` - Point source
-  - lines 5684-5700: Feature `em_fdtd_ez.line_source` - Line source
-  - lines 5702-5722: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
-  - lines 5724-5740: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 5742-5762: Feature `em_fdtd_ez.mode_source` - Mode source
-  - lines 5764-5773: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
-  - lines 5775-5793: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
-  - lines 5795-5820: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
-  - lines 5822-5847: Feature `em_fdtd_ez.gain_medium` - Gain medium
-  - lines 5849-5883: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
-  - lines 5885-5895: Feature `em_fdtd_ez.field_probe` - Field probe
-  - lines 5897-5914: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
-  - lines 5916-5930: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
-  - lines 5932-5948: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
-  - lines 5950-5966: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
-  - lines 5968-5984: Feature `em_fdtd_ez.far_field` - Far-field pattern
-- lines 5986-6397: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
-  - lines 5998-6019: Settings (PhysicsSpec.settings)
-  - lines 6021-6034: Material properties (MaterialSpec.properties)
-  - lines 6036-6065: Fields
-  - lines 6067-6071: Source slots
-  - lines 6073-6095: Feature `em_fdtd_hz.point_source` - Point source
-  - lines 6097-6113: Feature `em_fdtd_hz.line_source` - Line source
-  - lines 6115-6135: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
-  - lines 6137-6153: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
-  - lines 6155-6175: Feature `em_fdtd_hz.mode_source` - Mode source
-  - lines 6177-6186: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
-  - lines 6188-6206: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
-  - lines 6208-6233: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
-  - lines 6235-6260: Feature `em_fdtd_hz.gain_medium` - Gain medium
-  - lines 6262-6296: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
-  - lines 6298-6308: Feature `em_fdtd_hz.field_probe` - Field probe
-  - lines 6310-6327: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
-  - lines 6329-6343: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
-  - lines 6345-6361: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
-  - lines 6363-6379: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
-  - lines 6381-6397: Feature `em_fdtd_hz.far_field` - Far-field pattern
-- lines 6399-6608: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
-- lines 6610-6910: Physics type `heat` - Heat Transfer in Solids
-- lines 6912-7070: Physics type `laminar_flow` - Laminar Flow (2D)
-- lines 7072-7266: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
-- lines 7268-7436: Physics type `magnetostatics` - Magnetostatics (2D)
-- lines 7438-7610: Physics type `magnetostatics_3d` - Magnetostatics (3D)
-- lines 7612-7919: Physics type `membrane` - Membrane
-- lines 7921-8154: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
-- lines 8156-8642: Physics type `solid_mechanics` - Solid Mechanics (2D)
-  - lines 8168-8225: Settings (PhysicsSpec.settings)
-  - lines 8227-8314: Material properties (MaterialSpec.properties)
-  - lines 8316-8373: Fields
-  - lines 8375-8379: Source slots
-  - lines 8381-8391: Feature `solid_mechanics.fixed` - Fixed
-  - lines 8393-8403: Feature `solid_mechanics.roller` - Roller
-  - lines 8405-8418: Feature `solid_mechanics.displacement` - Displacement
-  - lines 8420-8430: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
-  - lines 8432-8445: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8447-8460: Feature `solid_mechanics.boundary_load` - Boundary load
-  - lines 8462-8475: Feature `solid_mechanics.segment_load` - Boundary load (segment)
-  - lines 8477-8490: Feature `solid_mechanics.body_force` - Body force
-  - lines 8492-8503: Feature `solid_mechanics.temperature_change` - Temperature change
-  - lines 8505-8516: Feature `solid_mechanics.solid_probe` - Solid probe
-  - lines 8518-8528: Feature `solid_mechanics.frequency_probe` - Frequency probe
-  - lines 8530-8540: Feature `solid_mechanics.resonance_table` - Resonance table
-  - lines 8542-8553: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
-  - lines 8555-8592: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
-  - lines 8594-8608: Feature `solid_mechanics.electrode` - Electrode
-  - lines 8610-8624: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
-  - lines 8626-8642: Feature `solid_mechanics.admittance` - Admittance
-- lines 8644-9211: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
-  - lines 8656-8705: Settings (PhysicsSpec.settings)
-  - lines 8707-8844: Material properties (MaterialSpec.properties)
-  - lines 8846-8916: Fields
-  - lines 8918-8923: Source slots
-  - lines 8925-8935: Feature `solid_mechanics_3d.fixed` - Fixed
-  - lines 8937-8947: Feature `solid_mechanics_3d.roller` - Roller
-  - lines 8949-8964: Feature `solid_mechanics_3d.displacement` - Displacement
-  - lines 8966-8976: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
-  - lines 8978-8993: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
-  - lines 8995-9010: Feature `solid_mechanics_3d.boundary_load` - Boundary load
-  - lines 9012-9027: Feature `solid_mechanics_3d.body_force` - Body force
-  - lines 9029-9040: Feature `solid_mechanics_3d.temperature_change` - Temperature change
-  - lines 9042-9053: Feature `solid_mechanics_3d.solid_probe` - Solid probe
-  - lines 9055-9065: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
-  - lines 9067-9077: Feature `solid_mechanics_3d.resonance_table` - Resonance table
-  - lines 9079-9102: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
-  - lines 9104-9115: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
-  - lines 9117-9134: Feature `solid_mechanics_3d.electrode` - Electrode
-  - lines 9136-9153: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
-  - lines 9155-9172: Feature `solid_mechanics_3d.admittance` - Admittance
-  - lines 9174-9211: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
-- lines 9213-9221: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
-- lines 9223-9231: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
-- lines 9233-9242: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
-- lines 9244-9253: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
-- lines 9255-9263: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
-- lines 9265-9273: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
-- lines 9275-9286: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
-- lines 9288-9296: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
-- lines 9298-9311: Coupling type `field_transfer` - Field transfer
-- lines 9313-9321: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
-- lines 9323-9331: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
-- lines 9333-9341: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
-- lines 9343-9351: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
-- lines 9353-9361: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
-- lines 9363-9371: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
-- lines 9373-9386: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
-- lines 9388-9397: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
-- lines 9399-9408: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
-- lines 9410-9444: Study type `eigenfrequency` - Eigenfrequency
-- lines 9446-9481: Study type `frequency_domain` - Frequency domain
-- lines 9483-9526: Study type `frequency_response` - Frequency response
-- lines 9528-9550: Study type `mode_analysis` - Mode analysis
-- lines 9552-9574: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
-- lines 9576-9592: Study type `optimization` - Optimization
-- lines 9594-9617: Study type `optomechanics` - Optomechanics
-- lines 9619-9640: Study type `stationary` - Stationary
-- lines 9642-9671: Study type `thermal_noise` - Thermal noise
-- lines 9673-9687: Study type `time_dependent` - Time dependent
-- lines 9689-9757: Templates
-- lines 9759-9977: Results, reports and files
+- lines 186-529: Model spec
+- lines 531-648: Expressions
+- lines 650-915: Geometry
+- lines 917-1086: Materials
+- lines 1088-1134: Mesh
+- lines 1136-1273: Solvers
+- lines 1275-2141: Shared help texts
+- lines 2143-2308: Physics type `drift_diffusion` - Semiconductor (drift-diffusion, 2D)
+- lines 2310-2563: Physics type `elastic_waves` - Elastic and Acoustic Waves, time domain (2D, in-plane)
+- lines 2565-2696: Physics type `electric_currents` - Electric Currents
+- lines 2698-2900: Physics type `electrostatics` - Electrostatics
+- lines 2902-3126: Physics type `em_eme` - Electromagnetic Waves, eigenmode expansion (2D)
+- lines 3128-3316: Physics type `em_eme_3d` - Electromagnetic Waves, eigenmode expansion (3D)
+- lines 3318-3431: Physics type `em_fdfd_3d` - Electromagnetic Waves, frequency domain (3D)
+- lines 3433-3630: Physics type `em_fdfd_bor` - Electromagnetic Waves, frequency domain (axisymmetric, azimuthal order m)
+- lines 3632-3804: Physics type `em_fdfd_conical` - Electromagnetic Waves, frequency domain (out-of-plane wave number k_z)
+- lines 3806-4148: Physics type `em_fdfd_ez` - Electromagnetic Waves, frequency domain (2D, electric field out of plane)
+- lines 4150-4514: Physics type `em_fdfd_hz` - Electromagnetic Waves, frequency domain (2D, magnetic field out of plane)
+- lines 4516-5036: Physics type `em_fdfd_nonlinear` - Nonlinear optics, frequency domain (2D, harmonic channels)
+  - lines 4528-4555: Settings (PhysicsSpec.settings)
+  - lines 4557-4572: Material properties (MaterialSpec.properties)
+  - lines 4574-4615: Fields
+  - lines 4617-4621: Source slots
+  - lines 4623-4643: Feature `em_fdfd_nonlinear.harmonic_channel` - Harmonic channel
+  - lines 4645-4705: Feature `em_fdfd_nonlinear.chi2_medium` - Second-order nonlinear medium
+  - lines 4707-4755: Feature `em_fdfd_nonlinear.chi3_medium` - Third-order nonlinear medium
+  - lines 4757-4777: Feature `em_fdfd_nonlinear.surface_chi2` - Surface second-order nonlinearity
+  - lines 4779-4813: Feature `em_fdfd_nonlinear.sheet_nonlinearity` - Nonlinear sheet
+  - lines 4815-4824: Feature `em_fdfd_nonlinear.pec_domain` - Perfect electric conductor
+  - lines 4826-4846: Feature `em_fdfd_nonlinear.conducting_sheet` - Conducting sheet
+  - lines 4848-4868: Feature `em_fdfd_nonlinear.design_region` - Design region
+  - lines 4870-4892: Feature `em_fdfd_nonlinear.point_source` - Point source
+  - lines 4894-4908: Feature `em_fdfd_nonlinear.line_source` - Line source
+  - lines 4910-4928: Feature `em_fdfd_nonlinear.gaussian_beam` - Gaussian beam
+  - lines 4930-4944: Feature `em_fdfd_nonlinear.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 4946-4964: Feature `em_fdfd_nonlinear.mode_source` - Mode source
+  - lines 4966-4978: Feature `em_fdfd_nonlinear.field_probe` - Field probe
+  - lines 4980-4990: Feature `em_fdfd_nonlinear.flux_monitor` - Flux monitor
+  - lines 4992-5004: Feature `em_fdfd_nonlinear.mode_monitor` - Mode monitor
+  - lines 5006-5018: Feature `em_fdfd_nonlinear.far_field` - Far-field pattern
+  - lines 5020-5036: Feature `em_fdfd_nonlinear.adjoint_objective` - Optimization objective
+- lines 5038-5345: Physics type `em_fdtd_3d` - Electromagnetic Waves, time domain (3D)
+- lines 5347-5580: Physics type `em_fdtd_bor` - Electromagnetic Waves, time domain (axisymmetric, azimuthal order m)
+- lines 5582-5985: Physics type `em_fdtd_ez` - Electromagnetic Waves, time domain (2D, electric field out of plane)
+  - lines 5594-5615: Settings (PhysicsSpec.settings)
+  - lines 5617-5628: Material properties (MaterialSpec.properties)
+  - lines 5630-5660: Fields
+  - lines 5662-5665: Source slots
+  - lines 5667-5683: Feature `em_fdtd_ez.point_source` - Point source
+  - lines 5685-5701: Feature `em_fdtd_ez.line_source` - Line source
+  - lines 5703-5723: Feature `em_fdtd_ez.gaussian_beam` - Gaussian beam
+  - lines 5725-5741: Feature `em_fdtd_ez.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 5743-5763: Feature `em_fdtd_ez.mode_source` - Mode source
+  - lines 5765-5774: Feature `em_fdtd_ez.pec_domain` - Perfect electric conductor
+  - lines 5776-5794: Feature `em_fdtd_ez.effective_index` - Effective index (2.5D)
+  - lines 5796-5821: Feature `em_fdtd_ez.nonlinear_medium` - Nonlinear medium
+  - lines 5823-5848: Feature `em_fdtd_ez.gain_medium` - Gain medium
+  - lines 5850-5884: Feature `em_fdtd_ez.phase_change_medium` - Phase-change medium
+  - lines 5886-5896: Feature `em_fdtd_ez.field_probe` - Field probe
+  - lines 5898-5915: Feature `em_fdtd_ez.resonance_monitor` - Resonance finder
+  - lines 5917-5931: Feature `em_fdtd_ez.flux_monitor` - Flux monitor
+  - lines 5933-5949: Feature `em_fdtd_ez.mode_monitor` - Mode monitor
+  - lines 5951-5967: Feature `em_fdtd_ez.dft_monitor` - Field map monitor
+  - lines 5969-5985: Feature `em_fdtd_ez.far_field` - Far-field pattern
+- lines 5987-6398: Physics type `em_fdtd_hz` - Electromagnetic Waves, time domain (2D, magnetic field out of plane)
+  - lines 5999-6020: Settings (PhysicsSpec.settings)
+  - lines 6022-6035: Material properties (MaterialSpec.properties)
+  - lines 6037-6066: Fields
+  - lines 6068-6072: Source slots
+  - lines 6074-6096: Feature `em_fdtd_hz.point_source` - Point source
+  - lines 6098-6114: Feature `em_fdtd_hz.line_source` - Line source
+  - lines 6116-6136: Feature `em_fdtd_hz.gaussian_beam` - Gaussian beam
+  - lines 6138-6154: Feature `em_fdtd_hz.plane_wave_tfsf` - Plane wave box (+x)
+  - lines 6156-6176: Feature `em_fdtd_hz.mode_source` - Mode source
+  - lines 6178-6187: Feature `em_fdtd_hz.pec_domain` - Perfect electric conductor
+  - lines 6189-6207: Feature `em_fdtd_hz.effective_index` - Effective index (2.5D)
+  - lines 6209-6234: Feature `em_fdtd_hz.nonlinear_medium` - Nonlinear medium
+  - lines 6236-6261: Feature `em_fdtd_hz.gain_medium` - Gain medium
+  - lines 6263-6297: Feature `em_fdtd_hz.phase_change_medium` - Phase-change medium
+  - lines 6299-6309: Feature `em_fdtd_hz.field_probe` - Field probe
+  - lines 6311-6328: Feature `em_fdtd_hz.resonance_monitor` - Resonance finder
+  - lines 6330-6344: Feature `em_fdtd_hz.flux_monitor` - Flux monitor
+  - lines 6346-6362: Feature `em_fdtd_hz.mode_monitor` - Mode monitor
+  - lines 6364-6380: Feature `em_fdtd_hz.dft_monitor` - Field map monitor
+  - lines 6382-6398: Feature `em_fdtd_hz.far_field` - Far-field pattern
+- lines 6400-6609: Physics type `em_modes` - Electromagnetic Waves, cross-section modes
+- lines 6611-6911: Physics type `heat` - Heat Transfer in Solids
+- lines 6913-7071: Physics type `laminar_flow` - Laminar Flow (2D)
+- lines 7073-7267: Physics type `magnetic_fields_ac` - Magnetic Fields, AC (2D)
+- lines 7269-7437: Physics type `magnetostatics` - Magnetostatics (2D)
+- lines 7439-7611: Physics type `magnetostatics_3d` - Magnetostatics (3D)
+- lines 7613-7920: Physics type `membrane` - Membrane
+- lines 7922-8155: Physics type `pressure_acoustics` - Pressure Acoustics, frequency domain
+- lines 8157-8643: Physics type `solid_mechanics` - Solid Mechanics (2D)
+  - lines 8169-8226: Settings (PhysicsSpec.settings)
+  - lines 8228-8315: Material properties (MaterialSpec.properties)
+  - lines 8317-8374: Fields
+  - lines 8376-8380: Source slots
+  - lines 8382-8392: Feature `solid_mechanics.fixed` - Fixed
+  - lines 8394-8404: Feature `solid_mechanics.roller` - Roller
+  - lines 8406-8419: Feature `solid_mechanics.displacement` - Displacement
+  - lines 8421-8431: Feature `solid_mechanics.fixed_domain` - Fixed (domain)
+  - lines 8433-8446: Feature `solid_mechanics.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8448-8461: Feature `solid_mechanics.boundary_load` - Boundary load
+  - lines 8463-8476: Feature `solid_mechanics.segment_load` - Boundary load (segment)
+  - lines 8478-8491: Feature `solid_mechanics.body_force` - Body force
+  - lines 8493-8504: Feature `solid_mechanics.temperature_change` - Temperature change
+  - lines 8506-8517: Feature `solid_mechanics.solid_probe` - Solid probe
+  - lines 8519-8529: Feature `solid_mechanics.frequency_probe` - Frequency probe
+  - lines 8531-8541: Feature `solid_mechanics.resonance_table` - Resonance table
+  - lines 8543-8554: Feature `solid_mechanics.thermoelastic_damping` - Thermoelastic damping
+  - lines 8556-8593: Feature `solid_mechanics.optomechanical_coupling` - Optomechanical coupling
+  - lines 8595-8609: Feature `solid_mechanics.electrode` - Electrode
+  - lines 8611-8625: Feature `solid_mechanics.electrode_domain` - Electrode (domain)
+  - lines 8627-8643: Feature `solid_mechanics.admittance` - Admittance
+- lines 8645-9224: Physics type `solid_mechanics_3d` - Solid Mechanics (3D)
+  - lines 8657-8706: Settings (PhysicsSpec.settings)
+  - lines 8708-8845: Material properties (MaterialSpec.properties)
+  - lines 8847-8917: Fields
+  - lines 8919-8924: Source slots
+  - lines 8926-8936: Feature `solid_mechanics_3d.fixed` - Fixed
+  - lines 8938-8948: Feature `solid_mechanics_3d.roller` - Roller
+  - lines 8950-8965: Feature `solid_mechanics_3d.displacement` - Displacement
+  - lines 8967-8977: Feature `solid_mechanics_3d.fixed_domain` - Fixed (domain)
+  - lines 8979-8994: Feature `solid_mechanics_3d.prescribed_displacement_domain` - Prescribed displacement (domain)
+  - lines 8996-9011: Feature `solid_mechanics_3d.boundary_load` - Boundary load
+  - lines 9013-9028: Feature `solid_mechanics_3d.body_force` - Body force
+  - lines 9030-9041: Feature `solid_mechanics_3d.temperature_change` - Temperature change
+  - lines 9043-9054: Feature `solid_mechanics_3d.solid_probe` - Solid probe
+  - lines 9056-9066: Feature `solid_mechanics_3d.frequency_probe` - Frequency probe
+  - lines 9068-9078: Feature `solid_mechanics_3d.resonance_table` - Resonance table
+  - lines 9080-9090: Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+  - lines 9092-9115: Feature `solid_mechanics_3d.squeeze_film_damping` - Squeeze-film damping
+  - lines 9117-9128: Feature `solid_mechanics_3d.thermoelastic_damping` - Thermoelastic damping
+  - lines 9130-9147: Feature `solid_mechanics_3d.electrode` - Electrode
+  - lines 9149-9166: Feature `solid_mechanics_3d.electrode_domain` - Electrode (domain)
+  - lines 9168-9185: Feature `solid_mechanics_3d.admittance` - Admittance
+  - lines 9187-9224: Feature `solid_mechanics_3d.optomechanical_coupling` - Optomechanical coupling
+- lines 9226-9234: Coupling type `acoustics_em_acousto_optic` - Acousto-optic effect (elastic waves -> electromagnetic waves)
+- lines 9236-9244: Coupling type `currents_heat_joule` - Joule heating (electric currents -> heat)
+- lines 9246-9255: Coupling type `electrostatics_acoustics_piezo` - Piezoelectric coupling (electrostatics <-> elastic waves)
+- lines 9257-9266: Coupling type `electrostatics_em_pockels` - Pockels effect (electrostatics -> electromagnetic waves)
+- lines 9268-9276: Coupling type `em_acoustics_photoacoustic` - Photoacoustic heating (electromagnetic waves -> elastic waves)
+- lines 9278-9286: Coupling type `em_heat_joule` - Joule heating (electromagnetic waves -> heat)
+- lines 9288-9299: Coupling type `em_semiconductor_generation` - Photogeneration (electromagnetic waves -> semiconductor)
+- lines 9301-9309: Coupling type `em_solid_optical_force` - Optical force (electromagnetic waves -> solid mechanics)
+- lines 9311-9324: Coupling type `field_transfer` - Field transfer
+- lines 9326-9334: Coupling type `fluid_heat_convection` - Convective heat transport (laminar flow -> heat)
+- lines 9336-9344: Coupling type `heat_em_phase_change` - Phase change (heat -> electromagnetic waves)
+- lines 9346-9354: Coupling type `heat_em_thermo_optic` - Thermo-optic effect (heat -> electromagnetic waves)
+- lines 9356-9364: Coupling type `heat_solid_thermal_strain` - Thermal expansion (heat -> solid mechanics)
+- lines 9366-9374: Coupling type `magnetic_heat_induction` - Induction heating (magnetic fields AC -> heat)
+- lines 9376-9384: Coupling type `magnetic_solid_lorentz_force` - Lorentz force (magnetic fields -> solid mechanics)
+- lines 9386-9399: Coupling type `semiconductor_em_plasma_dispersion` - Free-carrier plasma dispersion (semiconductor -> electromagnetic waves)
+- lines 9401-9410: Coupling type `solid_em_strain_optic` - Strain-optic effect (solid mechanics -> electromagnetic waves)
+- lines 9412-9421: Coupling type `solid_membrane_tension` - Film prestress (solid mechanics -> membrane)
+- lines 9423-9457: Study type `eigenfrequency` - Eigenfrequency
+- lines 9459-9494: Study type `frequency_domain` - Frequency domain
+- lines 9496-9539: Study type `frequency_response` - Frequency response
+- lines 9541-9563: Study type `mode_analysis` - Mode analysis
+- lines 9565-9587: Study type `nonlinear_frequency_domain` - Nonlinear frequency domain
+- lines 9589-9605: Study type `optimization` - Optimization
+- lines 9607-9630: Study type `optomechanics` - Optomechanics
+- lines 9632-9653: Study type `stationary` - Stationary
+- lines 9655-9684: Study type `thermal_noise` - Thermal noise
+- lines 9686-9702: Study type `time_dependent` - Time dependent
+- lines 9704-9772: Templates
+- lines 9774-10012: Results, reports and files
 
 ## Model spec
 
@@ -8651,7 +8652,7 @@ Params (FeatureSpec.params):
 - Backends (SolverDefaultsSpec.backend): gpu, cpu
 - Mesh kinds (MeshSpec.kind): tensor, tetrahedra; refinement indicator fields (when its solver has no error indicator of its own): u_abs
 - Dispersion poles (MaterialSpec.dispersion): not used
-- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, squeeze_film_damping, thermoelastic_damping, electrode, electrode_domain, admittance, optomechanical_coupling
+- Features (topics `solid_mechanics_3d.<feature>`): fixed, roller, displacement, fixed_domain, prescribed_displacement_domain, boundary_load, body_force, temperature_change, solid_probe, frequency_probe, resonance_table, mode_shapes, squeeze_film_damping, thermoelastic_damping, electrode, electrode_domain, admittance, optomechanical_coupling
 
 ### Settings (PhysicsSpec.settings)
 
@@ -9072,6 +9073,18 @@ Vibration modes of the last eigenfrequency study solve, the lowest first on a te
 - Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
 - Mesh kinds (MeshSpec.kind): tensor, tetrahedra
 - Result kind `table`
+
+Params (FeatureSpec.params):
+none
+
+### Feature `solid_mechanics_3d.mode_shapes` - Mode shapes
+
+Complex surface displacement of every resonance of the last eigenfrequency (or optomechanics) solve, tetrahedron mesh only; one result per sweep value (Results.sweep_result). Surface = the faces with exactly one solid window element (element with stiffness: youngs_modulus or c11; solid / void interfaces and the outer box faces of solid elements). Quadratic discretization: nodes = the three vertices and three edge midpoints of each surface face (its P2 dofs), each face split into 4 triangles; linear: the vertices and faces as they are. Triangles counter-clockwise seen from outside the solid. Result 'mode_shapes': nodes (n, 3) m, triangles (m, 3), resonance_number / frequency [Hz] / q_factor (NaN undamped) in the resonance_table row order, displacement_re / _im (r, n, 3) float32 m with the solver normalisation (peak node |u| = 1 m, its largest component real positive; real modes have _im = 0), bloch_k (3,) rad/m (0 off the periodic axes), periodic (3,) 0 / 1, period (3,) = the mesh extent per axis in m and phase_convention: the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)). A piezoelectric potential is not kept. Size about r x n x 24 bytes per value.
+
+- FeatureSpec.type `mode_shapes`; category monitor
+- Selection (FeatureSpec.selection): none (a selection is ignored with a warning)
+- Mesh kinds (MeshSpec.kind): tetrahedra
+- Result kind `mode_shapes`
 
 Params (FeatureSpec.params):
 none
@@ -9672,7 +9685,7 @@ Params (StudySpec.settings):
 
 ## Study type `time_dependent` - Time dependent
 
-Advances every physics in ticks of dt_sync, the smallest dt_limit of the physics (EM: its Courant step); a physics with every = n steps on every n-th tick over n * dt_sync. Couplings are applied after every tick at their own every and flushed at the end of the run, also when it is cancelled. Needs at least one physics that steps in time; snapshots at the output interval plus the final state.
+Advances every physics in ticks of dt_sync, the smallest dt_limit of the physics (EM: its Courant step); a physics with every = n steps on every n-th tick over n * dt_sync. Couplings are applied after every tick at their own every and flushed at the end of the run, also when it is cancelled. Needs at least one physics that steps in time; snapshots at the output interval (or n_snapshots evenly spaced) plus the final state.
 
 - StudySpec.type `time_dependent`; needs a physics that steps in time: yes
 
@@ -9680,7 +9693,9 @@ Params (StudySpec.settings):
 - `duration` (float; unit s; default 1e-13; range (0, inf)) - Duration
   Simulated time span in s; the run stops at the tick nearest the duration (less than half a time step advances nothing). EM runs typically take 100-1000 fs: the pulse (2*t0 = 9/(pi*bandwidth*f0); ricker 8/f0) plus the transit time and the ring-down (validation warns when the duration ends before the longest pulse, plus the domain diagonal * n_max / C0 with a flux, DFT, mode or far-field monitor); transient heat takes ms to s.
 - `output_interval` (float; unit s; default 0; range [0, inf)) - Output interval
-  Time in s between snapshots of the stored fields (study stored_fields, default every output field), from t = 0; 0 stores only the final state. Intermediate snapshots stop once they exceed 1 GB; the final state is always stored. Snapshots hold the native window cells (graded included) up to 250,000 cells, else nearest-cell values on square pixels of max(finest cell, sqrt(window area / 250,000)) (native_shape set): fine features can then be skipped.
+  Time in s between snapshots of the stored fields (study stored_fields, default every output field), from t = 0; 0 = n_snapshots evenly spaced instead. Intermediate snapshots stop once they exceed 1 GB; the final state is always stored. Snapshots hold the native window cells (graded included) up to 250,000 cells, else nearest-cell values on square pixels of max(finest cell, sqrt(window area / 250,000)) (native_shape set): fine features can then be skipped.
+- `n_snapshots` (int; default 20; range [1, inf)) - Number of snapshots
+  With output_interval 0: snapshots at t = 0, duration / (n_snapshots - 1), ..., the final state (n_snapshots in all; 1 = the final state only). Ignored when output_interval > 0. Headless self-test runs store only the final state unless the model sets output_interval or n_snapshots (selftest examples: unless an analytic curve reads a snapshot).
 - `live_update_hz` (float; unit Hz; default 5; range [0, inf)) - Live update rate
   Maximum rate of the live field frames the GUI shows while computing; 0 disables them. Frames never change the results (the headless api.run sets 0).
 - `parity_sectors` (bool; default false) - Parity sectors
@@ -9734,7 +9749,7 @@ The model JSON of each template is in api_templates.md beside this file (its Con
 - `flux_concentrator_needle_ac` - Flux-concentrator needle, AC: Magnetic fields AC, axisymmetric, stationary sweep over the frequency f = 10 Hz .. 30 kHz: the flux_concentrator_needle model (Metglas needle r = 31 um, l = 15 mm, mu_dc 1e5, applied axial field amplitude B_ext = 1e-4 T) with the needle conductivity sigma_needle = 7e5 S/m and magnetic loss mu_dc_loss = loss_tangent mu_dc: eddy currents screen the needle once the skin depth falls below its radius (~1 kHz), so the gain = B_sensor / B_ext (mean |B| over a 31 um disc a gap = 100 um below the tip; EF = 20 log10(gain) dB) drops with frequency. Uses physics magnetic_fields_ac; features magnetic_fields_ac.external_field; study stationary.
 - `needle_3d` - Flux concentrator needle (3D): Magnetostatics (3D, stationary): a 15 mm x 125 um x 25 um Metglas needle (mu_dc 1e5) along z in a uniform axial field B_ext (external_field, 10 x 10 x 35 mm window held at the applied potential), the geometry of Carey et al. 2026 on coarse 25 um cells around the needle and its lower tip (graded by 1.3 to 1 mm, by 1.5 to 2 mm outside). Derived values: gain_h50 = mean |B| / B_ext over a sensor box 50 um below the tip and EF_h50 = 20 log10(gain) against the prolate-spheroid estimate (Eq. 2 with m = l / sqrt(w t)); line curve B_axis: |B| on the needle axis below the tip against Eq. 2. The converged, paper-matched run is experiments/Ben_flux/needle_3d_scalar_potential. Uses physics magnetostatics_3d; features magnetostatics_3d.external_field; study stationary.
 - `heated_chip_stress_3d` - Heated chip stress (3D): Heat + solid mechanics 3D, stationary: a 1 x 1 x 0.5 mm silicon block on a 300 K heat sink (z_lo, also clamped) with a 0.4 mm square chip dissipating 0.8 W in its top 50 um, convection on z_hi; heat_solid_thermal_strain hands the temperature rise to the solid; derived T_max, von_mises_max, u_z_max. Uses physics heat, solid_mechanics_3d; features heat.temperature, heat.convection, heat.heat_source, solid_mechanics_3d.fixed; couplings heat_solid_thermal_strain; study stationary.
-- `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D): Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. Uses physics solid_mechanics_3d; features solid_mechanics_3d.resonance_table; study eigenfrequency.
+- `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D): Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (View in browser on the canvas showing a solid field, or show <run dir> --html: animated modes beside the band diagram). Uses physics solid_mechanics_3d; features solid_mechanics_3d.resonance_table, solid_mechanics_3d.mode_shapes; study eigenfrequency.
 - `heated_waveguide_stress` - Heated waveguide stress: Heat + solid mechanics (plane strain), stationary: cross-section of a 0.48 x 0.22 um silicon waveguide in silica under a 2 x 0.2 um gold heater (P_heater = 20 W/m), substrate y_lo held at 293.15 K and clamped, rollers on the sides; heat_solid_thermal_strain hands the temperature rise (~5 K at the core) to the solid; derived T_core, stress_xx_core, stress_yy_core, von_mises_max. Uses physics heat, solid_mechanics; features heat.heat_source, heat.temperature, heat.convection, solid_mechanics.fixed, solid_mechanics.roller; couplings heat_solid_thermal_strain; study stationary.
 - `silicon_beam_thermoelastic_damping` - Silicon beam thermoelastic damping: Solid mechanics (plane stress), eigenfrequency: half of a simply supported library-silicon beam (h = 2 um, L = 80 um, mirror roller at mid-span), its symmetric flexural modes with a resonance table and the thermoelastic_damping table (Q_TED per mode, T0 293.15 K); derived f_1 (1.19 MHz) and Q_ted_1 (1.3e5: far below the Debye peak, omega tau ~0.04; the 3rd and 5th flexural modes at 10.7 / 29 MHz reach 1.7e4 / 1.0e4, the peak Delta / 2 ~ 1e-4 sits near omega tau = 1; a lower k_beam or a thicker beam moves the fundamental towards it). Uses physics solid_mechanics; features solid_mechanics.displacement, solid_mechanics.roller, solid_mechanics.resonance_table, solid_mechanics.thermoelastic_damping; study eigenfrequency.
 - `solid_bloch_band_diagram` - Phononic crystal band diagram (2D): Solid mechanics (2D, plane strain) on a quadratic triangle mesh: one unit cell (a = 1 um) of a square lattice of circular holes (radius 0.35 a) in silicon, periodic along x and y with bloch_kx = k_fraction pi / a swept over 0-1 (Gamma-X) and bloch_ky 0; an eigenfrequency study per k lists the 8 bands nearest 1 GHz (resonance_table; the target > 0 drops the two rigid translations at Gamma). The bands per k form the in-plane band diagram; gaps between them are the phononic band gaps of the lattice. Uses physics solid_mechanics; features solid_mechanics.resonance_table; study eigenfrequency.
@@ -9770,7 +9785,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - check MODEL.json [--out DIR] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--max-wall-time S] [--json]: CPU-only validation, mesh, memory and run-time estimates, time step and step count -> check.json; --max-wall-time S warns when even the shortest estimated run time exceeds S seconds.
 - profile [--backend gpu|cpu] [--quick]: measure this machine for the run-time estimates (~30 s, --quick ~5 s with coarser curves) -> time_profiles/time_profile_<backend>.json next to the package (OPEN_SOL_PROFILE_DIR overrides the folder); default every available backend (cpu, and gpu when a CUDA device answers); prints each task's wall time and the stored profile's.
 - run MODEL.json [--out DIR] [--figures] [--max-wall-time S] [--no-arrays] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--json]: build and run on the model's backend (GPU or CPU) -> summary.json, log.txt, results.npz (not with --no-arrays), model.json (the model as given) and figures/*.png (with --figures: <key>.png per saved field and feature result, derived_<plot>.png per derived curve plot, <result>_vs_<column or row>.png per table x_column of its curves, curve_<name>.png per line curve, scene_3d.png for a 3D model: perspective picture of the objects with the first saved field on the x, y and z cut planes through the window middle); --max-wall-time stops cleanly with status timeout and partial results.
-- show PATH [--out DIR] [--figures] [--series NAME] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--json]: outline and check counts of a model file, or the summary of a results directory (--figures re-renders its figures into <out>/figures/*.png, by default the run directory's figures/, a sweep also its sweep_*.png overlays; --series NAME draws only that series of xy results and sweep overlays; a 3D run directory draws scene_3d.png with its saved cut planes: the mid-height z cut and the stored cuts of the last snapshot) -> show.json. A 3D model file with --figures gets <out>/figures/scene_3d.png, the objects only (CPU, no run; api.scene_figure).
+- show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--what NAME] [--no-geometry] [--set NAME=EXPR ...] [--backend auto|gpu|cpu] [--json]: outline and check counts of a model file, or the summary of a results directory (--figures re-renders its figures into <out>/figures/*.png, by default the run directory's figures/, a sweep also its sweep_*.png overlays; --series NAME draws only that series of xy results and sweep overlays; a 3D run directory draws scene_3d.png with its saved cut planes: the mid-height z cut and the stored cuts of the last snapshot) -> show.json. A 3D model file with --figures gets <out>/figures/scene_3d.png, the objects only (CPU, no run; api.scene_figure). --html [FILE] (results directory) writes the self-contained web page of --what NAME (Results.export_html: a field, a dft_fields or a mode_shapes result; default the only mode_shapes result) to <out>/<model stem>_<what>.html (_modes.html without --what; a field page carries the model objects, shown or hidden on the page, unless --no-geometry); exit 1 when there is nothing to show.
 - --set NAME=EXPR (repeatable) replaces the expression of the model parameter NAME for this command only (the file is not changed; run records it in model.json), e.g. --set P_in=2e3 --set "w=450*nm"; an unknown NAME is a model error at the parameters node. --backend (check, run, show) overrides the model's solver_defaults.backend for this command only (run records it in model.json).
 - mesh-study [PART ...] [--out DIR] [--case CASE ...] [--fine] [--force | --retry-failed] [--max-cells N] [--max-wall-time S]: the mesh study (parts per_physics, audit, prototypes (CPU), accuracy, pcg, line_block (GPU), analyse; default all, in this order) -> DIR (default ./mesh_study_out) records/, runs/, tables/, figures/ and mesh_study_report.json; recorded variants are skipped unless --force (all) or --retry-failed (those that did not complete); --max-cells skips larger variants (default 2e7); exit 1 when a part raised.
 - selftest [NAME ...] [--heavy | --all] [--out DIR] [--reset] [--json] [--list]: the built-in checks, then the registered analytic cases (the named ones, heavy or not; else the non-heavy ones, with --heavy only the heavy ones, with --all every one) -> selftest_report_light.json, selftest_report_heavy.json (--all: both) or selftest_report_named.json (names given), plus one <case>/<run>/ run directory per run; a run rewrites only its own report files. A case is heavy when it took >= 5 s (--list marks them). --all (no NAMEs) runs everything: every case with its gpu runs and variants (with a usable GPU), then the --examples run (each example once, on its own backend) -> also selftest_report_analytic.json and examples/ run directories; exit 1 unless the cases and the examples passed.
@@ -9819,7 +9834,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - curve_error {name: {max, rms, n_points}} of every analytic curve, evaluated at the simulated samples (a feature result: its t / iteration, wavelength, angle (far field: every wavelength, both normalised to their peak), x or table x_column; a line: the containing-cell profile points, the analytic at the sampled cell centres; sweep: the swept values against its series quantity) on the finite points: max = max |simulated - analytic| / ptp(analytic) (the analytic range: an absolute temperature against its rise; max |analytic| for a flat curve, absolute when that is 0), rms likewise; target sweep: |simulated - analytic| / |analytic| per swept value (curves spanning decades). A curve that cannot be compared (series fft or ratio, series "" with several candidates, no result) has max and rms NaN, n_points 0 and a note.
 - derived_curves {name: {plot, label, unit, x_label, x_unit, x [abscissa values], y [values], with a reference also y_reference and curve_error {max, rms, n_points (, note)}} or {plot, error}} of every derived curve over the final results (a sweep: its last value).
 - fixed_point {converged, iterations, relative_change, tolerance} of the coupled stationary loop (stationary; frequency_domain: the background solve, a coupled wavelength scan: over all wavelengths), or null (time_dependent, or no physics loop: a single pass). A run that did not converge keeps status completed (partial for a sweep with failed values) and says so in message; its derived values and results are those of the last iteration.
-- stored_fields ["physics.component"], field_meshes {"physics.component": name of the mesh the field lives on}, meshes [{name, kind (tensor | triangles), shape (cells incl. padding, null on triangles), elements (triangles, else null), cells, window_cells, dx_min, dx_max (m: physical cell lengths, element edges), physics [names], ledger [[build stage, bytes] of the build memory ledger lines of this mesh]} per built mesh], stored_cuts [[axis, cell-centre position m] of the 3D stored cut planes every snapshot holds], fields {key: field digest}, results {"physics.feature": result digest, or {kind, error}}, snapshot_times [s], snapshot_labels [text or null per snapshot: "lambda = <nm> nm" for frequency_domain, "mode <k>: n_eff = <value>" for mode_analysis, "resonance <k>: lambda = <nm> nm, Q = <value>" for eigenfrequency (solid mechanics: "resonance <k>: f = <value> Hz"; optomechanics: "mechanical mode <k>: f = <value> Hz, g0 / 2 pi = <value> Hz"; mirror faces add the parity: "mode <k> [x_lo symmetric]: ..."), "iteration <k>: J = <value>" per accepted iteration and "final: J = <value>" for optimization, the mode labels then "thermal noise" for thermal_noise, "channel <name>: lambda = <nm> nm" for nonlinear_frequency_domain, "f = <value> Hz" for frequency_response, null for time snapshots; parity sectors: "<label> [<sector>]" and the combined ones], live_snapshot (index of the snapshot holding the state Results.field reads when that is not the last: resonance 1 of eigenfrequency / optomechanics, mode_index of mode_analysis; else null), wavelengths [m] (frequency_domain only: the solved list in solve order, one snapshot each: shorter than requested after a cancel or timeout), harmonic_pulse (frequency_domain only: null without an em_fdtd_* physics, else {steps, simulated_time [s], stop_reason decayed | max_duration | cancelled, final_energy_ratio (window field energy / its peak at the end), source_end [s]} of the harmonic FDTD pulse), files {summary, log, arrays (results.npz or null), meshes (meshes.npz or null), model (model.json or null), figures ["figures/<name>.png"]}.
+- stored_fields ["physics.component"], field_meshes {"physics.component": name of the mesh the field lives on}, meshes [{name, kind (tensor | triangles), shape (cells incl. padding, null on triangles), elements (triangles, else null), cells, window_cells, dx_min, dx_max (m: physical cell lengths, element edges), physics [names], ledger [[build stage, bytes] of the build memory ledger lines of this mesh]} per built mesh], stored_cuts [[axis, cell-centre position m] of the 3D stored cut planes every snapshot holds], fields {key: field digest}, results {"physics.feature": result digest, or {kind, error}}, snapshot_times [s], snapshot_labels [text or null per snapshot: "lambda = <nm> nm" for frequency_domain, "mode <k>: n_eff = <value>" for mode_analysis, "resonance <k>: lambda = <nm> nm, Q = <value>" for eigenfrequency (solid mechanics: "resonance <k>: f = <value> Hz"; optomechanics: "mechanical mode <k>: f = <value> Hz, g0 / 2 pi = <value> Hz"; mirror faces add the parity: "mode <k> [x_lo symmetric]: ..."), "iteration <k>: J = <value>" per accepted iteration and "final: J = <value>" for optimization, the mode labels then "thermal noise" for thermal_noise, "channel <name>: lambda = <nm> nm" for nonlinear_frequency_domain, "f = <value> Hz" for frequency_response, null for time snapshots; parity sectors: "<label> [<sector>]" and the combined ones], live_snapshot (index of the snapshot holding the state Results.field reads when that is not the last: resonance 1 of eigenfrequency / optomechanics, mode_index of mode_analysis; else null), snapshot_solutions (per snapshot the physics whose every field and 3D cut the live GUI session renders from a kept solution; empty lists headless), wavelengths [m] (frequency_domain only: the solved list in solve order, one snapshot each: shorter than requested after a cancel or timeout), harmonic_pulse (frequency_domain only: null without an em_fdtd_* physics, else {steps, simulated_time [s], stop_reason decayed | max_duration | cancelled, final_energy_ratio (window field energy / its peak at the end), source_end [s]} of the harmonic FDTD pulse), files {summary, log, arrays (results.npz or null), meshes (meshes.npz or null), model (model.json or null), figures ["figures/<name>.png"]}.
 - status failed: see message (an out-of-GPU-memory failure says so and names the budget and the remedies), issues, errors and traceback; timeout: max_wall_time was reached and the results are partial; partial: a sweep finished but some values failed (message "k/n sweep values failed ...", sweep.failed; their derived values are NaN and their results empty).
 - A digest that cannot be computed is {error: "Type: message"}. A partial sweep whose last value failed keeps the sweep table but has empty fields and results.
 - When writing the report itself fails, the status is failed (exit 1) and summary.json holds only open_sol_version, status, message ("post-run failure: Type: message; the study ended <its status>"), errors, traceback and files; when even that cannot be written, Results.summary() holds it with files null and the reason in errors.
@@ -9856,6 +9871,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - far_field: {kind, quantity, unit, n_wavelengths, n_angles, wavelengths, power_max [per wavelength: the largest finite power], angle_at_max_deg [per wavelength]}.
 - xy: {kind, x_label, x_unit, n_points, x_min, x_max, series {name: {unit, min, max, x_at_max}}}; statistics over the finite values only (NaN marks a value that could not be computed).
 - table: {kind, columns, units, n_rows, rows [the first 50 rows]}.
+- mode_shapes: {kind, n_nodes, n_triangles, n_resonances, frequencies [Hz per mode, resonance order], bloch_k [rad/m per axis]}.
 - Values that cannot be computed (empty arrays, no finite value) are null.
 
 ### results.npz
@@ -9882,8 +9898,8 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - check(spec, out_dir=None, parameters=None, memory_budget=None, host_budget=None, backend=None, max_wall_time=None) -> the check.json dict (also written with out_dir); memory_budget [bytes] (e.g. a run summary build.gpu_budget) adds the GPU memory check, host_budget [bytes] (e.g. open_sol.core.host_memory.available_bytes()) the host RAM check (an estimate over a budget on size-based element counts: check builds the triangle / tetrahedron meshes first and reports on their counts, as a build judges); backend ('auto' | 'gpu' | 'cpu') overrides solver_defaults.backend; max_wall_time [s] adds a warning when even the shortest estimated run time exceeds it.
 - profile_machine(backend=None, quick=False, progress=print) -> {key, date, quick, text, path}: measures and stores the machine profile of the run-time estimates (CLI profile; backend None = the default backend).
 - scene_figure(spec, path, parameters=None, highlight=(), z_stretch=1.0, view=None) -> path: CPU-only perspective picture of a 3D model (.png / .pdf / .svg by the suffix; ValueError in 2D) as the GUI 3D preview draws it: translucent objects in their material colours, points / lines as markers, highlight = entity names drawn in the highlight colour, z_stretch scales the box height only (thin layers), view = (elevation, azimuth) in degrees; objects that do not resolve are left out with a RuntimeWarning.
-- run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, save_arrays=True, parameters=None, backend=None) -> Results: blocking, runs on the calling thread on the model's backend (backend 'auto' | 'gpu' | 'cpu' overrides solver_defaults.backend, kept in model.json); progress(event) receives every event except live frames. With out_dir it always writes summary.json and log.txt and never raises (except KeyboardInterrupt); without out_dir a failed build re-raises its exception (ModelError with .issues), a failed run raises RunError(message, traceback), and a timeout returns normally. progress=True prints to stdout through ProgressPrinter(stream=None, period=2.0) (the CLI printer: build, log and sweep lines, Progress lines at most every period s). Events, in open_sol.api: LogEvent(level, message), SweepStep(index (0-based), count, parameter, value), Built(summary: BuildSummary with nx, ny, n_cells, dt, build_seconds, ...), BuildFailed(message, traceback, issues, out_of_memory, build_memory), StudyStarted(), Progress(fraction, t, t_end [s], tick, wall_elapsed, ticks_per_second, message, tick_unit 'step' | 'iteration' | 'wavelength' | 'mode solve' | 'eigen solve' | 'factorisation' | 'channel solve', stages (stage names of the run in order, e.g. Background solve, Wavelength solves), stage_index (0-based), stage_fraction, stage_elapsed [s]; fraction and wall_elapsed cover the whole run, each stage an equal share), SweepValueDone(index, count, parameter, value, sweep: a copy of the study sweep table so far, after each computed or failed sweep value), StudyFinished(summary dict), StudyFailed(message, traceback, out_of_memory, session_live, build_memory). build_memory: the build ledger record (summary.json failed_build_memory layout) or null.
-- Results: status, spec, out_dir, session (live only), build_summary, log, is_live; summary() -> dict; field_names(), result_names(); convergence() -> copy of the mesh refinement report of a StudySpec.adaptation run (KeyError without one); field(name, physics=None, plane=None, unfold=False, native=False) -> FieldData (unfold=True: mirrored over the model's x / y mirror faces, ValueError for a field without a parity; values float32 (nx, ny) on the native window cells, x_centers / y_centers float64 in m, extent, info, time, plane, axes; 3D models: plane=(axis, position [m]) picks the cut normal to axis 'x' | 'y' | 'z' (values along axes ('y', 'z') / ('x', 'z') / ('x', 'y'), x_centers / y_centers and extent along them), live Results only, default and saved fields the mid-height z cut; polar / spherical domains: a containing-cell image over the sector's box, NaN outside, native_shape set; native=True (live only) gives the window cells instead: axes ('r', 'phi' | 'theta'), x_centers = r in m, y_centers = the angle in rad, extent (r_min, r_max, angle_min, angle_max), mapped_centres = the drawing-plane (x, y) centres in m, float64 (nx, ny) each); volume(name, physics=None, max_bytes=2**30) -> VolumeData of a 3D field (values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz (values, x_centers, y_centers, z_centers, metadata kind volume); result(physics, feature, **options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field (physics.component or a unique component) or a feature result (physics.feature; series: only that series of an xy result); scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> path of a 3D run: the api scene_figure picture of its model (built parameters) with field on cut planes in one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default the middle window cell on x, y and z; closed / loaded: the saved mid-height z cut plus the stored cuts of a last snapshot at the same time); derived_curves() -> [(plot, xy result or None, {curve name: error text})] of the derived curves over the final results; save(path, save_arrays=True); close(copy_to_host=True); Results.load(path).
+- run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, save_arrays=True, parameters=None, backend=None, snapshots=True) -> Results: blocking, runs on the calling thread on the model's backend (backend 'auto' | 'gpu' | 'cpu' overrides solver_defaults.backend, kept in model.json); snapshots=False stores only the final state (time_dependent: output_interval 0, n_snapshots 1; model.json keeps the model's values); progress(event) receives every event except live frames. With out_dir it always writes summary.json and log.txt and never raises (except KeyboardInterrupt); without out_dir a failed build re-raises its exception (ModelError with .issues), a failed run raises RunError(message, traceback), and a timeout returns normally. progress=True prints to stdout through ProgressPrinter(stream=None, period=2.0) (the CLI printer: build, log and sweep lines, Progress lines at most every period s). Events, in open_sol.api: LogEvent(level, message), SweepStep(index (0-based), count, parameter, value), Built(summary: BuildSummary with nx, ny, n_cells, dt, build_seconds, ...), BuildFailed(message, traceback, issues, out_of_memory, build_memory), StudyStarted(), Progress(fraction, t, t_end [s], tick, wall_elapsed, ticks_per_second, message, tick_unit 'step' | 'iteration' | 'wavelength' | 'mode solve' | 'eigen solve' | 'factorisation' | 'channel solve', stages (stage names of the run in order, e.g. Background solve, Wavelength solves), stage_index (0-based), stage_fraction, stage_elapsed [s]; fraction and wall_elapsed cover the whole run, each stage an equal share), SweepValueDone(index, count, parameter, value, sweep: a copy of the study sweep table so far, after each computed or failed sweep value), StudyFinished(summary dict), StudyFailed(message, traceback, out_of_memory, session_live, build_memory). build_memory: the build ledger record (summary.json failed_build_memory layout) or null.
+- Results: status, spec, out_dir, session (live only), build_summary, log, is_live; summary() -> dict; field_names(), result_names(); convergence() -> copy of the mesh refinement report of a StudySpec.adaptation run (KeyError without one); field(name, physics=None, plane=None, unfold=False, native=False) -> FieldData (unfold=True: mirrored over the model's x / y mirror faces, ValueError for a field without a parity; values float32 (nx, ny) on the native window cells, x_centers / y_centers float64 in m, extent, info, time, plane, axes; 3D models: plane=(axis, position [m]) picks the cut normal to axis 'x' | 'y' | 'z' (values along axes ('y', 'z') / ('x', 'z') / ('x', 'y'), x_centers / y_centers and extent along them), live Results only, default and saved fields the mid-height z cut; polar / spherical domains: a containing-cell image over the sector's box, NaN outside, native_shape set; native=True (live only) gives the window cells instead: axes ('r', 'phi' | 'theta'), x_centers = r in m, y_centers = the angle in rad, extent (r_min, r_max, angle_min, angle_max), mapped_centres = the drawing-plane (x, y) centres in m, float64 (nx, ny) each); volume(name, physics=None, max_bytes=2**30) -> VolumeData of a 3D field (values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz (values, x_centers, y_centers, z_centers, metadata kind volume); export_html(path, what=None, physics=None, title=None, geometry=True, planes=None) -> the written .html path: a self-contained web page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG and video export); what = a field ('physics.component' or a unique component; physics narrows it): every stored snapshot holding it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current / saved state, a 2D map (optional relief) or a 3D field on its cut planes in place (live state: an x, y and z cut, each at a mirror plane of the field's physics (the window cell next to it, drawn on the plane), else through the middle of the material objects that do not span the window on that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and the stored_cuts; planes [(axis, position m)] instead: the live state on exactly those planes, a snapshot its held cut on each axis nearest the position, ValueError for 2D models or an axis no snapshot holds when not live); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, else the swept parameter); None = the only mode_shapes result; geometry (field and dft_fields pages; a 3D DFT map excepted): the model objects at the built parameters, their outlines on every map / cut plane and in 3D their edges and see-through surfaces, switched on the page (Objects; ValueError without the model spec: pass geometry=False); a model with mirror planes (field pages, 2D DFT maps): the page also draws the field's mirror images (signs by its parity) and the objects', the whole structure, switched by its Mirror button; large data is thinned (grid stride, evenly kept frames, named in the page subtitle); other result kinds raise ValueError (figures); live, closed or loaded alike; result(physics, feature, **options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds freq_index and intensity); figure(what, path, title='', freq_index=None, series=None) -> PNG path of a field (physics.component or a unique component) or a feature result (physics.feature; series: only that series of an xy result); scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> path of a 3D run: the api scene_figure picture of its model (built parameters) with field on cut planes in one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default an x, y and z cut through the structure as export_html; closed / loaded: the saved mid-height z cut plus the stored cuts of a last snapshot at the same time); derived_curves() -> [(plot, xy result or None, {curve name: error text})] of the derived curves over the final results; save(path, save_arrays=True); close(copy_to_host=True); Results.load(path).
 - Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] (frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / y_centers set, graded meshes included) up to 250,000 window cells, else nearest-cell resampled on a uniform grid over extent (x_centers None, native_shape set); 3D: plane None = the mid-height z cut, (axis, position [m]) = the StudySpec.stored_cuts plane on that axis nearest position, an int = that stored cut; sweep_result(physics, feature) or sweep_result('physics.feature') -> [result dict, or None for a failed value] in summary()['sweep']['values'] order; sweep_xy(physics, feature=None, column='frequency', sort=True) -> 'xy' result of a per-value 'table' result vs the swept parameter, series '<column>_<k>' = the k-th smallest value of that column per sweep value (sort=False: the k-th row), NaN where missing (e.g. the bands of a resonance_monitor over a Bloch k sweep); sweep() -> copy of the sweep table {parameter, values, derived, reference, error, converged, failed, derived_series}; sweep_field(index, name, snapshot=-1, physics=None, plane=None) -> FieldData of a kept snapshot of sweep value index (keep_fields; snapshot / name / plane as snapshot_field); sweep_figure(quantity, path, series=None, title='') -> PNG of a sweep: quantity 'physics.feature' = one curve of that result per swept value (legend '<parameter> = <value>'; series picks an xy series or a flux_spectrum power / power_per_cw; far fields in dB at their first wavelength), 'derived' = every derived value vs the swept parameter, 'derived_series:<name>' = that derived value along the study axis per swept value (run --figures writes figures/sweep_derived.png, sweep_<key>.png and sweep_series_<name>.png of a sweep, derived_series.png of a run with a derived series); sector_result(physics, feature) -> [result dict or None per parity sector] in summary()['parity_sectors']['labels'] order (combine quadratic totals, e.g. flux power, with open_sol.core.mirror.combine_sector_totals, far-field patterns per angle with open_sol.core.mirror.combine_sector_far_fields: the mean of the complex amplitude_re / amplitude_im of the far_field results, power = |mean|^2; a sweep: the last value's sectors); sector_result(physics, feature, combined=True) -> the stored result of the drawn source alone (driven studies where every sector ran: far_field combined per angle, flux_spectrum power / power_per_cw as quadratic totals when its line / plane / box reaches every mirror plane, i.e. mirror_factor = 2^k; entry combined_sectors = 2^k), KeyError otherwise.
 - Non-finite numbers in summary() derived, derived_reference, derived_error, sweep derived / reference / error, curve_error max / rms (sweep too) and fixed_point relative_change, in table rows and in the scalar entries of result dicts (e.g. resonance_monitor start_time) are floats in every state (Results.load converts the JSON strings back); digest statistics stay "nan" / "inf" strings.
 - export_field(field_data, path) and export_result(result, path) (open_sol, from open_sol.io) write a FieldData / result dict as .npz or .csv (field metadata: plane of a 3D cut, axes, resampled / native_shape; a native polar / spherical field adds x_mapped / y_mapped arrays (.npz) or x / y columns after r and the angle (.csv)); export_volume(volume_data, path) a VolumeData as .npz only.
@@ -9891,6 +9907,7 @@ Registered selftest cases are not listed here: describe('selftests') (python -m 
 - selftest(out_dir=None, names=None, progress=None, heavy=False, reset=False) -> the selftest report dict (+ report_files: the files written to out_dir); heavy False runs the light registered cases, True the heavy ones (>= 5 s each), None everything (all cases, then selftest_examples with backend cpu and gpu; progress also gets the example records); names overrides it. With out_dir, unchanged passing cases are reused from out_dir/selftest_cache.json (CLI selftest Reuse); reset=True reruns them. progress(dict) gets events and records: {event: begin, phase, n_run, n_reused, n_total} per phase, {event: start, index, n_total, name, last_wall_time (s or None), remaining (s, summed last run times of it and every later test), n_untimed, time_estimate ({seconds_low, seconds_guess, seconds_high (build + study + output), phases {build, study, output: the same keys}, n_runs, n_estimated, message, not_estimated} of its runs on the stored machine profile, or None)} before each test, then its case / example record (time_estimate: {before, n_checked_runs, split {total, build, study, output, other: {seconds, estimate}, study_work_at_build}}: study estimated at the runs' measured counts, its counter-timed work done at build (e.g. a factorisation in finalize; study_work_at_build s) moved from build to study seconds, build / output the guesses before, other (checks, run set-up) never estimated; {event: skipped, name, message} for a case this machine cannot run).
 - selftest_examples(out_dir=None, names=None, progress=None, reset=False) (open_sol.api) -> the selftest_report_analytic.json dict (written with out_dir; each example once, on its own backend, examples/ run directories); progress gets the events of selftest and each example record; reuse and reset as selftest.
 - save_session_run(directory, spec, session, build_summary, study_summary, log_entries, model_file=None, save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].
+- export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None, physics=None, geometry=True, planes=None) -> the written path: Results.export_html of such a live session (the GUI View in browser buttons, canvas and Results Field tab: planes = the shown 3D cut); the session stays open.
 - Never mix api.run with the GUI worker in one process.
 
 ### GPU memory
@@ -9975,3 +9992,21 @@ Produced by: drift_diffusion.ohmic_contact, drift_diffusion.gate, elastic_waves.
 - `columns`: column names, list of str
 - `units`: unit of each column, list of str ('1' = dimensionless, '' = none)
 - `rows`: one list per row with one value per column: number, str, bool or null; non-finite numbers are floats, also in a loaded run (results.npz metadata stores them as "nan", "inf", "-inf")
+
+#### Result kind `mode_shapes`
+
+Produced by: solid_mechanics_3d.mode_shapes
+
+- `kind`: 'mode_shapes', str
+- `nodes`: surface node positions, float64 (n, 3), m: the vertices (and, quadratic elements, edge midpoints) of the boundary faces of the solid, numbered compactly
+- `triangles`: surface triangles, int32 (m, 3), indices into nodes, counter-clockwise seen from outside the solid (quadratic elements: each face split into 4 at its edge midpoints)
+- `resonance_number`: 1-based resonance of each mode, int32 (r,), in the resonance_table row order
+- `frequency`: Re f of each mode, float64 (r,), Hz
+- `q_factor`: quality factor Re f / (2 Im f) of each mode, float64 (r,), 1; NaN for an undamped mode
+- `displacement_re`: real part of the complex nodal displacement, float32 (r, n, 3) (components x, y, z), m, as the solver normalises the mode
+- `displacement_im`: imaginary part of the same, float32 (r, n, 3), m (0 for a real mode)
+- `bloch_k`: Bloch wavenumber per axis (x, y, z) of the solve, float64 (3,), rad/m; 0 off the periodic axes
+- `periodic`: 1 per Bloch-periodic axis, else 0, int8 (3,)
+- `period`: cell length L per axis (the mesh extent), float64 (3,), m
+- `phase_convention`: Bloch phase and time convention of the displacement, str, e.g. 'u(x + L) = u(x) exp(-j k L), time exp(+j omega t)'
+- `unit`: unit of nodes and the displacement, str ('m')

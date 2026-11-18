@@ -12,23 +12,23 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/io/: lines 195-199
 - open_sol/materials/: lines 201-218
 - open_sol/mesh_study/: lines 220-230
-- open_sol/model/: lines 232-300
-- open_sol/physics/: lines 302-304
-- open_sol/physics/acoustics/: lines 306-324
-- open_sol/physics/em/: lines 326-439
-- open_sol/physics/em/solvers/: lines 441-463
-- open_sol/physics/em3d/: lines 465-501
-- open_sol/physics/eme/: lines 503-520
-- open_sol/physics/fluid/: lines 522-533
-- open_sol/physics/heat/: lines 535-560
-- open_sol/physics/magnetic/: lines 562-592
-- open_sol/physics/mechanics/: lines 594-678
-- open_sol/physics/membrane/: lines 680-698
-- open_sol/physics/nlfd/: lines 700-719
-- open_sol/physics/potential/: lines 721-738
-- open_sol/physics/semiconductor/: lines 740-753
-- open_sol/solvers/: lines 755-770
-- open_sol/viz/: lines 772-779
+- open_sol/model/: lines 232-301
+- open_sol/physics/: lines 303-305
+- open_sol/physics/acoustics/: lines 307-325
+- open_sol/physics/em/: lines 327-440
+- open_sol/physics/em/solvers/: lines 442-464
+- open_sol/physics/em3d/: lines 466-502
+- open_sol/physics/eme/: lines 504-521
+- open_sol/physics/fluid/: lines 523-534
+- open_sol/physics/heat/: lines 536-561
+- open_sol/physics/magnetic/: lines 563-593
+- open_sol/physics/mechanics/: lines 595-680
+- open_sol/physics/membrane/: lines 682-700
+- open_sol/physics/nlfd/: lines 702-721
+- open_sol/physics/potential/: lines 723-740
+- open_sol/physics/semiconductor/: lines 742-755
+- open_sol/solvers/: lines 757-772
+- open_sol/viz/: lines 774-783
 
 ## open_sol/
 
@@ -252,7 +252,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `mesh_refinement.py`: Refined MeshSpecs of the S7.7 refinement levels (CPU, no GPU work): a mesh frozen to explicit numeric sizes, the 'uniform' sequence (every size x factor), the 'adaptive' tensor bands from marked indicator cells and the adaptive triangle ...
 - `mesh_transfer.py`: S7.2 grid transfers between the meshes of one build: the transfer factory (tensor <-> tensor: core.grid_transfer; a triangle mesh: fem.transfer through TriangleTransfer, mesh plan stage T2) and the rule of where a cross-mesh coupling's ...
 - `meshing.py`: Mesh planning from a ModelSpec, per mesh (S7.2: ModelSpec.meshes, PhysicsSpec.mesh): merged domain requirements of the physics on a mesh, CPU mesh estimates (no GPU work) and the Domain
-- `scene_3d.py`: 3D preview scene of a 3D model (view_3d C; numpy only, GUI-thread safe): surface faces of every domain object in its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there).
+- `scene_3d.py`: 3D preview scene of a 3D model (view_3d C; numpy only, GUI-thread safe): surface faces of every domain object in its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there)
 - `schema.py`: Self-describing parameter / feature / physics / coupling / study types, templates, selftest cases and the discovered type registry.
 - `selftest_cache.py`: Selftest reuse cache (selftest_cache.json in the report directory): a case that passed or an example that ran to a verdict is reused, not rerun, while every package code unit (top-level function, class, a file's module-level code) its last ...
 - `selftest_examples.py`: Analytic example check (selftest --examples, CPU): per-example records of the derived-value, analytic-curve and derived-curve errors against their tolerances, flags and the ranked report; api.selftest_examples runs the examples.
@@ -270,6 +270,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_line.py`: Self-tests of 1D models (symmetry plan 2.20, DomainSpec.size_y null): a heated two-layer slab / cylinder / sphere and a two-dielectric slab / coax / spherical capacitor against the exact discrete chains and their closed forms, plus the ...
 - `selftests_mesh.py`: CPU self-tests of the mesh spec: the S7.1 tensor-grid options (anisotropic refinements, coordinate bands, per-axis max_ratio, custom edges / segment profiles (2D and z), outer grading) and the S7.2 / S7.5 / S7.7 spec (named meshes per ...
 - `selftests_per_mesh.py`: Per-physics mesh Session / results self-test (S7.2, mesh plan stage P3): the currents strip of coupling/selftests with heat on its own coarse mesh (cpu run): fields and snapshots on their own meshes, derived values per mesh (D3) and across ...
+- `selftests_snapshot_solutions.py`: Snapshot solutions self-test (GUI runs: RunControl.keep_solutions): the em_fdtd_3d dipole template with snapshots every 10 fs keeps a solution per snapshot, a restored snapshot renders its stored field bit for bit, an unstored field on a ...
 - `selftests_subpixel.py`: Self-tests of subpixel smoothing (igor 1.5): interface geometry, the averaged eps of the FDTD / FDFD / em_modes / em_fdtd_3d engines and of the mode ports (builds only, on the cpu backend and the gpu, cpu vs gpu), and the translation ...
 - `selftests_sweep.py`: Sweep self-tests: the absorbing strip of coupling/selftests as a coupled frequency_domain run against its stationary twin, a two-power sweep of it (derived series, kept fields), the warm-started load sweep of a nonlinear tetrahedral string ...
 - `selftests_symmetry_check.py`: Self-test of the symmetry check (symmetry 2.7): validate warns exactly for geometry drawn asymmetrically beyond a mirror plane or the (r, z) axis (2D lo / hi faces, axisymmetric heat, a 3D z mirror)
@@ -613,6 +614,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `material_params.py`: Material property Params shared verbatim by solid_mechanics and elastic_waves (one help text per name: the library youngs_modulus / poisson_ratio / photoelastic data serve both); definition-layer module (imports model.schema).
 - `materials.py`: Material vocabulary of the solid (2D plane strain and 3D): Young's modulus, Poisson ratio, the anisotropic c_ij (2D ten, 3D 21), the piezoelectric e and clamped permittivity (2D in-plane, 3D full), the thermal expansion arrays (the ...
 - `modal.py`: Vibration modes (eigenfrequencies) K u = omega^2 M u on the free dofs, host numpy / scipy: shift-invert Lanczos of an assembled host pencil about the target (the 'eigen' role: SuperLU, or cuDSS LDL^T on the GPU), or matrix-free at sigma = ...
+- `mode_shapes.py`: Surface mode shapes of the tetrahedra solid (feature mode_shapes, result kind 'mode_shapes'): the boundary triangles of the solid window elements at the displacement's Lagrange resolution and the complex nodal displacement of every ...
 - `multigrid3d.py`: Geometric multigrid V-cycle preconditioner of the matrix-free 3D brick elasticity (ElasticSystem3D, speed plan A2): 2:1 coarsened tensor levels on kernels3d.BrickKernels, separable trilinear transfers, Chebyshev block-Jacobi smoothing and ...
 - `nonlinear_start.py`: Start states of the total-Lagrangian Newton of the nonlinear solids (2D triangles, 3D tetrahedra): a sweep seed of another build, the last converged state of the same assembly or u = 0, the load ramp from that state, and the cold-ramp ...
 - `optical_force.py`: Time-averaged optical (Maxwell-stress) force density of an em_fdfd_ez solution on the solid: f = -(eps0 / 4) |E_z|^2 grad eps_r (peak phasor, non-magnetic, no electrostriction), integrated per cell face and handed to the solid cells.
@@ -774,6 +776,8 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `__init__.py`: Visualization package: re-exports Visualizer, plot_field_array (pyplot-free Figures) and the PNG writers save_field_figure / save_result_figure.
 - `common.py`: numpy-only plot helpers shared by viz and the GUI (no matplotlib, no Qt): axis units, colour limits, safe ratios, dB normalisation, the probe FFT, line profiles of native fields, the line sets of triangle meshes and plane cuts of ...
 - `curve_figure.py`: Article-quality export of a 2D curve plot (pyplot-free matplotlib Figure): PlotStyle (fonts, ticks, line widths, legend; the GUI preview follows it on screen) and save_curve_figure of plain curve data at a given physical size, optionally ...
+- `field_viewer.py`: Self-contained HTML field viewer: scalar fields on 2D maps or 3D cut planes, turned and coloured in the browser.
+- `mode_player.py`: Self-contained HTML mode player: animated complex mode shapes on a surface mesh beside their band diagram.
 - `result_plots.py`: PNG report figures of fields and feature-result dicts (pyplot-free Figures); ASCII text, never prints.
 - `scene_figure.py`: Perspective 3D picture of a model.scene_3d.Scene3D on a pyplot-free matplotlib Axes3D (view_3d C): translucent material faces in one depth-sorted collection, rim edges, dashed composite inputs, point / line glyphs; optionally field cut ...
 - `visualization.py`: Matplotlib plots of open_sol simulations (pyplot-free Figures): geometry, mesh, fields and EM monitor results (FDFD: annotations, plot_flux / plot_transmission, plot_radiation_pattern; FDFD probes have no time series).

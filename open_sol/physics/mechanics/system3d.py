@@ -216,8 +216,8 @@ class ElasticSystem3D(ElasticSystemBase):
                 level_widths = self.widths_single
             else:
                 level_lambda, level_mu, level_blocks, level_widths = lame_lambda, mu, self.inverse_blocks, widths
-            self.multigrid.build(level_lambda, level_mu, self.free, level_blocks, level_widths, self.widths_host,
-                                 kernels)
+            self.multigrid.build(level_lambda, level_mu, self.free, held, level_blocks, level_widths,
+                                 self.widths_host, kernels)
         if isinstance(self.linear_solver, PCGSolver):
             self.linear_solver.release_block_graphs()   # captured CG blocks hold the replaced operator arrays
         self._rhs_built = False
@@ -351,7 +351,7 @@ class ElasticSystem3D(ElasticSystemBase):
     def _guarded_solve(self, solve_once) -> None:
         """solve_once(); with multigrid capped at multigrid_budget() iterations: a solve that did not converge within
         them switches this system to block Jacobi for good (warning) and re-solves from where it stopped (that attempt
-        then does not count as unconverged)."""
+        then does not count as unconverged). A mixed solve stalled at its round-off floor stays on multigrid."""
         solver = self.linear_solver
         unconverged_before = solver.n_unconverged
         budget = self.multigrid_budget() if self._multigrid_active else None
@@ -364,6 +364,8 @@ class ElasticSystem3D(ElasticSystemBase):
             solver.max_iterations = limit
         if not self._multigrid_active or (solver.last_converged and solver.last_iters <= budget):
             return
+        if solver.last_stalled:   # round-off floor of the system, not the cycle: block Jacobi stops at the same residual
+            return                # after its full iteration count (solid_3d_multigrid_void mixed); stays unconverged
         self._multigrid_active = False
         self.multigrid.fallbacks += 1
         solver.release_block_graphs()   # captured blocks hold the V-cycle launches
@@ -503,7 +505,8 @@ class ElasticSystem3D(ElasticSystemBase):
                 lame_lambda, mu, widths, blocks, _ = operator_set(single)
                 cycle = BrickMultigrid(self.element_shape, single, xp)
                 try:
-                    cycle.build(lame_lambda, mu, free, blocks, widths, self.widths_host, kernels)
+                    cycle.build(lame_lambda, mu, free, self.held.reshape(-1), blocks, widths, self.widths_host,
+                                kernels)
                 except RuntimeError as error:   # a collapsed coarse operator: block Jacobi
                     warnings.warn(f'{self.label()}: the multigrid preconditioner of the block eigensolver could not '
                                   f'be built ({error}); the eigen solve continues with block Jacobi', RuntimeWarning,

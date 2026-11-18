@@ -823,6 +823,9 @@ class PCGSolver:
         self.total_iters = 0
         self.total_refinements = 0          # mixed: outer float64 residual refreshes
         self.last_converged = False
+        # mixed: the last solve stopped unconverged at its round-off floor (the true residual no longer followed the
+        # float32 recurrence), not at the iteration limit: no other preconditioner gets it further
+        self.last_stalled = False
         self.last_residual = float('nan')   # ||b - A x|| / reference norm of the last solve (see solve)
         self.last_warning = None            # message of the latest non-converged solve (never cleared)
         self.n_unconverged = 0
@@ -1020,6 +1023,7 @@ class PCGSolver:
                 raise ValueError(f'{self.label()}: {name} must be C-contiguous on the gpu backend')
         start = time.perf_counter()
         self._non_finite = False   # set by the loops when a residual norm is NaN / inf: they stop at once
+        self.last_stalled = False  # set by the mixed loop when it stops at its round-off floor
         self._solve_setup_seconds = 0.0
         iterate = self._iterate_mixed if self.precision == 'mixed' else self._iterate_binding
         converged, iterations, reference_norm = iterate(rhs, solution, reference)
@@ -1213,6 +1217,7 @@ class PCGSolver:
         scale = math.sqrt(residual_squared)
         _array_module(self.backend).multiply(mixed.residual, 1.0 / scale, out=inner.residual)   # float32, unit norm
         if not float(vector_dot(inner.residual, inner.residual)) > 0.0:   # nothing representable to correct
+            self.last_stalled = True
             return False, 0, reference_norm
         self._cg_start()
         interval = self._check_interval()
@@ -1240,6 +1245,7 @@ class PCGSolver:
             stalled = (not updated_squared < MIXED_STALL_RATIO ** 2 * residual_squared
                        and inner_squared <= MIXED_STALL_RATIO ** 2 * replaced_squared)
             if converged or stalled:
+                self.last_stalled = not converged
                 break
             new_scale = math.sqrt(updated_squared)
             # true / recurrence residual norm in the old unit: a drifted recurrence (float32 operator error on a stiff
@@ -1313,6 +1319,9 @@ class PCGSolver:
                 self.last_warning = (f'{self.label()}: CG did not converge in {iterations} iterations (relative '
                                      f'residual {self.last_residual:.2e}, tol {self.tolerance:.1e}, precision '
                                      f'{self.precision})')
+                if self.last_stalled:
+                    self.last_warning += (': it stalled at the round-off floor of this system (the true residual no '
+                                          'longer follows the float32 recurrence); loosen the tolerance')
 
     def work_counters(self) -> dict:
         """Machine-independent work of every solve so far (summary 'solvers' record, selftest timing); mixed adds its

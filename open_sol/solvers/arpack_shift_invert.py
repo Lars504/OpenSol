@@ -828,7 +828,8 @@ class ArpackShiftInvertSolver:
         eigenpairs of `matvec` (cupy complex128 (n,) -> cupy array; matvec_on_host: numpy -> numpy) by Krylov-Schur with
         the basis on the device (module header "Device Krylov-Schur"); tolerance, basis and restarts as eigs; resume =
         the state of an earlier call on the same matvec (a widening: its Krylov decomposition kept, expanded to the
-        larger basis, in place when its storage holds it); reserve_basis: allocate rows for a later basis that large.
+        larger basis, in place when its storage holds it; a state whose basis the caller moved to the host (numpy
+        rows) is uploaded into the new storage); reserve_basis: allocate rows for a later basis that large.
         Too small for a device basis (device_arnoldi_fits without the host rule): host eigs, state None."""
         import cupy as cp
         basis_size = arnoldi_basis_size(n_wanted, n_unknowns, self.subspace_size, default_basis)
@@ -1018,7 +1019,10 @@ class _KrylovSchur:
         if resume is not None and resume[1].shape[1] < basis_size:   # a widening: the earlier decomposition kept
             kept_basis, kept_hessenberg = resume
             self.size = kept_hessenberg.shape[1]
-            if kept_basis.shape[0] >= basis_size + 1:   # its storage reserved the rows: expanded in place, no copy
+            if isinstance(kept_basis, np.ndarray):   # moved to the host by the caller: never two device bases
+                self.basis = cp.empty((basis_size + 1, n_unknowns), dtype=np.complex128)
+                self.basis[:self.size + 1].set(np.ascontiguousarray(kept_basis[:self.size + 1]))
+            elif kept_basis.shape[0] >= basis_size + 1:   # its storage reserved the rows: expanded in place, no copy
                 self.basis = kept_basis
             else:   # a second basis next to the first while copying (the caller drops the first afterwards)
                 self.basis = cp.empty((max(basis_size, capacity) + 1, n_unknowns), dtype=np.complex128)

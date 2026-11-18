@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Field viewer</title>
 <!-- open_sol field viewer: one self-contained page (no network). viz/field_viewer.py fills the data block below.
-     The camera, colour maps, theme, PNG and recording blocks follow viz/mode_player.html: keep the two in step. -->
+     The camera, colour maps and recording blocks follow viz/mode_player.html: keep the two in step. The Plot
+     settings (fig) repeat the keys of field_viewer.figure_settings: change both. -->
 <style>
 :root {
   --bg: #f4f5f7;
@@ -73,20 +74,31 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 #gl:active { cursor: grabbing; }
 #axes { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
-.readout { position: absolute; left: 18px; top: 14px; pointer-events: none; }
-.readout .f { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.15; }
-.readout .m { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
-.legend { position: absolute; right: 18px; bottom: 16px; width: 200px; pointer-events: none; font-size: 11px;
-          color: var(--ink-3); }
-.legend .bar { height: 8px; border-radius: 4px; margin-bottom: 3px; }
-.legend .ticks { display: flex; justify-content: space-between; gap: 6px; }
-.legend .name { color: var(--ink-2); margin-bottom: 4px; }
 .hint { position: absolute; left: 18px; bottom: 14px; font-size: 11px; color: var(--ink-3); pointer-events: none; }
-.mats { position: absolute; right: 18px; top: 40px; display: flex; flex-direction: column; align-items: flex-end;
-        gap: 3px; font-size: 11px; color: var(--ink-2); pointer-events: none; max-height: 60%; overflow: hidden; }
-.mats[hidden] { display: none; }
-.mats span { display: flex; align-items: center; gap: 6px; }
-.mats i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+/* Plot settings: a panel over the view (the canvas keeps its size, so the picture is exported as shown) */
+.settings { position: absolute; right: 14px; bottom: 14px; width: 310px; max-height: calc(100% - 28px); overflow: auto;
+            background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; box-shadow: var(--shadow);
+            font-size: 12px; color: var(--ink-2); z-index: 3; }
+.settings[hidden] { display: none; }
+.settings .head { display: flex; align-items: center; justify-content: space-between; padding: 6px 8px 6px 12px;
+                  border-bottom: 1px solid var(--rule); color: var(--ink); font-weight: 600; cursor: move;
+                  touch-action: none; user-select: none; }
+.settings .rows { display: grid; grid-template-columns: auto 1fr 1fr; gap: 6px 8px; align-items: center;
+                  padding: 10px 12px 12px; }
+.settings .rows label { white-space: nowrap; }
+.settings .rows h2 { grid-column: 1 / 4; margin: 6px 0 0; font-size: 11px; font-weight: 600; color: var(--ink-3); }
+                     /* no uppercase: the headings name units (mm, V^2/m^2) */
+.settings .rows h2:first-child { margin-top: 0; }
+.settings .wide { grid-column: 2 / 4; }
+.settings input[type="number"], .settings select { width: 100%; min-width: 0; font: inherit; font-size: 12px;
+  color: var(--ink); background: var(--panel-2); border: 1px solid var(--rule); border-radius: 6px; padding: 3px 6px; }
+.settings input:disabled { opacity: 0.45; }
+.settings input.bad { border-color: #e5484d; }
+.settings textarea { grid-column: 1 / 4; width: 100%; height: 52px; resize: vertical; color: var(--ink-2);
+                     font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--panel-2);
+                     border: 1px solid var(--rule); border-radius: 6px; padding: 4px 6px; }
+.settings .buttons { grid-column: 1 / 4; display: flex; gap: 8px; justify-content: flex-end; }
+.settings button { font-size: 12px; padding: 4px 9px; }
 .rec { position: absolute; right: 18px; top: 16px; display: none; align-items: center; gap: 6px; font-size: 12px;
        font-weight: 600; color: #e5484d; }
 .rec::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; }
@@ -111,14 +123,11 @@ input#frame { width: 180px; }
          padding: 24px; }
 .empty[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
                                       cover the canvas and take its pointer input */
-body.present .controls, body.present header p, body.present .hint { display: none; }
+body.present .controls, body.present header p, body.present .hint, body.present .settings { display: none; }
 body.present .app { padding: 10px; gap: 10px; }
 @media (max-width: 820px) {
   .app { height: auto; min-height: 100vh; }
   .view { aspect-ratio: 4 / 3; }
-  .readout .f { font-size: 20px; }
-  .legend { width: 140px; }
-  .legend .name { display: none; }
   .hint { display: none; }
 }
 </style>
@@ -134,13 +143,69 @@ body.present .app { padding: 10px; gap: 10px; }
   <section class="card view" aria-label="Field">
     <canvas id="gl"></canvas>
     <canvas id="axes"></canvas>
-    <div class="readout"><div class="f num" id="rf"></div><div class="m num" id="rm"></div></div>
-    <div class="legend" id="legend"><div class="name" id="lgname"></div><div class="bar" id="lgbar"></div>
-      <div class="ticks num"><span id="lglo"></span><span id="lgmid"></span><span id="lghi"></span></div></div>
-    <div class="hint">Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset</div>
+    <div class="hint" id="hint">Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset · Drag the material legend or scale bar to move it</div>
     <div class="rec" id="rec">REC</div>
-    <div class="mats" id="mats" hidden></div>
     <div class="empty" id="empty" hidden></div>
+    <div class="settings" id="settings" hidden>
+      <div class="head" id="settingshead"><span>Plot settings</span>
+        <button class="icon" id="settingsclose" title="Close">&#215;</button></div>
+      <div class="rows">
+        <h2>Font size (px)</h2>
+        <label for="fs_font_size">Axes, colour bar</label>
+        <input type="number" id="fs_font_size" class="wide" min="6" max="40" step="1" title="Font size of the axis ticks, the axis titles and the colour bar (6 - 40 px; applied as typed)">
+        <label for="fs_title_size">Heading</label>
+        <input type="number" id="fs_title_size" min="8" max="72" step="1" title="Font size of the heading (8 - 72 px; applied as typed)">
+        <select id="fs_title" title="Where the heading (frame label and field) is drawn">
+          <option value="top_left">Top left</option><option value="top_center">Top centre</option>
+          <option value="top_right">Top right</option><option value="off">Off</option></select>
+        <h2 id="fs_colorhead">Colour limits</h2>
+        <label for="fs_color_min">Min / max</label>
+        <input type="number" id="fs_color_min" step="any" title="Lowest value of the colour scale (empty: automatic, the grey value; Enter applies)">
+        <input type="number" id="fs_color_max" step="any" title="Highest value of the colour scale (empty: automatic, the grey value; Enter applies)">
+        <label for="fs_colorbar">Colour bar</label>
+        <select id="fs_colorbar" class="wide" title="Where the colour bar is drawn">
+          <option value="bottom_right">Bottom right</option><option value="bottom_left">Bottom left</option>
+          <option value="top_right">Top right</option><option value="top_left">Top left</option>
+          <option value="right">Right side</option><option value="left">Left side</option>
+          <option value="top">Top</option><option value="bottom">Bottom</option><option value="off">Off</option></select>
+        <label for="fs_colorbar_length">Bar length</label>
+        <input type="number" id="fs_colorbar_length" class="wide" min="0.1" max="1" step="0.05" placeholder="auto" title="Length of the colour bar as a fraction of the view, 0.1 - 1 (empty: automatic; applied as typed)">
+        <h2 id="fs_axishead">Axis limits</h2>
+        <label for="fs_x_min">x min / max</label>
+        <input type="number" id="fs_x_min" step="any" title="Empty: automatic, the grey value; Enter applies"><input type="number" id="fs_x_max" step="any" title="Empty: automatic, the grey value; Enter applies">
+        <label for="fs_y_min">y min / max</label>
+        <input type="number" id="fs_y_min" step="any" title="Empty: automatic, the grey value; Enter applies"><input type="number" id="fs_y_max" step="any" title="Empty: automatic, the grey value; Enter applies">
+        <label for="fs_z_min">z min / max</label>
+        <input type="number" id="fs_z_min" step="any" title="Empty: automatic, the grey value; Enter applies"><input type="number" id="fs_z_max" step="any" title="Empty: automatic, the grey value; Enter applies">
+        <label for="fs_horizontal_axis" id="fs_sidelabel">Axis labels</label>
+        <select id="fs_horizontal_axis" title="Side of the horizontal axis' ticks and title (a map seen face-on)">
+          <option value="bottom">Bottom</option><option value="top">Top</option></select>
+        <select id="fs_vertical_axis" title="Side of the vertical axis' ticks and title (a map seen face-on)">
+          <option value="left">Left</option><option value="right">Right</option></select>
+        <h2 id="fs_scalehead">Scale bar</h2>
+        <label for="fs_scale_bar" id="fs_scalelabel">Show / length</label>
+        <select id="fs_scale_bar" title="A bar of a round length on the map, in place of the axes (a map seen face-on; the Axes button brings the axes back beside it). Drag it to move it, double-click it to put it back">
+          <option value="off">Off</option><option value="on">On</option></select>
+        <input type="number" id="fs_scale_bar_length" step="any" min="0" placeholder="auto" title="Length of the scale bar (empty: a round length near a fifth of the view, following the zoom; Enter applies)">
+        <label for="fs_scale_bar_color" id="fs_scalecolorlabel">Colour</label>
+        <select id="fs_scale_bar_color" class="wide" title="Colour of the scale bar and its length">
+          <option value="auto">As the texts</option><option value="white">White</option><option value="black">Black</option></select>
+        <h2 id="fs_legendhead">Material legend</h2>
+        <label for="fs_legend_color" id="fs_legendlabel">Text colour</label>
+        <select id="fs_legend_color" class="wide" title="Colour of the material names (the legend can be dragged over the field)">
+          <option value="auto">As the texts</option><option value="white">White</option><option value="black">Black</option></select>
+        <h2>Export</h2>
+        <label for="fs_background">Background</label>
+        <select id="fs_background" class="wide" title="Background of the view and of the saved picture">
+          <option value="theme">As the theme</option><option value="white">White</option></select>
+        <label for="fs_export_scale">PNG size</label>
+        <select id="fs_export_scale" class="wide" title="Pixels of the saved PNG per pixel of the view (texts and lines scale with it)">
+          <option value="1">As shown</option><option value="2">2 ×</option><option value="4">4 ×</option></select>
+        <textarea id="fs_text" readonly title="The changed settings, as Results.export_html(figure=...) takes them (lengths in m)"></textarea>
+        <div class="buttons"><button id="fs_reset" title="Back to the settings this page was written with">Reset</button>
+          <button id="fs_copy" title="Copy the settings above for Results.export_html(figure=...)">Copy settings</button></div>
+      </div>
+    </div>
   </section>
   <div class="controls">
     <div class="group" id="framegroup">
@@ -169,7 +234,7 @@ body.present .app { padding: 10px; gap: 10px; }
     <div class="group" id="layergroup"></div>
     <div class="group" id="geomgroup"><label for="geom">Objects</label>
       <select id="geom" title="Model objects drawn with the field (G)"></select>
-      <select id="geomcolor" title="Colour of the object outlines">
+      <select id="geomcolor" title="Colour of the object outlines (Material: each outline is drawn just inside its own object, so both colours show where two objects meet)">
         <option value="auto">Contrast</option><option value="white">White</option><option value="black">Black</option>
         <option value="material">Material</option></select></div>
     <div class="group"><button id="mirror" aria-pressed="true">Mirror</button>
@@ -180,6 +245,7 @@ body.present .app { padding: 10px; gap: 10px; }
       <button id="spin" aria-pressed="false" title="Turn the view (S)">Spin</button></div>
     <div class="spacer"></div>
     <div class="group">
+      <button id="settingsbtn" aria-pressed="false">Plot settings</button>
       <button id="png" title="Save the view as PNG">PNG</button>
       <button id="record" title="Record the view as video (frames when playing, else one turn)">Record</button>
       <button id="present" title="Presentation mode (P)">Present</button>
@@ -205,18 +271,32 @@ function i16(text) { return new Int16Array(b64bytes(text)); }
 function hexRgb(h) { return [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255]; }
 function niceUnit(u) { return (u || '').replace(/^u(?=[a-zA-Z])/, 'µ'); }
 const PREFIXES = [[1e12, 'T'], [1e9, 'G'], [1e6, 'M'], [1e3, 'k'], [1, ''], [1e-3, 'm'], [1e-6, 'µ'], [1e-9, 'n'], [1e-12, 'p']];
+function prefixable(unit) {
+  // no SI prefix on units that start with one (kg, mT, mol), whose first factor has a power (m^2) or that take
+  // none (a.u., dB, deg, rad, %)
+  return !!unit && !/^[TGMkmµunp][A-Za-z]/.test(unit) && !/^[^/]*(\^|²|³)/.test(unit) && !/^(a\.u\.|1|dB|deg|rad|%)$/.test(unit);
+}
 function fmtValue(v, unit) {
   // a value with an SI prefix on a plain unit (V/m -> kV/m), else scientific
   if (!isFinite(v)) return '–';
   if (v === 0) return '0' + (unit ? ' ' + unit : '');
   const a = Math.abs(v);
-  // no prefix on units that start with one (kg, mT, mol), whose first factor has a power (m^2) or that take
-  // none (a.u., dB, deg, rad, %)
-  if (unit && !/^[TGMkmµunp][A-Za-z]/.test(unit) && !/^[^/]*(\^|²|³)/.test(unit) && !/^(a\.u\.|1|dB|deg|rad|%)$/.test(unit) && a >= 1e-12 && a < 1e15) {
+  if (prefixable(unit) && a >= 1e-12 && a < 1e15) {
     for (const [s, p] of PREFIXES) if (a >= s) return Number((v / s).toPrecision(3)) + ' ' + p + unit;
   }
   const t = (a >= 1e-2 && a < 1e4) ? Number(v.toPrecision(3)).toString() : v.toExponential(1).replace('e+', 'e');
   return t + (unit ? ' ' + unit : '');
+}
+function superscript(n) { return String(n).replace(/[-0-9]/g, (ch) => '⁻⁰¹²³⁴⁵⁶⁷⁸⁹'['-0123456789'.indexOf(ch)]); }
+function barScale(lo, hi, unit) {
+  // one factor for every tick label of the colour bar, named with the unit: an SI prefix on a plain unit (MPa),
+  // else a power of 1000 (×10⁻⁶ m^2)
+  const a = Math.max(Math.abs(lo), Math.abs(hi));
+  if (!(a > 0) || !isFinite(a)) return { factor: 1, unit: unit || '' };
+  if (prefixable(unit) && a >= 1e-12 && a < 1e15) for (const [s, p] of PREFIXES) if (a >= s) return { factor: s, unit: p + unit };
+  if (a >= 1e-2 && a < 1e4) return { factor: 1, unit: unit || '' };
+  const e = 3 * Math.floor(Math.log10(a) / 3);
+  return { factor: Math.pow(10, e), unit: '×10' + superscript(e) + (unit ? ' ' + unit : '') };
 }
 
 // 9 stops each; sequential maps for magnitudes, diverging maps for signed fields (the middle stop at 0)
@@ -248,6 +328,54 @@ const is2d = DATA.dimensions === 2;
 const lengthUnit = niceUnit(DATA.length_unit || 'm');
 const AX = { x: 0, y: 1, z: 2 };
 const LOG_OK = !SIGNED && DATA.range[1] > 0 && DATA.range[0] >= 0;
+
+// ---------- plot settings (the Plot settings panel; keys and values as viz.field_viewer.figure_settings) ----------
+// fig: lengths in m, colour limits in the field's unit, null = automatic. Start: the defaults, then what this browser
+// remembers (the style for every page; the limits for this file and field, so a rewritten page of the same model
+// keeps them), then DATA.figure (Results.export_html(figure=...))
+const LENGTH_SCALE = DATA.length_scale || 1;   // m per length unit of the page
+const FIGURE_STYLE = { font_size: 11, title_size: 26, title: 'top_left', colorbar: 'bottom_right', colorbar_length: null,
+  horizontal_axis: 'bottom', vertical_axis: 'left', scale_bar: 'on', scale_bar_color: 'auto', legend_color: 'auto',
+  background: 'theme', export_scale: 1 };
+const FIGURE_CHOICES = {
+  title: ['top_left', 'top_center', 'top_right', 'off'],
+  colorbar: ['bottom_right', 'bottom_left', 'top_right', 'top_left', 'right', 'left', 'top', 'bottom', 'off'],
+  horizontal_axis: ['bottom', 'top'], vertical_axis: ['left', 'right'], background: ['theme', 'white'],
+  scale_bar: ['off', 'on'], scale_bar_color: ['auto', 'white', 'black'], legend_color: ['auto', 'white', 'black'],
+  export_scale: [1, 2, 4] };
+const FIGURE_RANGES = { font_size: [6, 40], title_size: [8, 72], colorbar_length: [0.1, 1] };
+const LIMIT_KEYS = ['color_min', 'color_max', 'x_min', 'x_max', 'y_min', 'y_max', 'z_min', 'z_max'];
+const FILE_KEYS = [...LIMIT_KEYS, 'scale_bar_length'];   // values of this model: remembered per file, not for every page
+const FIGURE_DEFAULTS = Object.assign({}, FIGURE_STYLE, Object.fromEntries(FILE_KEYS.map((k) => [k, null])));
+const LIMITS_STORE = 'limits:' + location.pathname;
+const QUANTITY_KEY = Q.label + '|' + (Q.unit || '');
+function validSetting(k, v) {
+  if (k in FIGURE_CHOICES) return FIGURE_CHOICES[k].includes(v);
+  if (v === null) return FIGURE_DEFAULTS[k] === null;
+  if (typeof v !== 'number' || !isFinite(v)) return false;
+  if (k === 'scale_bar_length') return v > 0;
+  return !(k in FIGURE_RANGES) || (v >= FIGURE_RANGES[k][0] && v <= FIGURE_RANGES[k][1]);
+}
+function storedJson(key) { try { const v = JSON.parse(store(key) || 'null'); return v && typeof v === 'object' ? v : {}; }
+  catch (e) { return {}; } }
+const rememberedLimits = new Set();            // limit keys taken from the browser (dropped when they miss the data)
+const fig = (() => {
+  const out = Object.assign({}, FIGURE_DEFAULTS), style = storedJson('style'), kept = storedJson(LIMITS_STORE);
+  for (const k of Object.keys(FIGURE_STYLE)) if (k in style && validSetting(k, style[k])) out[k] = style[k];
+  for (const k of FILE_KEYS) if (typeof kept[k] === 'number' && validSetting(k, kept[k])
+      && (!k.startsWith('color') || kept.quantity === QUANTITY_KEY)) { out[k] = kept[k]; rememberedLimits.add(k); }
+  for (const [k, v] of Object.entries(DATA.figure || {})) if (k in FIGURE_DEFAULTS && validSetting(k, v)) {
+    out[k] = v; rememberedLimits.delete(k); }
+  return out;
+})();
+function scaleBarOffered() { return PLANAR && fig.scale_bar === 'on'; }   // one plane (a 3D view keeps its axes); drawn when seen face-on
+function saveFigure() {
+  // only what differs from the defaults, so a page with new defaults is not held to the old ones
+  store('style', JSON.stringify(Object.fromEntries(Object.keys(FIGURE_STYLE).filter((k) => fig[k] !== FIGURE_STYLE[k]).map((k) => [k, fig[k]]))));
+  const kept = { quantity: QUANTITY_KEY };
+  for (const k of FILE_KEYS) if (fig[k] !== null) kept[k] = fig[k];
+  store(LIMITS_STORE, JSON.stringify(kept));
+}
 
 // layer geometry: positions (n, 3) in length units, triangles, optional edges for mesh lines
 const LAYERS = DATA.layers.map((L, index) => {
@@ -323,10 +451,30 @@ const MAX_ASPECT = 4;
 function niceUp(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
   for (const m of [1, 2, 5]) if (m * p >= x * (1 - 1e-9)) return m * p; return 10 * p; }
 let bmin, bmax, center, SPAN, LARGEST, AUTO_STRETCH, CAN_STRETCH, STRETCH_TEXT;
-function setBounds(mirrored) {
+let clipLo, clipHi;                           // the axis limits the shaders cut at (length units; +-1e30 = none)
+function dataBounds(mirrored) {
   const images = mirrored ? MIRROR_IMAGES : [IDENTITY_IMAGE];
-  bmin = [0, 1, 2].map((c) => Math.min(...images.map((I) => I.a[c] > 0 ? hmin[c] + I.b[c] : I.b[c] - hmax[c])));
-  bmax = [0, 1, 2].map((c) => Math.max(...images.map((I) => I.a[c] > 0 ? hmax[c] + I.b[c] : I.b[c] - hmin[c])));
+  return [[0, 1, 2].map((c) => Math.min(...images.map((I) => I.a[c] > 0 ? hmin[c] + I.b[c] : I.b[c] - hmax[c]))),
+          [0, 1, 2].map((c) => Math.max(...images.map((I) => I.a[c] > 0 ? hmax[c] + I.b[c] : I.b[c] - hmin[c])))];
+}
+function limitedRange(c, lo, hi) {
+  // axis c's range [lo, hi] under its Plot settings limits (which may reach past the data, as plot limits do):
+  // { lo, hi, cutLo, cutHi }, null when the limits leave nothing or the axis is a planar view's normal
+  if (PLANAR && c === NORMAL) return null;
+  const a = fig[AXIS_NAMES[c] + '_min'], b = fig[AXIS_NAMES[c] + '_max'];
+  const out = { lo: a === null ? lo : a / LENGTH_SCALE, hi: b === null ? hi : b / LENGTH_SCALE, cutLo: a !== null, cutHi: b !== null };
+  return out.hi > out.lo ? out : null;
+}
+function setBounds(mirrored) {
+  [bmin, bmax] = dataBounds(mirrored);
+  clipLo = [-1e30, -1e30, -1e30]; clipHi = [1e30, 1e30, 1e30];
+  const slack = 1e-5 * (Math.max(...bmax.map((v, c) => v - bmin[c])) || 1);   // a cut exactly on a layer keeps it
+  for (const c of [0, 1, 2]) {
+    const R = limitedRange(c, bmin[c], bmax[c]);
+    if (!R) continue;
+    if (R.cutLo) { bmin[c] = R.lo; clipLo[c] = R.lo - slack; }
+    if (R.cutHi) { bmax[c] = R.hi; clipHi[c] = R.hi + slack; }
+  }
   center = [0, 1, 2].map((c) => 0.5 * (bmin[c] + bmax[c]));
   SPAN = [0, 1, 2].map((c) => bmax[c] - bmin[c]);
   LARGEST = Math.max(...SPAN) || 1;
@@ -334,13 +482,21 @@ function setBounds(mirrored) {
   CAN_STRETCH = AUTO_STRETCH.some((f) => f > 1);
   STRETCH_TEXT = AUTO_STRETCH.map((f, c) => f > 1 ? AXIS_NAMES[c] + ' ×' + f : '').filter(Boolean).join(', ');
 }
+{ // remembered axis limits that miss the data (another geometry under the same file name) would show nothing: dropped
+  const [lo, hi] = dataBounds(CAN_MIRROR);
+  for (const c of [0, 1, 2]) {
+    const keys = [AXIS_NAMES[c] + '_min', AXIS_NAMES[c] + '_max'], R = limitedRange(c, lo[c], hi[c]);
+    if (keys.some((k) => rememberedLimits.has(k)) && (!R || R.lo >= hi[c] || R.hi <= lo[c]))
+      for (const k of keys) if (rememberedLimits.has(k)) fig[k] = null;
+  }
+}
 setBounds(CAN_MIRROR);
 
 // ---------- state ----------
 const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
   frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
-  lines: false, box: !PLANAR, spin: false, axes: true, stretch: true, mirror: CAN_MIRROR,
+  lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: CAN_MIRROR,   // a scale bar stands in for the axes
   cmap: (SIGNED ? store('cmap_signed') : store('cmap')) || (SIGNED ? 'coolwarm' : 'viridis'),
 };
 const choices = CMAP_CHOICES[SIGNED ? 'diverging' : 'sequential'];
@@ -384,7 +540,18 @@ function frameValues(f) {
   return out;
 }
 function limits() {
-  // shown colour limits [lo, hi] (log: hi and the decades below it)
+  // shown colour limits [lo, hi]: the automatic ones unless the Plot settings give a colour minimum / maximum (a
+  // signed field with one of them stays symmetric; a log scale needs a positive minimum, else the decades below hi)
+  const auto = autoLimits(), lo = fig.color_min, hi = fig.color_max;
+  if (lo === null && hi === null) return auto;
+  let out;
+  if (SIGNED && (lo === null || hi === null)) { const m = Math.abs(lo === null ? hi : lo); out = [-m, m]; }
+  else out = [lo === null ? auto[0] : lo, hi === null ? auto[1] : hi];
+  if (state.log && LOG_OK && !(lo > 0)) out[0] = out[1] * Math.pow(10, -state.decades);
+  return out[1] > out[0] ? out : auto;
+}
+function autoLimits() {
+  // colour limits [lo, hi] of the data and the Range slider (log: hi and the decades below it)
   const F = FRAMES[state.frame];
   let lo = state.scale === 'frame' ? F.lo : DATA.range[0], hi = state.scale === 'frame' ? F.hi : DATA.range[1];
   if (SIGNED) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
@@ -407,7 +574,7 @@ uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
 uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
-out float vT; out float vOk; out vec3 vViewPos;
+out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace;
 void main() {
   float v = aVal.x, t;
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
@@ -415,7 +582,8 @@ void main() {
   else t = (v - uLo) / (uHi - uLo);
   t = clamp(t, 0.0, 1.0);
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
-  vec3 p = (aPos * uMirA + uMirB - uCenter) * uStretch + uNormal * (uRelief * h);
+  vPlace = aPos * uMirA + uMirB;      // true coordinates of the (mirrored) point: the axis limits cut on them
+  vec3 p = (vPlace - uCenter) * uStretch + uNormal * (uRelief * h);
   vT = t; vOk = aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
@@ -424,8 +592,9 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 precision highp int;
-in float vT; in float vOk; in vec3 vViewPos;
+in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
+uniform vec3 uClipLo; uniform vec3 uClipHi;
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -434,6 +603,7 @@ vec3 cmap(float t) {
 }
 void main() {
   if (vOk < 0.999) discard;           // a triangle or edge touching a sample without value
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   if (uLine == 1) { outColor = uLineColor; return; }
   vec3 base = cmap(vT);
   vec3 col = base;
@@ -470,7 +640,8 @@ function setupGL() {
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
-                      'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase'])
+                      'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
+                      'uClipLo', 'uClipHi'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
   for (const L of LAYERS) {
@@ -503,24 +674,48 @@ function norm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l
 function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 const UP = [0, 0, 1];
 const E1 = [-1, 0, 0], E2 = [0, -1, 0];      // azimuth 0 looks from -x; +90 deg from -y (2D: x right, y up)
-const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0] };
+const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0], moved: false };   // moved: panned / zoomed by hand since the last fit
 function resetCamera() {
   if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
   if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
-  cam.target = [0, 0, 0];
+  cam.target = [0, 0, 0]; cam.moved = false;
   fitDistance();
 }
 function reliefHeight() { return state.relief * 0.3 * Math.max(...shownSpan()); }
 function faceOn() { return PLANAR && Math.abs(eyeDir()[NORMAL]) > 0.99; }
+// the parts drawn on the overlay canvas around the view (drawOverlay), sized by the Plot settings; device px
+const PAD = 16;                                // CSS px between the canvas edge and those parts
+const TOP_SPOT = { top_left: 'left', top_center: 'center', top_right: 'right', top: 'center' };
+function headingHeight() { return fig.title === 'off' ? 0 : 1.85 * fig.title_size * pixelRatio; }
+function barMetrics() {
+  // colour bar: F text px, bar thickness, tick length; height of a horizontal bar (name, bar, ticks, labels) and
+  // width of an upright one (bar, ticks, labels over `labels` px, turned name)
+  const F = fig.font_size * pixelRatio, thick = Math.round(0.75 * F), tick = Math.round(0.4 * F), labels = 4.2 * F;
+  return { F, thick, tick, labels, height: 1.4 * F + thick + tick + 1.25 * F, width: thick + tick + 0.3 * F + labels + 1.6 * F };
+}
 function viewInsets() {
-  // device px a face-on map leaves free: readout above, axis labels, legend and hint below, tick labels at the left
-  const cap = (px, size) => Math.min(px * pixelRatio, 0.2 * size);
-  return { top: cap(72, canvas.height), bottom: cap(108, canvas.height), left: cap(80, canvas.width),
-           right: cap(28, canvas.width) };
+  // device px a face-on map leaves free on each side: the heading, the colour bar, the axis ticks and titles on the
+  // sides the Plot settings put them, and the hint
+  const px = pixelRatio, pad = PAD * px, bar = fig.colorbar, B = barMetrics(), F = B.F, gap = 0.6 * F;
+  const across = state.axes ? 8 * px + 2.9 * F : gap, upward = state.axes ? 8 * px + 5.6 * F : gap;
+  const headH = headingHeight(), barTop = bar.startsWith('top') ? B.height : 0;
+  const stacked = headH && barTop && TOP_SPOT[fig.title] === TOP_SPOT[bar];
+  const top = pad + (stacked ? headH + gap + barTop : Math.max(headH, barTop)) + (fig.horizontal_axis === 'top' ? across : gap);
+  const bottom = pad + (bar.startsWith('bottom') ? B.height : 20 * px) + (fig.horizontal_axis === 'bottom' ? across : gap);
+  const left = pad + (bar === 'left' ? B.width + gap : 0) + (fig.vertical_axis === 'left' ? upward : gap);
+  const right = pad + (bar === 'right' ? B.width + gap : 0) + (fig.vertical_axis === 'right' ? upward : gap);
+  const cap = (v, size) => Math.min(v, 0.4 * size);
+  return { top: cap(top, canvas.height), bottom: cap(bottom, canvas.height), left: cap(left, canvas.width),
+           right: cap(right, canvas.width) };
+}
+function overlayCentre() {
+  // device px centre of a face-on map inside its insets (where the centred heading and colour bars go), else the canvas'
+  const ins = faceOn() && state.relief === 0 ? viewInsets() : { top: 0, bottom: 0, left: 0, right: 0 };
+  return [0.5 * (ins.left + canvas.width - ins.right), 0.5 * (ins.top + canvas.height - ins.bottom)];
 }
 function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2);
-  const span = shownSpan();
+  const span = shownSpan(); cam.moved = false;
   if (faceOn() && state.relief === 0) {
     // tight: the map rectangle fills the canvas minus the insets, its centre at theirs (at distance d the view is
     // 2 d tan(fov / 2) high over canvas.height px)
@@ -555,14 +750,22 @@ function cssColor(name) { return getComputedStyle(document.documentElement).getP
 function cssRgb(name) { const v = cssColor(name); if (v.startsWith('#')) return hexRgb(v);
   const m = v.match(/[\d.]+/g); return m ? [m[0] / 255, m[1] / 255, m[2] / 255] : [0.5, 0.5, 0.5]; }
 let themeColors = null;
-function readTheme() { const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
-  themeColors = { clearTop: cssRgb('--view-top'), clearBottom: cssRgb('--view-bottom'), dark,
+function readTheme() {
+  // Plot settings background 'white': a white view with dark texts in either theme (a picture for print)
+  const white = fig.background === 'white';
+  const dark = !white && getComputedStyle(document.documentElement).colorScheme === 'dark';
+  const top = cssRgb('--view-top'), bottom = cssRgb('--view-bottom');
+  themeColors = { clear: white ? [1, 1, 1] : bottom.map((v, i) => 0.5 * (v + top[i])), dark,
     line: dark ? [0.02, 0.03, 0.05, 0.45] : [0.06, 0.08, 0.12, 0.28],
     box: dark ? [0.75, 0.8, 0.9, 0.55] : [0.25, 0.3, 0.4, 0.55],
-    axisText: cssColor('--ink-2'), axisTick: cssColor('--ink-3'), font: getComputedStyle(document.body).fontFamily }; }
+    headText: white ? '#16181d' : cssColor('--ink'), axisText: white ? '#2b303a' : cssColor('--ink-2'),
+    axisTick: white ? '#5d6472' : cssColor('--ink-3'), font: getComputedStyle(document.body).fontFamily }; }
 let pixelRatio = 1;                          // device px per CSS px of the canvases
+let renderScale = 1;                         // > 1 while a PNG is drawn (Plot settings PNG size): texts and lines scale too
+const MAX_DRAW = gl ? Math.min(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE), 8192) : 4096;   // canvas px per side
 function resize() {
-  const r = canvas.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const r = canvas.getBoundingClientRect();
+  const dpr = Math.min(Math.min(window.devicePixelRatio || 1, 2.5) * renderScale, MAX_DRAW / Math.max(r.width, r.height, 1));
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
   pixelRatio = dpr;
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
@@ -572,9 +775,10 @@ function draw() {
   if (!gl || !ready) return;
   resize();
   gl.viewport(0, 0, canvas.width, canvas.height);
-  const bg = themeColors.clearBottom.map((v, i) => 0.5 * (v + themeColors.clearTop[i]));
+  const bg = themeColors.clear;
   gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   gl.useProgram(prog);
+  gl.uniform3fv(uni.uClipLo, clipLo); gl.uniform3fv(uni.uClipHi, clipHi);
   const [lo, hi] = limits();
   const logScale = state.log && LOG_OK;
   const view = viewMatrix(), proj = projMatrix();
@@ -614,6 +818,8 @@ function draw() {
   }
   setImage(uni, IDENTITY_IMAGE);
   if (state.box && !PLANAR) {
+    // the box lies on the axis limits themselves: drawn uncut
+    gl.uniform3fv(uni.uClipLo, NO_CLIP_LO); gl.uniform3fv(uni.uClipHi, NO_CLIP_HI);
     gl.uniform4fv(uni.uLineColor, themeColors.box); gl.uniform1f(uni.uRelief, 0);
     gl.bindVertexArray(boxVao); gl.drawArrays(gl.LINES, 0, boxCount);
   }
@@ -621,7 +827,9 @@ function draw() {
   gl.bindVertexArray(null);
   drawGeometry(view, proj);
   drawAxes(view, proj);
+  drawOverlay(view, proj);
 }
+const NO_CLIP_LO = [-1e30, -1e30, -1e30], NO_CLIP_HI = [1e30, 1e30, 1e30];
 
 // ---------- axes: ticks and labels on the overlay canvas (true coordinates; composited into PNG and recordings) ----------
 const axesCanvas = $('axes'), actx = axesCanvas.getContext('2d');
@@ -656,7 +864,10 @@ function axisEdge(a, view, proj, middle) {
     let n = [-dy / len, dx / len];
     let out = (0.5 * (s0[0] + s1[0]) - middle[0]) * n[0] + (0.5 * (s0[1] + s1[1]) - middle[1]) * n[1];
     if (out < 0) { n = [-n[0], -n[1]]; out = -out; }
-    const score = out + 0.05 * len * (Math.abs(dx) >= Math.abs(dy) ? n[1] : -n[0]);
+    // one plane has two edges per axis: the Plot settings side decides (below / above, left / right)
+    const side = Math.abs(dx) >= Math.abs(dy) ? (fig.horizontal_axis === 'top' ? -n[1] : n[1])
+                                              : (fig.vertical_axis === 'right' ? n[0] : -n[0]);
+    const score = PLANAR ? out + 1e6 * Math.sign(side) : out + 0.05 * len * (Math.abs(dx) >= Math.abs(dy) ? n[1] : -n[0]);
     if (!best || score > best.score) best = { score, p0, n, len, s0, s1 };
   }
   return best;
@@ -666,7 +877,7 @@ function drawAxes(view, proj) {
   if (!state.axes) return;
   const middle = project(center, view, proj);
   if (!middle) return;
-  const px = pixelRatio, fontPx = 11 * px, font = fontPx + 'px ' + themeColors.font;
+  const px = pixelRatio, fontPx = fig.font_size * px, font = fontPx + 'px ' + themeColors.font;
   const tick = 5 * px, gap = 3 * px, f = stretch();
   actx.lineWidth = px; actx.strokeStyle = themeColors.axisTick; actx.fillStyle = themeColors.axisText;
   for (const a of (PLANAR ? PLANE_AXES : [0, 1, 2])) {
@@ -674,7 +885,7 @@ function drawAxes(view, proj) {
     const edge = axisEdge(a, view, proj, middle);
     if (!edge) continue;
     const n = edge.n, across = Math.abs(n[1]) >= Math.abs(n[0]);   // labels below / above the edge, else beside it
-    const { ticks, decimals } = niceTicks(bmin[a], bmax[a], Math.max(2, Math.min(8, Math.round(edge.len / (90 * px)))));
+    const { ticks, decimals } = niceTicks(bmin[a], bmax[a], Math.max(2, Math.min(8, Math.round(edge.len / (8 * fontPx)))));
     actx.font = font;
     actx.textAlign = across ? 'center' : (n[0] > 0 ? 'left' : 'right');
     actx.textBaseline = across ? (n[1] > 0 ? 'top' : 'bottom') : 'middle';
@@ -702,8 +913,175 @@ function drawAxes(view, proj) {
     actx.restore();
   }
 }
+// ---------- heading, colour bar and material legend: on the overlay canvas too, so pictures hold them as shown ----------
+const heading = { main: '', meta: '' };      // updateReadout
+let materialsShown = false;                  // syncGeometry
+function barTicks(lo, hi, logScale, factor, count) {
+  // round values along the colour bar [{ t in 0..1, text }], lowest first: 1-2-5 steps, on a log scale the decades
+  // (round values when fewer than two decades fit). The limits are labelled only when they are round themselves;
+  // the caller drops labels that would run into another
+  const l0 = Math.log10(lo), l1 = Math.log10(hi);
+  const place = (v) => Math.min(1, Math.max(0, logScale ? (Math.log10(v) - l0) / (l1 - l0) : (v - lo) / (hi - lo)));
+  if (logScale) {
+    const decades = [];
+    for (let k = Math.ceil(l0 - 1e-9); k <= l1 + 1e-9; k++)
+      decades.push({ t: place(Math.pow(10, k)), text: Number((Math.pow(10, k) / factor).toPrecision(3)).toString() });
+    if (decades.length >= 2) return decades;
+  }
+  let out = [];
+  for (let n = count; n <= 8 * count && out.length < 2; n *= 2) {   // a narrow range: finer steps until two fit
+    const { ticks, decimals } = niceTicks(lo / factor, hi / factor, n);
+    out = ticks.map((v) => ({ t: place(v * factor), text: v.toFixed(decimals) }));
+  }
+  return out;
+}
+function drawHeading(c) {
+  if (fig.title === 'off') return;
+  const px = pixelRatio, size = fig.title_size * px, pad = PAD * px, spot = TOP_SPOT[fig.title];
+  const x = spot === 'left' ? pad : spot === 'right' ? canvas.width - pad : overlayCentre()[0];
+  c.textAlign = spot; c.textBaseline = 'top';
+  c.font = '600 ' + size + 'px ' + themeColors.font; c.fillStyle = themeColors.headText;
+  c.fillText(heading.main, x, pad - 0.1 * size);
+  c.font = 0.5 * size + 'px ' + themeColors.font; c.fillStyle = themeColors.axisText;
+  c.fillText(heading.meta, x, pad + 1.2 * size);
+}
+function drawColorbar(c) {
+  const where = fig.colorbar;
+  if (where === 'off') return;
+  const px = pixelRatio, W = canvas.width, H = canvas.height, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F;
+  const [lo, hi] = limits(), logScale = state.log && LOG_OK, S = barScale(lo, hi, Q.unit);
+  const name = Q.label + (S.unit ? ' (' + S.unit + ')' : '') + (logScale ? ', log scale' : '');
+  const upright = where === 'left' || where === 'right', centred = where === 'top' || where === 'bottom';
+  const length = Math.min(fig.colorbar_length !== null ? fig.colorbar_length * (upright ? H : W)
+    : (upright ? 0.6 * H : centred ? 0.5 * W : Math.min(18 * F, 0.45 * W)), (upright ? H : W) - 2 * pad);
+  const ticks = barTicks(lo, hi, logScale, S.factor, Math.max(2, Math.min(8, Math.round(length / (5 * F)))));
+  const stops = CMAPS[state.cmap], [cx, cy] = overlayCentre(), taken = [];
+  const free = (a, b, margin) => !taken.some(([p, q]) => a < q + margin && b > p - margin);
+  c.font = F + 'px ' + themeColors.font; c.lineWidth = px; c.strokeStyle = themeColors.axisTick;
+  if (!upright) {
+    // name, bar, ticks and labels from the top down
+    const headH = headingHeight();
+    const x0 = where.endsWith('left') ? pad : where.endsWith('right') ? W - pad - length
+      : Math.max(pad, Math.min(cx - 0.5 * length, W - pad - length));
+    const y0 = where.startsWith('bottom') ? H - pad - B.height
+      : pad + (headH && TOP_SPOT[fig.title] === TOP_SPOT[where] ? headH + gap : 0);
+    const barY = y0 + 1.4 * F, labelY = barY + B.thick + B.tick + 0.2 * F;
+    const gradient = c.createLinearGradient(x0, 0, x0 + length, 0);
+    stops.forEach((s, i) => gradient.addColorStop(i / (stops.length - 1), s));
+    c.fillStyle = gradient; c.fillRect(x0, barY, length, B.thick); c.strokeRect(x0, barY, length, B.thick);
+    c.fillStyle = themeColors.axisText; c.textAlign = 'left'; c.textBaseline = 'top';
+    c.fillText(name, x0, y0);
+    c.beginPath();
+    for (const T of ticks) {
+      const x = x0 + T.t * length, w = c.measureText(T.text).width;
+      const a = x - 0.5 * w;
+      if (!free(a, a + w, 0.5 * F)) continue;
+      taken.push([a, a + w]);
+      c.moveTo(x, barY + B.thick); c.lineTo(x, barY + B.thick + B.tick);
+      c.fillText(T.text, a, labelY);
+    }
+    c.stroke();
+    return;
+  }
+  // upright: from the canvas edge inwards the turned name, the labels, the ticks, the bar (lowest value at the bottom)
+  const right = where === 'right', dir = right ? 1 : -1;
+  const y0 = Math.max(pad, Math.min(cy - 0.5 * length, H - pad - length)), y1 = y0 + length;
+  const barX = right ? W - pad - B.width : pad + B.width - B.thick, tickX = right ? barX + B.thick : barX;
+  const gradient = c.createLinearGradient(0, y1, 0, y0);
+  stops.forEach((s, i) => gradient.addColorStop(i / (stops.length - 1), s));
+  c.fillStyle = gradient; c.fillRect(barX, y0, B.thick, length); c.strokeRect(barX, y0, B.thick, length);
+  c.fillStyle = themeColors.axisText; c.textAlign = right ? 'left' : 'right'; c.textBaseline = 'top';
+  let widest = 0;
+  c.beginPath();
+  for (const T of ticks) {
+    const y = y1 - T.t * length;
+    const a = y - 0.5 * F;
+    if (!free(a, a + F, 0.25 * F)) continue;
+    taken.push([a, a + F]);
+    c.moveTo(tickX, y); c.lineTo(tickX + dir * B.tick, y);
+    c.fillText(T.text, tickX + dir * (B.tick + 0.3 * F), a);
+    widest = Math.max(widest, c.measureText(T.text).width);
+  }
+  c.stroke();
+  c.save();
+  c.translate(tickX + dir * (B.tick + 0.3 * F + widest + 0.9 * F), 0.5 * (y0 + y1));   // right after the widest label
+  c.rotate(-Math.PI / 2); c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText(name, 0, 0);
+  c.restore();
+}
+// overlay parts moved by dragging them (pointer handlers below; double-click puts one back): the material legend and
+// the scale bar. offset = CSS px from the part's home place, remembered per file like the limits; box = where it
+// was last drawn (device px), null while it is not shown
+function movablePart(name) {
+  const storeKey = name + ':' + location.pathname, v = storedJson(storeKey);
+  return { storeKey, box: null,
+    offset: Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && isFinite(n)) ? v : [0, 0] };
+}
+const MOVABLE = { legend: movablePart('legend'), scaleBar: movablePart('scale_bar') };
+function placePart(part, homeLeft, homeTop, width, height) {
+  // top left (device px) of a movable part of that size: home plus its offset, kept inside the canvas; the offset
+  // follows, so a drag past an edge turns back at once
+  const px = pixelRatio;
+  const left = Math.max(0, Math.min(homeLeft + part.offset[0] * px, canvas.width - width));
+  const top = Math.max(0, Math.min(homeTop + part.offset[1] * px, canvas.height - height));
+  if (part.offset[0] !== 0 || part.offset[1] !== 0) part.offset = [(left - homeLeft) / px, (top - homeTop) / px];
+  part.box = [left, top, left + width, top + height];
+  return [left, top];
+}
+function homePart(part) { part.offset = [0, 0]; store(part.storeKey, JSON.stringify(part.offset)); }
+function overlayColor(choice, themed) { return choice === 'white' ? '#ffffff' : choice === 'black' ? '#000000' : themed; }
+function drawMaterials(c) {
+  // the material colours of the drawn objects; home: below the heading / colour bar of the top right corner
+  MOVABLE.legend.box = null;
+  if (!materialsShown) return;
+  const px = pixelRatio, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F, headH = headingHeight(), row = 1.45 * F;
+  c.font = F + 'px ' + themeColors.font; c.textAlign = 'right'; c.textBaseline = 'middle';
+  const width = 1.5 * F + Math.max(...GEOM.materials.map((m) => c.measureText(m.name).width));
+  const height = row * GEOM.materials.length - (row - 0.9 * F);
+  const homeLeft = canvas.width - pad - (fig.colorbar === 'right' ? B.width + gap : 0) - width;
+  const homeTop = Math.max(40 * px, pad + (fig.title === 'top_right' ? headH + gap : 0) + (fig.colorbar === 'top_right' ? B.height + gap : 0));
+  const [left, top] = placePart(MOVABLE.legend, homeLeft, homeTop, width, height);
+  const ink = overlayColor(fig.legend_color, themeColors.axisText);
+  let y = top;
+  for (const m of GEOM.materials) {
+    c.fillStyle = m.color; c.fillRect(left + width - 0.9 * F, y, 0.9 * F, 0.9 * F);
+    c.fillStyle = ink; c.fillText(m.name, left + width - 1.5 * F, y + 0.45 * F);
+    y += row;
+  }
+}
+const LENGTH_UNITS = [[1e3, 'km'], [1, 'm'], [1e-3, 'mm'], [1e-6, 'µm'], [1e-9, 'nm'], [1e-12, 'pm']];
+function lengthText(metres) {
+  for (const [size, unit] of LENGTH_UNITS) if (metres >= size * (1 - 1e-9)) return Number((metres / size).toPrecision(3)) + ' ' + unit;
+  return metres.toExponential(1) + ' m';
+}
+function niceDown(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const m of [5, 2, 1]) if (m * p <= x * (1 + 1e-9)) return m * p; return p; }
+function drawScaleBar(c, view, proj) {
+  // Plot settings scale bar: a bar of a round (or the given) true length with that length above it. Only on a plane
+  // seen face-on, where the screen has one scale; home: the lower left corner inside the map
+  MOVABLE.scaleBar.box = null;
+  if (!scaleBarOffered() || !faceOn()) return;
+  const px = pixelRatio, F = fig.font_size * px, f = stretch(), right = cameraAxes().s;
+  // device px per length unit along the screen's horizontal: a step along the camera's right axis, which is
+  // step / stretch in true coordinates (so the bar is right on a stretched axis and in a turned map too)
+  const step = right.map((v, i) => 0.25 * LARGEST * v / f[i]);
+  const from = project(center, view, proj), to = project(center.map((v, i) => v + step[i]), view, proj);
+  if (!from || !to) return;
+  const perUnit = Math.hypot(to[0] - from[0], to[1] - from[1]) / Math.hypot(step[0], step[1], step[2]);
+  if (!(perUnit > 0) || !isFinite(perUnit)) return;
+  const length = fig.scale_bar_length !== null ? fig.scale_bar_length / LENGTH_SCALE : niceDown(0.2 * canvas.width / perUnit);
+  const text = lengthText(length * LENGTH_SCALE), bar = length * perUnit, thick = Math.max(2 * px, Math.round(0.3 * F));
+  c.font = '600 ' + F + 'px ' + themeColors.font;
+  const width = Math.max(bar, c.measureText(text).width), height = 1.3 * F + thick, ins = viewInsets();
+  const [left, top] = placePart(MOVABLE.scaleBar, ins.left + 1.2 * F, canvas.height - ins.bottom - 1.2 * F - height, width, height);
+  c.fillStyle = overlayColor(fig.scale_bar_color, themeColors.headText); c.textAlign = 'center'; c.textBaseline = 'top';
+  c.fillText(text, left + 0.5 * width, top);
+  c.fillRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick);
+}
+function drawOverlay(view, proj) { drawHeading(actx); drawColorbar(actx); drawMaterials(actx); drawScaleBar(actx, view, proj); }
 function composite(target) {
-  // the GL view with its axes on a 2D canvas: call right after draw() (the GL buffer is not preserved)
+  // the GL view with its overlay (axes, heading, colour bar) on a 2D canvas: call right after draw() (the GL buffer
+  // is not preserved)
   if (target.width !== canvas.width || target.height !== canvas.height) { target.width = canvas.width; target.height = canvas.height; }
   const c = target.getContext('2d'); c.drawImage(canvas, 0, 0); c.drawImage(axesCanvas, 0, 0);
   return target;
@@ -738,27 +1116,42 @@ function lineRgba(G) {
 }
 const LINE_VS = `#version 300 es
 precision highp float;
-in vec3 aA; in vec3 aB; in float aS; in vec2 aCorner;
+in vec3 aA; in vec3 aB; in float aS; in vec3 aIn; in vec2 aCorner;
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
-uniform vec2 uViewport; uniform float uWidth; uniform vec3 uMirA; uniform vec3 uMirB;
-out float vAlong;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uMirA; uniform vec3 uMirB; uniform float uInset;
+out float vAlong; out vec3 vPlace;
 void main() {
+  vPlace = mix(aA, aB, aCorner.x) * uMirA + uMirB;
   vec4 ca = uProj * uView * vec4((aA * uMirA + uMirB - uCenter) * uStretch, 1.0);
   vec4 cb = uProj * uView * vec4((aB * uMirA + uMirB - uCenter) * uStretch, 1.0);
   vec2 sa = ca.xy / max(ca.w, 1e-6) * uViewport, sb = cb.xy / max(cb.w, 1e-6) * uViewport;
   vec2 d = sb - sa; float len = length(d);
   vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+  vec2 across = vec2(-dir.y, dir.x);
+  // uInset (material-coloured outlines): the line lies on its object's side of the segment (aIn: unit direction into
+  // the object, zero = none), so two objects meeting on a line show both colours, each on its own side; the side on
+  // screen comes from a point one segment length inside, placed like the segment (mirror images, stretch)
+  float side = 0.0;
+  if (uInset > 0.5 && dot(aIn, aIn) > 0.0) {
+    vec3 mid = 0.5 * (aA + aB), inner = mid + aIn * distance(aA, aB);
+    vec4 cm = uProj * uView * vec4((mid * uMirA + uMirB - uCenter) * uStretch, 1.0);
+    vec4 ci = uProj * uView * vec4((inner * uMirA + uMirB - uCenter) * uStretch, 1.0);
+    side = sign(dot(across, (ci.xy / max(ci.w, 1e-6) - cm.xy / max(cm.w, 1e-6)) * uViewport));
+  }
   vec4 c = mix(ca, cb, aCorner.x);
-  // half a width to each side, and past each end so the joints between segments close (uWidth in device px)
-  c.xy += (vec2(-dir.y, dir.x) * aCorner.y + dir * (2.0 * aCorner.x - 1.0)) * uWidth * c.w / uViewport;
+  // half a width to each side (inset: all of it on the object's side), and past each end so the joints between
+  // segments close (uWidth in device px)
+  c.xy += (across * (aCorner.y + side) + dir * (2.0 * aCorner.x - 1.0)) * uWidth * c.w / uViewport;
   vAlong = aS + aCorner.x * distance(aA, aB);
   gl_Position = c;
 }`;
 const LINE_FS = `#version 300 es
 precision highp float;
-in float vAlong; uniform vec4 uColor; uniform float uDash;
+in float vAlong; in vec3 vPlace; uniform vec4 uColor; uniform float uDash;
+uniform vec3 uClipLo; uniform vec3 uClipHi;
 out vec4 outColor;
 void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   if (uDash > 0.0 && mod(vAlong, 2.0 * uDash) > uDash) discard;
   outColor = uColor;
 }`;
@@ -766,13 +1159,14 @@ const GLASS_VS = `#version 300 es
 precision highp float;
 in vec3 aPos; uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
 uniform vec3 uMirA; uniform vec3 uMirB;
-out vec3 vViewPos;
-void main() { vec4 vp = uView * vec4((aPos * uMirA + uMirB - uCenter) * uStretch, 1.0); vViewPos = vp.xyz; gl_Position = uProj * vp; }`;
+out vec3 vViewPos; out vec3 vPlace;
+void main() { vPlace = aPos * uMirA + uMirB; vec4 vp = uView * vec4((vPlace - uCenter) * uStretch, 1.0); vViewPos = vp.xyz; gl_Position = uProj * vp; }`;
 const GLASS_FS = `#version 300 es
 precision highp float;
-in vec3 vViewPos; uniform vec4 uColor;
+in vec3 vViewPos; in vec3 vPlace; uniform vec4 uColor; uniform vec3 uClipLo; uniform vec3 uClipHi;
 out vec4 outColor;
 void main() {
+  if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   // faces seen edge-on read stronger (a rim), faces turned to the eye lighter
   float facing = abs(normalize(cross(dFdx(vViewPos), dFdy(vViewPos))).z);
   outColor = vec4(uColor.rgb * (0.8 + 0.3 * facing), uColor.a * (1.6 - 0.9 * facing));
@@ -788,19 +1182,21 @@ function linkProgram(vs, fs, names, into) {
 function setupGeometryGL() {
   if (!GEOM_MODES.length) return false;
   lineProg = linkProgram(LINE_VS, LINE_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uViewport', 'uWidth', 'uColor', 'uDash',
-                                            'uMirA', 'uMirB'], lineUni);
+                                            'uMirA', 'uMirB', 'uClipLo', 'uClipHi', 'uInset'], lineUni);
   const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]);
   const aCorner = gl.getAttribLocation(lineProg, 'aCorner');
-  const rowAttributes = [['aA', 3, 0], ['aB', 3, 12], ['aS', 1, 24]].map(([n, size, offset]) => [gl.getAttribLocation(lineProg, n), size, offset]);
+  // one row of 10 float32 per segment: start, end, arc length at the start, unit direction into the object
+  const rowAttributes = [['aA', 3, 0], ['aB', 3, 12], ['aS', 1, 24], ['aIn', 3, 28]].map(([n, size, offset]) => [gl.getAttribLocation(lineProg, n), size, offset]);
   for (const G of GEOM_LINES) {
     G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao);
     vertexBuffer(aCorner, corners, 2, gl.STATIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, G.rows, gl.STATIC_DRAW);
     for (const [loc, size, offset] of rowAttributes) if (loc >= 0) {
-      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 28, offset); gl.vertexAttribDivisor(loc, 1); }
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 40, offset); gl.vertexAttribDivisor(loc, 1); }
   }
   if (GEOM_FACES.length) {
-    glassProg = linkProgram(GLASS_VS, GLASS_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uColor', 'uMirA', 'uMirB'], glassUni);
+    glassProg = linkProgram(GLASS_VS, GLASS_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uColor', 'uMirA', 'uMirB',
+                                                 'uClipLo', 'uClipHi'], glassUni);
     const aPos = gl.getAttribLocation(glassProg, 'aPos');
     for (const G of GEOM_FACES) { G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao); vertexBuffer(aPos, G.pos, 3, gl.STATIC_DRAW); }
   }
@@ -819,6 +1215,7 @@ function drawGeometry(view, proj) {
     gl.useProgram(glassProg);
     gl.uniformMatrix4fv(glassUni.uView, false, view); gl.uniformMatrix4fv(glassUni.uProj, false, proj);
     gl.uniform3fv(glassUni.uCenter, center); gl.uniform3fv(glassUni.uStretch, f);
+    gl.uniform3fv(glassUni.uClipLo, clipLo); gl.uniform3fv(glassUni.uClipHi, clipHi);
     gl.depthMask(false);
     for (const I of images()) {
       setImage(glassUni, I);
@@ -832,6 +1229,7 @@ function drawGeometry(view, proj) {
   gl.useProgram(lineProg);
   gl.uniformMatrix4fv(lineUni.uView, false, view); gl.uniformMatrix4fv(lineUni.uProj, false, proj);
   gl.uniform3fv(lineUni.uCenter, center); gl.uniform3fv(lineUni.uStretch, f);
+  gl.uniform3fv(lineUni.uClipLo, clipLo); gl.uniform3fv(lineUni.uClipHi, clipHi);
   gl.uniform2f(lineUni.uViewport, canvas.width, canvas.height);
   if (PLANAR) gl.disable(gl.DEPTH_TEST);       // one plane seen face-on (or raised by relief): outlines on top
   const dash = 0.008 * (Math.max(...SPAN) || 1);
@@ -840,8 +1238,12 @@ function drawGeometry(view, proj) {
     for (const G of GEOM_LINES) {
       if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
       if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
+      // material-coloured outlines lie inside their own object (two objects meeting on a line: both colours show,
+      // each on its side) and are a little wider; one-colour outlines stay centred on the true boundary
+      const inset = G.kind === 'outline' && state.geomColor === 'material';
       gl.uniform4fv(lineUni.uColor, lineRgba(G));
-      gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : G.kind === 'edge' ? 1.25 : 1.75) * pixelRatio);
+      gl.uniform1f(lineUni.uInset, inset ? 1 : 0);
+      gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : G.kind === 'edge' ? 1.25 : inset ? 2.25 : 1.75) * pixelRatio);
       gl.uniform1f(lineUni.uDash, G.dashed ? dash : 0);
       gl.bindVertexArray(G.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, G.count);
     }
@@ -850,30 +1252,27 @@ function drawGeometry(view, proj) {
 }
 function syncGeometry() {
   $('geom').value = state.geom; $('geomcolor').value = state.geomColor; $('geomcolor').disabled = state.geom === 'off';
-  // material legend when material colours are shown (edges, glass, or material-coloured outlines)
-  const shown = GEOM && state.geom !== 'off' && (state.geom !== 'outline' || state.geomColor === 'material');
-  $('mats').hidden = !shown || !GEOM.materials.length;
-  if (!$('mats').hidden) $('mats').replaceChildren(...GEOM.materials.map((m) => {
-    const s = document.createElement('span'), chip = document.createElement('i');
-    chip.style.background = m.color; s.append(m.name, chip); return s; }));
+  // material legend (drawMaterials) when material colours are shown (edges, glass, or material-coloured outlines)
+  materialsShown = !!GEOM && GEOM.materials.length > 0 && state.geom !== 'off'
+    && (state.geom !== 'outline' || state.geomColor === 'material');
 }
 $('geomgroup').style.display = GEOM_MODES.length ? '' : 'none';
 $('geom').replaceChildren(...GEOM_MODES.map(([key, label]) => new Option(label, key)));
 $('geom').onchange = (e) => { state.geom = e.target.value; syncGeometry(); };
 $('geomcolor').onchange = (e) => { state.geomColor = e.target.value; store('geom_color', state.geomColor); syncGeometry(); };
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   if ((e.key === 'g' || e.key === 'G') && GEOM_MODES.length) {
     const keys = GEOM_MODES.map(([key]) => key); state.geom = keys[(keys.indexOf(state.geom) + 1) % keys.length]; syncGeometry(); }
 });
 syncGeometry();
 
-// ---------- readout and legend ----------
+// ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
 function updateReadout() {
   const F = FRAMES[state.frame];
-  const name = Q.label + (Q.unit ? ' (' + Q.unit + ')' : '');
   const label = (F.label || '').replace(/\blambda\b/g, 'λ');
-  $('rf').textContent = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
+  heading.main = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
   const parts = [];
   if (KIND !== 'single' || label) parts.push(Q.label);
   if (F.empty) parts.push('no value in this frame');
@@ -881,14 +1280,107 @@ function updateReadout() {
   if (planes.length) parts.push(planes.join(', '));
   if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
   if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
-  $('rm').textContent = parts.join('  ·  ');
+  heading.meta = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
-  const [lo, hi] = limits();
-  $('lgname').textContent = name + (state.log && LOG_OK ? ', log scale' : '');
-  $('lgbar').style.background = 'linear-gradient(90deg,' + CMAPS[state.cmap].join(',') + ')';
-  $('lglo').textContent = fmtValue(lo, Q.unit);
-  $('lgmid').textContent = SIGNED ? '0' : (state.log && LOG_OK ? fmtValue(Math.sqrt(lo * hi), Q.unit) : '');
-  $('lghi').textContent = fmtValue(hi, Q.unit);
+  const [lo, hi] = autoLimits();
+  $('fs_color_min').placeholder = String(Number(lo.toPrecision(3)));   // grey: the automatic value
+  $('fs_color_max').placeholder = String(Number(hi.toPrecision(3)));
+}
+
+// ---------- Plot settings panel: every key of fig has the input 'fs_<key>' ----------
+const SETTING_KEYS = Object.keys(FIGURE_DEFAULTS);
+function shownPer(k) { return /^[xyz]_/.test(k) || k === 'scale_bar_length' ? 1 / LENGTH_SCALE : 1; }   // panel value per stored value (lengths: m -> length units)
+function changedSettings() { return Object.fromEntries(SETTING_KEYS.filter((k) => fig[k] !== FIGURE_DEFAULTS[k]).map((k) => [k, fig[k]])); }
+function syncSettings() {
+  for (const k of SETTING_KEYS) {
+    const el = $('fs_' + k);
+    el.value = fig[k] === null ? '' : el.tagName === 'SELECT' ? String(fig[k]) : String(Number((fig[k] * shownPer(k)).toPrecision(7)));
+    el.classList.remove('bad');
+  }
+  // a pair that leaves nothing is not applied: marked
+  const colourBad = fig.color_min !== null && fig.color_max !== null && !(fig.color_max > fig.color_min);
+  $('fs_color_min').classList.toggle('bad', colourBad); $('fs_color_max').classList.toggle('bad', colourBad);
+  const [lo, hi] = dataBounds(state.mirror);
+  for (const c of [0, 1, 2]) {
+    const lower = $('fs_' + AXIS_NAMES[c] + '_min'), upper = $('fs_' + AXIS_NAMES[c] + '_max');
+    const flat = PLANAR && c === NORMAL;       // one plane: no range along its normal
+    const bad = !flat && (lower.value !== '' || upper.value !== '') && !limitedRange(c, lo[c], hi[c]);
+    lower.disabled = upper.disabled = flat;
+    lower.classList.toggle('bad', bad); upper.classList.toggle('bad', bad);
+    lower.placeholder = flat ? '' : String(Number(lo[c].toPrecision(4)));
+    upper.placeholder = flat ? '' : String(Number(hi[c].toPrecision(4)));
+  }
+  $('fs_text').value = JSON.stringify(changedSettings()).replace(/,"/g, ', "').replace(/":/g, '": ');
+  const limited = LIMIT_KEYS.some((k) => fig[k] !== null);
+  $('settingsbtn').textContent = 'Plot settings' + (limited ? ' •' : '');
+  $('settingsbtn').title = 'Font sizes, colour and axis limits, colour bar and label places of the picture'
+    + (limited ? ' (limits are set)' : '');
+  $('range').disabled = fig.color_max !== null || (SIGNED && fig.color_min !== null);   // the limit it scales is given
+  $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
+}
+function applySettings(boundsChanged) {
+  // after fig changed: remember it, refit unless the view was panned / zoomed by hand (new bounds always refit)
+  saveFigure(); readTheme();
+  if (boundsChanged) { setBounds(state.mirror); writeBox(); cam.target = [0, 0, 0]; }
+  if (boundsChanged || !cam.moved) fitDistance();
+  updateReadout(); syncControls(); syncSettings();
+}
+for (const k of SETTING_KEYS) {
+  const el = $('fs_' + k);
+  const take = (typing) => {
+    // typing: a ranged number (font sizes, bar length) is applied while typed, once it is a valid value; the limits
+    // wait for Enter / leaving the field (half-typed numbers would crop and refit the view)
+    let value;
+    if (el.tagName === 'SELECT') value = typeof FIGURE_DEFAULTS[k] === 'number' ? +el.value : el.value;
+    else if (el.value.trim() === '') value = null;
+    else value = Number((+el.value / shownPer(k)).toPrecision(7));
+    if (value === null && FIGURE_DEFAULTS[k] !== null) { if (!typing) syncSettings(); return; }   // a size cannot be empty: as before
+    if (!validSetting(k, value)) { el.classList.add('bad'); return; }
+    if (value === fig[k]) { el.classList.remove('bad'); return; }
+    fig[k] = value;
+    if (k === 'scale_bar') state.axes = !scaleBarOffered();   // the bar stands in for the axes (the Axes button brings them back)
+    applySettings(/^[xyz]_/.test(k));
+  };
+  el.addEventListener('change', () => take(false));
+  if (k in FIGURE_RANGES) el.addEventListener('input', () => take(true));
+}
+$('fs_colorhead').textContent = 'Colour limits' + (Q.unit ? ' (' + Q.unit + ')' : '');
+$('fs_axishead').textContent = 'Axis limits (' + lengthUnit + ')';
+$('fs_scalehead').textContent = 'Scale bar (' + lengthUnit + ')';
+// what needs one plane seen face-on (axis label sides, the scale bar) is offered for planar views only; the material
+// legend's colour only with model objects on the page
+for (const id of ['fs_sidelabel', 'fs_horizontal_axis', 'fs_vertical_axis', 'fs_scalehead', 'fs_scalelabel', 'fs_scale_bar',
+                  'fs_scale_bar_length', 'fs_scalecolorlabel', 'fs_scale_bar_color']) $(id).style.display = PLANAR ? '' : 'none';
+for (const id of ['fs_legendhead', 'fs_legendlabel', 'fs_legend_color']) $(id).style.display = DATA.geometry ? '' : 'none';
+$('settingsbtn').onclick = () => { $('settings').hidden = !$('settings').hidden; syncControls(); };
+$('settingsclose').onclick = () => { $('settings').hidden = true; syncControls(); };
+$('fs_reset').onclick = () => {
+  Object.assign(fig, FIGURE_DEFAULTS, DATA.figure || {});
+  state.axes = !scaleBarOffered();
+  Object.values(MOVABLE).forEach(homePart);   // the dragged material legend and scale bar too
+  applySettings(true);
+};
+$('fs_copy').onclick = () => {
+  const area = $('fs_text'); area.select();
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(area.value).catch(() => document.execCommand('copy'));
+  else document.execCommand('copy');
+};
+{ // the panel is moved by its head, inside the view
+  const panel = $('settings'), head = $('settingshead'); let grab = null;
+  head.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    const r = panel.getBoundingClientRect(), frame = panel.parentElement.getBoundingClientRect();
+    grab = { dx: e.clientX - r.left, dy: e.clientY - r.top, frame, w: r.width, h: r.height };
+    head.setPointerCapture(e.pointerId);
+  });
+  head.addEventListener('pointermove', (e) => {
+    if (!grab) return;
+    const x = Math.max(0, Math.min(e.clientX - grab.frame.left - grab.dx, grab.frame.width - grab.w));
+    const y = Math.max(0, Math.min(e.clientY - grab.frame.top - grab.dy, grab.frame.height - grab.h));
+    panel.style.left = x + 'px'; panel.style.top = y + 'px'; panel.style.right = 'auto'; panel.style.bottom = 'auto';
+  });
+  head.addEventListener('pointerup', () => { grab = null; });
+  head.addEventListener('pointercancel', () => { grab = null; });
 }
 
 // ---------- controls ----------
@@ -909,6 +1401,7 @@ function syncControls() {
   $('mirror').setAttribute('aria-pressed', String(state.mirror));
   $('spin').setAttribute('aria-pressed', String(state.spin));
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
+  $('settingsbtn').setAttribute('aria-pressed', String(!$('settings').hidden));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
@@ -952,7 +1445,7 @@ $('box').onclick = () => { state.box = !state.box; syncControls(); };
 $('axesbtn').onclick = () => { state.axes = !state.axes; syncControls(); };
 $('stretch').onclick = () => { state.stretch = !state.stretch; fitDistance(); updateReadout(); syncControls(); };
 $('mirror').onclick = () => { state.mirror = !state.mirror; setBounds(state.mirror); writeBox(); cam.target = [0, 0, 0];
-  fitDistance(); updateReadout(); syncControls(); };
+  fitDistance(); updateReadout(); syncControls(); syncSettings(); };
 $('spin').onclick = () => { state.spin = !state.spin; syncControls(); };
 $('present').onclick = () => { document.body.classList.toggle('present'); syncControls(); setTimeout(() => { resize(); fitDistance(); }, 0); };
 $('theme').onclick = () => {
@@ -963,7 +1456,13 @@ $('theme').onclick = () => {
 function fileStem() { return (DATA.title || 'field').replace(/[^\w.-]+/g, '_').slice(0, 60); }
 function download(href, name) { const a = document.createElement('a'); a.href = href; a.download = name;
   document.body.appendChild(a); a.click(); a.remove(); }
-$('png').onclick = () => { draw(); download(composite(document.createElement('canvas')).toDataURL('image/png'), fileStem() + '.png'); };
+$('png').onclick = () => {
+  // one draw at the Plot settings PNG size (the canvases take that many pixels for it), then back to the screen's
+  renderScale = fig.export_scale; draw();
+  const url = composite(document.createElement('canvas')).toDataURL('image/png');
+  renderScale = 1; draw();
+  download(url, fileStem() + '.png');
+};
 let recorder = null, recordCanvas = null;   // recordings capture the composite (view + axes), refreshed after each draw
 $('record').onclick = () => {
   if (recorder) { recorder.stop(); return; }
@@ -991,7 +1490,8 @@ $('record').onclick = () => {
   setTimeout(() => { if (recorder) recorder.stop(); }, 1000 * seconds + 150);
 };
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;   // browser shortcuts (copy, select all) are not view keys
   const k = e.key;
   if (k === ' ' && KIND === 'time') { $('play').click(); e.preventDefault(); }
   else if (k === 'ArrowLeft' && NF > 1) { $('prev').click(); e.preventDefault(); }
@@ -1008,28 +1508,55 @@ window.addEventListener('keydown', (e) => {
 
 // ---------- pointer: orbit, pan, zoom ----------
 const pointers = new Map(); let pinch = 0;
-canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); pointers.set(e.pointerId, [e.clientX, e.clientY, e.shiftKey || e.button === 2]); });
-canvas.addEventListener('pointerup', (e) => { pointers.delete(e.pointerId); pinch = 0; });
-canvas.addEventListener('pointercancel', (e) => { pointers.delete(e.pointerId); pinch = 0; });
+let partDrag = null;                         // { part, id, x, y (last client px) } while a movable overlay part is dragged
+function partUnder(e) {
+  // the movable overlay part (MOVABLE) under the pointer, or null: the overlay canvas takes no pointer input itself
+  const r = canvas.getBoundingClientRect(), reach = 4 * pixelRatio;
+  const x = (e.clientX - r.left) * canvas.width / Math.max(r.width, 1), y = (e.clientY - r.top) * canvas.height / Math.max(r.height, 1);
+  return Object.values(MOVABLE).find((P) => P.box && x >= P.box[0] - reach && x <= P.box[2] + reach
+                                                  && y >= P.box[1] - reach && y <= P.box[3] + reach) || null;
+}
+function endPartDrag(e) {
+  if (!partDrag || partDrag.id !== e.pointerId) return;
+  store(partDrag.part.storeKey, JSON.stringify(partDrag.part.offset)); partDrag = null;
+}
+canvas.addEventListener('pointerdown', (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const part = e.button === 0 && !partDrag ? partUnder(e) : null;
+  if (part) { partDrag = { part, id: e.pointerId, x: e.clientX, y: e.clientY }; return; }
+  pointers.set(e.pointerId, [e.clientX, e.clientY, e.shiftKey || e.button === 2]);
+});
+canvas.addEventListener('pointerup', (e) => { endPartDrag(e); pointers.delete(e.pointerId); pinch = 0; });
+canvas.addEventListener('pointercancel', (e) => { endPartDrag(e); pointers.delete(e.pointerId); pinch = 0; });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('pointermove', (e) => {
-  if (!pointers.has(e.pointerId)) return;
+  if (partDrag && partDrag.id === e.pointerId) {
+    const P = partDrag.part;
+    P.offset = [P.offset[0] + e.clientX - partDrag.x, P.offset[1] + e.clientY - partDrag.y];
+    partDrag.x = e.clientX; partDrag.y = e.clientY;
+    return;
+  }
+  if (!pointers.has(e.pointerId)) { canvas.style.cursor = partUnder(e) ? 'move' : ''; return; }
   const [px, py, pan] = pointers.get(e.pointerId); const dx = e.clientX - px, dy = e.clientY - py;
   pointers.set(e.pointerId, [e.clientX, e.clientY, pan]);
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-    if (pinch) cam.dist *= pinch / d; pinch = d; return;
+    if (pinch) { cam.dist *= pinch / d; cam.moved = true; } pinch = d; return;
   }
   if (pan) {
     const { s, u } = cameraAxes();
     const k = cam.dist * 0.0018;
-    cam.target = cam.target.map((t, i) => t - (s[i] * dx - u[i] * dy) * k);
+    cam.target = cam.target.map((t, i) => t - (s[i] * dx - u[i] * dy) * k); cam.moved = true;
   } else {
     cam.az -= dx * 0.008; cam.el = Math.max(-1.55, Math.min(1.56, cam.el + dy * 0.008));
   }
 });
-canvas.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist *= Math.exp(e.deltaY * 0.0012); }, { passive: false });
-canvas.addEventListener('dblclick', () => resetCamera());
+canvas.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist *= Math.exp(e.deltaY * 0.0012); cam.moved = true; }, { passive: false });
+canvas.addEventListener('dblclick', (e) => {
+  // on the material legend or the scale bar: that part back to its home place; anywhere else: the view
+  const part = partUnder(e);
+  if (part) homePart(part); else resetCamera();
+});
 
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
@@ -1050,8 +1577,8 @@ const mq = window.matchMedia('(prefers-color-scheme: dark)');
 if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
-resize(); resetCamera(); syncControls(); select(0);
-window.fieldViewer = { state, select, draw, cam, limits };
+resize(); resetCamera(); syncControls(); syncSettings(); select(0);
+window.fieldViewer = { state, select, draw, cam, limits, figure: fig };
 requestAnimationFrame(tick);
 })();
 </script>

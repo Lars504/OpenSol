@@ -240,8 +240,8 @@ def _dense_eigen_solver():
 
     class DenseEigenSolver(ArpackShiftInvertSolver):
         def eigs(self, matvec, n_unknowns, n_wanted, start_vector=None, tolerance_floor=0.0,
-                 max_restarts=None, default_basis=0, device_matvec=None):   # device_matvec ignored (cpu, dense)
-            identity = np.eye(n_unknowns, dtype=np.complex128)
+                 max_restarts=None, default_basis=0, device_matvec=None, real=False):   # device_matvec ignored
+            identity = np.eye(n_unknowns, dtype=np.float64 if real else np.complex128)   # real: matvec real -> real
             operator = np.column_stack([matvec(identity[:, column]) for column in range(n_unknowns)])
             theta, vectors = np.linalg.eig(operator)
             self.n_eigen_solves += 1

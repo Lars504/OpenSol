@@ -226,8 +226,9 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
 - `assembly_seconds` (work counter) = wall time of every `_build_system`, carried as seconds_counter by the time
   recipe: code calling `_build_system` must not wrap it in another timed group.
 - Self-tests selftests_harmonic (CPU, each with a SelfTestVariant 'gpu' at the same tolerance, but
-  pressure_acoustics_host_direct: the PML duct at two frequencies on mumps_mixed / pardiso vs a scipy_splu node, cpu
-  only, skipped without python-mumps / pydiso); pressure_acoustics_rigid_disk uses t / a = 0.001 (the square-rim thickness correction ~(t / a) ln(a / t) is +3 % at the template's 0.01).
+  pressure_acoustics_host_direct: the PML duct at three frequencies on mumps_mixed / pardiso vs a scipy_splu node, cpu
+  only, skipped without python-mumps / pydiso; three because the PARDISO thread rule re-analyses this small factor once
+  at its first refactor, so only the third frequency shows a reused analysis); pressure_acoustics_rigid_disk uses t / a = 0.001 (the square-rim thickness correction ~(t / a) ln(a / t) is +3 % at the template's 0.01).
 - Open: losses, eigenfrequency study, structural couplings, m > 0, Bloch / periodic faces, interior zero-thickness
   rigid sheets (need doubled dofs).
 

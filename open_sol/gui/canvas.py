@@ -1494,6 +1494,7 @@ class ModelCanvas(QtWidgets.QWidget):
         stretched = model.view != 'xy' and self._stretch_z
         self._plot.setLabel('bottom', f'{u_axis} ({model.unit})')
         self._plot.setLabel('left', f'{v_axis} ({model.unit}, stretched)' if stretched else f'{v_axis} ({model.unit})')
+        self.plot_panel.set_unit_length(model.scale)   # the scale bar shown instead of the axes names lengths with it
         self._update_mesh_badge(model)
         if self.mode == 'field':
             self._update_field_image()

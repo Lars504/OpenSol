@@ -1324,11 +1324,11 @@ _RESULTS_NOTES = (
         '(values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, '
         'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
         '(values, x_centers, y_centers, z_centers, metadata kind volume); '
-        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None) -> the written .html "
-        'path: a '
+        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None) -> the "
+        'written .html path: a '
         'self-contained web '
         'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
-        "and video export); what = a field ('physics.component' or a unique component; physics narrows it): every "
+        "and video export, the PNG as shown with its heading, axes and colour bar); what = a field ('physics.component' or a unique component; physics narrows it): every "
         'stored snapshot holding it is a frame (time snapshots play, labelled ones such as wavelengths or modes get '
         'a slider), else the current / saved state, a 2D map (optional relief) or a 3D field on its cut planes in '
         'place (live state: an x, y and z cut, each at a mirror plane of the field\'s physics (the window cell next '
@@ -1345,7 +1345,25 @@ _RESULTS_NOTES = (
         'spec: pass geometry=False); a model with mirror planes (field pages, 2D DFT maps): the page also draws '
         "the field's mirror images (signs by its parity) and the objects', the whole structure, switched by its "
         'Mirror button; large data is thinned (grid stride, evenly '
-        'kept frames, named in the page subtitle); other result kinds raise ValueError (figures); live, closed or '
+        'kept frames, named in the page subtitle); figure (field and dft_fields pages; ValueError on a mode_shapes '
+        "page, for an unknown key, a value outside its choices / range or min >= max): {setting: value} the page's "
+        'Plot settings panel opens with (the panel edits the same settings, the browser remembers them and its '
+        'Copy settings gives this dict; None / missing = automatic): font_size (px of the axis and colour bar '
+        "texts, 6 - 40, default 11), title_size (px of the heading, 8 - 72, default 26), title 'top_left' | "
+        "'top_center' | 'top_right' | 'off' (heading: frame label and field), color_min / color_max (colour "
+        'limits in the field unit; a signed field with only one of them stays symmetric about 0), x_min / x_max / '
+        'y_min / y_max / z_min / z_max (axis limits in m: field, mesh lines and objects are cut there, the axes '
+        "and the fit follow; they may reach past the data; not along the normal of a single plane), colorbar "
+        "'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', "
+        'colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis '
+        "'bottom' | 'top' and vertical_axis 'left' | 'right' (side of the axis ticks and titles of a map seen "
+        "face-on), scale_bar 'on' | 'off' (default 'on': a bar of a round true length on a map seen face-on, in "
+        'place of the axes, so a 2D map / single cut starts with the axes off; a 3D view keeps its axes; dragged on '
+        'the page), scale_bar_length (m, > 0; default a round '
+        "length near a fifth of the view, following the zoom), scale_bar_color and legend_color 'auto' | 'white' "
+        "| 'black' (the scale bar; the names of the material legend, which is dragged on the page too), "
+        "background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG pixels per screen pixel); "
+        'other result kinds raise ValueError (figures); live, closed or '
         'loaded alike; '
         'result(physics, feature, '
         "**options) or result('physics.feature', **options) -> result dict (dft_fields: freq_index=i adds "
@@ -1422,7 +1440,8 @@ _RESULTS_NOTES = (
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
         'export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None, '
-        'physics=None, geometry=True, planes=None) -> the written path: Results.export_html of such a live session '
+        'physics=None, geometry=True, planes=None, figure=None) -> the written path: Results.export_html of such a '
+        'live session '
         '(the GUI View in browser buttons, canvas and Results Field tab: planes = the shown 3D cut); the session '
         'stays open.',
         'Never mix api.run with the GUI worker in one process.',

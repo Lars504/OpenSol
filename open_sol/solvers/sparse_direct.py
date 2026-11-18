@@ -866,28 +866,46 @@ def grid_nested_dissection(shape, leaf_cells=ND_LEAF_CELLS):
     return np.concatenate(pieces)
 
 
-def box_dissection_entries(shape, unknowns_per_cell=1.0, leaf_cells=ND_LEAF_CELLS) -> float:
+def box_dissection_entries(shape, unknowns_per_cell=1.0, leaf_cells=ND_LEAF_CELLS, yee_faces=False) -> float:
     """Counted factor entries of one triangle (diagonal included, in unknowns) of a structured-grid operator of
     +-1 cell coupling eliminated in grid_nested_dissection order (A5: cudss_factor.FactorFill for 3D tensor cuDSS
     factors in place of CUDSS_FILL_3D's growth law): a box's separator plane S (or a leaf box) holds a dense
     triangle plus a full coupling to the ancestor-separator cells on the box's faces, s (s + 1) / 2 + s b with
-    s = |S| and b = those face cells, each cell unknowns_per_cell unknowns (e.g. live Yee unknowns / cells)."""
+    s = |S| and b = those face cells, each cell unknowns_per_cell unknowns (e.g. live Yee unknowns / cells).
+    yee_faces (3D Yee curl-curl, a solver ordering the unknowns itself: cuDSS): a plane's separator is its two
+    tangential E components only (module note below), the normal one joins the hi half."""
+    # yee_faces: E_a of cell i (on its +a face) couples to the tangential components of planes i and i + 1 and to no
+    # E_a along a, so the tangential components of plane m alone separate the grid and E_a of plane m belongs to the
+    # hi half. A box of cells [start, stop) per axis therefore holds component c on [start_c - 1, stop_c) along c when
+    # its lo c-face is a separator (every 3 N component-cell is eliminated once); a plane normal to a holds, per
+    # tangential component c, (extent_c + lo_c) x extent_d sites (d the third axis). Sites carry unknowns_per_cell / 3.
     shape = tuple(int(count) for count in shape)
-    per_cell = float(unknowns_per_cell)
+    if yee_faces and len(shape) != 3:
+        raise ValueError(f'box_dissection_entries: yee_faces needs a 3D grid shape, got {shape}')
+    per_cell = float(unknowns_per_cell) / 3.0 if yee_faces else float(unknowns_per_cell)
     total = 0.0
     boxes = [tuple((0, count) for count in shape)]   # (start, stop) per axis; same splits as grid_nested_dissection
     while boxes:
         box = boxes.pop()
         extents = [stop - start for start, stop in box]
-        boundary = 0   # cells just outside the box's faces (ancestor separators; none on the grid boundary)
+        if yee_faces:
+            component_extents = [extent + (start > 0) for extent, (start, _stop) in zip(extents, box)]
+
+            def plane_sites(normal):   # tangential component sites of a plane normal to this axis, across the box
+                return sum(component_extents[component] * extents[3 - normal - component]
+                           for component in range(3) if component != normal)
+        else:
+            def plane_sites(normal):
+                return math.prod(extents[:normal] + extents[normal + 1:])
+        boundary = 0   # sites just outside the box's faces (ancestor separators; none on the grid boundary)
         for axis, (start, stop) in enumerate(box):
-            face = math.prod(extents[:axis] + extents[axis + 1:])
-            boundary += face * ((start > 0) + (stop < shape[axis]))
+            boundary += plane_sites(axis) * ((start > 0) + (stop < shape[axis]))
         axis = int(np.argmax(extents))
         if math.prod(extents) <= leaf_cells or extents[axis] < 3:
-            eliminated = math.prod(extents)
+            eliminated = (sum(component_extents[component] * math.prod(extents) // extents[component]
+                              for component in range(3)) if yee_faces else math.prod(extents))
         else:
-            eliminated = math.prod(extents[:axis] + extents[axis + 1:])   # the middle plane
+            eliminated = plane_sites(axis)   # the middle plane
             start, stop = box[axis]
             middle = start + extents[axis] // 2
             for half in ((start, middle), (middle + 1, stop)):

@@ -209,7 +209,10 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   without PEC objects, a product per component: a change of those rules changes both; 3 x cells read 11 % high on the
   Mie example), and the factor = the counted box nested dissection of the whole grid (`_box_fill` ->
   `sparse_direct.box_dissection_entries(shape, n / cells)`, cached): `host_counted_lu_bytes` for SuperLU (it factors in
-  that grid ND order) and MUMPS / PARDISO's scaled item, `FactorFill` for cuDSS (CUDSS_FILL_3D read 48 / 76 % low). No
+  that grid ND order) and MUMPS / PARDISO's scaled item, `FactorFill` for cuDSS (CUDSS_FILL_3D read 48 / 76 % low) from
+  the same boxes with `yee_faces=True`: cuDSS orders unknowns itself, and the normal E of a plane does not couple
+  across it, so its separators are the two tangential components (the cell-wise count read a 240 x 33 x 29 grid 54 %
+  high; the host items keep the cell-wise count, SuperLU eliminates whole cells). No
   driven em_fdfd_3d factor exists (eigenfrequency only). Size rule
   `sparse_direct.vector_3d_size_issue`: uncalibrated. Factorization cudss skips both
   (`definition_helpers.eigen_factorization`, `eigen_solver.factorization`) and the ND ordering. `FDFDSystem3D.symmetrizer`

@@ -142,7 +142,10 @@ templates, describe. Current state, no changelog.
   MODULE_UNIT references and the second level (tools_profilers/time_profilers sub file "Reuse"): keep its keyword
   defaults the selftest's. run_all_profilers loads selftest_cache.py as a lone file (no open_sol import) for
   `_package_path` / `_file_units`: no package import at its module level.
-  `package_units` is one snapshot per process (an edit mid-run makes a case stale next time, never falsely fresh);
+  `package_units` is one snapshot per process of the bytes read at its first call (an edit mid-run makes a case stale
+  next time, never falsely fresh); parsed units are kept by file sha1 in `open_sol/__pycache__/selftest_units.pickle`
+  (the whole store is dropped when Python or selftest_cache.py itself changes), so only edited files are parsed again;
+  an edit to the unit rules must live in this file or change the store key;
   unit ids 'normcase'd path::name'; its own file is in no dependency set. Overhead: one Python callback per Python call
   (3.11 has no sys.monitoring). `wall_times` keep every key's last run time (any status) for the progress estimate:
   api.selftest / selftest_examples decide reuse for every phase up front (`api._SelftestPlan`; --all plans the

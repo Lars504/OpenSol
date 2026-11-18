@@ -2,7 +2,7 @@
 ticks, grid), 'Curves' (per curve show, legend text, colour, line, line width, marker, marker size; legend below),
 'Labels' (fonts, texts, colours) and 'Exports' (Export plot, export file, resolution); the shared settings are a
 viz.curve_figure.PlotStyle. The screen shows the style; the export redraws the plot as shown (size, fonts, ticks,
-labels) with matplotlib (pdf / svg / eps / png)."""
+labels) with matplotlib (pdf / svg / eps / png). On the GUI canvas a scale bar can replace the axes."""
 import json
 import math
 import os
@@ -14,8 +14,10 @@ import pyqtgraph as pg
 from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..viz.curve_figure import (LEGEND_LOCATIONS, TICK_DIRECTIONS, AxesData, AxisTicks, ColorbarData, CurveData,
-                                ImageLayer, PlotStyle, SceneData, TextLabel, save_curve_figure)
+from ..viz.common import length_unit
+from ..viz.curve_figure import (LEGEND_LOCATIONS, SCALE_BAR_LOCATIONS, TICK_DIRECTIONS, AxesData, AxisTicks,
+                                ColorbarData, CurveData, ImageLayer, PlotStyle, ScaleBarData, SceneData, TextLabel,
+                                save_curve_figure, scale_bar_layout, scale_bar_origin)
 from .forms import ERROR_COLOR, rich_tooltip
 
 _AXES = ('x', 'y')
@@ -44,8 +46,14 @@ _CHOICE_LABELS = {
     'tick_direction': {'in': 'Inside', 'out': 'Outside'},
     'legend_location': {'best': 'Best place', 'upper right': 'Top right', 'upper left': 'Top left',
                         'lower left': 'Bottom left', 'lower right': 'Bottom right', 'outside right': 'Outside right',
-                        'none': 'Hidden'}}
-_CHOICES = {'tick_direction': TICK_DIRECTIONS, 'legend_location': LEGEND_LOCATIONS}
+                        'none': 'Hidden'},
+    'scale_bar_location': {'lower left': 'Bottom left', 'lower right': 'Bottom right'}}
+_CHOICES = {'tick_direction': TICK_DIRECTIONS, 'legend_location': LEGEND_LOCATIONS,
+            'scale_bar_location': SCALE_BAR_LOCATIONS}
+# x / y pixel scales closer than this count as equal: one bar for both directions (the canvas frame rounds to whole
+# pixels and a hand-zoomed view is a few percent off; the export then sets exactly equal scales)
+_SCALE_TOLERANCE = 0.05
+_SCALE_BAR_Z = 1000.0        # above the view's contents (a sibling of the view box's child group)
 _MAX_FIXED_TICKS = 50   # a fixed tick step giving more major ticks than this falls back to automatic
 _STEP_TIP = ('Distance between major ticks of this plot in the unit shown on the axis (with its prefix, e.g. 0.5 for '
              '0.5 MHz). Empty = automatic. Linear axes only; a step giving more than '
@@ -77,6 +85,29 @@ _AXIS_STYLE_GROUPS = (
         ('boxed', 'Frame on all sides', 'bool', {}, 'Axis lines and ticks also at the top and right.'),
         ('grid', 'Grid', 'bool', {}, ''),
         ('grid_alpha', 'Grid opacity', 'float', {'range': (0.0, 1.0), 'step': 0.05}, ''))),
+)
+# scene plots (the GUI canvas) only, beside 'Axes and ticks'
+_SCALE_BAR_STYLE_GROUPS = (
+    ('Scale bar', (
+        ('scale_bar', 'Scale bar instead of axes', 'bool', {},
+         'Hide the axes and show a bar of a round length in a corner of the view instead (on screen and in the '
+         'exported figure).\n\nWhere the two directions are drawn at clearly different scales, for example a '
+         'stretched view or a thin geometry, each direction gets its own bar. The status bar still shows the '
+         'position under the cursor.'),
+        ('scale_bar_location', 'Position', 'choice', {},
+         'Corner the bar sits in: of the shown field or materials, or of the view when zoomed in.'),
+        ('scale_bar_length', 'Longest length (% of view)', 'float', {'range': (5.0, 90.0), 'step': 5.0},
+         'Share of the view the bar may span. The bar is the longest round length (1, 2 or 5 times a power of '
+         'ten) that fits in it, so it changes in steps while zooming.'),
+        ('scale_bar_width', 'Bar thickness (pt)', 'float', {'range': (0.25, 20.0), 'step': 0.25}, ''),
+        ('scale_bar_color', 'Bar colour', 'color', {},
+         'Grey by default: readable over dark and over light fields.'),
+        ('scale_bar_font_size', 'Font size (pt)', 'float', {'range': (4.0, 40.0), 'step': 0.5}, ''),
+        ('scale_bar_bold', 'Bold text', 'bool', {}, ''),
+        ('scale_bar_text_color', 'Font colour', 'color', {}, ''),
+        ('scale_bar_box', 'Background box', 'bool', {},
+         'Box in the background colour behind the bar and its text, for fields where no single colour stays '
+         'readable.'))),
 )
 _EXPORT_STYLE_GROUPS = (
     ('Export settings', (
@@ -321,7 +352,7 @@ class PlotStyleForm(QtWidgets.QWidget):
             for name, label, kind, options, tip in rows:
                 editor = self._editor(name, kind, options)
                 if tip:
-                    editor.setToolTip(tip)
+                    editor.setToolTip(rich_tooltip(tip))
                 form.addRow(label, editor)
             grid.addWidget(group, index // 2, index % 2, QtCore.Qt.AlignmentFlag.AlignTop)
         defaults_button = QtWidgets.QPushButton('Defaults')
@@ -512,11 +543,7 @@ class _ArticleAxis(pg.AxisItem):
         """pyqtgraph's draw specs; records each level's tick values with the label texts it actually drew."""
         specs = super().generateDrawSpecs(p)
         if specs is not None:
-            drawn_texts = {text for _rect, _flags, text in specs[2]}
-            self.drawn_ticks = []
-            for spacing, values in self._painted_levels:
-                texts = self.tickStrings(values, self.autoSIPrefixScale * self.scale, spacing)
-                self.drawn_ticks.append((list(values), [text if text in drawn_texts else '' for text in texts]))
+            self.drawn_ticks = _drawn_tick_levels(self, self._painted_levels, specs)
             self._tick_text_px = max((rect.width() for rect, _flags, _text in specs[2]), default=0.0)
             self._place_left_label()
         return specs
@@ -540,6 +567,39 @@ class _ArticleAxis(pg.AxisItem):
 
     def logTickStrings(self, values, scale, spacing):
         return log_tick_strings(values, scale)
+
+
+def _drawn_tick_levels(axis, painted_levels, specs):
+    """[(view values, label texts '' = unlabelled)] per painted tick level, from pyqtgraph's draw specs."""
+    drawn_texts = {text for _rect, _flags, text in specs[2]}
+    drawn_levels = []
+    for spacing, values in painted_levels:
+        texts = axis.tickStrings(values, axis.autoSIPrefixScale * axis.scale, spacing)
+        drawn_levels.append((list(values), [text if text in drawn_texts else '' for text in texts]))
+    return drawn_levels
+
+
+def _keep_drawn_ticks(axis):
+    """A plain pyqtgraph AxisItem keeps the ticks of its last paint (drawn_ticks) like an _ArticleAxis: the axis a
+    ColorBarItem creates itself, so the export takes its tick texts as drawn."""
+    tick_values, draw_specs = axis.tickValues, axis.generateDrawSpecs
+    painted_levels = []
+    axis.drawn_ticks = None
+
+    def kept_tick_values(minVal, maxVal, size):
+        painted_levels[:] = tick_values(minVal, maxVal, size)
+        return painted_levels
+
+    def kept_draw_specs(p):
+        specs = draw_specs(p)
+        if specs is not None:
+            axis.drawn_ticks = _drawn_tick_levels(axis, painted_levels, specs)
+        return specs
+
+    axis.tickValues = kept_tick_values
+    axis.generateDrawSpecs = kept_draw_specs
+    axis.picture = None   # a cached paint recorded nothing
+    axis.update()
 
 
 def log_tick_strings(values, scale):
@@ -566,6 +626,124 @@ class _PanelSample(ItemSample):
         event.accept()
 
 
+class _ScaleBar:
+    """Scale bar of a scene plot in a bottom corner of what its view box shows: a horizontal bar of a 1-2-5 length
+    under its text and, where the y scale differs from the x scale by more than _SCALE_TOLERANCE, a vertical bar from
+    the same corner (viz.curve_figure.scale_bar_layout / scale_bar_origin, as the export draws it). Plain Qt items under the view box, in its pixel coordinates, taking no mouse input and
+    no part in the view's bounds. `drawn` = the ScaleBarData of the last layout, None while hidden."""
+
+    def __init__(self, view_box, widget):
+        self._view_box = view_box
+        self._widget = widget          # its logical dpi turns pt into pixels
+        self._style = None             # PlotStyle the bar is shown in; None = hidden
+        self._metres_per_unit = 1.0    # length of one view unit
+        self.drawn = None
+        no_button = QtCore.Qt.MouseButton.NoButton
+        self._box = QtWidgets.QGraphicsRectItem(view_box)
+        self._box.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+        self._box.setZValue(_SCALE_BAR_Z)
+        self._box.setAcceptedMouseButtons(no_button)
+        self._box.hide()
+        self._bars = [QtWidgets.QGraphicsLineItem(self._box) for _axis in _AXES]
+        self._texts = [QtWidgets.QGraphicsSimpleTextItem(self._box) for _axis in _AXES]
+        for item in (*self._bars, *self._texts):
+            item.setAcceptedMouseButtons(no_button)
+        self._texts[1].setRotation(-90.0)   # the vertical bar's text reads upwards
+        view_box.sigRangeChanged.connect(lambda *_args: self.refresh())
+        view_box.sigResized.connect(lambda *_args: self.refresh())
+
+    def show_style(self, style):
+        """Show the bar in the PlotStyle `style`; None hides it."""
+        self._style = style
+        self.refresh()
+
+    def set_unit_length(self, metres_per_unit):
+        """Length [m] of one view unit: the bar texts name lengths in m, mm, µm or nm."""
+        metres_per_unit = float(metres_per_unit)
+        if not (math.isfinite(metres_per_unit) and metres_per_unit > 0.0):
+            raise ValueError(f'scale bar: the length of a view unit must be positive, got {metres_per_unit!r}')
+        if metres_per_unit != self._metres_per_unit:
+            self._metres_per_unit = metres_per_unit
+            self.refresh()
+
+    def refresh(self):
+        """Lay the bar out for the view range, view size and style of now."""
+        style, view_box = self._style, self._view_box
+        (x_low, x_high), (y_low, y_high) = view_box.viewRange()
+        width_px, height_px = view_box.width(), view_box.height()
+        x_span, y_span = x_high - x_low, y_high - y_low
+        shown = bool(style is not None and width_px > 0 and height_px > 0 and math.isfinite(x_span)
+                     and math.isfinite(y_span) and x_span > 0.0 and y_span > 0.0)
+        self._box.setVisible(shown)
+        self.drawn = None
+        if not shown:
+            return
+        if view_box.state['xInverted'] or view_box.state['yInverted']:
+            raise NotImplementedError('scale bar: an inverted view axis is not supported')
+        px_per_pt = _px_per_pt(self._widget)
+        x_px_per_unit, y_px_per_unit = width_px / x_span, height_px / y_span
+        view_fraction = 0.01 * style.scale_bar_length   # share of a view side the bar may span
+        lengths = [_round_length(view_fraction * x_span), 0.0]   # view units; 0 = no vertical bar
+        if abs(y_px_per_unit / x_px_per_unit - 1.0) > _SCALE_TOLERANCE:
+            lengths[1] = _round_length(view_fraction * y_span)
+        font, text_color = _font(style, style.scale_bar_font_size), QtGui.QColor(style.scale_bar_text_color)
+        font.setBold(style.scale_bar_bold)
+        bar_pen = QtGui.QPen(QtGui.QColor(style.scale_bar_color))
+        bar_pen.setWidthF(style.scale_bar_width * px_per_pt)
+        bar_pen.setCapStyle(QtCore.Qt.PenCapStyle.FlatCap)
+        text_rects, text_sizes_pt = [], []
+        for bar, text, length in zip(self._bars, self._texts, lengths):
+            bar.setVisible(length > 0.0)
+            text.setVisible(length > 0.0)
+            bar.setPen(bar_pen)
+            text.setFont(font)
+            text.setBrush(text_color)
+            text.setText(_length_text(length * self._metres_per_unit) if length > 0.0 else '')
+            rect = text.boundingRect()
+            text_rects.append(rect)
+            text_sizes_pt.append((rect.width() / px_per_pt, rect.height() / px_per_pt) if length > 0.0
+                                 else (0.0, 0.0))
+        box_size, bar_lines, text_centres = scale_bar_layout(
+            style.scale_bar_width, lengths[0] * x_px_per_unit / px_per_pt, text_sizes_pt[0],
+            lengths[1] * y_px_per_unit / px_per_pt, text_sizes_pt[1])
+        # the bar sits in a corner of what the view shows (the field / material image), not in the empty margin a
+        # fitted view leaves around it; view units -> pt from the view's lower left corner
+        content = self._content_bounds()
+        content_pt = None
+        if content is not None:
+            content_pt = ((content[0] - x_low) * x_px_per_unit / px_per_pt,
+                          (content[1] - x_low) * x_px_per_unit / px_per_pt,
+                          (content[2] - y_low) * y_px_per_unit / px_per_pt,
+                          (content[3] - y_low) * y_px_per_unit / px_per_pt)
+        origin = scale_bar_origin(style.scale_bar_location, box_size,
+                                  (width_px / px_per_pt, height_px / px_per_pt), content_pt)
+
+        def view_point(x, y):   # pt from the box's lower left corner (y up) -> view box pixels (y down)
+            return QtCore.QPointF((origin[0] + x) * px_per_pt, height_px - (origin[1] + y) * px_per_pt)
+
+        self._box.setRect(QtCore.QRectF(view_point(0.0, box_size[1]), view_point(box_size[0], 0.0)))
+        self._box.setBrush(QtGui.QBrush(QtGui.QColor(style.background)) if style.scale_bar_box
+                           else QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+        for bar, (x0, y0, x1, y1) in zip(self._bars, bar_lines):
+            bar.setLine(QtCore.QLineF(view_point(x0, y0), view_point(x1, y1)))
+        for text, rect, (x, y) in zip(self._texts, text_rects, text_centres):
+            text.setTransformOriginPoint(rect.center())   # the quarter turn keeps the centre in place
+            text.setPos(view_point(x, y) - rect.center())
+        self.drawn = ScaleBarData(x_length=lengths[0], x_text=self._texts[0].text(), y_length=lengths[1],
+                                  y_text=self._texts[1].text(), content=content)
+
+    def _content_bounds(self):
+        """(x0, x1, y0, y1) in view units of the items that count for the view's range (images; overlays are added
+        with ignoreBounds); None where an axis has none."""
+        x_bounds, y_bounds = self._view_box.childrenBounds()
+        if x_bounds is None or y_bounds is None:
+            return None
+        bounds = (float(x_bounds[0]), float(x_bounds[1]), float(y_bounds[0]), float(y_bounds[1]))
+        if not all(math.isfinite(value) for value in bounds):
+            return None
+        return bounds
+
+
 class PlotPanel(QtWidgets.QGroupBox):
     """Box around a result plot: the plot over the tabs 'Axes' (PlotAxisControls + axis style), 'Curves' (per curve
     looks per apply() context, legend style), 'Labels' (text, colours) and 'Exports' (Export plot button ->
@@ -574,7 +752,8 @@ class PlotPanel(QtWidgets.QGroupBox):
     export(path) writes the plot as shown with matplotlib.
     The GUI canvas: plot = its GraphicsLayoutWidget, plot_item = its PlotItem, embed_plot False (the tabs only),
     curves_tab / log_axes False, colorbar = its ColorBarItem (styled; exported while opaque), scene_export True (images,
-    PlotCurveItem / ScatterPlotItem / TextItem / InfiniteLine overlays go to the export too)."""
+    PlotCurveItem / ScatterPlotItem / TextItem / InfiniteLine overlays go to the export too; the Axes tab gets the
+    'Scale bar' group: a _ScaleBar replaces the axes, its texts from set_unit_length)."""
     export_requested = QtCore.Signal()
     export_path_requested = QtCore.Signal()
 
@@ -607,12 +786,17 @@ class PlotPanel(QtWidgets.QGroupBox):
         view_box = plot_item.getViewBox()
         view_box.sigRangeChanged.connect(lambda *_args: self._update_best_legend())
         view_box.sigResized.connect(lambda *_args: self._update_best_legend())
+        if colorbar is not None:
+            _keep_drawn_ticks(colorbar.axis)   # pyqtgraph's own AxisItem: the export takes its drawn ticks too
+        # a scene's view units are lengths: a scale bar can stand in for its axes (style.scale_bar)
+        self._scale_bar = _ScaleBar(view_box, plot) if scene_export else None
 
         self.axis_controls = PlotAxisControls(plot_item, log_axes=log_axes, color_axis=colorbar is not None)
         self.axis_controls.log_changed.connect(self._apply_style)   # SI prefixes and tick steps follow log axes
         self.axis_controls.ticks_changed.connect(self._apply_style)
         label_style_form = PlotStyleForm(self._style, _LABEL_STYLE_GROUPS)
-        axis_style_form = PlotStyleForm(self._style, _AXIS_STYLE_GROUPS)
+        axis_style_form = PlotStyleForm(self._style, _AXIS_STYLE_GROUPS
+                                        + (_SCALE_BAR_STYLE_GROUPS if scene_export else ()))
         export_style_form = PlotStyleForm(self._style, _EXPORT_STYLE_GROUPS)
         legend_style_form = PlotStyleForm(self._style, _LEGEND_STYLE_GROUPS)
         self._style_forms = (label_style_form, axis_style_form, export_style_form, legend_style_form)
@@ -693,6 +877,12 @@ class PlotPanel(QtWidgets.QGroupBox):
     def set_export_path(self, path):
         self._export_path_edit.setText(path)
 
+    def set_unit_length(self, metres_per_unit):
+        """Scene plots: the length [m] of one view unit (the scale bar names its length with it)."""
+        if self._scale_bar is None:
+            raise RuntimeError('set_unit_length: only a scene plot (scene_export) has a scale bar')
+        self._scale_bar.set_unit_length(metres_per_unit)
+
     def apply(self, context=None):
         """Log modes, limits, the Curves tab settings of `context` (e.g. the plotted result; curves are matched by
         name within it) and the shared style on the plot as drawn (call after every redraw)."""
@@ -720,7 +910,8 @@ class PlotPanel(QtWidgets.QGroupBox):
             scene = SceneData(images=tuple(images), texts=tuple(texts), equal_aspect=bool(
                 plot_item.getViewBox().state['aspectLocked']),
                 colorbar=(_colorbar_data(colorbar, self._color_tick_step())
-                          if colorbar is not None and colorbar.opacity() > 0.0 else None))
+                          if colorbar is not None and colorbar.opacity() > 0.0 else None),
+                scale_bar=self._scale_bar.drawn)   # None while the axes are shown
         if style.legend_location == 'best':
             style = replace(style, legend_location=self._legend_corner)
         texts, logs, ranges, scales, ticks = [], [], [], [], []
@@ -976,11 +1167,18 @@ class PlotPanel(QtWidgets.QGroupBox):
         return min(_LEGEND_CORNERS, key=covered)
 
     def _style_axes(self, plot_item, style):
-        """Axis pens, tick fonts / lengths / steps, the frame axes and the (overridden) labels with SI prefixes."""
+        """Axis pens, tick fonts / lengths / steps, the frame axes and the (overridden) labels with SI prefixes; a
+        scene plot with style.scale_bar hides all four axes and shows its scale bar instead."""
         px_per_pt = _px_per_pt(self._plot)
         tick_length = int(round(style.tick_length * px_per_pt)) * (-1 if style.tick_direction == 'in' else 1)
-        plot_item.showAxis('top', style.boxed)
-        plot_item.showAxis('right', style.boxed)
+        axes_shown = True
+        if self._scale_bar is not None:
+            axes_shown = not style.scale_bar
+            for name in ('bottom', 'left'):
+                plot_item.showAxis(name, axes_shown)
+            self._scale_bar.show_style(style if style.scale_bar else None)
+        plot_item.showAxis('top', style.boxed and axes_shown)
+        plot_item.showAxis('right', style.boxed and axes_shown)
         label_style = {'font-size': f'{style.label_size}pt', 'color': style.foreground}
         if style.font_family:
             label_style['font-family'] = f"'{style.font_family}'"
@@ -1107,6 +1305,19 @@ def _font(style, size_pt):
     return font
 
 
+def _round_length(longest):
+    """Longest length of the form 1, 2 or 5 x 10^k that is at most `longest` (> 0)."""
+    longest = float(longest)
+    decade = 10.0 ** math.floor(math.log10(longest))
+    return next((factor for factor in (5.0, 2.0, 1.0) if factor * decade <= longest), 1.0) * decade
+
+
+def _length_text(length_m):
+    """'2 µm' of a length [m], in the unit viz.common.length_unit picks for it."""
+    scale, unit = length_unit(length_m * (1.0 + 1e-9))   # a rounded-down 1 µm stays '1 µm', not '1000 nm'
+    return f'{length_m / scale:.6g} {unit}'
+
+
 def _data_range(view_range, log):
     """[min, max] data values of a view range (10 ** of the log10 view coordinates on a log axis)."""
     if not log:
@@ -1129,10 +1340,13 @@ def _curve_data(item, legend_text, settings):
 
 
 def _scene_layers(plot_item, px_per_pt):
-    """(curves, images, texts) of the visible non-data items of the view box in z order: ImageItems as drawn (RGBA),
-    PlotCurveItem lines, ScatterPlotItem markers, InfiniteLines across the view, TextItems; ROIs are left out."""
+    """(curves, images, texts) of the visible non-data items of the plot in z order: ImageItems as drawn (RGBA),
+    PlotCurveItem lines, ScatterPlotItem markers, InfiniteLines across the view, TextItems, filled QGraphicsRectItems
+    (one-pixel images); ROIs are left out."""
     view_box = plot_item.getViewBox()
-    items = sorted((item for item in view_box.addedItems
+    # plot_item.items, not view_box.addedItems: the view box lists only the items that count for its auto range, so
+    # every overlay added with ignoreBounds=True (outlines, glyphs, labels) would be missing
+    items = sorted((item for item in plot_item.items
                     if item.isVisible() and not isinstance(item, pg.PlotDataItem)), key=lambda item: item.zValue())
     (x_low, x_high), (y_low, y_high) = view_box.viewRange()
     curves, images, texts = [], [], []
@@ -1188,6 +1402,16 @@ def _scene_layers(plot_item, px_per_pt):
                                    angle=float(item.angle), size=point_size if point_size > 0 else 0.0,
                                    background='' if fill.style() == QtCore.Qt.BrushStyle.NoBrush
                                    else _mpl_color(fill.color()), zorder=zorder))
+        elif isinstance(item, QtWidgets.QGraphicsRectItem):   # fill only (absorbing ring, layer shade): no outline
+            brush = item.brush()
+            if brush.style() == QtCore.Qt.BrushStyle.NoBrush:
+                continue
+            fill_color = brush.color()
+            rect = item.mapRectToParent(item.rect())   # the parent is the view box's child group: view coordinates
+            rgba = np.array([[[fill_color.redF(), fill_color.greenF(), fill_color.blueF(),
+                               fill_color.alphaF() * item.opacity()]]], dtype=np.float64)
+            images.append(ImageLayer(rgba=rgba, extent=(rect.left(), rect.right(), rect.top(), rect.bottom()),
+                                     zorder=zorder))
     return curves, images, texts
 
 
@@ -1210,7 +1434,7 @@ def _image_rgba(item):
 
 def _colorbar_data(colorbar, tick_step):
     """ColorbarData of a pyqtgraph ColorBarItem: its colour map as a 256-entry RGBA table, its levels (a log axis: the
-    levels are log10 values) and the tick step (0 = automatic)."""
+    levels are log10 values), the ticks its axis drew last and the tick step (0 = automatic) for a bar never painted."""
     lut = np.asarray(colorbar.colorMap().getLookupTable(nPts=256, mode='byte'), dtype=np.float64) / 255.0
     if lut.shape[1] == 3:
         lut = np.column_stack((lut, np.ones(len(lut))))
@@ -1218,7 +1442,8 @@ def _colorbar_data(colorbar, tick_step):
     log = bool(colorbar.axis.logMode)
     if log:
         low, high = 10.0 ** low, 10.0 ** high
-    return ColorbarData(lut=lut, low=low, high=high, tick_step=tick_step, log=log)
+    return ColorbarData(lut=lut, low=low, high=high, tick_step=tick_step, log=log,
+                        ticks=_drawn_axis_ticks(colorbar.axis))
 
 
 def _mpl_color(color):

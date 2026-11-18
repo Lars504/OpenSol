@@ -19,7 +19,7 @@ from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZA
                                     host_direct_precision, solver_host_bytes, superlu_bytes_scale)
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
-from .eigenfrequency import FILTER_BLOCK_COLUMNS, WIDENING_BASIS_RESERVE
+from .eigenfrequency import FILTER_BLOCK_COLUMNS
 from .materials import GYRATION_Z
 
 # FDFD kept Helmholtz term plan (operators._HelmholtzPlan): per cell 9 terms (4 per x / y product + the cell term) into
@@ -139,16 +139,17 @@ def real_cross_section_operator(settings_values, context):
 
 def resonance_search_items(backend, unknowns, n_wanted, n_basis, own_cudss, filter_entries, scaled_block=None):
     """(host items, EIGEN_PHASE transient items) of eigenfrequency.solve_resonances: the device Krylov-Schur basis
-    (room for one widening) or ARPACK's host basis, the host eigenvectors, on the gpu the resonance filter's copies
+    (first pass; no widening reserve) or ARPACK's host basis, the host eigenvectors, on the gpu the resonance filter's copies
     (scaled_block: the D v block of a polished search, None = own_cudss)."""
     gpu = backend == 'gpu'
     vector_bytes = COMPLEX128_BYTES * int(unknowns)
     host_items = [(f'eigenvectors ({n_wanted} x complex128)', n_wanted * vector_bytes)]
     transient_items = []
     if gpu and device_arnoldi_fits(unknowns, n_basis, host_matvec=not own_cudss):
-        rows = WIDENING_BASIS_RESERVE * int(n_basis) + 1
-        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({rows} complex128 rows: room for one '
-                                             'widening, + 2 work vectors)', (rows + 2) * vector_bytes))
+        rows = int(n_basis) + 1   # the first pass only: a widening is checked against the pool room when it happens
+        transient_items.append((EIGEN_PHASE, f'device Krylov-Schur basis ({rows} complex128 rows + 2 work vectors; '
+                                             'a widened search needs about twice as much)',
+                                (rows + 2) * vector_bytes))
     else:
         host_items.append((f'Arnoldi basis ({n_basis} vectors)', n_basis * vector_bytes))
     if gpu:   # sparse A, B / W copies; column blocks of at most n_wanted Ritz vectors (+ D v of an own cuDSS factor)

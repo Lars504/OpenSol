@@ -47,15 +47,13 @@
          "enabled": true}
       ],
       "every": 1,
-      "solvers": {"linear": "cg"}
+      "solvers": {}
     }
   ],
   "couplings": [],
   "mesh": {"mode": "uniform", "dx": "dx_mesh", "max_ratio": 1.15, "wavelength_min": null,
            "points_per_wavelength": 20.0, "refinements": []},
-  "solvers": [
-    {"name": "cg", "type": "pcg", "settings": {"tolerance": 1e-10, "max_iterations": 200000}}
-  ],
+  "solvers": [],
   "study": {"type": "stationary", "settings": {},
             "stored_fields": ["solid.u_abs", "solid.u_y", "solid.stress_xx", "solid.stress_xy"],
             "sweep": {"parameter": "n_h", "values": [4, 8, 16]}},

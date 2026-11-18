@@ -218,7 +218,9 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   recurrence norm the direction is kept and the recurrence state (direction, rho x factor^2; fused: product and p . q
   via `rescale`) rescaled, so the CG coefficients stay consistent (van der Vorst-Ye); beyond it CG restarts from r
   (recomputing rho against a kept direction diverged on stiff 2D / 3D models). Stops at the float64 reference, the
-  iteration limit, or a replacement shrinking ||r|| by less than MIXED_STALL_RATIO while the recurrence did;
+  iteration limit, or a replacement shrinking ||r|| by less than MIXED_STALL_RATIO while the recurrence did (the
+  round-off floor of the system: `last_stalled`, named in last_warning; a caller with a fallback preconditioner must
+  not take that stop for a weak preconditioner, ElasticSystem3D._guarded_solve);
   `refinements` counts the float64 refreshes. `workspace_bytes(..., 'mixed')` / `mixed_extra_bytes` count the solver's copies; a
   matrix-free caller counts its own float32 operator.
 - Users: the 'linear' role of heat, electric_currents, electrostatics, magnetostatics (`DiffusionSystem(linear_solver=)`)
@@ -643,7 +645,7 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   triangles / tetrahedra: `definition.factor_fill`; em_fdfd_3d tetrahedra: `definition_fdfd3d.nedelec_factor_entries`,
   also for its host SuperLU via `core.memory_estimate.host_counted_lu_bytes`; 3D tensor grids:
   `sparse_direct.box_dissection_entries(window shape, unknowns per cell)`, the box nested-dissection count of A5, for
-  which CUDSS_FILL_3D read 48 % / 76 % low) x the factor value bytes + the kept matrix copy +
+  which CUDSS_FILL_3D read 48 % / 76 % low; `yee_faces=True` for the Yee curl-curl: tangential-component separators) x the factor value bytes + the kept matrix copy +
   CUDSS_ROW_BYTES per row; the growth-law fill fitted to the selftest
   counters (constants, data, the known double count and open points in the cudss_factor notes above it). The pool items are counted from the
   arrays the code makes (an estimate above the measured bytes misreads the code); a wrong entries-per-row count is the

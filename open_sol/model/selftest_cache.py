@@ -8,6 +8,7 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import os
+import pickle
 import platform
 import sys
 import threading
@@ -106,13 +107,18 @@ def _sha1(text):
 def _file_units(full_path):
     """_FileUnits of a .py file; an unreadable or unparsable file is one MODULE_UNIT of its bytes."""
     try:
-        tree = ast.parse(Path(full_path).read_text(encoding='utf-8'))
-    except (OSError, SyntaxError, ValueError):
-        try:
-            digest = file_hash(full_path)
-        except OSError:
-            digest = None
-        return _FileUnits({MODULE_UNIT: digest}, {MODULE_UNIT: frozenset()})
+        source = Path(full_path).read_bytes()
+    except OSError:
+        return _FileUnits({MODULE_UNIT: None}, {MODULE_UNIT: frozenset()})
+    return _source_units(source)
+
+
+def _source_units(source):
+    """_FileUnits of a .py file's bytes; undecodable or unparsable bytes are one MODULE_UNIT of their sha1."""
+    try:
+        tree = ast.parse(source.decode('utf-8'))
+    except (SyntaxError, ValueError):   # UnicodeDecodeError is a ValueError
+        return _FileUnits({MODULE_UNIT: hashlib.sha1(source).hexdigest()}, {MODULE_UNIT: frozenset()})
     body = tree.body
     if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
         body = body[1:]   # the module docstring
@@ -133,16 +139,68 @@ def _file_units(full_path):
 
 @functools.cache
 def package_units():
-    """{package path: _FileUnits} of every .py file of the package, parsed once per process (the code its imports
-    ran)."""
-    units = {}
+    """{package path: _FileUnits} of every .py file of the package, snapshot once per process from the bytes read now;
+    a file whose sha1 matches its _UNITS_STORE entry is not parsed again (the store is rewritten when any differ)."""
+    stored = _read_units_store()
+    units, entries = {}, {}
     for folder, subfolder_names, file_names in os.walk(_ROOT):
         subfolder_names[:] = [name for name in subfolder_names if name != '__pycache__' and not name.startswith('.')]
         for name in file_names:
-            if name.endswith('.py'):
-                full_path = os.path.join(folder, name)
-                units[_package_path(full_path)] = _file_units(full_path)
+            if not name.endswith('.py'):
+                continue
+            full_path = os.path.join(folder, name)
+            path = _package_path(full_path)
+            try:
+                source = Path(full_path).read_bytes()
+            except OSError:   # unreadable now: one None MODULE_UNIT, not stored
+                units[path] = _FileUnits({MODULE_UNIT: None}, {MODULE_UNIT: frozenset()})
+                continue
+            digest = hashlib.sha1(source).hexdigest()
+            entry = stored.get(path)
+            if entry is None or entry[0] != digest:
+                file_units = _source_units(source)
+                entry = (digest, file_units.hashes, file_units.refs)
+            entries[path] = entry
+            units[path] = _FileUnits(entry[1], entry[2])
+    if entries != stored:   # a changed, new or removed file (the tuples compare by digest first)
+        _write_units_store(entries)
     return units
+
+
+# Parsed units of the package files by their sha1, kept between processes (git-ignored, beside the .pyc files); valid
+# only for the same Python and the same hashing code (_units_store_key)
+_UNITS_STORE = os.path.join(_ROOT, '__pycache__', 'selftest_units.pickle')
+
+
+def _units_store_key():
+    """Python version and sha1 of this file: another ast.dump or another unit rule invalidates the whole store."""
+    return sys.version, file_hash(__file__)
+
+
+def _read_units_store():
+    """{package path: (sha1, hashes, refs)} of _UNITS_STORE; {} when missing, damaged or of another _units_store_key."""
+    try:
+        with open(_UNITS_STORE, 'rb') as store:
+            saved = pickle.load(store)
+    except FileNotFoundError:
+        return {}
+    except (OSError, EOFError, pickle.UnpicklingError, ValueError):   # damaged: every file is parsed, the store rewritten
+        return {}
+    if not isinstance(saved, dict) or saved.get('key') != _units_store_key() or not isinstance(saved.get('files'), dict):
+        return {}
+    return saved['files']
+
+
+def _write_units_store(entries):
+    """Replace _UNITS_STORE atomically; a concurrent selftest holding it open (Windows) keeps the old one."""
+    os.makedirs(os.path.dirname(_UNITS_STORE), exist_ok=True)
+    temporary = f'{_UNITS_STORE}.{os.getpid()}.tmp'
+    with open(temporary, 'wb') as store:
+        pickle.dump({'key': _units_store_key(), 'files': entries}, store, protocol=pickle.HIGHEST_PROTOCOL)
+    try:
+        os.replace(temporary, _UNITS_STORE)
+    except PermissionError:   # the other process' store serves; the next run rewrites it if still stale
+        os.remove(temporary)
 
 
 def unit_hash(unit_id):

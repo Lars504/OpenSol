@@ -1310,11 +1310,11 @@ def _host_fit_checks(registry, checks):
     infos = [issue.message for issue in validate(spec, registry, mesh_estimate=meshes, host_budget=factor_host - 1)
              if issue.level == 'info' and issue.path == ('physics', 'p') and 'kept direct factor' in issue.message]
     large_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', None, 'cpu')
-    large_spec.domain.meshes = [MeshSpec(mode='uniform', dx=float(large_spec.domain.size_x) / _HOST_FIT_CELLS)]
+    large_spec.meshes = [MeshSpec(mode='uniform', dx=float(large_spec.domain.size_x) / _HOST_FIT_CELLS)]
     large_meshes = estimate_meshes(large_spec, {}, registry)
     _, oversize = fitted_memory_estimate(large_spec, {}, registry, large_meshes, None, host_budget=1 << 62)
     node_spec = _precision_spec('solid_mechanics', 'linear', 'stationary', 'auto', ('sparse_direct', {}), 'cpu')
-    node_spec.domain.meshes = large_spec.domain.meshes
+    node_spec.meshes = large_spec.meshes
     size_errors = [issue.message for issue in validate(node_spec, registry, host_budget=1 << 62)
                    if issue.level == 'error' and issue.path == ('physics', 'p') and 'per node' in issue.message]
     heat_spec = _precision_spec('heat', 'linear', 'time_dependent', 'auto', None, 'cpu')

@@ -156,13 +156,16 @@ _DUCT_DESCRIPTION = (
     'measured = error = the worst item in tolerance units, tolerance 1 (first estimates, not yet run).')
 
 
-# ---- pressure_acoustics_host_direct: the 'pml' duct (complex symmetric) at two frequencies, a scipy_splu node (the
-# reference) and one node per installed host direct back end (literals: the selftest rule); the second frequency
-# refactorises on the kept analysis (fem.harmonic HostPencil, previous=) ----
+# ---- pressure_acoustics_host_direct: the 'pml' duct (complex symmetric) at three frequencies, a scipy_splu node (the
+# reference) and one node per installed host direct back end (literals: the selftest rule); later frequencies
+# refactorise on the kept analysis (fem.harmonic HostPencil, previous=). Three, not two: the PARDISO thread rule
+# (host_direct) re-analyses once at the first refactor of this small factor (its solves ran on one thread), so only
+# the third frequency shows a reused analysis there ----
 _HOST_DIRECT_BACK_ENDS = ('mumps_mixed', 'pardiso')
 _HOST_DIRECT_REFERENCE = 'scipy_splu'
 _HOST_DIRECT_RUN = 'pml'
-_HOST_DIRECT_FREQUENCIES = (_DUCT_FREQUENCY, 1.1 * _DUCT_FREQUENCY)
+_HOST_DIRECT_FREQUENCIES = (_DUCT_FREQUENCY, 1.1 * _DUCT_FREQUENCY, 1.2 * _DUCT_FREQUENCY)
+_HOST_DIRECT_MAX_ANALYSES = 2      # one, or two after a one-thread PARDISO solve (the thread rule)
 _HOST_DIRECT_TOLERANCE = 1e-8      # relative to max |SuperLU probe| (double solves; mixed: GMRES to 1e-12)
 
 
@@ -181,7 +184,7 @@ def _host_direct_specs():
 
 def _check_host_direct(results_by_name):
     """Per back end and frequency: max |p - p_SuperLU| / max |p_SuperLU| over the probes; the linear record must show
-    that back end with a symmetric (LDL^T) factor and a reused analysis (second frequency)."""
+    that back end with a symmetric (LDL^T) factor, a reused analysis and at most _HOST_DIRECT_MAX_ANALYSES analyses."""
     if not results_by_name:
         return skip_without_host_direct(_HOST_DIRECT_BACK_ENDS)
     reference = results_by_name[_HOST_DIRECT_REFERENCE]
@@ -199,7 +202,8 @@ def _check_host_direct(results_by_name):
         counters = solver_role(results, PHYSICS).get('counters') or {}
         record_ok = (counters.get('back_end') == back_end
                      and int(counters.get('host_direct_symmetric_factors') or 0) > 0
-                     and int(counters.get('host_direct_reused_analyses') or 0) > 0)
+                     and int(counters.get('host_direct_reused_analyses') or 0) > 0
+                     and 0 < int(counters.get('host_direct_analyses') or 0) <= _HOST_DIRECT_MAX_ANALYSES)
         errors[f'{back_end} record'] = 0.0 if record_ok else 1.0
         tolerances[f'{back_end} record'] = 0.5
         details[back_end] = {'counters': dict(counters)}
@@ -367,15 +371,17 @@ HARMONIC_SELFTEST_CASES = (
     SelfTestCase(
         name='pressure_acoustics_host_direct',
         label='Pressure acoustics: PML duct on MUMPS / PARDISO linear solvers vs SuperLU',
-        description=(f"The 'pml' run of pressure_acoustics_duct (triangles, cpu) at {_HOST_DIRECT_FREQUENCIES[0]:g} and "
-                     f'{_HOST_DIRECT_FREQUENCIES[1]:g} Hz with a sparse_direct node pinned to scipy_splu (the '
-                     'reference) and one per installed back end of mumps_mixed, pardiso: fem.harmonic factorises the '
-                     'complex symmetric A(omega) from a HostPencil (factorize_pencil, previous=) as a library LDL^T '
-                     '(mixed: complex64 factor + float64 GMRES refinement) and refactorises the second frequency on '
-                     'the kept analysis. Per back end and frequency max |p - p_SuperLU| / max |p_SuperLU| over the '
-                     f'probes within {_HOST_DIRECT_TOLERANCE:g}; the linear record must show that back end with a '
-                     'symmetric factor and a reused analysis. measured = error = the worst item in tolerance units, '
-                     'tolerance 1; passes as skipped without python-mumps / pydiso. Not run yet.'),
+        description=(f"The 'pml' run of pressure_acoustics_duct (triangles, cpu) at "
+                     f"{', '.join(f'{frequency:g}' for frequency in _HOST_DIRECT_FREQUENCIES)} Hz with a sparse_direct "
+                     'node pinned to scipy_splu (the reference) and one per installed back end of mumps_mixed, '
+                     'pardiso: fem.harmonic factorises the complex symmetric A(omega) from a HostPencil '
+                     '(factorize_pencil, previous=) as a library LDL^T (mixed: complex64 factor + float64 GMRES '
+                     'refinement) and refactorises later frequencies on the kept analysis (PARDISO: after one '
+                     're-analysis, the thread rule of a factor that solved on one thread). Per back end and frequency '
+                     f'max |p - p_SuperLU| / max |p_SuperLU| over the probes within {_HOST_DIRECT_TOLERANCE:g}; the '
+                     'linear record must show that back end with a symmetric factor, a reused analysis and at most '
+                     f'{_HOST_DIRECT_MAX_ANALYSES} analyses. measured = error = the worst item in tolerance units, '
+                     'tolerance 1; passes as skipped without python-mumps / pydiso.'),
         specs=_host_direct_specs, check=_check_host_direct),
     SelfTestCase(
         name='pressure_acoustics_duct_3d',

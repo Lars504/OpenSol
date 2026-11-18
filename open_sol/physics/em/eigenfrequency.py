@@ -67,10 +67,38 @@ MIXED_ARPACK_TOLERANCE = 1e-6
 # around a host-only factor the host Krylov-Schur twin (eigs_host) resumes alike (rows reserved as on the device); host
 # ARPACK (operators too small for it) restarts from the random start plus the Ritz vectors found (_widened_start).
 # Mie sphere example (6.5e4 unknowns): pass 2 from scratch found nothing new; before S5a/S5b the two passes took 663 applications / 30 s.
-# The first device pass reserves basis rows for one widening (WIDENING_BASIS_RESERVE x its basis): the widening then
-# resumes in place (no second basis next to the first: Mie run pool 331 MiB, 81 + 161 rows + temporaries)
+# The device pass reserves nothing (the reserve was half the basis item, 0.77 GiB on the nanobeam eighth model, held by
+# runs that never widen): a widening moves the kept rows to the host, frees the device basis and allocates the wider one
+# (_device_basis_for_widening: never two device bases), only when it fits the pool room; else no widening, with a
+# warning. The memory estimate books the first pass only. The host twin still reserves (host RAM).
 MAX_WIDENINGS = 2
 WIDENING_BASIS_RESERVE = 2
+
+
+def _device_basis_for_widening(kept_decomposition, wider_basis):
+    """(state, warning text, fits) before a device widening to wider_basis: storage that holds it is kept; else the kept
+    rows go to the host when the wider basis fits gpu_memory.pool_room_bytes, and fits is False when it does not."""
+    from ...core.gpu_memory import format_bytes, pool_room_bytes
+    kept_basis, kept_hessenberg = kept_decomposition
+    if kept_basis.shape[0] >= wider_basis + 1:
+        return kept_decomposition, '', True
+    n_unknowns = int(kept_basis.shape[1])
+    held_bytes = int(kept_basis.nbytes)
+    wider_bytes = (int(wider_basis) + 1) * 16 * n_unknowns
+    room = pool_room_bytes()   # None before a budget (scripts): the allocation itself decides
+    growth = f'{format_bytes(held_bytes)} to {format_bytes(wider_bytes)} of GPU memory'
+    if room is not None and wider_bytes > room + held_bytes:
+        return kept_decomposition, (
+            f'the search was not widened (twice the eigenpairs): its Krylov basis would grow from {growth}, but only '
+            f'{format_bytes(room + held_bytes)} are free within the GPU memory budget; resonances may be missing. '
+            'Reduce the cell count, set the eigen solver subspace_size lower, or move the target wavelength nearer '
+            'the wanted resonances'), False
+    filled_rows = kept_hessenberg.shape[1] + 1
+    host_rows = kept_basis[:filled_rows].get()
+    del kept_basis, kept_decomposition   # the caller's tuple is replaced by the returned one: the device rows go
+    return (host_rows, kept_hessenberg), (
+        f'the search was widened (twice the eigenpairs) and its Krylov basis grew from {growth}, which the memory '
+        'estimate does not book'), True
 # Resonance filter (_ResonanceFilter): Ritz vectors per batched sparse product (A V, B V, W V of a column block); its
 # scratch is ~4 blocks of n x this complex128. The per-column host csr_matvec loops it replaced took 2.4 s of an 8 s
 # tetrahedral Mie run (44k Nedelec unknowns, 48 eigenpairs over two passes) and 1.0 s of the conical pipe (194k)
@@ -342,14 +370,13 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             # runtime where eigs would run it too (device_arnoldi_fits): then a widening resumes it there as well
             host_device = (not on_device and eigen_solver.device_arnoldi
                            and device_arnoldi_fits(n_unknowns, basis, host_matvec=True))
-            reserve_basis = WIDENING_BASIS_RESERVE * basis if MAX_WIDENINGS and widenings == 0 else 0
+            reserve_basis = WIDENING_BASIS_RESERVE * basis if MAX_WIDENINGS and widenings == 0 else 0   # host twin only
             eigs_host = getattr(eigen_solver, 'eigs_host', None)   # host Krylov-Schur: a host widening resumes too
-            if on_device or host_device:
+            if on_device or host_device:   # no device reserve: a widening allocates its basis when it happens
                 basis_kept = basis_kept or kept_decomposition is not None
                 theta, vectors, pass_applications, converged, kept_decomposition = eigen_solver.eigs_device(
                     apply_on_backend, n_unknowns, n_wanted, start_vector, tolerance_floor=tolerance_floor,
-                    default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device,
-                    reserve_basis=reserve_basis)
+                    default_basis=default_basis, resume=kept_decomposition, matvec_on_host=host_device)
             elif eigs_host is not None:
                 basis_kept = basis_kept or kept_decomposition is not None
                 theta, vectors, pass_applications, converged, kept_decomposition = eigs_host(
@@ -368,8 +395,20 @@ def solve_resonances(host_operator, mass, omega_target, energy_weights, in_windo
             if (len(candidates) >= n_resonances or len(candidates) == previous_count or widenings == MAX_WIDENINGS
                     or n_wanted >= n_free - 2):
                 break
+            wider_wanted = min(2 * n_wanted, n_free - 2)
+            if kept_decomposition is not None and (on_device or host_device):
+                wider_basis = arnoldi_basis_size(wider_wanted, n_unknowns, eigen_solver.subspace_size,
+                                                 int(basis_per_wanted) * wider_wanted)
+                kept_decomposition, note, fits = _device_basis_for_widening(kept_decomposition, wider_basis)
+                if note:
+                    warnings.append(f'{len(candidates)} of {n_resonances} resonances after the PML filter: {note}')
+                if not fits:
+                    break
+                if note:   # the freed basis blocks go back to the device when it is the tighter bound (once per widening)
+                    from ...core.gpu_memory import pool_room_bytes
+                    pool_room_bytes(release_cached=True)
             previous_count = len(candidates)
-            n_wanted = min(2 * n_wanted, n_free - 2)
+            n_wanted = wider_wanted
             widenings += 1
             if kept_decomposition is None:   # host ARPACK takes one start vector: the random one + the Ritz vectors
                 start_vector = _widened_start(start_vector, vectors, free)

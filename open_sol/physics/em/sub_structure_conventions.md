@@ -286,7 +286,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   per output entry its product terms, gathered and summed level by level, no SpGEMM / geam): one fixed canonical
   pattern for every omega and weight set (zero weights stay explicit zeros, unlike `helmholtz_operator`, which drops
   them), so a wavelength scan refreshes cuDSS on one plan; the operators share its indices / indptr: never
-  eliminate_zeros / sort them in place. eps_xy couplings are added after it; ops it did not make fall back.
+  eliminate_zeros / sort them in place. eps_xy couplings are added after it; ops it did not make fall back (it knows
+  its own by the YeeOperators2D object: scipy's csr constructor re-slices `indices`, so an `is` test on scipy index
+  arrays never holds; compare buffers with `np.shares_memory`).
   `helmholtz_operator`, `pin_cells` = D A D + (I - D), `pin_image_cells` (pinned image folded into its neighbour's
   diagonal). Never multiply by a sparse diagonal (`diags(...) @ A`): a cuSPARSE SpGEMM whose workspace grows with the
   rows (5e6 rows asked 6.5 GB); scale stored entries (`_column_scaled`, `_kept_entries`, `_entry_rows`) keeping the
@@ -575,9 +577,12 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   omega <= 1e-6 omega_t (hz Neumann constant) and PML resonances (> 0.5 energy outside `physical_window`); too few
   left: ARPACK with 2x the eigenpairs, `MAX_WIDENINGS` times (estimates size the first pass only; cost ~
   eigenpairs^2, so ask only for resonances that exist near the target). Own cuDSS factor, or a host factor on a gpu
-  runtime where `device_arnoldi_fits(host_matvec=True)`: device Arnoldi (`eigs_device`, the first pass reserving
-  WIDENING_BASIS_RESERVE x its basis rows), widenings resume the Krylov-Schur decomposition in place (`basis_kept` in
-  the info). Any other host factor: the host twin (`eigs_host`, `_HostKrylovSchur`, numpy rows, same reserve and resume;
+  runtime where `device_arnoldi_fits(host_matvec=True)`: device Arnoldi (`eigs_device`, no rows reserved: the estimate books the first pass only), widenings resume the
+  Krylov-Schur decomposition (`basis_kept` in the info) through `_device_basis_for_widening`: kept rows to the host,
+  device basis freed, the wider one allocated (never two device bases), only when it fits
+  `gpu_memory.pool_room_bytes`; else no widening and a solve warning (a widening that happens warns too: memory beyond
+  the estimate). Any other host factor: the host twin (`eigs_host`, `_HostKrylovSchur`, numpy rows, resume in place on
+  rows reserved by the first pass, WIDENING_BASIS_RESERVE;
   host ARPACK only below DEVICE_ARNOLDI_MIN_RATIO), so cpu runs follow the gpu algorithm. The candidate filter (`_ResonanceFilter`, built once per solve: on the device on a gpu runtime or own
   cuDSS factor, else host) takes per column v^H B v, v^H A v, the D-scaled Rayleigh terms and the energy / window /
   region sums from ONE sparse product per operator and block of FILTER_BLOCK_COLUMNS vectors; never per-column host

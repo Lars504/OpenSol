@@ -60,8 +60,8 @@ from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
 from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
-                               layer_from_field, mirror_plane, plan_frames, snap_to_mirrors, strided_layer,
-                               time_label, write_field_viewer)
+                               figure_settings, layer_from_field, mirror_plane, plan_frames, snap_to_mirrors,
+                               strided_layer, time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
@@ -794,12 +794,12 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
 
 
 def export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None,
-                        physics=None, geometry=True, planes=None) -> str:
-    """Write the web page of Results.export_html(path, what, physics, geometry=, planes=) for a live session its
-    caller built and ran (the GUI worker, on its thread); the session stays open. Other arguments as
+                        physics=None, geometry=True, planes=None, figure=None) -> str:
+    """Write the web page of Results.export_html(path, what, physics, geometry=, planes=, figure=) for a live session
+    its caller built and ran (the GUI worker, on its thread); the session stays open. Other arguments as
     save_session_run; returns the written path."""
     with _session_results(spec, session, build_summary, study_summary, log_entries, model_file, False) as results:
-        return results.export_html(path, what, physics=physics, geometry=geometry, planes=planes)
+        return results.export_html(path, what, physics=physics, geometry=geometry, planes=planes, figure=figure)
 
 
 @contextlib.contextmanager
@@ -1578,7 +1578,7 @@ class Results:
             raise ValueError(f'no saved cut plane of field {name!r} (an older run directory without plane records)')
         return field_planes
 
-    def export_html(self, path, what=None, physics=None, title=None, geometry=True, planes=None) -> str:
+    def export_html(self, path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None) -> str:
         """Write a self-contained web page (no network: hand-written WebGL2, data embedded) to turn, zoom and colour
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
@@ -1596,8 +1596,10 @@ class Results:
         object edges and surfaces, shown or hidden there. A model with mirror planes (core.mirror.mirror_faces; field
         pages and 2D DFT maps): the page draws the mirror images of the field (its parity's signs) and objects too,
         the whole structure, with a Mirror button to show the simulated part alone. Large data is thinned (grid
-        stride, evenly kept frames; the page subtitle says so). Other result kinds (curves, tables) raise ValueError:
-        they are figures (figure())."""
+        stride, evenly kept frames; the page subtitle says so). figure (field and DFT pages; ValueError on a
+        mode_shapes page): {setting: value} the page's Plot settings panel opens with (viz.field_viewer
+        figure_settings: font sizes, colour and axis limits, colour bar and label places, PNG size). Other result
+        kinds (curves, tables) raise ValueError: they are figures (figure())."""
         kinds = self._result_kinds()
         if what is None:
             keys = [key for key, kind in kinds.items() if kind == 'mode_shapes']
@@ -1610,9 +1612,12 @@ class Results:
         if not field_keys:
             kind = kinds[what]
             if kind == 'mode_shapes':
+                if figure:
+                    raise ValueError(f'figure= sets the Plot settings of a field page; {what!r} is a mode_shapes '
+                                     'result (the mode animation has none)')
                 return mode_player_from_results(self, path, key=what, title=title)
             if kind == 'dft_fields':
-                return self._dft_viewer(path, what, title, geometry)
+                return self._dft_viewer(path, what, title, geometry, figure)
             raise ValueError(f'{what!r} is a {kind} result (curves or a table): export it as a figure (figure()); '
                              'web pages show ' + self._html_choices())
         if len(field_keys) != 1:
@@ -1623,7 +1628,7 @@ class Results:
             planes = [(str(axis), float(position)) for axis, position in planes]
             if not planes or any(axis not in ('x', 'y', 'z') for axis, _ in planes):
                 raise ValueError(f"planes= needs at least one (axis 'x' | 'y' | 'z', position [m]), got {planes}")
-        return self._field_viewer(path, field_keys[0], title, geometry, planes)
+        return self._field_viewer(path, field_keys[0], title, geometry, planes, figure)
 
     def _result_kinds(self):
         """{'physics.feature': result kind} without fetching any result (live: the build summary; else the saved
@@ -1643,8 +1648,9 @@ class Results:
         model_title = (self._data.summary.get('model') or {}).get('title') or getattr(self.spec, 'title', None)
         return title or model_title or ''
 
-    def _field_viewer(self, path, key, title, geometry, planes=None):
+    def _field_viewer(self, path, key, title, geometry, planes=None, figure=None):
         """export_html of the field key ('physics.component'); planes: export_html's (3D, checked there)."""
+        figure_settings(figure)   # a wrong setting raises before any field is read
         stored = [snapshot for snapshot in self._stored_snapshots() if key in snapshot.fields]
         note = ''
         if len(stored) > 1 and planes is not None:
@@ -1688,7 +1694,7 @@ class Results:
         objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
                                   subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
-                                  mirrors=mirrors)
+                                  mirrors=mirrors, figure=figure)
 
     def _viewer_mirrors(self, physics, info, spans):
         """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
@@ -1762,9 +1768,10 @@ class Results:
             raise ValueError(f'planes= of a closed / loaded run read the stored snapshot cuts: {key!r} has none')
         return _nearest_held_cuts(stored[-1], key, planes)
 
-    def _dft_viewer(self, path, key, title, geometry):
+    def _dft_viewer(self, path, key, title, geometry, figure=None):
         """export_html of a dft_fields result: its intensity map per monitored frequency, loaded one at a time (only
         the frames the page keeps, strided at once); geometry: the object outlines over the box (2D models)."""
+        figure_settings(figure)   # a wrong setting raises before any map is loaded
         meta = self.result(key)
         wavelengths = np.atleast_1d(np.asarray(meta['wavelength'], dtype=np.float64))
         x_centres = np.asarray(meta['x_centers'], dtype=np.float64)
@@ -1783,7 +1790,7 @@ class Results:
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or f'DFT {key}',
                                   subtitle=f'{key}: {wavelengths.size} monitored frequencies (open_sol)',
                                   frame_kind='labelled', plan=plan, geometry=objects,
-                                  mirrors=self._dft_mirrors(key) if flat else [])
+                                  mirrors=self._dft_mirrors(key) if flat else [], figure=figure)
 
     def _dft_mirrors(self, key):
         """ViewerMirrors of a 2D dft_fields map (an even intensity): the planes on the window edges of a field of its

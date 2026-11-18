@@ -451,13 +451,24 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   on a GPU with slow float64). Coarse
   levels are rediscretised, not Galerkin (volume-mean Lame values, injected holds; lost holds become pseudo-inverse
   null space), except the coarsest dense operator: P^T A P of the level above, probed by the same 27 colours (nested
-  Q1 basis: 27-node stencil); rediscretised it over-stiffened a thin plate in void (solid_3d_multigrid_void fell back). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
+  Q1 basis: 27-node stencil); rediscretised it over-stiffened a thin plate in void (solid_3d_multigrid_void fell back).
+  Coarse free dofs: only SUPPORT holds are injected (`build(held=)`, the system's `held`, never `~free`); a void pin is
+  not a hold: a coarse dof is free when a free fine dof lies in its interpolation stencil (`_reached_dofs`: P^T of the
+  free mask > 0), so void coarse nodes beside a solid carry its surface values. Injecting `~free` kept only the
+  mid-plane layer of a plate whose faces sit on odd nodes (surface values prolonged to half: no rigid modes, the coarse
+  correction could not bend; the cycle ran as its smoother alone and tripped the guard). The probes run in the cycle
+  dtype (float32): counters `multigrid_coarsest_kept` / `multigrid_coarsest_condition` show what they had to resolve
+  (trouble expected towards 1e7: soft eigenvalues lost in the probe rounding; then probe in float64). Intermediate
+  rediscretised levels still over-stiffen a thin plate that half-fills its coarse cells (bending ~4x; no self-test
+  with >= 3 levels in void yet). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
   = the exact transpose (gather form), so pre / post Chebyshev + R = P^T keep the cycle symmetric for plain PCG.
   `_guarded_solve` (static and every Lanczos inner solve) caps max_iterations at `multigrid_budget()` (the block-Jacobi
   estimate CG_ITERATIONS_PER_AXIS_CELL x longest axis over CYCLE_COST_IN_JACOBI_ITERATIONS, within
   [FALLBACK_MIN_ITERATIONS, FALLBACK_ITERATIONS]): a solve unconverged within it switches the system to block Jacobi
   for good (warning, `multigrid_fallbacks`) and re-solves from there (its failed attempt is taken out of
-  n_unconverged). Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` (thin plate in void) fail on a
+  n_unconverged). A mixed solve that stalled (`PCGSolver.last_stalled`: round-off floor of the system, below the
+  budget) is no fallback: block Jacobi stops at the same residual after its full iteration count (void plate: 3e-11 on
+  both, tolerance 1e-12); it stays reported unconverged. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` (thin plate in void) fail on a
   fallback, so the guard cannot hide a weak cycle. Counters via `PCGSolver.preconditioner_counters`; estimator items 'multigrid levels' / build
   transient / coarsest host build, time recipe `_multigrid_ops` (cycle as preconditioner_ops, build as setup_ops).
 - pcg 'mixed' (`CG_ELASTIC_3D_LINEAR_ROLE`; 2D: section "SolidMechanicsPhysics / ElasticSystem"): float64 system + `_single_operator`

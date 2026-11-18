@@ -133,6 +133,9 @@ def _check_block(results_by_name):
 # The guard would hide a weak cycle (it falls back to block Jacobi and still passes), so the check also requires no
 # fallback and at most _MULTIGRID_MAX_ITERATIONS CG iterations per run.
 _MULTIGRID_MAX_ITERATIONS = 60   # measured 24 / 26 (mixed) / 12
+# counters of a multigrid run kept in the check details (coarsest kept / condition: what the float32 probes resolved)
+_MULTIGRID_COUNTERS = ('cg_iterations', 'unconverged_solves', 'multigrid_levels', 'multigrid_fallbacks',
+                       'multigrid_coarsest_dofs', 'multigrid_coarsest_kept', 'multigrid_coarsest_condition')
 
 
 def _multigrid_specs():
@@ -153,8 +156,7 @@ def _check_multigrid(results_by_name):
     work = {}
     for run, results in results_by_name.items():
         counters = solver_role(results, _SOLID).get('counters') or {}
-        work[run] = {name: counters.get(name) for name in ('cg_iterations', 'multigrid_levels', 'multigrid_fallbacks',
-                                                           'multigrid_coarsest_dofs')}
+        work[run] = {name: counters.get(name) for name in _MULTIGRID_COUNTERS}
         iterations, fallbacks = counters.get('cg_iterations'), counters.get('multigrid_fallbacks')
         # a missing counter (multigrid not built) or a fallback fails the check, as does a slow cycle
         errors[f'{run}_iterations'] = (0.0 if iterations is not None and iterations <= _MULTIGRID_MAX_ITERATIONS
@@ -169,6 +171,9 @@ def _check_multigrid(results_by_name):
 # 32 x 8 x 8 um of 1 um cells (2 levels); the plate y in [3, 5] um (2 cells thick), z in [1, 7] um spans x, void
 # around it (E = 0), clamped on x_lo, body force f_y on the plate. Reference: the same model on block Jacobi (both
 # exact_cg); the multigrid run must match it on the mid-height cut, with no fallback and within the iteration bound.
+# The plate faces sit on ODD nodes (y 3 / 5, z 1 / 7), between the coarse nodes: the coarse level must keep the void
+# nodes beside the plate free, or it holds the mid-plane layer alone and cannot bend (do not move the plate onto even
+# nodes: that hides the coarse free rule).
 _VOID_SIZE = (32e-6, 8e-6, 8e-6)
 _VOID_PLATE = (0.0, 3e-6, 1e-6, 32e-6, 5e-6, 7e-6)   # x0, y0, z0, x1, y1, z1
 _VOID_BODY_FORCE = -1e10                             # N/m^3 along y: tip deflection ~4e-8 m
@@ -210,9 +215,9 @@ def _check_void_plate(results_by_name):
     return {'measured': max(errors[name] for name in names), 'expected': 0.0, 'error': worst_error(errors),
             'tolerance': _VOID_TOLERANCE,
             'details': {'errors': errors, 'peak_u_m': peak,
-                        'multigrid': {name: counters.get(name) for name in (
-                            'cg_iterations', 'multigrid_levels', 'multigrid_fallbacks', 'multigrid_coarsest_dofs')},
-                        'jacobi_cg_iterations': jacobi.get('cg_iterations')}}
+                        'multigrid': {name: counters.get(name) for name in _MULTIGRID_COUNTERS},
+                        'jacobi_cg_iterations': jacobi.get('cg_iterations'),
+                        'jacobi_unconverged_solves': jacobi.get('unconverged_solves')}}
 
 
 # ---- solid_3d_extruded_bilayer: the 2D bilayer with depth and rollers on both z faces ----
@@ -604,8 +609,16 @@ SELFTEST_CASES_3D = (
                      'multigrid u_x / u_y / u_z on the mid-height cut equal the Jacobi ones within '
                      f'{_VOID_TOLERANCE:g} of the peak |u|; the case also fails on a multigrid fallback or more than '
                      f'{_MULTIGRID_MAX_ITERATIONS} CG iterations (a thin solid in void is where rediscretised '
-                     'coarse levels are weakest; this decides whether multigrid can become the Automatic). Variant '
-                     'mixed: float32 inner CG. Not yet run.'),
+                     'coarse levels are weakest; this decides whether multigrid can become the Automatic). The plate '
+                     'faces lie on odd nodes, between the coarse nodes, so the case pins the coarse free rule (void '
+                     'nodes beside a solid stay free); the details list the coarsest kept eigenvalues and condition '
+                     'number. Variant mixed: float32 inner CG; its true residual stops near 3e-11 on either '
+                     'preconditioner (round-off floor of the slender plate, above the 1e-12 tolerance), so both mixed '
+                     'runs end unconverged at the floor and the guard must not count that stall as a fallback. '
+                     'Measured 18 Nov: void pins injected (mid-plane layer only) 64 multigrid + 398 Jacobi '
+                     'iterations; stencil rule 18 iterations (double; Jacobi 208), coarsest 720 kept, condition '
+                     '7.5e5; mixed 22 multigrid iterations to the floor (Jacobi 2080). Not yet run with the stall '
+                     'rule of the guard.'),
         specs=_void_plate_specs, check=_check_void_plate, variants=_MIXED_VARIANTS),
     SelfTestCase(
         name='solid_3d_column_z_expressions',

@@ -3,9 +3,13 @@
 and a dense coarsest pseudo-inverse; every launch a core.kernels twin, no host sync and no allocation inside a cycle."""
 # Design: .temp_scratchpad/solidmech3d_multigrid_design.md. Coarse levels are rediscretised (not Galerkin): pair sums of
 # the widths per axis (an odd count keeps its last cell single), volume-mean Lame values (void children count 0, so a
-# half-void coarse cell is half as stiff; void only when every child is), held dofs by injection at coincident nodes
-# (holds at other fine nodes are lost there; the prolonged correction is masked by the fine free dofs, and a coarse
-# rigid motion that results falls into the pseudo-inverse's dropped null space). The coarsest dense operator alone is
+# half-void coarse cell is half as stiff; void only when every child is), support holds by injection at coincident
+# nodes (holds at other fine nodes are lost there; the prolonged correction is masked by the fine free dofs, and a
+# coarse rigid motion that results falls into the pseudo-inverse's dropped null space). Void pins are NOT injected: a
+# coarse dof is free when any free fine dof lies in its interpolation stencil, so coarse nodes in the void beside a
+# solid carry its surface values (injecting them left a plate 2 cells thick with its mid-plane layer only: the surface
+# nodes prolonged to half the mid-plane value, no rigid translation or rotation, and solid_3d_multigrid_void fell
+# back on a coarse correction that could not bend). The coarsest dense operator alone is
 # Galerkin (P^T A P of the level above, probed): a rediscretised one over-stiffened thin plates in void (bending ~ t^3
 # of the averaged thickness) and multigrid fell back on solid_3d_multigrid_void. Pre- and post-smoothing are the same
 # Chebyshev polynomial in B^-1 A and R = P^T, so the cycle is symmetric (plain PCG).
@@ -459,19 +463,22 @@ class BrickMultigrid:
         self.n_builds = 0
         self.fallbacks = 0          # ElasticSystem3D: solves after which the system switched to block Jacobi
         self.coarsest_kept = 0      # coarsest eigenvalues kept by the pseudo-inverse of the last build
+        self.coarsest_condition = 0.0   # largest / smallest of them (float32 probes resolve it up to ~1e6)
         self.build_seconds = 0.0
 
     # --- build ------------------------------------------------------------------
-    def build(self, lame_lambda, mu, free, inverse_blocks, widths, widths_host, kernels) -> None:
-        """Hierarchy of the latest assembly: level 0 = the system's arrays in the cycle dtype (lame_lambda, mu,
-        reduced inverse blocks, device widths, free dofs, its BrickKernels; widths_host float64 per axis), then per
-        coarser level Lame means, injected holds, blocks, Chebyshev bounds and the coarsest dense inverse."""
+    def build(self, lame_lambda, mu, free, held, inverse_blocks, widths, widths_host, kernels) -> None:
+        """Hierarchy of the latest assembly: level 0 = the system's arrays in the cycle dtype (free dofs, `held` = the
+        support-held dofs alone), then per coarser level Lame means, free dofs, blocks, Chebyshev bounds."""
         start = time.perf_counter()
         xp = self.xp
         top = self.levels[0]
         top.lame_lambda, top.mu, top.inverse_blocks, top.widths, top.free = lame_lambda, mu, inverse_blocks, widths, free
         top.kernels = kernels
         top.widths_host = tuple(np.asarray(values, dtype=np.float64) for values in widths_host)
+        if held.size != top.n_dofs:
+            raise ValueError(f'multigrid (solid_mechanics_3d): held has {held.size} dofs, the window {top.n_dofs}')
+        held_level = held.reshape(*top.node_shape, 3)   # support holds of the level, injected level by level
         volume = self._volume(top.widths_host)
         solid = mu > 0
         lambda_volume = xp.where(solid, lame_lambda, 0).astype(np.float64) * volume
@@ -494,14 +501,16 @@ class BrickMultigrid:
                 volume = _pair_sums(volume, axis, xp)
             coarse.lame_lambda = xp.ascontiguousarray((lambda_volume / volume).astype(self.dtype))
             coarse.mu = xp.ascontiguousarray((mu_volume / volume).astype(self.dtype))
-            injected = fine.free.reshape(*fine.node_shape, 3)
             for axis, (_, _, fine_nodes) in enumerate(tables):
-                injected = xp.take(injected, fine_nodes, axis=axis)
+                held_level = xp.take(held_level, fine_nodes, axis=axis)
             coarse.kernels.diagonal_blocks(coarse.inverse_blocks, coarse.lame_lambda, coarse.mu, coarse.widths)
             unconnected = (coarse.inverse_blocks[:, :3] <= 0).reshape(-1)   # dofs touching no solid coarse element
-            xp.logical_and(injected.reshape(-1), ~unconnected, out=coarse.free)
+            # free = reached by a free fine dof, not support-held at its own node (a reached dof always touches a
+            # solid coarse element: the fine one is a child of a neighbouring coarse cell)
+            xp.logical_and(self._reached_dofs(fine, coarse), ~held_level.reshape(-1), out=coarse.free)
+            xp.logical_and(coarse.free, ~unconnected, out=coarse.free)
             coarse.kernels.reduce_invert_blocks(coarse.inverse_blocks, coarse.free)
-        del lambda_volume, mu_volume, volume
+        del lambda_volume, mu_volume, volume, held_level
         for level in self.levels[:-1]:
             level.coefficients = self._chebyshev_coefficients(self._largest_eigenvalue(level))
         self._dense = None
@@ -512,6 +521,13 @@ class BrickMultigrid:
     def _volume(self, widths_host):
         wx, wy, wz = widths_host
         return self.xp.asarray(wx[:, None, None] * wy[None, :, None] * wz[None, None, :])
+
+    def _reached_dofs(self, fine, coarse):
+        """Bool coarse dofs whose interpolation stencil holds a free fine dof: P^T of the fine free mask > 0 (weights
+        are positive; uses fine.residual, the transfer intermediates and coarse.residual as scratch)."""
+        self.xp.copyto(fine.residual, fine.free)
+        self._restrict(fine, coarse, masked=False)
+        return coarse.residual > 0
 
     def _largest_eigenvalue(self, level) -> float:
         """Power-iteration estimate (from below) of the largest eigenvalue of B^-1 A on the free dofs: the A-inner
@@ -599,13 +615,15 @@ class BrickMultigrid:
                 dense[rows, probed] = image[rows]
         kept = np.flatnonzero(free)
         inverse = np.zeros((n, n))
-        self.coarsest_kept = 0
+        self.coarsest_kept, self.coarsest_condition = 0, 0.0
         if kept.size:
             block = dense[np.ix_(kept, kept)]
             block = 0.5 * (block + block.T)
             eigenvalues, vectors = np.linalg.eigh(block)
             keep = eigenvalues > PSEUDO_INVERSE_CUTOFF * max(float(eigenvalues.max()), 0.0)
             self.coarsest_kept = int(np.count_nonzero(keep))
+            if self.coarsest_kept:
+                self.coarsest_condition = float(eigenvalues[keep].max() / eigenvalues[keep].min())
             inverse[np.ix_(kept, kept)] = (vectors[:, keep] / eigenvalues[keep]) @ vectors[:, keep].T
         with np.errstate(over='ignore'):
             low = inverse.astype(self.dtype)
@@ -654,14 +672,14 @@ class BrickMultigrid:
             level.product_of(level.direction, level.product)
             self._chebyshev(level, solution, _RESIDUAL, steps[0])
 
-    def _restrict(self, fine, coarse):
-        """coarse.residual = P^T fine.residual (axis 2, 1, 0), fixed coarse dofs zeroed."""
+    def _restrict(self, fine, coarse, masked=True):
+        """coarse.residual = P^T fine.residual (axis 2, 1, 0), fixed coarse dofs zeroed when masked."""
         transfer = fine.transfer
         f0, f1, f2 = transfer.fine_nodes
         c0, c1, c2 = transfer.coarse_nodes
         passes = ((2, fine.residual, transfer.second, (f0, f1, c2), f2, 0),
                   (1, transfer.second, transfer.first, (f0, c1, c2), f1, 0),
-                  (0, transfer.first, coarse.residual, (c0, c1, c2), f0, 1))
+                  (0, transfer.first, coarse.residual, (c0, c1, c2), f0, int(masked)))
         for axis, source, target, dims, n_fine, masked in passes:
             left, weight, fine_nodes = transfer.tables[axis]
             _TWINS['mg3_axis_restrict'](_grid(3 * int(np.prod(dims))), (_BLOCK,),
@@ -684,8 +702,11 @@ class BrickMultigrid:
                                         np.int32(axis), np.int32(n_coarse), np.int32(mode)))
 
     def work_counters(self) -> dict:
-        """Hierarchy record for the pcg role runtime's counters (levels, coarsest dofs, builds, fallbacks)."""
+        """Hierarchy record for the pcg role runtime's counters (levels, coarsest dofs / kept eigenvalues / condition
+        number of the last build, builds, fallbacks)."""
         return {'multigrid_levels': len(self.levels), 'multigrid_coarsest_dofs': int(self.levels[-1].n_dofs),
+                'multigrid_coarsest_kept': self.coarsest_kept,
+                'multigrid_coarsest_condition': self.coarsest_condition,
                 'multigrid_builds': self.n_builds, 'multigrid_fallbacks': self.fallbacks,
                 'multigrid_build_seconds': self.build_seconds}
 

@@ -223,7 +223,9 @@ def _kept_yee_matches(operators, boundaries, cell_widths, omega):
             difference = abs(planned - reference).max() / abs(reference).max()
             kept_patterns.append((planned.indptr, planned.indices))
             matches.append(bool(difference < 1e-14) and planned.has_canonical_format)
-        matches.append(kept_patterns[0][0] is kept_patterns[1][0] and kept_patterns[0][1] is kept_patterns[1][1])
+        # one kept pattern buffer for both omegas (scipy's csr re-slices indices, so compare buffers, not objects)
+        matches.append(np.shares_memory(kept_patterns[0][0], kept_patterns[1][0])
+                       and np.shares_memory(kept_patterns[0][1], kept_patterns[1][1]))
     return matches
 
 

@@ -246,7 +246,21 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   of values clipped at `_field_log_floor`, levels and colour-bar axis in log10; hover readout and data exports keep the
   values. `_redraw` and `_update_field_image` end with its `apply()`. Its Export plot is
   `scene_export`: visible ImageItems as drawn (RGBA), overlays in z order and the colour bar to
-  `save_curve_figure(scene=)`; ROIs are left out. A new overlay item type needs a case in `plot_controls._scene_layers`.
+  `save_curve_figure(scene=)`; ROIs are left out. A new overlay item type needs a case in `plot_controls._scene_layers`,
+  which reads `PlotItem.items` (pyqtgraph's `ViewBox.addedItems` holds only auto-range items: nothing added with
+  ignoreBounds=True, i.e. no overlay). The colour bar's ticks and texts are the ones its axis drew last
+  (`_keep_drawn_ticks` records them on pyqtgraph's own AxisItem), so matplotlib never picks its own format / offset
+  text; a canvas text or tick format that must match the file goes through such drawn values, never a second formatter.
+- Canvas scale bar (`PlotStyle.scale_bar`, default on; Axes tab group 'Scale bar', scene panels only): every canvas
+  mode then has no axes (all four hidden in `_style_axes`; the status bar's cursor position stays), so nothing on
+  the canvas may rely on an axis being painted (`drawn_ticks` of a hidden axis are stale). `plot_controls._ScaleBar`
+  = plain Qt items under the view box (not in `PlotItem.items`: not a scene layer, no bounds, no mouse input), laid
+  out by `viz.curve_figure.scale_bar_layout` on every range / size / style change; its length text needs
+  `plot_panel.set_unit_length(model.scale)` (`_draw_view`). x and y pixel scales further apart than
+  `_SCALE_TOLERANCE` (thin geometry, Stretch z) get a second, vertical bar; the export takes `_ScaleBar.drawn`. The
+  bar sits in a bottom corner of the view box's `childrenBounds` cut to the view (the field / material image, not
+  the margin a fit leaves around it), so an item meant as content must count for the bounds and an overlay must be
+  added with ignoreBounds, as they already are for the auto range.
 - Canvas interaction: hit tests respect object_kinds, allow_outer_faces, allow_interior; select clicks are ignored in
   the field view; a draw tool switches to the geometry view (leaving it returns to select); with a selecting node
   current a plain click only toggles an eligible entity, Ctrl+click toggles 'all' (empty domain space) or selects the
