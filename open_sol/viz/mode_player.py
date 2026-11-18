@@ -1,9 +1,11 @@
 """Self-contained HTML mode player: animated complex mode shapes on a surface mesh beside their band diagram.
 
-`write_mode_player` packs plain numpy data (surface nodes and triangles, complex nodal displacements per mode, the
-optional band table and lattice period) into `mode_player.html`, a single page with no network use (hand-written
-WebGL2, data embedded as base64). `mode_player_from_results` reads it from an api.Results (duck-typed: viz never
-imports api or model), from a saved run or a live session.
+`write_mode_player` packs plain numpy data (surface nodes and triangles, complex nodal displacements per mode,
+optionally the complex stress / strain / potential per mode and the nodal density, the optional band table and lattice
+period) into `mode_player.html`, a single page with no network use (hand-written WebGL2, data embedded as base64); the
+page derives what it colours by from them (components, von Mises, principal stresses, energy densities).
+`mode_player_from_results` reads it from an api.Results (duck-typed: viz never imports api or model), from a saved run
+or a live session.
 """
 
 import base64
@@ -19,6 +21,11 @@ DATA_MARKER = '/*__MODE_DATA__*/null'
 FORMAT = 'open_sol.mode_player'
 FORMAT_VERSION = 1
 _INT16_MAX = 32767
+# optional per-mode groups beside the displacement: page group -> (PlayerMode attribute, components per node); the
+# piezoelectric potential travels with the stress (the mode_shapes feature keeps both or neither)
+FIELD_GROUPS = {'stress': ('stress', 6), 'strain': ('strain', 6), 'potential': ('potential', 1)}
+PAGE_FIELDS = ('stress', 'strain')        # what a caller chooses (fields=); 'potential' follows 'stress'
+_BASE64 = 4.0 / 3.0
 _LENGTH_UNITS = ((1e-9, 'nm'), (1e-6, 'um'), (1e-3, 'mm'), (1.0, 'm'))
 
 
@@ -33,6 +40,9 @@ class PlayerMode:
     cell_phase: float = 0.0                # Bloch phase step per lattice period, radians (k a)
     q_factor: float | None = None
     label: str = ''
+    stress: np.ndarray | None = None       # complex (n_nodes, 6): xx, yy, zz, xy, xz, yz (only its shape is drawn)
+    strain: np.ndarray | None = None       # complex (n_nodes, 6), same order, tensor shear strain
+    potential: np.ndarray | None = None    # complex (n_nodes,)
 
 
 @dataclass(eq=False)
@@ -60,17 +70,30 @@ def _b64(array):
 
 
 def _aligned(displacement):
-    """Mode rotated in complex phase so its largest component is real, scaled to max |u| = 1 (|u| over x, y, z)."""
+    """(re, im, rotation): the mode rotated in complex phase so its largest component is real (rotation = that unit
+    factor, 1 for a zero mode), scaled to max |u| = 1 (|u| over x, y, z)."""
     u = np.asarray(displacement, dtype=np.complex128).reshape(-1, 3)
     u = np.where(np.isfinite(u), u, 0.0)
     magnitude = np.sqrt(np.sum(np.abs(u) ** 2, axis=1))
     peak = float(magnitude.max()) if magnitude.size else 0.0
     if peak <= 0.0:
-        return u.real * 0.0, u.real * 0.0
+        return u.real * 0.0, u.real * 0.0, 1.0
     flat = u.ravel()
     largest = flat[int(np.argmax(np.abs(flat)))]
-    u = u * (abs(largest) / largest) / peak
-    return u.real, u.imag
+    rotation = abs(largest) / largest
+    u = u * rotation / peak
+    return u.real, u.imag, rotation
+
+
+def _rotated_group(values, rotation, n_nodes, width):
+    """{'re', 'im'} base64 int16 of a complex per-node group turned by the displacement's rotation and scaled to max
+    |component| = 1 (each derived quantity is drawn normalised, so the group's own scale is not needed)."""
+    values = np.asarray(values, dtype=np.complex128).reshape(n_nodes, width)
+    values = np.where(np.isfinite(values), values, 0.0) * rotation
+    peak = float(np.abs(values).max()) if values.size else 0.0
+    if peak > 0.0:
+        values = values / peak
+    return {'re': _b64(_quantised(values.real)), 'im': _b64(_quantised(values.imag))}
 
 
 def _quantised(values):
@@ -81,11 +104,31 @@ def _finite(value):
     return None if value is None or not math.isfinite(float(value)) else float(value)
 
 
+def page_bytes(n_nodes, n_modes, groups=()) -> dict:
+    """{'displacement' | group: approximate page bytes} of the mode data (int16 re + im per component, base64)."""
+    per_component = 2 * 2 * n_nodes * n_modes * _BASE64
+    sizes = {'displacement': int(3 * per_component)}
+    sizes.update({group: int(FIELD_GROUPS[group][1] * per_component) for group in groups})
+    return sizes
+
+
+class ModePageTooLarge(ValueError):
+    """The page with every stored group would pass max_bytes: `sizes` {'displacement' | group: bytes} lets the caller
+    choose (mode_player_from_results(fields=))."""
+
+    def __init__(self, sizes, max_bytes):
+        self.sizes = dict(sizes)
+        self.max_bytes = int(max_bytes)
+        super().__init__(f'the mode page would hold about {sum(sizes.values()) / 1e6:.0f} MB of mode data (limit '
+                         f'{max_bytes / 1e6:.0f} MB): choose fewer fields (fields=)')
+
+
 def player_data(positions, triangles, modes, bands=None, lattice_period=None, lattice_axis=(1.0, 0.0, 0.0),
-                title='', subtitle='', dimensions=3, up=(0.0, 0.0, 1.0), view=None, default_mode=0):
+                title='', subtitle='', dimensions=3, up=(0.0, 0.0, 1.0), view=None, default_mode=0, density=None):
     """The JSON-able dict the page reads. positions (n, 3) in m (2D: z = 0), triangles (m, 3) node indices,
-    modes [PlayerMode], bands BandTable or None, lattice_period (m) with lattice_axis tiles the cell (None: one
-    cell). view = (azimuth, elevation) degrees about `up`, None = the page default."""
+    modes [PlayerMode] (a stress / strain / potential group goes on the page when every mode has it, else none may),
+    bands BandTable or None, lattice_period (m) with lattice_axis tiles the cell (None: one cell). view = (azimuth,
+    elevation) degrees about `up`, None = the page default. density (n,) kg/m^3 or None: the kinetic energy density."""
     positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     triangles = np.asarray(triangles, dtype=np.int64).reshape(-1, 3)
     if not len(modes):
@@ -96,24 +139,45 @@ def player_data(positions, triangles, modes, bands=None, lattice_period=None, la
         raise ValueError('triangle node index outside the node list')
     extent = float(np.max(np.ptp(positions, axis=0))) or 1.0
     scale, unit = length_scale(extent)
+    n_nodes = positions.shape[0]
+    groups = []
+    for group, (attribute, width) in FIELD_GROUPS.items():
+        present = [getattr(mode, attribute) is not None for mode in modes]
+        if any(present) and not all(present):
+            raise ValueError(f'{group} is given for {sum(present)} of {len(modes)} modes: every mode or none')
+        if all(present):
+            groups.append(group)
     out_modes = []
     for mode in modes:
         u = np.asarray(mode.displacement)
         if u.shape != positions.shape:
             raise ValueError(f'mode displacement shape {u.shape} does not match the nodes {positions.shape}')
-        re, im = _aligned(u)
-        out_modes.append({
-            'frequency': float(mode.frequency), 'k': _finite(mode.k), 'k_index': mode.k_index, 'band': mode.band,
-            'cell_phase': float(mode.cell_phase), 'q_factor': _finite(mode.q_factor), 'label': mode.label,
-            're': _b64(_quantised(re)), 'im': _b64(_quantised(im))})
+        re, im, rotation = _aligned(u)
+        entry = {'frequency': float(mode.frequency), 'k': _finite(mode.k), 'k_index': mode.k_index,
+                 'band': mode.band, 'cell_phase': float(mode.cell_phase), 'q_factor': _finite(mode.q_factor),
+                 'label': mode.label, 're': _b64(_quantised(re)), 'im': _b64(_quantised(im))}
+        for group in groups:
+            attribute, width = FIELD_GROUPS[group]
+            values = np.asarray(getattr(mode, attribute))
+            if values.size != n_nodes * width:
+                raise ValueError(f'mode {group} has {values.size} values, expected {n_nodes} nodes x {width}')
+            entry[group] = _rotated_group(values, rotation, n_nodes, width)
+        out_modes.append(entry)
     data = {
         'format': FORMAT, 'version': FORMAT_VERSION, 'title': title, 'subtitle': subtitle, 'length_unit': unit,
         'geometry': {'dimensions': int(dimensions), 'positions': _b64((positions / scale).astype('<f4')),
                      'triangles': _b64(triangles.astype('<u4')), 'up': [float(v) for v in up]},
-        'lattice': None, 'bands': None, 'modes': out_modes,
+        'lattice': None, 'bands': None, 'modes': out_modes, 'fields': groups, 'density': None,
         'default_mode': int(min(max(default_mode, 0), len(out_modes) - 1))}
     if view is not None:
         data['geometry']['view'] = [float(view[0]), float(view[1])]
+    if density is not None:
+        density = np.asarray(density, dtype=np.float64).reshape(-1)
+        if density.size != n_nodes:
+            raise ValueError(f'density has {density.size} values for {n_nodes} nodes')
+        density = np.where(np.isfinite(density) & (density > 0.0), density, 0.0)
+        if density.max() > 0.0:   # relative: every energy density is drawn normalised
+            data['density'] = _b64((density / density.max()).astype('<f4'))
     if lattice_period:
         axis = np.asarray(lattice_axis, dtype=np.float64)
         data['lattice'] = {'period': float(lattice_period) / scale, 'axis': (axis / np.linalg.norm(axis)).tolist()}
@@ -191,10 +255,47 @@ def _k_ticks(k_values):
     return ticks
 
 
-def mode_player_from_results(results, path, key=None, title=None, subtitle=None) -> str:
-    """Write the player page of a mode_shapes result (key 'physics.feature'; None = the only one) of a Results,
-    live or loaded: in a sweep every successful value on the same surface mesh, its Bloch wavenumber as the band
-    diagram abscissa (another swept parameter otherwise); returns the written path."""
+def stored_fields(entries) -> list:
+    """PAGE_FIELDS every mode_shapes result dict of entries keeps (mode_shapes feature setting 'fields')."""
+    return [group for group in PAGE_FIELDS if all(f'{group}_re' in entry for entry in entries)]
+
+
+def _page_groups(entries, fields):
+    """FIELD_GROUPS of the page: the chosen PAGE_FIELDS (None = every stored one; ValueError for one not stored or
+    not a field) plus the potential with the stress when stored."""
+    stored = stored_fields(entries)
+    if fields is None:
+        fields = stored
+    fields = list(fields)
+    unknown = [group for group in fields if group not in PAGE_FIELDS]
+    if unknown:
+        raise ValueError(f"fields= takes {', '.join(PAGE_FIELDS)}, got {', '.join(map(repr, unknown))}")
+    missing = [group for group in fields if group not in stored]
+    if missing:
+        raise ValueError(f"the mode_shapes result keeps no {' or '.join(missing)}: set the mode_shapes feature's "
+                         "fields to 'stress' or 'stress_strain' and compute again")
+    groups = [group for group in PAGE_FIELDS if group in fields]
+    if 'stress' in groups and all('potential_re' in entry for entry in entries):
+        groups.append('potential')
+    return groups
+
+
+def mode_page_sizes(results, key=None) -> dict:
+    """{'displacement' | group: approximate bytes} of the player page of a mode_shapes result with every stored group
+    (the GUI asks which to keep when the sum is large)."""
+    key = _mode_key(results, key)
+    entries = _mesh_entries(results, key)
+    first = entries[-1][1]
+    return page_bytes(first['nodes'].shape[0], _mode_count(entries),
+                      _page_groups([entry for _, entry in entries], None))
+
+
+def _mode_count(entries):
+    """Modes the page shows: the finite frequencies over every entry."""
+    return sum(int(np.isfinite(np.asarray(entry['frequency'], dtype=np.float64)).sum()) for _, entry in entries)
+
+
+def _mode_key(results, key):
     if key is None:
         keys = mode_shape_keys(results)
         if not keys:
@@ -202,12 +303,39 @@ def mode_player_from_results(results, path, key=None, title=None, subtitle=None)
                              'physics (eigenfrequency study on a tetrahedron mesh) and compute again')
         if len(keys) > 1:
             raise ValueError(f"several mode_shapes results ({', '.join(keys)}): choose one")
-        key = keys[0]
-    elif key not in results.result_names() or results.result(key).get('kind') != MODE_SHAPES_KIND:
+        return keys[0]
+    if key not in results.result_names() or results.result(key).get('kind') != MODE_SHAPES_KIND:
         raise KeyError(f'{key!r} is not a mode_shapes result')   # only this key is fetched (live: one GPU read)
+    return key
+
+
+def _mesh_entries(results, key):
+    """_entries of key on the last value's surface mesh."""
     entries = _entries(results, key)
     first = entries[-1][1]
-    entries = [(index, entry) for index, entry in entries if _same_mesh(first, entry)]
+    return [(index, entry) for index, entry in entries if _same_mesh(first, entry)]
+
+
+def _group_values(entry, group, j):
+    """Complex per-node values of `group` of mode j of a mode_shapes result dict."""
+    real, imaginary = entry[f'{group}_re'][j], entry[f'{group}_im'][j]
+    return np.asarray(real, dtype=np.float64) + 1j * np.asarray(imaginary, dtype=np.float64)
+
+
+def mode_player_from_results(results, path, key=None, title=None, subtitle=None, fields=None, max_bytes=None) -> str:
+    """Write the player page of a mode_shapes result (key 'physics.feature'; None = the only one) of a Results,
+    live or loaded: in a sweep every successful value on the same surface mesh, its Bloch wavenumber as the band
+    diagram abscissa (another swept parameter otherwise); fields = the stored PAGE_FIELDS to put on the page (None =
+    every stored one); max_bytes: ModePageTooLarge (nothing written) when the mode data would pass it. Returns the
+    written path."""
+    key = _mode_key(results, key)
+    entries = _mesh_entries(results, key)
+    first = entries[-1][1]
+    groups = _page_groups([entry for _, entry in entries], fields)
+    if max_bytes is not None:   # before any mode is packed
+        sizes = page_bytes(first['nodes'].shape[0], _mode_count(entries), groups)
+        if sum(sizes.values()) > max_bytes:
+            raise ModePageTooLarge(sizes, max_bytes)
     summary = results.summary()
     sweep = summary.get('sweep') or {}
     swept_values = list(sweep.get('values') or [])
@@ -240,10 +368,11 @@ def mode_player_from_results(results, path, key=None, title=None, subtitle=None)
         for j in range(frequency.size):
             if not math.isfinite(frequency[j]):
                 continue
+            extra = {FIELD_GROUPS[group][0]: _group_values(entry, group, j) for group in groups}
             modes.append(PlayerMode(frequency=float(frequency[j]), displacement=re[j] + 1j * im[j],
                                     k=x, k_index=row if x is not None else None, band=int(rank[j]) + 1,
                                     cell_phase=cell_phase, q_factor=float(q[j]) if j < q.size else None,
-                                    label=f'resonance {j + 1}'))
+                                    label=f'resonance {j + 1}', **extra))
     bands = None
     if by_k:
         bands = BandTable(k=xs, frequencies=rows, k_label='Wavenumber  k a / 2π', k_symbol='k a/2π',
@@ -266,4 +395,5 @@ def mode_player_from_results(results, path, key=None, title=None, subtitle=None)
     lattice = {} if axis is None else {'lattice_period': float(period[axis]),
                                        'lattice_axis': tuple(float(i == axis) for i in range(3))}
     return write_mode_player(path, first['nodes'], first['triangles'], modes, bands=bands, title=title,
-                             subtitle=subtitle, dimensions=dimensions, default_mode=middle, **lattice)
+                             subtitle=subtitle, dimensions=dimensions, default_mode=middle,
+                             density=first.get('density'), **lattice)

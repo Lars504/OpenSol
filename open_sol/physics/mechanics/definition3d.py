@@ -1826,7 +1826,7 @@ def _resonance_table_feature():
 # ---- mode_shapes feature (tetrahedra; mode_shapes.py, result kind 'mode_shapes') ----
 def _apply_mode_shapes(ctx, solver, feature_spec, values, selection):
     from .mode_shapes import ModeShapes   # the surface cache of the feature
-    return ModeShapes()
+    return ModeShapes(values['fields'])
 
 
 def _mode_shapes_result(session, solver, shapes, feature_spec, options):
@@ -1844,8 +1844,20 @@ def _validate_mode_shapes(vctx, physics_spec, feature_spec, values):
                   f'{study} here): use the eigenfrequency study, or remove the feature')]
 
 
+_MODE_SHAPES_FIELDS_PARAM = Param(
+    'fields', 'choice', 'stress', label='Kept fields', choices=('displacement', 'stress', 'stress_strain'),
+    choice_labels=(('displacement', 'Displacement'), ('stress', 'Displacement and stress'),
+                   ('stress_strain', 'Displacement, stress and strain')),
+    help=("What each resonance keeps on the surface besides the displacement: 'stress' adds the complex modal stress "
+          "(the web page then also colours by stress components, von Mises, principal stresses and pressure), "
+          "'stress_strain' also the strain (strain components, volumetric strain and the strain energy density); "
+          "'displacement' keeps the result smallest."),
+    tip=('What the mode animation can colour by besides the displacement: stress (von Mises, principal stresses, '
+         'components) and strain (components, strain energy density). Each tensor costs twice the displacement.'))
+
+
 MODE_SHAPES_FEATURE = FeatureType(
-    'mode_shapes', 'Mode shapes', 'monitor', None, result_kind='mode_shapes',
+    'mode_shapes', 'Mode shapes', 'monitor', None, result_kind='mode_shapes', params=(_MODE_SHAPES_FIELDS_PARAM,),
     summary=('Keeps the vibration shape of every resonance on the surface of the solid, for each value of a sweep, so '
              'the modes can be animated later (for example beside a phononic band diagram).'),
     description=(
@@ -1859,8 +1871,13 @@ MODE_SHAPES_FEATURE = FeatureType(
         'resonance_table row order, displacement_re / _im (r, n, 3) float32 m with the solver normalisation (peak '
         'node |u| = 1 m, its largest component real positive; real modes have _im = 0), bloch_k (3,) rad/m (0 off '
         'the periodic axes), periodic (3,) 0 / 1, period (3,) = the mesh extent per axis in m and phase_convention: '
-        'the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)). '
-        'A piezoelectric potential is not kept. Size about r x n x 24 bytes per value.'),
+        'the displacement of the neighbouring cell at x + L is this one times exp(-j k L) (time exp(+j omega t)), '
+        "density (n,) kg/m^3 (mean over the solid elements around each node). fields 'stress' adds stress_re / "
+        "_im (r, n, 6) float32 Pa and, piezoelectric, potential_re / _im (r, n) float32 V; 'stress_strain' also "
+        'strain_re / _im (r, n, 6) float32: components xx, yy, zz, xy, xz, yz (tensor shear strain), the nodal '
+        'averages the stress / strain fields of the selected mode show (modal: no thermal part, no initial stress), '
+        "in the displacement's normalisation and phase. Size about r x n x 24 bytes per value for the displacement, "
+        '48 more for each tensor.'),
     apply=_apply_mode_shapes, result=_mode_shapes_result, validate=_validate_mode_shapes, grids=(_TETRAHEDRA,))
 
 

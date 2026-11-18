@@ -71,6 +71,9 @@ _OUTPUT_GROUPS = {'primary': _PRIMARY_OUTPUTS,
                   'mechanical': tuple(name for name in OUTPUT_ARRAYS_3D if name not in _PRIMARY_OUTPUTS),
                   'electric': _ELECTRIC_POINT_OUTPUTS,
                   'energy': ENERGY_OUTPUT_ARRAYS_3D}
+# mode_surface_tensors columns (the mode_shapes result's stress / strain component order)
+_SURFACE_STRESS = ('stress_xx', 'stress_yy', 'stress_zz', 'stress_xy', 'stress_xz', 'stress_yz')
+_SURFACE_STRAIN = ('strain_xx', 'strain_yy', 'strain_zz', 'strain_xy', 'strain_xz', 'strain_yz')
 # initial-stress force share on the free dofs above which sigma0 counts as not self-equilibrated with the supports
 _UNBALANCED_INITIAL_STRESS = 1e-6
 # Newton scale floor: the largest displacement counts at least this fraction of the mesh extent (a zero solution)
@@ -923,6 +926,54 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             self._shows_complex = False
         self._shows_mode, self._shows_harmonic = True, False
         self.selected_resonance = number
+
+    def mode_surface_tensors(self, dofs, strain=True) -> dict:
+        """{'stress': complex128 (r, n, 6) [Pa], 'strain' (strain=True): complex128 (r, n, 6) [1]} of every resonance of
+        the last eigen solve at the sorted full-numbering scalar dofs `dofs`, components (xx, yy, zz, xy, xz, yz),
+        tensor shear strain: the nodal values select_resonance shows (the modal stress, no thermal part or initial
+        stress; piezoelectric: - e^T E of the mode's potential), averaged over only the solid elements touching those
+        dofs (exact there: every element around a dof touches it); real and imaginary parts of a complex mode each."""
+        full = self.system.full
+        n_vector = COMPONENTS * self.system.n_dofs
+        solid = np.flatnonzero(self._solid)
+        elements = solid[np.isin(full.element_dofs[solid], dofs).any(axis=1)]
+        points = local_dof_points_3d(self.order)
+        names = _SURFACE_STRESS + (_SURFACE_STRAIN if strain else ())
+        resonances = list(self.eigen_solve.resonances)
+        values = np.zeros((len(resonances), len(dofs), len(names)), dtype=np.complex128)
+        for index, resonance in enumerate(resonances):
+            mode = np.asarray(resonance.displacement)
+            for part, unit in ((mode.real, 1.0), (mode.imag, 1j)) if np.iscomplexobj(mode) else ((mode, 1.0),):
+                displacement = np.ascontiguousarray(part[:n_vector], dtype=np.float64).reshape(-1, COMPONENTS)
+                strains = element_strains_3d(full, displacement, points, elements=elements)[1]
+                field = (-element_gradients_3d(full, part[n_vector:], points, elements=elements)[1]
+                         if self.piezoelectric else None)
+                local = self._point_outputs(elements, strains, False, field, prestress=False)
+                averaged = nodal_average_3d(full, np.stack([local[name] for name in names], axis=-1),
+                                            elements=elements)
+                values[index] += unit * averaged[dofs]
+        out = {'stress': values[..., :len(_SURFACE_STRESS)]}
+        if strain:
+            out['strain'] = values[..., len(_SURFACE_STRESS):]
+        return out
+
+    def mode_surface_potential(self, dofs):
+        """Complex (r, n) piezoelectric potential [V] of every resonance of the last eigen solve at the scalar dofs
+        `dofs`; None without the piezoelectric setting."""
+        if not self.piezoelectric:
+            return None
+        n_vector = COMPONENTS * self.system.n_dofs
+        return np.array([np.asarray(resonance.displacement)[n_vector:][dofs]
+                         for resonance in self.eigen_solve.resonances], dtype=np.complex128)
+
+    def mode_surface_density(self, dofs):
+        """Mass density rho [kg/m^3] (n,) at the scalar dofs `dofs`: the mean over the solid elements around each."""
+        full = self.system.full
+        solid = np.flatnonzero(self._solid)
+        elements = solid[np.isin(full.element_dofs[solid], dofs).any(axis=1)]
+        density = self._host_input('density', lambda: _host(self.domain.materials.rho))[elements]
+        local = np.repeat(density[:, None], full.element_dofs.shape[1], axis=1)
+        return nodal_average_3d(full, local, elements=elements)[dofs]
 
     # --- frequency_response study hooks -----------------------------------------
 

@@ -81,7 +81,18 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `mode_player_from_results` duck-types api.Results (result_names / result / sweep_result / summary / spec; no api or
   model import) and reads only 'mode_shapes' results; sweep values on another surface mesh than the last are dropped;
   band = rank of the frequency among the computed resonances at that k (a search window, not an absolute band index),
-  the page labels it 'mode j of n'. Rest shape (G) is a hidden-line drawing, never the mesh: page-side candidate edges
+  the page labels it 'mode j of n'. Colour by (`QUANTITIES` on the page, code = the shaders' uColor): the
+  displacement always; with the mode_shapes result's kept groups (`DATA.fields`: stress (+ potential), strain;
+  `fields=` / `max_bytes` choose them, `ModePageTooLarge` carries the sizes for the GUI's dialog) the page derives the
+  rest itself: tensor components, von Mises, principal / maximum shear stress, pressure, volumetric strain, the time
+  averaged strain (1/4 Re sigma : eps*, needs both groups) and kinetic (rho |U|^2, `DATA.density`) energy densities.
+  Every group is complex, turned by the displacement's alignment rotation (`_aligned` returns it: a group without
+  that turn would animate out of phase) and scaled to its own max |component| = 1 (no scales on the page: each
+  quantity is drawn normalised by its largest magnitude over nodes and cycle, `quantityLimit`, so constant factors
+  cancel). Linear quantities animate as Re[X exp(j psi)] in the vertex shader (`TENSOR_GLSL`); `quantityLimit`
+  mirrors those formulas in JS (nonlinear ones sampled over LIMIT_PHASES): change both. Node data are decoded per mode
+  on first use (a few modes cached) and only the groups of the shown quantity are expanded to the unindexed vertex
+  buffers (`uploadMode`, also on a quantity change). Rest shape (G) is a hidden-line drawing, never the mesh: page-side candidate edges
   (creases above FEATURE_COS, open / non-manifold edges, plus every non-flat edge that the line shader keeps only
   while it is a silhouette, so curved bodies get an outline), screen-space quads drawn after the body in two passes
   (depth body + rest surface: full strength; depth rest surface alone: faint where the body covers it), one fragment

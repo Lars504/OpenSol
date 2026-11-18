@@ -20,7 +20,9 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   else 'physics.component'. Never greyed out: a click with nothing to view says so in the status bar. It calls
   `api.export_session_html` (Results.export_html: viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing
   into `web_page_directory()` (temporary folder, one file per model and target, no save dialog), then opens it with
-  QDesktopServices (failure names the file). It passes no `planes=`: a live 3D page gets api's default x, y and z
+  QDesktopServices (failure names the file). A mode animation is first written with max_bytes =
+  `_MODE_PAGE_ASK_BYTES`: above it the worker returns the `ModePageTooLarge` (nothing written) and the GUI thread
+  asks which kept groups to take (`_ask_mode_page_fields`), then exports again with that `fields=`. It passes no `planes=`: a live 3D page gets api's default x, y and z
   cuts through the structure (one shown cut alone was a worse page: a single plane, often missing the objects).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current

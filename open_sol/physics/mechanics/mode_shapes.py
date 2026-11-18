@@ -1,7 +1,8 @@
 """Surface mode shapes of the tetrahedra solid (feature mode_shapes, result kind 'mode_shapes'): the boundary
 triangles of the solid window elements at the displacement's Lagrange resolution and the complex nodal displacement of
-every resonance of the last eigenfrequency solve on them, with the Bloch wavenumbers and periods of the cell. Host
-numpy."""
+every resonance of the last eigenfrequency solve on them, with the Bloch wavenumbers and periods of the cell; per the
+feature's `fields` also the complex modal stress (and strain) at those nodes, the basis the mode player derives its
+quantities from (components, von Mises, principal stresses, energy densities). Host numpy."""
 # Surface = the faces with exactly one solid window element (fem.mesh3d.interface_faces of solid_elements & window:
 # solid / void interfaces, the outer box faces of solid elements, the window side of a PML shell). Nodes = the scalar
 # full-numbering Lagrange dofs of those faces (P2: the three vertices and the three edge dofs n_points + edge; P1:
@@ -10,7 +11,9 @@ numpy."""
 # resolution; every triangle is counter-clockwise seen from outside the solid (normal out of the solid element).
 # Displacement = rows of the resonance's (n_dofs, 3) block (a piezoelectric potential dropped), the solver's
 # normalisation kept (peak node |u| = 1 m, its largest component real positive): no interpolation, no copy of the
-# volume vectors. The surface is cached on the feature's ModeShapes per (dof map, solid set).
+# volume vectors. The surface is cached on the feature's ModeShapes per (dof map, solid set). Stress / strain = the
+# solver's nodal averages at the surface dofs (SolidMechanicsFEMPhysics3D.mode_surface_tensors), so the page shows what
+# the GUI field of a selected mode shows; complex like the displacement (a Bloch mode's stress has its own phase).
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,6 +24,10 @@ MODE_SHAPES_KIND = 'mode_shapes'
 # fem.dofs.bloch_master_map: each hi-side dof is its lo-side partner times exp(-j k L) per crossed period
 PHASE_CONVENTION = 'u(x + L) = u(x) exp(-j k L), time exp(+j omega t)'
 _COMPONENTS = 3   # interleaved displacement dofs 3 d + component
+# feature setting 'fields': what each resonance keeps besides the displacement
+FIELDS_CHOICES = ('displacement', 'stress', 'stress_strain')
+DEFAULT_FIELDS = 'stress'
+TENSOR_COMPONENTS = ('xx', 'yy', 'zz', 'xy', 'xz', 'yz')   # column order of stress_* / strain_* (tensor shear strain)
 
 
 @dataclass(frozen=True, eq=False)
@@ -66,10 +73,13 @@ def solid_surface(dofs, solid) -> SolidSurface:
 
 
 class ModeShapes:
-    """Runtime object of a mode_shapes feature: the SolidSurface of the last (dof map, solid set), rebuilt when either
-    changes."""
+    """Runtime object of a mode_shapes feature: its `fields` setting and the SolidSurface of the last (dof map, solid
+    set), rebuilt when either changes."""
 
-    def __init__(self):
+    def __init__(self, fields=DEFAULT_FIELDS):
+        if fields not in FIELDS_CHOICES:
+            raise ValueError(f"mode_shapes fields must be one of {', '.join(FIELDS_CHOICES)}, got {fields!r}")
+        self.fields = fields
         self._key = None
         self._surface = None
 
@@ -103,11 +113,23 @@ def mode_shapes_result(solver, shapes) -> dict:
     periodic = (False,) * 3 if bloch is None else bloch.periodic
     wavenumbers = (0.0,) * 3 if bloch is None else bloch.wavenumbers
     bounds = np.asarray(mesh.bounds, dtype=np.float64)
-    return {'kind': MODE_SHAPES_KIND, 'nodes': surface.nodes.copy(), 'triangles': surface.triangles.copy(),
-            'resonance_number': np.arange(1, len(resonances) + 1, dtype=np.int32),
-            'frequency': np.array([resonance.frequency for resonance in resonances], dtype=np.float64),
-            'q_factor': np.array([resonance.q_factor if resonance.frequency_imag else np.nan
-                                  for resonance in resonances], dtype=np.float64),
-            'displacement_re': real, 'displacement_im': imaginary,
-            'bloch_k': np.array(wavenumbers, dtype=np.float64), 'periodic': np.array(periodic, dtype=np.int8),
-            'period': bounds[3:] - bounds[:3], 'phase_convention': PHASE_CONVENTION, 'unit': 'm'}
+    result = {'kind': MODE_SHAPES_KIND, 'nodes': surface.nodes.copy(), 'triangles': surface.triangles.copy(),
+              'resonance_number': np.arange(1, len(resonances) + 1, dtype=np.int32),
+              'frequency': np.array([resonance.frequency for resonance in resonances], dtype=np.float64),
+              'q_factor': np.array([resonance.q_factor if resonance.frequency_imag else np.nan
+                                    for resonance in resonances], dtype=np.float64),
+              'displacement_re': real, 'displacement_im': imaginary,
+              'bloch_k': np.array(wavenumbers, dtype=np.float64), 'periodic': np.array(periodic, dtype=np.int8),
+              'period': bounds[3:] - bounds[:3], 'phase_convention': PHASE_CONVENTION, 'unit': 'm',
+              'density': solver.mode_surface_density(surface.dofs)}
+    if shapes.fields == 'displacement':
+        return result
+    tensors = solver.mode_surface_tensors(surface.dofs, strain=shapes.fields == 'stress_strain')
+    for name, values in tensors.items():
+        result[f'{name}_re'] = values.real.astype(np.float32)
+        result[f'{name}_im'] = values.imag.astype(np.float32)
+    potential = solver.mode_surface_potential(surface.dofs)
+    if potential is not None:
+        result['potential_re'] = potential.real.astype(np.float32)
+        result['potential_im'] = potential.imag.astype(np.float32)
+    return result

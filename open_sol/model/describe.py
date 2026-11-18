@@ -824,7 +824,8 @@ _RESULTS_NOTES = (
         'line curve, scene_3d.png for a 3D model: perspective picture of the objects with the first saved field on '
         'the x, y and z cut planes through the window middle); --max-wall-time stops cleanly with status timeout and '
         'partial results.',
-        'show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--what NAME] [--no-geometry] '
+        'show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--what NAME] [--fields LIST] '
+        '[--no-geometry] '
         '[--set NAME=EXPR ...] '
         '[--backend '
         'auto|gpu|cpu] [--json]: '
@@ -836,7 +837,8 @@ _RESULTS_NOTES = (
         'api.scene_figure). --html [FILE] (results directory) writes the self-contained web page of --what NAME '
         '(Results.export_html: a field, a dft_fields or a mode_shapes result; default the only mode_shapes result) '
         'to <out>/<model stem>_<what>.html (_modes.html without --what; a field page carries the model objects, '
-        'shown or hidden on the page, unless --no-geometry); exit 1 when there is nothing to show.',
+        'shown or hidden on the page, unless --no-geometry; a mode page takes the kept stress / strain, --fields '
+        'stress,strain | stress | strain | none choosing them); exit 1 when there is nothing to show.',
         '--set NAME=EXPR (repeatable) replaces the expression of the model parameter NAME for this command only (the '
         'file is not changed; run records it in model.json), e.g. --set P_in=2e3 --set "w=450*nm"; an unknown NAME '
         'is a model error at the parameters node. --backend (check, run, show) overrides the model\'s '
@@ -1324,7 +1326,8 @@ _RESULTS_NOTES = (
         '(values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, '
         'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
         '(values, x_centers, y_centers, z_centers, metadata kind volume); '
-        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None) -> the "
+        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None, "
+        "fields=None, max_bytes=None) -> the "
         'written .html path: a '
         'self-contained web '
         'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
@@ -1339,7 +1342,13 @@ _RESULTS_NOTES = (
         "not live); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
         'mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep '
         'contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, '
-        'else the swept parameter); None = the only mode_shapes result; geometry (field and dft_fields pages; a 3D '
+        'else the swept parameter; coloured by displacement, and with the kept stress / strain of the mode_shapes '
+        'feature by von Mises, largest principal and maximum shear stress, pressure, stress and strain components, '
+        'volumetric strain, strain and kinetic energy densities (time averages) and a piezoelectric potential, each '
+        "normalised over the mode and cycle; fields = a list of 'stress' / 'strain' to put on the page, None = every "
+        'kept one, ValueError for one not kept; max_bytes: viz.mode_player.ModePageTooLarge (a ValueError with '
+        '.sizes in bytes per group), nothing written, when the mode data would pass it; fields / max_bytes on '
+        'another page: ValueError); None = the only mode_shapes result; geometry (field and dft_fields pages; a 3D '
         'DFT map excepted): the model objects at the built parameters, their outlines on every map / cut plane and '
         'in 3D their edges and see-through surfaces, switched on the page (Objects; ValueError without the model '
         'spec: pass geometry=False); a model with mirror planes (field pages, 2D DFT maps): the page also draws '
@@ -1440,7 +1449,8 @@ _RESULTS_NOTES = (
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
         'export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None, '
-        'physics=None, geometry=True, planes=None, figure=None) -> the written path: Results.export_html of such a '
+        'physics=None, geometry=True, planes=None, figure=None, fields=None, max_bytes=None) -> the written path: '
+        'Results.export_html of such a '
         'live session '
         '(the GUI View in browser buttons, canvas and Results Field tab: planes = the shown 3D cut); the session '
         'stays open.',

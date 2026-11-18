@@ -112,6 +112,10 @@ def _build_parser():
                                   'frames, 3D on its saved cut planes), a dft_fields result (intensity per '
                                   'frequency) or a mode_shapes result (animated mode shapes beside the band '
                                   'diagram); default the only mode_shapes result')
+    show_parser.add_argument('--fields', metavar='LIST',
+                             help="with --html of a mode_shapes result: the kept fields the page colours by besides "
+                                  "the displacement, comma-separated stress / strain, or 'none' (default every "
+                                  'kept one: the mode_shapes feature setting fields)')
     show_parser.add_argument('--no-geometry', action='store_true',
                              help='with --html: leave the model objects (outlines on the maps / cut planes, 3D '
                                   'edges and surfaces) off the field page')
@@ -300,8 +304,8 @@ def _show(args):
         print(f'open_sol: no such file or directory: {path}', file=sys.stderr)
         return 2
     overrides = dict(args.overrides)   # --set pairs, the last one wins
-    if (args.what is not None or args.no_geometry) and args.html is None:
-        print('open_sol: --what and --no-geometry apply with --html only', file=sys.stderr)
+    if (args.what is not None or args.no_geometry or args.fields is not None) and args.html is None:
+        print('open_sol: --what, --fields and --no-geometry apply with --html only', file=sys.stderr)
         return 2
     if path.is_dir():
         if overrides:
@@ -339,7 +343,9 @@ def _show_results(path, args):
         suffix = 'modes' if args.what is None else re.sub(r'[^\w.-]+', '_', args.what).replace('.', '_')
         html_path = Path(args.html) if args.html else out_dir / f'{stem}_{suffix}.html'
         try:
-            web_page = results.export_html(html_path, args.what, geometry=not args.no_geometry)
+            fields = None if args.fields is None else [name.strip() for name in args.fields.split(',')
+                                                        if name.strip() and name.strip() != 'none']
+            web_page = results.export_html(html_path, args.what, geometry=not args.no_geometry, fields=fields)
             print(f'  web page {web_page}', file=stream)
         except (OSError, ValueError, KeyError) as exc:
             print(f'open_sol: no web page: {error_message(exc)}', file=sys.stderr)

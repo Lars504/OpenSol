@@ -52,6 +52,10 @@ _MESSAGES_MIN_WRAP_COLUMNS = 80   # Messages lines wrap at the view width, never
 _MESSAGES_HANGING_INDENT_COLUMNS = 9   # wrapped / continuation lines start below the text after 'HH:MM:SS '
 _MESSAGES_GAP_PX = 4                   # space between two messages
 _COMPUTE_ICON_COLOR = '#2e9d44'
+# View in browser of a mode animation: above this much mode data a dialog asks which kept groups the page takes
+_MODE_PAGE_ASK_BYTES = 50e6
+_MODE_GROUP_LABELS = {'stress': 'Stress: von Mises, principal stresses, pressure, components',
+                      'strain': 'Strain: components, volumetric strain, strain energy density (with stress)'}
 _STOP_ICON_COLOR = '#d32f2f'
 _PROGRESS_FIELDS = (('status', 'Status'), ('stage', 'Current stage'), ('stages', 'Stages'),
                     ('time', 'Simulated time'), ('tick', 'Step / iteration / wavelength'),
@@ -164,6 +168,43 @@ class _WorkerWaitDialog(QtWidgets.QDialog):
 
     def reject(self):
         """Esc / window close do nothing: only the worker stopping or Force quit ends the wait."""
+
+
+def _ask_mode_page_fields(parent, sizes):
+    """Modal choice of the kept groups a large mode page takes (viz.mode_player.ModePageTooLarge.sizes: bytes per
+    group; the potential travels with the stress); the chosen PAGE_FIELDS list, or None when cancelled."""
+    dialog = QtWidgets.QDialog(parent)
+    dialog.setWindowTitle('Mode page size')
+    layout = QtWidgets.QVBoxLayout(dialog)
+    layout.addWidget(QtWidgets.QLabel(
+        f"The web page with every kept field would hold about {format_bytes(sum(sizes.values()))} of mode data, slow "
+        'to open in a browser.\nChoose what to colour by besides the displacement '
+        f"({format_bytes(sizes['displacement'])}):"))
+    group_sizes = {group: sizes[group] + (sizes.get('potential', 0) if group == 'stress' else 0)
+                   for group in _MODE_GROUP_LABELS if group in sizes}
+    boxes = {}
+    for group, size in group_sizes.items():
+        box = QtWidgets.QCheckBox(f'{_MODE_GROUP_LABELS[group]}  ({format_bytes(size)})')
+        box.setChecked(group == 'stress')
+        layout.addWidget(box)
+        boxes[group] = box
+    total = QtWidgets.QLabel()
+    layout.addWidget(total)
+
+    def update_total():
+        chosen = sizes['displacement'] + sum(size for group, size in group_sizes.items() if boxes[group].isChecked())
+        total.setText(f'Page mode data: about {format_bytes(chosen)}')
+    for box in boxes.values():
+        box.toggled.connect(lambda _checked: update_total())
+    update_total()
+    buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.StandardButton.Ok
+                                         | QtWidgets.QDialogButtonBox.StandardButton.Cancel)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+        return None
+    return [group for group, box in boxes.items() if box.isChecked()]
 
 
 def web_page_directory():
@@ -1121,10 +1162,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_status('Saving the run…')
         bridge.call(save, on_result=saved, on_error=failed)
 
-    def _view_in_browser(self):
+    def _view_in_browser(self, fields=None):
         """Write the web page of the canvas field (_web_page_target; api.export_session_html on the worker: the page
         of `python -m open_sol show <run dir> --html --what ...`) into web_page_directory() and open it in the default
-        browser; the session stays open."""
+        browser; the session stays open. A mode animation whose kept groups would pass _MODE_PAGE_ASK_BYTES comes back
+        unwritten and the user chooses them (fields: that choice, written as chosen)."""
         what = self._web_page_target()
         if what is None:
             self.show_status('Nothing to view in the browser: compute first, then show a field (a running job: wait '
@@ -1140,11 +1182,23 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def export(session):
             from ..api import export_session_html   # worker thread: reads fields / results from the session
+            from ..viz.mode_player import ModePageTooLarge
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            return export_session_html(path, what, spec, session, build_summary, study_summary, log_entries,
-                                       model_file)
+            try:
+                return export_session_html(path, what, spec, session, build_summary, study_summary, log_entries,
+                                           model_file, fields=fields,
+                                           max_bytes=_MODE_PAGE_ASK_BYTES if fields is None else None)
+            except ModePageTooLarge as too_large:
+                return too_large   # the GUI thread asks which kept groups to take
 
         def exported(written):
+            if not isinstance(written, str):   # ModePageTooLarge: nothing written yet
+                chosen = _ask_mode_page_fields(self, written.sizes)
+                if chosen is None:
+                    self.show_status('View in browser cancelled')
+                else:
+                    self._view_in_browser(fields=chosen)
+                return
             if not QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(os.path.abspath(written))):
                 self._report_file_failure('Open in browser failed', f'The page of {what} was written to {written}, '
                                           'but no web browser could be started: open the file by hand.')

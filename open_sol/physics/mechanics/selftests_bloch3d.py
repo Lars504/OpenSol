@@ -312,6 +312,7 @@ _TEMPLATE_K_FRACTIONS = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
 _TEMPLATE_TARGET = 4e9           # Hz
 _TEMPLATE_BANDS = 8
 _SHAPES = 'shapes'               # the template's mode_shapes feature
+_TEMPLATE_YOUNGS, _TEMPLATE_POISSON, _TEMPLATE_DENSITY = 169e9, 0.28, 2329.0   # silicon, isotropic (Pa, 1, kg/m^3)
 
 
 def solid_bloch_band_diagram_3d_spec():
@@ -331,7 +332,8 @@ def solid_bloch_band_diagram_3d_spec():
                                   'Bloch kx in units of 2 pi / a (Gamma-X: 0-0.5)')],
         domain=DomainSpec(size_x=_TEMPLATE_PERIOD, size_y=_TEMPLATE_WIDTH, size_z=_TEMPLATE_CORE),
         geometry=geometry,
-        materials=[MaterialSpec('silicon', properties=_elastic(169e9, 0.28, rho=2329.0), selection=['core', 'wing'])],
+        materials=[MaterialSpec('silicon', properties=_elastic(_TEMPLATE_YOUNGS, _TEMPLATE_POISSON,
+                                                               rho=_TEMPLATE_DENSITY), selection=['core', 'wing'])],
         physics=[PhysicsSpec(_SOLID, 'solid_mechanics_3d', settings=settings,
                              features=[FeatureSpec(_TABLE, 'resonance_table'),
                                        FeatureSpec(_SHAPES, 'mode_shapes')])],
@@ -351,7 +353,9 @@ _SHAPES_EXACT_TOLERANCE = 1e-12   # relative: copies of the same float64 numbers
 _SHAPES_DTYPES = {'nodes': ('float64', 2), 'triangles': ('int32', 2), 'resonance_number': ('int32', 1),
                   'frequency': ('float64', 1), 'q_factor': ('float64', 1), 'displacement_re': ('float32', 3),
                   'displacement_im': ('float32', 3), 'bloch_k': ('float64', 1), 'periodic': ('int8', 1),
-                  'period': ('float64', 1)}
+                  'period': ('float64', 1), 'density': ('float64', 1), 'stress_re': ('float32', 3),
+                  'stress_im': ('float32', 3), 'strain_re': ('float32', 3), 'strain_im': ('float32', 3)}
+_SHAPES_HOOKE_TOLERANCE = 1e-5    # of the peak |stress|: sigma = lambda tr(eps) I + 2 mu eps on float32 stress / strain
 
 
 def _mode_shapes_spec():
@@ -360,8 +364,12 @@ def _mode_shapes_spec():
     spec = solid_bloch_band_diagram_3d_spec()
     parameters = [replace(parameter, expression=_SHAPES_K_FRACTION) if parameter.name == 'k_fraction' else parameter
                   for parameter in spec.parameters]
+    physics = [replace(entry, features=[replace(feature, params={**feature.params, 'fields': 'stress_strain'})
+                                        if feature.name == _SHAPES else feature for feature in entry.features])
+               for entry in spec.physics]
     return replace(spec, title='Self-test: mode shapes of the phononic nanobeam cell', parameters=parameters,
-                   study=replace(spec.study, sweep=None), solver_defaults=SolverDefaultsSpec(backend='cpu'))
+                   physics=physics, study=replace(spec.study, sweep=None),
+                   solver_defaults=SolverDefaultsSpec(backend='cpu'))
 
 
 def _contract_problems(shapes):
@@ -376,7 +384,9 @@ def _contract_problems(shapes):
     n_nodes, count = shapes['nodes'].shape[0], shapes['frequency'].size
     expected_shapes = {'nodes': (n_nodes, 3), 'triangles': (shapes['triangles'].shape[0], 3),
                        'resonance_number': (count,), 'q_factor': (count,), 'displacement_re': (count, n_nodes, 3),
-                       'displacement_im': (count, n_nodes, 3), 'bloch_k': (3,), 'periodic': (3,), 'period': (3,)}
+                       'displacement_im': (count, n_nodes, 3), 'bloch_k': (3,), 'periodic': (3,), 'period': (3,),
+                       'density': (n_nodes,), **{f'{tensor}_{part}': (count, n_nodes, 6) for tensor in
+                                                 ('stress', 'strain') for part in ('re', 'im')}}
     problems += [f'{key}: shape {shapes[key].shape}, expected {shape}' for key, shape in expected_shapes.items()
                  if shapes[key].shape != shape]
     if shapes['triangles'].min() < 0 or shapes['triangles'].max() >= n_nodes:
@@ -421,8 +431,19 @@ def _check_mode_shapes(results_by_name):
     cell = np.concatenate([shapes['bloch_k'] / np.array([wavenumber, 1.0, 1.0]) - [1.0, 0.0, 0.0],
                            shapes['period'] / [_TEMPLATE_PERIOD, _TEMPLATE_WIDTH, _TEMPLATE_CORE] - 1.0])
     errors['cell'] = (float(np.abs(cell).max()) if np.array_equal(shapes['periodic'], [1, 0, 0]) else math.inf)
+    # one isotropic material: the nodal averages of stress and strain keep Hooke's law exactly (columns xx, yy, zz,
+    # xy, xz, yz, tensor shear strain), complex parts each
+    lame_lambda, mu = _lame(_TEMPLATE_YOUNGS, _TEMPLATE_POISSON)
+    stress = shapes['stress_re'].astype(np.float64) + 1j * shapes['stress_im']
+    strain = shapes['strain_re'].astype(np.float64) + 1j * shapes['strain_im']
+    hooke = 2.0 * mu * strain
+    hooke[..., :3] += lame_lambda * strain[..., :3].sum(axis=-1, keepdims=True)
+    stress_peak = float(np.abs(stress).max())
+    errors['hooke'] = float(np.abs(stress - hooke).max()) / stress_peak if stress_peak > 0.0 else math.inf
+    errors['density'] = float(np.abs(shapes['density'] / _TEMPLATE_DENSITY - 1.0).max())
     tolerances.update({'frequencies': _SHAPES_EXACT_TOLERANCE, 'bloch_relation': _SHAPES_BLOCH_TOLERANCE,
-                       'outward_surface_volume': _SHAPES_EXACT_TOLERANCE, 'cell': _SHAPES_EXACT_TOLERANCE})
+                       'outward_surface_volume': _SHAPES_EXACT_TOLERANCE, 'cell': _SHAPES_EXACT_TOLERANCE,
+                       'hooke': _SHAPES_HOOKE_TOLERANCE, 'density': _SHAPES_EXACT_TOLERANCE})
     details.update({'n_nodes': int(nodes.shape[0]), 'n_triangles': int(triangles.shape[0]),
                     'periodic_pairs': int(len(high)), 'complex_modes': bool(np.abs(shapes['displacement_im']).max()),
                     'frequencies_Hz': shapes['frequency'].tolist(), 'volume_m3': volume,
@@ -476,7 +497,9 @@ BLOCH_FEM_3D_CASES = (
                      f'(the phase_convention) within {_SHAPES_BLOCH_TOLERANCE:g} of the peak |u| (float32 storage); '
                      'the P2-split surface triangles close the solid outward: sum a . (b x c) / 6 = the core + wing '
                      f'volume within {_SHAPES_EXACT_TOLERANCE:g} (conforming builtin mesh); bloch_k, periodic, '
-                     'period of the cell and the key / dtype / shape contract of RESULT_KIND_DOCS. measured = error '
-                     '= the worst deviation in tolerance units, tolerance 1.'),
+                     'period of the cell; fields stress_strain: the stored stress and strain keep Hooke\'s law of the '
+                     f'one isotropic material within {_SHAPES_HOOKE_TOLERANCE:g} of the peak stress (float32), density '
+                     f'= {_TEMPLATE_DENSITY:g} kg/m^3 at every node; the key / dtype / shape contract of '
+                     'RESULT_KIND_DOCS. measured = error = the worst deviation in tolerance units, tolerance 1.'),
         specs=lambda: {'cell': _mode_shapes_spec()}, check=_check_mode_shapes),
 )

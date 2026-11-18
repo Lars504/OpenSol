@@ -630,9 +630,16 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   runtime caches the surface per (dof map, solid set); displacement = rows of the first 3 n_dofs (piezo phi dropped),
   float32, solver normalisation. bloch_k / periodic from `system.bloch` (0 off periodic axes), period = node extent
   (the L of the phase). No memory estimate: r x n_surface x 24 B per value, a fraction of the eigenvectors the eigen
-  items count; a sweep keeps one per value (host, results.npz). Self-test solid_fem3d_bloch_mode_shapes (template
-  cell at k a = pi / 2: phase exactly -j, the opposite sign fails by O(1)) pins the convention, the frequencies and the
-  closed outward surface (divergence-theorem volume).
+  items count; a sweep keeps one per value (host, results.npz). Setting `fields` (default 'stress'): stress (+ the
+  piezo potential) / stress_strain also keep the complex nodal stress / strain (`mode_surface_tensors`: the same
+  `_point_outputs` + `nodal_average_3d` as `_write_mechanical_outputs` with thermal / prestress off, i.e. what a
+  selected mode's GUI field shows, but for Re and Im of a complex mode each: select_resonance shows only Re; elements
+  limited to the solid ones touching a surface dof, exact there), 48 B per node and mode each; density (nodal mean of
+  rho) always. The surface fields are the page's basis (viz mode_player derives von Mises, principal stresses, energy
+  densities): a new derived quantity belongs on the page, a new linear field (e.g. E / D) here. Self-test
+  solid_fem3d_bloch_mode_shapes (template cell at k a = pi / 2: phase exactly -j, the opposite sign fails by O(1); fields
+  stress_strain) pins the convention, the frequencies, the closed outward surface (divergence-theorem volume) and
+  Hooke's law between the stored stress and strain (one isotropic material: exact up to float32).
 - Elastic PML (`pml3d.py`): `_domain_requirements` returns a `pml3d.PMLPadding` (meshing grows the shell, materials by
   the clamped-centroid rule); shell carries stiffness (`_elastic_elements`), outer faces held at 0, s = 1 - j beta (d /
   w)^2 frequency independent (pencil stays linear in omega^2). a damped ModalPencil (`shell_dofs`) keeps Re

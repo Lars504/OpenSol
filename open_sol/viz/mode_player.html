@@ -187,14 +187,7 @@ body.present .app { padding: 10px; gap: 10px; }
     <div class="group" id="cellsgroup"><label for="cells">Cells</label><input type="range" id="cells" min="1" max="16" step="1" value="5">
       <span class="val num" id="cellsv"></span></div>
     <div class="group"><label for="color">Colour</label>
-      <select id="color">
-        <option value="1">Displacement |u|</option>
-        <option value="0">Mode amplitude</option>
-        <option value="2">u_x</option>
-        <option value="3">u_y</option>
-        <option value="4">u_z</option>
-        <option value="5">Plain</option>
-      </select>
+      <select id="color" title="What the surface is coloured by (stress / strain: as the mode_shapes feature kept them)"></select>
       <select id="cmap" title="Colour map (sequential for magnitudes, diverging for signed components)"></select>
     </div>
     <div class="group"><button id="lines" aria-pressed="true" title="Mesh lines (L)">Mesh</button>
@@ -245,7 +238,31 @@ const CMAP_CHOICES = {
   sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
   diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
 };
-const isSigned = (color) => color >= 2 && color <= 4;
+// What the surface can be coloured by: code = the shaders' uColor, needs = data groups (DATA.fields, 'density'),
+// signed = diverging map over [-limit, limit]; every value is drawn normalised by its largest magnitude over the
+// mode's nodes and the cycle (quantityLimit), so the solver's mode normalisation never shows.
+const QUANTITIES = [
+  { code: 1, menu: 'Displacement', label: 'Displacement |u|' },
+  { code: 0, menu: 'Displacement', label: 'Mode amplitude |U|' },
+  { code: 2, menu: 'Displacement', label: 'Displacement x', signed: true },
+  { code: 3, menu: 'Displacement', label: 'Displacement y', signed: true },
+  { code: 4, menu: 'Displacement', label: 'Displacement z', signed: true },
+  { code: 16, menu: 'Stress', label: 'von Mises stress', needs: ['stress'] },
+  { code: 17, menu: 'Stress', label: 'Largest principal stress', needs: ['stress'], signed: true },
+  { code: 18, menu: 'Stress', label: 'Maximum shear stress', needs: ['stress'] },
+  { code: 19, menu: 'Stress', label: 'Pressure (−trace / 3)', needs: ['stress'], signed: true },
+  ...['xx', 'yy', 'zz', 'xy', 'xz', 'yz'].map((c, i) => ({ code: 10 + i, menu: 'Stress', needs: ['stress'],
+    signed: true, label: (i < 3 ? 'Stress ' : 'Shear stress ') + c })),
+  ...['xx', 'yy', 'zz', 'xy', 'xz', 'yz'].map((c, i) => ({ code: 20 + i, menu: 'Strain', needs: ['strain'],
+    signed: true, label: (i < 3 ? 'Strain ' : 'Shear strain ') + c })),
+  { code: 26, menu: 'Strain', label: 'Volumetric strain (trace)', needs: ['strain'], signed: true },
+  { code: 30, menu: 'Energy density', label: 'Strain energy density (time average)', needs: ['stress', 'strain'] },
+  { code: 31, menu: 'Energy density', label: 'Kinetic energy density (time average)', needs: ['density'] },
+  { code: 40, menu: 'Electric', label: 'Electric potential', needs: ['potential'], signed: true },
+  { code: 5, menu: 'Other', label: 'Plain' },
+];
+const QUANTITY = Object.fromEntries(QUANTITIES.map((q) => [q.code, q]));
+const isSigned = (color) => !!QUANTITY[color].signed;
 const cmapKind = () => (isSigned(state.color) ? 'diverging' : 'sequential');
 const currentCmap = () => state.cmaps[cmapKind()];
 
@@ -272,6 +289,11 @@ for (let i = 0; i < NNODE; i++) for (let c = 0; c < 3; c++) { const v = POS[3 * 
 const center = [0, 1, 2].map((c) => 0.5 * (bmin[c] + bmax[c]));
 const cellSize = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]) || 1;
 
+const GROUPS = new Set(DATA.fields || []);
+const DENSITY = DATA.density ? f32(DATA.density) : null;
+if (DENSITY) GROUPS.add('density');
+const AVAILABLE = QUANTITIES.filter((q) => (q.needs || []).every((g) => GROUPS.has(g)));
+
 // ---------- state ----------
 const state = {
   mode: Math.min(Math.max(DATA.default_mode || 0, 0), MODES.length - 1),
@@ -281,6 +303,18 @@ const state = {
 };
 for (const kind of ['sequential', 'diverging']) {
   if (!CMAP_CHOICES[kind].some(([key]) => key === state.cmaps[kind])) state.cmaps[kind] = CMAP_CHOICES[kind][0][0];
+}
+{ const saved = Number(store('quantity'));   // the last choice, when this page offers it
+  if (store('quantity') !== null && AVAILABLE.some((q) => q.code === saved)) state.color = saved; }
+function fillColorChoices() {
+  // one entry per available quantity, grouped by kind when more than displacement is offered
+  const select = $('color');
+  const menus = [...new Set(AVAILABLE.map((q) => q.menu))];
+  if (menus.length <= 2) select.replaceChildren(...AVAILABLE.map((q) => new Option(q.label, q.code)));
+  else select.replaceChildren(...menus.map((menu) => { const group = document.createElement('optgroup');
+    group.label = menu; group.append(...AVAILABLE.filter((q) => q.menu === menu).map((q) => new Option(q.label, q.code)));
+    return group; }));
+  select.value = String(state.color);
 }
 function fillCmapChoices() {
   // the colour-map menu lists the maps of the shown quantity's kind and shows its remembered choice
@@ -297,27 +331,63 @@ const canvas = $('gl');
 const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, stencil: true, preserveDrawingBuffer: false });
 if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has no WebGL2: the mode view cannot be drawn.'; }
 
+// Derived tensor quantities, shared by the vertex shader and (through tensorValue below) the colour limits: d = normal
+// (xx, yy, zz), o = shear (xy, xz, yz) components at one instant. Principal values: the trigonometric solution of
+// the symmetric 3 x 3 eigenproblem, largest first.
+const TENSOR_GLSL = `
+vec3 principal(vec3 d, vec3 o) {
+  float q = (d.x + d.y + d.z) / 3.0;
+  vec3 e = d - q;
+  float p = sqrt((dot(e, e) + 2.0 * dot(o, o)) / 6.0);
+  if (p < 1e-12) return vec3(q);
+  vec3 b = e / p, h = o / p;   // B = (A - q I) / p, h = (xy, xz, yz)
+  float det = b.x * (b.y * b.z - h.z * h.z) - h.x * (h.x * b.z - h.z * h.y) + h.y * (h.x * h.z - b.y * h.y);
+  float phi = acos(clamp(0.5 * det, -1.0, 1.0)) / 3.0;
+  float s1 = q + 2.0 * p * cos(phi), s3 = q + 2.0 * p * cos(phi + 2.0943951023931957);
+  return vec3(s1, 3.0 * q - s1 - s3, s3);
+}
+float stressValue(int code, vec3 d, vec3 o) {
+  if (code < 13) return d[code - 10];
+  if (code < 16) return o[code - 13];
+  if (code == 16) { vec3 t = d - d.yzx; return sqrt(0.5 * dot(t, t) + 3.0 * dot(o, o)); }
+  if (code == 17) return principal(d, o).x;
+  if (code == 18) { vec3 s = principal(d, o); return 0.5 * (s.x - s.z); }
+  return -(d.x + d.y + d.z) / 3.0;
+}
+float strainValue(int code, vec3 d, vec3 o) {
+  if (code < 23) return d[code - 20];
+  if (code < 26) return o[code - 23];
+  return d.x + d.y + d.z;
+}`;
 const VS = `#version 300 es
 precision highp float;
 precision highp int;
 in vec3 aPos; in vec3 aRe; in vec3 aIm; in vec3 aBary;
+// stress / strain: normal (xx, yy, zz) and shear (xy, xz, yz) parts, real and imaginary; aX = (density, potential re,
+// potential im); attributes of absent groups stay disabled (read 0)
+in vec3 aSr0; in vec3 aSr1; in vec3 aSi0; in vec3 aSi1; in vec3 aEr0; in vec3 aEr1; in vec3 aEi0; in vec3 aEi1; in vec3 aX;
 uniform mat4 uView; uniform mat4 uProj;
 uniform float uTheta; uniform float uCellPhase; uniform float uAmp; uniform float uCells; uniform float uPeriod;
-uniform vec3 uAxis; uniform vec3 uCenter; uniform int uColor; uniform float uRest;
+uniform vec3 uAxis; uniform vec3 uCenter; uniform int uColor; uniform float uRest; uniform float uLimit; uniform int uSigned;
 out vec3 vBary; out float vScalar; out vec3 vViewPos;
+${TENSOR_GLSL}
 void main() {
   float idx = float(gl_InstanceID);
-  float psi = uCellPhase * idx + uTheta;   // u = Re[U exp(j (cell_phase n + omega t))]
-  vec3 u = aRe * cos(psi) - aIm * sin(psi);
+  float psi = uCellPhase * idx + uTheta;   // x = Re[X exp(j (cell_phase n + omega t))] for every linear quantity
+  float c = cos(psi), sn = sin(psi);
+  vec3 u = aRe * c - aIm * sn;
   vec3 p = aPos - uCenter + uAxis * (uPeriod * (idx - 0.5 * (uCells - 1.0))) + (1.0 - uRest) * uAmp * u;
-  float s;
-  if (uColor == 0) s = sqrt(dot(aRe, aRe) + dot(aIm, aIm));
-  else if (uColor == 1) s = length(u);
-  else if (uColor == 2) s = 0.5 + 0.5 * u.x;
-  else if (uColor == 3) s = 0.5 + 0.5 * u.y;
-  else if (uColor == 4) s = 0.5 + 0.5 * u.z;
-  else s = 0.0;
-  vScalar = s; vBary = aBary;
+  float v = 0.0;
+  if (uColor == 0) v = sqrt(dot(aRe, aRe) + dot(aIm, aIm));
+  else if (uColor == 1) v = length(u);
+  else if (uColor <= 4) v = u[uColor - 2];
+  else if (uColor >= 10 && uColor < 20) v = stressValue(uColor, aSr0 * c - aSi0 * sn, aSr1 * c - aSi1 * sn);
+  else if (uColor >= 20 && uColor < 30) v = strainValue(uColor, aEr0 * c - aEi0 * sn, aEr1 * c - aEi1 * sn);
+  else if (uColor == 30) v = dot(aSr0, aEr0) + dot(aSi0, aEi0) + 2.0 * (dot(aSr1, aEr1) + dot(aSi1, aEi1));
+  else if (uColor == 31) v = aX.x * (dot(aRe, aRe) + dot(aIm, aIm));
+  else if (uColor == 40) v = aX.y * c - aX.z * sn;
+  vScalar = uSigned == 1 ? 0.5 + 0.5 * v / uLimit : v / uLimit;
+  vBary = aBary;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
   gl_Position = uProj * vp;
@@ -478,7 +548,8 @@ function setupLines() {
 function setupGL() {
   prog = link(VS, FS);
   for (const name of ['uView', 'uProj', 'uTheta', 'uCellPhase', 'uAmp', 'uCells', 'uPeriod', 'uAxis', 'uCenter', 'uColor',
-                      'uStops', 'uLines', 'uPlain', 'uLineColor', 'uRest']) uni[name] = gl.getUniformLocation(prog, name);
+                      'uStops', 'uLines', 'uPlain', 'uLineColor', 'uRest', 'uLimit', 'uSigned'])
+    uni[name] = gl.getUniformLocation(prog, name);
   vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
   const nv = NTRI * 3;
@@ -489,6 +560,12 @@ function setupGL() {
   }
   buf.pos = attribute('aPos', pos); buf.bary = attribute('aBary', bary);
   buf.re = attribute('aRe', new Float32Array(nv * 3)); buf.im = attribute('aIm', new Float32Array(nv * 3));
+  for (const [group, names] of Object.entries(GROUP_ATTRIBUTES)) {
+    if (!GROUPS.has(group)) continue;
+    for (const name of names) buf[name] = attribute(name, new Float32Array(nv * 3));
+  }
+  if (DENSITY || GROUPS.has('potential')) buf.aX = attribute('aX', new Float32Array(nv * 3));
+  vertexScratch = new Float32Array(nv * 3);
   gl.bindVertexArray(null);
   setupLines();
   gl.enable(gl.DEPTH_TEST);
@@ -498,25 +575,125 @@ function attribute(name, data) { const loc = gl.getAttribLocation(prog, name); c
   gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
   if (loc >= 0) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0); } return b; }
 
+// Mode data per node (Float32, decoded on first use, a few modes kept); uploadMode expands what the shown quantity needs
+// to the per-vertex buffers (the triangles are drawn unindexed for the mesh-line barycentrics).
+const GROUP_ATTRIBUTES = { stress: ['aSr0', 'aSr1', 'aSi0', 'aSi1'], strain: ['aEr0', 'aEr1', 'aEi0', 'aEi1'] };
+const GROUP_WIDTH = { displacement: 3, stress: 6, strain: 6, potential: 1 };
 const modeCache = new Map();
-function modeArrays(m) {
-  if (modeCache.has(m.index)) return modeCache.get(m.index);
-  const re = i16(m.re), im = i16(m.im), k = 1 / 32767;
-  const nv = NTRI * 3, er = new Float32Array(nv * 3), ei = new Float32Array(nv * 3);
+let vertexScratch = null;
+function modeGroup(m, group) {
+  let entry = modeCache.get(m.index);
+  if (!entry) {
+    entry = {}; modeCache.set(m.index, entry);
+    if (modeCache.size > 8) modeCache.delete(modeCache.keys().next().value);
+  }
+  if (!entry[group]) {
+    const source = group === 'displacement' ? m : m[group], k = 1 / 32767;
+    const re = Float32Array.from(i16(source.re), (v) => v * k), im = Float32Array.from(i16(source.im), (v) => v * k);
+    entry[group] = { re, im };
+  }
+  return entry[group];
+}
+function quantityGroups(code) {
+  const q = QUANTITY[code];
+  return (q.needs || []).filter((g) => g !== 'density');
+}
+function expand(values, width, first) {
+  // node values (n, width) -> vertex buffer of 3 components: columns first .. first + 2 (absent columns 0)
+  const out = vertexScratch;
   for (let t = 0; t < NTRI; t++) for (let c = 0; c < 3; c++) {
     const n = TRI[3 * t + c], o = 3 * (3 * t + c);
-    for (let d = 0; d < 3; d++) { er[o + d] = re[3 * n + d] * k; ei[o + d] = im[3 * n + d] * k; }
+    for (let d = 0; d < 3; d++) out[o + d] = first + d < width ? values[width * n + first + d] : 0;
   }
-  const out = { re: er, im: ei };
-  if (modeCache.size > 24) modeCache.delete(modeCache.keys().next().value);
-  modeCache.set(m.index, out);
   return out;
 }
+function upload(buffer, data) { gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferSubData(gl.ARRAY_BUFFER, 0, data); }
 function uploadMode() {
   if (!gl || !ready) return;
-  const a = modeArrays(MODES[state.mode]);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf.re); gl.bufferSubData(gl.ARRAY_BUFFER, 0, a.re);
-  gl.bindBuffer(gl.ARRAY_BUFFER, buf.im); gl.bufferSubData(gl.ARRAY_BUFFER, 0, a.im);
+  const m = MODES[state.mode];
+  const u = modeGroup(m, 'displacement');
+  upload(buf.re, expand(u.re, 3, 0)); upload(buf.im, expand(u.im, 3, 0));
+  for (const group of quantityGroups(state.color)) {
+    const a = modeGroup(m, group);
+    if (group === 'potential') continue;
+    const [r0, r1, i0, i1] = GROUP_ATTRIBUTES[group];
+    upload(buf[r0], expand(a.re, 6, 0)); upload(buf[r1], expand(a.re, 6, 3));
+    upload(buf[i0], expand(a.im, 6, 0)); upload(buf[i1], expand(a.im, 6, 3));
+  }
+  if (buf.aX && (state.color === 31 || state.color === 40)) {
+    const n = NNODE, x = new Float32Array(3 * n);
+    const phi = GROUPS.has('potential') ? modeGroup(m, 'potential') : null;
+    for (let i = 0; i < n; i++) {
+      x[3 * i] = DENSITY ? DENSITY[i] : 0;
+      if (phi) { x[3 * i + 1] = phi.re[i]; x[3 * i + 2] = phi.im[i]; }
+    }
+    upload(buf.aX, expand(x, 3, 0));
+  }
+}
+
+// Colour limit of a quantity on a mode: its largest magnitude over the nodes and, for a nonlinear one, over the cycle
+// (sampled phases); the same formulas as the shader (tensorValue mirrors TENSOR_GLSL).
+const limitCache = new Map();
+const LIMIT_PHASES = 48;
+function principal(d, o) {
+  const q = (d[0] + d[1] + d[2]) / 3, e = [d[0] - q, d[1] - q, d[2] - q];
+  const p = Math.sqrt((e[0] * e[0] + e[1] * e[1] + e[2] * e[2] + 2 * (o[0] * o[0] + o[1] * o[1] + o[2] * o[2])) / 6);
+  if (p < 1e-12) return [q, q, q];
+  const b = e.map((v) => v / p), h = o.map((v) => v / p);
+  const det = b[0] * (b[1] * b[2] - h[2] * h[2]) - h[0] * (h[0] * b[2] - h[2] * h[1]) + h[1] * (h[0] * h[2] - b[1] * h[1]);
+  const phi = Math.acos(Math.max(-1, Math.min(1, 0.5 * det))) / 3;
+  const s1 = q + 2 * p * Math.cos(phi), s3 = q + 2 * p * Math.cos(phi + 2 * Math.PI / 3);
+  return [s1, 3 * q - s1 - s3, s3];
+}
+function tensorValue(code, d, o) {
+  if (code === 16) { const a = d[0] - d[1], b = d[1] - d[2], c = d[2] - d[0];
+    return Math.sqrt(0.5 * (a * a + b * b + c * c) + 3 * (o[0] * o[0] + o[1] * o[1] + o[2] * o[2])); }
+  if (code === 17) return principal(d, o)[0];
+  const s = principal(d, o); return 0.5 * (s[0] - s[2]);   // 18
+}
+function quantityLimit(m, code) {
+  const key = m.index + ':' + code;
+  if (limitCache.has(key)) return limitCache.get(key);
+  let limit = 1;   // displacement: the page data is scaled to max |U| = 1
+  const n = NNODE;
+  const complexPeak = (re, im, width, weights) => { let peak = 0;   // max over nodes of |sum_c w_c X_c|
+    for (let i = 0; i < n; i++) { let a = 0, b = 0;
+      for (let c = 0; c < width; c++) { a += weights[c] * re[width * i + c]; b += weights[c] * im[width * i + c]; }
+      peak = Math.max(peak, Math.hypot(a, b)); }
+    return peak; };
+  const unit = (column) => [0, 1, 2, 3, 4, 5].map((c) => (c === column ? 1 : 0));
+  if ((code >= 10 && code <= 15) || (code >= 20 && code <= 25)) {
+    const a = modeGroup(m, code < 20 ? 'stress' : 'strain');
+    limit = complexPeak(a.re, a.im, 6, unit(code % 10));
+  } else if (code === 19 || code === 26) {
+    const a = modeGroup(m, code === 19 ? 'stress' : 'strain');
+    limit = complexPeak(a.re, a.im, 6, [1, 1, 1, 0, 0, 0]) / (code === 19 ? 3 : 1);
+  } else if (code >= 16 && code <= 18) {
+    const a = modeGroup(m, 'stress'); limit = 0;
+    for (let k = 0; k < LIMIT_PHASES; k++) {
+      const c = Math.cos(2 * Math.PI * k / LIMIT_PHASES), s = Math.sin(2 * Math.PI * k / LIMIT_PHASES);
+      for (let i = 0; i < n; i++) {
+        const at = (col) => a.re[6 * i + col] * c - a.im[6 * i + col] * s;
+        const value = tensorValue(code, [at(0), at(1), at(2)], [at(3), at(4), at(5)]);
+        limit = Math.max(limit, Math.abs(value));
+      }
+    }
+  } else if (code === 30) {
+    const a = modeGroup(m, 'stress'), e = modeGroup(m, 'strain'); limit = 0;
+    for (let i = 0; i < n; i++) { let w = 0;
+      for (let c = 0; c < 6; c++) w += (c < 3 ? 1 : 2) * (a.re[6 * i + c] * e.re[6 * i + c] + a.im[6 * i + c] * e.im[6 * i + c]);
+      limit = Math.max(limit, Math.abs(w)); }
+  } else if (code === 31) {
+    const u = modeGroup(m, 'displacement'); limit = 0;
+    for (let i = 0; i < n; i++) { let s = 0;
+      for (let c = 0; c < 3; c++) s += u.re[3 * i + c] ** 2 + u.im[3 * i + c] ** 2;
+      limit = Math.max(limit, DENSITY[i] * s); }
+  } else if (code === 40) {
+    const a = modeGroup(m, 'potential'); limit = complexPeak(a.re, a.im, 1, [1]);
+  }
+  limit = limit > 0 && isFinite(limit) ? limit : 1;
+  limitCache.set(key, limit);
+  return limit;
 }
 
 // ---------- camera ----------
@@ -589,6 +766,8 @@ function draw() {
   gl.uniform3fv(uni.uAxis, lattice ? lattice.axis : [1, 0, 0]);
   gl.uniform3fv(uni.uCenter, center);
   gl.uniform1i(uni.uColor, state.color);
+  gl.uniform1f(uni.uLimit, quantityLimit(m, state.color));
+  gl.uniform1i(uni.uSigned, isSigned(state.color) ? 1 : 0);
   gl.uniform3fv(uni.uStops, new Float32Array(stops));
   gl.uniform1f(uni.uLines, state.lines ? 1 : 0);
   gl.uniform3fv(uni.uPlain, themeColors.plain);
@@ -653,9 +832,8 @@ function updateReadout() {
   $('rf').innerHTML = fmt(m.frequency / FS_, 5) + '<small>' + FU + '</small>';
   $('rm').textContent = modeText(m);
   const signed = isSigned(state.color);
-  const names = ['Mode amplitude |u|', 'Displacement |u|', 'u_x', 'u_y', 'u_z', ''];
   $('legend').style.display = state.color === 5 ? 'none' : '';
-  $('lgname').textContent = names[state.color] + ' (normalised)';
+  $('lgname').textContent = QUANTITY[state.color].label + ' (normalised)';
   $('lgbar').style.background = 'linear-gradient(90deg,' + CMAPS[currentCmap()].join(',') + ')';
   $('lglo').textContent = signed ? '−1' : '0'; $('lgmid').textContent = signed ? '0' : ''; $('lghi').textContent = signed ? '+1' : '1';
 }
@@ -815,7 +993,8 @@ $('next').onclick = () => neighbour(1, 0);
 $('speed').oninput = (e) => { state.speed = +e.target.value; syncControls(); };
 $('amp').oninput = (e) => { state.amp = +e.target.value; syncControls(); };
 $('cells').oninput = (e) => { state.cells = +e.target.value; fitDistance(); syncControls(); };
-$('color').onchange = (e) => { state.color = +e.target.value; fillCmapChoices(); updateReadout(); };
+$('color').onchange = (e) => { state.color = +e.target.value; store('quantity', String(state.color));
+  fillCmapChoices(); uploadMode(); updateReadout(); };
 $('cmap').onchange = (e) => { const kind = cmapKind(); state.cmaps[kind] = e.target.value;
   store(kind === 'diverging' ? 'cmap_signed' : 'cmap', e.target.value); updateReadout(); };
 $('lines').onclick = () => { state.lines = !state.lines; syncControls(); };
@@ -901,7 +1080,7 @@ const mq = window.matchMedia('(prefers-color-scheme: dark)');
 if (mq.addEventListener) mq.addEventListener('change', () => { readTheme(); drawBands(); });
 window.addEventListener('resize', () => { drawBands(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
-fillCmapChoices(); syncControls(); resize(); resetCamera(); uploadMode(); updateReadout(); drawBands();
+fillColorChoices(); fillCmapChoices(); syncControls(); resize(); resetCamera(); uploadMode(); updateReadout(); drawBands();
 window.modePlayer = { state, select, draw, cam };
 requestAnimationFrame(frame);
 })();

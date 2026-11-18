@@ -1453,6 +1453,17 @@ RESULT_KIND_DOCS = {
         ('phase_convention', "Bloch phase and time convention of the displacement, str, e.g. 'u(x + L) = u(x) "
                              "exp(-j k L), time exp(+j omega t)'"),
         ('unit', "unit of nodes and the displacement, str ('m')"),
+        ('density', 'mass density at each node (mean over the solid elements around it), float64 (n,), kg/m^3'),
+        ('stress_re', "mode_shapes fields 'stress' / 'stress_strain' only: real part of the complex modal stress at "
+                      'the nodes, float32 (r, n, 6) (components xx, yy, zz, xy, xz, yz), Pa, in the normalisation and '
+                      'phase of the displacement'),
+        ('stress_im', 'imaginary part of the same, float32 (r, n, 6), Pa'),
+        ('strain_re', "mode_shapes fields 'stress_strain' only: real part of the complex strain, float32 (r, n, 6) "
+                      '(xx, yy, zz, xy, xz, yz; tensor shear strain), 1'),
+        ('strain_im', 'imaginary part of the same, float32 (r, n, 6), 1'),
+        ('potential_re', "piezoelectric with fields 'stress' / 'stress_strain' only: real part of the complex "
+                         'electric potential at the nodes, float32 (r, n), V'),
+        ('potential_im', 'imaginary part of the same, float32 (r, n), V'),
     ),
 }
 

@@ -794,12 +794,13 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
 
 
 def export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None,
-                        physics=None, geometry=True, planes=None, figure=None) -> str:
-    """Write the web page of Results.export_html(path, what, physics, geometry=, planes=, figure=) for a live session
-    its caller built and ran (the GUI worker, on its thread); the session stays open. Other arguments as
-    save_session_run; returns the written path."""
+                        physics=None, geometry=True, planes=None, figure=None, fields=None, max_bytes=None) -> str:
+    """Write the web page of Results.export_html(path, what, physics, geometry=, planes=, figure=, fields=,
+    max_bytes=) for a live session its caller built and ran (the GUI worker, on its thread); the session stays open.
+    Other arguments as save_session_run; returns the written path."""
     with _session_results(spec, session, build_summary, study_summary, log_entries, model_file, False) as results:
-        return results.export_html(path, what, physics=physics, geometry=geometry, planes=planes, figure=figure)
+        return results.export_html(path, what, physics=physics, geometry=geometry, planes=planes, figure=figure,
+                                   fields=fields, max_bytes=max_bytes)
 
 
 @contextlib.contextmanager
@@ -1578,7 +1579,8 @@ class Results:
             raise ValueError(f'no saved cut plane of field {name!r} (an older run directory without plane records)')
         return field_planes
 
-    def export_html(self, path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None) -> str:
+    def export_html(self, path, what=None, physics=None, title=None, geometry=True, planes=None, figure=None,
+                    fields=None, max_bytes=None) -> str:
         """Write a self-contained web page (no network: hand-written WebGL2, data embedded) to turn, zoom and colour
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
@@ -1591,7 +1593,11 @@ class Results:
         those planes, a snapshot its held cut on each plane's axis nearest the position (live: the current state
         when the snapshots hold no cut on an axis, named in the subtitle). A dft_fields result
         'physics.feature': its intensity map per monitored frequency (slider). A mode_shapes result: viz.mode_player
-        (animated mode shapes beside the band diagram). None = the only mode_shapes result. geometry (field pages):
+        (animated mode shapes beside the band diagram, coloured by any quantity the page derives from the kept
+        displacement, stress and strain); fields (mode_shapes pages; ValueError elsewhere): the kept groups to put on
+        the page, a list of 'stress' / 'strain' (None = every kept one; the potential goes with the stress);
+        max_bytes (mode_shapes pages): viz.mode_player.ModePageTooLarge, nothing written, when the mode data would
+        pass it (its sizes per group let a caller choose fields). None = the only mode_shapes result. geometry (field pages):
         the model objects (built parameters) go on the page, the outlines on every map / cut plane and in 3D the
         object edges and surfaces, shown or hidden there. A model with mirror planes (core.mirror.mirror_faces; field
         pages and 2D DFT maps): the page draws the mirror images of the field (its parity's signs) and objects too,
@@ -1615,13 +1621,19 @@ class Results:
                 if figure:
                     raise ValueError(f'figure= sets the Plot settings of a field page; {what!r} is a mode_shapes '
                                      'result (the mode animation has none)')
-                return mode_player_from_results(self, path, key=what, title=title)
+                return mode_player_from_results(self, path, key=what, title=title, fields=fields,
+                                                max_bytes=max_bytes)
+            if fields is not None or max_bytes is not None:
+                raise ValueError(f'fields= / max_bytes= choose the kept groups of a mode_shapes page; {what!r} is a '
+                                 f'{kind} result')
             if kind == 'dft_fields':
                 return self._dft_viewer(path, what, title, geometry, figure)
             raise ValueError(f'{what!r} is a {kind} result (curves or a table): export it as a figure (figure()); '
                              'web pages show ' + self._html_choices())
         if len(field_keys) != 1:
             raise self._field_lookup_error(what, physics, field_keys)
+        if fields is not None or max_bytes is not None:
+            raise ValueError(f'fields= / max_bytes= choose the kept groups of a mode_shapes page; {what!r} is a field')
         if planes is not None:
             if self.spec is None or self.spec.domain.size_z is None:
                 raise ValueError('planes= picks cut planes of a 3D model (needs the model spec)')
