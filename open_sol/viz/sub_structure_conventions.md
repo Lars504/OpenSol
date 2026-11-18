@@ -81,7 +81,13 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `mode_player_from_results` duck-types api.Results (result_names / result / sweep_result / summary / spec; no api or
   model import) and reads only 'mode_shapes' results; sweep values on another surface mesh than the last are dropped;
   band = rank of the frequency among the computed resonances at that k (a search window, not an absolute band index),
-  the page labels it 'mode j of n'. Colour maps come in two kinds: sequential for the magnitudes, diverging (middle stop =
+  the page labels it 'mode j of n'. Rest shape (G) is a hidden-line drawing, never the mesh: page-side candidate edges
+  (creases above FEATURE_COS, open / non-manifold edges, plus every non-flat edge that the line shader keeps only
+  while it is a silhouette, so curved bodies get an outline), screen-space quads drawn after the body in two passes
+  (depth body + rest surface: full strength; depth rest surface alone: faint where the body covers it), one fragment
+  per pixel through the stencil (cores before fringes; the context asks for `stencil: true`), surfaces under a polygon
+  offset so lines on them pass. Edges in the lattice end planes show only at the ends of the tiled row (seams between
+  cells otherwise), and only when the body spans the period. Colour maps come in two kinds: sequential for the magnitudes, diverging (middle stop =
   0) for the signed u_x / u_y / u_z; the menu lists the shown quantity's kind and remembers a choice per kind. Band gaps on the page: intervals no band segment crosses (bands continuous between
   samples, matched across k with an index shift for a moving search window) and inside the window at every k.
 - field_viewer (HTML field page; `Results.export_html` of a field or dft_fields result, CLI `show <run dir> --html

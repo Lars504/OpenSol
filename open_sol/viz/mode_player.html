@@ -259,7 +259,6 @@ const POS = f32(geo.positions);
 const TRI = u32(geo.triangles);
 const NNODE = POS.length / 3;
 const NTRI = TRI.length / 3;
-const EDGES = geo.edges ? u32(geo.edges) : null;
 const lattice = DATA.lattice || null;
 const MODES = DATA.modes.map((m, i) => Object.assign({ index: i }, m));
 const lengthUnit = DATA.length_unit || 'm';
@@ -295,7 +294,7 @@ if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.da
 
 // ---------- WebGL ----------
 const canvas = $('gl');
-const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, preserveDrawingBuffer: false });
+const gl = canvas.getContext('webgl2', { antialias: true, alpha: false, stencil: true, preserveDrawingBuffer: false });
 if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has no WebGL2: the mode view cannot be drawn.'; }
 
 const VS = `#version 300 es
@@ -328,7 +327,6 @@ precision highp float;
 precision highp int;
 in vec3 vBary; in float vScalar; in vec3 vViewPos;
 uniform vec3 uStops[9]; uniform int uColor; uniform float uLines; uniform vec3 uPlain; uniform vec4 uLineColor;
-uniform float uRest;
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -336,13 +334,6 @@ vec3 cmap(float t) {
   return mix(uStops[i], uStops[i + 1], t - float(i));
 }
 void main() {
-  if (uRest > 0.5) {
-    float e = min(min(vBary.x, vBary.y), vBary.z);
-    float w = 1.0 - smoothstep(0.0, fwidth(e) * 1.3, e);
-    if (w < 0.02) discard;
-    outColor = vec4(uLineColor.rgb, uLineColor.a * w);
-    return;
-  }
   vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
   vec3 v = normalize(-vViewPos);
   vec3 key = normalize(vec3(0.45, 0.75, 0.55));
@@ -358,15 +349,134 @@ void main() {
   outColor = vec4(col, 1.0);
 }`;
 
+// Rest shape: a hidden-line drawing of the undeformed surface, never its mesh. Candidate edges are the surface edges
+// that are creases (feature angle), open boundaries or non-manifold, plus every non-flat edge, which the vertex
+// shader keeps only while it is a silhouette (one face toward the eye, one away). Lines are screen-space quads (one
+// instance per edge, one draw per lattice cell); edges in the lattice end planes show only at the ends of the tiled
+// row (between cells they are seams, not edges of the body).
+const LS = `#version 300 es
+precision highp float;
+in vec2 aCorner; in vec3 aA; in vec3 aB; in vec3 aN1; in vec3 aN2; in float aFlag;
+uniform mat4 uView; uniform mat4 uProj; uniform float uIdx; uniform float uCells; uniform float uPeriod;
+uniform vec3 uAxis; uniform vec3 uCenter; uniform vec2 uViewport; uniform float uWidth;
+out float vSide;
+void main() {
+  int flag = int(aFlag + 0.5);
+  bool seam = ((flag & 2) != 0 && uIdx > 0.5) || ((flag & 4) != 0 && uIdx < uCells - 1.5);
+  vec3 shift = uAxis * (uPeriod * (uIdx - 0.5 * (uCells - 1.0))) - uCenter;
+  vec4 va = uView * vec4(aA + shift, 1.0), vb = uView * vec4(aB + shift, 1.0);
+  vec3 mid = 0.5 * (va.xyz + vb.xyz);
+  mat3 rot = mat3(uView);
+  bool silhouette = dot(rot * aN1, mid) * dot(rot * aN2, mid) <= 0.0;
+  if (seam || ((flag & 1) == 0 && !silhouette)) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); vSide = 0.0; return; }
+  vec4 ca = uProj * va, cb = uProj * vb;
+  vec2 sa = ca.xy / ca.w * uViewport, sb = cb.xy / cb.w * uViewport;   // twice the pixel coordinates
+  vec2 d = sb - sa; float len = length(d);
+  d = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+  vec2 n = vec2(-d.y, d.x);
+  float halfWidth = 0.5 * uWidth + 1.0;   // + 1 px of anti-aliasing fringe across the line
+  vec4 c = aCorner.x < 0.5 ? ca : cb;     // ends extended by half the width: square joins, no overhang
+  c.xy += (n * aCorner.y * halfWidth + d * (2.0 * aCorner.x - 1.0) * 0.5 * uWidth) * (2.0 / uViewport) * c.w;
+  vSide = aCorner.y * halfWidth;
+  gl_Position = c;
+}`;
+const LFS = `#version 300 es
+precision highp float;
+in float vSide; uniform vec4 uLineColor; uniform float uWidth; uniform int uPart;
+out vec4 outColor;
+void main() {
+  float a = clamp(0.5 * uWidth + 0.5 - abs(vSide), 0.0, 1.0);
+  if (a <= 0.0 || (uPart == 0) != (a > 0.99)) discard;   // part 0: line cores, 1: anti-aliasing fringes
+  outColor = vec4(uLineColor.rgb, uLineColor.a * a);
+}`;
+const FEATURE_COS = Math.cos(35 * Math.PI / 180);   // crease when neighbouring faces turn by more than this
+const FLAT_COS = 0.9999;                             // flatter edges can never be a silhouette worth a line
+
+function restEdges() {
+  // per candidate edge: end points, the two face normals (an open edge repeats its one) and flags 1 = always drawn,
+  // 2 / 4 = in the lattice lo / hi end plane
+  const normals = new Float32Array(NTRI * 3);
+  for (let t = 0; t < NTRI; t++) {
+    const a = 3 * TRI[3 * t], b = 3 * TRI[3 * t + 1], c = 3 * TRI[3 * t + 2];
+    const u = [POS[b] - POS[a], POS[b + 1] - POS[a + 1], POS[b + 2] - POS[a + 2]];
+    const v = [POS[c] - POS[a], POS[c + 1] - POS[a + 1], POS[c + 2] - POS[a + 2]];
+    const n = norm(cross(u, v)); normals[3 * t] = n[0]; normals[3 * t + 1] = n[1]; normals[3 * t + 2] = n[2];
+  }
+  const keys = new Float64Array(3 * NTRI);
+  for (let t = 0; t < NTRI; t++) for (let c = 0; c < 3; c++) {
+    const i = TRI[3 * t + c], j = TRI[3 * t + (c + 1) % 3];
+    keys[3 * t + c] = Math.min(i, j) * NNODE + Math.max(i, j);
+  }
+  const order = new Uint32Array(3 * NTRI).map((_, i) => i).sort((p, q) => keys[p] - keys[q]);
+  let along = null, lo = 0, hi = 0, tol = 0;
+  if (lattice) {
+    along = new Float64Array(NNODE).map((_, i) => dot([POS[3 * i], POS[3 * i + 1], POS[3 * i + 2]], lattice.axis));
+    lo = Infinity; hi = -Infinity; for (const a of along) { lo = Math.min(lo, a); hi = Math.max(hi, a); }
+    tol = 1e-5 * cellSize;
+    if (Math.abs(hi - lo - lattice.period) > 1e-4 * lattice.period) along = null;   // the body does not span the cell
+  }
+  const rows = [];
+  for (let s = 0; s < order.length;) {
+    let e = s + 1; while (e < order.length && keys[order[e]] === keys[order[s]]) e++;
+    const f1 = Math.floor(order[s] / 3), f2 = Math.floor(order[e === s + 1 ? s : s + 1] / 3);
+    const n1 = [normals[3 * f1], normals[3 * f1 + 1], normals[3 * f1 + 2]];
+    const n2 = [normals[3 * f2], normals[3 * f2 + 1], normals[3 * f2 + 2]];
+    const c = dot(n1, n2);
+    const corner = order[s], t = Math.floor(corner / 3), k = corner % 3;
+    const i = TRI[3 * t + k], j = TRI[3 * t + (k + 1) % 3];
+    let flag = (e - s !== 2 || c < FEATURE_COS) ? 1 : 0;
+    if (along) {
+      if (Math.abs(along[i] - lo) < tol && Math.abs(along[j] - lo) < tol) flag |= 2;
+      else if (Math.abs(along[i] - hi) < tol && Math.abs(along[j] - hi) < tol) flag |= 4;
+    }
+    if (flag || c < FLAT_COS) rows.push(i, j, f1, f2, flag);
+    s = e;
+  }
+  const count = rows.length / 5, out = new Float32Array(count * 13);
+  for (let r = 0; r < count; r++) {
+    const [i, j, f1, f2, flag] = rows.slice(5 * r, 5 * r + 5), o = 13 * r;
+    for (let d = 0; d < 3; d++) {
+      out[o + d] = POS[3 * i + d]; out[o + 3 + d] = POS[3 * j + d];
+      out[o + 6 + d] = normals[3 * f1 + d]; out[o + 9 + d] = normals[3 * f2 + d];
+    }
+    out[o + 12] = flag;
+  }
+  return { data: out, count };
+}
+
 let prog = null, vao = null, buf = {}, uni = {}, ready = false;
+let lineProg = null, lineVao = null, lineUni = {}, nEdges = 0;
 function compile(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
   if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+function link(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+function setupLines() {
+  lineProg = link(LS, LFS);
+  for (const name of ['uView', 'uProj', 'uIdx', 'uCells', 'uPeriod', 'uAxis', 'uCenter', 'uViewport', 'uWidth',
+                      'uLineColor', 'uPart']) lineUni[name] = gl.getUniformLocation(lineProg, name);
+  lineVao = gl.createVertexArray();
+  gl.bindVertexArray(lineVao);
+  const corner = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, corner);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]), gl.STATIC_DRAW);
+  const cl = gl.getAttribLocation(lineProg, 'aCorner');
+  gl.enableVertexAttribArray(cl); gl.vertexAttribPointer(cl, 2, gl.FLOAT, false, 0, 0);
+  const edges = restEdges(); nEdges = edges.count;
+  const eb = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, eb); gl.bufferData(gl.ARRAY_BUFFER, edges.data, gl.STATIC_DRAW);
+  for (const [name, size, offset] of [['aA', 3, 0], ['aB', 3, 3], ['aN1', 3, 6], ['aN2', 3, 9], ['aFlag', 1, 12]]) {
+    const loc = gl.getAttribLocation(lineProg, name);
+    if (loc < 0) continue;
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 52, 4 * offset);
+    gl.vertexAttribDivisor(loc, 1);
+  }
+  gl.bindVertexArray(null);
+}
 function setupGL() {
-  prog = gl.createProgram();
-  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
-  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
-  gl.linkProgram(prog);
-  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  prog = link(VS, FS);
   for (const name of ['uView', 'uProj', 'uTheta', 'uCellPhase', 'uAmp', 'uCells', 'uPeriod', 'uAxis', 'uCenter', 'uColor',
                       'uStops', 'uLines', 'uPlain', 'uLineColor', 'uRest']) uni[name] = gl.getUniformLocation(prog, name);
   vao = gl.createVertexArray();
@@ -379,6 +489,8 @@ function setupGL() {
   }
   buf.pos = attribute('aPos', pos); buf.bary = attribute('aBary', bary);
   buf.re = attribute('aRe', new Float32Array(nv * 3)); buf.im = attribute('aIm', new Float32Array(nv * 3));
+  gl.bindVertexArray(null);
+  setupLines();
   gl.enable(gl.DEPTH_TEST);
   ready = true;
 }
@@ -452,7 +564,7 @@ let themeColors = null;
 function readTheme() { const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
   themeColors = { clearTop: cssRgb('--view-top'), clearBottom: cssRgb('--view-bottom'), dark,
     line: dark ? [0.02, 0.03, 0.05, 0.38] : [0.06, 0.08, 0.12, 0.18],
-    ghost: dark ? [0.75, 0.8, 0.9, 0.35] : [0.2, 0.25, 0.35, 0.35],
+    ghost: dark ? [0.86, 0.9, 0.98] : [0.1, 0.13, 0.2],
     plain: dark ? [0.62, 0.68, 0.78] : [0.66, 0.71, 0.80] }; }
 function resize() {
   const r = canvas.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -464,7 +576,7 @@ function draw() {
   resize();
   gl.viewport(0, 0, canvas.width, canvas.height);
   const bg = themeColors.clearBottom.map((v, i) => 0.5 * (v + themeColors.clearTop[i]));
-  gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
   gl.useProgram(prog); gl.bindVertexArray(vao);
   const m = MODES[state.mode];
   const stops = CMAPS[currentCmap()].map(hexRgb).flat();
@@ -484,13 +596,44 @@ function draw() {
   gl.uniform1f(uni.uRest, 0);
   const n = lattice ? state.cells : 1;
   gl.disable(gl.BLEND);
+  // surfaces sit a little behind their own depth so lines on them (rest edges, silhouettes) pass the depth test
+  gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
   gl.drawArraysInstanced(gl.TRIANGLES, 0, NTRI * 3, n);
-  if (state.ghost) {
+  if (state.ghost && nEdges) drawRestShape(n);
+  gl.disable(gl.POLYGON_OFFSET_FILL);
+}
+function drawRestShape(n) {
+  // 1. depth = moving body + rest surface: the rest edges in front of both, full strength;
+  // 2. depth = the rest surface alone: its edges toward the eye that the moving body covers, faint.
+  // Every pixel takes one line fragment (stencil 0 -> 1), cores before fringes: overlapping line ends and pass 1's
+  // lines under pass 2 are not blended twice (no dots at the joints).
+  const surface = () => { gl.useProgram(prog); gl.bindVertexArray(vao); gl.uniform1f(uni.uRest, 1);
+    gl.colorMask(false, false, false, false); gl.drawArraysInstanced(gl.TRIANGLES, 0, NTRI * 3, n);
+    gl.colorMask(true, true, true, true); };
+  const lines = (alpha) => {
+    gl.useProgram(lineProg); gl.bindVertexArray(lineVao);
+    gl.uniform4fv(lineUni.uLineColor, themeColors.ghost.concat([alpha]));
     gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
-    gl.uniform1f(uni.uRest, 1); gl.uniform4fv(uni.uLineColor, themeColors.ghost);
-    gl.disable(gl.DEPTH_TEST); gl.drawArraysInstanced(gl.TRIANGLES, 0, NTRI * 3, n); gl.enable(gl.DEPTH_TEST);
-    gl.depthMask(true); gl.disable(gl.BLEND);
-  }
+    gl.enable(gl.STENCIL_TEST); gl.stencilFunc(gl.EQUAL, 0, 0xff); gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
+    for (const part of [0, 1]) {
+      gl.uniform1i(lineUni.uPart, part);
+      for (let i = 0; i < n; i++) { gl.uniform1f(lineUni.uIdx, i); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, nEdges); }
+    }
+    gl.disable(gl.STENCIL_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
+  };
+  gl.useProgram(lineProg);
+  gl.uniformMatrix4fv(lineUni.uView, false, viewMatrix()); gl.uniformMatrix4fv(lineUni.uProj, false, projMatrix());
+  gl.uniform1f(lineUni.uCells, n);
+  gl.uniform1f(lineUni.uPeriod, lattice ? lattice.period : 0);
+  gl.uniform3fv(lineUni.uAxis, lattice ? lattice.axis : [1, 0, 0]);
+  gl.uniform3fv(lineUni.uCenter, center);
+  gl.uniform2f(lineUni.uViewport, canvas.width, canvas.height);
+  gl.uniform1f(lineUni.uWidth, 1.6 * Math.min(window.devicePixelRatio || 1, 2.5));
+  surface();
+  lines(1);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  surface();
+  lines(themeColors.dark ? 0.34 : 0.3);
 }
 
 // ---------- readout and legend ----------
