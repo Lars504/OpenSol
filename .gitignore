@@ -11,8 +11,6 @@ __pycache__/
 # Generated output: every tool writes into a folder named out/ or *_out/
 out/
 *_out/
-# committed example outputs (summary.json, log.txt, model.json) stay tracked; their arrays / figures do not
-!examples/**/*_out/
 *.npz
 *.partial
 *.msh

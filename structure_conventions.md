@@ -541,8 +541,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 
 ### Generated output and git
 - Every folder a tool writes results into (its default `--out` too) is named `out/` or ends in `_out/`: the tracked
-  `.gitignore` ignores both, so a new tool needs no new rule. Committed example outputs (`examples/**/*_out/`) are
-  re-included there; their `.npz` / `.png` stay ignored.
+  `.gitignore` ignores both, so a new tool needs no new rule. Example outputs (`examples/**/*_out/`) are not
+  committed either.
 - The tracked `.gitignore` is public and generic; private folder names (experiments, plans, articles, side projects)
   go in `.git/info/exclude`, which every worktree of this clone shares and which is never pushed.
 
