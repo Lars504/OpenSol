@@ -6,6 +6,10 @@ Sub file of the root `structure_conventions.md` (read that first). Gotchas of ap
   It runs a private spec copy (ModelSpec copied, dict or file path) with `live_update_hz` = 0 and
   `RunControl(live_results=False)`; `parameters=` overrides go through `_apply_parameters` on that copy (all names
   checked first; unknown -> Issue at ('parameters',), without out_dir KeyError), so model.json records them.
+  `snapshots=False` writes the study type's `StudyType.final_state_settings` into the run copy only (model.json keeps
+  the model's values): selftest examples pass it unless an analytic curve names a snapshot; `_selftest_run` fills
+  only the final-state settings a case leaves unset (a case setting output_interval / n_snapshots keeps its
+  snapshots). The GUI and plain `run` keep the defaults (time_dependent: 20 snapshots).
   `max_wall_time` cancels at the next study checkpoint (status 'timeout', partial results; the final flush still
   runs). With out_dir, model / build / run / post-run failures never raise and summary.json + log.txt are always
   written; only argument errors and KeyboardInterrupt escape. A post-run failure (summary, save) makes the status

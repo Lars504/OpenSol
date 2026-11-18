@@ -132,6 +132,10 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
   feature precisions / validate): a new field reader or writer must scale or refuse. psi, poles, q_accum, DFT stay
   float32 / complex. float16 writes never use cupy's float16 kernels (unresolved `__half` on some CUDA / cupy pairs):
   dipole add via `half_bits(target)` + `STORED_ACCESS`, mirror rows on the uint16 bits (core.half_storage).
+  Snapshot solutions (`EMPhysics3D.solution_state` / `restore_solution`) copy the six full-grid arrays as stored
+  (fp16 bits) and write them back the same way: the scale is fixed for the engine's life, so a raw copy needs no
+  conversion; with them the engine time, q_accum / last_q_accum windows (pole work deposited first) and, with
+  `materials`, eps_r. Harmonic phasors are selected (select_harmonic_frequency), not copied.
 
 ## Cylindrical sectors (symmetry 2.21; engine3d, kernels3d, selftests_cylindrical3d)
 - A polar `Domain3D` (x = r - radius_min, y = phi [rad]) is an (r, phi, z) sector; scripts only (EMPhysics3D lists
@@ -228,6 +232,8 @@ subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 - Region filter: resonance_table selection + min_region_fraction -> `set_resonance_region` (tensor: host bool cells,
   each owning its +x / +y / +z E faces; a mirror-plane face belongs to the ghost, so a region on a mirror reads slightly
   low; tetrahedra: per element, via `FEMPhysics3D.resonance_region`). 'all' raises at apply. Not in a self-test.
+- Snapshot solutions: em_fdfd_3d (tensor and tetrahedra) has no SolutionStateSolver: eigenfrequency only, its
+  snapshots are select_resonance selections; a driven solve (per wavelength / iteration) must add the hook.
 - Not yet: conformal PEC, driven solves. Renderer: raw `<c>_re / _im / _abs` at their samples, centre moduli via
   `yee_grid.lower_face_partner` (Bloch: wrapped face x e^{+j k L}); e_abs primary.
 - Self-tests `selftests_fdfd3d` (CPU operator cases; model runs on gpu with the cudss_mixed eigen node of

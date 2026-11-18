@@ -10,7 +10,7 @@ from .schema import StudyType
 from .solver_hooks import NonlinearSolver
 from .study import (_FEEDBACK_ROUNDS_PARAM, Cancelled, LogEvent, _SolverWarnings, _background_fixed_point_params,
                     _background_stage, _count_progress, _feedback_couplings, _feedback_rounds, _log_solve_summaries,
-                    _solver_roles)
+                    _select, _solver_roles)
 
 STUDY_NAME = 'nonlinear_frequency_domain'
 _CHANNEL_STAGE = 'Channel solves'
@@ -139,14 +139,19 @@ def _channel_snapshots(session, solved, recorder, live):
     entries = [(name, solver.channels[solver.channel_index(channel_name)]) for name, solver in solvers.items()
                for channel_name in solver.cascade.order]
     for position, (name, channel) in enumerate(entries):
-        solvers[name].select_channel(channel.name)
+        _select(session, name, solvers[name], _select_channel, channel.name)
         text = _channel_text(channel) + ('' if solvers[name].cascade.converged else ' (not converged)')
         recorder.record(final=position == len(entries) - 1, label=text if len(solvers) == 1 else f'{name} {text}',
-                        blank_physics={other for other in solvers if other != name})
+                        blank_physics={other for other in solvers if other != name},
+                        selections={name: (_select_channel, channel.name)})
         live.update()
     for name, solver in solvers.items():
-        solver.select_channel(shown[name])
+        _select(session, name, solver, _select_channel, shown[name])
     return len(entries)
+
+
+def _select_channel(solver, channel_name):
+    solver.select_channel(channel_name)
 
 
 _PARAMS = (*_background_fixed_point_params('the nonlinear solve', 'the nonlinear optics solve'), _FEEDBACK_ROUNDS_PARAM)

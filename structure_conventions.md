@@ -268,6 +268,11 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   `<physics>_<name>` only (`schema.scalar_output_names`; no plain alias), a declared name the solver did not report
   gives NaN + warning. Validate rejects a scalar named like a field of its type and a parameter named like one.
 - Quasi-static solvers record probes with `replace_same_time=t > 0.0` (a re-solve at the same time replaces the sample).
+- Snapshot solutions (GUI runs only: `RunControl.keep_solutions`; model sub file): a solver whose state a study
+  changes between snapshots (time stepping, per-wavelength / per-frequency / per-iteration solves) implements
+  `solver_hooks.SolutionStateSolver` (`solution_state(materials)` -> host copies of everything its renderer reads,
+  `restore_solution(state)` writing them back in place and invalidating cached derived fields), else its intermediate
+  snapshots show only the stored fields. A new renderer input changed during a study joins its solution_state.
 - Nonlinear loop state that warm-starts later loops (saturation, k(T), ...) is cleared when the nonlinear set of
   cells / elements changes or empties. Fixed-point maps on conjugated fields are only real-linear: their mixing /
   least-squares / Krylov coefficients are real.
@@ -392,6 +397,9 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
   and the parked plans; its on-disk ordering store is the GUI worker's only: solvers sub file "Ordering reuse"). A disk cache across processes is off inside the self-tests (the gmsh tetrahedron
   cache, on by default otherwise: `gmsh3d.default_disk_cache_off`, entered before the trace; fem sub file).
 - Self-test modules never rebind a module-level constant later in the file (later cases silently read the new value).
+- Self-test runs store only the final state (`StudyType.final_state_settings`; time_dependent defaults to 20
+  snapshots elsewhere): a case whose check reads intermediate snapshots sets output_interval / n_snapshots itself, an
+  example names the snapshot in an analytic curve (root sub file "api.run").
 - Work counters: a new quasi-static solver adds `work_counters()` (not on the ABC; summary.json `solvers`, model sub
   file "Timing") with cumulative, machine-independent counts (iterations, factorisations) besides any seconds, on its
   role runtime when the solve is a solver role, else on the physics (never both).

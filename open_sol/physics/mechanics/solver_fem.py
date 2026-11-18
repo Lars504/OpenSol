@@ -43,7 +43,7 @@ from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
 from .renderer import SolidRenderer
 from .solver import GENERALIZED_PLANE_STRAIN, GEOMETRIES, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS
-from .solver_common import MATERIAL_STATE_ARRAYS, FEMSolidCommon, host_array as _host
+from .solver_common import MATERIAL_STATE_ARRAYS, FEMSolidCommon, _copy_or_none, host_array as _host
 from .stiffness import (ElementStiffness, check_positive_definite, element_stiffness, elastic_stress,
                         operator_coefficients, plane_stress_strain, thermal_coefficients)
 from .system_fem import ElasticFEMSystem
@@ -1054,6 +1054,35 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._complex_displacement = np.array(displacement, dtype=np.complex128)   # read by the primary group
         self._shows_mode, self._shows_harmonic = False, True
         self.selected_resonance = None
+
+    # --- snapshot solutions (FEMSolidCommon.solution_state hooks) ----------------
+    def _shown_solution(self) -> dict:
+        """Host copies of what the pending outputs compute from: displacement, a shown complex response, the
+        generalized plane-strain terms and the _write_outputs settings."""
+        return {'unknown': np.array(self.system.unknown), 'complex': _copy_or_none(self._complex_displacement),
+                'imaginary': _copy_or_none(self._output_imaginary), 'axial_terms': np.array(self._axial_terms),
+                'thermal': self._output_thermal, 'prestress': self._output_prestress, 'omega': self._output_omega,
+                'green_lagrange': self._output_green_lagrange}
+
+    def _show_solution_state(self, shown) -> None:
+        """Show a _shown_solution again: its outputs pending, computed on the next read."""
+        self.system.unknown = shown['unknown'].copy()
+        self._axial_terms = shown['axial_terms'].copy()
+        self._write_outputs(thermal=shown['thermal'], prestress=shown['prestress'], omega=shown['omega'],
+                            imaginary=_copy_or_none(shown['imaginary']), green_lagrange=shown['green_lagrange'])
+        self._complex_displacement = _copy_or_none(shown['complex'])   # after _write_outputs, as _show_harmonic
+
+    def _computed_outputs(self) -> dict:
+        """Host copies of the computed centroid values kept outside the state arrays (Im u, energy densities)."""
+        return {name: None if kept is None else {key: values.copy() for key, values in kept.items()}
+                for name, kept in (('imag', self._imag_centroids), ('energy', self._energy_centroids))}
+
+    def _restore_computed_outputs(self, computed) -> None:
+        """Set _computed_outputs back (None: none, nothing shown)."""
+        computed = computed or {'imag': None, 'energy': None}
+        self._imag_centroids, self._energy_centroids = (
+            None if computed[name] is None else {key: values.copy() for key, values in computed[name].items()}
+            for name in ('imag', 'energy'))
 
     # --- display fields ---------------------------------------------------------
 

@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__
 from .core import gpu_memory, host_memory
 from .core.backend import default_backend_name
-from .core.mirror import mirror_faces, unfold_field
+from .core.mirror import field_parity, field_plane_signs, image_sign, mirror_faces, unfold_field
 from .core.renderer import primary_field_info
 from .core.time_estimate import format_seconds
 from .core.time_profile import profile_path, profile_text, run_profile
@@ -41,7 +41,7 @@ from .model.interface_sampling import interface_line_profile, line_curve_field_k
 from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate_memory, estimate_mesh,
                             estimate_meshes, fitted_memory_estimate, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
-from .model.scene_3d import build_scene
+from .model.scene_3d import build_scene, object_cut_targets, plane_outlines
 from .model.schema import (ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values, resolved_solvers,
                            solver_backend, solver_grid)
 from .solvers.roles import resolved_precision
@@ -59,8 +59,9 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFrame, ViewerLayer, ViewerQuantity, layer_from_field, plan_frames,
-                               strided_layer, time_label, write_field_viewer)
+from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity,
+                               layer_from_field, mirror_plane, plan_frames, snap_to_mirrors, strided_layer,
+                               time_label, write_field_viewer)
 from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
@@ -343,10 +344,11 @@ def _study_estimate(spec, registry, parameters, meshes):
 
 # ---- run ----
 def run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, save_arrays=True,
-        parameters=None, backend=None) -> 'Results':
+        parameters=None, backend=None, snapshots=True) -> 'Results':
     """Build + run a spec on this thread, blocking (never next to a GUI BackendWorker in one process) -> Results;
     progress: callable(event) or True (ProgressPrinter to stdout); parameters {name: expression} and backend ('auto' |
-    'gpu' | 'cpu': solver_defaults.backend) override the model (kept in model.json). With out_dir it always writes
+    'gpu' | 'cpu': solver_defaults.backend) override the model (kept in model.json); snapshots False stores only the
+    final state (StudyType.final_state_settings, not kept in model.json). With out_dir it always writes
     summary.json + log.txt (a failed report write: status 'failed'); without, a failed build re-raises, a failed run raises RunError (no GPU budget: RuntimeError)."""
     if progress is True:
         progress = ProgressPrinter()
@@ -393,7 +395,8 @@ def run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, sa
     try:
         session = None
         if setup_failure is None:
-            session, timed_out = _execute_study(input_spec, collector, recorder, tracker, max_wall_time, wall_start)
+            session, timed_out = _execute_study(input_spec, collector, recorder, tracker, max_wall_time, wall_start,
+                                                snapshots)
             status, message, traceback_text = _final_status(collector, timed_out, max_wall_time)
         else:
             status, message, traceback_text = 'failed', setup_failure, ''
@@ -584,12 +587,16 @@ class _SessionTracker:
         self.session = session
 
 
-def _execute_study(input_spec, collector, recorder, tracker, max_wall_time, wall_start):
-    """run_study on a copy with live output off -> (session or None, timed_out); its service cancels the study once
-    max_wall_time has passed (checked at every study checkpoint, so not during a build)."""
+def _execute_study(input_spec, collector, recorder, tracker, max_wall_time, wall_start, snapshots=True):
+    """run_study on a copy with live output off (snapshots False: final state only) -> (session or None, timed_out);
+    its service cancels the study once max_wall_time has passed (checked at every study checkpoint, so not during a
+    build)."""
     run_spec = input_spec.copy()
     _disable_live_output(run_spec)
-    control = RunControl(live_results=False)   # emit drops LiveResults headless: never build them
+    if not snapshots:
+        _final_state_only(run_spec)
+    # emit drops LiveResults headless: never build them; snapshot solutions are for the GUI's field browsing only
+    control = RunControl(live_results=False, keep_solutions=False)
     timed_out = False
 
     def stop_after_max_wall_time():
@@ -614,6 +621,20 @@ def _disable_live_output(run_spec):
     if (isinstance(run_spec.study.settings, dict)
             and any(param.name == 'live_update_hz' for param in study_type.params)):
         run_spec.study.settings['live_update_hz'] = 0.0
+
+
+def _final_state_only(run_spec, unset_only=False):
+    """Write the study type's final_state_settings (only the final state stored) into run_spec; unset_only: only
+    those the model leaves unset (the self-test default: a case asking for snapshots keeps them)."""
+    try:
+        study_type = get_registry().study_type(run_spec.study.type)
+    except KeyError:   # run_study reports the unknown study type
+        return
+    if not isinstance(run_spec.study.settings, dict):
+        return
+    for name, value in study_type.final_state_settings.items():
+        if not unset_only or name not in run_spec.study.settings:
+            run_spec.study.settings[name] = value
 
 
 def _final_status(collector, timed_out, max_wall_time):
@@ -773,12 +794,12 @@ def save_session_run(directory, spec, session, build_summary, study_summary, log
 
 
 def export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None,
-                        physics=None) -> str:
-    """Write the web page of Results.export_html(path, what, physics) for a live session its caller built and ran
-    (the GUI worker, on its thread); the session stays open. Other arguments as save_session_run; returns the
-    written path."""
+                        physics=None, geometry=True, planes=None) -> str:
+    """Write the web page of Results.export_html(path, what, physics, geometry=, planes=) for a live session its
+    caller built and ran (the GUI worker, on its thread); the session stays open. Other arguments as
+    save_session_run; returns the written path."""
     with _session_results(spec, session, build_summary, study_summary, log_entries, model_file, False) as results:
-        return results.export_html(path, what, physics=physics)
+        return results.export_html(path, what, physics=physics, geometry=geometry, planes=planes)
 
 
 @contextlib.contextmanager
@@ -1114,6 +1135,27 @@ def _stored_cut_index(snapshot, plane):
         raise ValueError(f"this snapshot stores no cut normal to {plane[0]!r} (study stored_cuts: "
                          f"{stored_text or 'none'}; the default cut is plane=None)")
     return min(on_axis, key=lambda index: abs(planes[index][1] - float(plane[1])))
+
+
+def _held_cuts(snapshot, key):
+    """FieldData of key that a 3D snapshot holds on a placed plane: its mid-height z cut and its stored cuts."""
+    return [fields[key] for fields in (snapshot.fields, *snapshot.cuts)
+            if key in fields and fields[key].plane is not None]
+
+
+def _nearest_held_cuts(snapshot, key, planes):
+    """Per (axis, position [m]) of planes the held cut of key on that axis nearest the position (the GUI's snapshot
+    rule, so each sweep value keeps its own positions), each once; ValueError when an axis has none."""
+    held, chosen = _held_cuts(snapshot, key), []
+    for axis, position in planes:
+        on_axis = [field_data for field_data in held if field_data.plane[0] == axis]
+        if not on_axis:
+            raise ValueError(f'snapshot {snapshot.label or snapshot.time!r} holds no {axis} cut of {key!r} (study '
+                             'stored_cuts)')
+        nearest = min(on_axis, key=lambda field_data: abs(float(field_data.plane[1]) - position))
+        if all(nearest is not other for other in chosen):
+            chosen.append(nearest)
+    return chosen
 
 
 @dataclass
@@ -1478,9 +1520,9 @@ class Results:
 
     def scene_figure(self, path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> str:
         """3D models: api.scene_figure of the run's model (built parameters) with field (name as in field(); None =
-        objects only) on cut planes in one colour scale: live, planes [(axis, position [m])] (default the middle window
-        cell on x, y and z); closed / loaded, the saved mid-height z cut plus the stored cuts of a last snapshot at
-        the same time."""
+        objects only) on cut planes in one colour scale: live, planes [(axis, position [m])] (default an x, y and z cut
+        through the structure: _default_cut_planes); closed / loaded, the saved mid-height z cut plus the stored cuts
+        of a last snapshot at the same time."""
         if self.spec is None:
             raise ValueError('scene_figure needs the model spec of the run (missing from this run directory)')
         if self.spec.domain.size_z is None:
@@ -1489,12 +1531,37 @@ class Results:
         return _save_scene_figure(self.spec, self._built_parameters(), path, field_planes=field_planes,
                                   z_stretch=z_stretch, view=view)
 
+    def _default_cut_planes(self, name=None, physics=None):
+        """Live 3D default cuts, per axis: the window cell at a mirror plane of the field's physics (core.mirror
+        mirror_faces, Cartesian domains; the lo face when both), else the cell centre nearest the middle of the
+        material objects not spanning the window along it (scene_3d.object_cut_targets), else the window middle."""
+        targets, mirrored_hi = {}, {}
+        if self.spec is not None:
+            targets = object_cut_targets(build_scene(self.spec, self._built_parameters(), get_registry()))
+            matches = self._field_matches(name, physics) if name is not None else []
+            if len(matches) == 1 and self.spec.domain.coordinates == 'cartesian':
+                for face in mirror_faces(self._state_spec(), matches[0].partition('.')[0]):
+                    if face.endswith('_lo') or face[0] not in mirrored_hi:
+                        mirrored_hi[face[0]] = face.endswith('_hi')
+        planes = []
+        for axis in ('x', 'y', 'z'):
+            centres = list(self.session.cut_centers(axis))
+            if not centres:
+                continue
+            if axis in mirrored_hi:
+                position = centres[-1] if mirrored_hi[axis] else centres[0]
+            elif axis in targets:
+                position = min(centres, key=lambda centre: abs(centre - targets[axis]))
+            else:
+                position = centres[len(centres) // 2]
+            planes.append((axis, position))
+        return planes
+
     def _scene_planes(self, name, physics, planes):
         """FieldData cuts of scene_figure (see there); ValueError when none is available."""
         if self.is_live:
             if planes is None:
-                planes = [(axis, centres[len(centres) // 2]) for axis in ('x', 'y', 'z')
-                          for centres in (self.session.cut_centers(axis),) if centres]
+                planes = self._default_cut_planes(name, physics)
             return [self.field(name, physics, plane=tuple(plane)) for plane in planes]
         if planes is not None:
             raise ValueError('planes= needs live Results (saved fields are the mid-height z cut; the study '
@@ -1511,17 +1578,26 @@ class Results:
             raise ValueError(f'no saved cut plane of field {name!r} (an older run directory without plane records)')
         return field_planes
 
-    def export_html(self, path, what=None, physics=None, title=None) -> str:
+    def export_html(self, path, what=None, physics=None, title=None, geometry=True, planes=None) -> str:
         """Write a self-contained web page (no network: hand-written WebGL2, data embedded) to turn, zoom and colour
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
         it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current
-        (live) or saved state; a 3D field is shown on its cut planes in place (live state: the middle x, y and z cuts;
-        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts). A dft_fields result
+        (live) or saved state; a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
+        a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
+        not spanning the window on that axis, else the window middle;
+        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
+        position [m])] (3D field pages; the GUI passes its shown cut) picks them instead: the live state on exactly
+        those planes, a snapshot its held cut on each plane's axis nearest the position (live: the current state
+        when the snapshots hold no cut on an axis, named in the subtitle). A dft_fields result
         'physics.feature': its intensity map per monitored frequency (slider). A mode_shapes result: viz.mode_player
-        (animated mode shapes beside the band diagram). None = the only mode_shapes result. Large data is thinned
-        (grid stride, evenly kept frames; the page subtitle says so). Other result kinds (curves, tables) raise
-        ValueError: they are figures (figure())."""
+        (animated mode shapes beside the band diagram). None = the only mode_shapes result. geometry (field pages):
+        the model objects (built parameters) go on the page, the outlines on every map / cut plane and in 3D the
+        object edges and surfaces, shown or hidden there. A model with mirror planes (core.mirror.mirror_faces; field
+        pages and 2D DFT maps): the page draws the mirror images of the field (its parity's signs) and objects too,
+        the whole structure, with a Mirror button to show the simulated part alone. Large data is thinned (grid
+        stride, evenly kept frames; the page subtitle says so). Other result kinds (curves, tables) raise ValueError:
+        they are figures (figure())."""
         kinds = self._result_kinds()
         if what is None:
             keys = [key for key, kind in kinds.items() if kind == 'mode_shapes']
@@ -1536,12 +1612,18 @@ class Results:
             if kind == 'mode_shapes':
                 return mode_player_from_results(self, path, key=what, title=title)
             if kind == 'dft_fields':
-                return self._dft_viewer(path, what, title)
+                return self._dft_viewer(path, what, title, geometry)
             raise ValueError(f'{what!r} is a {kind} result (curves or a table): export it as a figure (figure()); '
                              'web pages show ' + self._html_choices())
         if len(field_keys) != 1:
             raise self._field_lookup_error(what, physics, field_keys)
-        return self._field_viewer(path, field_keys[0], title)
+        if planes is not None:
+            if self.spec is None or self.spec.domain.size_z is None:
+                raise ValueError('planes= picks cut planes of a 3D model (needs the model spec)')
+            planes = [(str(axis), float(position)) for axis, position in planes]
+            if not planes or any(axis not in ('x', 'y', 'z') for axis, _ in planes):
+                raise ValueError(f"planes= needs at least one (axis 'x' | 'y' | 'z', position [m]), got {planes}")
+        return self._field_viewer(path, field_keys[0], title, geometry, planes)
 
     def _result_kinds(self):
         """{'physics.feature': result kind} without fetching any result (live: the build summary; else the saved
@@ -1561,14 +1643,24 @@ class Results:
         model_title = (self._data.summary.get('model') or {}).get('title') or getattr(self.spec, 'title', None)
         return title or model_title or ''
 
-    def _field_viewer(self, path, key, title):
-        """export_html of the field key ('physics.component')."""
+    def _field_viewer(self, path, key, title, geometry, planes=None):
+        """export_html of the field key ('physics.component'); planes: export_html's (3D, checked there)."""
         stored = [snapshot for snapshot in self._stored_snapshots() if key in snapshot.fields]
+        note = ''
+        if len(stored) > 1 and planes is not None:
+            missing = sorted({axis for axis, _ in planes} - {field_data.plane[0] for snapshot in stored
+                                                             for field_data in _held_cuts(snapshot, key)})
+            if missing and not self.is_live:
+                raise ValueError(f"the snapshots of {key!r} hold no {' / '.join(missing)} cut (study stored_cuts): "
+                                 'those planes need live Results')
+            if missing:   # live: the current state is there on any plane
+                stored, note = [], f", the snapshots hold no {' / '.join(missing)} cut"
         if len(stored) > 1:
             frames = []
             three_d = self.spec is not None and self.spec.domain.size_z is not None
             for snapshot in stored:
-                fields = [snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut]
+                fields = ([snapshot.fields[key]] + [cut[key] for cut in snapshot.cuts if key in cut] if planes is None
+                          else _nearest_held_cuts(snapshot, key, planes))
                 if three_d and any(field_data.plane is None for field_data in fields):
                     raise ValueError(f'the snapshots of {key!r} have no cut-plane records (an older run directory): '
                                      'their planes cannot be placed in 3D')
@@ -1577,28 +1669,102 @@ class Results:
                                           float(snapshot.time)))
             frame_kind = 'time' if all(snapshot.label is None for snapshot in stored) else 'labelled'
             info = stored[0].fields[key].info
+            unfolded = bool(getattr(stored[0].fields[key], 'unfolded', False))
             source = f'{len(stored)} snapshots'
         else:
-            fields = self._state_fields(key)
+            fields = self._state_fields(key, planes)
             frames = [ViewerFrame([layer_from_field(field_data) for field_data in fields],
                                   fields[0].time_label or '', float(fields[0].time))]
             frame_kind = 'labelled'
             info = fields[0].info
-            source = 'current state' if self.is_live else 'saved state'
-        quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed))
+            unfolded = bool(getattr(fields[0], 'unfolded', False))
+            source = ('current state' if self.is_live else 'saved state') + note
+        quantity = ViewerQuantity(label=info.label, unit=info.unit, signed=bool(info.signed),
+                                  phase=str(info.parity or '').startswith('phase_'))
+        # parity-sector snapshots are stored unfolded already: no images of them
+        mirrors = [] if unfolded else self._viewer_mirrors(
+            key.partition('.')[0], info, [(layer.axes, layer.extent) for layer in frames[0].layers])
+        snap_to_mirrors(frames, mirrors)   # before the outlines: a cut next to a mirror plane is drawn on it
+        objects = self._viewer_geometry([layer.plane for layer in frames[0].layers]) if geometry else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or info.label,
-                                  subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind)
+                                  subtitle=f'{key}, {source} (open_sol)', frame_kind=frame_kind, geometry=objects,
+                                  mirrors=mirrors)
 
-    def _state_fields(self, key):
+    def _viewer_mirrors(self, physics, info, spans):
+        """ViewerMirrors of the model's mirror faces for a field of physics (FieldInfo info; None = an even
+        intensity), placed on the window edges of spans [(axes, extent)]; RuntimeWarning for what is not offered."""
+        if self.spec is None:
+            return []
+        faces = mirror_faces(self._state_spec(), physics)
+        if info is not None:
+            faces = field_plane_signs(faces, info)
+        if not faces:
+            return []
+        if self.spec.domain.coordinates != 'cartesian':
+            warnings.warn('web page mirror images: not offered on a polar / spherical domain (the image is no '
+                          'reflection of the drawn box)', RuntimeWarning, stacklevel=4)
+            return []
+        try:
+            parity = 'even' if info is None else field_parity(info)
+        except ValueError as exc:
+            warnings.warn(f'web page mirror images: not offered: {exc}', RuntimeWarning, stacklevel=4)
+            return []
+        mirrors, unplaced = [], []
+        for face, plane_sign in sorted(faces.items()):
+            position = mirror_plane(spans, face)
+            if position is None:
+                unplaced.append(face)
+                continue
+            mirrors.append(ViewerMirror(face=face, position=position,
+                                        value_sign=image_sign(parity, face[0], plane_sign)))
+        if unplaced:
+            warnings.warn(f"web page mirror images: not across {', '.join(unplaced)} (no shown plane spans that axis)",
+                          RuntimeWarning, stacklevel=4)
+        return mirrors
+
+    def _viewer_geometry(self, planes):
+        """ViewerGeometry of the model objects (built parameters) on the page's layers (planes: each layer's cut,
+        None = a 2D map) plus, in 3D, the objects' edges, surfaces and point / line glyphs; objects that fail to
+        resolve are a RuntimeWarning."""
+        if self.spec is None:
+            raise ValueError('geometry needs the model spec of the run (missing from this run directory): export '
+                             'with geometry=False')
+        parameters = self._built_parameters()
+        three_d = self.spec.domain.size_z is not None
+        if three_d and any(plane is None for plane in planes):
+            raise ValueError('geometry of a 3D model needs every layer on a cut plane')
+        outlines, glyphs, problems = [], [], []
+        for plane in planes:
+            plane_items, plane_glyphs, plane_problems = plane_outlines(self.spec, parameters, plane)
+            outlines.append(plane_items)
+            glyphs = glyphs or plane_glyphs
+            problems += [text for text in plane_problems if text not in problems]
+        solids, box = [], None
+        if three_d:
+            scene = build_scene(self.spec, parameters, get_registry())
+            solids, glyphs, box = scene.solids, scene.glyphs, scene.size
+            problems += [text for text in scene.problems if text not in problems]
+        if problems:
+            warnings.warn(f"web page geometry: not drawn: {'; '.join(problems)}", RuntimeWarning, stacklevel=4)
+        return ViewerGeometry(material_names=[material.name for material in self.spec.materials], outlines=outlines,
+                              solids=solids, glyphs=glyphs, box=box)
+
+    def _state_fields(self, key, planes=None):
         """FieldData of the field key in the current / saved state: a 2D map, or the 3D cut planes of scene_figure
-        (live: the middle x, y and z cuts; closed / loaded: the saved z cut plus the stored cuts at the same time)."""
-        if self.spec is not None and self.spec.domain.size_z is not None:
-            return self._scene_planes(key, None, None)
-        return [self.field(key)]
+        (live: planes, default the cuts through the structure; closed / loaded: the saved z cut plus the stored cuts at
+        the same time, with planes the last snapshot's held cuts nearest them)."""
+        if self.spec is None or self.spec.domain.size_z is None:
+            return [self.field(key)]
+        if planes is None or self.is_live:
+            return self._scene_planes(key, None, planes)
+        stored = [snapshot for snapshot in self._stored_snapshots() if key in snapshot.fields]
+        if not stored:
+            raise ValueError(f'planes= of a closed / loaded run read the stored snapshot cuts: {key!r} has none')
+        return _nearest_held_cuts(stored[-1], key, planes)
 
-    def _dft_viewer(self, path, key, title):
+    def _dft_viewer(self, path, key, title, geometry):
         """export_html of a dft_fields result: its intensity map per monitored frequency, loaded one at a time (only
-        the frames the page keeps, strided at once)."""
+        the frames the page keeps, strided at once); geometry: the object outlines over the box (2D models)."""
         meta = self.result(key)
         wavelengths = np.atleast_1d(np.asarray(meta['wavelength'], dtype=np.float64))
         x_centres = np.asarray(meta['x_centers'], dtype=np.float64)
@@ -1612,9 +1778,26 @@ class Results:
             layer = ViewerLayer(values=intensity, u_centres=x_centres, v_centres=y_centres)
             frames.append(ViewerFrame([strided_layer(layer, plan.stride)], wavelength_label(wavelengths[index])))
         quantity = ViewerQuantity(label=f"{meta.get('quantity', 'intensity')} (DFT)", unit='a.u.', signed=False)
+        flat = self.spec is None or self.spec.domain.size_z is None   # a 3D DFT map has no placed plane
+        objects = self._viewer_geometry([None]) if geometry and flat else None
         return write_field_viewer(path, frames, quantity, title=self._page_title(title) or f'DFT {key}',
                                   subtitle=f'{key}: {wavelengths.size} monitored frequencies (open_sol)',
-                                  frame_kind='labelled', plan=plan)
+                                  frame_kind='labelled', plan=plan, geometry=objects,
+                                  mirrors=self._dft_mirrors(key) if flat else [])
+
+    def _dft_mirrors(self, key):
+        """ViewerMirrors of a 2D dft_fields map (an even intensity): the planes on the window edges of a field of its
+        physics (the DFT box may stop short of them); none when the physics has no field to take the window from."""
+        physics = key.partition('.')[0]
+        if self.spec is None or not mirror_faces(self.spec, physics):
+            return []
+        names = [name for name in self.field_names() if name.partition('.')[0] == physics]
+        if not names:
+            warnings.warn(f'web page mirror images: not offered (no field of {physics!r} gives the window edges)',
+                          RuntimeWarning, stacklevel=4)
+            return []
+        window = self.field(names[0])
+        return self._viewer_mirrors(physics, None, [(tuple(getattr(window, 'axes', ('x', 'y'))), window.extent)])
 
     def save(self, path, save_arrays=True) -> Path:
         """Write summary.json, log.txt, model.json and (save_arrays) results.npz into the directory path, copying the
@@ -2490,10 +2673,13 @@ def _variant_spec(spec, variant, registry):
 
 
 def _selftest_run(spec, run_dir, max_wall_time):
-    """(Results or None, run record) of one selftest run; any failure raised by run() (no out_dir: ModelError,
-    RunError or a build's own exception) is a 'failed' run."""
+    """(Results or None, run record) of one selftest run, storing only the final state unless the case sets the
+    snapshot settings itself; any failure raised by run() (no out_dir: ModelError, RunError or a build's own
+    exception) is a 'failed' run."""
     start = time.perf_counter()
     try:
+        spec = _as_spec(spec)
+        _final_state_only(spec, unset_only=True)
         with warnings.catch_warnings():   # a multi-run case keeps its earlier Results live on purpose (log line only)
             warnings.filterwarnings('ignore', message=_LIVE_RESULTS_WARNING_PATTERN, category=RuntimeWarning)
             results = run(spec, out_dir=run_dir, max_wall_time=max_wall_time)
@@ -2831,13 +3017,15 @@ def _selected_example_paths(names):
 
 
 def _example_run_record(path, relative_path, spec, out_dir, start):
-    """Report entry of one example: run() on its own backend into out_dir/examples/<path>/ (no arrays, no figures),
-    then its summary compared with the spec's tolerances; a raising run is an 'error' entry."""
+    """Report entry of one example: run() on its own backend into out_dir/examples/<path>/ (no arrays, no figures;
+    only the final state stored unless an analytic curve reads a snapshot), then its summary compared with the spec's
+    tolerances; a raising run is an 'error' entry."""
     run_dir = None if out_dir is None else out_dir / 'examples' / relative_path[:-len('.json')]
     run_backend = solver_backend(spec)
     run_start = time.perf_counter()
+    reads_snapshots = any(curve.snapshot is not None for curve in spec.analytic_curves)
     try:
-        results = run(path, out_dir=run_dir, save_arrays=False)
+        results = run(path, out_dir=run_dir, save_arrays=False, snapshots=reads_snapshots)
     except Exception as exc:   # text only (run() cleared the frames of what it re-raises)
         record = failed_example_record(relative_path, spec.title, _error_text(exc), time.perf_counter() - start)
     else:

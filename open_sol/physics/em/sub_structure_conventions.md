@@ -238,6 +238,14 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   new EM renderer. Renderers of centre-field dicts (ModeRenderer, BORRenderer, ConicalRenderer) subclass
   `renderer.CentreFieldRenderer`; the FDTD pair's dispatch is `_FDTDRendererBase._fdtd_field` (`material_names`,
   `_polarization_field`). FDFD hz also exposes ex_re / ex_im / ey_re / ey_im (`_IN_PLANE_E_PART_INFOS`); EME omits them.
+- Snapshot solutions (`solution_state` / `restore_solution`; harmonic FDTD phasors, modes, resonances are selected,
+  never copied): em_fdtd_ez / _hz the real field set as stored (float64 under 'double'), clock, both q_accum windows,
+  C5 media boxes (`_rendered_media_arrays`); em_fdtd_bor the lockstep x / h + n_step (`solution_serial` keys the
+  renderer cache); FDFD the phasor with its face fields and q_abs (the system is not kept, so face fields are copied),
+  design densities / beta and the adjoint gradient only when computed for that solve (else `eps_sensitivity` raises on
+  the restored snapshot); FEMFDFDPhysics element + nodal fields; BOR / conical the display fields. `materials` adds the
+  renderer's material arrays, crystallinity (`materials.material_solution_state`) and the hz eps_xy change. Restores
+  never call materials_changed or reassemble; a new renderer input a study changes joins these states.
 - Monitors take `polarization` ('ez' default); dft_fields / far_field carry 'quantity' (plots, GUI read it); hz
   dft_fields with freq_index adds 'hz_intensity' (not in loaded Results). flux_spectrum 'unit': FDTD 'a.u.'
   (dt-weighted), FDFD 'W/m'. When all sources share one waveform (coupling drives not counted), results add

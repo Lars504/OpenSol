@@ -4,7 +4,7 @@ import math
 import warnings
 
 import numpy as np
-from ....core.backend import cp, to_host
+from ....core.backend import cp, host_copy, to_host, write_host_into
 
 from ....core.constants import DTYPE, MU0
 from ....core.monitors import FieldProbe, FieldProbeRows
@@ -415,6 +415,57 @@ class _YeeEngine2DBase(PhysicsSolver):
         power_density = self.q_accum * DTYPE(1.0 / window)
         self.reset_q_accum()
         return power_density
+
+    # --- snapshot solutions (EMPhysics.solution_state) ------------------------
+
+    def solution_state(self) -> dict:
+        """Host copies of the renderer inputs stepping changes: the real field set as stored (field dtype; the
+        imaginary Bloch set is never rendered), the clock, both absorbed-power windows, the nonlinear carrier densities
+        and the gain populations N1 / N2."""
+        state = {name: host_copy(getattr(self.fields, name)) for name in self.fields.components}
+        state['time'] = float(self.time)
+        state['q_accum'] = None if self.q_accum is None else host_copy(self.q_accum)
+        state['q_accum_time'] = float(self.q_accum_time)
+        state['last_q_accum'] = None if self.last_q_accum is None else host_copy(self.last_q_accum)
+        state['last_q_accum_time'] = float(self.last_q_accum_time)
+        state['media'] = [host_copy(values) for values in self._rendered_media_arrays()]
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (graph-captured fields, q_accum and media boxes keep their pointers)."""
+        for name in self.fields.components:
+            write_host_into(getattr(self.fields, name), state[name])
+        self.time = state['time']
+        if (state['q_accum'] is None) != (self.q_accum is None):
+            raise RuntimeError(f'em_fdtd_{self.polarization} restore_solution: absorbed-power accumulation was switched '
+                               'on or off since this state was taken')
+        if self.q_accum is not None:
+            write_host_into(self.q_accum, state['q_accum'])
+        self.q_accum_time = state['q_accum_time']
+        last = state['last_q_accum']
+        if last is None:
+            self.last_q_accum = None
+        else:
+            if self.last_q_accum is None:
+                self.last_q_accum = self.xp.empty(last.shape, dtype=last.dtype)
+            write_host_into(self.last_q_accum, last)
+        self.last_q_accum_time = state['last_q_accum_time']
+        media = self._rendered_media_arrays()
+        if len(media) != len(state['media']):
+            raise RuntimeError(f"em_fdtd_{self.polarization} restore_solution: {len(state['media'])} medium arrays in "
+                               f'the state, {len(media)} in the engine (a state of another build?)')
+        for target, values in zip(media, state['media']):
+            write_host_into(target, values)
+
+    def _rendered_media_arrays(self) -> list:
+        """Run-backend box arrays the renderer reads from the C5 media: carrier densities (float64) of the nonlinear
+        components, then N1 and N2 (float64) of every gain component."""
+        arrays = [] if self.nonlinear is None else [component['density'] for component in self.nonlinear.components
+                                                    if 'density' in component]
+        for gain in self.gain_media:
+            for component in gain.components:
+                arrays.extend(component['populations'][level] for level in (1, 2))
+        return arrays
 
     # --- time stepping --------------------------------------------------------
 

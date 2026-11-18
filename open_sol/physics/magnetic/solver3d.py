@@ -12,7 +12,8 @@ import numpy as np
 from ...core.backend import to_host
 from ...core.constants import DTYPE, FACES_3D, MU0
 from ...core.damped_iteration import DampedIteration, DampingSettings
-from ...core.fv_diffusion import DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig
+from ...core.fv_diffusion import (DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig, host_copies,
+                                  write_host_copies)
 from ...core.fv_diffusion_3d import (centre_gradient_3d, edge_extension_views_3d, face_drive_divergence_3d,
                                      face_drive_integrals_3d, face_drive_terms_3d, face_flow_energy_3d, face_flows_3d,
                                      face_terms_at_centres_3d)
@@ -179,6 +180,31 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
 
     def renderer(self):
         return MagneticRenderer3D(self)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the full-grid fields the renderer reads (phi_m, B, H, w_mag; J and mu_eff once allocated);
+        materials: mu_dc_xx / _yy / _zz. The system and the saturation loop state stay the live ones."""
+        state = {'fields': host_copies(self._solution_arrays())}
+        if materials:
+            state['materials'] = host_copies(self._material_arrays())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (an array allocated after the state was taken keeps its live values)."""
+        write_host_copies(self._solution_arrays(), state['fields'])
+        if 'materials' in state:
+            write_host_copies(self._material_arrays(), state['materials'])
+
+    def _solution_arrays(self) -> dict:
+        fields = self.fields
+        names = (MAGNETIC_3D_FIELD_NAMES + (MAGNETIC_3D_CURRENT_NAMES if fields.has_current_density else ())
+                 + ((MAGNETIC_3D_PERMEABILITY_NAME,) if fields.has_effective_permeability else ()))
+        return {name: getattr(fields, name) for name in names}
+
+    def _material_arrays(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in _PERMEABILITY_NAMES}
 
     def scalars(self) -> dict:
         """energy [J], per coil <name>_flux_linkage [Wb] / <name>_inductance [H]; {} before a solve."""

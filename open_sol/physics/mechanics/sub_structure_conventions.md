@@ -525,6 +525,12 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   first, and a new reader of
   `_nodal` or per-element outputs goes through it (why: the eigen study selects every mode for snapshots; ~47 s at 2.2e5
   P2 piezo elements with eager passes).
+- Snapshot solutions (`FEMSolidCommon.solution_state`, triangles too; hooks `_shown_solution` / `_show_solution_state`
+  / `_computed_outputs`): without materials the state is lazy (unknown, potential, complex solution, GPS terms, the
+  `_write_outputs` settings + input fields; restore re-marks the groups pending and raises when `_stiffness` is
+  another assembly's), with materials (couplings may re-assemble) the computed outputs + `_nodal` + E / nu. A new
+  per-solve value an output group reads joins `_shown_solution`. Tensor solids (`SolidMechanicsBase`) copy every output
+  / input field (eager writes). All raise while `_unpublished_frequency` is set.
 - The point groups (mechanical, energy, electric's D) read one shared `_point_values(points[, imaginary])` = (values,
   strains) over every solid element (READ-ONLY; copy before subtracting alpha dT), one `element_strains_3d` per
   (solution part, point set); `_write_outputs` and `_assemble` (new `_solid`) clear it and the last pending point group

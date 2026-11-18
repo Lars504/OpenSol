@@ -18,7 +18,8 @@ from ..fdtd_bor import BOROrderSum, BORTimeStepper, leapfrog_susceptibility, poi
 from ..fdtd_bor_ports import (BORFDTDModeMonitor, BORFDTDModeSource, fdtd_bor_mode_monitor_result,
                               stepped_frequency)
 from ..harmonic_fdtd import _shared_pulse
-from ..materials import DrudePole, LorentzPole, register_em_arrays
+from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
+                         restore_material_solution)
 from ..placement import port_cells
 from ..renderer_fdtd_bor import BORFDTDRenderer
 from ..sources import _carrier_angular_frequency
@@ -80,6 +81,7 @@ class BORFDTDPhysics(PhysicsSolver):
         self.engine = None            # fdtd_bor.BORTimeStepper or BOROrderSum, built by finalize
         self.harmonic = None          # BORHarmonic of a frequency_domain study
         self._coefficients_dirty = False
+        self.solution_serial = 0      # restore_solution count: the renderer's centre-sample cache key
 
     @property
     def permittivity_arrays(self) -> tuple:
@@ -152,6 +154,27 @@ class BORFDTDPhysics(PhysicsSolver):
 
     def renderer(self):
         return BORFDTDRenderer(self)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver; harmonic phasors are selected, not copied) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of the stepper's x / h of every member and its clock (None before the stepper exists);
+        materials: the permittivity arrays and sigma_e too."""
+        state = {'engine': None if self.engine is None else self.engine.lockstep_batch.solution_state()}
+        if materials:
+            state['materials'] = material_solution_state(self, (*self.permittivity_arrays, 'sigma_e'))
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back in place; coefficients are not refreshed (a snapshot read only renders)."""
+        if (state['engine'] is None) != (self.engine is None):
+            raise RuntimeError('em_fdtd_bor restore_solution: the stepper was built or dropped since this state was '
+                               'taken')
+        if self.engine is not None:
+            self.engine.lockstep_batch.restore_solution(state['engine'])
+        if 'materials' in state:
+            restore_material_solution(self, state['materials'])
+        self.solution_serial += 1
 
     # --- engine ---
 

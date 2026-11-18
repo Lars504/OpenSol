@@ -21,7 +21,7 @@ from ..model.analytic import (DEGREE_FIT_OPERATIONS, FFT_SERIES, RATIO_SERIES, b
 from ..model.interface_sampling import interface_line_profile, line_curve_field_keys, projected_info
 from ..model.expressions import evaluate_parameters, evaluate_scalar, error_message
 from ..model.meshing import MESH_ESTIMATE_ERRORS, estimate_mesh
-from ..model.session import FieldData
+from ..model.session import FieldData, stored_snapshot_field
 from ..model.spec import ModelSpec
 from ..physics.em.results import _DFT_QUANTITY
 from ..viz.result_plots import table_cell_text
@@ -139,6 +139,16 @@ def _snapshot_field(snapshot, field_key, plane=None):
     if not held:
         raise KeyError(f'{field_key} on a {plane[0]} cut (not among the stored cut planes)')
     return min(held, key=lambda field_data: abs(float(field_data.plane[1]) - plane[1]))
+
+
+def _session_snapshot_field(session, index, field_key, plane=None):
+    """Worker read of a session snapshot: Session.snapshot_field (the stored field, else rendered at exactly `plane`
+    from the snapshot's kept solution) when it has either, else _snapshot_field's nearest held cut."""
+    physics, component = split_key(field_key, 'physics.component')
+    snapshot = session.snapshots[index]
+    if physics in snapshot.solutions or stored_snapshot_field(snapshot, field_key, plane) is not None:
+        return session.snapshot_field(index, component, physics, plane)
+    return _snapshot_field(snapshot, field_key, plane)
 
 
 def _session_segment_profile(session, field_key, start, end, sampling='nearest'):
@@ -424,6 +434,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._derived_curves_pending = False
         self._symmetric_override = None  # bool once the user toggled 'Symmetric limits'; None = FieldInfo.signed
         self._session_state_field = None # FieldData of show_selected_field; cleared by a build / study
+        self.shown_dft_key = None        # 'physics.feature' of the DFT map last shown on the canvas (View in browser)
         self._session_lost_reason = None # why the worker holds no session for these results (banner text), or None
         self._had_results = False        # has_results at the last availability_changed
         self._plot_views = []            # every ResultPlotView of the panel (_plot_view)
@@ -455,16 +466,6 @@ class ResultsPanel(QtWidgets.QWidget):
         self._message_label.setTextFormat(QtCore.Qt.TextFormat.PlainText)   # error texts may contain '<...>'
         self._message_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self._tabs = QtWidgets.QTabWidget()
-        # Export menu in the tab bar's corner; MainWindow adds its export actions and greys out each one with
-        # nothing to export on aboutToShow (the entries stay visible)
-        self.export_menu = QtWidgets.QMenu('Export', self)
-        self.export_menu.setToolTipsVisible(True)
-        export_button = QtWidgets.QToolButton()
-        export_button.setText('Export')
-        export_button.setToolTip('Export the shown field, the canvas figure or the computed modes as an animation')
-        export_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        export_button.setMenu(self.export_menu)
-        self._tabs.setCornerWidget(export_button, QtCore.Qt.Corner.TopRightCorner)
         self._probes_tab = self._build_probes_tab()
         self._spectra_tab = self._build_spectra_tab()
         self._far_field_tab = self._build_far_field_tab()
@@ -519,16 +520,6 @@ class ResultsPanel(QtWidgets.QWidget):
     def has_results(self) -> bool:
         """True while a build or study of the current model left something to show."""
         return self._summary is not None or self._study_summary is not None
-
-    def selected_field_key(self):
-        """'physics.component' of the field chosen in the Field tab, None without one."""
-        selection = self._selected_field()
-        return None if selection is None else f'{selection[0]}.{selection[1]}'
-
-    def selected_dft_key(self):
-        """'physics.feature' of the monitor chosen in the DFT tab, None without one."""
-        key = self._current_key(self._dft_combo, self._dft_keys)
-        return None if key is None else _key_text(key)
 
     def refresh(self):
         """Fetch every feature result of the current session (dft_fields: metadata only) via bridge.call."""
@@ -868,7 +859,10 @@ class ResultsPanel(QtWidgets.QWidget):
             'instead, or use the scripting interface with a larger limit.'))
         self._export_volume_button.clicked.connect(lambda checked=False: self.export_volume_data())
         self._export_volume_button.hide()
-        form.addRow(self._row(export_data, self._export_volume_button, None))
+        browser_button = QtWidgets.QPushButton('View in browser')   # as the canvas button (MainWindow._view_in_browser)
+        browser_button.setToolTip(self._canvas.browser_button_tooltip)
+        browser_button.clicked.connect(lambda checked=False: self._canvas.view_in_browser_requested.emit())
+        form.addRow(self._row(export_data, self._export_volume_button, browser_button, None))
         # the canvas figure's Axes / Labels / Exports tabs (Export plot = the figure as shown, matplotlib)
         figure_panel = self._canvas.plot_panel
         figure_panel.export_requested.connect(self.export_image)
@@ -1921,7 +1915,9 @@ class ResultsPanel(QtWidgets.QWidget):
         index = self._snapshot_slider.value()
         stored = (self._study_summary or {}).get('stored_fields') or []
         selection = self._selected_field()
-        note = '' if selection is None or f'{selection[0]}.{selection[1]}' in stored else ' (field not stored)'
+        solution = selection is not None and self._snapshot_solution(selection[0], index)
+        note = ('' if selection is None or solution or f'{selection[0]}.{selection[1]}' in stored
+                else ' (field not stored)')
         if not note and self._selected_plane() is not None and self._snapshot_plane() is None:
             note = ' (this vertical cut is not stored: add it to the stored cut planes)'
         label = self._snapshot_labels[index] if index < len(self._snapshot_labels) else None
@@ -1936,34 +1932,52 @@ class ResultsPanel(QtWidgets.QWidget):
         else:
             self._snapshot_timer.start()
 
-    def _stored_snapshot_key(self):
-        """'physics.component' of the selected field when snapshots store it, else None (message shown when stored
-        fields exist but not this one)."""
+    def _snapshot_solution(self, physics, index=None) -> bool:
+        """True when the live session's snapshot `index` (None: the slider's; 'all': every snapshot) keeps a solution
+        of physics (summary snapshot_solutions): any field and cut renders from it. Never for a kept sweep value."""
+        summary = self._study_summary or {}
+        if self._kept_snapshots() is not None or summary.get('session_live') is False:
+            return False
+        solutions = summary.get('snapshot_solutions') or []
+        if index == 'all':
+            return bool(solutions) and len(solutions) == len(self._snapshot_times) and all(
+                physics in names for names in solutions)
+        index = self._snapshot_slider.value() if index is None else index
+        return 0 <= index < len(solutions) and physics in solutions[index]
+
+    def _stored_snapshot_key(self, every_snapshot=False):
+        """'physics.component' of the selected field when snapshots store it or (the slider's snapshot; every_snapshot:
+        all of them) keep its physics' solution, else None (message shown)."""
         selection = self._selected_field()
         if not self._snapshot_times or selection is None:
             return None
         key = f'{selection[0]}.{selection[1]}'
         stored = (self._study_summary or {}).get('stored_fields') or []
-        if key not in stored:
+        if key not in stored and not self._snapshot_solution(selection[0], 'all' if every_snapshot else None):
             self._show_message(f"{key} is not stored in snapshots (stored: {', '.join(stored) or 'none'}); "
                                f"add it to the study's stored fields.")
             return None
         return key
 
-    def _snapshot_plane(self):
-        """Chosen cut plane for snapshots (each shows its held cut on that axis nearest it, _snapshot_field); None in
-        2D or for a vertical axis without a stored cut (summary stored_cuts)."""
+    def _snapshot_plane(self, every_snapshot=False):
+        """Chosen cut plane for snapshots (stored cuts: each shows its held cut on that axis nearest it,
+        _snapshot_field; a kept solution: exactly this cut); None in 2D or for a vertical axis without a stored cut
+        (summary stored_cuts) or kept solution."""
         plane = self._selected_plane()
         if plane is None or plane[0] == 'z':
+            return plane
+        selection = self._selected_field()
+        if selection is not None and self._snapshot_solution(selection[0], 'all' if every_snapshot else None):
             return plane
         stored = (self._study_summary or {}).get('stored_cuts') or []
         return plane if any(axis == plane[0] for axis, _ in stored) else None
 
-    def _unstored_cut_refused(self):
-        """True (message shown) when the chosen vertical cut has no stored cut on its axis: the snapshot is not
-        shown and the cut-plane combos go back to the shown field's cut (canvas and combos stay in step)."""
+    def _unstored_cut_refused(self, every_snapshot=False):
+        """True (message shown) when the chosen vertical cut has no stored cut on its axis nor a kept solution: the
+        snapshot is not shown and the cut-plane combos go back to the shown field's cut (canvas and combos stay in
+        step)."""
         plane = self._selected_plane()
-        if plane is None or self._snapshot_plane() is not None:
+        if plane is None or self._snapshot_plane(every_snapshot) is not None:
             return False
         shown_plane = getattr(self._shown_field, 'plane', None)
         if shown_plane is not None and shown_plane[0] != plane[0]:
@@ -1987,7 +2001,7 @@ class ResultsPanel(QtWidgets.QWidget):
                 self._show_message(f'This snapshot of the sweep value holds no {key}: {error_message(exc)}')
             return
         self._call(lambda session, index=index, key=key, plane=plane:
-                   _snapshot_field(session.snapshots[index], key, plane),
+                   _session_snapshot_field(session, index, key, plane),
                    lambda field_data: self._show_field(field_data, snapshot=True))
 
     # ---- kept sweep snapshots (SweepSpec.keep_fields) ----
@@ -2090,8 +2104,8 @@ class ResultsPanel(QtWidgets.QWidget):
         if not checked:
             self._stop_replay()
             return
-        key = self._stored_snapshot_key()
-        if key is None or self._unstored_cut_refused():
+        key = self._stored_snapshot_key(every_snapshot=True)
+        if key is None or self._unstored_cut_refused(every_snapshot=True):
             if not self._snapshot_times:
                 self._show_message('No snapshots to replay: run a study with an output interval first.')
             self._stop_replay()
@@ -2100,7 +2114,7 @@ class ResultsPanel(QtWidgets.QWidget):
         if self._selected_replay_frames() is not None:
             self._begin_playback()
             return
-        token, plane = self._replay_token, self._snapshot_plane()
+        token, plane = self._replay_token, self._snapshot_plane(every_snapshot=True)
         kept = self._kept_snapshots()
         if kept is not None:   # host frames of a kept sweep value
             try:
@@ -2111,8 +2125,8 @@ class ResultsPanel(QtWidgets.QWidget):
             self._on_replay_frames(frames, (key, plane), token)
             return
         self._show_message('Loading replay frames…', error=False)
-        self._call(lambda session, key=key, plane=plane: [_snapshot_field(snapshot, key, plane)
-                                                          for snapshot in session.snapshots],
+        self._call(lambda session, key=key, plane=plane: [_session_snapshot_field(session, index, key, plane)
+                                                          for index in range(len(session.snapshots))],
                    lambda frames, key=key, plane=plane, token=token: self._on_replay_frames(frames, (key, plane), token),
                    on_error=self._on_replay_error)
 
@@ -2421,7 +2435,13 @@ class ResultsPanel(QtWidgets.QWidget):
         physics, feature = key
         intensity_key = self._dft_intensity_keys[intensity_index]
         self._call(lambda session, physics=physics, feature=feature, index=frequency_index, key=intensity_key:
-                   _dft_field_data(session, physics, feature, index, key), self._show_field)
+                   _dft_field_data(session, physics, feature, index, key),
+                   lambda field_data, dft_key=_key_text(key): self._show_dft_field(dft_key, field_data))
+
+    def _show_dft_field(self, dft_key, field_data):
+        """Show a fetched DFT map and remember its monitor (View in browser opens that monitor's page)."""
+        self.shown_dft_key = dft_key
+        self._show_field(field_data)
 
     # ---- curves & tables tab ----
     def _xy_table_result(self):
@@ -2974,7 +2994,8 @@ class ResultsPanel(QtWidgets.QWidget):
         stored = (self._study_summary or {}).get('stored_fields') or []
         try:
             index = snapshot_index(curve.snapshot, labels[:len(self._snapshot_times)])
-            missing = [key for key in field_keys if key not in stored]
+            missing = [key for key in field_keys if key not in stored
+                       and not self._snapshot_solution(split_key(key, 'physics.component')[0], index)]
             if missing:
                 raise ValueError(f"{', '.join(missing)} not stored in snapshots (stored: "
                                  f"{', '.join(stored) or 'none'})")
@@ -2985,7 +3006,8 @@ class ResultsPanel(QtWidgets.QWidget):
         fetch_key = self._profile_fetch_key(curve, index)
         if self._reuse_profile_fetch(name, fetch_key):
             return
-        self._call(lambda session, index=index, keys=field_keys: [session.snapshots[index].fields[key] for key in keys],
+        self._call(lambda session, index=index, keys=field_keys: [_session_snapshot_field(session, index, key)
+                                                                  for key in keys],
                    lambda fields, name=name, moment=moment, fetch_key=fetch_key: self._show_fetched_profile(
                        fetch_key, name, fields, moment, False))
 

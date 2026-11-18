@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import host_copy, to_host, write_host_into
 from ...core.constants import DTYPE, FACES
 from ...core.harmonic_probe import HarmonicProbeRecord
 from ...core.solver_base import PhysicsSolver
@@ -461,6 +461,41 @@ class MembraneBase(PhysicsSolver):
         self.values = np.array(system.publish_fields(), dtype=np.complex128)
         self._device_values = system.device_values()   # None after a reduced publish (V y on the host)
         self._publish()
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) -----------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the shown solution: full-numbering w, the per-element phasor fields and what the label
+        names; materials: the coupled tension slots and the coefficient materials (tension / density displays).
+        RuntimeError while the last solved frequency is unpublished."""
+        if self._unpublished_frequency is not None:
+            raise RuntimeError(f'{self._label()}: the shown fields are not those of the last solved frequency '
+                               f'({self._unpublished_frequency:.6g} Hz, skipped by the field policy)')
+        state = {'values': np.array(self.values), 'selected_resonance': self.selected_resonance,
+                 'response_frequency': self.response_frequency,
+                 'phasors': {name: host_copy(self.fields[name]) for name in STATE_FIELD_NAMES}}
+        if materials:
+            grid = self.domain.materials
+            present = set(grid.property_names())
+            state['slots'] = {name: host_copy(self.fields[name]) for name in COUPLED_TENSION_SLOTS}
+            state['materials'] = {name: host_copy(getattr(grid, name)) for name in COEFFICIENT_ARRAYS
+                                  if name in present}
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back (values replaced, never written in place: the line phasor cache keys on them);
+        slots / materials only where they differ, which re-reads the coefficients (the next solve re-applies them)."""
+        self.values = np.array(state['values'])
+        self._device_values = None
+        self.selected_resonance, self.response_frequency = state['selected_resonance'], state['response_frequency']
+        for name, values in state['phasors'].items():
+            write_host_into(self.fields[name], values)
+        grid = self.domain.materials
+        targets = [(self.fields[name], values) for name, values in state.get('slots', {}).items()]
+        targets += [(getattr(grid, name), values) for name, values in state.get('materials', {}).items()]
+        for target, values in targets:
+            if not np.array_equal(to_host(target), values):
+                write_host_into(target, values)
+                self._coefficients_dirty = True
 
     # --- probes and state ---------------------------------------------------------
     def _new_probe(self, name, location) -> MembraneProbe:

@@ -99,6 +99,15 @@ class FEMDriftDiffusionPhysics(DriftDiffusionPhysics):
     def set_conformal_boundaries(self, locator) -> None:
         """Nothing to do: the mesh follows the drawn outlines."""
 
+    def solution_state(self, materials=False) -> dict:
+        """DriftDiffusionPhysics.solution_state plus the nodal display fields."""
+        nodal = {name: values.copy() for name, values in self.nodal.items()}
+        return {**super().solution_state(materials), 'nodal': nodal}
+
+    def restore_solution(self, state) -> None:
+        super().restore_solution(state)
+        self.nodal = {name: values.copy() for name, values in state['nodal'].items()}   # replaced per solve
+
     # --- internals ------------------------------------------------------------
 
     def _solve(self):

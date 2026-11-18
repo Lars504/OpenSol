@@ -10,7 +10,7 @@ from ...core.backend import to_host
 from ...core.constants import DTYPE, FACES, MU0
 from ...core.damped_iteration import DampedIteration, DampingSettings
 from ...core.fv_diffusion import (BCSide, DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig,
-                                  edge_extension_views)
+                                  edge_extension_views, host_copies, write_host_copies)
 from .fields import MagneticFields2D
 from .kept_preconditioner import KeptPreconditionerSolver, kept_preconditioner_solver
 from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, SATURATION_ARRAY
@@ -73,6 +73,8 @@ class MagneticPhysics(DiffusionPhysicsBase):
     name = 'magnetic'
     type_label = 'magnetostatics'           # message prefix (MagneticACPhysics: magnetic_fields_ac)
     _base_material_schema = MAGNETIC_SCHEMA
+    _solution_fields = ('A', *_DERIVED_FIELDS, 'J_coupled', 'J_applied')   # fields attributes the renderer reads
+    _rendered_materials = ('mu_dc_xx', 'mu_dc_yy')                          # MaterialGrid arrays it reads
     _probe_field = 'A'
     _probe_label = 'vector potential probe'
     coordinate_grids = ('cartesian',)       # B, H, coils and face sources read Cartesian cell widths
@@ -378,6 +380,28 @@ class MagneticPhysics(DiffusionPhysicsBase):
         self.xp.copyto(self._source_window, self.xp.asarray(fields['source'], dtype=DTYPE))
         self._source_dirty = True
         return ('A', 'J_coupled')
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver; MagneticACPhysics too) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the full-grid fields the renderer reads (_solution_fields); materials: _rendered_materials.
+        The system and the saturation loop state are never read, so they stay the live ones."""
+        state = {'fields': host_copies(self._solution_arrays())}
+        if materials:
+            state['materials'] = host_copies(self._material_arrays())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place."""
+        write_host_copies(self._solution_arrays(), state['fields'])
+        if 'materials' in state:
+            write_host_copies(self._material_arrays(), state['materials'])
+
+    def _solution_arrays(self) -> dict:
+        return {name: getattr(self.fields, name) for name in self._solution_fields}
+
+    def _material_arrays(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in self._rendered_materials}
 
     # --- internals ------------------------------------------------------------
 

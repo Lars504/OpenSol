@@ -6,9 +6,9 @@ import math
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import to_host, write_host_into
 from ...core.constants import DTYPE, STEFAN_BOLTZMANN
-from ...core.fv_diffusion import BCSide
+from ...core.fv_diffusion import BCSide, host_copies, write_host_copies
 from ...fem.diffusion import EdgeCondition, FEMDiffusionPhysicsBase, coefficient_tensor, element_means
 from ...fem.indicators import diffusion_indicator
 from ...fem.renderer import FEMFieldRenderer
@@ -185,6 +185,29 @@ class FEMHeatMixin:
         self.xp.copyto(self.Q, self.xp.asarray(fields['Q'], dtype=DTYPE))
         self._publish()
         return ('T', 'Q')
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of what the renderer reads: the unknown (T / T_rise nodal, heat_flux_abs on read), T, Q, Q_ext
+        per element and time; materials: the k tensor of that solve (replaced, never written, per assembly)."""
+        state = {'values': self.system.values.copy(), 'arrays': host_copies(self._solution_arrays()),
+                 'time': self.time}
+        if materials:
+            state['flux_tensor'] = self._flux_tensor
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (the unknown is also the next transient step's start); heat_flux_abs
+        is recomputed from it on read."""
+        write_host_into(self.system.values, state['values'])
+        write_host_copies(self._solution_arrays(), state['arrays'])
+        self.time = state['time']
+        if 'flux_tensor' in state:
+            self._flux_tensor = state['flux_tensor']
+        self._flux_stale = True
+
+    def _solution_arrays(self) -> dict:
+        return {'T': self.T, 'Q': self.Q, 'Q_ext': self.Q_ext}
 
     # --- radiation (feature radiation on triangles / tetrahedra) ------------------
     def add_face_radiation(self, face, emissivity, ambient_temperature) -> None:

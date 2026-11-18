@@ -8,7 +8,7 @@ import numpy as np
 
 from ...core.backend import to_host
 from ...core.constants import DTYPE
-from ...core.fv_diffusion import edge_extension_views
+from ...core.fv_diffusion import edge_extension_views, host_copies, write_host_copies
 from ...core.gpu_memory import format_bytes
 from ...core.solver_base import PhysicsSolver
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
@@ -287,6 +287,16 @@ class DriftDiffusionPhysics(PhysicsSolver):
         if self.system.seed_converged_state(fields):
             self._dirty = True
         return ()
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of every output field (the renderer reads only them: no material array, so `materials` adds
+        nothing); the Newton continuation state is never read, so it stays the live one."""
+        return {'fields': host_copies(self.fields)}
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place."""
+        write_host_copies(self.fields, state['fields'])
 
     @property
     def host_factor_bytes(self):

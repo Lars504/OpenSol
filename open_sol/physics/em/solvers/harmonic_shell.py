@@ -3,6 +3,7 @@ HarmonicEMShell holds omega, the float32 state arrays, the permittivity slots (w
 protocol and the stationary / frequency_domain hooks."""
 import math
 
+from ....core.backend import host_copy, write_host_into
 from ....core.constants import C0, DTYPE
 from ..index_reference import OFF_DIAGONAL_ARRAY, OFF_DIAGONAL_SLOT
 from ..placement import PERMITTIVITY_ARRAYS, PERMITTIVITY_SLOTS
@@ -121,6 +122,20 @@ class HarmonicEMShell:
         changed) and record the monitors."""
         self.omega = omega
         self._solve()
+
+    def _coupled_eps_xy_state(self):
+        """Snapshot solutions (materials): host copy of the hz eps_xy_update change, None before the first transfer."""
+        return None if self._coupled_eps_xy is None else host_copy(self._coupled_eps_xy)
+
+    def _restore_coupled_eps_xy(self, values):
+        """Write a _coupled_eps_xy_state back in place (None: zeros when a change array exists)."""
+        if values is None:
+            if self._coupled_eps_xy is not None:
+                self._coupled_eps_xy.fill(DTYPE(0.0))
+            return
+        if self._coupled_eps_xy is None:
+            self._coupled_eps_xy = self.xp.zeros(values.shape, dtype=DTYPE)
+        write_host_into(self._coupled_eps_xy, values)
 
     def eps_xy(self):
         """hz float32 off-diagonal permittivity as given: material eps_xy + the eps_xy_update change (fresh array, zeros

@@ -373,7 +373,8 @@ class _EvaluatedModel:
     layer: tuple | None = None                       # 3D: the shown layer (one of layers), None = all (footprints)
     hidden: set = field(default_factory=set)         # 3D: objects absent from the shown layer / cut (no outline, no hits)
     view: str = 'xy'                                 # 3D: 'xy' (layers), 'xz' (cut y = cut), 'yz' (cut x = cut)
-    cut: float | None = None                         # side views: cut-plane position [m] along cut_axis
+    cut: float | None = None                         # side views: cut-plane position [m] along cut_axis; field top
+                                                     # view: the shown field's z cut
     _preview_masks: dict = field(default_factory=dict)
     _preview_centres: tuple | None = None             # 1D (u, v) pixel centres of the preview
     domain_map: object = None                         # 2D polar / spherical domains: geometry.DomainMap, else None
@@ -579,6 +580,7 @@ class ModelCanvas(QtWidgets.QWidget):
     # field view, 3D: View / cut edited -> (cut axis 'x' | 'y' | 'z', position [m] or None = keep / middle); the
     # Results panel's cut plane follows and the field it fetches sets the view
     field_cut_requested = QtCore.Signal(str, object)
+    view_in_browser_requested = QtCore.Signal()   # field view button: MainWindow writes and opens the web page
 
     def __init__(self, document, registry, parent=None):
         super().__init__(parent)
@@ -680,8 +682,9 @@ class ModelCanvas(QtWidgets.QWidget):
         self._cut_spin = QtWidgets.QDoubleSpinBox()
         self._cut_spin.setDecimals(4)
         self._cut_spin.setKeyboardTracking(False)
-        self._cut_spin.setToolTip(rich_tooltip('Position of the vertical cut shown. The arrows step one mesh cell; in '
-                                               'the Top view the cut is the dashed line, which can be dragged.'))
+        self._cut_spin.setToolTip(rich_tooltip('Position of the cut shown (a result field in the Top view: its height '
+                                               'z). The arrows step one mesh cell; a vertical cut is the dashed line '
+                                               'of the Top view, which can be dragged.'))
         self._cut_spin.valueChanged.connect(self._on_cut_changed)
         self._stretch_check = QtWidgets.QCheckBox('Stretch z')
         self._stretch_check.setToolTip(rich_tooltip('Scale the height to fill the view, so thin layers become '
@@ -774,6 +777,18 @@ class ModelCanvas(QtWidgets.QWidget):
         self._info_box.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._info_box.setWidget(info_widget)
         self._info_min_height = metrics.lineSpacing() * _INFO_BOX_MIN_LINES + 8
+        # over the plot's top-right corner (title row), field view only (_update_browser_button)
+        self._browser_button = QtWidgets.QToolButton(self._plot_area)
+        self._browser_button.setText('View in browser')
+        self.browser_button_tooltip = rich_tooltip(   # also on the Results Field tab's View in browser
+            'Open the shown field in the web browser, to turn, zoom and colour it: a 2D map or the 3D cut planes in '
+            'place; stored snapshots become frames (time snapshots play). A DFT map shown from the DFT tab opens its '
+            'intensity at every monitored frequency; a field of a physics with a mode_shapes output opens the mode '
+            'animation beside the band diagram. The page is self-contained; it is written to a temporary folder, so '
+            'save a copy from the browser to keep it. Needs a finished run.')
+        self._browser_button.setToolTip(self.browser_button_tooltip)
+        self._browser_button.clicked.connect(lambda checked=False: self.view_in_browser_requested.emit())
+        self._browser_button.hide()
         self._plot_area.resized.connect(self._place_plot)
         self._view_box.sigResized.connect(lambda _view_box: self._place_plot())
 
@@ -1100,6 +1115,7 @@ class ModelCanvas(QtWidgets.QWidget):
         self._node_view = None               # the document selects ('model',) without node_selected
         if self.mode == 'field':
             self.mode = 'geometry'
+        self._update_browser_button()
         self._view, self._last_side_view, self._cuts = 'xy', None, {}
 
     def _on_document_changed(self, section, origin):
@@ -1164,10 +1180,11 @@ class ModelCanvas(QtWidgets.QWidget):
             return True
         if self._model.size_z is None:
             return False
-        if self.mode != 'field':
-            return self._model.view != self._view
+        if self.mode != 'field':   # a field top view's model holds the field's layer, not the edited one
+            return self._model.view != self._view or (self._model.view == 'xy' and self._model.cut is not None)
         view = _field_view(self._current_field)
-        return self._model.view != view or (view != 'xy' and self._model.cut != float(self._current_field.plane[1]))
+        plane = getattr(self._current_field, 'plane', None)
+        return self._model.view != view or (plane is not None and self._model.cut != float(plane[1]))
 
     def _shown_axes(self, model):
         """Scene (u, v) axis names: the shown field's axes in the field view (a 3D side cut left on screen after the
@@ -1188,12 +1205,24 @@ class ModelCanvas(QtWidgets.QWidget):
         if mode != 'geometry' and self._tool not in ('select', 'profile'):   # draw tools belong to the geometry view
             self.set_tool('select')
         self.mode = mode
+        self._update_browser_button()
         if deferred:
             self._schedule_refresh()
         else:
             if self._view_is_stale():
                 self._model = self._evaluate()
             self._redraw()
+
+    def _update_browser_button(self):
+        """View in browser shown in the field view with a field, at the plot frame's top-right corner."""
+        shown = self.mode == 'field' and self._current_field is not None
+        self._browser_button.setVisible(shown)
+        if shown:
+            frame = self._graphics.geometry()
+            hint = self._browser_button.sizeHint()
+            self._browser_button.setGeometry(max(frame.right() - hint.width() - 4, frame.left()), frame.top() + 2,
+                                             hint.width(), hint.height())
+            self._browser_button.raise_()
 
     def _set_edit_message(self, text):
         self._edit_message = text
@@ -1269,22 +1298,29 @@ class ModelCanvas(QtWidgets.QWidget):
         return model
 
     def _evaluate_layers(self, model, spec, parameters):
-        """3D: size_z, the layer slabs, the shown layer (kept while it still exists), the view and, in the top view,
-        the objects absent from the layer; then the layer selector is resynced. 2D: back to the top view."""
+        """3D: size_z, the layer slabs, the shown layer (kept while it still exists; a field's z cut: the layer
+        holding it), the view and, in the top view, the objects absent from the layer; then the layer selector."""
         try:
             model.size_z = domain_size_z(spec, parameters)
         except ValueError as exc:
             model.problems.append(f'Domain size_z: {exc}')
+        field_cut = False
         if model.size_z is None:
             self._view = 'xy'
         else:
             model.layers = _layer_bounds(model.shapes, model.size_z)
             model.layer = self._layer if self._layer in model.layers else None
             model.view = _field_view(self._current_field) if self.mode == 'field' else self._view
+            plane = getattr(self._current_field, 'plane', None)
+            if self.mode == 'field' and model.view == 'xy' and plane is not None:
+                field_cut = True
+                model.cut = float(plane[1])
+                model.layer = next((bounds for bounds in model.layers if bounds[0] <= model.cut <= bounds[1]), None)
             if model.layer is not None and model.view == 'xy':
                 model.hidden = {name for name in model.shapes
                                 if _absent_from_layer(name, model.shapes, model.layer, model.size_z, model.outlines)}
-        self._layer = model.layer
+        if not field_cut:   # the field's layer is shown, the edited one kept
+            self._layer = model.layer
         self._sync_layer_combo(model)
 
     def _cut_position(self, model, axis):
@@ -1293,15 +1329,25 @@ class ModelCanvas(QtWidgets.QWidget):
         chosen = self._cuts.get(axis)
         return chosen if chosen is not None and 0.0 <= chosen <= size_axis else 0.5 * size_axis
 
-    def _cut_tolerance(self, model):
-        """Half the width [m] of the mesh cell holding the cut (points / lines in it show in the side view), else
-        half a preview pixel."""
-        axis = model.cut_axis
-        if model.cells is not None:
+    def _cut_tolerance(self, model, axis=None):
+        """Half the width [m] of the mesh cell holding the cut along axis (default the side view's; points / lines in
+        it show in the side view), else half a preview pixel."""
+        axis = axis or model.cut_axis
+        if model.cells is not None and model.cells.edges(axis) is not None:
             edges = model.cells.edges(axis)
             index = model.cells.cell(axis, model.cut)
             return 0.5 * float(edges[index + 1] - edges[index])
-        return 0.5 * (model.size_x if axis == 'x' else model.size_y) / _MATERIAL_PREVIEW_CELLS
+        return 0.5 * self._axis_size(model, axis) / _MATERIAL_PREVIEW_CELLS
+
+    @staticmethod
+    def _axis_size(model, axis):
+        return {'x': model.size_x, 'y': model.size_y, 'z': model.size_z}[axis]
+
+    def _spin_axis(self, model):
+        """Axis of the cut-position box: the side view's cut axis, 'z' for a field's cut in the top view, else None."""
+        if model.view != 'xy':
+            return model.cut_axis
+        return 'z' if self.mode == 'field' and model.cut is not None else None
 
     def _evaluate_section(self, model):
         """Side views: the cut position (field view: the shown side cut's), every object's section outline and the
@@ -1317,27 +1363,28 @@ class ModelCanvas(QtWidgets.QWidget):
 
     def _sync_view_row(self, model):
         """3D view row: View combo and cut position (the field's cut in the field view), the Layer combo in the top
-        view, the cut position and Stretch z in side views (signals blocked); hidden in 2D."""
+        view (a field's z cut: its height instead), the cut position and Stretch z in side views (signals blocked);
+        hidden in 2D."""
         self._view_row.setVisible(model.size_z is not None)
         if model.size_z is None:
             return
-        side = model.view != 'xy'
+        axis = self._spin_axis(model)
         self._view_combo.blockSignals(True)
         self._view_combo.setCurrentIndex([view for view, _ in _VIEWS].index(model.view))
         self._view_combo.blockSignals(False)
         for widget in (self._layer_label, self._layer_combo):
-            widget.setVisible(not side)
-        for widget in (self._cut_label, self._cut_spin, self._stretch_check):
-            widget.setVisible(side)
-        if not side:
+            widget.setVisible(axis is None)
+        for widget in (self._cut_label, self._cut_spin):
+            widget.setVisible(axis is not None)
+        self._stretch_check.setVisible(model.view != 'xy')
+        if axis is None:
             return
-        axis = model.cut_axis
         self._cut_label.setText(f'at {axis} =')
         self._cut_spin.blockSignals(True)
         try:
             self._cut_spin.setSuffix(f' {model.unit}')
-            self._cut_spin.setRange(0.0, (model.size_x if axis == 'x' else model.size_y) / model.scale)
-            self._cut_spin.setSingleStep(2.0 * self._cut_tolerance(model) / model.scale)
+            self._cut_spin.setRange(0.0, self._axis_size(model, axis) / model.scale)
+            self._cut_spin.setSingleStep(2.0 * self._cut_tolerance(model, axis) / model.scale)
             self._cut_spin.setValue(model.cut / model.scale)
         finally:
             self._cut_spin.blockSignals(False)
@@ -1361,7 +1408,7 @@ class ModelCanvas(QtWidgets.QWidget):
 
     def _on_cut_changed(self, value):
         """Cut position edited (scene units): re-evaluate the side view there (field view: request that cut)."""
-        axis = self._model.cut_axis
+        axis = self._spin_axis(self._model)
         if axis is None:
             return
         self._cuts[axis] = float(value) * self._model.scale
@@ -2459,6 +2506,7 @@ class ModelCanvas(QtWidgets.QWidget):
             self._graphics.setGeometry(left, 0, width, height)
             old = self._graphics.geometry()
         self._info_box.setGeometry(0, old.height() + spacing, area_width, max(area_height - old.height() - spacing, 0))
+        self._update_browser_button()
 
     # ---- editable ROI ----
     def _sync_roi(self, model):

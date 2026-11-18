@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ....core.backend import to_host
+from ....core.backend import host_copy, to_host, write_host_into
 from ....core.constants import C0, DTYPE
 from ....core.solver_base import PhysicsSolver
 from ....fem.dofs import lagrange_dofs
@@ -14,7 +14,8 @@ from ....solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from ....solvers.sparse_direct import scipy_available
 from ..fem_modes import size_issue_for_unknowns
 from ..harmonic import cell_permeability, cell_permittivity, write_float32
-from ..materials import DrudePole, LorentzPole, register_em_arrays
+from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
+                         restore_material_solution)
 from .fdtd_2d_base import add_pec_cells
 
 
@@ -129,15 +130,49 @@ class TriangleEMPhysics(PhysicsSolver):
                                                           dtype=np.float64)
         if component == 'absorbed_power' and 'q_abs' in self.element_fields:
             return self.field_dofs('q_abs'), np.asarray(to_host(self.element_fields['q_abs']), dtype=np.float64)
+        nodal_dofs = self._nodal_dof_map()
+        nodal = self._shown_nodal()
+        if nodal is None:
+            return nodal_dofs, np.zeros(nodal_dofs.n_dofs)
+        if component not in nodal:
+            raise ValueError(f"{self.type_label} on triangles has no field '{component}'")
+        return nodal_dofs, nodal[component]
+
+    def _nodal_dof_map(self):
+        """Full-mesh Lagrange DofMap of the element degree (built once)."""
         if self._nodal_dofs is None:
             self._nodal_dofs = lagrange_dofs(self.mesh, self.order)
+        return self._nodal_dofs
+
+    def _shown_nodal(self):
+        """Host float64 nodal renderer fields of the shown solution (cached until the next show), None before one."""
         if not self._has_shown_field():
-            return self._nodal_dofs, np.zeros(self._nodal_dofs.n_dofs)
+            return None
         if self._nodal is None:
-            self._nodal = self._shown_nodal_fields(self._nodal_dofs)
-        if component not in self._nodal:
-            raise ValueError(f"{self.type_label} on triangles has no field '{component}'")
-        return self._nodal_dofs, self._nodal[component]
+            self._nodal = self._shown_nodal_fields(self._nodal_dof_map())
+        return self._nodal
+
+    def _triangle_solution_state(self, materials):
+        """Snapshot-solution part every triangle physics shares: host copies of the element fields and the nodal
+        renderer fields (built now: they need the shown solve's system), omega / resonance; materials: the arrays."""
+        nodal = self._shown_nodal()
+        state = {'element_fields': {name: host_copy(values) for name, values in self.element_fields.items()},
+                 'nodal': None if nodal is None else {name: values.copy() for name, values in nodal.items()},
+                 'solved_omega': self.solved_omega, 'selected_resonance': self.selected_resonance}
+        if materials:
+            state['materials'] = material_solution_state(self, self.material_names)
+        return state
+
+    def _restore_triangle_solution(self, state):
+        """Write a _triangle_solution_state back (element fields in place, the nodal cache replaced)."""
+        for name, values in self.element_fields.items():
+            write_host_into(values, state['element_fields'][name])
+        nodal = state['nodal']
+        self._nodal = None if nodal is None else {name: values.copy() for name, values in nodal.items()}
+        self.solved_omega = state['solved_omega']
+        self.selected_resonance = state['selected_resonance']
+        if 'materials' in state:
+            restore_material_solution(self, state['materials'])
 
     def inject_source(self, name: str, array):
         """Copy a coupling's per-element array into the permittivity array of slot `name`; the next solve reads it."""

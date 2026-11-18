@@ -5,6 +5,8 @@ import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field
 
+import numpy as np
+
 from ..core.gpu_memory import pool_used_bytes
 from .analytic import SEGMENT_SAMPLINGS, derived_curve_result, is_curve_source, result_value, split_key
 from .expressions import ExpressionError, compile_expression, evaluate_parameters, evaluate_scalar, referenced_names
@@ -32,6 +34,78 @@ class Snapshot:
                                                               # analytic line curve at this state
     live: bool = False          # holds the state the session keeps after the study when that is not the last
                                 # snapshot (eigenfrequency resonance 1, mode_analysis mode_index)
+    # physics -> LIVE_SOLUTION | StoredSolution | SelectedSolution: the solution every output field of that physics is
+    # rendered from (Session.snapshot_field: any field, any cut); live sessions only (RunControl.keep_solutions, the
+    # GUI), dropped by Session.close, kept sweep snapshots and parity-sector merges; never saved
+    solutions: dict = dataclass_field(default_factory=dict)
+
+
+class _LiveSolution:
+    """Snapshot.solutions entry: the physics still holds this snapshot's state (the study's final state, or a physics
+    left unchanged after its solve, e.g. a background physics), so it is read as it is."""
+
+    def __repr__(self):
+        return 'LIVE_SOLUTION'
+
+
+LIVE_SOLUTION = _LiveSolution()
+
+
+@dataclass(frozen=True, eq=False)
+class StoredSolution:
+    """Snapshot.solutions entry: host copy of a solver_hooks.SolutionStateSolver's solution_state(materials)."""
+    state: dict
+    materials: bool             # the state holds the material arrays the renderer reads (couplings change them)
+    nbytes: int
+
+    def restore(self, solver):
+        solver.restore_solution(self.state)
+
+
+@dataclass(frozen=True, eq=False)
+class SelectedSolution:
+    """Snapshot.solutions entry: a solution the solver keeps itself (mode, resonance, harmonic frequency, channel),
+    shown again by select(solver, key)."""
+    select: object              # callable(solver, key)
+    key: object
+
+    def restore(self, solver):
+        self.select(solver, self.key)
+
+
+def solution_bytes(state, seen=None) -> int:
+    """Host bytes of the numpy arrays inside a solution_state (dicts / lists / tuples followed), each array counted
+    once (a state may hold one array under several keys)."""
+    seen = set() if seen is None else seen
+    if isinstance(state, np.ndarray):
+        if id(state) in seen:
+            return 0
+        seen.add(id(state))
+        return int(state.nbytes)
+    if isinstance(state, dict):
+        return sum(solution_bytes(value, seen) for value in state.values())
+    if isinstance(state, (list, tuple)):
+        return sum(solution_bytes(value, seen) for value in state)
+    return 0
+
+
+def snapshot_solution_names(snapshots) -> list:
+    """Summary snapshot_solutions: per snapshot the sorted physics names whose fields render from a kept solution."""
+    return [sorted(snapshot.solutions) for snapshot in snapshots]
+
+
+def stored_snapshot_field(snapshot, key, plane=None):
+    """The stored FieldData of 'physics.component' key in a snapshot: plane None = the default cut, a 3D plane = a held
+    cut at that position (cell-centre positions compared to 1e-9 relative); None when not stored."""
+    if plane is None:
+        return snapshot.fields.get(key)
+    axis, position = plane[0], float(plane[1])
+    for fields in [snapshot.fields, *snapshot.cuts]:
+        field_data = fields.get(key)
+        if (field_data is not None and field_data.plane is not None and field_data.plane[0] == axis
+                and math.isclose(float(field_data.plane[1]), position, rel_tol=1e-9, abs_tol=1e-15)):
+            return field_data
+    return None
 
 
 def live_snapshot_index(snapshots):
@@ -91,6 +165,8 @@ class Session:
         self.context = context
         self.features = features            # (physics, feature) -> runtime object (None when apply returned None)
         self.snapshots = []
+        self.keep_solutions = False         # snapshots keep Snapshot.solutions (study._run_built: RunControl's flag)
+        self.live_selections = {}           # physics -> SelectedSolution it shows now (studies note each select)
         self.build_seconds = float(build_seconds)
         self.warnings = list(warnings)
         self._renderers = {}
@@ -122,6 +198,9 @@ class Session:
         relying on gc; idempotent. Afterwards only snapshots, spec, registry and parameters are usable."""
         if self.closed:
             return
+        for snapshot in self.snapshots:   # kept solutions need the solvers (and free their host copies)
+            snapshot.solutions = {}
+        self.live_selections.clear()
         context = self.context
         if context is not None:
             for mesh_context in [context, *context.other_meshes.values()]:
@@ -162,6 +241,7 @@ class Session:
         self._require_open()
         root = self._parent or self
         root.snapshots.clear()   # in place: mesh views share the list
+        root.live_selections.clear()
         root.runner.t, root.runner.tick = 0.0, 0
         for solver in root.runner.physics.values():
             solver.reset_records()
@@ -339,6 +419,62 @@ class Session:
         if view is not self:
             return view.field(component, physics, plane, native)
         return self.access.field(physics, component, plane, native)
+
+    def snapshot_field(self, index, component, physics=None, plane=None) -> FieldData:
+        """FieldData of snapshot `index`: the stored one (stored_snapshot_field), else canvas_field rendered from the
+        snapshot's kept solution of the physics (any field, any 3D plane); KeyError when it has neither."""
+        self._require_open()
+        physics = self._owner(component, physics)
+        snapshot = (self._parent or self).snapshots[index]
+        stored = stored_snapshot_field(snapshot, f'{physics}.{component}', plane)
+        if stored is not None:
+            return stored
+        if physics not in snapshot.solutions:
+            where = '' if plane is None else f' on the {plane[0]} = {float(plane[1]):.6g} m cut'
+            raise KeyError(f'snapshot {index + 1} stores no {physics}.{component}{where} and keeps no solution of '
+                           f"'{physics}' to render it from (snapshot solutions: GUI runs, within a quarter of the free "
+                           'host memory)')
+        with self.restored_snapshot(index, [physics]):
+            return self.canvas_field(component, physics, plane=plane)
+
+    @contextmanager
+    def restored_snapshot(self, index, names):
+        """Context: the named physics hold snapshot `index`'s kept solutions (Snapshot.solutions) and the runner clock
+        its time; on exit the live state again (a StoredSolution: the solver's own solution_state taken first; a
+        SelectedSolution: live_selections). Reads only inside: never step or solve. KeyError for a physics without
+        one."""
+        self._require_open()
+        root = self._parent or self
+        snapshot = root.snapshots[index]
+        missing = [name for name in names if name not in snapshot.solutions]
+        if missing:
+            raise KeyError(f"snapshot {index + 1} keeps no solution of {', '.join(missing)}")
+        restores = [(name, snapshot.solutions[name]) for name in names if snapshot.solutions[name] is not LIVE_SOLUTION]
+        live_time = root.runner.t
+        backups = []
+        try:
+            for name, solution in restores:
+                solver = root.physics[name]
+                backups.append((solver, root._live_solution(name, solution, solver)))
+                solution.restore(solver)
+            if restores:
+                root.runner.t = snapshot.time
+            yield snapshot
+        finally:
+            for solver, backup in reversed(backups):
+                backup.restore(solver)
+            root.runner.t = live_time
+
+    def _live_solution(self, name, solution, solver):
+        """What restores physics `name` to its live state after `solution` was restored."""
+        if isinstance(solution, StoredSolution):
+            state = solver.solution_state(materials=solution.materials)
+            return StoredSolution(state, solution.materials, solution_bytes(state))
+        live = self.live_selections.get(name)
+        if live is None:
+            raise KeyError(f"physics '{name}': no live selection noted (Session.live_selections), so its live state "
+                           'could not be shown again after the snapshot read')
+        return live
 
     def segment_profile(self, component, start, end, physics=None, sampling='nearest') -> LineProfile:
         """Field along the 3D segment start -> end [m] (x, y, z) of a 3D model: sampling 'nearest' = the containing

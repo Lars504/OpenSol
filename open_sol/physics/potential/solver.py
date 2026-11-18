@@ -13,7 +13,7 @@ from ...core.cut_cells import locate_held_edges
 from ...core.damped_iteration import DampedIteration, DampingSettings
 from ...core.mirror import touch_factor
 from ...core.fv_diffusion import (BCSide, DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig,
-                                  edge_extension_views)
+                                  edge_extension_views, host_copies, write_host_copies)
 from ...core.sources import ContinuousWave, GaussianPulse, RickerWavelet
 from .electrolyte import (ELECTROLYTE_MODELS, boltzmann_terms, number_densities, screening_coefficient,
                           species_concentration, thermal_voltage)
@@ -498,6 +498,31 @@ class PotentialPhysics(DiffusionPhysicsBase):
         self.xp.copyto(self._source_window, self.xp.asarray(fields['source'], dtype=DTYPE))
         self._source_dirty = True
         return ('V', self.spec.source_field)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the full-grid fields the renderer reads (V, E, flux, sources, q_joule / rho_ion; ion
+        concentrations follow V); materials: the rendered xx / yy coefficient arrays. The system is never read."""
+        state = {'fields': host_copies(self._solution_arrays())}
+        if materials:
+            state['materials'] = host_copies(self._rendered_materials())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (no solve or assembly state changes)."""
+        write_host_copies(self._solution_arrays(), state['fields'])
+        if 'materials' in state:
+            write_host_copies(self._rendered_materials(), state['materials'])
+
+    def _solution_arrays(self) -> dict:
+        fields = self.fields
+        arrays = {name: getattr(fields, name) for name in ('V', 'E_x', 'E_y', 'flux_x', 'flux_y', 'source',
+                                                            'source_ext', 'q_joule', 'rho_ion')}
+        return {name: array for name, array in arrays.items() if array is not None}
+
+    def _rendered_materials(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in self.spec.coefficient_arrays[:2]}
 
     def add_held_region(self, region: HeldRegion) -> HeldRegion:
         """Keep a voltage / terminal region for scalars(); returns it."""

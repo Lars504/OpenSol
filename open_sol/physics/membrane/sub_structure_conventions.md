@@ -178,6 +178,10 @@ Kirchhoff plate, D (1 + j eta) del^4 w - div(T (1 + j eta) grad w) - rho_s omega
   cell centres), tension_xx / _yy = material + coupled.
 - field_probe = `HarmonicProbeRecord` component 'w', cleared by `reset_frequency_response`; eigen studies record
   nothing.
+- Snapshot solutions (`MembraneBase.solution_state` / `restore_solution`, frequency_response): `values` (replaced on
+  restore, never written in place), the w_* state fields and the label (resonance / frequency); materials adds the
+  coupled tension slots and coefficient materials, written back only where they differ (then `_coefficients_dirty`,
+  so the next solve re-applies the coefficients). Raises while `_unpublished_frequency` is set.
 
 ## Self-tests (`selftests.py`, model runs on the cpu; tolerances first estimates)
 - membrane_line_loss: closed forms on the meshed length (a 1D window's float32 cell widths shorten L by 2.5e-8, x 2 Q

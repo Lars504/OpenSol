@@ -12,23 +12,23 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - open_sol/io/: lines 195-199
 - open_sol/materials/: lines 201-216
 - open_sol/mesh_study/: lines 218-228
-- open_sol/model/: lines 230-298
-- open_sol/physics/: lines 300-302
-- open_sol/physics/acoustics/: lines 304-322
-- open_sol/physics/em/: lines 324-436
-- open_sol/physics/em/solvers/: lines 438-460
-- open_sol/physics/em3d/: lines 462-498
-- open_sol/physics/eme/: lines 500-517
-- open_sol/physics/fluid/: lines 519-530
-- open_sol/physics/heat/: lines 532-557
-- open_sol/physics/magnetic/: lines 559-589
-- open_sol/physics/mechanics/: lines 591-671
-- open_sol/physics/membrane/: lines 673-691
-- open_sol/physics/nlfd/: lines 693-712
-- open_sol/physics/potential/: lines 714-731
-- open_sol/physics/semiconductor/: lines 733-746
-- open_sol/solvers/: lines 748-763
-- open_sol/viz/: lines 765-774
+- open_sol/model/: lines 230-299
+- open_sol/physics/: lines 301-303
+- open_sol/physics/acoustics/: lines 305-323
+- open_sol/physics/em/: lines 325-437
+- open_sol/physics/em/solvers/: lines 439-461
+- open_sol/physics/em3d/: lines 463-499
+- open_sol/physics/eme/: lines 501-518
+- open_sol/physics/fluid/: lines 520-531
+- open_sol/physics/heat/: lines 533-558
+- open_sol/physics/magnetic/: lines 560-590
+- open_sol/physics/mechanics/: lines 592-672
+- open_sol/physics/membrane/: lines 674-692
+- open_sol/physics/nlfd/: lines 694-713
+- open_sol/physics/potential/: lines 715-732
+- open_sol/physics/semiconductor/: lines 734-747
+- open_sol/solvers/: lines 749-764
+- open_sol/viz/: lines 766-775
 
 ## open_sol/
 
@@ -250,7 +250,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `mesh_refinement.py`: Refined MeshSpecs of the S7.7 refinement levels (CPU, no GPU work): a mesh frozen to explicit numeric sizes, the 'uniform' sequence (every size x factor), the 'adaptive' tensor bands from marked indicator cells and the adaptive triangle ...
 - `mesh_transfer.py`: S7.2 grid transfers between the meshes of one build: the transfer factory (tensor <-> tensor: core.grid_transfer; a triangle mesh: fem.transfer through TriangleTransfer, mesh plan stage T2) and the rule of where a cross-mesh coupling's ...
 - `meshing.py`: Mesh planning from a ModelSpec, per mesh (S7.2: ModelSpec.meshes, PhysicsSpec.mesh): merged domain requirements of the physics on a mesh, CPU mesh estimates (no GPU work) and the Domain
-- `scene_3d.py`: 3D preview scene of a 3D model (view_3d C; numpy only, GUI-thread safe): surface faces of every domain object in its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there).
+- `scene_3d.py`: 3D preview scene of a 3D model (view_3d C; numpy only, GUI-thread safe): surface faces of every domain object in its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there)
 - `schema.py`: Self-describing parameter / feature / physics / coupling / study types, templates, selftest cases and the discovered type registry.
 - `selftest_cache.py`: Selftest reuse cache (selftest_cache.json in the report directory): a case that passed or an example that ran to a verdict is reused, not rerun, while every package code unit (top-level function, class, a file's module-level code) its last ...
 - `selftest_examples.py`: Analytic example check (selftest --examples, CPU): per-example records of the derived-value, analytic-curve and derived-curve errors against their tolerances, flags and the ranked report; api.selftest_examples runs the examples.
@@ -268,6 +268,7 @@ Generated from the module docstrings (first sentence each) by `python -m open_so
 - `selftests_line.py`: Self-tests of 1D models (symmetry plan 2.20, DomainSpec.size_y null): a heated two-layer slab / cylinder / sphere and a two-dielectric slab / coax / spherical capacitor against the exact discrete chains and their closed forms, plus the ...
 - `selftests_mesh.py`: CPU self-tests of the mesh spec: the S7.1 tensor-grid options (anisotropic refinements, coordinate bands, per-axis max_ratio, custom edges / segment profiles (2D and z), outer grading) and the S7.2 / S7.5 / S7.7 spec (named meshes per ...
 - `selftests_per_mesh.py`: Per-physics mesh Session / results self-test (S7.2, mesh plan stage P3): the currents strip of coupling/selftests with heat on its own coarse mesh (cpu run): fields and snapshots on their own meshes, derived values per mesh (D3) and across ...
+- `selftests_snapshot_solutions.py`: Snapshot solutions self-test (GUI runs: RunControl.keep_solutions): the em_fdtd_3d dipole template with snapshots every 10 fs keeps a solution per snapshot, a restored snapshot renders its stored field bit for bit, an unstored field on a ...
 - `selftests_subpixel.py`: Self-tests of subpixel smoothing (igor 1.5): interface geometry, the averaged eps of the FDTD / FDFD / em_modes / em_fdtd_3d engines and of the mode ports (builds only, on the cpu backend and the gpu, cpu vs gpu), and the translation ...
 - `selftests_sweep.py`: Sweep self-tests: the absorbing strip of coupling/selftests as a coupled frequency_domain run against its stationary twin, a two-power sweep of it (derived series, kept fields), the warm-started load sweep of a nonlinear tetrahedral string ...
 - `selftests_symmetry_check.py`: Self-test of the symmetry check (symmetry 2.7): validate warns exactly for geometry drawn asymmetrically beyond a mirror plane or the (r, z) axis (2D lo / hi faces, axisymmetric heat, a 3D z mirror)

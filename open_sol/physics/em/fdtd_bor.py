@@ -66,7 +66,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ...core.backend import cp
+from ...core.backend import cp, host_copy, write_host_into
 from ...core.constants import DTYPE, C0, EPS0, MU0
 from ...core.sources import sampled_waveform_spectrum
 from .body_of_revolution import BOR_SOURCE_COMPONENTS, BORAssembly, _regular_axis, axis_class, mirrored_yee
@@ -828,6 +828,16 @@ class _LockstepBatch:
         self._spectra.append(group)
         return group.views
 
+    def solution_state(self) -> dict:
+        """Snapshot solutions: host copies of the stacked x / h of every member and the step count (the clock)."""
+        return {'x': host_copy(self.x), 'h': host_copy(self.h), 'n_step': int(self.n_step)}
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (the members' rows and 2D views stay valid)."""
+        write_host_into(self.x, state['x'])
+        write_host_into(self.h, state['h'])
+        self.n_step = state['n_step']
+
     def _apply_field_injections(self, side, field, time):
         for injection, index, weight_re, weight_im in self._field_injections:
             if injection.side != side:
@@ -982,6 +992,11 @@ class BORTimeStepper:
     @property
     def n_step(self) -> int:
         return 0 if self._batch is None else self._batch.n_step
+
+    @property
+    def lockstep_batch(self):
+        """The _LockstepBatch holding this stepper's x / h rows and the clock (snapshot solutions)."""
+        return self._batch
 
     def _side(self, parts, profile_z, radial_rates, size):
         """_SidePlan of (d_z, d_r, m / r) parts with the per-row (sigma, kappa, alpha) along z and the r_hi layer rates
@@ -1269,6 +1284,11 @@ class BOROrderSum:
     @property
     def n_step(self) -> int:
         return self.members[0].stepper.n_step
+
+    @property
+    def lockstep_batch(self):
+        """The _LockstepBatch holding every member's x / h rows and the clock (snapshot solutions)."""
+        return self._batch
 
     @property
     def time(self) -> float:

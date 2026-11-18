@@ -4,6 +4,7 @@ stationary / frequency_domain hooks, labels, counters, poles / PEC masks and the
 after a material change, cuDSS factors kept for their plan)."""
 import math
 
+from ....core.backend import host_copy, write_host_into
 from ....core.constants import C0, DTYPE
 from ....core.gpu_memory import format_bytes
 from ....core.wavelengths import wavelength_label
@@ -14,7 +15,7 @@ from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_EN
                                        scipy_available)
 from ..fdfd_monitors import CentrePhasorProbe
 from ..harmonic import write_float32
-from ..materials import DrudePole, LorentzPole
+from ..materials import DrudePole, LorentzPole, material_solution_state, restore_material_solution
 from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
 
 SUPERLU_TEXT = 'host SuperLU'
@@ -317,6 +318,26 @@ class HostFDFDBase:
             self._release_kept_cudss()
             factorization = factorize()
             return factorization.solve_host(rhs), factorization
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of what the renderer reads (the float32 display fields, the shown omega / resonance); materials:
+        the permittivity arrays and sigma_e too."""
+        state = {'fields': {name: host_copy(values) for name, values in self.fields.items()},
+                 'solved_omega': self.solved_omega, 'selected_resonance': self.selected_resonance}
+        if materials:
+            state['materials'] = material_solution_state(self, (*self.permittivity_arrays, 'sigma_e'))
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back in place; solution / centre_phasors (monitors) stay live: a read only renders."""
+        for name, values in self.fields.items():
+            write_host_into(values, state['fields'][name])
+        self.solved_omega = state['solved_omega']
+        self.selected_resonance = state['selected_resonance']
+        if 'materials' in state:
+            restore_material_solution(self, state['materials'])
 
     def _show_fields(self, host_fields, phasors, omega):
         """Write the display fields (float32, one host-to-device copy each) and keep the centre phasors."""

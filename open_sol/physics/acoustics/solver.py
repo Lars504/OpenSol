@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
-from ...core.backend import cp, to_host
+from ...core.backend import cp, host_copy, to_host, write_host_into
 
 from ...core.constants import DTYPE, EPS0, FACES
 from ...core.solver_base import PhysicsSolver
@@ -37,6 +37,7 @@ HEATING_SLOT = 'heating_power'
 FIELD_DTYPES = {'single': np.float32, 'half_storage': np.float16}
 HALF_STORAGE_PEAK = 16.0   # stored units of the estimated peak stress: ~4000x headroom below the fp16 max
 STATE_NAMES = ('vx', 'vy', 'sxx', 'syy', 'sxy', 'pressure')
+_STORED_FIELDS = ('vx', 'vy', 'sxx', 'syy', 'sxy', 'stt')   # AcousticFields arrays (stt: axisymmetric only)
 # MaterialGrid arrays: rho is shared with heat (same default 0), youngs_modulus / poisson_ratio (the moduli when
 # sound_speed is unset) and photoelastic_p11 / _p12 (read by acoustics_em_acousto_optic) with solid_mechanics; c11 /
 # c12 / c22 / c66 default NaN = unset (the speeds / moduli apply); gruneisen is read by the thermoelastic sources every
@@ -477,6 +478,38 @@ class AcousticPhysics(PhysicsSolver):
     def renderer(self):
         from .renderer import AcousticRenderer
         return AcousticRenderer(self)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ------------------------------------------------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the stored fields as stored (half_storage: fp16 stored units, scales fixed once stepped), the
+        strain accumulator (piezo / monoclinic) and the time; materials: the effective c11 / c12 / c22 the strain
+        outputs read (rebuilt from the materials couplings write)."""
+        fields = self.fields
+        state = {'fields': {name: host_copy(getattr(fields, name)) for name in _STORED_FIELDS
+                            if getattr(fields, name) is not None},
+                 'strain': None if self._strain is None else tuple(host_copy(array) for array in self._strain),
+                 'time': float(self.time), 'scales': (self.stress_scale, self.velocity_scale)}
+        if materials:
+            state['stiffness'] = {name: host_copy(getattr(self, name)) for name in ('c11', 'c12', 'c22')}
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (graph-captured arrays keep their pointers); RuntimeError when the
+        half_storage scales changed since (stored units would no longer convert)."""
+        if state['scales'] != (self.stress_scale, self.velocity_scale):
+            raise RuntimeError(f'elastic_waves restore_solution: the storage scales changed from {state["scales"]} to '
+                               f'{(self.stress_scale, self.velocity_scale)} since this state was taken')
+        for name, values in state['fields'].items():
+            write_host_into(getattr(self.fields, name), values)
+        if (state['strain'] is None) != (self._strain is None):
+            raise RuntimeError('elastic_waves restore_solution: the strain accumulator was allocated or dropped since '
+                               'this state was taken')
+        if self._strain is not None:
+            for target, values in zip(self._strain, state['strain']):
+                write_host_into(target, values)
+        self.time = state['time']
+        for name, values in state.get('stiffness', {}).items():
+            write_host_into(getattr(self, name), values)
 
     # --- time stepping --------------------------------------------------------------------------------------------
 

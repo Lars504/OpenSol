@@ -97,6 +97,9 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   `_half_storage_issues` + ValueError): piezo arrays and any coupling into the physics (amplitude unknown when the scale
   is fixed); resonance_monitor by its feature precisions. A new field reader or writer must scale or refuse. Writers into
   float16 fields never use cupy's float16 kernels: `half_bits(field)` + `STORED_ACCESS` (core.half_storage).
+  Snapshot solutions (`solution_state` / `restore_solution`) copy the stored fields as stored (fp16 units: the scales
+  are fixed once stepped, checked on restore), the strain accumulator and time; materials adds the derived c11 / c12 /
+  c22 the strain outputs read (not the MaterialGrid). All written in place: they are step-graph arguments.
 - Backends ('gpu', 'cpu'): every `kernels.py` kernel is a `core.kernels` twin ('acoustics.<name>'; single-precision
   field kernels registered by `field_kernels('single')` at the first AcousticPhysics, half_storage ones stay plain
   RawKernels); arrays on `domain.xp`. Host twins write in place through flat views: fields must stay C-contiguous
@@ -217,7 +220,9 @@ Sub file of the root `structure_conventions.md` (read that first). Elastic / aco
   change of the field's basis / geometry order must change `_point_weights` too.
 - Shown fields: `_show_solution` keeps host `_scattered` and `_background_nodal`; `_publish` writes only per-element
   state (on cupy after a cuDSS solve from `system.device_values()`). The host total is formed on first read: readers
-  call `_host_total()`, never `_total` directly.
+  call `_host_total()`, never `_total` directly. Snapshot solutions copy `_scattered`, `_background_nodal`, omega,
+  frequency and the state fields (materials: rho / sound_speed), dropping `_total` / `_velocity` on restore; the
+  velocity reads the assembly's `_rho` (materials do not change within a sweep).
 - `assembly_seconds` (work counter) = wall time of every `_build_system`, carried as seconds_counter by the time
   recipe: code calling `_build_system` must not wrap it in another timed group.
 - Self-tests selftests_harmonic (CPU, each with a SelfTestVariant 'gpu' at the same tolerance, but

@@ -122,6 +122,15 @@ class WarmStartSolver(Protocol):
 
 
 @runtime_checkable
+class SolutionStateSolver(Protocol):
+    """Optional (snapshot solutions, GUI runs): solution_state(materials) -> dict of host copies of everything its
+    renderer reads that a study changes (materials: also the material arrays couplings write); restore_solution(state)
+    writes one back in place, after which every output field renders from it (cached derived fields invalidated)."""
+    def solution_state(self, materials=False): ...
+    def restore_solution(self, state): ...
+
+
+@runtime_checkable
 class RerunSolver(Protocol):
     """Optional (SweepSpec.reuse_build): reset_records() before each rerun of the reused build drops the run records
     (probe series, kept static-state products) and marks the loads dirty; a model with a physics lacking it is rebuilt

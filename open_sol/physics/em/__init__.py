@@ -8,7 +8,8 @@ from ...core.backend import to_host
 from ...core.constants import C0, DTYPE, ETA0
 from ...core.solver_base import PhysicsSolver
 from .fields import Fields2D_Ez, Fields2D_Hz
-from .materials import DrudePole, LorentzPole, tfsf_outline_warnings
+from .materials import (DrudePole, LorentzPole, material_solution_state, restore_material_solution,
+                        tfsf_outline_warnings)
 from .boundaries import BCType, BoundaryConfig, BoundaryManager, CPMLSided, solver_boundary_config
 from .sources import (
     GaussianPulse, ContinuousWave, RickerWavelet,
@@ -221,6 +222,22 @@ class EMPhysics(PhysicsSolver):
         """EM loss protocol: mean absorbed power density [W/m^3] since the last call (None for an empty window);
         merge_previous also averages over the last completed window (end-of-run flush)."""
         return self.engine.take_absorbed_power(merge_previous)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver; harmonic phasors are selected, not copied) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of the engine's renderer inputs (fields as stored, clock, absorbed-power windows, C5 media);
+        materials: the permittivity arrays, sigma_e and the phase-change crystallinity too."""
+        state = {'engine': self.engine.solution_state()}
+        if materials:
+            state['materials'] = material_solution_state(self, (*self.permittivity_arrays, 'sigma_e'))
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back in place; the coefficients are not rebuilt (a snapshot read only renders)."""
+        self.engine.restore_solution(state['engine'])
+        if 'materials' in state:
+            restore_material_solution(self, state['materials'])
 
     def _check_courant_stability(self):
         """ValueError when eps * mu_r < (C0 dt)^2 (1/dx_i^2 + 1/dy_j^2) + mu_r * pole term in any cell, PML included

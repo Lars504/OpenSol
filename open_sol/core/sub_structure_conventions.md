@@ -494,6 +494,9 @@ coordinate rules stay in the root file.
   convergence record, `set_face_bc`, `add_boundary_flux` into `_applied_source_window`, probes, PML edge extension via
   `_bind_window`); subclasses call `_init_diffusion` in `__init__` and set `_probe_field` / `_probe_label`. Plain
   attributes on a physics never reach the system: add new settings as properties here.
+- Snapshot solutions: `DiffusionSystem.solution_state` / `restore_solution` (unknown, face rhs terms, dirty marks)
+  are tied to `n_assemblies` (bumped per full assembly in `_keep_assembly`): a state of another assembly dirties the
+  operator instead of restoring the terms, so a read re-assembles from the owner's restored inputs (heat sub file).
 - `assemble` caches face conductances, outer face terms, owned c_xx / c_yy copies (`assembled_c_xx / _yy`) and, with a
   2D cross term, `cross` (`CrossQuads`); `flux_at_centres` (= `axis_flux_at_centres` + `cross_flux_at_centres`) /
   `dissipation_density` read only that cache and raise while `operator_dirty` (`heat_flux_magnitude` re-assembles

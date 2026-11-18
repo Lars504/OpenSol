@@ -166,10 +166,6 @@ class _WorkerWaitDialog(QtWidgets.QDialog):
         """Esc / window close do nothing: only the worker stopping or Force quit ends the wait."""
 
 
-_WEB_PAGE_NOTE = ('The page is self-contained (no network); its file goes to a temporary folder, so save a copy from '
-                  'the browser to keep it.')
-
-
 def web_page_directory():
     """Folder of the pages Open in browser writes (temporary: the OS may clear it; one file per model and target,
     rewritten on each open)."""
@@ -372,28 +368,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.save_run_action = self._make_action('Save &run…', self._save_run,
                                                  tip='Save the last computed run (summary.json, log, model, result '
                                                      'arrays) into a folder, as the command-line run does')
-        self.export_field_action = self._make_action('Export field &data…', self._export_field_data,
-                                                     tip='Save the displayed field as a NumPy file (.npz) or a text '
-                                                         'table (.csv)')
-        # web pages (api.export_session_html): self-contained, turned and coloured in a browser, for presentations
-        self.export_field_page_action = self._make_action(
-            'Open field in &browser', partial(self._export_web_page, 'field'),
-            tip='Open the field chosen in the Field tab in the web browser, to turn, zoom and colour: a 2D map '
-                '(optional relief) or the 3D cut planes in place; stored snapshots become frames (time snapshots '
-                f'play). {_WEB_PAGE_NOTE} Needs a finished run')
-        self.export_dft_page_action = self._make_action(
-            'Open &DFT in browser', partial(self._export_web_page, 'dft'),
-            tip='Open the DFT monitor chosen in the DFT tab in the web browser: its intensity map per monitored '
-                f'frequency (slider, log colour scale). {_WEB_PAGE_NOTE} Needs a finished run with a DFT fields '
-                'monitor')
-        self.export_animation_action = self._make_action(
-            'Open mode &animation in browser', partial(self._export_web_page, 'modes'),
-            tip='Open the computed modes in the web browser: animated mode shapes beside the band diagram '
-                '(eigenfrequency studies, also swept over a Bloch wavenumber), for presentations. '
-                f'{_WEB_PAGE_NOTE} Needs a finished run with a mode_shapes output feature')
-        self.export_image_action = self._make_action('Export &figure…', self._export_image,
-                                                     tip='Save the canvas figure as shown (PDF, SVG, EPS or PNG; style '
-                                                         'in the Results Field tab, Figure box)')
         self.quit_action = self._make_action('&Quit', self.close, 'Ctrl+Q', 'Close open_sol')
         self.undo_action = self._make_action('&Undo', self.document.undo, keys.Undo, 'Undo the last model change',
                                              pixmaps.SP_ArrowBack)
@@ -495,14 +469,6 @@ class MainWindow(QtWidgets.QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.quit_action)
 
-        # exports live in the Results dock's Export menu, greyed out while there is nothing to export
-        export_menu = self.results_panel.export_menu
-        export_menu.addActions([self.export_field_action, self.export_image_action])
-        export_menu.addSeparator()
-        export_menu.addActions([self.export_field_page_action, self.export_dft_page_action,
-                                self.export_animation_action])
-        export_menu.aboutToShow.connect(self._update_export_actions)
-
         edit_menu = menu_bar.addMenu('&Edit')
         edit_menu.addActions([self.undo_action, self.redo_action])
         edit_menu.addSeparator()
@@ -571,6 +537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.cursor_info.connect(self.cursor_label.setText)
         self.canvas.tool_changed.connect(self._on_tool_changed)
         self.canvas.edit_refused.connect(self._report_refused_edit)
+        self.canvas.view_in_browser_requested.connect(self._view_in_browser)
         self.preview_3d_panel.message.connect(self.show_status)
         self.mesh_store.message.connect(self.show_status)
         self.mesh_store.log.connect(self.log_message)
@@ -779,31 +746,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._start_job('run', 'Starting…')
         self.bridge.run(self.document.spec)
 
-    def _update_export_actions(self):
-        """Grey out the Export menu entries with nothing to export: field data without a field on the canvas; the web
-        pages without a finished run (export_session_html's input: the Save run state), the field page also without
-        a field chosen in the Field tab, the DFT and mode pages without a dft_fields / mode_shapes result."""
-        self.export_field_action.setEnabled(self.canvas.current_field is not None)
-        for action in (self.export_field_page_action, self.export_dft_page_action, self.export_animation_action):
-            action.setEnabled(self._web_page_target(action) is not None)
-
-    def _web_page_target(self, action):
-        """export_session_html's what of a web-page action ('physics.component' / 'physics.feature'), None when
-        there is nothing to export."""
+    def _web_page_target(self):
+        """export_session_html's what of the canvas field: its physics' only mode_shapes result (the animation), the
+        DFT monitor of a DFT map shown on it, else 'physics.component'; None without a finished run or a field."""
         bridge = self.bridge
         build_summary = bridge.last_build_summary
+        field = self.canvas.current_field
         if (bridge.busy or bridge.results_spec is None or bridge.last_study_summary is None
-                or build_summary is None):
+                or build_summary is None or field is None):
             return None
-        if action is self.export_field_page_action:
-            return self.results_panel.selected_field_key()
-        kind = 'dft_fields' if action is self.export_dft_page_action else 'mode_shapes'
-        keys = [f'{physics}.{feature}' for physics, feature, result_kind in build_summary.feature_results
-                if result_kind == kind]
-        if kind == 'dft_fields':
-            chosen = self.results_panel.selected_dft_key()
-            return chosen if chosen in keys else (keys[0] if keys else None)
-        return keys[0] if len(keys) == 1 else None   # several mode_shapes results: export_html needs one
+        modes = [f'{physics}.{feature}' for physics, feature, kind in build_summary.feature_results
+                 if kind == 'mode_shapes' and physics == field.physics]
+        if len(modes) == 1:   # a mode of this physics: the animation shows it in motion
+            return modes[0]
+        if field.component.startswith('dft_'):   # results._dft_field_data: a DFT intensity map, not a field
+            return self.results_panel.shown_dft_key
+        return f'{field.physics}.{field.component}'
 
     def _toggle_pause(self):
         if self.bridge.paused:
@@ -819,7 +777,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.compute_action.setEnabled(not busy)
         self.save_run_action.setEnabled(not busy and self.bridge.results_spec is not None
                                         and self.bridge.last_study_summary is not None)
-        self._update_export_actions()
         self.pause_action.setEnabled(controllable)
         self.stop_action.setEnabled(controllable)
         self.pause_action.setText('&Resume' if paused else '&Pause')
@@ -1164,24 +1121,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_status('Saving the run…')
         bridge.call(save, on_result=saved, on_error=failed)
 
-    def _export_web_page(self, target):
-        """Write the web page (api.export_session_html on the worker: the page of `python -m open_sol show <run dir>
-        --html --what ...`) of target 'field' (the Field tab's field), 'dft' (the DFT tab's monitor) or 'modes' (the
-        mode_shapes result) into web_page_directory() and open it in the default browser; the session stays open."""
-        action = {'field': self.export_field_page_action, 'dft': self.export_dft_page_action,
-                  'modes': self.export_animation_action}[target]
-        what = self._web_page_target(action)   # the state may have changed since the menu opened
+    def _view_in_browser(self):
+        """Write the web page of the canvas field (_web_page_target; api.export_session_html on the worker: the page
+        of `python -m open_sol show <run dir> --html --what ...`) into web_page_directory() and open it in the default
+        browser; the session stays open."""
+        what = self._web_page_target()
         if what is None:
-            self._update_export_actions()
-            self.show_status(f'Nothing to export as a web page ({action.text().replace("&", "")}): '
-                             'compute first' + ('' if target == 'field' else
-                                                f" with a {'DFT fields monitor' if target == 'dft' else 'mode_shapes output'}"))
+            self.show_status('Nothing to view in the browser: compute first, then show a field (a running job: wait '
+                             'until it finishes)')
             return
         bridge = self.bridge
         spec, build_summary, study_summary = bridge.results_spec, bridge.last_build_summary, bridge.last_study_summary
         model_file = self._job_model_file
         stem = os.path.splitext(os.path.basename(model_file or 'model.json'))[0]
-        suffix = 'modes' if target == 'modes' else file_stem(what)
+        suffix = file_stem(what)
         path = os.path.join(web_page_directory(), f'{stem}_{suffix}.html')
         log_entries = list(self._job_log)
 
@@ -1205,16 +1158,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.show_status(f'Writing the web page of {what}…')
         bridge.call(export, on_result=exported, on_error=failed)
-
-    def _export_field_data(self):
-        """Raise the results dock (where the outcome is reported) and export the displayed field from there."""
-        self._raise_dock(self.results_dock)
-        self.results_panel.export_field_data()
-
-    def _export_image(self):
-        """Raise the results dock (where the outcome is reported) and export the canvas figure from there."""
-        self._raise_dock(self.results_dock)
-        self.results_panel.export_image()
 
     def _populate_add_object_menu(self):
         """Geometry > Add object: the kinds of the model's dimension (box / cylinder_z / sphere only in 3D), as the

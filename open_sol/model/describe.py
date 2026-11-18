@@ -824,7 +824,8 @@ _RESULTS_NOTES = (
         'line curve, scene_3d.png for a 3D model: perspective picture of the objects with the first saved field on '
         'the x, y and z cut planes through the window middle); --max-wall-time stops cleanly with status timeout and '
         'partial results.',
-        'show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--what NAME] [--set NAME=EXPR ...] '
+        'show PATH [--out DIR] [--figures] [--series NAME] [--html [FILE]] [--what NAME] [--no-geometry] '
+        '[--set NAME=EXPR ...] '
         '[--backend '
         'auto|gpu|cpu] [--json]: '
         'outline and check counts of a model file, or the summary of a results directory (--figures re-renders its '
@@ -834,7 +835,8 @@ _RESULTS_NOTES = (
         'show.json. A 3D model file with --figures gets <out>/figures/scene_3d.png, the objects only (CPU, no run; '
         'api.scene_figure). --html [FILE] (results directory) writes the self-contained web page of --what NAME '
         '(Results.export_html: a field, a dft_fields or a mode_shapes result; default the only mode_shapes result) '
-        'to <out>/<model stem>_<what>.html (_modes.html without --what); exit 1 when there is nothing to show.',
+        'to <out>/<model stem>_<what>.html (_modes.html without --what; a field page carries the model objects, '
+        'shown or hidden on the page, unless --no-geometry); exit 1 when there is nothing to show.',
         '--set NAME=EXPR (repeatable) replaces the expression of the model parameter NAME for this command only (the '
         'file is not changed; run records it in model.json), e.g. --set P_in=2e3 --set "w=450*nm"; an unknown NAME '
         'is a model error at the parameters node. --backend (check, run, show) overrides the model\'s '
@@ -1089,7 +1091,9 @@ _RESULTS_NOTES = (
         'Hz" for frequency_response, null for time '
         'snapshots; parity sectors: "<label> [<sector>]" and the combined ones], live_snapshot (index of the snapshot '
         'holding the state Results.field reads when that is not the last: resonance 1 of eigenfrequency / '
-        'optomechanics, mode_index of mode_analysis; else null), wavelengths [m] (frequency_domain only: the solved list in '
+        'optomechanics, mode_index of mode_analysis; else null), snapshot_solutions (per snapshot the physics whose '
+        'every field and 3D cut the live GUI session renders from a kept solution; empty lists headless), wavelengths '
+        '[m] (frequency_domain only: the solved list in '
         'solve order, one snapshot each: shorter than requested after a cancel or timeout), harmonic_pulse '
         '(frequency_domain only: null without an em_fdtd_* physics, else {steps, simulated_time [s], stop_reason '
         'decayed | max_duration | cancelled, final_energy_ratio (window field energy / its peak at the end), '
@@ -1283,9 +1287,11 @@ _RESULTS_NOTES = (
         'drawn in the highlight colour, z_stretch scales the box height only (thin layers), view = (elevation, '
         'azimuth) in degrees; objects that do not resolve are left out with a RuntimeWarning.',
         'run(spec, out_dir=None, max_wall_time=None, progress=None, figures=False, save_arrays=True, '
-        'parameters=None, backend=None) -> Results: '
+        'parameters=None, backend=None, snapshots=True) -> Results: '
         'blocking, runs on the calling thread on the model\'s backend (backend \'auto\' | \'gpu\' | \'cpu\' overrides '
-        'solver_defaults.backend, kept in model.json); progress(event) receives every event except live frames. '
+        'solver_defaults.backend, kept in model.json); snapshots=False stores only the final state (time_dependent: '
+        'output_interval 0, n_snapshots 1; model.json keeps the model\'s values); progress(event) receives every '
+        'event except live frames. '
         'With out_dir it always writes summary.json and log.txt and never raises (except KeyboardInterrupt); '
         'without out_dir a failed build re-raises its exception (ModelError with .issues), a failed run raises '
         'RunError(message, traceback), and a timeout returns normally. progress=True prints to stdout '
@@ -1318,16 +1324,27 @@ _RESULTS_NOTES = (
         '(values float32 (wx, wy, wz) on the window cells, centres (x, y, z) float64 in m, info, time; live only, '
         'ValueError above max_bytes) and export_volume(name, path, physics=None, max_bytes=2**30) -> its .npz '
         '(values, x_centers, y_centers, z_centers, metadata kind volume); '
-        "export_html(path, what=None, physics=None, title=None) -> the written .html path: a self-contained web "
+        "export_html(path, what=None, physics=None, title=None, geometry=True, planes=None) -> the written .html "
+        'path: a '
+        'self-contained web '
         'page (no network, WebGL2) to turn, zoom and colour in a browser (colour maps, log scale, colour range; PNG '
         "and video export); what = a field ('physics.component' or a unique component; physics narrows it): every "
         'stored snapshot holding it is a frame (time snapshots play, labelled ones such as wavelengths or modes get '
         'a slider), else the current / saved state, a 2D map (optional relief) or a 3D field on its cut planes in '
-        'place (live state: the middle x, y and z cuts; snapshots and closed / loaded runs: the mid-height z cut and '
-        "the stored_cuts); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
+        'place (live state: an x, y and z cut, each at a mirror plane of the field\'s physics (the window cell next '
+        'to it, drawn on the plane), else through the middle of the material objects that do not span the window on '
+        'that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and '
+        "the stored_cuts; planes [(axis, position m)] instead: the live state on exactly those planes, a snapshot "
+        "its held cut on each axis nearest the position, ValueError for 2D models or an axis no snapshot holds when "
+        "not live); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
         'mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep '
         'contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, '
-        'else the swept parameter); None = the only mode_shapes result; large data is thinned (grid stride, evenly '
+        'else the swept parameter); None = the only mode_shapes result; geometry (field and dft_fields pages; a 3D '
+        'DFT map excepted): the model objects at the built parameters, their outlines on every map / cut plane and '
+        'in 3D their edges and see-through surfaces, switched on the page (Objects; ValueError without the model '
+        'spec: pass geometry=False); a model with mirror planes (field pages, 2D DFT maps): the page also draws '
+        "the field's mirror images (signs by its parity) and the objects', the whole structure, switched by its "
+        'Mirror button; large data is thinned (grid stride, evenly '
         'kept frames, named in the page subtitle); other result kinds raise ValueError (figures); live, closed or '
         'loaded alike; '
         'result(physics, feature, '
@@ -1336,9 +1353,9 @@ _RESULTS_NOTES = (
         '(physics.component or a unique component) or a feature result (physics.feature; series: only that series '
         'of an xy result); scene_figure(path, field=None, physics=None, planes=None, z_stretch=1.0, view=None) -> '
         'path of a 3D run: the api scene_figure picture of its model (built parameters) with field on cut planes in '
-        'one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default the middle '
-        'window cell on x, y and z; closed / loaded: the saved mid-height z cut plus the stored cuts of a last '
-        'snapshot at the same time); derived_curves() -> '
+        'one colour scale, the objects then as edges only (live: planes [(axis, position [m])], default an x, y and '
+        'z cut through the structure as export_html; closed / loaded: the saved mid-height z cut plus the stored '
+        'cuts of a last snapshot at the same time); derived_curves() -> '
         '[(plot, xy result or None, {curve name: error text})] of the derived curves over the final results; '
         'save(path, save_arrays=True); close(copy_to_host=True); Results.load(path).',
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '
@@ -1405,8 +1422,9 @@ _RESULTS_NOTES = (
         'save_arrays=True) -> directory: writes the run directory run(out_dir=) would of a live session its caller '
         'built and ran (the GUI worker); the session stays open; log_entries = [(clock text, level, message)].',
         'export_session_html(path, what, spec, session, build_summary, study_summary, log_entries, model_file=None, '
-        'physics=None) -> the written path: Results.export_html of such a live session (the GUI Results dock, Export '
-        'menu Open ... in browser entries); the session stays open.',
+        'physics=None, geometry=True, planes=None) -> the written path: Results.export_html of such a live session '
+        '(the GUI View in browser buttons, canvas and Results Field tab: planes = the shown 3D cut); the session '
+        'stays open.',
         'Never mix api.run with the GUI worker in one process.',
     )),
     ('GPU memory', (

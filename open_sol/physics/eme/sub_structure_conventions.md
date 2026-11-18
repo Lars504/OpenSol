@@ -115,6 +115,12 @@ ports, 'eigen' solver role).
   re-cascades with `assemble_total` through `port_fractions(smatrix)`, the stretch factors stacked on a leading axis
   (star / append_phase / total_smatrix / smatrix_power / unit_cell broadcast leading batch axes; chunks of
   `length_sweep_chunk`, booked by `length_sweep_host_items`). Attaching marks the physics dirty.
+- Snapshot solutions (`EMEBase.solution_state` / `restore_solution`, 2D and 3D): host copies of `field_arrays`, q_abs,
+  solved_omega, scalars, the dirty flag and the eps_sensitivity density only when it was cached at that solve (the
+  optimization study's evaluations cache it; frequency_domain only when the field is stored); materials: the
+  `rendered_materials` arrays and the design densities / projection beta. Mode cache, cascade and monitors are not
+  copied: a restored earlier solve (`_shown_solve`) answers eps_sensitivity from its kept density or raises, never from
+  the live cascade. A new renderer input changed per solve joins the state.
 - Excitation: `set_excitation` / eme_ports (one per physics); default mode 1 at 1 W/m (3D: 1 W) from lo. Scalars
   transmission_<k> (k <= n_port_modes of the first enabled eme_ports), transmission, reflection.
 - Memory estimates: every slice taken as a section (upper figure); host items dominate. Device transients are

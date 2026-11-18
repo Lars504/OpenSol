@@ -17,7 +17,7 @@ from .mesh_refinement import (adaptive_mesh_spec, frozen_mesh_spec, refined_axes
                               window_widths)
 from .meshing import backend_memory, estimate_memory, estimate_mesh
 from .schema import memory_check_level, solver_backend
-from .session import live_snapshot_index
+from .session import live_snapshot_index, snapshot_solution_names
 from .solver_hooks import ErrorIndicatorSolver
 from .study import (LogEvent, StudyFailed, StudyStarted, _StageProgress, _failure_message, _fail_sweep_setup,
                     _record_failure, _run_built, build_session, release_session, summed_runs)
@@ -106,8 +106,8 @@ def run_adaptation(spec, registry, build, emit, control, service, on_session):
             break
         if adaptation.keep_levels:
             kept_snapshots += [replace(snapshot, label=f'level {level}' + (f': {snapshot.label}' if snapshot.label
-                                                                            else ''), live=False)
-                               for snapshot in session.snapshots]
+                                                                            else ''), live=False, solutions={})
+                               for snapshot in session.snapshots]   # solutions belong to that level's solvers
         level_spec, estimates = next_spec, next_estimates
     summary = dict(last_summary)   # level 0 ran: its failures returned or raised above
     report = convergence_report(adaptation, setup, levels, stop_reason, message, last_spec)
@@ -115,11 +115,13 @@ def run_adaptation(spec, registry, build, emit, control, service, on_session):
     summary.update(summed_runs(level_runs))
     if previous is None:   # the level after the last computed one failed: its session (and snapshots) are gone
         summary['snapshot_times'], summary['snapshot_labels'], summary['live_snapshot'] = [], [], None
+        summary['snapshot_solutions'] = []
     elif kept_snapshots:
         previous.snapshots[:0] = kept_snapshots
         summary['snapshot_times'] = [float(snapshot.time) for snapshot in previous.snapshots]
         summary['snapshot_labels'] = [snapshot.label for snapshot in previous.snapshots]
         summary['live_snapshot'] = live_snapshot_index(previous.snapshots)
+        summary['snapshot_solutions'] = snapshot_solution_names(previous.snapshots)
     if stop_reason == 'cancelled':
         summary['status'] = 'cancelled'
     emit(LogEvent('info' if report['converged'] else 'warning', f"mesh refinement: {report['message']}"))

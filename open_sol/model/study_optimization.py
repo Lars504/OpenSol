@@ -144,6 +144,7 @@ def _run_optimization(session, values, emit, control, service):
     solvers = _design_solvers(runner)
     runner.prepare()
     recorder = _SnapshotRecorder(session, emit)
+    recorder.changing_materials = frozenset(runner.physics)   # every evaluation writes the design densities into eps
     live = _LiveFeed(session, control, emit, values['live_update_hz'])
     max_iterations = values['max_iterations']
     stages = values['continuation_stages']

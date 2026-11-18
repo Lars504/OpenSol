@@ -170,6 +170,26 @@ def to_host(array):
     return np.asarray(array)
 
 
+def host_copy(array):
+    """numpy copy of a numpy or cupy array that later writes into `array` never change (one transfer for cupy)."""
+    if isinstance(array, np.ndarray):
+        return array.copy()
+    return to_host(array)   # cupy .get() returns a new array
+
+
+def write_host_into(target, values) -> None:
+    """Write host `values` into the numpy / cupy array `target` in place (same shape and dtype, else ValueError; one
+    transfer for cupy), so array pointers held elsewhere (CUDA graphs, views) stay valid."""
+    values = np.asarray(values)
+    if values.shape != target.shape or values.dtype != target.dtype:
+        raise ValueError(f'cannot write {values.dtype} {values.shape} values into a {target.dtype} {target.shape} '
+                         'array (a solution state of another build?)')
+    if isinstance(target, np.ndarray):
+        np.copyto(target, values)
+    else:
+        target.set(np.ascontiguousarray(values))
+
+
 def synchronize(backend) -> None:
     """Wait for queued device work ('gpu'); nothing on the cpu."""
     if backend == 'gpu':

@@ -23,7 +23,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import host_copy, to_host, write_host_into
 from ...core.constants import DTYPE
 from ...core.harmonic_probe import HarmonicProbeRecord, harmonic_probe_result
 from ...core.renderer import FieldInfo
@@ -552,6 +552,32 @@ class AcousticHarmonicBase(PhysicsSolver):
             return
         self.system.publish_fields()
         self._show_solution(omega / (2.0 * math.pi), omega)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) -----------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the shown solution: p_s and p_b nodal, omega, the frequency and the centroid state fields;
+        materials: rho / sound_speed too. RuntimeError while the last solved frequency is unpublished."""
+        if self._unpublished_omega is not None:
+            raise RuntimeError(f'{self._label()}: the shown fields are not those of the last solved frequency '
+                               f'({self._unpublished_omega / (2.0 * math.pi):.6g} Hz, skipped by the field policy)')
+        state = {'scattered': None if self._scattered is None else self._scattered.copy(),
+                 'background': None if self._background_nodal is None else np.array(self._background_nodal),
+                 'omega': self._omega, 'last_frequency': self.last_frequency,
+                 'fields': {name: host_copy(self.fields[name]) for name in STATE_NAMES}}
+        if materials:
+            state['materials'] = {name: host_copy(getattr(self.domain.materials, name)) for name in self.material_schema}
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back (state fields and materials in place; the total and velocity caches dropped)."""
+        self._scattered = None if state['scattered'] is None else state['scattered'].copy()
+        self._background_nodal = None if state['background'] is None else state['background'].copy()
+        self._omega, self.last_frequency = state['omega'], state['last_frequency']
+        self._total = self._velocity = None   # formed on read from the restored p_s, p_b
+        for name, values in state['fields'].items():
+            write_host_into(self.fields[name], values)
+        for name, values in state.get('materials', {}).items():
+            write_host_into(getattr(self.domain.materials, name), values)
 
     def _show_solution(self, frequency, omega) -> None:
         """The system's values as the shown scattered field at frequency [Hz] (+ p_b) and the published state."""

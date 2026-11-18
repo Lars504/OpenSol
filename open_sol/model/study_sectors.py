@@ -117,6 +117,7 @@ def _merge_runs(spec, outcome, emit) -> dict:
     summary['snapshot_times'] = [float(snapshot.time) for snapshot in snapshots]
     summary['snapshot_labels'] = [snapshot.label for snapshot in snapshots]
     summary['live_snapshot'] = live_snapshot_index(snapshots)
+    summary['snapshot_solutions'] = [[] for _ in snapshots]   # merged / unfolded fields: stored ones only
     summary['parity_sectors']['snapshot_sectors'] = snapshot_sectors
     return summary
 
@@ -187,6 +188,7 @@ def _run_sector_sweep(spec, parameter, sweep_values, registry, build, emit, cont
         last_summary['snapshot_times'] = []
         last_summary['snapshot_labels'] = []
         last_summary['live_snapshot'] = None
+        last_summary['snapshot_solutions'] = []
     last_summary.update(summed_runs(value_runs))
     last_summary['status'] = status
     last_summary['sweep'], last_summary['sweep_index'] = table, last_index

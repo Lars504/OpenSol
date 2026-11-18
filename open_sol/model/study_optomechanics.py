@@ -58,6 +58,7 @@ def _run_optomechanics(session, values, emit, control, service):
         _solve_static_states(runner, mechanical, True, emit)
         status = _solve_optical(session, optical, mechanical, values, stage.stages.stage_emit(_OPTICAL_STAGE),
                                 control, service)
+        stage.recorder.fixed_physics |= frozenset(optical)   # their coupled mode stays shown through the snapshots
     if status == 'completed':
         status, n_found = _solve_mechanical(session, mechanical, values, stage.recorder, stage.live,
                                             stage.stages.stage_emit(_MECHANICAL_STAGE), control, service)

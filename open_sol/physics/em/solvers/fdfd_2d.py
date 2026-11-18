@@ -6,7 +6,7 @@ import math
 import time
 
 import numpy as np
-from ....core.backend import to_host
+from ....core.backend import host_copy, to_host, write_host_into
 
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.error_indicators import energy_interpolation_indicator
@@ -34,7 +34,8 @@ from ..fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWa
                             SheetCurrentPhasor)
 from ..harmonic import HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity
 from ..index_reference import OFF_DIAGONAL_ARRAY
-from ..materials import DrudePole, LorentzPole, register_em_arrays, tfsf_outline_warnings
+from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
+                         restore_material_solution, tfsf_outline_warnings)
 from ..operators import (KeptYeeOperators, active_coupling_faces, bloch_wrap_phases, helmholtz_operator,
                          off_diagonal_face_couplings, pin_image_cells, stretched_cell_areas, yee_operators)
 from ..placement import (PERMITTIVITY_ARRAYS, box_window_faces, electric_dipole_faces,
@@ -54,6 +55,7 @@ from .host_fdfd import fell_back_to_superlu
 _WALL_SIGNS = WALL_SIGNS
 _REJECTED = 'rejected'   # _line_factor of a system whose line-block solve missed the accept tolerance
 _SPARSE_DIRECT_TEXT = 'sparse direct'
+_NOT_KEPT = 'not kept'   # _restored_sensitivity of a restored snapshot whose solve kept no adjoint gradient
 
 
 class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
@@ -188,6 +190,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._face_fields = None      # cached face_fields() of the last solve
         self._pending_state_system = None   # system of a solve whose q_abs / state arrays are not written yet (lazy)
         self._sensitivity = None      # ((n_solves, objectives), EpsSensitivity): eps_sensitivity() cache
+        # EpsSensitivity of a restored snapshot (restore_solution; _NOT_KEPT: none kept), None = the live solve's cache
+        self._restored_sensitivity = None
         self._system_dirty = True
         self._solution_dirty = True
         self._port_modes_current = False
@@ -508,6 +512,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         xp.copyto(self.solution, solution)
         del solution
         self.selected_resonance = None
+        self._restored_sensitivity = None   # a solve is live again (restore_solution never outlives a read)
         self._refresh_state(system, lazy=not record_monitors)
         self._solution_dirty = False
         self.n_solves += 1
@@ -1320,15 +1325,100 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def eps_sensitivity(self):
         """adjoint.EpsSensitivity of the objectives at the last driven solve (one transposed solve, cached per solve and
         objectives; hz also dJ/d eps_xy); zeros without objectives, before a solve or while a resonance is shown."""
-        objectives = tuple(monitor for monitor in self.monitors if is_objective(monitor))
+        objectives = self._objectives()
         if self.selected_resonance is not None or not objectives:
             grid = self.domain.grid
             return EpsSensitivity(0.0, None, {}, self.xp.zeros((grid.nx, grid.ny), dtype=DTYPE))
+        restored = self._restored_sensitivity
+        if restored is _NOT_KEPT:   # the live system belongs to another solve: no transposed solve can serve it
+            raise ValueError('eps_sensitivity: this snapshot kept no adjoint gradient (kept only when the optimization '
+                             'iteration or a read computed it before the snapshot was recorded)')
+        if restored is not None:
+            return restored
         key = (self.n_solves, objectives)
         if self._sensitivity is None or self._sensitivity[0] != key:
             self._sensitivity = None   # free the previous gradient first
             self._sensitivity = (key, eps_sensitivity(self, self._wall_rows))
         return self._sensitivity[1]
+
+    def _objectives(self) -> tuple:
+        """The objective features among the monitors (adjoint.is_objective), in monitor order."""
+        return tuple(monitor for monitor in self.monitors if is_objective(monitor))
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of what the renderer reads from the shown solve: the phasor and its face fields (they need that
+        solve's system), q_abs, its omega / resonance, the adjoint gradient when computed for it (never solved here),
+        the design densities; materials: the permittivity arrays, sigma_e, crystallinity and the hz eps_xy change."""
+        self._refresh_pending_state()
+        shown = self.solution is not None
+        state = {'solution': host_copy(self.solution) if shown else None,
+                 'face_fields': tuple(host_copy(values) for values in self.face_fields()) if shown else None,
+                 'q_abs': host_copy(self._q_abs), 'solved_omega': self.solved_omega,
+                 'selected_resonance': self.selected_resonance, 'n_solves': self.n_solves,
+                 'sensitivity': self._kept_sensitivity_state(),
+                 'design': [(region.density.copy(), region.map.projection_beta) for region in self.design_regions]}
+        if materials:
+            state['materials'] = material_solution_state(self, (*self.permittivity_arrays, 'sigma_e'))
+            state['coupled_eps_xy'] = self._coupled_eps_xy_state()
+        return state
+
+    def _kept_sensitivity_state(self):
+        """Host copies of the eps_sensitivity() result of the shown solve (the restored one, else the cache when it
+        belongs to this solve and objective set), None when none was computed."""
+        sensitivity = self._restored_sensitivity
+        if sensitivity is None:
+            cached = self._sensitivity
+            if cached is None or cached[0] != (self.n_solves, self._objectives()):
+                return None
+            sensitivity = cached[1]
+        elif sensitivity is _NOT_KEPT:
+            return None
+        off_diagonal = sensitivity.off_diagonal_density
+        return {'objective': sensitivity.objective, 'omega': sensitivity.omega,
+                'density': host_copy(sensitivity.density),
+                'off_diagonal_density': None if off_diagonal is None else host_copy(off_diagonal)}
+
+    def restore_solution(self, state):
+        """Write a solution_state back (in place where arrays exist; the system is not reassembled: a snapshot read only
+        renders); a state of another solve shows its kept gradient (cell_gradients left out) or refuses eps_sensitivity."""
+        xp = self.xp
+        self._pending_state_system = None   # solution_state of the live solve refreshed it before this restore
+        solution = state['solution']
+        if solution is None:
+            self.solution = None
+            self._face_fields = None
+            self._field_re.fill(DTYPE(0.0))
+            self._field_im.fill(DTYPE(0.0))
+        else:
+            if self.solution is None:
+                self.solution = xp.empty(solution.shape, dtype=solution.dtype)
+            write_host_into(self.solution, solution)
+            self._face_fields = tuple(xp.asarray(values) for values in state['face_fields'])
+            xp.copyto(self._field_re, self.solution.real)
+            xp.copyto(self._field_im, self.solution.imag)
+        write_host_into(self._q_abs, state['q_abs'])
+        self.solved_omega = state['solved_omega']
+        self.selected_resonance = state['selected_resonance']
+        kept = state['sensitivity']
+        if state['n_solves'] == self.n_solves:
+            self._restored_sensitivity = None   # the live solve: eps_sensitivity() computes or reuses its own cache
+        elif kept is None:
+            self._restored_sensitivity = _NOT_KEPT
+        else:
+            self._restored_sensitivity = EpsSensitivity(
+                kept['objective'], kept['omega'], {}, xp.asarray(kept['density']),
+                None if kept['off_diagonal_density'] is None else xp.asarray(kept['off_diagonal_density']))
+        if len(state['design']) != len(self.design_regions):
+            raise RuntimeError(f"FDFDPhysics restore_solution: {len(state['design'])} design regions in the state, "
+                               f'{len(self.design_regions)} in the solver (a state of another build?)')
+        for region, (density, beta) in zip(self.design_regions, state['design']):
+            region.density = density.copy()
+            region.map.projection_beta = beta
+        if 'materials' in state:
+            restore_material_solution(self, state['materials'])
+            self._restore_coupled_eps_xy(state['coupled_eps_xy'])
 
     # --- design regions (design_density.py, optimization study) ---
 

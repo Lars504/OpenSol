@@ -10,7 +10,7 @@ Array-module agnostic: the Domain's backend (cupy / cupyx on the gpu, numpy / sc
 import numpy as np
 
 from ..solvers.pcg import DTYPE_PRECISIONS, SOLVER_DTYPE_NAMES, PCGSolver
-from .backend import array_module_of, cp, ndimage_module, sparse_module, to_host
+from .backend import array_module_of, cp, host_copy, ndimage_module, sparse_module, to_host, write_host_into
 from .box_values import BoxValues
 from .constants import DTYPE, FACES, FACES_3D
 from .error_indicators import compliance, face_jump_indicator
@@ -305,6 +305,17 @@ def _join_wrapped_regions(labels_last, labels_first, wrap_links, anchored, wrap_
     return len(roots), sum(1 for root in roots if not anchored[root])
 
 
+def host_copies(arrays) -> dict:
+    """{name: host copy} of a {name: numpy / cupy array} dict (snapshot solutions: core.backend.host_copy)."""
+    return {name: host_copy(array) for name, array in arrays.items()}
+
+
+def write_host_copies(targets, copies) -> None:
+    """Write host_copies(...) back in place into the {name: array} targets (KeyError for a name they lack)."""
+    for name, values in copies.items():
+        write_host_into(targets[name], values)
+
+
 def _forwarded(owner_attribute, name, cast=None, check=None, doc=None):
     """Property reading `name` of self.<owner_attribute>; with cast also a setter (check(value) first, then the cast
     value written there)."""
@@ -383,6 +394,7 @@ class DiffusionSystem:
         self.n_fused_assemblies = 0         # assemblies by the fused kernels (core.fv_diffusion_fused)
         self.n_anchor_shortcuts = 0         # anchor checks reduced to the c > 0 pattern test (coefficient-only change)
         self._assembled_held_count = None   # count of fixed_user cells at the last assembly (0-d device / int)
+        self.n_assemblies = 0               # full assemblies (_keep_assembly): which one a solution_state belongs to
         # owner hook (DiffusionPhysicsBase): called with new / old volume fractions (window device array) whenever the
         # insulated-wall cut cells change cell_area, so perimeter flux densities keep their totals
         self.volume_fraction_listener = None
@@ -907,6 +919,7 @@ class DiffusionSystem:
         self.assembled_reference = reference   # the unknown's reference of the face rhs terms (update_face_value)
         self._lower_cell_shares = None
         self._assembled_held_count = self.xp.count_nonzero(self.fixed_user)   # refresh_held_values: no sync here
+        self.n_assemblies += 1
         self.operator_dirty = False
 
     def _fused_reassembly_applies(self, c_xx, c_yy, capacity_over_dt) -> bool:
@@ -1221,6 +1234,33 @@ class DiffusionSystem:
         if values.shape != self.window_shape:
             raise ValueError(f'{self.label()}: seed must have the window shape {self.window_shape}, got {values.shape}')
         self.xp.copyto(self.unknown2d, values, where=self.free.astype(np.bool_))
+
+    def solution_state(self) -> dict:
+        """Host copies of what the post-processing reads beside the assembly (snapshot solutions): the unknown, the
+        outer-face rhs terms (values of t change them in place) and which assembly they belong to, with its marks."""
+        face_rhs = (None if self.face_terms is None
+                    else {face: host_copy(rhs) for face, (_, _, rhs) in self.face_terms.items()})
+        marks = (self._operator_dirty, self._diagonal_only_change, self._held_values_only_change,
+                 self._coefficients_only_change, self.cross_term_dirty)
+        return {'unknown': host_copy(self.unknown), 'face_rhs': face_rhs, 'assembly': self.n_assemblies,
+                'marks': marks}
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back: the unknown in place; on the assembly it was taken on also its face rhs terms
+        and marks (rhs_drive / rhs_offset never change), else the operator is dirtied so the next read or step
+        re-assembles from the owner's restored inputs (a read's re-assembly is undone the same way)."""
+        write_host_into(self.unknown, state['unknown'])
+        if state['assembly'] != self.n_assemblies:
+            self.operator_dirty = True
+            self.cross_term_dirty = True
+            self._pending_anchor_check = None   # the next (full) assembly checks anchors again
+            return
+        if state['face_rhs'] is not None:
+            for face, rhs in state['face_rhs'].items():
+                cells, conductance, _ = self.face_terms[face]
+                self.face_terms[face] = (cells, conductance, self.xp.array(rhs))   # a new array: never aliased
+        (self._operator_dirty, self._diagonal_only_change, self._held_values_only_change,
+         self._coefficients_only_change, self.cross_term_dirty) = state['marks']
 
     def solve(self) -> None:
         """Jacobi-PCG (linear_solver) on the assembled system from the current unknown; stop reference ||b|| in a

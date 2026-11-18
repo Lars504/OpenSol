@@ -446,6 +446,8 @@ _SUPERSCRIPT_DIGITS = str.maketrans('0123456789', '⁰¹²³⁴⁵⁶⁷⁸⁹')
 class _ArticleAxis(pg.AxisItem):
     """AxisItem whose minor tick levels can be switched off (show_minor_ticks); log labels always read 10ⁿ; keeps the
     ticks of its last paint (drawn_ticks) for the export."""
+    # class default: AxisItem.__init__ already resizes (setRange -> setMinimumWidth -> resizeEvent) before ours runs
+    _tick_text_px = 0.0
 
     def __init__(self, orientation):
         super().__init__(orientation)

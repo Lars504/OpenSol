@@ -66,7 +66,7 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   elements and the outlines of axis-normal cross-sections (nodes on the plane nudged above it, shared edges once, PML
   shell segments apart).
 - mode_player (HTML mode animation; `Results.export_html` of a mode_shapes result, CLI `show <run dir> --html`, GUI
-  Results dock Export > Open mode animation in browser): `mode_player.py` packs numpy data into `mode_player.html` (package
+  View in browser on a canvas field of that physics): `mode_player.py` packs numpy data into `mode_player.html` (package
   data) at `DATA_MARKER`; the page is self-contained on purpose (hand-written WebGL2, no CDN, works offline in a talk): keep it free of external scripts
   and fonts. Data: positions float32 / triangles uint32 / per mode re + im int16 (base64), each mode phase-aligned (largest
   component real) and scaled to max |u| = 1 (`_aligned`), lengths in the unit `length_scale` picks; '</' escaped in
@@ -79,7 +79,7 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   0) for the signed u_x / u_y / u_z; the menu lists the shown quantity's kind and remembers a choice per kind. Band gaps on the page: intervals no band segment crosses (bands continuous between
   samples, matched across k with an index shift for a moving search window) and inside the window at every k.
 - field_viewer (HTML field page; `Results.export_html` of a field or dft_fields result, CLI `show <run dir> --html
-  --what NAME`, GUI Results dock Export > Open field / DFT in browser): `field_viewer.py` packs `ViewerFrame`s of
+  --what NAME`, GUI View in browser of the canvas field or DFT map): `field_viewer.py` packs `ViewerFrame`s of
   `ViewerLayer`s (grid of cell centres, or a FieldData display triangulation; plane = a 3D cut placed in the scene,
   None = a 2D map at z = 0) into `field_viewer.html` at its `DATA_MARKER`, self-contained like mode_player (its
   camera, colour maps, theme, PNG and recording code are copies of mode_player's: change both). Every frame holds the
@@ -97,3 +97,35 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
   relief. Colour limits default to all frames for 'time', to the shown frame for 'labelled' (independent states).
   Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.
+  Quasi-2D (page-side, no Python input): a 2D map or a set of 3D layers in one plane (a single cut) is 'planar': it
+  opens face-on as the canvas shows it ((u, v) of `FieldData.axes` right / up), tightly fitted inside the readout /
+  legend / axis-label insets, with relief. An axis spanning below 1 / MAX_ASPECT (4) of the largest is stretched by a
+  1-2-5 factor (Stretch button, on by default; the page's counterpart of the canvas's unequal scales and Stretch z),
+  applied as `uStretch` in the vertex shader: the box, relief height, fit and axis projection use the stretched
+  spans, while the tick labels stay true coordinates and the axis title names the factor. Axes are a 2D overlay canvas
+  (`#axes`); PNG and recordings take the composite of both canvases, unlike mode_player's GL canvas only.
+  Model objects (`viewer_data(geometry=ViewerGeometry)`, api `export_html(geometry=True)` from
+  `model.scene_3d.plane_outlines` per layer plane + `build_scene` in 3D; duck-typed items): outlines are one list per
+  layer of frame 0 (a layer count mismatch raises), packed as float32 segment rows (start, end, arc length at the
+  start) per (layer, material, solid) group and clipped to the layer's `extent` (FieldData extent, so objects reaching
+  into the absorbing ring stop at the window); 3D solids add rim edges and their faces fan / ear-clip triangulated per
+  material; point objects are crosses, lines segments. Colours: tab10 by material index (scene_figure's default).
+  The page draws them in its own programs after the layers (lines = instanced screen-space quads, 1 px GL lines being
+  too thin; dashes for not-solid composite inputs; glass = blended faces without depth writes), through the same
+  centre and `uStretch` as the field; planar views draw lines without depth test (on top of relief). Objects select
+  (G): outlines / edges / glass / off, default edges for non-planar 3D; outline colour Contrast (dark over a light
+  colour-map middle) / white / black / material, remembered; the material legend shows whenever material colours do.
+  Mirror planes (`viewer_data(mirrors=[ViewerMirror])`; api `_viewer_mirrors`: `core.mirror.mirror_faces` of the
+  state spec with the field's `field_plane_signs`, value sign `image_sign(field_parity)`, plane positions by
+  `mirror_plane` from the layers' extents (the window edges; a DFT map from a field of its physics, its box may stop
+  short); none for unfolded fields (parity-sector snapshots) and polar / spherical domains, a RuntimeWarning for a
+  field without parity or a face no layer spans): the page draws the images itself (no data doubling) as reflected
+  copies of every layer, mesh line and object (uniforms `uMirA` / `uMirB`: a x + b per axis, `uValSign`; a phase
+  gains pi), one image each side per axis like `unfold_field`, products across axes; a planar view drops faces
+  along its normal. Bounds, centre, box, axes and the Stretch factors follow the shown images (`setBounds`); Mirror
+  button (M), on by default. Grid layers ending on a plane get a sample row on it (`_plane_pads`: nearest row even,
+  0 odd), else the map and its image would leave a one-cell gap at the plane. A layer normal to a mirror axis within
+  the nearest grid sample row of that plane (api's default live cuts are those cells) is moved onto it by
+  `snap_to_mirrors` (api calls it before computing the outlines, so they are the plane's sections); the page then
+  skips the image that maps a layer onto itself (`selfImage`: field, mesh lines, outlines), else the coincident,
+  for odd fields sign-flipped, copy z-fights.

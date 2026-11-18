@@ -42,7 +42,7 @@ class FEMPotentialPhysics3D(FEMPotentialMixin, FEMDiffusionPhysicsBase3D):
 
     def __init__(self, domain, kind: str = 'currents', order: int = 2, linear_solver=None):
         self._init_potential(kind)
-        self.diagonal_arrays = self._operator_arrays = DIAGONAL_ARRAYS[kind]
+        self.diagonal_arrays = self._operator_arrays = self._rendered_material_names = DIAGONAL_ARRAYS[kind]
         self.flux_names = (*self.spec.flux_names, _FLUX_Z_NAMES[kind])
         self.finalize_warnings = []
         self._init_fem(domain, order, linear_solver, lambda: f"{self.spec.label} '{self.name}'", 'potential',

@@ -66,6 +66,8 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   (`set_auger`, later features win), never the MaterialGrid.
 - `max_iterations` setting = solver kwarg `max_newton_iterations`; `temperature` defaults to 300 K (library data), by
   design not heat's T0 293.15 K; selftests pass it explicitly.
+- Snapshot solutions: `solution_state` copies `fields` (+ the FEM `nodal` dict, replaced per solve); the renderer
+  reads no material array (materials adds nothing) and the Newton continuation state is never read, so it stays live.
 - RerunSolver (sweep reuse_build): `reset_records` only marks dirty (the converged state stays the continuation
   start); ohmic_contact / gate `voltage` follow live parameters (`set_contact_voltage` / `set_gate_voltage` write the
   core's voltage lists; the table results read them, never the frozen region's build value). Uniform doping

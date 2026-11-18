@@ -27,7 +27,7 @@ from ..em.materials import DrudePole, LorentzPole, register_em_arrays
 from .adjoint import PeriodicAdjointFields, cross_section_gradient, objective_cotangents, section_amplitude_pairs
 from .mode_sets import (_PML_MODE_FRACTION, cross_section_fields, cross_section_mode_set, gauss_mean, gauss_positions,
                         stretched_areas)
-from .renderer3d import EME_3D_COMPONENTS, EMERenderer3D
+from .renderer3d import EME_3D_COMPONENTS, EME_3D_MATERIAL_FIELDS, EMERenderer3D
 from .sections import find_sections
 from .solver import INPUT_POWER_FLOOR, EME_PERMITTIVITY_ARRAYS, MODE_CACHE_BYTES, EMEBase, slice_positions
 
@@ -66,6 +66,7 @@ class EMEPhysics3D(EMEBase):
     S-matrix cascade and the excitation's E over the grid; ports = the z_lo / z_hi window planes."""
 
     tracks_modes = True
+    rendered_materials = tuple(EME_3D_MATERIAL_FIELDS)
 
     def __init__(self, domain, boundary_config=None, wavelength=1.55e-6, n_modes=20, n_eff_guess=None,
                  section_tolerance=0.0, eigen_solver=None):

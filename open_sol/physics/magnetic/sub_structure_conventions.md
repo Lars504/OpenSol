@@ -63,6 +63,10 @@ Sub file of the root `structure_conventions.md`. DiffusionSystem (assembly, PCG,
   to it only approximately at interfaces.
 - `step` re-solves when dirty (operator: mu_dc, faces, held cells, J_s, add_bh_curve; rhs: sources, coils,
   inject_source, remanence).
+- Snapshot solutions (every magnetic solver): `solution_state` copies what the renderer reads (tensor: the fields of
+  `_solution_fields`; FEM: element fields + `system.values` / AC `values`, the nodal display arrays, 3D FEM the
+  assembled mu while saturating) and, with materials, the rendered mu_dc (/ sigma_dc_xx); the saturation / Newton
+  loop state is never read, so it stays live. Replaced-per-solve arrays are restored by replacement, never in place.
 - RerunSolver (sweep reuse_build; MagneticPhysics only, tensor meshes): `reset_records` clears the probe series; the
   current_source density (parameter-only values: `add_source` of the difference) and the coil current
   (`set_coil_current`; the live current is the solver's `_coil_currents`, CoilRegion.current stays the build value) follow

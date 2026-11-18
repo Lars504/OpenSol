@@ -72,6 +72,7 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 .view { background: linear-gradient(180deg, var(--view-top), var(--view-bottom)); }
 #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 #gl:active { cursor: grabbing; }
+#axes { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
 .readout { position: absolute; left: 18px; top: 14px; pointer-events: none; }
 .readout .f { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.15; }
 .readout .m { color: var(--ink-2); font-size: 13px; margin-top: 2px; }
@@ -81,6 +82,11 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 .legend .ticks { display: flex; justify-content: space-between; gap: 6px; }
 .legend .name { color: var(--ink-2); margin-bottom: 4px; }
 .hint { position: absolute; left: 18px; bottom: 14px; font-size: 11px; color: var(--ink-3); pointer-events: none; }
+.mats { position: absolute; right: 18px; top: 40px; display: flex; flex-direction: column; align-items: flex-end;
+        gap: 3px; font-size: 11px; color: var(--ink-2); pointer-events: none; max-height: 60%; overflow: hidden; }
+.mats[hidden] { display: none; }
+.mats span { display: flex; align-items: center; gap: 6px; }
+.mats i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .rec { position: absolute; right: 18px; top: 16px; display: none; align-items: center; gap: 6px; font-size: 12px;
        font-weight: 600; color: #e5484d; }
 .rec::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #e5484d; }
@@ -127,11 +133,13 @@ body.present .app { padding: 10px; gap: 10px; }
   </header>
   <section class="card view" aria-label="Field">
     <canvas id="gl"></canvas>
+    <canvas id="axes"></canvas>
     <div class="readout"><div class="f num" id="rf"></div><div class="m num" id="rm"></div></div>
     <div class="legend" id="legend"><div class="name" id="lgname"></div><div class="bar" id="lgbar"></div>
       <div class="ticks num"><span id="lglo"></span><span id="lgmid"></span><span id="lghi"></span></div></div>
     <div class="hint">Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset</div>
     <div class="rec" id="rec">REC</div>
+    <div class="mats" id="mats" hidden></div>
     <div class="empty" id="empty" hidden></div>
   </section>
   <div class="controls">
@@ -159,8 +167,16 @@ body.present .app { padding: 10px; gap: 10px; }
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
     <div class="group" id="layergroup"></div>
-    <div class="group"><button id="lines" aria-pressed="false" title="Lines between the samples: the display grid or triangles, not necessarily the solver mesh (L)">Mesh</button>
+    <div class="group" id="geomgroup"><label for="geom">Objects</label>
+      <select id="geom" title="Model objects drawn with the field (G)"></select>
+      <select id="geomcolor" title="Colour of the object outlines">
+        <option value="auto">Contrast</option><option value="white">White</option><option value="black">Black</option>
+        <option value="material">Material</option></select></div>
+    <div class="group"><button id="mirror" aria-pressed="true">Mirror</button>
+      <button id="lines" aria-pressed="false" title="Lines between the samples: the display grid or triangles, not necessarily the solver mesh (L)">Mesh</button>
       <button id="box" aria-pressed="true" title="Outline of the cut planes' box (B)">Box</button>
+      <button id="axesbtn" aria-pressed="true" title="Coordinate axes with ticks (A)">Axes</button>
+      <button id="stretch" aria-pressed="true">Stretch</button>
       <button id="spin" aria-pressed="false" title="Turn the view (S)">Spin</button></div>
     <div class="spacer"></div>
     <div class="group">
@@ -267,26 +283,80 @@ const LAYERS = DATA.layers.map((L, index) => {
     }
   }
   const normal = [0, 0, 0]; normal[iw] = 1;
-  return { index, name: L.name || '', n, pos, tri, edges, normal, visible: true };
+  return { index, name: L.name || '', n, pos, tri, edges, normal, axis: iw, position: w, visible: true };
 });
 
-const bmin = [Infinity, Infinity, Infinity], bmax = [-Infinity, -Infinity, -Infinity];
+const AXIS_NAMES = ['x', 'y', 'z'];
+
+// planar: a 2D map, or 3D cut planes all in one plane (a single cut): shown face-on as the GUI canvas shows it (u to
+// the right, v up), with relief; NORMAL = the axis it faces, PLANE_AXES = its (u, v)
+const PLANAR = is2d || DATA.layers.every((L) => L.normal === DATA.layers[0].normal && L.position === DATA.layers[0].position);
+const NORMAL = is2d ? 2 : AX[DATA.layers[0].normal];
+const PLANE_AXES = [AX[DATA.layers[0].axes[0]], AX[DATA.layers[0].axes[1]]];
+const FACE_ON = { 0: [Math.PI, 0], 1: [Math.PI / 2, 0], 2: [Math.PI / 2, 89.4 * Math.PI / 180] };   // (az, el)
+
+// mirror planes (DATA.mirrors): the images of a half / quarter model drawn as reflected copies of every layer and
+// object (x' = 2 p - x on each mirrored axis; field values times the face's sign, an odd phase shifted by pi); both
+// faces of one axis give one image each side (as core.mirror.unfold_field), products across axes; a planar view keeps
+// its one plane (no images along its normal)
+const MIRRORS = (DATA.mirrors || []).filter((M) => !(PLANAR && AX[M.axis] === NORMAL));
+const IDENTITY_IMAGE = { a: [1, 1, 1], b: [0, 0, 0], sign: 1 };
+const MIRROR_IMAGES = (() => {
+  let images = [IDENTITY_IMAGE];
+  for (const c of [0, 1, 2]) {
+    const faces = MIRRORS.filter((M) => AX[M.axis] === c);
+    if (faces.length) images = images.flatMap((I) => [I, ...faces.map((M) => {
+      const a = I.a.slice(), b = I.b.slice(); a[c] = -1; b[c] = 2 * M.position; return { a, b, sign: I.sign * M.sign }; })]);
+  }
+  return images;
+})();
+const CAN_MIRROR = MIRROR_IMAGES.length > 1;
+
+// bounds of the simulated part (hmin, hmax), and of what is shown with or without its images (setBounds)
+const hmin = [Infinity, Infinity, Infinity], hmax = [-Infinity, -Infinity, -Infinity];
 for (const L of LAYERS) for (let k = 0; k < L.n; k++) for (let c = 0; c < 3; c++) {
-  const v = L.pos[3 * k + c]; if (v < bmin[c]) bmin[c] = v; if (v > bmax[c]) bmax[c] = v; }
-const center = [0, 1, 2].map((c) => 0.5 * (bmin[c] + bmax[c]));
-const sceneSize = Math.max(bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2]) || 1;
+  const v = L.pos[3 * k + c]; if (v < hmin[c]) hmin[c] = v; if (v > hmax[c]) hmax[c] = v; }
+
+// thin geometries: the GUI canvas gives them unequal scales (and its side views a Stretch z); here an axis whose span is
+// below 1 / MAX_ASPECT of the largest is stretched by a 1-2-5 factor, named on its axis title and in the readout
+const MAX_ASPECT = 4;
+function niceUp(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const m of [1, 2, 5]) if (m * p >= x * (1 - 1e-9)) return m * p; return 10 * p; }
+let bmin, bmax, center, SPAN, LARGEST, AUTO_STRETCH, CAN_STRETCH, STRETCH_TEXT;
+function setBounds(mirrored) {
+  const images = mirrored ? MIRROR_IMAGES : [IDENTITY_IMAGE];
+  bmin = [0, 1, 2].map((c) => Math.min(...images.map((I) => I.a[c] > 0 ? hmin[c] + I.b[c] : I.b[c] - hmax[c])));
+  bmax = [0, 1, 2].map((c) => Math.max(...images.map((I) => I.a[c] > 0 ? hmax[c] + I.b[c] : I.b[c] - hmin[c])));
+  center = [0, 1, 2].map((c) => 0.5 * (bmin[c] + bmax[c]));
+  SPAN = [0, 1, 2].map((c) => bmax[c] - bmin[c]);
+  LARGEST = Math.max(...SPAN) || 1;
+  AUTO_STRETCH = SPAN.map((s) => (s > 0 && s * MAX_ASPECT < LARGEST) ? niceUp(LARGEST / (MAX_ASPECT * s)) : 1);
+  CAN_STRETCH = AUTO_STRETCH.some((f) => f > 1);
+  STRETCH_TEXT = AUTO_STRETCH.map((f, c) => f > 1 ? AXIS_NAMES[c] + ' ×' + f : '').filter(Boolean).join(', ');
+}
+setBounds(CAN_MIRROR);
 
 // ---------- state ----------
 const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
   frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
-  lines: false, box: !is2d, spin: false,
+  lines: false, box: !PLANAR, spin: false, axes: true, stretch: true, mirror: CAN_MIRROR,
   cmap: (SIGNED ? store('cmap_signed') : store('cmap')) || (SIGNED ? 'coolwarm' : 'viridis'),
 };
 const choices = CMAP_CHOICES[SIGNED ? 'diverging' : 'sequential'];
 if (!choices.some(([key]) => key === state.cmap)) state.cmap = choices[0][0];
 $('cmap').replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
 $('cmap').value = state.cmap;
+function stretch() { return state.stretch ? AUTO_STRETCH : [1, 1, 1]; }
+function images() { return state.mirror ? MIRROR_IMAGES : [IDENTITY_IMAGE]; }
+function selfImage(L, I) {
+  // an image reflecting a layer's normal axis across the layer's own plane (a cut on a mirror plane, placed there by
+  // field_viewer.snap_to_mirrors) maps it onto itself: drawn once, else the coincident copy (sign-flipped for odd
+  // fields) z-fights
+  return I.a[L.axis] < 0 && Math.abs(I.b[L.axis] - 2 * L.position) <= 1e-6 * (Math.max(...hmax.map((v, c) => v - hmin[c])) || 1);
+}
+function setImage(u, I) { gl.uniform3fv(u.uMirA, I.a); gl.uniform3fv(u.uMirB, I.b); if (u.uValSign) gl.uniform1f(u.uValSign, I.sign); }
+function shownSpan() { const f = stretch(); return SPAN.map((s, c) => s * f[c]); }
 const savedTheme = store('theme');
 if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
 
@@ -335,15 +405,17 @@ precision highp int;
 in vec3 aPos; in vec2 aVal;
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
-uniform float uRelief; uniform vec3 uNormal;
+uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
+uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
 out float vT; out float vOk; out vec3 vViewPos;
 void main() {
   float v = aVal.x, t;
+  if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
   if (uLog == 1) t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
   else t = (v - uLo) / (uHi - uLo);
   t = clamp(t, 0.0, 1.0);
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
-  vec3 p = aPos - uCenter + uNormal * (uRelief * h);
+  vec3 p = (aPos * uMirA + uMirB - uCenter) * uStretch + uNormal * (uRelief * h);
   vT = t; vOk = aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
@@ -376,7 +448,14 @@ void main() {
   outColor = vec4(col, 1.0);
 }`;
 
-let prog = null, uni = {}, ready = false, boxVao = null, boxCount = 0;
+let prog = null, uni = {}, ready = false, boxVao = null, boxBuf = null, boxCount = 0;
+function boxLines() {
+  const c = [[bmin[0], bmin[1], bmin[2]], [bmax[0], bmin[1], bmin[2]], [bmax[0], bmax[1], bmin[2]], [bmin[0], bmax[1], bmin[2]],
+             [bmin[0], bmin[1], bmax[2]], [bmax[0], bmin[1], bmax[2]], [bmax[0], bmax[1], bmax[2]], [bmin[0], bmax[1], bmax[2]]];
+  const order = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
+  return new Float32Array(order.flatMap((i) => c[i]));
+}
+function writeBox() { if (!gl || !ready) return; gl.bindBuffer(gl.ARRAY_BUFFER, boxBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, boxLines()); }
 function compile(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
   if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
 function vertexBuffer(loc, data, size, usage) { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b);
@@ -390,8 +469,9 @@ function setupGL() {
   gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
   gl.linkProgram(prog);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
-  for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStops',
-                      'uLine', 'uLineColor', 'uShade']) uni[name] = gl.getUniformLocation(prog, name);
+  for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
+                      'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase'])
+    uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
   for (const L of LAYERS) {
     L.vao = gl.createVertexArray(); gl.bindVertexArray(L.vao);
@@ -400,13 +480,10 @@ function setupGL() {
     L.triBuf = indexBuffer(L.tri);
     L.edgeBuf = L.edges ? indexBuffer(L.edges) : null;
   }
-  // outline of the layers' box: 12 edges, every vertex valued (aVal = (0, 1))
-  const c = [[bmin[0], bmin[1], bmin[2]], [bmax[0], bmin[1], bmin[2]], [bmax[0], bmax[1], bmin[2]], [bmin[0], bmax[1], bmin[2]],
-             [bmin[0], bmin[1], bmax[2]], [bmax[0], bmin[1], bmax[2]], [bmax[0], bmax[1], bmax[2]], [bmin[0], bmax[1], bmax[2]]];
-  const order = [0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6, 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7];
-  const box = new Float32Array(order.flatMap((i) => c[i])); boxCount = order.length;
+  // outline of the shown box: 12 edges, every vertex valued (aVal = (0, 1)); rewritten when the bounds change
+  const box = boxLines(); boxCount = box.length / 3;
   boxVao = gl.createVertexArray(); gl.bindVertexArray(boxVao);
-  vertexBuffer(aPos, box, 3, gl.STATIC_DRAW);
+  boxBuf = vertexBuffer(aPos, box, 3, gl.DYNAMIC_DRAW);
   const ok = new Float32Array(2 * boxCount); for (let i = 0; i < boxCount; i++) ok[2 * i + 1] = 1;
   vertexBuffer(aVal, ok, 2, gl.STATIC_DRAW);
   gl.bindVertexArray(null);
@@ -428,19 +505,41 @@ const UP = [0, 0, 1];
 const E1 = [-1, 0, 0], E2 = [0, -1, 0];      // azimuth 0 looks from -x; +90 deg from -y (2D: x right, y up)
 const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0] };
 function resetCamera() {
-  if (is2d) { cam.az = Math.PI / 2; cam.el = 89.4 * Math.PI / 180; }
+  if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
   if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
   cam.target = [0, 0, 0];
   fitDistance();
 }
-function reliefHeight() { return state.relief * 0.3 * sceneSize; }
-function fitDistance() { const fov = 30 * Math.PI / 180; const aspect = canvas.width / Math.max(canvas.height, 1);
-  const span = [bmax[0] - bmin[0], bmax[1] - bmin[1], bmax[2] - bmin[2] + (is2d ? reliefHeight() : 0)];
+function reliefHeight() { return state.relief * 0.3 * Math.max(...shownSpan()); }
+function faceOn() { return PLANAR && Math.abs(eyeDir()[NORMAL]) > 0.99; }
+function viewInsets() {
+  // device px a face-on map leaves free: readout above, axis labels, legend and hint below, tick labels at the left
+  const cap = (px, size) => Math.min(px * pixelRatio, 0.2 * size);
+  return { top: cap(72, canvas.height), bottom: cap(108, canvas.height), left: cap(80, canvas.width),
+           right: cap(28, canvas.width) };
+}
+function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2);
+  const span = shownSpan();
+  if (faceOn() && state.relief === 0) {
+    // tight: the map rectangle fills the canvas minus the insets, its centre at theirs (at distance d the view is
+    // 2 d tan(fov / 2) high over canvas.height px)
+    const ins = viewInsets(), [iu, iv] = PLANE_AXES;
+    const freeW = Math.max(canvas.width - ins.left - ins.right, 1), freeH = Math.max(canvas.height - ins.top - ins.bottom, 1);
+    cam.dist = Math.max(span[iu] / freeW, span[iv] / freeH) * canvas.height / (2 * tan) || 1;
+    const perPixel = 2 * cam.dist * tan / Math.max(canvas.height, 1), { s, u } = cameraAxes();
+    const right = 0.5 * (ins.left - ins.right), up = 0.5 * (ins.bottom - ins.top);   // map centre from the canvas centre, px
+    cam.target = [0, 1, 2].map((i) => -(s[i] * right + u[i] * up) * perPixel);
+    return;
+  }
+  const aspect = canvas.width / Math.max(canvas.height, 1);
+  if (PLANAR) span[NORMAL] += reliefHeight();
   const r = 0.5 * Math.hypot(span[0], span[1], span[2]) || 1;
-  const h = r / Math.tan(fov / 2), w = r / (Math.tan(fov / 2) * Math.min(aspect, 1.0));
-  cam.dist = Math.max(h, w) * (is2d ? 0.92 : 0.86); }
+  const h = r / tan, w = r / (tan * Math.min(aspect, 1.0));
+  cam.dist = Math.max(h, w) * (PLANAR ? 0.92 : 0.86); }
 function eyeDir() { const c = Math.cos(cam.el); return [0, 1, 2].map((i) => c * (Math.cos(cam.az) * E1[i] + Math.sin(cam.az) * E2[i]) + Math.sin(cam.el) * UP[i]); }
+function cameraAxes() { const f = norm(eyeDir().map((v) => -v)); let s = norm(cross(f, UP)); if (!isFinite(s[0])) s = E1;
+  return { f, s, u: cross(s, f) }; }
 function viewMatrix() {
   const d = eyeDir(); const eye = cam.target.map((t, i) => t + cam.dist * d[i]);
   const f = norm(sub(cam.target, eye)); let s = norm(cross(f, UP)); if (!isFinite(s[0])) s = E1; const u = cross(s, f);
@@ -459,11 +558,15 @@ let themeColors = null;
 function readTheme() { const dark = getComputedStyle(document.documentElement).colorScheme === 'dark';
   themeColors = { clearTop: cssRgb('--view-top'), clearBottom: cssRgb('--view-bottom'), dark,
     line: dark ? [0.02, 0.03, 0.05, 0.45] : [0.06, 0.08, 0.12, 0.28],
-    box: dark ? [0.75, 0.8, 0.9, 0.55] : [0.25, 0.3, 0.4, 0.55] }; }
+    box: dark ? [0.75, 0.8, 0.9, 0.55] : [0.25, 0.3, 0.4, 0.55],
+    axisText: cssColor('--ink-2'), axisTick: cssColor('--ink-3'), font: getComputedStyle(document.body).fontFamily }; }
+let pixelRatio = 1;                          // device px per CSS px of the canvases
 function resize() {
   const r = canvas.getBoundingClientRect(); const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
   const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+  pixelRatio = dpr;
   if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  if (axesCanvas.width !== w || axesCanvas.height !== h) { axesCanvas.width = w; axesCanvas.height = h; }
 }
 function draw() {
   if (!gl || !ready) return;
@@ -474,41 +577,296 @@ function draw() {
   gl.useProgram(prog);
   const [lo, hi] = limits();
   const logScale = state.log && LOG_OK;
-  gl.uniformMatrix4fv(uni.uView, false, viewMatrix()); gl.uniformMatrix4fv(uni.uProj, false, projMatrix());
-  gl.uniform3fv(uni.uCenter, center);
+  const view = viewMatrix(), proj = projMatrix();
+  gl.uniformMatrix4fv(uni.uView, false, view); gl.uniformMatrix4fv(uni.uProj, false, proj);
+  gl.uniform3fv(uni.uCenter, center); gl.uniform3fv(uni.uStretch, stretch());
   gl.uniform1f(uni.uLo, lo); gl.uniform1f(uni.uHi, hi);
   gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, SIGNED ? 1 : 0);
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
-  const relief = is2d ? reliefHeight() : 0;
+  const relief = PLANAR ? reliefHeight() : 0;
   gl.uniform1f(uni.uShade, relief > 0 ? 1 : 0);
   gl.disable(gl.BLEND);
   gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);   // fills behind their mesh lines
-  gl.uniform1i(uni.uLine, 0);
-  for (const L of LAYERS) {
-    if (!L.visible) continue;
-    gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
-    gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.triBuf);
-    gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
+  gl.uniform1i(uni.uLine, 0); gl.uniform1i(uni.uPhase, Q.phase ? 1 : 0);
+  for (const I of images()) {
+    setImage(uni, I);
+    for (const L of LAYERS) {
+      if (!L.visible || selfImage(L, I)) continue;
+      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+      gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.triBuf);
+      gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
+    }
   }
   gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.uniform1i(uni.uLine, 1);
   if (state.lines) {
     gl.uniform4fv(uni.uLineColor, themeColors.line);
-    for (const L of LAYERS) {
-      if (!L.visible || !L.edgeBuf) continue;
-      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
-      gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.edgeBuf);
-      gl.drawElements(gl.LINES, L.edges.length, gl.UNSIGNED_INT, 0);
+    for (const I of images()) {
+      setImage(uni, I);
+      for (const L of LAYERS) {
+        if (!L.visible || !L.edgeBuf || selfImage(L, I)) continue;
+        gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+        gl.bindVertexArray(L.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, L.edgeBuf);
+        gl.drawElements(gl.LINES, L.edges.length, gl.UNSIGNED_INT, 0);
+      }
     }
   }
-  if (state.box && !is2d) {
+  setImage(uni, IDENTITY_IMAGE);
+  if (state.box && !PLANAR) {
     gl.uniform4fv(uni.uLineColor, themeColors.box); gl.uniform1f(uni.uRelief, 0);
     gl.bindVertexArray(boxVao); gl.drawArrays(gl.LINES, 0, boxCount);
   }
   gl.disable(gl.BLEND);
   gl.bindVertexArray(null);
+  drawGeometry(view, proj);
+  drawAxes(view, proj);
 }
+
+// ---------- axes: ticks and labels on the overlay canvas (true coordinates; composited into PNG and recordings) ----------
+const axesCanvas = $('axes'), actx = axesCanvas.getContext('2d');
+function project(point, view, proj) {
+  // a point in length units -> [x, y] device px of the canvas (as the vertex shader places it), null behind the eye
+  const f = stretch(), p = [0, 1, 2].map((c) => (point[c] - center[c]) * f[c]);
+  const v = [0, 1, 2, 3].map((r) => view[r] * p[0] + view[4 + r] * p[1] + view[8 + r] * p[2] + view[12 + r]);
+  const c = [0, 1, 3].map((r) => proj[r] * v[0] + proj[4 + r] * v[1] + proj[8 + r] * v[2] + proj[12 + r] * v[3]);
+  if (!(c[2] > 1e-12)) return null;
+  return [(c[0] / c[2] + 1) * 0.5 * canvas.width, (1 - c[1] / c[2]) * 0.5 * canvas.height];
+}
+function niceTicks(lo, hi, count) {
+  // 1-2-5 ticks inside [lo, hi] and the decimals their labels need
+  const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-9));
+  const first = Math.ceil(lo / step - 1e-9), ticks = [];
+  for (let k = first; k * step <= hi + 1e-9 * step; k++) ticks.push(k === 0 ? 0 : k * step);
+  return { ticks, decimals: Math.max(0, -Math.floor(Math.log10(step) + 1e-9)) };
+}
+function axisEdge(a, view, proj, middle) {
+  // of the box edges along axis a, the one furthest out from the box centre on screen (ties: bottom for an axis
+  // drawn across, left for one drawn upwards); null when every edge is behind the eye or seen end-on
+  const [b, c] = [0, 1, 2].filter((k) => k !== a);
+  let best = null;
+  for (const vb of [bmin[b], bmax[b]]) for (const vc of [bmin[c], bmax[c]]) {
+    const p0 = [0, 0, 0]; p0[a] = bmin[a]; p0[b] = vb; p0[c] = vc;
+    const p1 = p0.slice(); p1[a] = bmax[a];
+    const s0 = project(p0, view, proj), s1 = project(p1, view, proj);
+    if (!s0 || !s1) continue;
+    const dx = s1[0] - s0[0], dy = s1[1] - s0[1], len = Math.hypot(dx, dy);
+    if (len < 8 * pixelRatio) continue;
+    let n = [-dy / len, dx / len];
+    let out = (0.5 * (s0[0] + s1[0]) - middle[0]) * n[0] + (0.5 * (s0[1] + s1[1]) - middle[1]) * n[1];
+    if (out < 0) { n = [-n[0], -n[1]]; out = -out; }
+    const score = out + 0.05 * len * (Math.abs(dx) >= Math.abs(dy) ? n[1] : -n[0]);
+    if (!best || score > best.score) best = { score, p0, n, len, s0, s1 };
+  }
+  return best;
+}
+function drawAxes(view, proj) {
+  actx.clearRect(0, 0, axesCanvas.width, axesCanvas.height);
+  if (!state.axes) return;
+  const middle = project(center, view, proj);
+  if (!middle) return;
+  const px = pixelRatio, fontPx = 11 * px, font = fontPx + 'px ' + themeColors.font;
+  const tick = 5 * px, gap = 3 * px, f = stretch();
+  actx.lineWidth = px; actx.strokeStyle = themeColors.axisTick; actx.fillStyle = themeColors.axisText;
+  for (const a of (PLANAR ? PLANE_AXES : [0, 1, 2])) {
+    if (!(SPAN[a] > 0)) continue;
+    const edge = axisEdge(a, view, proj, middle);
+    if (!edge) continue;
+    const n = edge.n, across = Math.abs(n[1]) >= Math.abs(n[0]);   // labels below / above the edge, else beside it
+    const { ticks, decimals } = niceTicks(bmin[a], bmax[a], Math.max(2, Math.min(8, Math.round(edge.len / (90 * px)))));
+    actx.font = font;
+    actx.textAlign = across ? 'center' : (n[0] > 0 ? 'left' : 'right');
+    actx.textBaseline = across ? (n[1] > 0 ? 'top' : 'bottom') : 'middle';
+    let widest = 0;
+    actx.beginPath();
+    for (const t of ticks) {
+      const p = edge.p0.slice(); p[a] = t;
+      const s = project(p, view, proj);
+      if (!s) continue;
+      actx.moveTo(s[0], s[1]); actx.lineTo(s[0] + n[0] * tick, s[1] + n[1] * tick);
+      const text = t.toFixed(decimals);
+      actx.fillText(text, s[0] + n[0] * (tick + gap), s[1] + n[1] * (tick + gap));
+      widest = Math.max(widest, actx.measureText(text).width);
+    }
+    actx.stroke();
+    // axis title beyond the tick labels, turned along an axis drawn upwards; a stretched axis names its factor
+    const title = AXIS_NAMES[a] + ' (' + lengthUnit + ')' + (f[a] > 1 ? '  ×' + f[a] : '');
+    const reach = tick + gap + (across ? 1.3 * fontPx : widest + 0.9 * fontPx);
+    const mx = 0.5 * (edge.s0[0] + edge.s1[0]) + n[0] * reach, my = 0.5 * (edge.s0[1] + edge.s1[1]) + n[1] * reach;
+    actx.font = '600 ' + font;
+    actx.save(); actx.translate(mx, my);
+    if (across) { actx.textAlign = 'center'; actx.textBaseline = n[1] > 0 ? 'top' : 'bottom'; }
+    else { actx.rotate(n[0] > 0 ? Math.PI / 2 : -Math.PI / 2); actx.textAlign = 'center'; actx.textBaseline = 'middle'; }
+    actx.fillText(title, 0, 0);
+    actx.restore();
+  }
+}
+function composite(target) {
+  // the GL view with its axes on a 2D canvas: call right after draw() (the GL buffer is not preserved)
+  if (target.width !== canvas.width || target.height !== canvas.height) { target.width = canvas.width; target.height = canvas.height; }
+  const c = target.getContext('2d'); c.drawImage(canvas, 0, 0); c.drawImage(axesCanvas, 0, 0);
+  return target;
+}
+
+// ---------- model objects (DATA.geometry): outlines on the layers, 3D edges and see-through surfaces ----------
+// own programs: lines are screen-space quads (WebGL draws 1 px lines only), one instance per segment (start, end, arc
+// length at the start: dashes for subtracted composite inputs), placed like the field (centre, stretch)
+const GEOM = DATA.geometry || null;
+const GEOM_LINES = GEOM ? GEOM.lines.map((G) => Object.assign({}, G, { rows: f32(G.segments) })) : [];
+const GEOM_FACES = GEOM ? GEOM.faces.map((G) => Object.assign({}, G, { pos: f32(G.positions) })) : [];
+const HAS_EDGES = GEOM_LINES.some((G) => G.kind === 'edge');
+const HAS_OUTLINES = GEOM_LINES.some((G) => G.kind === 'outline');   // false: no object crosses the shown planes
+const GEOM_MODES = !(GEOM_LINES.length || GEOM_FACES.length) ? [] : [
+  ['outline', (HAS_EDGES ? 'Cut outlines' : 'Outlines') + (HAS_OUTLINES ? '' : ' (none on these planes)')],
+  ...(HAS_EDGES ? [['edges', 'Edges']] : []),
+  ...(GEOM_FACES.length ? [['glass', 'Glass']] : []), ['off', 'Off']];
+state.geom = !GEOM_MODES.length ? 'off' : (!PLANAR && HAS_EDGES ? 'edges' : 'outline');
+state.geomColor = ['auto', 'white', 'black', 'material'].includes(store('geom_color')) ? store('geom_color') : 'auto';
+const MAT_RGB = new Map((GEOM ? GEOM.materials : []).map((m) => [m.index, hexRgb(m.color)]));
+function materialRgb(m) { return MAT_RGB.get(m) || hexRgb(GEOM.no_material_color); }
+function contrastRgba() {
+  // dark lines over a map whose middle colour is light (diverging maps), else light lines
+  const [r, g, b] = hexRgb(CMAPS[state.cmap][4]);
+  const dark = state.geomColor === 'black' || (state.geomColor !== 'white' && 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.5);
+  return dark ? [0.06, 0.07, 0.09, 0.9] : [1, 1, 1, 0.92];
+}
+function lineRgba(G) {
+  if (G.kind === 'edge') return [...materialRgb(G.material), 0.85];
+  if (G.kind === 'outline' && state.geomColor === 'material') return [...materialRgb(G.material), 1];
+  return contrastRgba();
+}
+const LINE_VS = `#version 300 es
+precision highp float;
+in vec3 aA; in vec3 aB; in float aS; in vec2 aCorner;
+uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec2 uViewport; uniform float uWidth; uniform vec3 uMirA; uniform vec3 uMirB;
+out float vAlong;
+void main() {
+  vec4 ca = uProj * uView * vec4((aA * uMirA + uMirB - uCenter) * uStretch, 1.0);
+  vec4 cb = uProj * uView * vec4((aB * uMirA + uMirB - uCenter) * uStretch, 1.0);
+  vec2 sa = ca.xy / max(ca.w, 1e-6) * uViewport, sb = cb.xy / max(cb.w, 1e-6) * uViewport;
+  vec2 d = sb - sa; float len = length(d);
+  vec2 dir = len > 1e-6 ? d / len : vec2(1.0, 0.0);
+  vec4 c = mix(ca, cb, aCorner.x);
+  // half a width to each side, and past each end so the joints between segments close (uWidth in device px)
+  c.xy += (vec2(-dir.y, dir.x) * aCorner.y + dir * (2.0 * aCorner.x - 1.0)) * uWidth * c.w / uViewport;
+  vAlong = aS + aCorner.x * distance(aA, aB);
+  gl_Position = c;
+}`;
+const LINE_FS = `#version 300 es
+precision highp float;
+in float vAlong; uniform vec4 uColor; uniform float uDash;
+out vec4 outColor;
+void main() {
+  if (uDash > 0.0 && mod(vAlong, 2.0 * uDash) > uDash) discard;
+  outColor = uColor;
+}`;
+const GLASS_VS = `#version 300 es
+precision highp float;
+in vec3 aPos; uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter; uniform vec3 uStretch;
+uniform vec3 uMirA; uniform vec3 uMirB;
+out vec3 vViewPos;
+void main() { vec4 vp = uView * vec4((aPos * uMirA + uMirB - uCenter) * uStretch, 1.0); vViewPos = vp.xyz; gl_Position = uProj * vp; }`;
+const GLASS_FS = `#version 300 es
+precision highp float;
+in vec3 vViewPos; uniform vec4 uColor;
+out vec4 outColor;
+void main() {
+  // faces seen edge-on read stronger (a rim), faces turned to the eye lighter
+  float facing = abs(normalize(cross(dFdx(vViewPos), dFdy(vViewPos))).z);
+  outColor = vec4(uColor.rgb * (0.8 + 0.3 * facing), uColor.a * (1.6 - 0.9 * facing));
+}`;
+let geometryGL = null, lineProg = null, glassProg = null;   // geometryGL: null = not set up yet, false = nothing / failed
+const lineUni = {}, glassUni = {};
+function linkProgram(vs, fs, names, into) {
+  const p = gl.createProgram(); gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p); if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  for (const name of names) into[name] = gl.getUniformLocation(p, name);
+  return p;
+}
+function setupGeometryGL() {
+  if (!GEOM_MODES.length) return false;
+  lineProg = linkProgram(LINE_VS, LINE_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uViewport', 'uWidth', 'uColor', 'uDash',
+                                            'uMirA', 'uMirB'], lineUni);
+  const corners = new Float32Array([0, -1, 1, -1, 1, 1, 0, -1, 1, 1, 0, 1]);
+  const aCorner = gl.getAttribLocation(lineProg, 'aCorner');
+  const rowAttributes = [['aA', 3, 0], ['aB', 3, 12], ['aS', 1, 24]].map(([n, size, offset]) => [gl.getAttribLocation(lineProg, n), size, offset]);
+  for (const G of GEOM_LINES) {
+    G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao);
+    vertexBuffer(aCorner, corners, 2, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, G.rows, gl.STATIC_DRAW);
+    for (const [loc, size, offset] of rowAttributes) if (loc >= 0) {
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 28, offset); gl.vertexAttribDivisor(loc, 1); }
+  }
+  if (GEOM_FACES.length) {
+    glassProg = linkProgram(GLASS_VS, GLASS_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uColor', 'uMirA', 'uMirB'], glassUni);
+    const aPos = gl.getAttribLocation(glassProg, 'aPos');
+    for (const G of GEOM_FACES) { G.vao = gl.createVertexArray(); gl.bindVertexArray(G.vao); vertexBuffer(aPos, G.pos, 3, gl.STATIC_DRAW); }
+  }
+  gl.bindVertexArray(null);
+  return true;
+}
+function drawGeometry(view, proj) {
+  if (geometryGL === null) {
+    try { geometryGL = setupGeometryGL(); }
+    catch (err) { geometryGL = false; $('geom').disabled = true; $('geom').title = 'Model objects: WebGL error ' + err.message; }
+  }
+  if (!geometryGL || state.geom === 'off') return;
+  const f = stretch();
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  if (state.geom === 'glass' && glassProg) {   // after the opaque layers, no depth writes: every surface shows through
+    gl.useProgram(glassProg);
+    gl.uniformMatrix4fv(glassUni.uView, false, view); gl.uniformMatrix4fv(glassUni.uProj, false, proj);
+    gl.uniform3fv(glassUni.uCenter, center); gl.uniform3fv(glassUni.uStretch, f);
+    gl.depthMask(false);
+    for (const I of images()) {
+      setImage(glassUni, I);
+      for (const G of GEOM_FACES) {
+        gl.uniform4fv(glassUni.uColor, [...materialRgb(G.material), 0.16]);
+        gl.bindVertexArray(G.vao); gl.drawArrays(gl.TRIANGLES, 0, G.count);
+      }
+    }
+    gl.depthMask(true);
+  }
+  gl.useProgram(lineProg);
+  gl.uniformMatrix4fv(lineUni.uView, false, view); gl.uniformMatrix4fv(lineUni.uProj, false, proj);
+  gl.uniform3fv(lineUni.uCenter, center); gl.uniform3fv(lineUni.uStretch, f);
+  gl.uniform2f(lineUni.uViewport, canvas.width, canvas.height);
+  if (PLANAR) gl.disable(gl.DEPTH_TEST);       // one plane seen face-on (or raised by relief): outlines on top
+  const dash = 0.008 * (Math.max(...SPAN) || 1);
+  for (const I of images()) {
+    setImage(lineUni, I);
+    for (const G of GEOM_LINES) {
+      if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
+      if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
+      gl.uniform4fv(lineUni.uColor, lineRgba(G));
+      gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : G.kind === 'edge' ? 1.25 : 1.75) * pixelRatio);
+      gl.uniform1f(lineUni.uDash, G.dashed ? dash : 0);
+      gl.bindVertexArray(G.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, G.count);
+    }
+  }
+  gl.enable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.bindVertexArray(null);
+}
+function syncGeometry() {
+  $('geom').value = state.geom; $('geomcolor').value = state.geomColor; $('geomcolor').disabled = state.geom === 'off';
+  // material legend when material colours are shown (edges, glass, or material-coloured outlines)
+  const shown = GEOM && state.geom !== 'off' && (state.geom !== 'outline' || state.geomColor === 'material');
+  $('mats').hidden = !shown || !GEOM.materials.length;
+  if (!$('mats').hidden) $('mats').replaceChildren(...GEOM.materials.map((m) => {
+    const s = document.createElement('span'), chip = document.createElement('i');
+    chip.style.background = m.color; s.append(m.name, chip); return s; }));
+}
+$('geomgroup').style.display = GEOM_MODES.length ? '' : 'none';
+$('geom').replaceChildren(...GEOM_MODES.map(([key, label]) => new Option(label, key)));
+$('geom').onchange = (e) => { state.geom = e.target.value; syncGeometry(); };
+$('geomcolor').onchange = (e) => { state.geomColor = e.target.value; store('geom_color', state.geomColor); syncGeometry(); };
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if ((e.key === 'g' || e.key === 'G') && GEOM_MODES.length) {
+    const keys = GEOM_MODES.map(([key]) => key); state.geom = keys[(keys.indexOf(state.geom) + 1) % keys.length]; syncGeometry(); }
+});
+syncGeometry();
 
 // ---------- readout and legend ----------
 function updateReadout() {
@@ -521,6 +879,8 @@ function updateReadout() {
   if (F.empty) parts.push('no value in this frame');
   const planes = LAYERS.filter((L) => L.name && L.visible).map((L) => L.name + ' ' + lengthUnit);
   if (planes.length) parts.push(planes.join(', '));
+  if (state.stretch && CAN_STRETCH) parts.push('stretched ' + STRETCH_TEXT);
+  if (state.mirror && CAN_MIRROR) parts.push('mirrored at ' + MIRRORS.map((M) => M.face).join(', '));
   $('rm').textContent = parts.join('  ·  ');
   $('framev').textContent = NF > 1 ? (state.frame + 1) + ' / ' + NF : '';
   const [lo, hi] = limits();
@@ -542,6 +902,11 @@ function syncControls() {
   $('decades').style.display = state.log && LOG_OK ? '' : 'none';
   $('lines').setAttribute('aria-pressed', String(state.lines));
   $('box').setAttribute('aria-pressed', String(state.box));
+  $('axesbtn').setAttribute('aria-pressed', String(state.axes));
+  $('stretch').setAttribute('aria-pressed', String(state.stretch));
+  $('stretch').style.display = CAN_STRETCH ? '' : 'none';   // the thin axes change with the mirror images
+  $('stretch').title = 'Stretch the thin axes so the field fills the view (' + STRETCH_TEXT + '); off: true proportions (T)';
+  $('mirror').setAttribute('aria-pressed', String(state.mirror));
   $('spin').setAttribute('aria-pressed', String(state.spin));
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
@@ -553,8 +918,11 @@ $('speedgroup').style.display = KIND === 'time' ? '' : 'none';
 $('scale').style.display = NF > 1 ? '' : 'none';
 $('scale').value = state.scale;
 $('log').style.display = LOG_OK ? '' : 'none';
-$('reliefgroup').style.display = is2d ? '' : 'none';
-$('box').style.display = is2d ? 'none' : '';
+$('reliefgroup').style.display = PLANAR ? '' : 'none';
+$('box').style.display = PLANAR ? 'none' : '';
+$('mirror').style.display = CAN_MIRROR ? '' : 'none';
+$('mirror').title = 'Mirror images across the symmetry planes: the whole structure, not only the simulated part ('
+  + MIRRORS.map((M) => M.face + (M.sign < 0 ? (Q.phase ? ': phase + π' : ': field × −1') : '')).join(', ') + ') (M)';
 $('lines').disabled = !LAYERS.some((L) => L.edges);
 if ($('lines').disabled) $('lines').title = 'Mesh lines (too many cells to draw them)';
 $('frame').max = String(Math.max(NF - 1, 0));
@@ -577,10 +945,14 @@ $('log').onclick = () => { state.log = !state.log; updateReadout(); syncControls
 $('decades').onchange = (e) => { state.decades = +e.target.value; updateReadout(); };
 $('range').oninput = (e) => { state.range = +e.target.value; updateReadout(); syncControls(); };
 $('relief').oninput = (e) => { const was = state.relief; state.relief = +e.target.value;
-  if (is2d && was === 0 && state.relief > 0 && cam.el > 1.4) cam.el = 0.75;   // tilt so the relief shows
+  if (was === 0 && state.relief > 0 && faceOn()) { cam.el = NORMAL === 2 ? 0.75 : 0.6; cam.target = [0, 0, 0]; }   // tilt so the relief shows
   fitDistance(); syncControls(); };
 $('lines').onclick = () => { state.lines = !state.lines; syncControls(); };
 $('box').onclick = () => { state.box = !state.box; syncControls(); };
+$('axesbtn').onclick = () => { state.axes = !state.axes; syncControls(); };
+$('stretch').onclick = () => { state.stretch = !state.stretch; fitDistance(); updateReadout(); syncControls(); };
+$('mirror').onclick = () => { state.mirror = !state.mirror; setBounds(state.mirror); writeBox(); cam.target = [0, 0, 0];
+  fitDistance(); updateReadout(); syncControls(); };
 $('spin').onclick = () => { state.spin = !state.spin; syncControls(); };
 $('present').onclick = () => { document.body.classList.toggle('present'); syncControls(); setTimeout(() => { resize(); fitDistance(); }, 0); };
 $('theme').onclick = () => {
@@ -591,20 +963,22 @@ $('theme').onclick = () => {
 function fileStem() { return (DATA.title || 'field').replace(/[^\w.-]+/g, '_').slice(0, 60); }
 function download(href, name) { const a = document.createElement('a'); a.href = href; a.download = name;
   document.body.appendChild(a); a.click(); a.remove(); }
-$('png').onclick = () => { draw(); download(canvas.toDataURL('image/png'), fileStem() + '.png'); };
-let recorder = null;
+$('png').onclick = () => { draw(); download(composite(document.createElement('canvas')).toDataURL('image/png'), fileStem() + '.png'); };
+let recorder = null, recordCanvas = null;   // recordings capture the composite (view + axes), refreshed after each draw
 $('record').onclick = () => {
   if (recorder) { recorder.stop(); return; }
-  if (!canvas.captureStream || !window.MediaRecorder) { alert('This browser cannot record the canvas.'); return; }
+  recordCanvas = document.createElement('canvas');
+  if (!recordCanvas.captureStream || !window.MediaRecorder) { recordCanvas = null; alert('This browser cannot record the canvas.'); return; }
   const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
   const type = types.find((t) => MediaRecorder.isTypeSupported(t)) || '';
   const chunks = [];
-  recorder = new MediaRecorder(canvas.captureStream(60), type ? { mimeType: type, videoBitsPerSecond: 16e6 } : {});
+  draw(); composite(recordCanvas);
+  recorder = new MediaRecorder(recordCanvas.captureStream(60), type ? { mimeType: type, videoBitsPerSecond: 16e6 } : {});
   recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
   recorder.onstop = () => {
     const blob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' });
     download(URL.createObjectURL(blob), fileStem() + (blob.type.includes('mp4') ? '.mp4' : '.webm'));
-    recorder = null; $('rec').classList.remove('on'); $('record').textContent = 'Record';
+    recorder = null; recordCanvas = null; $('rec').classList.remove('on'); $('record').textContent = 'Record';
     state.spin = spinBefore; syncControls();
   };
   const spinBefore = state.spin;
@@ -625,7 +999,10 @@ window.addEventListener('keydown', (e) => {
   else if (k === 'p' || k === 'P') $('present').click();
   else if (k === 'f' || k === 'F') { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); }
   else if ((k === 'l' || k === 'L') && !$('lines').disabled) $('lines').click();
-  else if ((k === 'b' || k === 'B') && !is2d) $('box').click();
+  else if ((k === 'b' || k === 'B') && !PLANAR) $('box').click();
+  else if (k === 'a' || k === 'A') $('axesbtn').click();
+  else if ((k === 't' || k === 'T') && CAN_STRETCH) $('stretch').click();
+  else if ((k === 'm' || k === 'M') && CAN_MIRROR) $('mirror').click();
   else if (k === 's' || k === 'S') $('spin').click();
 });
 
@@ -644,7 +1021,7 @@ canvas.addEventListener('pointermove', (e) => {
     if (pinch) cam.dist *= pinch / d; pinch = d; return;
   }
   if (pan) {
-    const f = norm(eyeDir().map((v) => -v)); let s = norm(cross(f, UP)); if (!isFinite(s[0])) s = E1; const u = cross(s, f);
+    const { s, u } = cameraAxes();
     const k = cam.dist * 0.0018;
     cam.target = cam.target.map((t, i) => t - (s[i] * dx - u[i] * dy) * k);
   } else {
@@ -665,6 +1042,7 @@ function tick(now) {
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
   }
   draw();
+  if (recordCanvas) composite(recordCanvas);
   requestAnimationFrame(tick);
 }
 readTheme();

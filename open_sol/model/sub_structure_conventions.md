@@ -209,7 +209,11 @@ templates, describe. Current state, no changelog.
   unset (`z_param_set`). Every per-z consumer goes through `geometry._section(shape, z)` -> (key, plain parts) and the
   footprint through `_footprint` (`is_plain` = neither), so a new 3D kind or option extends `_section` (and
   `surface_faces`, the 3D preview surface), never a consumer. `scene_3d.build_scene` colours an object by the last
-  material of `material_paint_order` naming it ('all': legend only); a composite draws its primitive inputs. A taper
+  material of `material_paint_order` naming it ('all': legend only); a composite draws its primitive inputs
+  (`plane_outlines`, the web page's outlines on a 2D map / 3D cut, shares those leaves and owners: z cuts through
+  `outline(z=)`, x / y cuts through `vertical_section`, lifted to 3D coordinates; api's default live cut planes
+  are the window cells at the field physics' mirror planes, else `object_cut_targets` (through the material objects,
+  leaving out per axis those spanning the domain), else the window middle). A taper
   makes every z cell its own run; `domain_object_rasterizer(reuse=)` keeps each object's last (key, mask). Mesh snap
   faces come only from `geometry.axis_parallel_faces` (meshing `_add_refinement` / `_add_z_refinement`); curved and
   tilted walls stay staircased. Selftest `model_3d_core` calls builder internals (`BuildContext`,
@@ -861,9 +865,28 @@ templates, describe. Current state, no changelog.
   the previous result with beta = feature value x beta_growth^(s - n); a beta change invalidates the cached point
   (`problem.last = None`). Default stored fields add `<physics>.design_density` (`StudyType.default_stored_fields(spec)`,
   used only when StudySpec.stored_fields is []).
+- time_dependent snapshots: output_interval > 0 wins, else n_snapshots (default 20, GUI and `api.run`) evenly from
+  t = 0 to the final state (interval duration / (n - 1)). A study type whose snapshots are an extra, not its result,
+  lists the settings that store only the final state in `StudyType.final_state_settings` (keys checked against its
+  params): `api.run(snapshots=False)` and the self-tests apply them (root sub file "api.run").
 - StudySpec.stored_fields [] (the default) stores every `session.available_fields()` entry in each snapshot
   (`_stored_field_keys`: primaries first): a new renderer field must be readable after every study solve its
   `requires_study` allows, else every default run of that type fails at its first snapshot.
+- Snapshot solutions (`RunControl.keep_solutions`: GUI worker on, `api.run` / CLI / self-tests off ->
+  `session.keep_solutions` in `_run_built`): besides the stored fields each Snapshot keeps per physics in
+  `Snapshot.solutions` what every field of it renders from, chosen by `_SnapshotRecorder._solutions`: the study's
+  `selections` {physics: (select, key)} first (a SelectedSolution: `_numbered_snapshots` modes / resonances,
+  pulsed FDTD harmonic frequencies, nonlinear channels; the study notes each select in `session.live_selections` via
+  `study._select`, which the read restores afterwards), else LIVE_SOLUTION on the final record (the state the session
+  keeps) and for `recorder.fixed_physics` (background physics, optomechanics optics), else a StoredSolution of a
+  `solver_hooks.SolutionStateSolver` (host copies; `materials=True` for `recorder.changing_materials`: coupling /
+  DMU targets, optimization all) while they fit a quarter of the free host RAM (one info line, later snapshots none);
+  blank physics none. `Session.snapshot_field(index, component, physics, plane)` = the stored field (exact plane),
+  else `restored_snapshot` (backup = the solver's own solution_state / the live selection, runner.t = the snapshot's
+  time) + `canvas_field`: any field, any 3D cut. Solutions never leave the session: `Session.close`, kept sweep
+  snapshots (`_KeptSweepFields.take`), parity-sector merges and adaptation `keep_levels` copies drop them; summary
+  `snapshot_solutions` lists the physics per snapshot. A new study that selects a kept solution passes `selections`
+  and calls `_select`; one that re-solves a physics after a snapshot must not put it in `fixed_physics`.
 - thermal_noise (`study_thermal_noise.py`, background 'stationary'): roles by Protocol, not `_solver_roles` (noise =
   ThermalNoiseSolver = every heat; modes = ModeSolver; the rest background, dt_limit inf), background solve +
   `_apply_background_couplings`, `study._solve_mode_snapshots(..., final_last=False)`, then

@@ -11,14 +11,17 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   Save run (`MainWindow._save_run`: `api.save_session_run` in a `bridge.call`, the `run --out` files; log.txt = the
   Messages lines since the last Build / Compute, `_job_log` capped; summary model.file = the document path at the
   request). The results panel then names that cause in its banner and skips session fetches after a sweep whose last
-  value failed. Exports sit in the Results dock's Export menu (`ResultsPanel.export_menu`, the tab bar's corner;
-  MainWindow adds its actions and greys out each with nothing to export in `_update_export_actions`, also on
-  aboutToShow: field data needs `canvas.current_field`; the web pages (`_web_page_target`) the Save run state plus the
-  Field tab's field (`ResultsPanel.selected_field_key`), a 'dft_fields' kind (the DFT tab's monitor,
-  `selected_dft_key`, else the first) or exactly one 'mode_shapes' kind in `last_build_summary.feature_results`).
-  `MainWindow._export_web_page` (the Open ... in browser entries) calls `api.export_session_html` (Results.export_html:
-  viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing into `web_page_directory()` (temporary folder,
-  one file per model and target, no save dialog), then opens it with QDesktopServices (failure names the file).
+  value failed. View in browser (web page of the canvas field) has one path: the canvas button
+  (`ModelCanvas._browser_button`, a child of `_plot_area` placed over the plot frame's top-right corner by
+  `_update_browser_button` from `_place_plot` / `_set_mode`; field view with a field only) and the Results Field tab's
+  export-row button both emit `canvas.view_in_browser_requested` -> `MainWindow._view_in_browser`. Its
+  `_web_page_target` needs the Save run state and `canvas.current_field`: the field's physics' only 'mode_shapes' result
+  (the animation), a 'dft_' component (`_dft_field_data`) -> `ResultsPanel.shown_dft_key` (set by `_show_dft_field`),
+  else 'physics.component'. Never greyed out: a click with nothing to view says so in the status bar. It calls
+  `api.export_session_html` (Results.export_html: viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing
+  into `web_page_directory()` (temporary folder, one file per model and target, no save dialog), then opens it with
+  QDesktopServices (failure names the file). It passes no `planes=`: a live 3D page gets api's default x, y and z
+  cuts through the structure (one shown cut alone was a worse page: a single plane, often missing the objects).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
   definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not
@@ -33,7 +36,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   model's Build is at the base value; until then `built_parameters(results_spec or document spec, study summary)`), so
   a 'results' / 'all' change redraws every result view and refetches a chosen line-curve profile (`session.field` at
   the curve's plane, else the Field tab's z cut (mid-height while a side cut is shown), whose change refetches it too;
-  a `snapshot` curve reads `session.snapshots[i].fields`, its index resolved on the GUI thread from the summary labels).
+  a `snapshot` curve reads `_session_snapshot_field`, its index resolved on the GUI thread from the summary labels).
 - Result curve plots (every tab but Field, DFT, Derived values, Parity sectors and the far-field polar plot) are
   `plot_view.ResultPlotView`s made by `ResultsPanel._plot_view` (exports stamped by `_export_metadata`; None without
   results_spec: curve-data export refused). Contract: `plots()` -> [(name, xy or None)], xy = x (SI), x_label, x_unit,
@@ -241,7 +244,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   'canvas_plot_style'; placed by ResultsPanel at the end of the Field tab); fixed colour limits override the field's /
   replay range in `_update_field_image` (lowest >= highest: ignored); 'Log colour' images hold `_color_values` = log10
   of values clipped at `_field_log_floor`, levels and colour-bar axis in log10; hover readout and data exports keep the
-  values. `_redraw` and `_update_field_image` end with its `apply()`. Its Export plot (and Export > Export figure) is
+  values. `_redraw` and `_update_field_image` end with its `apply()`. Its Export plot is
   `scene_export`: visible ImageItems as drawn (RGBA), overlays in z order and the colour bar to
   `save_curve_figure(scene=)`; ROIs are left out. A new overlay item type needs a case in `plot_controls._scene_layers`.
 - Canvas interaction: hit tests respect object_kinds, allow_outer_faces, allow_interior; select clicks are ignored in
@@ -286,6 +289,10 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 - Snapshot slider (`_setup_snapshot_slider`): starts at the summary's `live_snapshot` (kept values: their last
   `Snapshot.live`), else the last snapshot, so its label names the state the canvas shows (eigenfrequency keeps
   resonance 1 live).
+- Snapshot solutions (model sub file): a session snapshot whose summary `snapshot_solutions` entry lists the field's
+  physics shows any field and any cut (`_snapshot_solution`; replay: every snapshot, `every_snapshot=True`); every
+  session snapshot read goes through `_session_snapshot_field` (worker: `Session.snapshot_field`, else the nearest
+  held cut), never `session.snapshots[i].fields` directly. Kept sweep values have none.
 - Snapshot replay (Play): one `bridge.call` fetches every snapshot's FieldData of the field (`_replay_frames`, dropped
   by `_setup_snapshot_slider` via `_replay_token`); cached slider moves show frames with `color_range` over all frames
   ('Fixed colour limits' off: None). Any other `canvas.show_field(field_data)` resets the range;
@@ -321,12 +328,14 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   composites have no outline; side views select and highlight only (draw tools / ROIs refused); mesh / PML use the
   graded z edges. The field view takes the shown field's plane (`canvas._field_view`; `_view_is_stale` compares the
   cut); there View combo / cut spin emit `field_cut_requested` -> ResultsPanel `_on_canvas_cut_requested`, and the row
-  keeps the shown cut until the fetched field arrives; outlines, hover and axis labels follow `FieldData.axes`.
+  keeps the shown cut until the fetched field arrives; outlines, hover and axis labels follow `FieldData.axes`. A
+  field's z cut in the Top view sets `_EvaluatedModel.cut` = its z (`_spin_axis` 'z': the cut spin replaces the Layer
+  combo) and shows the layer holding it; the edited `_layer` is kept, and leaving the field view re-evaluates.
 - 3D results: 'Cut plane' axis + position (from `BuildSummary.x / y / z_centers`) -> `plane` of
   `session.display_field`; live frames are the mid-height z cut; a snapshot shows the stored cut nearest the chosen
-  position (`_snapshot_field` matches by `FieldData.plane`); a vertical axis without a summary `stored_cuts` entry is
-  refused and the combos set back (`_set_plane_choice`), never a fallback to the z cut (it would switch the canvas view
-  and refit). `_replay_key` = (field key, `_snapshot_plane()`); while a snapshot is shown (`_snapshot_shown`) a
+  position (`_snapshot_field` matches by `FieldData.plane`; a kept solution: exactly that cut); a vertical axis
+  without a summary `stored_cuts` entry or kept solution is refused and the combos set back (`_set_plane_choice`),
+  never a fallback to the z cut (it would switch the canvas view and refit). `_replay_key` = (field key, `_snapshot_plane()`); while a snapshot is shown (`_snapshot_shown`) a
   cut-plane change refetches that snapshot. A line curve without its own plane uses the chosen cut only when it is a z
   cut (`_line_curve_plane`), else mid-height; a 3D-segment line curve fetches `session.segment_profile` (a snapshot's
   `segments[curve name]`). Drawn profiles on a side cut carry `axes` and `plane_<axis>` into exports. 'Export volume…'

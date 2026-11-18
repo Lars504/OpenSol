@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import array_module_of, to_host
+from ...core.backend import array_module_of, host_copy, to_host, write_host_into
 from ...core.constants import DTYPE, FACES
 from ...core.fv_diffusion import edge_extension_views
 from ...core.half_storage import half_bits
@@ -39,6 +39,7 @@ GRAPH_STEPS = 32             # lattice steps of the largest graph; the rest of a
 _MAX_STEP_GRAPHS = 16        # graph keys kept (5 sizes per argument set; stale ones belong to replaced wall tables /
                              # relaxation / force args)
 _AXIS_FACES = {'x': ('x_lo', 'x_hi'), 'y': ('y_lo', 'y_hi')}
+_SHOWN_FIELDS = ('u_x', 'u_y', 'u_abs', 'pressure', 'body_force_x', 'body_force_y')   # FluidFields2D the renderer reads
 _INWARD_NORMAL = {'x_lo': (1.0, 0.0), 'x_hi': (-1.0, 0.0), 'y_lo': (0.0, 1.0), 'y_hi': (0.0, -1.0)}
 
 
@@ -312,6 +313,27 @@ class FluidPhysics(PhysicsSolver):
 
     def renderer(self):
         return FluidRenderer(self)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ------------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the published SI fields and coupled forces (full grid; the renderer never reads the
+        populations, which stay live) and the lattice step count of the time label; materials: viscosity and the fluid
+        mask the vorticity reads."""
+        state = {'fields': {name: host_copy(getattr(self.fields, name)) for name in _SHOWN_FIELDS},
+                 'total_steps': self.total_steps}
+        if materials:
+            state['viscosity'] = host_copy(self.domain.materials.viscosity)
+            state['fluid'] = host_copy(self._fluid)
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (the fluid mask is a step-graph argument: its pointer stays)."""
+        for name, values in state['fields'].items():
+            write_host_into(getattr(self.fields, name), values)
+        self.total_steps = state['total_steps']
+        if 'viscosity' in state:
+            write_host_into(self.domain.materials.viscosity, state['viscosity'])
+            write_host_into(self._fluid, state['fluid'])
 
     # --- fluid API (features, scripts) -------------------------------------------
 

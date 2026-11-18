@@ -1,7 +1,7 @@
 """EM MaterialGrid arrays per polarisation (register_em_arrays), the DrudePole / LorentzPole dispersion poles and the
 TFSF box outline warnings."""
 import numpy as np
-from ...core.backend import array_module_of
+from ...core.backend import array_module_of, host_copy, write_host_into
 
 from ...core.constants import DTYPE, EPS0
 
@@ -24,6 +24,28 @@ def register_em_arrays(materials, polarization):
             if name not in registered:
                 array_module_of(materials.eps_r).copyto(materials.add_property(name, 1.0), materials.eps_r)
     materials.add_properties(EM_MATERIAL_SCHEMAS[polarization])
+
+
+def material_solution_state(solver, names) -> dict:
+    """Snapshot solutions (materials=True): host copies of the MaterialGrid arrays `names` and of the crystallinity of
+    the solver's phase_change_media (both written by couplings)."""
+    materials = solver.domain.materials
+    return {'arrays': {name: host_copy(getattr(materials, name)) for name in names},
+            'crystallinity': [host_copy(medium.crystallinity) for medium in getattr(solver, 'phase_change_media', ())]}
+
+
+def restore_material_solution(solver, state) -> None:
+    """Write a material_solution_state back in place, without materials_changed (a snapshot read only renders and the
+    live state is written back the same way afterwards)."""
+    materials = solver.domain.materials
+    for name, values in state['arrays'].items():
+        write_host_into(getattr(materials, name), values)
+    media = getattr(solver, 'phase_change_media', ())
+    if len(media) != len(state['crystallinity']):
+        raise RuntimeError(f"{type(solver).__name__} restore_solution: {len(state['crystallinity'])} phase-change media "
+                           f'in the state, {len(media)} in the solver (a state of another build?)')
+    for medium, values in zip(media, state['crystallinity']):
+        write_host_into(medium.crystallinity, values)
 
 
 def tfsf_outline_warnings(physics, boxes, uniform=False):

@@ -28,6 +28,11 @@ cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md`.
 - Transient `step(t, every * dt_sync)` stores T at the end of the implicit-Euler interval: `heat.time`, its
   `time_label` and probe times lead runner.t / Snapshot.time by up to (every-1) dt_sync (the last may pass t_end;
   documented, not deferred).
+- Snapshot solutions: `HeatPhysics.solution_state` = T / Q / Q_ext, `DiffusionSystem.solution_state` (unknown, face
+  rhs, `n_assemblies` + dirty marks), face BCSides, time / step marks (materials: k). heat_flux_abs reads the
+  assembly: a state of another assembly dirties the operator on restore (the read re-assembles from the restored k /
+  BCs, the live restore dirties it again); on the same one only the face rhs swap (rhs_drive / rhs_offset untouched).
+  FEM: `system.values` + per-element arrays, flux recomputed on read (materials: the solve's k tensor).
 - Backends: fields on `domain.xp`; the rise / temperature conversions pick the cupy kernel or its numpy twin in
   `prepare`; the thermo-optic kernel is a twin ('heat.thermo_optic_index_shift'); thermal_noise.py reads every array by
   `to_host` (the particle operator is assembled on the host on both backends). Self-test diffusion_cpu_gpu

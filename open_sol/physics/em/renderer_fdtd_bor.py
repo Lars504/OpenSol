@@ -77,9 +77,11 @@ class BORFDTDRenderer(_EMRendererBase):
     _cached = None
 
     def _centre_samples(self):
-        """em.centre_samples() once per engine step (several components of one snapshot share it)."""
+        """em.centre_samples() once per engine step and restored snapshot solution (several components of one
+        snapshot share it)."""
         engine = self.em.engine
-        key = ('instant', engine, None if engine is None else engine.n_step)   # the object: a rebuilt engine misses
+        # the engine object: a rebuilt engine misses; solution_serial: a restored snapshot (or the live state after it)
+        key = ('instant', engine, None if engine is None else engine.n_step, self.em.solution_serial)
         if self._cached_key != key:
             self._cached_key, self._cached = key, self.em.centre_samples()
         return self._cached

@@ -319,6 +319,24 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
             return self.field_dofs('sigma_e'), np.asarray(to_host(self.eps_xy()), dtype=np.float64)
         return super().fem_field(component)
 
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of the shown solve (coefficients, element fields, nodal renderer fields, omega / resonance);
+        materials: the material arrays and the hz eps_xy change too."""
+        state = self._triangle_solution_state(materials)
+        state['solution'] = None if self.solution is None else self.solution.copy()
+        if materials:
+            state['coupled_eps_xy'] = self._coupled_eps_xy_state()
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back; the system is not reassembled (a snapshot read only renders)."""
+        self._restore_triangle_solution(state)
+        self.solution = None if state['solution'] is None else state['solution'].copy()
+        if 'materials' in state:
+            self._restore_coupled_eps_xy(state['coupled_eps_xy'])
+
     # --- sources, probes ---
 
     def _add_source(self, source):

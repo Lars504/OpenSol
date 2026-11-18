@@ -8,9 +8,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import to_host, write_host_into
 from ...core.constants import DTYPE, FACES_3D, MU0
 from ...core.damped_iteration import DampedIteration, DampingSettings
+from ...core.fv_diffusion import host_copies, write_host_copies
 from ...core.monitors import FieldProbe
 from ...fem.assembly3d import assemble_lagrange_gradient_load_3d, rule_values_3d
 from ...fem.diffusion3d import FEMDiffusionPhysicsBase3D, coefficient_tensor_3d
@@ -157,6 +158,31 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
 
     def renderer(self):
         return LagrangeSampleRenderer(self, 'magnetic', MAGNETIC_3D_FIELD_INFOS, self._time_label)
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of what lagrange_field reads: the unknown u (phi_m; also the next solve's start), the per-element
+        fields and, while elements saturate, the assembled mu (mu_eff); materials: mu_dc_xx / _yy / _zz."""
+        state = {'values': self.system.values.copy(),
+                 'element_values': {name: values.copy() for name, values in self._values.items()},
+                 'assembled': (self._assembled.copy() if self._nonlinear is not None and self._assembled is not None
+                               else None)}
+        if materials:
+            state['materials'] = host_copies(self._material_arrays())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back (u in place; the per-element dict and the assembled mu are replaced per solve)."""
+        write_host_into(self.system.values, state['values'])
+        self._values = {name: values.copy() for name, values in state['element_values'].items()}
+        if state['assembled'] is not None:
+            self._assembled = state['assembled'].copy()
+        if 'materials' in state:
+            write_host_copies(self._material_arrays(), state['materials'])
+
+    def _material_arrays(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in _PERMEABILITY_NAMES}
 
     def scalars(self) -> dict:
         """energy [J], per coil <name>_flux_linkage [Wb] / <name>_inductance [H]; {} before a solve."""

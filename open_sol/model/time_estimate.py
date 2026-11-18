@@ -499,12 +499,18 @@ def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_k
 
 def _snapshot_count(study) -> tuple:
     """(snapshots one run records, count kind): frequency_response one per frequency ('all') or the last, none with
-    'none'; any other study its final one (a guess: time series and iterations may record more)."""
+    'none'; time_dependent per output_interval or n_snapshots (+ the final one); any other study its final one (a
+    guess: iterations may record more)."""
     setting = study.values.get('snapshots')
     if setting == 'none':
         return 0.0, 'exact'
     if study.type == 'frequency_response':
         return (float(study.counts.get('harmonic_points', 1) or 1) if setting == 'all' else 1.0), 'exact'
+    if study.type == 'time_dependent':
+        interval, duration = float(study.values['output_interval']), float(study.values['duration'])
+        if interval > 0.0:   # t = 0, interval, ... below the end, then the final state
+            return float(math.ceil(duration / interval - 1e-9) + 1), 'exact'
+        return float(study.values['n_snapshots']), 'exact'
     return 1.0, 'guess'
 
 

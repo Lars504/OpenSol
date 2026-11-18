@@ -6,7 +6,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import host_copy, to_host, write_host_into
 from ...core.constants import DTYPE, EPS0, MU0
 from ...core.cut_cells import union_test
 from ...core.mirror import MIRROR_SIGNS, plane_wave_mirror_issue
@@ -32,6 +32,7 @@ MATERIAL_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy', 'sigma_e', 'mu_r', 'sigma_m')
 PERMITTIVITY_SLOT = 'eps_r_update'
 PERMITTIVITY_SLOTS = {PERMITTIVITY_SLOT: 'eps_r', 'eps_xx_update': 'eps_xx', 'eps_yy_update': 'eps_yy'}
 HALF_STORAGE_PEAK = 16.0   # stored units of the estimated peak field: ~4000x headroom below the fp16 max
+_YEE_COMPONENTS = ('ex', 'ey', 'ez', 'hx', 'hy', 'hz')   # Fields3D arrays (the real set; Bloch's imag set is not shown)
 
 
 class EM3DSlots:
@@ -289,6 +290,47 @@ class EMPhysics3D(EM3DSlots, PhysicsSolver):
                     warnings.append(warning)
                 self._reported_warnings.add(warning)
         return warnings
+
+    # ---- snapshot solutions (solver_hooks.SolutionStateSolver) ----
+    def solution_state(self, materials=False):
+        """Host copies of what the renderer reads outside the harmonic phasors: the six Yee components as stored (fp16
+        stored units under half_storage, full grid: centring reads the lo rows), the absorbed-power windows (pole
+        work deposited first) and the engine time; materials: eps_r too."""
+        engine = self.engine
+        engine.deposit_pole_work()
+        state = {name: host_copy(getattr(self.fields, name)) for name in _YEE_COMPONENTS}
+        state['time'] = float(engine.time)
+        state['q_accum'] = None if engine.q_accum is None else host_copy(engine.q_accum)
+        state['q_accum_time'] = float(engine.q_accum_time)
+        state['last_q_accum'] = None if engine.last_q_accum is None else host_copy(engine.last_q_accum)
+        state['last_q_accum_time'] = float(engine.last_q_accum_time)
+        if materials:
+            state['eps_r'] = host_copy(self.domain.materials.eps_r)
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back in place (graph-captured arrays keep their pointers); the field scale is fixed
+        for the engine's life, so stored units need no conversion."""
+        engine = self.engine
+        for name in _YEE_COMPONENTS:
+            write_host_into(getattr(self.fields, name), state[name])
+        engine.time = state['time']
+        if (state['q_accum'] is None) != (engine.q_accum is None):
+            raise RuntimeError('em_fdtd_3d restore_solution: absorbed-power accumulation was switched on or off '
+                               'since this state was taken')
+        if engine.q_accum is not None:
+            write_host_into(engine.q_accum, state['q_accum'])
+        engine.q_accum_time = state['q_accum_time']
+        last = state['last_q_accum']
+        if last is None:
+            engine.last_q_accum = None
+        else:
+            if engine.last_q_accum is None:
+                engine.last_q_accum = self.domain.xp.empty(last.shape, dtype=last.dtype)
+            write_host_into(engine.last_q_accum, last)
+        engine.last_q_accum_time = state['last_q_accum_time']
+        if 'eps_r' in state:
+            write_host_into(self.domain.materials.eps_r, state['eps_r'])
 
     # ---- frequency_domain study (harmonic FDTD) ----
     def attach_harmonic(self, frequencies):

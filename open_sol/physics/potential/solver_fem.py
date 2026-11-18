@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import to_host, write_host_into
 from ...core.constants import DTYPE
-from ...core.fv_diffusion import BCSide
+from ...core.fv_diffusion import BCSide, host_copies, write_host_copies
 from ...core.mirror import touch_factor
 from ...fem.diffusion import FEMDiffusionPhysicsBase, coefficient_tensor, element_means
 from ...fem.indicators import diffusion_indicator
@@ -161,6 +161,26 @@ class FEMPotentialMixin:
         self._values_changed()
         return ('V', self.spec.source_field)
 
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of what the renderer reads: the unknown (V nodal), the per-element fields; materials: the
+        rendered coefficient arrays (_rendered_material_names)."""
+        state = {'values': self.system.values.copy(), 'fields': host_copies(self.fields)}
+        if materials:
+            state['materials'] = host_copies(self._rendered_materials())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (no solve or assembly state changes)."""
+        write_host_into(self.system.values, state['values'])
+        write_host_copies(self.fields, state['fields'])
+        if 'materials' in state:
+            write_host_copies(self._rendered_materials(), state['materials'])
+
+    def _rendered_materials(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in self._rendered_material_names}
+
     # --- internals ------------------------------------------------------------
     def _source(self):
         """Host float64 source_ext + source per element."""
@@ -213,6 +233,7 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
                  linear_solver=None):
         self._init_potential(kind)
         self._operator_arrays = self.spec.coefficient_arrays
+        self._rendered_material_names = self.spec.coefficient_arrays[:2]   # the xx / yy renderer fields
         self._init_fem(domain, order, linear_solver, axisymmetric, lambda: f"{self.spec.label} '{self.name}'",
                        'potential', self.spec.anchor_text, REMEDY_TEXT)
         self.electrolytes = []   # ElectrolyteRegions of add_electrolyte_region, reported by scalars()
@@ -223,6 +244,14 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
 
     def finalize(self) -> None:
         self.rebuild_operator()
+
+    def solution_state(self, materials=False) -> dict:
+        """FEMPotentialMixin.solution_state plus the element mean V of the ion concentrations."""
+        return {**super().solution_state(materials), 'mean_potential': self._mean_potential.copy()}
+
+    def restore_solution(self, state) -> None:
+        super().restore_solution(state)
+        self._mean_potential = state['mean_potential'].copy()   # replaced per solve, never written in place
 
     def state(self) -> dict:
         fields, spec = self.fields, self.spec

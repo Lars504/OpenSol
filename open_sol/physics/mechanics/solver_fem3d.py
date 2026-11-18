@@ -54,7 +54,7 @@ from .piezo_fem3d import (block_layout, check_permittivity_3d, coupled_mass_3d, 
                           permittivity_tensor_3d, piezo_tensor_3d, potential_active)
 from .pml3d import DEFAULT_PML_REFLECTION, elastic_pml_shell_3d, ring_wave_speed
 from .renderer3d import SolidRenderer3D
-from .solver_common import MATERIAL_STATE_ARRAYS, FEMSolidCommon, host_array as _host
+from .solver_common import MATERIAL_STATE_ARRAYS, FEMSolidCommon, _copy_or_none, host_array as _host
 from .stiffness3d import check_positive_definite_3d, element_stiffness_3d, stress_3d, thermal_stress_3d
 from .system_fem3d import ElasticFEMSystem3D
 from .tangent_update import TangentPolicy, newton_proposer
@@ -1163,6 +1163,32 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._write_outputs(False, complex_displacement=np.array(displacement), prestress=False, omega=omega)
         self._electrode_values = {}
         self._shows_complex = True
+
+    # --- snapshot solutions (FEMSolidCommon.solution_state hooks) ----------------
+    def _shown_solution(self) -> dict:
+        """Host copies of what the pending outputs compute from: displacement, potential, a shown complex solution and
+        the _write_outputs settings."""
+        return {'unknown': np.array(self.system.unknown), 'potential': _copy_or_none(self._potential),
+                'complex': _copy_or_none(self._complex_displacement), 'thermal': self._output_thermal,
+                'prestress': self._output_prestress, 'omega': self._output_omega,
+                'green_lagrange': self._output_green_lagrange}
+
+    def _show_solution_state(self, shown) -> None:
+        """Show a _shown_solution again: its outputs pending, computed on the next read."""
+        self.system.unknown = shown['unknown'].copy()
+        self._potential = _copy_or_none(shown['potential'])
+        self._write_outputs(shown['thermal'], complex_displacement=_copy_or_none(shown['complex']),
+                            prestress=shown['prestress'], green_lagrange=shown['green_lagrange'], omega=shown['omega'])
+
+    def _computed_outputs(self) -> dict:
+        """Host copy of the complex solution the Im u fields read directly (lagrange_field), beside the computed
+        outputs."""
+        return {'complex': _copy_or_none(self._complex_displacement)}
+
+    def _restore_computed_outputs(self, computed) -> None:
+        """Set _computed_outputs back (None: nothing shown)."""
+        self._complex_displacement = None if computed is None else _copy_or_none(computed['complex'])
+        self._point_cache = {}
 
     # --- display fields ---------------------------------------------------------
 

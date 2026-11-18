@@ -1,12 +1,13 @@
 """3D preview scene of a 3D model (view_3d C; numpy only, GUI-thread safe): surface faces of every domain object in
-its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there)."""
+its material's paint order, point / line glyphs and highlights; drawn by viz.scene_figure (no model import there).
+Also the object outlines on one plane (a 2D model's drawing plane or a 3D cut) for the field web page."""
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from .geometry import (GEOMETRY_KINDS, UNION_KINDS, composite_inputs, consumed_objects, domain_size, domain_size_z,
-                       expand_entities, is_array_copy, material_paint_order, material_selections, point_z,
-                       resolve_geometry, surface_faces)
+                       expand_entities, is_array_copy, material_paint_order, material_selections, outline, point_z,
+                       resolve_geometry, surface_faces, vertical_section)
 from .spec import outer_faces
 
 _FACE_BUDGET = 6000          # automatic n_segments keeps about this many faces over all round objects
@@ -61,10 +62,7 @@ def build_scene(spec, parameters, registry=None, highlight=(), n_segments=None) 
         highlighted = set()
     scene.highlighted_faces = [face for face in (*outer_faces(spec), 'all') if face in highlighted]
     owners, scene.background = _material_owners(spec)
-    consumed = consumed_objects(spec)
-    tops = [name for name, shape in shapes.items() if GEOMETRY_KINDS[shape.kind].entity_kind == 'domain'
-            and name not in consumed and not is_array_copy(name)]   # copies are leaves of their array
-    leaves = [(top, leaf, solid) for top in tops for leaf, solid in _leaves(top, shapes, True)]
+    leaves = _domain_leaves(spec, shapes)
     if n_segments is None:
         n_round = sum(shapes[leaf].kind in ('circle', 'ellipse', 'cylinder_z', 'sphere')
                       or (shapes[leaf].kind == 'rounded_rectangle' and shapes[leaf].values['r'] > 0.0)
@@ -89,6 +87,88 @@ def build_scene(spec, parameters, registry=None, highlight=(), n_segments=None) 
             vertices = np.array([[values[x_key], values[y_key], height] for x_key, y_key in ends], dtype=np.float64)
             scene.glyphs.append(SceneGlyph(name, vertices, categories.get(name, ''), name in highlighted))
     return scene
+
+
+def object_cut_targets(scene, full_fraction=0.99) -> dict:
+    """{axis: middle [m] of the material objects' extent inside the domain along it}, leaving out on each axis the
+    objects spanning >= full_fraction of the domain there (substrates, guides running through); axes with none
+    left are missing (callers take the window middle)."""
+    boxes = []
+    for solid in scene.solids:
+        if solid.solid and solid.faces and solid.material is not None:
+            points = np.concatenate([np.asarray(face, dtype=np.float64).reshape(-1, 3) for face in solid.faces])
+            boxes.append((points.min(axis=0), points.max(axis=0)))
+    targets = {}
+    for index, axis in enumerate('xyz'):
+        kept = [(low[index], high[index]) for low, high in boxes
+                if high[index] - low[index] < full_fraction * scene.size[index]]
+        if kept:
+            targets[axis] = 0.5 * (min(low for low, _ in kept) + max(high for _, high in kept))
+    return targets
+
+
+@dataclass(eq=False)
+class PlaneOutline:
+    """Outline polylines of one primitive on a plane, float64 (N, 3) [m] (2D models: z = 0); name = its top object."""
+    name: str
+    polylines: list
+    material: int | None       # index into spec.materials of the winning material, None = none
+    solid: bool = True         # False: subtracted / intersected composite input (drawn dashed)
+
+
+def plane_outlines(spec, parameters, plane=None, n_segments=128) -> tuple:
+    """([PlaneOutline] of every domain primitive crossing the plane, [SceneGlyph] of the point / line objects (2D
+    models only), problems) on plane None = a 2D model's drawing plane, (axis, position [m]) a cut of a 3D model."""
+    size_z = domain_size_z(spec, parameters)
+    if (plane is None) != (size_z is None):
+        raise ValueError('plane outlines: a 2D model takes plane None, a 3D model an (axis, position) cut, got '
+                         f'{plane!r}')
+    errors = {}
+    shapes = resolve_geometry(spec, parameters, errors=errors)
+    problems = [f'{name}: {message}' for name, message in errors.items()]
+    owners, _ = _material_owners(spec)
+    outlines = []
+    for top, leaf, solid in _domain_leaves(spec, shapes):
+        try:
+            polylines = _plane_polylines(leaf, shapes, plane, size_z, n_segments)
+        except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
+            problems.append(f'{leaf}: {exc}')
+            continue
+        if polylines:
+            outlines.append(PlaneOutline(top, polylines, owners.get(top), solid))
+    glyphs = []
+    if plane is None:
+        for name, shape in shapes.items():
+            if GEOMETRY_KINDS[shape.kind].entity_kind in ('point', 'line'):
+                vertices = outline(name, shapes)[0]
+                glyphs.append(SceneGlyph(name, np.column_stack([vertices, np.zeros(len(vertices))])))
+    return outlines, glyphs, problems
+
+
+def _plane_polylines(name, shapes, plane, size_z, n_segments) -> list:
+    """(N, 3) polylines of a primitive on the plane (None: the 2D drawing plane at z = 0; a z cut: its cross-section
+    there; an x / y cut: geometry.vertical_section, whose u is the other horizontal axis)."""
+    if plane is None or plane[0] == 'z':
+        height = 0.0 if plane is None else float(plane[1])
+        polylines = outline(name, shapes, n_segments, z=None if plane is None else height)
+        return [np.column_stack([polyline, np.full(len(polyline), height)]) for polyline in polylines]
+    axis, position = plane[0], float(plane[1])
+    lifted = []
+    for polyline in vertical_section(name, shapes, (axis, position), size_z, n_segments=n_segments):
+        points = np.empty((len(polyline), 3), dtype=np.float64)
+        points[:, 0 if axis == 'y' else 1] = polyline[:, 0]
+        points[:, 1 if axis == 'y' else 0] = position
+        points[:, 2] = polyline[:, 1]
+        lifted.append(points)
+    return lifted
+
+
+def _domain_leaves(spec, shapes) -> list:
+    """[(top object, primitive, solid)] of every drawn domain object (array copies are leaves of their array)."""
+    consumed = consumed_objects(spec)
+    tops = [name for name, shape in shapes.items() if GEOMETRY_KINDS[shape.kind].entity_kind == 'domain'
+            and name not in consumed and not is_array_copy(name)]
+    return [(top, leaf, solid) for top in tops for leaf, solid in _leaves(top, shapes, True)]
 
 
 def _material_owners(spec) -> tuple:

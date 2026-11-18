@@ -84,7 +84,9 @@ Sub file of the root `structure_conventions.md` (read that first). Laminar flow 
   elastic_waves when `acoustics.definition.estimated_time_step` (imported inside `_wave_step_issues`) gives 3 nu dt /
   dx^2 < MIN_TAU_OFFSET. `n_solves` counts marches / transient calls (coupling revisions).
 - SI outputs (u_x, u_y, u_abs, pressure) full-grid, written on the window after each march / step, edge-extended into
-  a PML ring; vorticity on request (renderer).
+  a PML ring; vorticity on request (renderer). Snapshot solutions copy these + body_force_x / _y and total_steps (not
+  the populations: the renderer never reads them); materials adds viscosity and `_fluid` (a step-graph argument:
+  written in place).
 - initial_velocity (`set_initial_flow`): kept until `finalize` (dt_lbm known); `_start_from_initial_flow` writes the
   equilibrium populations, sets `_lattice_dt`, publishes t = 0 fields. Must stay after `_refresh_lattice` (it zeroes
   cells that were not fluid before).

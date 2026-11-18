@@ -87,6 +87,8 @@ class MagneticACPhysics(MagneticPhysics):
 
     type_label = 'magnetic_fields_ac'
     _base_material_schema = MAGNETIC_AC_SCHEMA
+    _solution_fields = AC_FIELD_NAMES                                   # solution_state (MagneticPhysics)
+    _rendered_materials = ('mu_dc_xx', 'mu_dc_yy', 'sigma_dc_xx')
     _probe_field = 'A_abs'
     _probe_label = 'vector potential amplitude probe'
 

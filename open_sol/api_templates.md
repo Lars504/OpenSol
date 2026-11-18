@@ -6215,7 +6215,7 @@ Heat + solid mechanics 3D, stationary: a 1 x 1 x 0.5 mm silicon block on a 300 K
 
 ### `solid_bloch_band_diagram_3d` - Phononic nanobeam band diagram (3D)
 
-Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (Results dock Export > Open mode animation in browser, or show <run dir> --html: animated modes beside the band diagram).
+Solid mechanics 3D on builtin tetrahedra: one unit cell (a = 0.5 um) of a free-standing silicon nanobeam (0.25 x 0.25 um core) with a 0.75 um wide wing over the middle half of the period, periodic along x with bloch_kx = k_fraction 2 pi / a swept over 0-0.5 (Gamma-X); an eigenfrequency study per k lists the 8 bands nearest 4 GHz (resonance_table; target > 0 drops the rigid modes at Gamma). The bands per k form the band diagram; gaps between them are the phononic band gaps of the corrugation. mode_shapes keeps every mode on the beam surface per k (View in browser on the canvas showing a solid field, or show <run dir> --html: animated modes beside the band diagram).
 
 ```json
 {

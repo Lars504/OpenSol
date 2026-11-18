@@ -7,7 +7,7 @@ import numpy as np
 from ...core.backend import cp, to_host
 from ...core.constants import DTYPE, STEFAN_BOLTZMANN
 from ...core.cut_cells import locate_held_edges
-from ...core.fv_diffusion import DiffusionPhysicsBase, DiffusionSystem
+from ...core.fv_diffusion import DiffusionPhysicsBase, DiffusionSystem, host_copies, write_host_copies
 from ...solvers.line_block import LineBlockSolver
 from ...solvers.sparse_direct import SparseDirectSolver
 
@@ -387,6 +387,42 @@ class HeatPhysics(DiffusionPhysicsBase):
         self._extend_into_pml()
         self.xp.copyto(self._Q_window, self.xp.asarray(fields['Q'], dtype=DTYPE))
         return ('T', 'Q')
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of what the renderer reads: full-grid T, Q, Q_ext, the system's solution_state (rise, face
+        rhs: heat_flux_abs), the face BCs, time and step marks; materials: the k arrays (heat_flux_abs) too."""
+        state = {'fields': host_copies(self._solution_arrays()), 'system': self.system.solution_state(),
+                 'bcs': {face: getattr(self.bcs, face) for face in self.system.faces}, 'time': self.time,
+                 'theta_stale': self._theta_stale, 'capacity_stale': self._capacity_stale,
+                 'assembled_time_step': self._assembled_time_step}
+        if materials:
+            state['materials'] = host_copies(self._conduction_arrays())
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place; a state of an older assembly dirties the operator, so heat_flux_abs
+        re-assembles from the restored k / BCs (and the live state after it: one re-assembly at the next step)."""
+        write_host_copies(self._solution_arrays(), state['fields'])
+        for face, bc in state['bcs'].items():   # BCSides are replaced, never mutated: references suffice
+            setattr(self.bcs, face, bc)
+        if 'materials' in state:
+            write_host_copies(self._conduction_arrays(), state['materials'])
+        self.system.restore_solution(state['system'])
+        self.time = state['time']
+        self._theta_stale = state['theta_stale']
+        self._capacity_stale = state['capacity_stale']
+        self._assembled_time_step = state['assembled_time_step']
+
+    def _solution_arrays(self) -> dict:
+        fields = self.fields
+        return {'T': fields.T, 'Q': fields.Q, 'Q_ext': fields.Q_ext}
+
+    def _conduction_arrays(self) -> dict:
+        """MaterialGrid arrays of the conduction operator (k_zz on a 3D domain only)."""
+        materials = self.domain.materials
+        names = ('k_xx', 'k_yy', 'k_xy', 'k_zz') if self.system.dimensions == 3 else ('k_xx', 'k_yy', 'k_xy')
+        return {name: getattr(materials, name) for name in names}
 
     def add_thermal_noise(self, monitor):
         """Register a thermal_noise.ThermalNoiseMonitor (thermal_noise study hook solve_thermal_noise fills it)."""

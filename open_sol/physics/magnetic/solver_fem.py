@@ -8,8 +8,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import to_host
+from ...core.backend import to_host, write_host_into
 from ...core.constants import DTYPE, FACES, MU0
+from ...core.fv_diffusion import host_copies, write_host_copies
 from ...core.monitors import FieldProbe
 from ...core.solver_base import PhysicsSolver
 from ...fem.indicators import CHUNK_ITEMS, add_edge_terms, edge_sides, lagrange_at
@@ -59,9 +60,31 @@ class TriangleMagneticBase(PhysicsSolver):
     coordinate_grids = ('cartesian',)
     conformal_locator = None     # moot on triangles: the elements follow the drawn outlines
     _probe_component = 'A'
+    _element_field_names = ()    # ElementFields attributes (subclass)
+    _rendered_materials = ()     # MaterialGrid arrays among the renderer fields (subclass)
 
     def _label(self):
         return f"{self.type_label} '{self.name}'"
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver; the subclass adds its nodal state) ---
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the per-element fields; materials: _rendered_materials."""
+        state = {'fields': host_copies(self._element_arrays())}
+        if materials:
+            state['materials'] = host_copies(self._material_arrays())
+        return state
+
+    def restore_solution(self, state) -> None:
+        write_host_copies(self._element_arrays(), state['fields'])
+        if 'materials' in state:
+            write_host_copies(self._material_arrays(), state['materials'])
+
+    def _element_arrays(self) -> dict:
+        return {name: getattr(self.fields, name) for name in self._element_field_names}
+
+    def _material_arrays(self) -> dict:
+        materials = self.domain.materials
+        return {name: getattr(materials, name) for name in self._rendered_materials}
 
     def inject_source(self, name: str, array) -> None:
         if name != 'current_density':
@@ -154,6 +177,8 @@ class MagneticFEMPhysics(TriangleMagneticBase):
 
     type_label = 'magnetostatics'
     material_schema = dict(MAGNETIC_SCHEMA)
+    _element_field_names = ELEMENT_FIELDS
+    _rendered_materials = ('mu_dc_xx', 'mu_dc_yy')
 
     def __init__(self, domain, axisymmetric: bool = False, discretization: str = 'quadratic', linear_solver=None,
                  nonlinear_tolerance: float = 1e-6, nonlinear_max_iterations: int = 100,
@@ -336,6 +361,17 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         self.xp.copyto(self.fields.J_coupled, self.xp.asarray(fields['source'], dtype=DTYPE))
         self._source_dirty = True
         return ('A', 'J_coupled')
+
+    def solution_state(self, materials=False) -> dict:
+        """TriangleMagneticBase.solution_state plus the nodal A (also the next Newton start) and the nodal B / H."""
+        nodal = {name: values.copy() for name, values in self._nodal.items()}
+        return {**super().solution_state(materials), 'values': self.system.values.copy(), 'nodal': nodal}
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back (A in place; the nodal display dict is replaced per solve)."""
+        super().restore_solution(state)
+        write_host_into(self.system.values, state['values'])
+        self._nodal = {name: values.copy() for name, values in state['nodal'].items()}
 
     # --- display fields -----------------------------------------------------------
     def fem_field(self, component) -> tuple:

@@ -70,6 +70,8 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
     type_label = 'magnetic_fields_ac'
     material_schema = dict(MAGNETIC_AC_SCHEMA)
     _probe_component = 'A_abs'
+    _element_field_names = AC_FIELD_NAMES
+    _rendered_materials = ('mu_dc_xx', 'mu_dc_yy', 'sigma_dc_xx')
 
     def __init__(self, domain, frequency: float, axisymmetric: bool = False, discretization: str = 'quadratic',
                  host_solver=None):
@@ -295,6 +297,17 @@ class MagneticACFEMPhysics(TriangleMagneticBase):
         self.xp.copyto(self.fields.J_coupled, self.xp.asarray(fields['source'], dtype=DTYPE))
         self._source_dirty = True
         return ('J_coupled',)
+
+    def solution_state(self, materials=False) -> dict:
+        """TriangleMagneticBase.solution_state plus the full-mesh complex A and nodal B of the display."""
+        nodal_flux = None if self._nodal_flux is None else self._nodal_flux.copy()
+        return {**super().solution_state(materials), 'values': self.values.copy(), 'nodal_flux': nodal_flux}
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back (A and the nodal B are replaced per solve, never written in place)."""
+        super().restore_solution(state)
+        self.values = state['values'].copy()
+        self._nodal_flux = None if state['nodal_flux'] is None else state['nodal_flux'].copy()
 
     # --- display fields -----------------------------------------------------------
     def fem_field(self, component) -> tuple:

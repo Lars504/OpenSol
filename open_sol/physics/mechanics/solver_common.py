@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.backend import array_module, ndimage_module, sparse_module, to_host
+from ...core.backend import array_module, host_copy, ndimage_module, sparse_module, to_host, write_host_into
 from ...core.constants import DTYPE
 from ...core.error_indicators import compliance, face_jump_indicator
 from ...core.solver_base import PhysicsSolver
@@ -150,6 +150,18 @@ def host_array(array) -> np.ndarray:
     return np.asarray(to_host(array), dtype=np.float64)
 
 
+def _require_published(unpublished_frequency, label) -> None:
+    """RuntimeError when the shown fields are not the last solved frequency's (a fields-free solve of the field policy):
+    a solution_state then would hold another frequency's fields."""
+    if unpublished_frequency is not None:
+        raise RuntimeError(f'{label}: the shown fields are not those of the last solved frequency '
+                           f'({unpublished_frequency:.6g} Hz, skipped by the field policy): no solution state of it')
+
+
+def _copy_or_none(array):
+    return None if array is None else np.array(array)
+
+
 class FEMSolidCommon(HostInputCache):
     """The FEM solids' shared layer (SolidMechanicsFEMPhysics on triangles, SolidMechanicsFEMPhysics3D on tetrahedra):
     records and Newton reporting, element masks / values, the temperature change and density reads, the loads flag;
@@ -237,6 +249,51 @@ class FEMSolidCommon(HostInputCache):
     def rebuild_operator(self) -> None:
         self._assemble()
 
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ----------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of the input fields and the shown solution: without materials its displacement and output
+        settings (_shown_solution; the outputs recompute on read, on this assembly), with materials (couplings may
+        re-assemble) the computed outputs, nodal values and E / nu. RuntimeError while a sweep frequency is unpublished."""
+        _require_published(self._unpublished_frequency, self._label())
+        state = {'inputs': {name: host_copy(getattr(self.fields, name)) for name in self.input_arrays}}
+        if not materials:
+            state['assembly'] = self._stiffness   # identity only: restore refuses a state of another assembly
+            state['shown'] = None if not (self._pending_outputs or self._nodal) else self._shown_solution()
+            return state
+        self._ensure_outputs()
+        state['outputs'] = {name: host_copy(getattr(self.fields, name)) for name in self.output_arrays}
+        state['nodal'] = {name: np.array(values) for name, values in self._nodal.items()}
+        state['computed'] = self._computed_outputs()
+        state['materials'] = {name: host_copy(getattr(self.domain.materials, name)) for name in MATERIAL_STATE_ARRAYS}
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back: the input fields in place, then the shown solution marked pending (outputs
+        recompute on read) or the computed outputs / E / nu in place; shown None = nothing solved yet (zero outputs)."""
+        for name, values in state['inputs'].items():
+            write_host_into(getattr(self.fields, name), values)
+        self._drop_host_inputs()
+        if 'outputs' in state:
+            for name, values in state['outputs'].items():
+                write_host_into(getattr(self.fields, name), values)
+            for name, values in state['materials'].items():
+                write_host_into(getattr(self.domain.materials, name), values)
+            self._nodal = {name: values.copy() for name, values in state['nodal'].items()}
+            self._restore_computed_outputs(state['computed'])
+            self._pending_outputs = set()
+            return
+        if state['assembly'] is not self._stiffness:
+            raise RuntimeError(f'{self._label()}: the solid was re-assembled since this solution state was taken (its '
+                               'outputs would recompute on another stiffness)')
+        if state['shown'] is None:
+            for name in self.output_arrays:
+                getattr(self.fields, name).fill(0.0)
+            self._nodal = {}
+            self._restore_computed_outputs(None)
+            self._pending_outputs = set()
+            return
+        self._show_solution_state(state['shown'])
+
     def harmonic_reaction_table(self, region) -> dict:
         """'table' of the support's complex reaction per solved frequency (frequency_response.reaction_table)."""
         from .frequency_response import reaction_table   # lazy: frequency_response is the FEM solids' module
@@ -292,6 +349,7 @@ class SolidMechanicsBase(PhysicsSolver):
     output_arrays = ()
     input_arrays = ()
     source_slots = ()
+    _unpublished_frequency = None   # [Hz] a frequency response solved without showing its fields (2D field policy)
 
     def _init_solid(self, system, domain) -> None:
         """Bind the window system (ElasticSystem / ElasticSystem3D) and prepare on the domain."""
@@ -362,6 +420,25 @@ class SolidMechanicsBase(PhysicsSolver):
         xp = self.system.xp
         xp.copyto(getattr(self.fields, name), xp.asarray(array, dtype=DTYPE))
         self._loads_dirty = True
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ----------------
+    def solution_state(self, materials=False) -> dict:
+        """Host copies of every output and input field (full grid: the outputs are written eagerly per solve);
+        materials: E / nu too. RuntimeError while a frequency response's last solve is unpublished."""
+        _require_published(self._unpublished_frequency, self.system.label())
+        state = {'fields': {name: host_copy(getattr(self.fields, name))
+                            for name in self.output_arrays + self.input_arrays}}
+        if materials:
+            state['materials'] = {name: host_copy(getattr(self.domain.materials, name))
+                                  for name in MATERIAL_STATE_ARRAYS}
+        return state
+
+    def restore_solution(self, state) -> None:
+        """Write a solution_state back in place (the loads stay as they are: no re-solve follows a read)."""
+        for name, values in state['fields'].items():
+            write_host_into(getattr(self.fields, name), values)
+        for name, values in state.get('materials', {}).items():
+            write_host_into(getattr(self.domain.materials, name), values)
 
     # --- solver settings and convergence record (the system holds them) -------
 

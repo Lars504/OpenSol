@@ -4,7 +4,9 @@
 triangulation, each a 2D map or a cut plane placed in 3D) into `field_viewer.html`, a single page with no network use
 (hand-written WebGL2, data embedded as base64, values int16-quantised per frame). Frames are time snapshots (the page
 plays them), or labelled states (wavelengths, modes, DFT frequencies: a slider, no playback). `layer_from_field`
-reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames.
+reads a FieldData duck-typed (viz never imports api or model); api.Results.export_html collects the frames. An
+optional `ViewerGeometry` adds the model objects: their outlines on every layer and, in 3D, their edges and surfaces;
+`ViewerMirror`s let the page draw the mirror images of a half / quarter model (a Mirror button).
 """
 
 import json
@@ -33,19 +35,40 @@ LOG_DECADES = 9                       # log codes span hi * 10^-9 .. hi (step ~0
 LOG_CODE_RATIO = 1e-3                 # non-negative frames with lo <= this * hi get log codes (intensities, |E|)
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 _TIME_UNITS = ((1e-15, 'fs'), (1e-12, 'ps'), (1e-9, 'ns'), (1e-6, 'µs'), (1e-3, 'ms'), (1.0, 's'))
+MATERIAL_COLORS = ('#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f',
+                   '#bcbd22', '#17becf')   # matplotlib tab10, as viz.scene_figure's default material colours
+NO_MATERIAL_COLOR = '#b0b0b0'
+GLYPH_ARM = 0.012                     # half length of a point object's cross, fraction of the largest layer span
+MAX_GEOMETRY_BYTES = 8_000_000        # packed outline segments and surface triangles (float32)
+_OUTER_FACES = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
 
 
 @dataclass(eq=False)
 class ViewerLayer:
     """One sampled surface of a frame. values (nu, nv) on the u_centres x v_centres grid (m) along axes, or with
     triangulation (nodes (n, 2) in (u, v) m, triangles (k, 3)) values (n,) per node; plane (normal axis, position m)
-    places it in 3D, None = a 2D map at z = 0."""
+    places it in 3D, None = a 2D map at z = 0; extent (u0, u1, v0, v1) m clips its object outlines (None: from
+    the samples)."""
     values: np.ndarray
     u_centres: np.ndarray | None = None
     v_centres: np.ndarray | None = None
     axes: tuple = ('x', 'y')
     plane: tuple | None = None
     triangulation: tuple | None = None   # (nodes (n, 2) float, triangles (k, 3) int)
+    extent: tuple | None = None
+
+
+@dataclass(eq=False)
+class ViewerGeometry:
+    """Model objects drawn with the field (duck-typed parts, coordinates m): outlines = one list per layer of frame 0
+    of items with polylines [(N, 3)], material (index | None), solid (False: dashed); solids (3D) items with faces
+    [(N, 3) planar polygons], edges [(M, 3)], material, solid; glyphs items with vertices (1 point | 2 line, 3);
+    box = the 3D domain size (outlined and fitted by the page) or None."""
+    material_names: list
+    outlines: list
+    solids: list = field(default_factory=list)
+    glyphs: list = field(default_factory=list)
+    box: tuple | None = None
 
 
 @dataclass(eq=False)
@@ -61,6 +84,16 @@ class ViewerQuantity:
     label: str
     unit: str = ''
     signed: bool = False                 # True: diverging colour maps, limits symmetric about 0
+    phase: bool = False                  # an angle in rad on (-pi, pi]: an odd mirror image shifts it by pi
+
+
+@dataclass(eq=False)
+class ViewerMirror:
+    """A mirror plane of the model the page can unfold across: face 'x_lo' ... 'z_hi', position (m) of the plane on
+    its axis, value_sign of the field's image (+1 even, -1 odd: negated, a phase shifted by pi)."""
+    face: str
+    position: float
+    value_sign: int = 1
 
 
 def _centres(centres, low, high, count):
@@ -82,13 +115,14 @@ def layer_from_field(field_data) -> ViewerLayer:
         nodes, triangles, node_values = _clipped_triangulation(
             np.asarray(nodes, dtype=np.float64).reshape(-1, 2), np.asarray(triangles).reshape(-1, 3),
             np.asarray(node_values, dtype=np.float64).reshape(-1), field_data.extent)
-        return ViewerLayer(values=node_values, axes=axes, plane=plane, triangulation=(nodes, triangles))
+        return ViewerLayer(values=node_values, axes=axes, plane=plane, triangulation=(nodes, triangles),
+                           extent=tuple(float(edge) for edge in field_data.extent))
     values = np.asarray(field_data.values, dtype=np.float64)
     if values.ndim != 2 or min(values.shape) < 2:
         raise ValueError(f'field {field_data.physics}.{field_data.component}: a map needs at least 2 x 2 samples, '
                          f'got shape {values.shape} (a 1D field is a curve: export a figure)')
     u0, u1, v0, v1 = (float(edge) for edge in field_data.extent)
-    return ViewerLayer(values=values, axes=axes, plane=plane,
+    return ViewerLayer(values=values, axes=axes, plane=plane, extent=(u0, u1, v0, v1),
                        u_centres=_centres(field_data.x_centers, u0, u1, values.shape[0]),
                        v_centres=_centres(field_data.y_centers, v0, v1, values.shape[1]))
 
@@ -195,7 +229,8 @@ def _strided(layer, stride):
         return layer
     return ViewerLayer(values=_block_mean(layer.values, stride, (0, 1)),
                        u_centres=_block_mean(layer.u_centres, stride, (0,)),
-                       v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane)
+                       v_centres=_block_mean(layer.v_centres, stride, (0,)), axes=layer.axes, plane=layer.plane,
+                       extent=layer.extent)
 
 
 def _log_floor(low, high):
@@ -325,12 +360,270 @@ def strided_layer(layer, stride) -> ViewerLayer:
     return _strided(layer, stride)
 
 
+# ---- model objects ----
+def _layer_extent(layer):
+    """(u0, u1, v0, v1) m of a layer: its extent, else the sample range (grid: plus half an end cell)."""
+    if layer.extent is not None:
+        return tuple(float(edge) for edge in layer.extent)
+    if layer.triangulation is not None:
+        nodes = np.asarray(layer.triangulation[0], dtype=np.float64).reshape(-1, 2)
+        return float(nodes[:, 0].min()), float(nodes[:, 0].max()), float(nodes[:, 1].min()), float(nodes[:, 1].max())
+    bounds = []
+    for centres in (np.asarray(layer.u_centres, dtype=np.float64), np.asarray(layer.v_centres, dtype=np.float64)):
+        bounds += [centres[0] - 0.5 * (centres[1] - centres[0]), centres[-1] + 0.5 * (centres[-1] - centres[-2])]
+    return tuple(float(edge) for edge in bounds)
+
+
+def _segments(polylines):
+    """float64 (n, 7) rows (start xyz, end xyz, arc length at the start) of (N, 3) polylines (m)."""
+    rows = []
+    for polyline in polylines:
+        points = np.asarray(polyline, dtype=np.float64).reshape(-1, 3)
+        if len(points) < 2:
+            continue
+        lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+        starts = np.concatenate([[0.0], np.cumsum(lengths)[:-1]])
+        rows.append(np.column_stack([points[:-1], points[1:], starts]))
+    return np.vstack(rows) if rows else np.empty((0, 7))
+
+
+def _clipped_segments(segments, layer):
+    """Segment rows clipped to the layer's extent in its (u, v) axes (Liang-Barsky, edges inclusive); misses and
+    zero-length pieces dropped, arc lengths moved with the start."""
+    start, delta = segments[:, 0:3], segments[:, 3:6] - segments[:, 0:3]
+    t_low, t_high = np.zeros(len(segments)), np.ones(len(segments))
+    u0, u1, v0, v1 = _layer_extent(layer)
+    for axis, low, high in ((_AXIS_INDEX[layer.axes[0]], u0, u1), (_AXIS_INDEX[layer.axes[1]], v0, v1)):
+        step, origin = delta[:, axis], start[:, axis]
+        inside = (origin >= low) & (origin <= high)
+        moving = step != 0.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            to_low, to_high = (low - origin) / step, (high - origin) / step
+        t_low = np.maximum(t_low, np.where(moving, np.minimum(to_low, to_high), np.where(inside, -np.inf, np.inf)))
+        t_high = np.minimum(t_high, np.where(moving, np.maximum(to_low, to_high), np.where(inside, np.inf, -np.inf)))
+    keep = (t_high > t_low) & np.any(delta != 0.0, axis=1)
+    start, delta, t_low, t_high = start[keep], delta[keep], t_low[keep], t_high[keep]
+    arc = segments[keep, 6] + t_low * np.linalg.norm(delta, axis=1)
+    return np.column_stack([start + t_low[:, None] * delta, start + t_high[:, None] * delta, arc])
+
+
+def _glyph_segments(glyphs, arm, three_d):
+    """Segment rows of point / line objects: a line its segment, a point a cross of half length arm (m) along x, y
+    (and z in 3D)."""
+    polylines = []
+    for glyph in glyphs:
+        vertices = np.asarray(glyph.vertices, dtype=np.float64).reshape(-1, 3)
+        if len(vertices) > 1:
+            polylines.append(vertices)
+            continue
+        for axis in range(3 if three_d else 2):
+            offset = np.zeros(3)
+            offset[axis] = arm
+            polylines.append(np.vstack([vertices[0] - offset, vertices[0] + offset]))
+    return _segments(polylines)
+
+
+def _polygon_triangles(polygon):
+    """float64 (k, 3, 3) triangles of a planar simple polygon (N, 3): a fan when convex, else ear clipping in the
+    plane of its largest normal component."""
+    points = np.asarray(polygon, dtype=np.float64).reshape(-1, 3)
+    if len(points) > 3 and np.allclose(points[0], points[-1]):
+        points = points[:-1]
+    if len(points) < 3:
+        return np.empty((0, 3, 3))
+    normal = np.cross(points, np.roll(points, -1, axis=0)).sum(axis=0)   # Newell
+    first, second = (axis for axis in range(3) if axis != int(np.argmax(np.abs(normal))))
+    flat = points[:, [first, second]]
+    order = list(range(len(points)))
+    if np.sum(flat[:, 0] * np.roll(flat[:, 1], -1) - np.roll(flat[:, 0], -1) * flat[:, 1]) < 0.0:
+        order.reverse()   # counter-clockwise in the projection
+
+    def turn(a, b, c):
+        return (flat[b, 0] - flat[a, 0]) * (flat[c, 1] - flat[b, 1]) - (flat[b, 1] - flat[a, 1]) * (flat[c, 0] - flat[b, 0])
+
+    tolerance = 1e-12 * float(np.ptp(flat, axis=0).max()) ** 2
+    count = len(order)
+    if all(turn(order[k - 1], order[k], order[(k + 1) % count]) >= -tolerance for k in range(count)):
+        fan = [(order[0], order[k], order[k + 1]) for k in range(1, count - 1)]
+        return points[np.array(fan)]
+    triangles = []
+    while len(order) > 3:
+        for k in range(len(order)):
+            a, b, c = order[k - 1], order[k], order[(k + 1) % len(order)]
+            if turn(a, b, c) <= tolerance:
+                continue   # reflex or degenerate corner
+            if any(turn(a, b, p) > tolerance and turn(b, c, p) > tolerance and turn(c, a, p) > tolerance
+                   for p in order if p not in (a, b, c)):
+                continue   # another vertex inside: not an ear
+            triangles.append((a, b, c))
+            order.pop(k)
+            break
+        else:
+            break          # no ear (a self-touching polygon): fan the rest
+    triangles += [(order[0], order[k], order[k + 1]) for k in range(1, len(order) - 1)]
+    return points[np.array(triangles)]
+
+
+def _geometry_data(geometry, layers, scale):
+    """JSON of the model objects: materials, line groups (kind 'outline' per layer, 'edge', 'glyph'; segment rows
+    float32 in length units) and surface triangles per material (3D solids)."""
+    if len(geometry.outlines) != len(layers):
+        raise ValueError(f'geometry has outlines for {len(geometry.outlines)} layers, the frames have {len(layers)}')
+    lines, faces, used, total = [], [], set(), 0
+
+    def add_lines(kind, layer, material, solid, rows):
+        nonlocal total
+        if len(rows):
+            lines.append({'kind': kind, 'layer': layer, 'material': material, 'dashed': not solid,
+                          'count': int(len(rows)), 'segments': _b64((rows / scale).astype('<f4'))})
+            total += rows.size * 4
+            if material is not None:
+                used.add(material)
+
+    for index, (layer, items) in enumerate(zip(layers, geometry.outlines)):
+        groups = {}
+        for item in items:
+            groups.setdefault((item.material, bool(item.solid)), []).extend(item.polylines)
+        for (material, solid), polylines in groups.items():
+            add_lines('outline', index, material, solid, _clipped_segments(_segments(polylines), layer))
+    groups, triangles = {}, {}
+    for solid in geometry.solids:
+        groups.setdefault((solid.material, bool(solid.solid)), []).extend(solid.edges)
+        if solid.solid and solid.faces:
+            triangles.setdefault(solid.material, []).extend(_polygon_triangles(face) for face in solid.faces)
+    for (material, solid), polylines in groups.items():
+        add_lines('edge', None, material, solid, _segments(polylines))
+    for material, parts in triangles.items():
+        corners = np.concatenate(parts).reshape(-1, 3) if parts else np.empty((0, 3))
+        if len(corners):
+            faces.append({'material': material, 'count': int(len(corners)),
+                          'positions': _b64((corners / scale).astype('<f4'))})
+            total += corners.size * 4
+            if material is not None:
+                used.add(material)
+    if geometry.glyphs:
+        extents = [_layer_extent(layer) for layer in layers]
+        arm = GLYPH_ARM * max(max(u1 - u0, v1 - v0) for u0, u1, v0, v1 in extents)
+        three_d = any(layer.plane is not None for layer in layers)
+        add_lines('glyph', None, None, True, _glyph_segments(geometry.glyphs, arm, three_d))
+    if total > MAX_GEOMETRY_BYTES:
+        raise ValueError(f'the model objects need {total} bytes on the page, above {MAX_GEOMETRY_BYTES}: export '
+                         'without geometry')
+    materials = [{'index': index, 'name': str(name), 'color': MATERIAL_COLORS[index % len(MATERIAL_COLORS)]}
+                 for index, name in enumerate(geometry.material_names) if index in used]
+    return {'materials': materials, 'no_material_color': NO_MATERIAL_COLOR, 'lines': lines, 'faces': faces,
+            'box': None if geometry.box is None else [float(size) / scale for size in geometry.box]}
+
+
+# ---- mirror planes ----
+def mirror_plane(spans, face):
+    """Position (m) of the outer face 'x_lo' ... on its axis: the extent edge of the spans [(axes, extent (u0, u1,
+    v0, v1))] holding that axis (the window edges), None when none does; ValueError when they disagree."""
+    if face not in _OUTER_FACES:
+        raise ValueError(f'mirror face {face!r} is not one of {_OUTER_FACES}')
+    axis, side = face.split('_')
+    edges, reach = [], 0.0
+    for axes, extent in spans:
+        extent = [float(edge) for edge in extent]
+        reach = max(reach, extent[1] - extent[0], extent[3] - extent[2], *(abs(edge) for edge in extent))
+        if axis in axes:
+            edges.append(extent[2 * list(axes).index(axis) + (side == 'hi')])
+    if not edges:
+        return None
+    if max(edges) - min(edges) > 1e-6 * reach:
+        raise ValueError(f'the layers end at different {face} edges {edges}: no single mirror plane')
+    return edges[0]
+
+
+def snap_to_mirrors(frames, mirrors):
+    """Move every layer normal to a mirror's axis that lies no further from the plane than the nearest sample row of
+    the grid layers along that axis (the cut next to the symmetry plane) onto the plane, in every frame (in place):
+    its object outlines are then the plane's sections and the page draws it once (its image is itself)."""
+    first = frames[0].layers if frames else []
+    for mirror in mirrors:
+        axis, position = mirror.face[0], float(mirror.position)
+        offsets = [float(np.min(np.abs(np.asarray(layer.u_centres if layer.axes[0] == axis else layer.v_centres,
+                                                  dtype=np.float64) - position)))
+                   for layer in first if layer.triangulation is None and axis in layer.axes]
+        if not offsets:
+            continue
+        reach = 1.01 * min(offsets)
+        for index, layer in enumerate(first):
+            if layer.plane is not None and layer.plane[0] == axis and abs(layer.plane[1] - position) <= reach:
+                for frame in frames:
+                    frame.layers[index].plane = (axis, position)
+
+
+def _plane_pads(layer, mirrors, tolerance):
+    """(axis index, side, position, value_sign) of the mirror planes a grid layer's extent ends on but its sample
+    centres do not reach ([] for triangulations, whose nodes lie on the window edge)."""
+    if layer.triangulation is not None:
+        return []
+    extent = _layer_extent(layer)
+    pads = []
+    for mirror in mirrors:
+        axis, side = mirror.face.split('_')
+        if axis not in layer.axes:
+            continue
+        index = list(layer.axes).index(axis)
+        centres = np.asarray(layer.u_centres if index == 0 else layer.v_centres, dtype=np.float64)
+        end = centres[0] if side == 'lo' else centres[-1]
+        edge = extent[2 * index + (side == 'hi')]
+        if abs(edge - mirror.position) <= tolerance < abs(end - mirror.position):
+            pads.append((index, side, float(mirror.position), int(mirror.value_sign)))
+    return pads
+
+
+def _plane_padded(layer, pads, phase):
+    """Grid layer with a sample row on each padded mirror plane (even image: the nearest row, odd: 0, a phase keeps
+    the nearest), so the map and its mirror image meet without a one-cell gap."""
+    values = np.asarray(layer.values, dtype=np.float64)
+    centres = [np.asarray(layer.u_centres, dtype=np.float64), np.asarray(layer.v_centres, dtype=np.float64)]
+    for index, side, position, sign in pads:
+        nearest = np.take(values, [0 if side == 'lo' else -1], axis=index)
+        row = nearest if sign > 0 or phase else np.where(np.isfinite(nearest), 0.0, np.nan)
+        values = np.concatenate((row, values) if side == 'lo' else (values, row), axis=index)
+        centres[index] = np.concatenate(([position], centres[index]) if side == 'lo' else (centres[index], [position]))
+    return ViewerLayer(values=values, u_centres=centres[0], v_centres=centres[1], axes=layer.axes, plane=layer.plane,
+                       extent=layer.extent)
+
+
+def _mirror_padded_frames(frames, mirrors, phase):
+    """frames with their grid layers padded onto the mirror planes (pads decided on frame 0, the same surfaces in
+    every frame)."""
+    if not mirrors:
+        return frames
+    tolerance = 1e-6 * max(_layer_span(layer) for layer in frames[0].layers)
+    pads = [_plane_pads(layer, mirrors, tolerance) for layer in frames[0].layers]
+    if not any(pads):
+        return frames
+    return [ViewerFrame([_plane_padded(layer, pad, phase) if pad else layer for layer, pad in zip(frame.layers, pads)],
+                        frame.label, frame.time) for frame in frames]
+
+
+def _mirror_data(mirrors, scale):
+    """JSON of the mirror planes (positions in length units); ValueError on an unknown face, a repeated one or a
+    sign other than +-1."""
+    faces = [mirror.face for mirror in mirrors]
+    if len(set(faces)) != len(faces):
+        raise ValueError(f'mirror faces repeat: {faces}')
+    data = []
+    for mirror in mirrors:
+        if mirror.face not in _OUTER_FACES or int(mirror.value_sign) not in (1, -1):
+            raise ValueError(f'mirror {mirror.face!r} sign {mirror.value_sign!r}: faces {_OUTER_FACES}, signs +1 / -1')
+        data.append({'face': mirror.face, 'axis': mirror.face[0], 'position': float(mirror.position) / scale,
+                     'sign': int(mirror.value_sign)})
+    return data
+
+
 def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', view=None, plan=None,
-                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES):
+                max_bytes=MAX_BYTES, max_frames=MAX_FRAMES, geometry=None, mirrors=None):
     """The JSON-able dict the page reads. frames [ViewerFrame] (one surface set throughout), quantity ViewerQuantity,
-    frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None. plan None: frames are thinned and grid
-    layers strided here (plan_frames over max_bytes / max_frames); a plan: frames already follow it (picked and
-    strided by the caller, e.g. loaded one frequency at a time). The subtitle names any thinning or stride."""
+    frame_kind 'time' | 'labelled', view (azimuth, elevation) degrees or None, geometry ViewerGeometry or None,
+    mirrors [ViewerMirror] the planes the page can unfold across (a Mirror button; grid layers ending on one get a
+    sample row on it). plan None: frames are thinned and grid layers strided here (plan_frames over max_bytes /
+    max_frames); a plan: frames already follow it (picked and strided by the caller). The subtitle names any
+    thinning or stride."""
     if not frames:
         raise ValueError('nothing to show: no field frames')
     if frame_kind not in FRAME_KINDS:
@@ -342,8 +635,13 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
                               frames[index].time) for index in plan.indices]
     elif len(frames) != len(plan.indices):
         raise ValueError(f'{len(frames)} frames for a plan of {len(plan.indices)}')
+    mirrors = list(mirrors or [])
+    frames = _mirror_padded_frames(frames, mirrors, bool(quantity.phase))
     first = frames[0].layers
-    scale, unit = length_scale(max(_layer_span(layer) for layer in first) or 1.0)
+    span = max(_layer_span(layer) for layer in first)
+    if geometry is not None and geometry.box is not None:
+        span = max(span, *(float(size) for size in geometry.box))
+    scale, unit = length_scale(span or 1.0)
     packed, ranges = [], []
     for frame in frames:
         frame_range = _finite_range(layer.values for layer in frame.layers)
@@ -362,11 +660,14 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
         'title': title, 'subtitle': ' · '.join(part for part in (subtitle, *plan.notes) if part),
         'dimensions': 3 if any(layer.plane is not None for layer in first) else 2,
         'length_unit': unit,
-        'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed)},
+        'quantity': {'label': quantity.label, 'unit': quantity.unit, 'signed': bool(quantity.signed),
+                     'phase': bool(quantity.phase)},
         'layers': [_layer_geometry(layer, scale) for layer in first],
         'frames': packed, 'frame_kind': frame_kind if len(packed) > 1 else 'single',
         'range': [low, high],
         'view': None if view is None else [float(view[0]), float(view[1])],
+        'geometry': None if geometry is None else _geometry_data(geometry, first, scale),
+        'mirrors': _mirror_data(mirrors, scale),
     }
 
 

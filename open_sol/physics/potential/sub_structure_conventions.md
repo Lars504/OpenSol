@@ -34,6 +34,9 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
   `add_fixed_potential`; rhs: `inject_source`, `add_source`, `add_boundary_flux`) or at the first call; probes sample
   after a re-solve and at every `step(t, inf)` (a stationary iteration still records; flush gives the end-of-run
   sample), never on an unchanged finite-dt tick (every = 1 would store one copy per EM step).
+- Snapshot solutions (`solution_state` / `restore_solution`, FV and FEM 2D / 3D): the renderer reads only stored
+  fields (+ FEM `system.values`, 2D `_mean_potential`) and the rendered xx / yy (/ zz) coefficients, so a restore
+  never touches the system; a new renderer input joins `_solution_arrays` / the FEM state.
 - RerunSolver (sweep reuse_build; FV and FEM 2D / 3D): `reset_records` clears the probe series. voltage / terminal
   `voltage` follow (`set_held_voltage(region, voltage, hold, outline)` on every grid kind; HeldRegion / FEMHeldRegion
   / FEMHeldRegion3D are not frozen, their voltage is re-set so results and `_face_held_by` read the live value): faces

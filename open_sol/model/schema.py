@@ -618,10 +618,15 @@ class StudyType:
     # model.solver_hooks Protocols: the solver of a physics whose type lists this study satisfies one of them (the
     # builder checks right after create); () = no study hook (time_dependent, stationary)
     solver_protocols: tuple = ()
+    # {param: value} that store only the final state (api.run snapshots=False, the self-tests); {} = nothing to drop
+    final_state_settings: dict = field(default_factory=dict)
 
     def __post_init__(self):
         _require_unique_names(self.params, 'param', f"StudyType '{self.name}'")
         _check_params(self.params, f"StudyType '{self.name}'")
+        unknown = sorted(set(self.final_state_settings) - {param.name for param in self.params})
+        if unknown:
+            raise ValueError(f"StudyType '{self.name}': final_state_settings names no param {unknown}")
         if not (isinstance(self.solver_protocols, tuple) and all(
                 getattr(protocol, '_is_runtime_protocol', False) for protocol in self.solver_protocols)):
             raise TypeError(f"StudyType '{self.name}': solver_protocols must be a tuple of runtime-checkable "

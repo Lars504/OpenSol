@@ -27,9 +27,11 @@ from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
 from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
-from .session import Snapshot, earlier_derived_names, live_snapshot_index
+from ..core import host_memory
+from .session import (LIVE_SOLUTION, SelectedSolution, Snapshot, StoredSolution, earlier_derived_names,
+                      live_snapshot_index, snapshot_solution_names, solution_bytes)
 from .solver_hooks import (HarmonicFrequencyPlanner, HarmonicSolver, ModeSolver, PrestressSolver, PulsedHarmonicSolver,
-                           WarmStartSolver, hook_names)
+                           SolutionStateSolver, WarmStartSolver, hook_names)
 
 __all__ = [
     'Progress', 'LiveFrame', 'LiveResults', 'LogEvent', 'SweepStep', 'SweepValueDone', 'Built', 'BuildFailed',
@@ -40,6 +42,8 @@ __all__ = [
 _LIVE_PIXELS = 250_000                 # default LiveFrame resolution
 _SNAPSHOT_PIXELS = 250_000             # per stored snapshot field
 _SNAPSHOT_BYTE_LIMIT = 1 << 30         # intermediate snapshots stop above 1 GB (the final state is always stored)
+_SOLUTION_HOST_FRACTION = 0.25         # kept snapshot solutions (GUI runs): within this share of the free host RAM
+_SOLUTION_FALLBACK_BYTES = 1 << 31     # ... or this when the free host memory cannot be queried
 _LIVE_RESULT_POINTS = 4000             # samples per LiveResults timeseries
 _LIVE_RESULT_PERIOD = 1.0              # s of wall time between LiveResults
 _CHUNK_SECONDS = 0.1                   # target wall time of one runner.advance chunk
@@ -157,7 +161,8 @@ class StudyStarted:
 @dataclass
 class StudyFinished:
     """summary: status, wall_time, ticks + tick_unit, t_end, snapshot_times, snapshot_labels, live_snapshot (index of
-    the snapshot holding the live state, None = the last), stored_fields, stored_cuts, derived,
+    the snapshot holding the live state, None = the last), snapshot_solutions (per snapshot the physics whose fields
+    the live session renders from a kept solution: Session.snapshot_field), stored_fields, stored_cuts, derived,
     derived_reference / derived_error (derived values with a reference), derived_series (the source-free derived
     values at every time_dependent / frequency_domain snapshot as an 'xy' dict of lists, None below 2 points),
     fixed_point (solve_stationary's record or None), study_seconds, solvers (_solver_records), solvers_at_study_start
@@ -187,14 +192,16 @@ class Cancelled(Exception):
 
 class RunControl:
     """Thread-safe pause / cancel flags and the live-field request shared by the GUI side and the running study;
-    live_results=False (headless) skips building LiveResults."""
+    live_results=False (headless) skips building LiveResults; keep_solutions (GUI default; headless off): snapshots
+    keep the solutions every field and cut renders from (Snapshot.solutions)."""
 
-    def __init__(self, live_results=True):
+    def __init__(self, live_results=True, keep_solutions=True):
         self._lock = threading.Lock()
         self._paused = False
         self._cancelled = False
         self._live_field = None
         self.live_results = bool(live_results)
+        self.keep_solutions = bool(keep_solutions)
 
     def pause(self):
         with self._lock:
@@ -584,6 +591,7 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
         last_summary['snapshot_times'] = []
         last_summary['snapshot_labels'] = []
         last_summary['live_snapshot'] = None
+        last_summary['snapshot_solutions'] = []
         if previous_session is not None:   # its half-run session (non-OOM run failure) must not pose as the results
             release_session(on_session, previous_session, emit)   # resets run_study's latest_session
     last_summary.update(summed_runs(value_runs))
@@ -665,8 +673,9 @@ class _KeptSweepFields:
         self._finals_only = False
 
     def take(self, snapshots):
-        """List of the snapshots kept of one value (read before its session closes)."""
-        snapshots = list(snapshots)
+        """List of the snapshots kept of one value (read before its session closes), without their solutions (they
+        need that session's solvers)."""
+        snapshots = [replace(snapshot, solutions={}) for snapshot in snapshots]
         if not self._finals_only and self._stored_bytes + _snapshot_bytes(snapshots) > _SNAPSHOT_BYTE_LIMIT:
             self._finals_only = True
             self._emit(LogEvent('warning', f'kept sweep snapshots exceed {_SNAPSHOT_BYTE_LIMIT / 2**30:.0f} GB: from '
@@ -697,6 +706,7 @@ def _run_built(session, spec, registry, emit, control, service):
     if study_type.run is None:
         raise ValueError(f"study type '{study_type.name}' has no run function")
     values = resolve_values(study_type.params, spec.study.settings, session.parameters)
+    session.keep_solutions = control.keep_solutions
     solvers_at_start = _solver_records(session)   # counter-timed work done at build (a factorisation in finalize)
     study_start = time.perf_counter()
     try:
@@ -732,6 +742,7 @@ def _run_built(session, spec, registry, emit, control, service):
                'snapshot_times': [float(snapshot.time) for snapshot in session.snapshots],
                'snapshot_labels': [snapshot.label for snapshot in session.snapshots],
                'live_snapshot': live_snapshot_index(session.snapshots),
+               'snapshot_solutions': snapshot_solution_names(session.snapshots),
                'stored_fields': stored_keys, 'stored_cuts': _stored_cut_records(session),
                'meshes': session.mesh_records(), 'field_meshes': field_meshes(session, stored_keys),
                'derived': derived, 'derived_reference': references, 'derived_error': errors, 'derived_series': None,
@@ -901,6 +912,8 @@ def _run_time_dependent(session, values, emit, control, service):
         raise ValueError('nothing steps in time (every physics is quasi-static); use a stationary study')
     duration = values['duration']
     output_interval = values['output_interval']
+    if output_interval <= 0.0 and values['n_snapshots'] > 1:   # evenly spaced, the last one the final state
+        output_interval = duration / (values['n_snapshots'] - 1)
     t_start = runner.t
     t_final = t_start + duration
     half_tick = 0.5 * dt_sync
@@ -1272,6 +1285,7 @@ def _background_stage(session, background, solved, values, emit, control, servic
     _refuse_solution_readers(runner.couplings, solved, *refused, allowed=feedback)
     runner.prepare()
     recorder = _SnapshotRecorder(session, emit)
+    recorder.fixed_physics = frozenset(background)   # solved once below; feedback rounds end before any snapshot
     live = _LiveFeed(session, control, emit, values['live_update_hz'])
     emit(LogEvent('info', intro))
     stages = _StageProgress(emit, [_BACKGROUND_STAGE] * bool(background) + list(stage_names))
@@ -1391,7 +1405,7 @@ def _solve_wavelength_list(session, harmonic, wavelengths, recorder, live, emit,
     order with one labelled snapshot each (the last always stored) -> (wavelengths solved, status)."""
     runner = session.runner
     solvers = {name: runner.physics[name] for name in harmonic}
-    pulsed_solvers = [runner.physics[name] for name in pulsed]
+    pulsed_solvers = {name: runner.physics[name] for name in pulsed}
     solver_warnings = _SolverWarnings(solvers, emit)
     n_wavelengths = len(wavelengths)
     wall_start = time.perf_counter()
@@ -1403,11 +1417,12 @@ def _solve_wavelength_list(session, harmonic, wavelengths, recorder, live, emit,
         emit(_count_progress(runner, index / n_wavelengths, index, wall_start,
                              f"Solving {', '.join(harmonic + list(pulsed))} at {label} ({index + 1}/{n_wavelengths}); "
                              'stopping waits for this solve', 'wavelength'))
-        for solver in pulsed_solvers:
-            solver.select_harmonic_frequency(index)
+        for name, solver in pulsed_solvers.items():
+            _select(session, name, solver, _select_harmonic_frequency, index)
         for solver in solvers.values():
             solver.solve_harmonic(2.0 * math.pi * C0 / wavelength)
-        recorder.record(final=index == n_wavelengths - 1, label=label, wavelength=wavelength)
+        recorder.record(final=index == n_wavelengths - 1, label=label, wavelength=wavelength,
+                        selections={name: (_select_harmonic_frequency, index) for name in pulsed_solvers})
         live.update()
         solver_warnings.check()
         wall = time.perf_counter() - wall_start
@@ -1567,25 +1582,45 @@ def _numbered_snapshots(session, names, solve, select, reselect, noun, tick_unit
         emit(LogEvent('warning', f'no {noun} was found; no {noun} snapshot was stored'))
     stored = {}   # number -> its Snapshot (the recorder skips them once full)
     for number in range(1, count + 1):
-        parts, blank = [], set()
+        parts, blank, selections = [], set(), {}
         for name, solver in solvers.items():
             if number <= len(texts[name]):
-                select(solver, number)
+                _select(session, name, solver, select, number)
+                selections[name] = (select, number)
                 text = texts[name][number - 1]
                 parts.append(text if len(solvers) == 1 else f'{name} {text}')
             else:
                 blank.add(name)
         n_stored = len(session.snapshots)
         recorder.record(final=final_last and number == count,
-                        label=f"{noun} {number}{parity_text}: {', '.join(parts)}", blank_physics=blank)
+                        label=f"{noun} {number}{parity_text}: {', '.join(parts)}", blank_physics=blank,
+                        selections=selections)
         if len(session.snapshots) > n_stored:
             stored[number] = session.snapshots[-1]
         live.update()
-    live_numbers = {reselect(solver, len(texts[name])) for name, solver in solvers.items()}
+    live_numbers = set()
+    for name, solver in solvers.items():
+        live_number = reselect(solver, len(texts[name]))
+        live_numbers.add(live_number)
+        if live_number is None:
+            session.live_selections.pop(name, None)
+        else:
+            session.live_selections[name] = SelectedSolution(select, live_number)
     if final_last and len(live_numbers) == 1 and (live_number := live_numbers.pop()) in stored:
         stored[live_number].live = True
     emit(_count_progress(runner, 1.0, len(solvers), wall_start, f'{count} {noun}(s) found', tick_unit))
     return 'completed', count
+
+
+def _select(session, name, solver, select, key):
+    """select(solver, key) of physics `name`, noted as its live selection (Session.live_selections: a snapshot read
+    of another selection shows this one again afterwards)."""
+    select(solver, key)
+    session.live_selections[name] = SelectedSolution(select, key)
+
+
+def _select_harmonic_frequency(solver, index):
+    solver.select_harmonic_frequency(index)
 
 
 def _validate_frequency_domain(vctx, values):
@@ -1816,12 +1851,19 @@ _TIME_DEPENDENT_PARAMS = (
                'the duration ends before the longest pulse, plus the domain diagonal * n_max / C0 with a flux, DFT, '
                'mode or far-field monitor); transient heat takes ms to s.'),
     Param('output_interval', 'float', 0.0, label='Output interval', unit='s', min=0.0,
-          tip='Simulated time between stored field snapshots; 0 stores only the final state.',
+          tip="Simulated time between stored field snapshots; 0 spreads 'Number of snapshots' over the duration.",
           help='Time in s between snapshots of the stored fields (study stored_fields, default every output '
-               'field), from t = 0; 0 stores only the final state. Intermediate snapshots stop once they '
+               'field), from t = 0; 0 = n_snapshots evenly spaced instead. Intermediate snapshots stop once they '
                'exceed 1 GB; the final state is always stored. Snapshots hold the native window cells (graded '
                'included) up to 250,000 cells, else nearest-cell values on square pixels of max(finest cell, '
                'sqrt(window area / 250,000)) (native_shape set): fine features can then be skipped.'),
+    Param('n_snapshots', 'int', 20, label='Number of snapshots', min=1,
+          tip="Stored field snapshots, evenly spaced from the start to the end; 1 stores only the final state.\n\n"
+              "Used when 'Output interval' is 0.",
+          help='With output_interval 0: snapshots at t = 0, duration / (n_snapshots - 1), ..., the final state '
+               '(n_snapshots in all; 1 = the final state only). Ignored when output_interval > 0. Headless '
+               'self-test runs store only the final state unless the model sets output_interval or n_snapshots '
+               '(selftest examples: unless an analytic curve reads a snapshot).'),
     _LIVE_UPDATE_PARAM,
     _PARITY_SECTORS_PARAM,
 )
@@ -1928,6 +1970,7 @@ def _selftest_cases():
     from .selftests_line import LINE_SELFTEST_CASES
     from .selftests_mesh import MESH_SELFTEST_CASES
     from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # mesh plan P3 (Session / results per mesh)
+    from .selftests_snapshot_solutions import SNAPSHOT_SOLUTION_SELFTEST_CASES   # GUI snapshot solutions
     from .selftests_subpixel import SUBPIXEL_SELFTEST_CASES
     from .selftests_sweep import SWEEP_SELFTEST_CASES
     from .selftests_symmetry_check import SYMMETRY_CHECK_SELFTEST_CASES
@@ -1937,7 +1980,8 @@ def _selftest_cases():
             *SUBPIXEL_SELFTEST_CASES, *SYMMETRY_CHECK_SELFTEST_CASES, *CONFORMAL_SELFTEST_CASES,
             *CONFORMAL_CUT_SELFTEST_CASES, *CONFORMAL_POLAR_SELFTEST_CASES, *SWEEP_SELFTEST_CASES,
             *INTERFACE_SELFTEST_CASES, *LINE_SELFTEST_CASES, *TIME_SELFTEST_CASES, *FEM_SELFTEST_CASES,
-            *ADAPTATION_SELFTEST_CASES, *PER_MESH_SELFTEST_CASES, *ESTIMATION_SELFTEST_CASES)
+            *ADAPTATION_SELFTEST_CASES, *PER_MESH_SELFTEST_CASES, *ESTIMATION_SELFTEST_CASES,
+            *SNAPSHOT_SOLUTION_SELFTEST_CASES)
 
 
 def register(registry):
@@ -1953,9 +1997,10 @@ def register(registry):
                     'Courant step); a physics with every = n steps on every n-th tick over n * dt_sync. Couplings '
                     'are applied after every tick at their own every and flushed at the end of the run, also when '
                     'it is cancelled. Needs at least one physics that steps in time; snapshots at the output '
-                    'interval plus the final state.',
+                    'interval (or n_snapshots evenly spaced) plus the final state.',
         params=_TIME_DEPENDENT_PARAMS, requires_time_stepping=True, run=_run_time_dependent,
-        validate=_with_parity_sectors(), time_counts=_time_dependent_counts))
+        validate=_with_parity_sectors(), time_counts=_time_dependent_counts,
+        final_state_settings={'output_interval': 0.0, 'n_snapshots': 1}))
     registry.register_study(StudyType(
         'stationary', 'Stationary',
         summary='Solves the steady state of every physics, repeating coupled physics until they agree. Time-domain '
@@ -2060,12 +2105,27 @@ class _SnapshotRecorder:
     graded or not, else nearest-cell resampled; 3D: the mid-height z cut plus each StudySpec.stored_cuts plane in
     Snapshot.cuts, and the profile of every 3D-segment line curve in Snapshot.segments); intermediate ones stop above
     1 GB. With a series_axis ('time' | 'wavelength') every record also
-    evaluates the source-free derived values on the live state (derived_series)."""
+    evaluates the source-free derived values on the live state (derived_series). With session.keep_solutions each
+    snapshot also keeps per physics the solution its fields render from (Snapshot.solutions, _solutions)."""
 
     def __init__(self, session, emit, series_axis=None):
         self._session = session
         self._emit = emit
         self.series_axis = series_axis
+        self.fixed_physics = frozenset()   # unchanged after their solve until the study ends (_background_stage)
+        # physics whose material arrays may change during the study (couplings / dynamic updates write them;
+        # optimization: every physics): their stored solutions also hold the materials
+        targets = [_coupling_targets(coupling) for coupling in session.runner.couplings]
+        self.changing_materials = (frozenset(session.runner.physics) if any(not names for names in targets)
+                                   else frozenset().union(*targets))
+        self._keep_solutions = bool(getattr(session, 'keep_solutions', False))
+        available = host_memory.available_bytes() if self._keep_solutions else None
+        self._solution_budget = (_SOLUTION_FALLBACK_BYTES if available is None
+                                 else int(_SOLUTION_HOST_FRACTION * available))
+        self._solution_bytes = sum(solution.nbytes for snapshot in session.snapshots
+                                   for solution in snapshot.solutions.values() if isinstance(solution, StoredSolution))
+        self._counted_arrays = set()   # ids of host arrays already counted (states may share one by reference)
+        self._solutions_full = False
         self._series_x = []
         self._series = {}   # source-free derived values whose referenced derived values are in the series too
         for derived in session.spec.derived_values:
@@ -2093,10 +2153,12 @@ class _SnapshotRecorder:
         self._stored_bytes = _snapshot_bytes(session.snapshots)
         self.full = False
 
-    def record(self, final=False, label=None, blank_physics=(), wavelength=None):
+    def record(self, final=False, label=None, blank_physics=(), wavelength=None, selections=None):
         """Store the current state, labelled e.g. 'lambda = 1550 nm' (skipped once full unless final); the fields of
         blank_physics are NaN (they hold a solution other than the label's, e.g. fewer modes). The derived series
-        takes a point at session.time or `wavelength` [m] (series_axis) even when full."""
+        takes a point at session.time or `wavelength` [m] (series_axis) even when full. final: the state the session
+        keeps after the study; selections {physics: (select(solver, key), key)}: the solutions the solvers keep
+        themselves (modes, resonances, harmonic frequencies, channels)."""
         session = self._session
         if self.series_axis is not None:
             self._record_series(session.time if self.series_axis == 'time' else wavelength)
@@ -2118,13 +2180,47 @@ class _SnapshotRecorder:
         fields, cuts = stored[0], stored[1:]
         segments = {segment[0]: computed_segments[segment[0]] for segment in self._segments}
         session.snapshots.append(Snapshot(time=float(session.time), fields=fields, label=label, cuts=cuts,
-                                          segments=segments))
+                                          segments=segments,
+                                          solutions=self._solutions(final, blank_physics, selections or {})))
         self._stored_bytes += sum(_field_bytes(field_data) for stored in [fields, *cuts]
                                   for field_data in stored.values())
         if not (final or self.full) and self._stored_bytes > _SNAPSHOT_BYTE_LIMIT:
             self.full = True
             self._emit(LogEvent('warning', f'stored snapshots exceed {_SNAPSHOT_BYTE_LIMIT / 2**30:.0f} GB; '
                                            f'only the final state will be stored'))
+
+    def _solutions(self, final, blank_physics, selections):
+        """Snapshot.solutions of one record ({} unless keep_solutions): per non-blank physics its selection, else
+        LIVE_SOLUTION (final record or fixed physics), else a StoredSolution of a SolutionStateSolver while the kept
+        host copies fit _solution_budget (one warning when they stop); a physics without any renders stored fields
+        only."""
+        if not self._keep_solutions:
+            return {}
+        solutions = {}
+        for name, solver in self._session.runner.physics.items():
+            if name in blank_physics:
+                continue
+            if name in selections:
+                select, key = selections[name]
+                solutions[name] = SelectedSolution(select, key)
+            elif final or name in self.fixed_physics:
+                solutions[name] = LIVE_SOLUTION
+            elif isinstance(solver, SolutionStateSolver) and not self._solutions_full:
+                materials = name in self.changing_materials
+                state = solver.solution_state(materials=materials)
+                # nbytes = what this snapshot adds (arrays shared with earlier states are held once; kept alive by
+                # those states, so their ids stay unique)
+                stored = StoredSolution(state, materials, solution_bytes(state, self._counted_arrays))
+                if self._solution_bytes + stored.nbytes > self._solution_budget:
+                    self._solutions_full = True
+                    self._emit(LogEvent('info', f'snapshot solutions reached '
+                                                f'{gpu_memory.format_bytes(self._solution_budget)} of host memory (a '
+                                                'quarter of the free RAM): later snapshots show their stored fields '
+                                                'only; the final state renders any field'))
+                    continue
+                self._solution_bytes += stored.nbytes
+                solutions[name] = stored
+        return solutions
 
     def derived_series(self):
         """'xy' dict (plain lists) of the source-free derived values at every recorded point (x = time [s] or

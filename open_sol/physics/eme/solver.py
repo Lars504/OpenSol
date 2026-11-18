@@ -18,7 +18,7 @@ import math
 import time
 
 import numpy as np
-from ...core.backend import to_host
+from ...core.backend import host_copy, to_host, write_host_into
 
 from ...core.constants import C0, DTYPE, EPS0
 from ...core.solver_base import PhysicsSolver
@@ -38,7 +38,7 @@ from .cascade import (PORT_FACES, CascadeBuilder, SMatrix, bloch_modes, cell_cas
                       total_smatrix, unit_cell)
 from .interfaces import interface_defects, interface_smatrix
 from .mode_sets import INPUT_POWER_FLOOR, bent_line, gauss_mean, gauss_positions, mode_set, section_fields
-from .renderer import EMERenderer
+from .renderer import EME_MATERIAL_FIELDS, EMERenderer
 from .sections import slice_stack, stack_sections
 
 EME_POLARIZATIONS = ('ez', 'hz')
@@ -93,6 +93,7 @@ class EMEBase(PhysicsSolver):
     name = 'eme'
     tracks_modes = False   # True: _solve_section starts from the previous wavelength's entry (3D shift-invert)
     objective_unit = '1'   # J = port power fractions (the optimization study labels; FDFD objectives are W/m)
+    rendered_materials = EME_MATERIAL_FIELDS   # MaterialGrid arrays the renderer shows (snapshot solutions)
 
     def __init__(self, domain, wavelength, n_modes, section_tolerance, read_arrays, label):
         self.domain = domain
@@ -134,6 +135,8 @@ class EMEBase(PhysicsSolver):
         self._cache_omega = None
         self._link = None             # (first, last, n_periods, junction) of the last solve's periodic link, or None
         self._sensitivity = None      # ((n_solves, objectives), EpsSensitivity) of the last eps_sensitivity
+        # (solve index, (J, run-backend density) or None) while restore_solution shows an earlier solve, else None
+        self._shown_solve = None
         self._dirty = True
 
     @property
@@ -162,6 +165,54 @@ class EMEBase(PhysicsSolver):
     def reset_records(self):
         """RerunSolver (reused sweep build): nothing to drop (every monitor keeps only the last solve); the next step
         solves when the wavelength or another input changed."""
+
+    # --- snapshot solutions (solver_hooks.SolutionStateSolver) ---
+
+    def solution_state(self, materials=False):
+        """Host copies of the field arrays, q_abs, solved omega, scalars, dirty flag and the eps_sensitivity density
+        when it was computed at that solve; materials: the rendered material arrays and the design densities too."""
+        if self._shown_solve is not None:
+            solve_index, kept = self._shown_solve
+            sensitivity = None if kept is None else (kept[0], host_copy(kept[1]))
+        else:
+            solve_index, cached = self.n_solves, self._sensitivity
+            sensitivity = (None if cached is None or cached[0] != (self.n_solves, self._objectives())
+                           else (float(cached[1].objective), host_copy(cached[1].density)))
+        state = {'fields': {name: host_copy(array) for name, array in self.field_arrays.items()},
+                 'q_abs': host_copy(self.q_abs), 'solved_omega': self.solved_omega, 'scalars': dict(self._scalars),
+                 'dirty': self._dirty, 'solve_index': solve_index, 'sensitivity': sensitivity}
+        if materials:
+            state['materials'] = {name: host_copy(getattr(self.domain.materials, name))
+                                  for name in self.rendered_materials}
+            state['designs'] = [(region.density.copy(), region.map.projection_beta)
+                                for region in getattr(self, 'design_regions', ())]
+        return state
+
+    def restore_solution(self, state):
+        """Write a solution_state back in place; an earlier solve's eps_sensitivity reads its kept density (raises
+        when none was kept), never the live cascade."""
+        for name, array in self.field_arrays.items():
+            write_host_into(array, state['fields'][name])
+        write_host_into(self.q_abs, state['q_abs'])
+        self.solved_omega = state['solved_omega']
+        self._scalars = dict(state['scalars'])
+        self._dirty = state['dirty']
+        if 'materials' in state:
+            for name, values in state['materials'].items():
+                write_host_into(getattr(self.domain.materials, name), values)
+            regions = getattr(self, 'design_regions', ())
+            if len(regions) != len(state['designs']):
+                raise RuntimeError(f'EME restore_solution: {len(state["designs"])} design regions in the state, '
+                                   f'{len(regions)} on the physics (a state of another build?)')
+            for region, (density, beta) in zip(regions, state['designs']):
+                region.density = density.copy()
+                region.map.projection_beta = beta
+        if state['solve_index'] == self.n_solves:
+            self._shown_solve = None
+        else:
+            kept = state['sensitivity']
+            self._shown_solve = (state['solve_index'],
+                                 None if kept is None else (kept[0], self.domain.xp.asarray(kept[1])))
 
     # --- PhysicsSolver contract ---
 
@@ -301,15 +352,26 @@ class EMEBase(PhysicsSolver):
 
     def eps_sensitivity(self):
         """em.adjoint.EpsSensitivity (J [1], dJ/d eps per cell of the permittivity arrays the solve reads) of the
-        objectives at the last solve (cached until the next solve); zeros without objectives or before a solve."""
-        objectives = tuple(monitor for monitor in self.monitors if isinstance(monitor, EMEObjective))
+        objectives at the last solve (cached until the next solve); zeros without objectives or before a solve; while a
+        restored snapshot shows an earlier solve, its kept density only (no cell gradients)."""
+        objectives = self._objectives()
         if not objectives or self.solved_omega is None or self.cascade is None:
             return EpsSensitivity(0.0, None, {}, self.domain.xp.zeros(self.q_abs.shape, dtype=DTYPE))
+        if self._shown_solve is not None:   # the live cascade is another solve's
+            kept = self._shown_solve[1]
+            if kept is None:
+                raise RuntimeError('em_eme eps_sensitivity of this snapshot was not computed during the study: add '
+                                   "eps_sensitivity to the study's stored fields to keep it")
+            return EpsSensitivity(kept[0], self.solved_omega, {}, kept[1])
         key = (self.n_solves, objectives)
         if self._sensitivity is None or self._sensitivity[0] != key:
             self._sensitivity = None   # free the previous gradient first
             self._sensitivity = (key, self._cascade_sensitivity(objectives))
         return self._sensitivity[1]
+
+    def _objectives(self):
+        """The attached EMEObjective monitors (the eps_sensitivity cache key)."""
+        return tuple(monitor for monitor in self.monitors if isinstance(monitor, EMEObjective))
 
     def _cascade_sensitivity(self, objectives):
         """EpsSensitivity of the last solve by the cascade adjoint."""
@@ -478,6 +540,7 @@ class EMEBase(PhysicsSolver):
         self._reconstruct(cascade, omega, previous_cache, cache, counts)
         self._mode_cache, self._cache_omega = cache, omega
         self._dirty = False
+        self._shown_solve = None   # the fields show this solve
         self.n_solves += 1
         for monitor in self.monitors:
             monitor.record(self)
