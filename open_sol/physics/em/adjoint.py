@@ -17,6 +17,10 @@ transposed solve A^T lam = dJ/du on the forward factorisation (FDFDPhysics.solve
 # - eps_xy^2): the cell cotangents of these three chain onto d eps_xx, d eps_yy (eps_xy held: the design arrays) and d
 # eps_xy (off_diagonal_density; 0 where the assembly zeroes eps_xy). The image-sign fold sees no X change (eps_xy is 0
 # on the outer two wall rows), and face fields t = scale (V c - X c') make the adjoint source carry -scale X^T too.
+# Gyrotropic hz (gyration_z g, harmonic.py header): eta_xy = -(eps_xy + j g) / det and eta_yx = -(eps_xy - j g) / det
+# differ, so each map has its own cotangent and the chain rule runs on q = eps_xy^2 + g^2 (g held fixed). A^T is the
+# operator of -g: the transposed solve A^T lam = g is the non-reciprocal adjoint (the solve with the magnetisation
+# reversed), on the same factor (SuperLU trans='T') or a factor of the transpose (cuDSS LU, _transposed_solve).
 # Held fixed (not differentiated): source currents and calibrations, TFSF / port incident fields, the port modes (line
 # cells) and the objective's own face weights (hz: E on its faces is W (D u + J)), so the gradient is exact only off
 # every source / port / objective line and the cells beyond their hi faces.
@@ -30,6 +34,7 @@ from ...core.backend import array_module_of
 from ...core.constants import C0, DTYPE, EPS0, MU0
 from .fdfd_monitors import HarmonicFluxMonitor
 from .fdfd_ports import HarmonicModeMonitor
+from .harmonic import off_diagonal_entries
 from .operators import active_coupling_faces, off_diagonal_mean_maps
 from .slab_modes import mode_amplitude_weights
 from .yee_grid import cell_row, face_shares, grid_cell_widths
@@ -225,9 +230,10 @@ def adjoint_source(physics, cell_part, face_parts, wall_rows):
     return source.ravel()
 
 
-def _eta_cotangent(physics, system, x_from_y_pairs, y_from_x_pairs):
-    """complex128 (nx, ny) h with dJ = 2 Re(h d eta_xy) per cell: sum of p^T dX q over the (p, q) face pairs of X_xy
-    (p hi-x, q hi-y faces) and X_yx (p hi-y, q hi-x), X = keep F diag(eta_xy) C keep (operators)."""
+def _eta_cotangents(physics, system, x_from_y_pairs, y_from_x_pairs):
+    """complex128 (nx, ny) (h_xy, h_yx) with dJ = 2 Re(h_xy d eta_xy + h_yx d eta_yx) per cell: sums of p^T dX q over
+    the (p, q) face pairs of the map onto the hi-y faces (E_x from D_y, eta_xy: p hi-y, q hi-x faces) and onto the hi-x
+    faces (E_y from D_x, eta_yx: p hi-x, q hi-y), X = keep F diag(eta) C keep (operators)."""
     grid = physics.domain.grid
     xp = physics.domain.xp
     shape = (grid.nx, grid.ny)
@@ -235,13 +241,15 @@ def _eta_cotangent(physics, system, x_from_y_pairs, y_from_x_pairs):
     centre_x, centre_y, face_x, face_y = off_diagonal_mean_maps(grid_cell_widths(grid), periodic,
                                                                 physics.lower_wrap_factors, xp=xp)
     keep_x, keep_y = active_coupling_faces(system.weight_hi_x_faces, system.weight_hi_y_faces, *periodic)
-    eta_cotangent = xp.zeros(shape, dtype=xp.complex128)
-    for pairs, p_keep, q_keep, face_map, centre_map in ((x_from_y_pairs, keep_x, keep_y, face_x, centre_y),
-                                                        (y_from_x_pairs, keep_y, keep_x, face_y, centre_x)):
+    cotangents = []
+    for pairs, p_keep, q_keep, face_map, centre_map in ((y_from_x_pairs, keep_y, keep_x, face_y, centre_x),
+                                                        (x_from_y_pairs, keep_x, keep_y, face_x, centre_y)):
+        eta_cotangent = xp.zeros(shape, dtype=xp.complex128)
         for p_faces, q_faces in pairs:
             eta_cotangent += ((face_map.T @ (p_faces * p_keep).ravel())
                               * (centre_map @ (q_faces * q_keep).ravel())).reshape(shape)
-    return eta_cotangent
+        cotangents.append(eta_cotangent)
+    return tuple(cotangents)
 
 
 def _assembled_xy_cells(physics, wall_rows, shape):
@@ -321,21 +329,30 @@ def permittivity_gradients(physics, adjoint, wall_rows, face_currents=None, face
     if cotangent_pieces[0][0] is not None:
         y_from_x_pairs.append((cotangent_pieces[0][0], cotangent_pieces[1][1]))
     del residual_pieces, cotangent_pieces
-    eta_cotangent = _eta_cotangent(physics, system, x_from_y_pairs, y_from_x_pairs)
+    cotangent_xy, cotangent_yx = _eta_cotangents(physics, system, x_from_y_pairs, y_from_x_pairs)
     del x_from_y_pairs, y_from_x_pairs
     eps_xx, eps_yy, eps_xy = system.cell_eps_xx, system.cell_eps_yy, system.cell_eps_xy
-    if eps_xy is None:   # eps_xy = 0: the diagonal terms decouple, d eta_xy / d eps_xy = -1 / (eps_xx eps_yy)
+    gyration = system.cell_gyration
+    if eps_xy is None and gyration is None:
+        # eps_xy = g = 0: the diagonal terms decouple, d eta_xy / d eps_xy = d eta_yx / d eps_xy = -1 / (eps_xx eps_yy)
         gradients = {'eps_xx': 2.0 * along_xx.real, 'eps_yy': 2.0 * along_yy.real}
-        xy_cotangent = -eta_cotangent / (eps_xx * eps_yy)
+        xy_cotangent = -(cotangent_xy + cotangent_yx) / (eps_xx * eps_yy)
     else:
-        squared = eps_xy * eps_xy
-        determinant_squared = (eps_xx * eps_yy - squared) ** 2
-        eta_share = eta_cotangent * eps_xy / determinant_squared   # d eta / d eps_xx = eps_xy eps_yy / det^2
-        gradients = {'eps_xx': 2.0 * (along_xx + along_yy * squared / (eps_xx * eps_xx) + eta_share * eps_yy).real,
-                     'eps_yy': 2.0 * (along_yy + along_xx * squared / (eps_yy * eps_yy) + eta_share * eps_xx).real}
-        xy_cotangent = (-2.0 * eps_xy * (along_xx / eps_yy + along_yy / eps_xx)
-                        - eta_cotangent * (eps_xx * eps_yy + squared) / determinant_squared)
-        del squared, determinant_squared, eta_share
+        # entries c+ = eps_xy + j g (eta_xy = -c+ / det), c- = eps_xy - j g, q = c+ c- = eps_xy^2 + g^2, det = eps_xx
+        # eps_yy - q; along_x = eps_xx - q / eps_yy, along_y = eps_yy - q / eps_xx; g held fixed
+        xy_entry, yx_entry = off_diagonal_entries(eps_xy, gyration, xp=physics.domain.xp)
+        product = xy_entry * yx_entry
+        determinant = eps_xx * eps_yy - product
+        determinant_squared = determinant * determinant
+        # d eta_xy / d eps_xx = c+ eps_yy / det^2 (eta_yx alike with c-)
+        eta_share = (cotangent_xy * xy_entry + cotangent_yx * yx_entry) / determinant_squared
+        gradients = {'eps_xx': 2.0 * (along_xx + along_yy * product / (eps_xx * eps_xx) + eta_share * eps_yy).real,
+                     'eps_yy': 2.0 * (along_yy + along_xx * product / (eps_yy * eps_yy) + eta_share * eps_xx).real}
+        real_xy = 0.0 if eps_xy is None else eps_xy   # dq / d eps_xy = 2 eps_xy
+        xy_cotangent = (-2.0 * real_xy * (along_xx / eps_yy + along_yy / eps_xx)
+                        - (cotangent_xy * (determinant + 2.0 * real_xy * xy_entry)
+                           + cotangent_yx * (determinant + 2.0 * real_xy * yx_entry)) / determinant_squared)
+        del xy_entry, yx_entry, product, determinant, determinant_squared, eta_share
     if off_diagonal:
         gradients['eps_xy'] = 2.0 * xy_cotangent.real * _assembled_xy_cells(physics, wall_rows, shape)
     return gradients

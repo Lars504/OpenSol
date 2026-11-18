@@ -32,9 +32,10 @@ from ..fdfd_monitors import HarmonicFluxMonitor, HarmonicNearToFar, HarmonicProb
 from ..fdfd_ports import HarmonicModeMonitor, ModeSourcePhasor
 from ..fdfd_sources import (ElectricDipolePhasor, MagneticCurrentPhasor, PlaneWavePhasor, PointCurrentPhasor,
                             SheetCurrentPhasor)
-from ..harmonic import HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity
+from ..harmonic import (HarmonicSystem, absorbed_power_ez, absorbed_power_hz, cell_permeability, cell_permittivity,
+                        off_diagonal_entries)
 from ..index_reference import OFF_DIAGONAL_ARRAY
-from ..materials import (DrudePole, LorentzPole, material_solution_state, register_em_arrays,
+from ..materials import (GYRATION_Z, DrudePole, LorentzPole, material_solution_state, register_em_arrays,
                          restore_material_solution, tfsf_outline_warnings)
 from ..operators import (KeptYeeOperators, active_coupling_faces, bloch_wrap_phases, helmholtz_operator,
                          off_diagonal_face_couplings, pin_image_cells, stretched_cell_areas, yee_operators)
@@ -213,29 +214,33 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self.finalize_warnings.extend(self._off_diagonal_line_warnings())
 
     def _off_diagonal_line_warnings(self):
-        """hz: one warning per mode port / line source / beam whose line cells hold a non-zero eps_xy of the assembly
-        (material eps_xy now; a later eps_xy_update coupling is not checked): they solve with the diagonal eps only."""
+        """hz: one warning per mode port / line source / beam whose line cells hold a non-zero eps_xy or gyration_z of
+        the assembly (material values now; a later eps_xy_update coupling is not checked): they solve with the diagonal
+        eps only."""
         if self.polarization != 'hz':
             return []
-        cell_eps_xy = self.assembly_eps_xy()
-        if cell_eps_xy is None:
+        terms = [(name, values) for name, values in (('eps_xy', self.assembly_eps_xy()),
+                                                     ('gyration_z', self.assembly_gyration())) if values is not None]
+        if not terms:
             return []
         warnings = []
         for item in (*self.sources, *self.monitors):
             if isinstance(item, SheetCurrentPhasor):
                 label, line = item.label, item.line
                 consequence = ('its launch is calibrated with the face permittivity eps_ii - eps_xy^2 / eps_jj and '
-                               'ignores the eps_xy coupling, so the radiated amplitude is approximate')
+                               'ignores the off-diagonal coupling, so the radiated amplitude is approximate')
             elif hasattr(item, 'port') and hasattr(item, 'solve'):   # mode source / monitor / mode-power objective
                 label, line = item.port.label, item.port.line_index(item.position)
                 consequence = ('its slab modes are solved with eps_xx / eps_yy only, so the injected or measured mode '
                                'is not the guided mode of the anisotropic line and powers / fractions are approximate')
             else:
                 continue
-            largest = float(self.xp.abs(cell_eps_xy[line]).max())   # one host sync per line, at finalize only
-            if largest > 0.0:
-                warnings.append(f"{label}: its line cells have an off-diagonal eps_xy (max |eps_xy| {largest:.3g}); "
-                                f"{consequence}. Put the line in cells without eps_xy (isotropic or unrotated)")
+            for name, values in terms:
+                largest = float(self.xp.abs(values[line]).max())   # one host sync per line, at finalize only
+                if largest > 0.0:
+                    warnings.append(f"{label}: its line cells have an off-diagonal {name} (max |{name}| "
+                                    f"{largest:.3g}); {consequence}. Put the line in cells without {name} (isotropic, "
+                                    'unrotated or unmagnetised)')
         return warnings
 
     def set_subpixel_smoothing(self, geometry):
@@ -317,8 +322,10 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def _symmetrizer(self, omega):
         """Stretched cell areas D of the system at omega (D A complex symmetric: a cuDSS / MUMPS / PARDISO factor of
-        D A is an LDL^T), None with a Bloch phase."""
-        if self.boundary_config.has_bloch_phase:
+        D A is an LDL^T), None with a Bloch phase or a gyration_z in the current system (non-reciprocal: no D makes D A
+        symmetric, so a general LU)."""
+        if self.boundary_config.has_bloch_phase or (self.system is not None
+                                                    and self.system.cell_gyration is not None):
             return None
         domain = self.domain
         cell_widths = grid_cell_widths(domain.grid)
@@ -910,18 +917,24 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         cell_eps_xx = cell_permittivity(materials, 'eps_xx', self.dispersive_regions, omega, xp=xp)
         cell_eps_yy = cell_permittivity(materials, 'eps_yy', self.dispersive_regions, omega, xp=xp)
         self._add_extra_permittivity((cell_eps_xx, cell_eps_yy))
-        cell_eps_xy = self.assembly_eps_xy()   # kept on the system: the adjoint chain rule reads it
-        if cell_eps_xy is not None and self.metric is not None:
-            raise NotImplementedError('FDFDPhysics: eps_xy on a polar grid is not supported (its face couplings use '
-                                      'Cartesian cell areas; components there are radial / angular, so a Cartesian '
-                                      'crystal is off-diagonal everywhere)')
-        along_x, along_y, eta_xy = cell_eps_xx, cell_eps_yy, None
-        if cell_eps_xy is not None:   # E_x / E_y see 1 / eta_xx, 1 / eta_yy along their faces (harmonic.py header)
-            squared = cell_eps_xy * cell_eps_xy
-            along_x = cell_eps_xx - squared / cell_eps_yy
-            along_y = cell_eps_yy - squared / cell_eps_xx
-            eta_xy = -cell_eps_xy / (cell_eps_xx * cell_eps_yy - squared)
-            del squared
+        cell_eps_xy = self.assembly_eps_xy()   # kept on the system: the adjoint chain rule reads them
+        cell_gyration = self.assembly_gyration()
+        if (cell_eps_xy is not None or cell_gyration is not None) and self.metric is not None:
+            raise NotImplementedError('FDFDPhysics: eps_xy / gyration_z on a polar grid is not supported (its face '
+                                      'couplings use Cartesian cell areas; components there are radial / angular, so '
+                                      'a Cartesian crystal is off-diagonal everywhere)')
+        along_x, along_y, eta_xy, eta_yx = cell_eps_xx, cell_eps_yy, None, None
+        if cell_eps_xy is not None or cell_gyration is not None:
+            # E_x / E_y see 1 / eta_xx, 1 / eta_yy along their faces (harmonic.py header)
+            xy_entry, yx_entry = off_diagonal_entries(cell_eps_xy, cell_gyration, xp=xp)
+            product = xy_entry * yx_entry   # eps_xy^2 + g^2
+            along_x = cell_eps_xx - product / cell_eps_yy
+            along_y = cell_eps_yy - product / cell_eps_xx
+            determinant = cell_eps_xx * cell_eps_yy - product
+            eta_xy = -xy_entry / determinant
+            if cell_gyration is not None:   # eta_yx != eta_xy: non-reciprocal
+                eta_yx = -yx_entry / determinant
+            del xy_entry, yx_entry, product, determinant
         eps_hi_y_faces = face_average(along_x, 1, periodic_y, cell_dy, xp=xp)   # eps_xx at E_x
         eps_hi_x_faces = face_average(along_y, 0, periodic_x, cell_dx, xp=xp)   # eps_yy at E_y
         del along_x, along_y
@@ -957,8 +970,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
                                                                          periodic_x, periodic_y)
             off_diagonal = off_diagonal_face_couplings((cell_dx, cell_dy), (periodic_x, periodic_y),
                                                        self.lower_wrap_factors, eta_xy, active_hi_x_faces,
-                                                       active_hi_y_faces, xp=xp)
-            del eta_xy, active_hi_x_faces, active_hi_y_faces
+                                                       active_hi_y_faces, xp=xp, eta_yx=eta_yx)
+            del eta_xy, eta_yx, active_hi_x_faces, active_hi_y_faces
             y_faces_from_x_faces, x_faces_from_y_faces = off_diagonal
             operator = (operator - ops.dx_e @ x_faces_from_y_faces @ ops.dy_h
                         - ops.dy_e @ y_faces_from_x_faces @ ops.dx_h).tocsr()
@@ -968,29 +981,42 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             weight_hi_y_faces=weight_hi_y_faces, cell_eps=None, cell_eps_xx=cell_eps_xx, cell_eps_yy=cell_eps_yy,
             cell_mu=cell_mu, eps_hi_x_faces=eps_hi_x_faces, eps_hi_y_faces=eps_hi_y_faces, pec_cells=pec_cells,
             periodic_x=periodic_x, periodic_y=periodic_y, off_diagonal=off_diagonal, cell_eps_xy=cell_eps_xy,
-            face_fractions=face_fractions, cell_area_fractions=cell_area_fractions)
+            cell_gyration=cell_gyration, face_fractions=face_fractions, cell_area_fractions=cell_area_fractions)
 
     def assembly_eps_xy(self):
         """hz float64 (nx, ny) eps_xy the assembly uses = the material eps_xy + the eps_xy_update change, 0 in PEC cells
         and in the outer two cell rows of every wall / mirror face (pinned images assume 5 points); None when all 0."""
         materials = self.domain.materials
-        parts = [array for array in ((getattr(materials, OFF_DIAGONAL_ARRAY)
-                                      if OFF_DIAGONAL_ARRAY in materials.property_names() else None),
-                                     self._coupled_eps_xy) if array is not None]
+        return self._assembled_off_diagonal(((getattr(materials, OFF_DIAGONAL_ARRAY)
+                                              if OFF_DIAGONAL_ARRAY in materials.property_names() else None),
+                                             self._coupled_eps_xy))
+
+    def assembly_gyration(self):
+        """hz float64 (nx, ny) gyration g (material gyration_z: eps_xy +- j g, harmonic.py header) the assembly uses, 0
+        in PEC cells and the outer two cell rows of every wall face (as assembly_eps_xy); None when all 0 or ez."""
+        materials = self.domain.materials
+        if self.polarization != 'hz' or GYRATION_Z not in materials.property_names():
+            return None
+        return self._assembled_off_diagonal((getattr(materials, GYRATION_Z),))
+
+    def _assembled_off_diagonal(self, arrays):
+        """float64 (nx, ny) sum of the non-None arrays, zeroed in PEC cells and the outer two rows of every wall /
+        mirror face; None without any or when all 0 (one host sync)."""
+        parts = [array for array in arrays if array is not None]
         if not parts:
             return None
         xp = self.xp
-        cell_eps_xy = parts[0].astype(xp.float64)
+        cell_values = parts[0].astype(xp.float64)
         for part in parts[1:]:
-            cell_eps_xy += part
+            cell_values += part
         if self.pec_cells is not None:
-            xp.copyto(cell_eps_xy, 0.0, where=self.pec_cells)
+            xp.copyto(cell_values, 0.0, where=self.pec_cells)
         for axis, outer, inner, _, _ in self._wall_rows:
-            cell_row(cell_eps_xy, axis, outer)[...] = 0.0
-            cell_row(cell_eps_xy, axis, inner)[...] = 0.0
-        if not bool(xp.any(cell_eps_xy != 0.0)):   # one host sync per assembly: an all-zero eps_xy keeps 5 points
+            cell_row(cell_values, axis, outer)[...] = 0.0
+            cell_row(cell_values, axis, inner)[...] = 0.0
+        if not bool(xp.any(cell_values != 0.0)):   # one host sync per assembly: all zero keeps 5 points
             return None
-        return cell_eps_xy
+        return cell_values
 
     def _add_extra_permittivity(self, cell_eps_arrays):
         """Add extra_permittivity in place to the assembly's cell eps(omega) (ez (eps,), hz (eps_xx, eps_yy))."""

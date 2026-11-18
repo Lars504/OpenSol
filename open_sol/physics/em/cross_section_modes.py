@@ -39,7 +39,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...core.constants import C0, ETA0
+from ...core.constants import C0, EPS0, ETA0
 from .boundaries import BCType, cpml_axis_profiles
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver, device_factor_matvec, guarded_start_vector
 from ...solvers.sparse_direct import size_issue
@@ -913,6 +913,35 @@ def centre_fields(mode, periodic_x, periodic_y, wrap_factors=(1.0, 1.0)):
             'ez': np.array(mode.ez, copy=True), 'hx': to_centres(mode.hx, 1, periodic_y, wrap_y),
             'hy': to_centres(mode.hy, 0, periodic_x, wrap_x),
             'hz': to_centres(to_centres(mode.hz, 0, periodic_x, wrap_x), 1, periodic_y, wrap_y)}
+
+
+def nonreciprocal_shift(mode, point_materials, gyration_x=None, gyration_y=None, wrap_factors=(1.0, 1.0)):
+    """beta_forward - beta_backward [rad/m] of a mode to first order in the gyration of a transverse magnetisation
+    (gyration_x / gyration_y: float (nx, ny) cell arrays or None; eps_yz = j g_x, eps_zx = j g_y, exp(j omega t - j
+    beta z)): -(omega eps0 / P) sum [g_x Im(conj(E_y) E_z) + g_y Im(conj(E_z) E_x)] dA over the cell centres, P the
+    mode's power; mirror images counted by mirror_factor; point_materials = the solve's ModePointMaterials (the normal
+    E_x / E_y reach the centres as D / eps: second order at interfaces); NaN for an evanescent mode (|P| < 1e-3 W)."""
+    # Perturbation (Mizumoto / Shintaku): d beta = omega eps0 integral E* . d eps E dA / (4 P). The backward mode of the
+    # unperturbed guide has the same E_t and -E_z, so the E_t-E_z cross terms of the antisymmetric j g entries flip:
+    # E* . d eps E = j g_x (E_y* E_z - E_z* E_y) + j g_y (E_z* E_x - E_x* E_z) = -2 g_x Im(E_y* E_z) - 2 g_y Im(E_z* E_x)
+    # (+ the E_x-E_y term of g_z, equal in both directions), and beta_f - beta_b = 2 d beta_f. E_x / E_y are normal to
+    # the x / y interfaces: a plain face mean of E would be first order there, the mean of D = eps_face E over the
+    # cell's eps is second order.
+    if abs(mode.power) < 1e-3:
+        return math.nan
+    wrap_x, wrap_y = wrap_factors
+    layout = point_materials.layout
+    integrand = np.zeros(mode.ez.shape, dtype=np.float64)
+    if gyration_x is not None:
+        ey = (to_centres(point_materials.eps_y_faces * mode.ey, 1, layout.y.periodic, wrap_y)
+              / point_materials.cell_eps_yy)
+        integrand += np.asarray(gyration_x, dtype=np.float64) * np.imag(np.conj(ey) * mode.ez)
+    if gyration_y is not None:
+        ex = (to_centres(point_materials.eps_x_faces * mode.ex, 0, layout.x.periodic, wrap_x)
+              / point_materials.cell_eps_xx)
+        integrand += np.asarray(gyration_y, dtype=np.float64) * np.imag(np.conj(mode.ez) * ex)
+    total = mode.mirror_factor * float(np.sum(integrand * layout.centre_area))
+    return 0.0 if total == 0.0 else -float(mode.omega) * EPS0 * total / mode.power
 
 
 def mode_overlap(mode_a, mode_b):

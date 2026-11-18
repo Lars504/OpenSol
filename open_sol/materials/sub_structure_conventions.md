@@ -16,8 +16,9 @@ Sub file of the root `structure_conventions.md` (read that first). Library mater
   / `selected_material_sets` (the builder's merge; unresolved materials skipped or flagged), never its own loop. `water` / `heavy_water` carry absorption as sigma_e, alpha = 0.
 - `model_properties()` merges `electrical` (sigma_dc / eps_dc: gold, silver, aluminum, water conduct in any
   electric_currents physics), `fluid` (viscosity: water, heavy_water; air has none: set it to make air flow) and
-  `mechanical` (isotropic youngs_modulus / poisson_ratio: silica, silicon (Hill average), gold, silver, aluminum, both
-  lithium niobates (rough estimate); liquids and air have none = void in solid_mechanics) like `optical` / `thermal`.
+  `mechanical` (isotropic youngs_modulus / poisson_ratio: silica, silicon (Hill average), silicon_nitride (LPCVD film
+  values: the film-dependent k / alpha / E ranges are in its description), gold, silver, aluminum, both lithium niobates
+  (rough estimate); liquids and air have none = void in solid_mechanics) like `optical` / `thermal`.
   Properties of absent types are ignored by the builder (validation warns for user-set ones, never library-merged
   ones; permittivity names are left to the EM `_material_issues` hint).
 - `Material.nk_table` (`NkTable`, rows in `nk_data.py` from refractiveindex.info copies: silver / gold Johnson & Christy
@@ -58,3 +59,6 @@ Sub file of the root `structure_conventions.md` (read that first). Library mater
 - `gst_225_amorphous` / `gst_225_crystalline` (gst.py): eps_r / sigma_e computed from `physics/em/phase_change.GST_225`
   n, k (one source with the phase_change_medium defaults: edit the numbers there); thermal data per phase in gst.py.
   Static phases only: switching is the phase_change_medium feature.
+- `ce_yig`: index and film loss only; its gyration (|g| ~ 0.009 at 1.55 um) is in the description, not in a dict: the
+  gyration_x / _y / _z component is the magnetisation direction of the model (and its sign the device's), so a library
+  value would silently pick one. Its values are typical literature figures, marked unverified like the crystal optics.

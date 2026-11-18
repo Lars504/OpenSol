@@ -1,0 +1,308 @@
+{
+  "title": "Analytic: non-reciprocal phase shift of a Ce:YIG-clad silicon slab (em_modes)",
+  "description": "Cross-section modes (em_modes, mode_analysis at 1.55 um) of a silicon slab on silica under a Ce:YIG cladding (library ce_yig) magnetised along x, across the guide in the chip plane: material gyration_x = 0.009 (eps_yz = j g_x, |g| from the Faraday rotation ~ -4500 deg/cm). Periodic x (4 cells), CPML along y, uniform 5 nm cells, subpixel smoothing on. The sweep steps the silicon thickness d_si from 220 to 400 nm in 20 nm steps (the interfaces stay on cell edges: the gyration takes the cell-centre material, it is not smoothed).\nEach mode gets the first-order non-reciprocal phase shift delta_beta = beta_forward - beta_backward from its fields (mode_table column delta_beta, scalar output modes_delta_beta_<k>): only the quasi-TM mode (row 1, E along y, the one whose E_y and E_z overlap in the magnetised cladding) shifts; TE0 (row 0) gives 0.\nAnalytic: the TM0 dispersion of the asymmetric slab, kappa d = atan(p_s) + atan(p_c), solved by 8 Newton steps in the parameters; with the gyration the cladding boundary term gains -+ beta g in the two directions (the exact gyrotropic slab), so to first order delta_beta = -g_x 2 eps_si / (eps_yig^2 (1 + p_c^2) F'(kappa)) (Mizumoto / Shintaku form). L_pi = pi / |delta_beta|: ~0.44 mm at 220 nm, ~1.8 mm at 400 nm, the scale of integrated Ce:YIG isolators.\nSweep tab: delta_beta_TM0 and n_eff_TM0 vs d_si with the dashed closed forms (the Ce:YIG loss, ~40 dB/cm, is in the run but not in the closed form: negligible here). Derived values tab (last value, 400 nm): delta_beta and L_pi with reference and relative error; the TE0 shift (0).",
+  "version": 2,
+  "parameters": [
+    {
+      "name": "lambda0",
+      "expression": "1550*nm",
+      "description": "vacuum wavelength of the mode solve"
+    },
+    {
+      "name": "eps_si",
+      "expression": 12.08,
+      "description": "silicon core permittivity (library silicon, n = 3.476)"
+    },
+    {
+      "name": "eps_sio2",
+      "expression": 2.085,
+      "description": "silica substrate permittivity (library silica, n = 1.444)"
+    },
+    {
+      "name": "eps_yig",
+      "expression": 4.93,
+      "description": "Ce:YIG cladding permittivity (library ce_yig, n = 2.22; its small loss is left out of the closed form)"
+    },
+    {
+      "name": "g_x",
+      "expression": 0.009,
+      "description": "gyration of the Ce:YIG cladding, magnetised along +x (across the guide, in the chip plane)"
+    },
+    {
+      "name": "dx_cell",
+      "expression": "5*nm",
+      "description": "uniform cell size"
+    },
+    {
+      "name": "d_si",
+      "expression": "300*nm",
+      "description": "silicon thickness (swept 220-400 nm in 20 nm steps: the interfaces stay on cell edges; below ~210 nm TM0 nears the Ce:YIG light line)"
+    },
+    {
+      "name": "Ly",
+      "expression": "2*um",
+      "description": "domain height (CPML beyond)"
+    },
+    {
+      "name": "y_core",
+      "expression": "Ly/2",
+      "description": "core centre line (a cell edge)"
+    },
+    {
+      "name": "kv",
+      "expression": "2*pi/lambda0",
+      "description": "vacuum wavenumber"
+    },
+    {
+      "name": "Vs",
+      "expression": "kv*sqrt(eps_si - eps_sio2)",
+      "description": "kappa^2 + gamma_s^2 (substrate side)"
+    },
+    {
+      "name": "Vc",
+      "expression": "kv*sqrt(eps_si - eps_yig)",
+      "description": "kappa^2 + gamma_c^2 (cladding side, the smaller)"
+    },
+    {
+      "name": "kap0",
+      "expression": "0.99*Vc",
+      "description": "TM0 start value of the core wavenumber kappa (just below the cladding cutoff)"
+    },
+    {
+      "name": "kap1",
+      "expression": "min(kap0 - (kap0*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap0**2)/kap0) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap0**2)/kap0))/(d_si + eps_si/eps_sio2*Vs**2/((kap0**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap0**2))*sqrt(Vs**2 - kap0**2)) + eps_si/eps_yig*Vc**2/((kap0**2 + (eps_si/eps_yig)**2*(Vc**2 - kap0**2))*sqrt(Vc**2 - kap0**2))), 0.999*Vc)",
+      "description": "Newton step 1 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap2",
+      "expression": "min(kap1 - (kap1*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap1**2)/kap1) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap1**2)/kap1))/(d_si + eps_si/eps_sio2*Vs**2/((kap1**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap1**2))*sqrt(Vs**2 - kap1**2)) + eps_si/eps_yig*Vc**2/((kap1**2 + (eps_si/eps_yig)**2*(Vc**2 - kap1**2))*sqrt(Vc**2 - kap1**2))), 0.999*Vc)",
+      "description": "Newton step 2 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap3",
+      "expression": "min(kap2 - (kap2*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap2**2)/kap2) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap2**2)/kap2))/(d_si + eps_si/eps_sio2*Vs**2/((kap2**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap2**2))*sqrt(Vs**2 - kap2**2)) + eps_si/eps_yig*Vc**2/((kap2**2 + (eps_si/eps_yig)**2*(Vc**2 - kap2**2))*sqrt(Vc**2 - kap2**2))), 0.999*Vc)",
+      "description": "Newton step 3 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap4",
+      "expression": "min(kap3 - (kap3*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap3**2)/kap3) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap3**2)/kap3))/(d_si + eps_si/eps_sio2*Vs**2/((kap3**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap3**2))*sqrt(Vs**2 - kap3**2)) + eps_si/eps_yig*Vc**2/((kap3**2 + (eps_si/eps_yig)**2*(Vc**2 - kap3**2))*sqrt(Vc**2 - kap3**2))), 0.999*Vc)",
+      "description": "Newton step 4 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap5",
+      "expression": "min(kap4 - (kap4*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap4**2)/kap4) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap4**2)/kap4))/(d_si + eps_si/eps_sio2*Vs**2/((kap4**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap4**2))*sqrt(Vs**2 - kap4**2)) + eps_si/eps_yig*Vc**2/((kap4**2 + (eps_si/eps_yig)**2*(Vc**2 - kap4**2))*sqrt(Vc**2 - kap4**2))), 0.999*Vc)",
+      "description": "Newton step 5 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap6",
+      "expression": "min(kap5 - (kap5*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap5**2)/kap5) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap5**2)/kap5))/(d_si + eps_si/eps_sio2*Vs**2/((kap5**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap5**2))*sqrt(Vs**2 - kap5**2)) + eps_si/eps_yig*Vc**2/((kap5**2 + (eps_si/eps_yig)**2*(Vc**2 - kap5**2))*sqrt(Vc**2 - kap5**2))), 0.999*Vc)",
+      "description": "Newton step 6 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap7",
+      "expression": "min(kap6 - (kap6*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap6**2)/kap6) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap6**2)/kap6))/(d_si + eps_si/eps_sio2*Vs**2/((kap6**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap6**2))*sqrt(Vs**2 - kap6**2)) + eps_si/eps_yig*Vc**2/((kap6**2 + (eps_si/eps_yig)**2*(Vc**2 - kap6**2))*sqrt(Vc**2 - kap6**2))), 0.999*Vc)",
+      "description": "Newton step 7 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "kap8",
+      "expression": "min(kap7 - (kap7*d_si - atan(eps_si/eps_sio2*sqrt(Vs**2 - kap7**2)/kap7) - atan(eps_si/eps_yig*sqrt(Vc**2 - kap7**2)/kap7))/(d_si + eps_si/eps_sio2*Vs**2/((kap7**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap7**2))*sqrt(Vs**2 - kap7**2)) + eps_si/eps_yig*Vc**2/((kap7**2 + (eps_si/eps_yig)**2*(Vc**2 - kap7**2))*sqrt(Vc**2 - kap7**2))), 0.999*Vc)",
+      "description": "Newton step 8 on F(kappa) = kappa d - atan(p_s) - atan(p_c) = 0, p_l = (eps_si / eps_l) gamma_l / kappa (TM0 of the unmagnetised slab)"
+    },
+    {
+      "name": "neff_tm",
+      "expression": "sqrt(eps_si - (kap8/kv)**2)",
+      "description": "analytic n_eff of TM0 (E along y, unmagnetised)"
+    },
+    {
+      "name": "pc",
+      "expression": "eps_si/eps_yig*sqrt(Vc**2 - kap8**2)/kap8",
+      "description": "p_c at the root"
+    },
+    {
+      "name": "Fp8",
+      "expression": "(d_si + eps_si/eps_sio2*Vs**2/((kap8**2 + (eps_si/eps_sio2)**2*(Vs**2 - kap8**2))*sqrt(Vs**2 - kap8**2)) + eps_si/eps_yig*Vc**2/((kap8**2 + (eps_si/eps_yig)**2*(Vc**2 - kap8**2))*sqrt(Vc**2 - kap8**2)))",
+      "description": "F'(kappa) at the root"
+    },
+    {
+      "name": "dbeta_ref",
+      "expression": "-g_x*2*eps_si/(eps_yig**2*(1 + pc**2)*Fp8)",
+      "description": "first-order beta_forward - beta_backward of TM0 [rad/m]: the gyration enters the cladding boundary term of the dispersion as -+ beta g_z (g_z = -g_x, the in-plane frame), d beta / d g_z = 2 eps_si / (eps_yig^2 (1 + p_c^2) F'(kappa)) per direction"
+    },
+    {
+      "name": "Lpi_ref",
+      "expression": "pi/abs(dbeta_ref)",
+      "description": "length of a pi non-reciprocal phase difference [m]"
+    }
+  ],
+  "domain": {
+    "size_x": "4*dx_cell",
+    "size_y": "Ly"
+  },
+  "geometry": [
+    {
+      "name": "core",
+      "kind": "rectangle",
+      "params": {
+        "x0": 0.0,
+        "y0": "y_core - d_si/2",
+        "x1": "4*dx_cell",
+        "y1": "y_core + d_si/2"
+      }
+    },
+    {
+      "name": "cladding",
+      "kind": "rectangle",
+      "params": {
+        "x0": 0.0,
+        "y0": "y_core + d_si/2",
+        "x1": "4*dx_cell",
+        "y1": "Ly"
+      }
+    }
+  ],
+  "selections": [],
+  "materials": [
+    {
+      "name": "silica",
+      "library": null,
+      "properties": {
+        "eps_r": "eps_sio2"
+      },
+      "dispersion": null,
+      "selection": [
+        "all"
+      ]
+    },
+    {
+      "name": "silicon",
+      "library": null,
+      "properties": {
+        "eps_r": "eps_si"
+      },
+      "dispersion": null,
+      "selection": [
+        "core"
+      ]
+    },
+    {
+      "name": "ce_yig",
+      "library": "ce_yig",
+      "properties": {
+        "gyration_x": "g_x"
+      },
+      "dispersion": null,
+      "selection": [
+        "cladding"
+      ]
+    }
+  ],
+  "physics": [
+    {
+      "name": "modes",
+      "type": "em_modes",
+      "settings": {
+        "bc_x_lo": "periodic",
+        "bc_x_hi": "periodic",
+        "wavelength": "lambda0",
+        "n_modes": 2,
+        "n_eff_guess": 3.5
+      },
+      "features": [
+        {
+          "name": "table",
+          "type": "mode_table",
+          "selection": [],
+          "params": {},
+          "enabled": true
+        }
+      ],
+      "every": 1
+    }
+  ],
+  "couplings": [],
+  "mesh": {
+    "mode": "uniform",
+    "dx": "dx_cell",
+    "max_ratio": 1.15,
+    "wavelength_min": null,
+    "points_per_wavelength": 20.0,
+    "refinements": []
+  },
+  "solver_defaults": {
+    "backend": "auto",
+    "subpixel_smoothing": true,
+    "conformal_boundaries": false
+  },
+  "study": {
+    "type": "mode_analysis",
+    "settings": {},
+    "stored_fields": [],
+    "sweep": {
+      "parameter": "d_si",
+      "values": [
+        2.2e-07,
+        2.4e-07,
+        2.6e-07,
+        2.8e-07,
+        3e-07,
+        3.2e-07,
+        3.4e-07,
+        3.6e-07,
+        3.8e-07,
+        4e-07
+      ]
+    }
+  },
+  "derived_values": [
+    {
+      "name": "delta_beta_TM0",
+      "expression": "delta_beta",
+      "selection": [],
+      "operation": "at",
+      "source": "modes.table",
+      "at": 1,
+      "reference": "dbeta_ref",
+      "tolerance": 0.002
+    },
+    {
+      "name": "n_eff_TM0",
+      "expression": "n_eff",
+      "selection": [],
+      "operation": "at",
+      "source": "modes.table",
+      "at": 1,
+      "reference": "neff_tm",
+      "tolerance": 0.0001
+    },
+    {
+      "name": "L_pi_TM0",
+      "expression": "pi/abs(delta_beta_TM0)",
+      "selection": [],
+      "operation": "expression",
+      "reference": "Lpi_ref",
+      "tolerance": 0.002
+    },
+    {
+      "name": "delta_beta_TE0",
+      "expression": "modes_delta_beta_1",
+      "selection": [],
+      "operation": "expression"
+    }
+  ],
+  "analytic_curves": [
+    {
+      "name": "delta_beta_vs_thickness",
+      "target": "sweep",
+      "series": "delta_beta_TM0",
+      "expression": "dbeta_ref",
+      "tolerance": 0.005
+    },
+    {
+      "name": "n_eff_TM0_vs_thickness",
+      "target": "sweep",
+      "series": "n_eff_TM0",
+      "expression": "neff_tm",
+      "tolerance": 0.005
+    }
+  ]
+}

@@ -279,10 +279,15 @@ class ElasticSystem(ElasticSystemBase):
     """Window system of the 2D displacement: node grid, held dofs (eliminated), rigid-mode check, block-Jacobi PCG
     (PCGSolver on the CSR) or a direct factor of A_solve (sparse_direct, made by the first solve after an assembly) and
     the reaction / gradient post-processing; the physics supplies coefficients and loads. axisymmetric (set before
-    prepare): (r, z) ring weights and the hoop terms."""
+    prepare): (r, z) ring weights and the hoop terms. `bloch` (bloch2d BlochCell3D over the window nodes, set by the
+    physics) makes the rigid-mode check periodic; with `rigid_motions_allowed` the free translations of a
+    trivial-phase cell are counted in n_rigid_motions instead of refused."""
 
     axisymmetric = False
     accepts_direct = True
+    bloch = None                    # bloch3d.BlochCell3D of the periodic window sides (bloch2d.tensor_bloch_cell)
+    rigid_motions_allowed = False   # a Bloch cell about a target > 0: its free translations are counted
+    n_rigid_motions = 0             # free rigid motions of the last assembly (rigid_motions_allowed only)
 
     # --- allocation -----------------------------------------------------------
 
@@ -526,7 +531,9 @@ class ElasticSystem(ElasticSystemBase):
     def _check_rigid_modes(self, solid_elements):
         """Raise ValueError when a solid region (elements with stiffness, joined through shared corners) admits a
         rigid motion: no held u_x, no held u_y, or held u_x nodes on one horizontal line and held u_y nodes on one
-        vertical line (rotation free); axisymmetric: no held u_z (= u_y) only (u_r strains the hoop). Skipped while the
+        vertical line (rotation free); axisymmetric: no held u_z (= u_y) only (u_r strains the hoop). A Bloch cell
+        (`bloch`): regions join through periodic partners; a wrapping region is stable at a non-trivial phase and keeps
+        its unheld translations at a trivial one (counted with rigid_motions_allowed, else refused). Skipped while the
         solid and held sets are unchanged."""
         xp = self.xp
         signature = (solid_elements.copy(), self.held.copy())
@@ -536,6 +543,7 @@ class ElasticSystem(ElasticSystemBase):
             return
         labels, n_regions = self.ndimage.label(solid_elements, structure=np.ones((3, 3), dtype=bool))   # 8-connected
         n_regions = int(n_regions)
+        self.n_rigid_motions = 0
         if n_regions:
             padded = xp.zeros((labels.shape[0] + 2, labels.shape[1] + 2), dtype=labels.dtype)
             padded[1:-1, 1:-1] = labels
@@ -549,6 +557,8 @@ class ElasticSystem(ElasticSystemBase):
             ok_x, spread_x = _region_spread(to_host(node_labels[held_x]), to_host(node_j[held_x]), n_regions)
             ok_y, spread_y = _region_spread(to_host(node_labels[held_y]), to_host(node_i[held_y]), n_regions)
             stable = ok_y if self.axisymmetric else ok_x & ok_y & (spread_x | spread_y)
+            if self.bloch is not None:
+                stable = self._periodic_stable(to_host(node_labels).reshape(-1) - 1, stable)
             if not stable.all():
                 first = int(np.flatnonzero(~stable)[0])
                 if self.axisymmetric:
@@ -571,8 +581,32 @@ class ElasticSystem(ElasticSystemBase):
                     f'the solve is singular; e.g. the region containing the cell at x = {x_cell:.6g} m, y = {y_cell:.6g} '
                     f'm (from the window corner): {reason}. Hold every solid region with Fixed, Roller or '
                     'Displacement supports on outer faces or a Fixed (domain) region, e.g. rollers on x_lo and y_lo, '
-                    'or give the material around it stiffness so that it joins a held region.')
+                    'or give the material around it stiffness so that it joins a held region'
+                    + ('; a free Bloch cell (every periodic phase 1, e.g. bloch_k 0) solves only about an '
+                       'eigenfrequency target_frequency > 0, where its rigid modes are dropped.'
+                       if self.bloch is not None else '.'))
         self._rigid_signature = signature
+
+    def _periodic_stable(self, node_region, stable):
+        """Stable flags per region of a Bloch cell (regions joined through periodic partners, node_region 0-based, -1
+        off the solid): a wrapping group is stable at a non-trivial phase; at a trivial one its unheld translations are
+        counted (rigid_motions_allowed) or leave it unstable; a group that does not wrap keeps the ordinary flags."""
+        from .bloch2d import free_translations, joined_regions, wrapping_regions
+        bloch = self.bloch
+        group = joined_regions(node_region, bloch.master)
+        wraps = wrapping_regions(group, bloch.master)
+        region_group = np.full(stable.size, -1, dtype=np.int64)
+        region_group[node_region[node_region >= 0]] = group[node_region >= 0]
+        ordinary = np.bincount(region_group, weights=(~stable).astype(np.float64), minlength=wraps.size) == 0
+        if bloch.trivial:
+            free = free_translations(group, to_host(self.held).reshape(-1, 2), wraps)
+            if self.rigid_motions_allowed:
+                self.n_rigid_motions = int(free.sum())
+                free[:] = 0
+            group_stable = np.where(wraps, free == 0, ordinary)
+        else:
+            group_stable = wraps | ordinary
+        return group_stable[region_group]
 
     # --- solve ----------------------------------------------------------------
 

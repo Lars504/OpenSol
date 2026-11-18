@@ -16,6 +16,7 @@ from ..fdfd_sources import phase_factor
 from ..fem_fdfd import (FEMFDFDMaterials, assemble_fem_fdfd, dipole_load, element_state, fem_fdfd_error_indicator,
                         fem_fdfd_layout, fem_fdfd_size_issue, nodal_fields, point_fields, point_load,
                         solve_fem_fdfd_resonances)
+from ..materials import GYRATION_Z
 from ..placement import PERMITTIVITY_ARRAYS, PROBE_COMPONENTS, require_polarization
 from ..renderer import FDFDRendererEz, FDFDRendererHz
 from .fem_em_base import TriangleEMPhysics
@@ -293,6 +294,11 @@ class FEMFDFDPhysics(HarmonicEMShell, TriangleEMPhysics):
         eps, mu, pec = self._element_materials(omega)
         if self.polarization == 'ez':
             return FEMFDFDMaterials(eps=eps['eps_r'], mu=mu, pec=pec)
+        materials = self.domain.materials
+        if GYRATION_Z in materials.property_names() and np.any(to_host(getattr(materials, GYRATION_Z)) != 0.0):
+            raise NotImplementedError('em_fdfd_hz on a triangles mesh: gyration_z (a magneto-optic, non-reciprocal '
+                                      'medium) is not supported there (its pencil is not complex symmetric); use a '
+                                      'tensor mesh')
         tensor = np.zeros((self.mesh.n_elements, 2, 2), dtype=np.complex128)
         tensor[:, 0, 0], tensor[:, 1, 1] = eps['eps_xx'], eps['eps_yy']
         off_diagonal = np.asarray(to_host(self.eps_xy()), dtype=np.float64)

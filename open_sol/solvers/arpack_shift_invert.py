@@ -726,12 +726,14 @@ class ArpackShiftInvertSolver:
                      pencil=None, stiffness_coefficients=None):
         """(lambda complex, vectors, applications, converged, factor) of the n_wanted eigenpairs K x = lambda M x nearest
         the real shift of a complex symmetric (not Hermitian) host pencil, M symmetric (real semi-definite, or complex:
-        an elastic PML):
+        an elastic PML; a caller's general pencil, symmetric False, factors by LU):
         counted complex symmetric factor of K - sigma M (sigma, pencil and previous as eigsh_shifted; with a pencil of
         several stiffness terms K = sum a_i K_i, a_i = stiffness_coefficients, and stiffness unused; cuDSS LDL^T with
         row_scale, None = ShiftPencil.row_scale) and Arnoldi (eigs) on (K - sigma M)^-1 M; massless rows give theta = 0
         (lambda infinite: NaN); RuntimeError when that factor is singular."""
-        pencil = self._checked_pencil(pencil, (stiffness,), mass, np.complex128, symmetric=True)
+        # a caller's pencil may be general (symmetric False: a complex Bloch reduction of a complex symmetric pencil)
+        pencil = self._checked_pencil(pencil, (stiffness,), mass, np.complex128,
+                                      symmetric=True if pencil is None else pencil.symmetric)
         sigma = float(shift) * (1.0 + EIGSH_SHIFT_RELATIVE_OFFSET)
         factor, _ = self._factorize_shift(pencil, pencil.coefficients(stiffness_coefficients, sigma), row_scale,
                                           previous)

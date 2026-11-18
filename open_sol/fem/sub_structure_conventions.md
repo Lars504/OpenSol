@@ -257,9 +257,15 @@ all but drift_diffusion.
   `DofMap3D.face_quadrature` (FACE_QUADRATURE_ENTRIES, read-only). `eliminate_dirichlet` lifts fixed values into the rhs; eigenproblems
   use `restrict`.
 - `assemble_gradient_coupling(nedelec, lagrange)` needs both maps on the same elements and geometry order.
+- Axisymmetric weights differ by module: fem.assembly (scalar stiffness / mass / loads) integrates x r, fem.elasticity
+  x 2 pi r (`RING`, whole rings). Code mixing them (thermoelastic damping: the scalar thermal operators against
+  `assemble_strain_source`, the transpose of `assemble_stress_load` on the solid's scalar map) scales the scalar ones
+  by RING, else a ratio of the two is off by 2 pi.
 - Periodic / Bloch (2D twins of mesh3d / dofs3d, Lagrange only): `mesh.periodic_node_partners`, `dofs.periodic_dof_partners`,
   `dofs.bloch_masters(dofs, {axis: k})` -> (master, phase e^{-jkL} per crossed period; corners chain both axes),
   `dofs.bloch_prolongation` -> (columns, P), x = P x_r (float64 when every phase is real); callers form P^H A P.
+  `bloch_master_map` takes any partners_of(axis): the 2D solid's tensor-mesh cells pair Q1 corner nodes by index with
+  it (physics/mechanics bloch2d), so a new grid kind needs no mesh object for its masters.
 
 ## Domain, sampling, transfers
 - TriangleDomain: `grid_kind` 'triangles', MaterialGrid (n_elements,) (D12), `coordinate_grids()` = float32 centroid

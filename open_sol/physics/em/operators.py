@@ -445,24 +445,29 @@ def active_coupling_faces(weight_hi_x_faces, weight_hi_y_faces, periodic_x, peri
 
 
 def off_diagonal_face_couplings(cell_widths, periodic, wrap_factors, eta_xy, active_hi_x_faces, active_hi_y_faces,
-                                xp=np):
-    """(hi-x -> hi-y faces: E_x from D_y, hi-y -> hi-x faces: E_y from D_x) CSR complex128 of a cell off-diagonal
-    inverse permittivity eta_xy (nx, ny), each face mean . diag(eta_xy) . centre mean, inactive faces dropped."""
+                                xp=np, eta_yx=None):
+    """(hi-x -> hi-y faces: E_x from D_y through eta_xy, hi-y -> hi-x faces: E_y from D_x through eta_yx) CSR
+    complex128 of the cell off-diagonal inverse permittivities (nx, ny; eta_yx None = eta_xy, a symmetric tensor), each
+    face mean . diag(eta) . centre mean, inactive faces dropped."""
     # face mean = W_f^-1 (centre mean)^T W_c (cell areas W_c, dual face areas W_f; Bloch: the conjugate transpose), so
-    # W_f X is the (Hermitian) transpose of the other map's: the H_z operator keeps its symmetric structure.
+    # W_f X is the (Hermitian) transpose of the other map's when eta_yx = eta_xy: the H_z operator keeps its symmetric
+    # structure. A gyrotropic eta_yx != eta_xy breaks it (non-reciprocal); with eta_yx = conj(eta_xy) (a lossless
+    # Hermitian eps) W_f X_xy = (W_f X_yx)^H, so the discrete Poynting balance stays exact.
     n_unknowns = len(cell_widths[0]) * len(cell_widths[1])
     centre_x, centre_y, face_x, face_y = off_diagonal_mean_maps(cell_widths, periodic, wrap_factors, xp)
     eta = _flat_values(eta_xy, n_unknowns, xp, 'off-diagonal eta_xy', np.complex128)
+    eta_other = eta if eta_yx is None else _flat_values(eta_yx, n_unknowns, xp, 'off-diagonal eta_yx', np.complex128)
     active_x = _flat_values(active_hi_x_faces, n_unknowns, xp, 'active hi-x faces', np.bool_)
     active_y = _flat_values(active_hi_y_faces, n_unknowns, xp, 'active hi-y faces', np.bool_)
 
-    def coupling(face_mean, active_rows, centre_mean, active_columns):
-        """diag(active_rows) face_mean diag(eta) centre_mean diag(active_columns): one sparse product."""
+    def coupling(face_mean, active_rows, cell_eta, centre_mean, active_columns):
+        """diag(active_rows) face_mean diag(cell_eta) centre_mean diag(active_columns): one sparse product."""
         active_face_mean = _kept_entries(face_mean, active_rows[_entry_rows(face_mean, xp)], xp)
-        product = (_column_scaled(active_face_mean, eta, xp) @ centre_mean).tocsr()
+        product = (_column_scaled(active_face_mean, cell_eta, xp) @ centre_mean).tocsr()
         return _kept_entries(product, active_columns[product.indices], xp)
 
-    return coupling(face_y, active_y, centre_x, active_x), coupling(face_x, active_x, centre_y, active_y)
+    return (coupling(face_y, active_y, eta, centre_x, active_x),
+            coupling(face_x, active_x, eta_other, centre_y, active_y))
 
 
 def _flat_values(values, n_unknowns, xp, label, dtype=None):

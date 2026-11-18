@@ -43,7 +43,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Type catalogue: `solid_mechanics` (default 'solid'; shares alpha / alpha_xx / alpha_yy and their arrays with heat,
   adds alpha_zz; rho read only by eigenfrequency / frequency_response; youngs_modulus / poisson_ratio /
   photoelastic_p11 / _p12 are elastic_waves' Param objects, `material_params.py`; optional c_ij, piezoelectric,
-  axial_wavenumber = 2.5D guided modes (u_z nonzero only there), frequency_response study). `solid_mechanics_3d` (3D
+  axial_wavenumber = 2.5D guided modes (u_z nonzero only there), frequency_response study, periodic_x / _y + bloch_kx /
+  _ky Bloch cells on both mesh kinds: section "Bloch cells, 2D"). `solid_mechanics_3d` (3D
   only, separate type like em_fdtd_3d; default 'solid'; same material Params incl. rho; tensor meshes: lowest modes
   only; tetrahedra: target_frequency / search targets / band, 21 c_IJ, piezoelectric (18 piezo_e*, six eps_dc*,
   charges in C, static on 'linear' sparse_direct, short / open modes on 'eigen'), frequency_response on 'linear').
@@ -149,7 +150,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `system.unknown`, `_write_outputs(thermal=False)`; n_solves stays 0, so support reactions raise (results left out
   with a warning). rho is in both material schemas (3D: one more float32 full-grid array in every study).
 - Shared definition pieces (`definition_common`): `resonance_table_feature(order_text)` (callbacks read
-  `physics.eigen_solve`), `modal_study_issues`, `modal_resonance_count`.
+  `physics.eigen_solve`), `thermoelastic_damping_feature(grids, where_text)`, `modal_study_issues`,
+  `modal_resonance_count`.
 - `ModalPencil` (2D and 3D): free-dof reduction (or P^H K P) once; kind 'symmetric' / 'damped' (loss, PML) /
   'loaded' (resistive electrode); one factor kept across shifts (`previous=`, cuDSS plan reuse); K, M, load matrix as
   host CSR, plus the eigen runtime's `ShiftPencil` (`_pencil()`) that count_below / eigsh_shifted / eigs_shifted all
@@ -279,6 +281,43 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `modal_overlap_data` carries `axial_wavenumber` (None = plane strain), 3 dofs per node then.
 - Self-tests `selftests_guided_modes.py`; solid_guided_modes_roller_box pins the sign of the k terms by the mode-1
   shape.
+
+## Bloch cells, 2D (`bloch2d.py`, `definition_bloch2d.py`; settings periodic_x / _y, bloch_kx / _ky)
+- Same phase convention and reduction as the tetrahedra cells (`bloch3d`, section "Tetrahedron meshes"): the 2D
+  identification is a `bloch3d.BlochCell3D` with z never periodic (`vector_masters(c)` for every interleaved layout: 2
+  plane strain, 3 guided (u_x, u_y, w) and 3 piezo (u_x, u_y, phi), all sharing the node phase), prolongation
+  `bloch3d.bloch_prolongation(master, phase, free)`. Tensor: `tensor_bloch_cell` pairs the window corner nodes by index
+  (x_hi column -> x_lo, y_hi row -> y_lo, corners chained by `fem.dofs.bloch_master_map`; L = the window widths sum, so
+  graded cells need no matching), built once in prepare. Triangles: `system_fem.ElasticFEMSystem.periodic` makes every
+  assembly rebuild `bloch` on the SOLID map (`fem.dofs.bloch_masters`: a void-touching side raises when the solid does
+  not reach both sides alike; L = the node extent, a y_lo / y_hi PML ring strip keeps the x extent).
+- Rigid check: regions join through partner pairs (`bloch2d.joined_regions`); a wrapping region cannot rotate, keeps
+  nothing at a non-trivial phase and its unheld translations at phase 1 (counted with rigid_motions_allowed = target >
+  0, else refused); a region touching no partner keeps the ordinary rules. The tensor system gained `bloch` /
+  `rigid_motions_allowed` / `n_rigid_motions` for this only (still no free bodies otherwise); guided at k_z = 0 adds the
+  u_z translation (`_guided_bloch_rigid_motions`) instead of check_antiplane_supports.
+- Eigenfrequency study; a plain periodic cell (every bloch_k 0) on triangles also stationary / time_dependent:
+  `ElasticFEMSystem.solve` factors K_r = P^T K P of the real prolongation (`_periodic_p`, per assembly; the ordinary
+  support rules apply, `static_periodic_cell` turns the Bloch support rules off), reactions stay K u - f at held dofs.
+  Validation `bloch_issues_2d` refuses the rest (tensor statics: the PCG has no P; frequency_response: HarmonicSystem's
+  output rows assume no column map); stress_stiffening / geometric_nonlinearity, generalized plane strain and
+  axisymmetric are refused (no periodic prestate / superposition / axis rule). Supports
+  and electrodes on a periodic face are validation errors; a face of the other axis may reach the periodic corners
+  (consistent: a master is held with any dof it stands for). Floating electrodes touching a periodic side raise in
+  `_assemble_piezo` (their G tie would fight the phase); `PiezoSystem(require_ground=)` and `_piezo_issues` drop the
+  ground rule at a non-trivial phase.
+- Triangles + elastic PML on the other axis (a surface-wave cell): the damped pencil reduced by a complex P is neither
+  complex symmetric nor Hermitian, so `ModalPencil._pencil` asks a general ShiftPencil (symmetric = vouched) and
+  `eigs_shifted` honours the caller pencil's flag (LU). Tensor complex modes: `_show_complex_mode` (real parts, u_abs).
+- ARPACK can return only some copies of an exactly degenerate band (the Q1 square cell's 4-fold c_T 2 pi / a band at
+  Gamma came back 3-fold with n = 4; guided at k_z = 0 its 8-fold in-plane + antiplane band 4-fold even with n = 10):
+  cases ask a few more modes than they grade, or grade at a k off the symmetry point.
+- Self-tests `selftests_bloch2d.py` (also the template solid_bloch_band_diagram: definition.py imports it, so its
+  sibling selftests imports stay inside functions; listed in import_contracts TEMPLATE_SOURCES); example
+  examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: periodic frequency responses (the harmonic
+  admittance of an infinite IDT would need a prolongation through HarmonicSystem's output rows), tensor periodic
+  statics, Bloch with piezoelectric on triangles (no 2D piezo there). The error_indicator treats periodic sides as free
+  edges (one-sided traction jumps).
 
 ## Eigenfrequency study, 3D tensor meshes (`ElasticSystem3D.lowest_modes`; tetrahedra: section "Tetrahedron meshes")
 - Decision: matrix-free shift-invert at sigma = 0 (no CSR in 3D; a 3D elastic SuperLU fills host memory at ~30-40^3
@@ -450,7 +489,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `discretization` quadratic (P2, default) / linear, isoparametric on curved edges. Runs stationary, time_dependent,
   eigenfrequency, frequency_response, optomechanics (axisymmetric with em_fdfd_bor only; `set_axial_wavenumber`
   raises), all out-of-plane conditions and axisymmetric, c_ij via ElementStiffness (ring elements void unless an
-  elastic PML). Refused (`_triangle_issues`): piezoelectric (so no electrode / admittance), guided modes, the planar
+  elastic PML), Bloch cells (section "Bloch cells, 2D"). Refused (`_triangle_issues`): piezoelectric (so no electrode /
+  admittance), guided modes, the planar
   optomechanics study, solid_em_strain_optic from it, a 'linear' node other than sparse_direct (back_end choices
   DIFFUSION_DIRECT_BACK_ENDS keep cusolver_qr out; cg_solver_issues is tensor only: it reads nx).
 - Why the gaps stay open: piezo needs phi on every window element + G on a DofMap (~a piezo_fem.py, would unlock
@@ -688,6 +728,28 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
 - Initial-stress balance: finalize build warning (validation has no mesh) when sigma0 is not self-equilibrated and no
   static solve relaxes it (Bloch, PML, free body).
 
+## Thermoelastic damping (`thermoelastic.py`, feature thermoelastic_damping; definition_common)
+- Post-processing of the last `eigen_solve` (both modal studies), evaluated on the first result read and kept per
+  solve object (identity): solid_mechanics tensor (own Q1 2 x 2 Gauss scalar assembly, not the elastic stencils) and
+  triangles, solid_mechanics_3d tetrahedra (a tensor 3D mesh raises: matrix-free modes). Formula, sign convention and
+  discretisation in the module header; the help text is the user contract (keep both in step).
+- Needs `modal_mass` of the same solve (stored energy = omega^2 Re(u^H M u), never K: complex PML / loss pencils) and
+  the solver's beta (`_thermal_coefficients` / `_thermal_stress` of the last assembly, plane stress reduced): a new
+  solid variant listing the modal studies keeps both, or the feature's validation must refuse it. Refused: piezo,
+  guided, azimuthal_order >= 1, Bloch cells; PML ring / shell elements are left out of the thermal problem.
+- One host SuperLU per mode through a private `SparseDirectSolver('scipy_splu', 'cpu')` (no solver role: a feature
+  evaluation like the squeeze films; not in work_counters); host memory booked by the feature's memory_estimate.
+- q_other: a damped pencil's Q (PML + loss factor on element meshes) or, on the tensor mesh (undamped pencil), the
+  perturbative eta from `_harmonic_operators[1]`; tetrahedra add the squeeze films' gas Q (never both for one loss).
+- Materials: k / k_xx / k_yy / k_zz / cp are solid Params mirroring heat's (kind, unit, bounds, flags: the registry
+  check), arrays `OPTIONAL_TED_SCHEMA` (feature-gated entries: allocated only with an enabled thermoelastic_damping
+  feature and a material setting one of them, so plain solids of library silicon / silica carry none; a heat physics
+  allocates them anyway). Code reading them outside the feature must not assume they exist.
+- Accuracy (selftests_thermoelastic.py vs Lifshitz-Roukes): planar tensor 16 cells over h 0.4 % (8 cells: 1 % off the
+  Debye peak), tensor axisymmetric slower (+5 / +1.4 / +0.45 % at 4 / 8 / 16 cells over h), P2 triangles / tetrahedra
+  ~0.3 % at 4 / 2 elements over h; slender-beam theory itself is (h / L)^2 off (Timoshenko shear energy, ~0.5 % at L /
+  h = 20).
+
 ## Reused sweep builds (SweepSpec.reuse_build; model sub file)
 - Flagged values (`definition_common.following`): body_force f_*, boundary_load / segment_load t_*, displacement /
   prescribed_displacement_domain u_*. Applies add the build value, then `follow_load` (adds the change; tractions
@@ -778,8 +840,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   `_probe`, `_probes`, `_point`), `selftests_eigenfrequency.py` (`_symbols`, `_table_frequencies`, `_add_rank_items`:
   rank-order table frequencies and snapshot counts), `selftests_formulations.py` (GPS layers: `_gps_materials`,
   `_layer_constants`), `selftests_nonlinear.py` (string warm start / tangent update twins). Template modules
-  (`selftests.py`, `selftests_3d.py`, `selftests_bloch3d.py`, `selftests_optomechanics.py`) import no non-template
-  sibling at module level (get_registry loads them).
+  (`selftests.py`, `selftests_3d.py`, `selftests_bloch3d.py`, `selftests_optomechanics.py`,
+  `selftests_thermoelastic.py`) import no non-template sibling at module level (get_registry loads them).
 - Nonlinear: `selftests_nonlinear3d.py` (definition3d loader; solid_fem3d_newton_gpu needs cuDSS), `selftests_nonlinear.py`
   (2D; its helpers serve the 3D twins), sweep_nonlinear_string_warm_start (model/selftests_sweep).
 - Exact-in-Q1 cases (1e-6, float64 CG to 1e-12): solid_bilayer_tension_graded (variants 'mixed' / 'mixed_cpu': pcg

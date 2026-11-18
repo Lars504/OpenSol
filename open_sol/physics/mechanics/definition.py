@@ -36,23 +36,28 @@ from ...solvers.pcg import workspace_bytes
 from . import definition3d
 from .definition3d import eigen_host_direct, host_factor_items
 from .coupling import make_temperature_rise_transform
+from .definition_bloch2d import (BAND_TEMPLATE_2D, bloch_issues_2d, complex_bloch_pencil_2d, periodic_axes_2d,
+                                periodic_params_2d, solver_periodic_arguments, static_periodic_cell,
+                                trivial_bloch_phase_2d)
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PHOTOELASTIC_P44_PARAM, PIEZO_MATERIAL_PROPERTIES, STIFFNESS_TENSOR_PROPERTIES,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, apply_body_force, apply_temperature_change,
+                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
+                                apply_temperature_change,
                                 background_context, displacement_param, eigen_search_issues, electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
                                 initial_stress_materials, material_issues, materials_setting, modal_kept_count,
                                 modal_resonance_count, modal_study_issues, nonlinear_state_infos, outer_faces,
                                 piezo_material_issues, prestress_issues, register_support, resonance_table_feature,
                                 solid_linear_solver, solid_study, stiffness_follows_state, support_holders,
-                                support_result, union_masks)
+                                support_result, thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import (ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, anisotropy_issues,
                                             frequency_response_host_items, frequency_response_issues)
 from .fields import ENERGY_DENSITY_FIELDS, HARMONIC_IMAG_FIELDS, INPUT_ARRAYS, OUTPUT_ARRAYS
 from .generalized_plane_strain import BENDING_CHOICES, BENDING_TERMS
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA,
-                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, PIEZO_ARRAYS, PIEZO_DEFAULTS,
+                        OPTIONAL_PRESTRESS_SCHEMA, OPTIONAL_STIFFNESS_SCHEMA, OPTIONAL_TED_SCHEMA, PIEZO_ARRAYS,
+                        PIEZO_DEFAULTS,
                         PRESTRESS_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS)
 from .piezo import ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS
 from .pml2d import DEFAULT_PML_CELLS, DEFAULT_PML_REFLECTION, pml_padding
@@ -62,6 +67,8 @@ from .modal import EXTRA_EIGENVALUES
 from .optical_force import make_optical_force_transforms
 from .renderer import SolidRenderer
 from .selftests import HEATED_WAVEGUIDE_STRESS_DESCRIPTION, HEATED_WAVEGUIDE_STRESS_LABEL, heated_waveguide_stress_spec
+from .selftests_thermoelastic import SILICON_BEAM_TED_DESCRIPTION, SILICON_BEAM_TED_LABEL, silicon_beam_ted_spec
+from .selftests_bloch2d import BAND_DIAGRAM_DESCRIPTION, BAND_DIAGRAM_LABEL, solid_bloch_band_diagram_spec
 from .solver import (GENERALIZED_PLANE_STRAIN, OUT_OF_PLANE_CONDITIONS, PLANE_STRAIN, PLANE_STRESS,
                      SolidMechanicsPhysics)
 from .solver_common import SupportRegion
@@ -125,7 +132,8 @@ _TARGET_FREQUENCY_PARAM = Param(
          '(2 pi target_frequency)^2, moved 1e-4 above it so a target on a resonance still factors); 0 = the lowest '
          'modes (a body that moves without strain then fails: check the supports). On a triangle mesh a target > 0 '
          'also allows a free body (no supports; axisymmetric: no held u_z): its rigid-body modes (f below 1e-4 x the '
-         'target) are dropped. Ignored by the other studies.',
+         'target) are dropped; likewise the free translations of a periodic cell with every bloch_k 0 (either mesh '
+         'kind). Ignored by the other studies.',
     tip="Used only by an 'Eigenfrequency' study: the vibration modes closest to this frequency are found.\n\n"
         '0 finds the lowest modes.')
 _AXIAL_WAVENUMBER_PARAM = Param(
@@ -152,7 +160,8 @@ _PIEZOELECTRIC_PARAM = Param(
          'node, void cells included as dielectric) couples to the displacement through the piezo_e* material arrays '
          '(solid cells) with the clamped permittivity eps0 eps_dc_xx / _yy / _xy (every window cell, unset = 1): T = c S '
          '- e^T E, D = e S + eps E, E = -grad phi, div D = 0 (no free volume charge). Electrode / Electrode (domain) '
-         'features fix phi (connection voltage; at least one, the ground, is required) or make an isolated '
+         'features fix phi (connection voltage; at least one, the ground, is required, except in a Bloch cell with a '
+         'bloch_k != 0, which excludes a constant phi) or make an isolated '
          'equipotential carrying a net charge (floating); every other outer face is insulating (D . n = 0). The '
          'coupled operator [[K_uu, K_uphi], [K_phiu, -K_phiphi]] is symmetric but indefinite, so the static solve is '
          'one host SuperLU factorisation (float64, kept while the operator is unchanged; counters piezo_* in the '
@@ -308,12 +317,14 @@ def _azimuthal_order(settings_values) -> int:
 
 
 def _domain_requirements(settings_values):
-    """The PML ring padding (pml_cells x dx on the pml_<face> faces of a triangle mesh); none without a PML face."""
+    """The PML ring padding (pml_cells x dx on the pml_<face> faces of a triangle mesh; none without a PML face) and
+    the periodic axes (a triangle mesh matches their side nodes; the rectangular-cell mesh needs nothing)."""
     faces = _pml_faces(settings_values)
+    periodic = periodic_axes_2d(settings_values)
     if not faces:
-        return DomainRequirements()
+        return DomainRequirements(periodic_axes=periodic)
     return DomainRequirements(boundary_config=pml_padding(faces, int(settings_values.get('pml_cells')
-                                                                     or DEFAULT_PML_CELLS)))
+                                                                     or DEFAULT_PML_CELLS)), periodic_axes=periodic)
 
 
 # ---- feature texts ----
@@ -522,16 +533,17 @@ def _support_issues(vctx, physics_spec, path, axial_wavenumber=None, guided_by_s
                     free_body=False, held_elsewhere=False):
     """Error without a held u_x or u_y anywhere (rigid translation; none for guided modes at k_z > 0, incl. the
     study-set backward k_z, at k_z = 0 also without a held u_z; axisymmetric: u_y only, the axis holds u_r; free_body
-    (triangles, free_body_allowed): an info instead; held_elsewhere: none, a clamped PML ring or an azimuthal order m
-    >= 2 leaves no rigid motion); warning per face component held by several features and per boundary load on a fully
+    (triangles, free_body_allowed): an info instead; held_elsewhere: none, a clamped PML ring, an azimuthal order m
+    >= 2 or a Bloch cell (bloch_issues_2d decides) leaves no rigid motion); warning per face component held by several features and per boundary load on a fully
     held face."""
     holders = support_holders(vctx, physics_spec, _held_components)
     held_directions = {component for _, component in holders}
     if axisymmetric:
         held_directions.add('x')   # u_r = 0 on the axis; a radial translation strains the hoop, so it is no rigid mode
     issues = []
-    if axial_wavenumber == 0.0 and not any(feature.enabled and feature.type in ('fixed', 'fixed_domain')
-                                           for feature in physics_spec.features):
+    if axial_wavenumber == 0.0 and not held_elsewhere and not any(feature.enabled and feature.type in
+                                                                  ('fixed', 'fixed_domain')
+                                                                  for feature in physics_spec.features):
         issues.append(Issue('error', path,
                             'axial_wavenumber 0: the antiplane (u_z) modes need u_z held, else the solid translates '
                             'freely along z: add a Fixed face or a Fixed (domain) region (Roller and Displacement leave '
@@ -592,7 +604,8 @@ def _piezo_issues(vctx, physics_spec, settings_values, path):
                                            'solid (its modes carry the potential); turn piezoelectric off'))
     if vctx.study_type == EIGENFREQUENCY_STUDY and settings_values.get('axial_wavenumber') is not None:
         issues.append(Issue('error', path, 'piezoelectric has no guided (2.5D) modes: leave axial_wavenumber empty'))
-    grounded = False
+    # a Bloch phase != 1 excludes a constant potential: no ground electrode needed there
+    grounded = not trivial_bloch_phase_2d(settings_values)
     for feature in electrodes:
         values = vctx.values(SOLID_MECHANICS.feature_type(feature.type).params, feature.params)
         grounded = grounded or values is None or values['connection'] == 'voltage'
@@ -825,6 +838,10 @@ def _validate_solid(vctx, physics_spec, settings_values):
     issues.extend(prestress_issues(vctx, physics_spec, settings_values, path, triangles, refused_zz=refused_zz,
                                    static_refused=static_refused))
     issues.extend(_pml_issues(vctx, physics_spec, settings_values, path, triangles))
+    # a Bloch cell's supports are bloch_issues_2d's (a static plain periodic cell keeps the ordinary rules)
+    bloch_cell = bool(periodic_axes_2d(settings_values)) and not static_periodic_cell(vctx, settings_values, triangles)
+    issues.extend(bloch_issues_2d(vctx, physics_spec, settings_values, path, _held_components,
+                                  _pml_faces(settings_values), triangles))
     issues.extend(_azimuthal_issues(vctx, physics_spec, settings_values, path, triangles))
     issues.extend(_nonlinear_issues(vctx, physics_spec, settings_values, path, triangles, static_refused))
     if triangles and condition == GENERALIZED_PLANE_STRAIN and not is_axisymmetric(settings_values):
@@ -852,7 +869,7 @@ def _validate_solid(vctx, physics_spec, settings_values):
     # leave no rigid motion
     issues.extend(_support_issues(vctx, physics_spec, path, axial_wavenumber, guided_by_study,
                                   is_axisymmetric(settings_values) and order != 1, free_body=free_body,
-                                  held_elsewhere=order >= 2 or pml))
+                                  held_elsewhere=order >= 2 or pml or bloch_cell))
     if triangles:
         issues.extend(_triangle_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} triangle"
@@ -897,7 +914,8 @@ def _create_solid(ctx, physics_spec, values):
                                         load_steps=values['load_steps'],
                                         nonlinear_tolerance=values['nonlinear_tolerance'],
                                         nonlinear_max_iterations=values['nonlinear_max_iterations'],
-                                        tangent_update=values['tangent_update'])
+                                        tangent_update=values['tangent_update'],
+                                        **solver_periodic_arguments(values))
     study = solid_study(ctx.spec, physics_spec.name)   # a background solid of solved_physics: 'stationary'
     guided = values['axial_wavenumber'] if study == EIGENFREQUENCY_STUDY else None
     return SolidMechanicsPhysics(ctx.domain, linear_solver=solid_linear_solver(ctx, physics_spec),
@@ -908,7 +926,7 @@ def _create_solid(ctx, physics_spec, values):
                                  geometry=values['geometry'], out_of_plane=values['out_of_plane'],
                                  axial_force=values['axial_force'], thickness=values['thickness'],
                                  bending=values['bending'], bending_moment_x=values['bending_moment_x'],
-                                 bending_moment_y=values['bending_moment_y'])
+                                 bending_moment_y=values['bending_moment_y'], **solver_periodic_arguments(values))
 
 
 _INT64_BYTES = 8
@@ -1037,7 +1055,8 @@ def _fem_memory_estimate(settings_values, mesh, context):
     if study == EIGENFREQUENCY_STUDY:
         host_items.append(('consistent mass CSR', csr_entry_bytes * entries))
         pml = bool(_pml_faces(settings_values))
-        complex_pencil = bool(context.material_sets(LOSS_ARRAYS[0]) or pml)   # complex pencil, factor and vectors
+        complex_pencil = bool(context.material_sets(LOSS_ARRAYS[0]) or pml   # complex pencil, factor and vectors
+                              or complex_bloch_pencil_2d(settings_values))
         rigid_motions = _estimated_rigid_motions(settings_values, context)
         _, n_basis = eigen_basis_counts(context, vector_dofs, rigid_motions, pml)
         # solve_eigenfrequencies releases the ModalPencil (DevicePencil, factor) after each solve; a complex pencil
@@ -1201,6 +1220,8 @@ def _memory_estimate(settings_values, mesh, context):
         host_items = (('A_solve CSR copy for the host factor (float64)', (FLOAT64_BYTES + INT32_BYTES) * entries),
                       *host_factor_items(host_back_end, 'SuperLU L + U factors of A_solve (float64, heuristic)',
                                          _Q1_FILL_SCALE * host_real_lu_bytes(dofs), dofs, entries))
+    if study in MODAL_STUDIES and complex_bloch_pencil_2d(settings_values):   # complex P^H K P: factor, vectors
+        host_items = tuple((name, 2 * value) for name, value in host_items)
     if study == FREQUENCY_RESPONSE_STUDY:   # density, loss and amplitude window temporaries on the device
         transient_items.append(('frequency response', 'frequency response device temporaries',
                                 6 * value_bytes * elements))
@@ -1417,8 +1438,10 @@ def _modal_time_estimate(settings_values, context, nodes, dofs, entries, assembl
     # real SuperLU priced on the scalar 5-point curve: the 2 x 2 (guided 3 x 3) node blocks fill b^1.5 more; one
     # shift-invert per shift of the eigenfrequency search (eigen_search_counts)
     shift_work, _ = eigen_search_counts(context)
+    # a Bloch phase != 1: the complex Hermitian P^H K P (complex factor and vectors)
+    pencil_bytes = 2 * FLOAT64_BYTES if complex_bloch_pencil_2d(settings_values) else FLOAT64_BYTES
     return te.combine((te.TimeEstimate(items),
-                       context.solver_work('eigen', unknowns=float(unknowns), nnz=float(nnz), value_bytes=FLOAT64_BYTES,
+                       context.solver_work('eigen', unknowns=float(unknowns), nnz=float(nnz), value_bytes=pencil_bytes,
                                            dimensions=2, eigenpairs=eigenpairs, plan_reused=True, **shift_work)))
 
 
@@ -1505,11 +1528,13 @@ _FEM_TANGENT_BYTES_PER_COO = {'linear': 800.0, 'quadratic': 1500.0}
 def _estimated_rigid_motions(settings_values, context) -> int:
     """Rigid motions an eigenfrequency solve on triangles asks on top of n + 4 (target_frequency > 0, no enabled
     support, no PML ring): 1 axisymmetric (u_z slide), 2 at azimuthal order 1 (sideways translation, tilt), 0 at m >=
-    2, 3 planar; else 0 (partial supports: not counted)."""
+    2, 3 planar, 2 for a trivial-phase Bloch cell (0 at any other phase); else 0 (partial supports: not counted)."""
     if not settings_values.get('target_frequency') or _pml_faces(settings_values):
         return 0
     if any(feature.enabled and feature.type in SUPPORT_FEATURES for feature in context.physics_spec.features):
         return 0
+    if periodic_axes_2d(settings_values):   # a wrapping cell cannot rotate; a Bloch phase != 1 admits no motion
+        return 2 if trivial_bloch_phase_2d(settings_values) else 0
     if is_axisymmetric(settings_values):
         return {0: 1, 1: 2}.get(_azimuthal_order(settings_values), 0)
     return 3
@@ -1550,6 +1575,7 @@ def _fem_time_estimate(settings_values, mesh, context):
         pml = bool(_pml_faces(settings_values))
         loss = context.material_sets(LOSS_ARRAYS[0])
         complex_pencil = pml or loss   # eigs on the complex symmetric pencil, else eigsh (Lanczos)
+        bloch = complex_bloch_pencil_2d(settings_values)   # complex Hermitian: Lanczos on complex values
         if not complex_pencil:
             scales = dict(scales, applications_per_basis=LANCZOS_APPLICATIONS_PER_BASIS)
         shift_work, resonances = eigen_search_counts(context)   # one shift-invert per shift of the search
@@ -1569,7 +1595,8 @@ def _fem_time_estimate(settings_values, mesh, context):
             and linear.values.get('back_end') in CUDSS_BACK_ENDS)
         return te.combine((te.TimeEstimate(items, not_estimated=overlaps), *prestress(with_loads=True),
                            context.solver_work('eigen', unknowns=unknowns, nnz=entries,
-                                               value_bytes=2 * FLOAT64_BYTES if complex_pencil else FLOAT64_BYTES,
+                                               value_bytes=(2 * FLOAT64_BYTES if complex_pencil or bloch
+                                                            else FLOAT64_BYTES),
                                                dimensions=2, eigenpairs=eigenpairs, plan_reused=True,
                                                ordering_kept=ordering_kept, **shift_work, **scales, **host)))
     if study == FREQUENCY_RESPONSE_STUDY:   # factorisations: the study's harmonic_factorizations (sweep_method)
@@ -1907,6 +1934,8 @@ _FEATURES = (
     frequency_probe_feature(_apply_frequency_probe, ('u_x', 'u_y'), (_TRIANGLES,)),
     replace(resonance_table_feature('nearest the target (the target_frequency setting) first, ranked by |omega - '
                                     'omega_target|'), grids=_BOTH_GRIDS),
+    thermoelastic_damping_feature(_BOTH_GRIDS, 'on tensor (rectangular-cell) and triangle meshes (planar plane '
+                                               'strain / plane stress, axisymmetric)'),
     OPTOMECHANICAL_COUPLING_FEATURE,
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', allow_interior=False,
                 params=_ELECTRODE_PARAMS, result_kind='table',
@@ -2032,17 +2061,28 @@ SOLID_MECHANICS = PhysicsType(
                 '(triangle meshes; J/m^3; not in state()): a static solve 1/2 sigma : eps_el (no initial stress) and 0, '
                 'a shown mode or response the time averages 1/4 Re(sigma : eps_el*) and 1/4 rho omega^2 |u|^2 at the '
                 'mode / drive frequency (azimuthal order: twice the phi mean, so ring integrals give the totals); in a '
-                'PML ring they use the unstretched gradients (not physical there).',
+                'PML ring they use the unstretched gradients (not physical there). Settings periodic_x / periodic_y '
+                'with bloch_kx / bloch_ky (eigenfrequency study, both mesh kinds, planar plane strain or plane '
+                'stress): a Bloch / Floquet unit cell, u on the hi side = u on the lo side times exp(-j k L), the '
+                'modes of the reduced pencil P^H K P, P^H M P (complex: shown as the real part and u_abs = |u|); one '
+                'study per k gives the band diagram of a phononic crystal (template solid_bloch_band_diagram), a '
+                'cell with a free top and a Fixed bottom or (triangles) an elastic PML on the other axis the '
+                'surface or plate waves (Rayleigh, Lamb) of one period; on the rectangular-cell mesh also with '
+                'piezoelectric (u and phi share the phase; no ground electrode needed at k != 0; an electrode grating '
+                'of one IDT period gives the SAW stopband edges at the zone edge) and with axial_wavenumber (the '
+                'guided k_z of the cell); a plain periodic triangle cell (every bloch_k 0) also solves stationary / '
+                'time_dependent (K_r = P^T K P: one cell of an infinite array).',
     settings=(_GEOMETRY_PARAM, AZIMUTHAL_ORDER_PARAM, _OUT_OF_PLANE_PARAM, _THICKNESS_PARAM, _AXIAL_FORCE_PARAM,
               _BENDING_PARAM, _BENDING_MOMENT_X_PARAM, _BENDING_MOMENT_Y_PARAM, _TARGET_FREQUENCY_PARAM,
               STRESS_STIFFENING_PARAM, *GEOMETRIC_NONLINEARITY_PARAMS, _AXIAL_WAVENUMBER_PARAM, _PIEZOELECTRIC_PARAM,
-              _DISCRETIZATION_PARAM, *_pml_params()),
+              _DISCRETIZATION_PARAM, *_pml_params(), *periodic_params_2d()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM, PHOTOELASTIC_P44_PARAM) + PIEZO_MATERIAL_PROPERTIES
-                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES),
+                         + STIFFNESS_TENSOR_PROPERTIES + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES
+                         + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA, **SHEAR_PHOTOELASTIC_SCHEMA},
     optional_material_schema={**OPTIONAL_PIEZO_SCHEMA, **OPTIONAL_STIFFNESS_SCHEMA, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA},
+                              **OPTIONAL_PRESTRESS_SCHEMA, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
@@ -2058,7 +2098,7 @@ SOLID_MECHANICS = PhysicsType(
     validate=_validate_solid,
     memory_estimate=_memory_estimate,
     time_estimate=_time_estimate,
-    domain_requirements=_domain_requirements,   # the elastic PML ring (triangles)
+    domain_requirements=_domain_requirements,   # the elastic PML ring and the periodic sides (triangles)
     grids=_BOTH_GRIDS,   # triangles: solver_fem.SolidMechanicsFEMPhysics (create dispatches on the mesh kind)
     eigen_searches=('nearest', 'targets', 'band'),   # modal.MultiShiftModes (piezoelectric: band refused in validate)
 )
@@ -2263,6 +2303,7 @@ def _selftest_cases(em_types):
     from .selftests_frequency_response import FREQUENCY_RESPONSE_CASES
     from .selftests_guided_modes import GUIDED_MODES_CASES
     from .selftests_azimuthal import AZIMUTHAL_CASES
+    from .selftests_bloch2d import BLOCH_2D_CASES
     from .selftests_nonlinear import NONLINEAR_CASES
     from .selftests_piezo import PIEZO_CASES
     from .selftests_pml2d import PML_2D_CASES
@@ -2270,16 +2311,18 @@ def _selftest_cases(em_types):
     from .selftests_prestress_string import PRESTRESS_STRING_CASES
     from .selftests_reduced_sweep import REDUCED_SWEEP_CASES
     from .selftests_segment_load import SEGMENT_LOAD_CASES
+    from .selftests_thermoelastic import THERMOELASTIC_CASES
     return (SELFTEST_CASES + SEGMENT_LOAD_CASES + FORMULATION_CASES + EIGENFREQUENCY_CASES + EIGEN_SEARCH_CASES
             + GUIDED_MODES_CASES + PIEZO_CASES + ANISOTROPY_CASES + FREQUENCY_RESPONSE_CASES + FEM_CASES + PRESTRESS_CASES
             + PRESTRESS_STRING_CASES + PML_2D_CASES + AZIMUTHAL_CASES + NONLINEAR_CASES + REDUCED_SWEEP_CASES
-            + optomechanics_cases(em_types) + backend_cases(em_types))
+            + THERMOELASTIC_CASES + BLOCH_2D_CASES + optomechanics_cases(em_types) + backend_cases(em_types))
 
 
 def register(registry):
     """solid_mechanics, solid_mechanics_3d (definition3d.register: type, template, 3D selftest loader), the
     heat_solid_thermal_strain coupling (both targets), solid_em_strain_optic (with family-'em' types) and
-    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress' and the optomechanics templates
+    em_solid_optical_force (with em_fdfd_ez), the 'heated_waveguide_stress', 'silicon_beam_thermoelastic_damping',
+    'solid_bloch_band_diagram' and the optomechanics templates
     (definition_optomechanics), then the 2D selftest loader (bound to the registered em types)."""
     registry.register_physics(SOLID_MECHANICS)
     definition3d.register(registry)
@@ -2295,5 +2338,14 @@ def register(registry):
         heated_waveguide_stress_spec,
         summary='Thermal stress in the cross-section of a silicon waveguide under a gold heater: the heat spreads into '
                 'the silica, everything expands, and the silicon core ends up compressed. Steady state.')
+    registry.register_template(
+        'silicon_beam_thermoelastic_damping', SILICON_BEAM_TED_LABEL, SILICON_BEAM_TED_DESCRIPTION,
+        silicon_beam_ted_spec,
+        summary='Vibration modes of a thin silicon beam and how much of each vibration is lost to heat flowing '
+                'between its compressed and stretched sides (thermoelastic damping).')
+    registry.register_template(
+        BAND_TEMPLATE_2D, BAND_DIAGRAM_LABEL, BAND_DIAGRAM_DESCRIPTION, solid_bloch_band_diagram_spec,
+        summary='Band diagram of a 2D phononic crystal: one cell of a square lattice of holes in silicon, its in-plane '
+                'vibration frequencies for each wave number along x.')
     register_optomechanics_templates(registry, em_types)
     registry.register_selftests(partial(_selftest_cases, em_types))

@@ -182,7 +182,9 @@ class ElasticFEMSystem(DirectElasticSystem):
     (bool over the vector dofs), `prolongation` (m = 1 axis ties u_phi = -u_r: CSR x = P x_r over the free dofs, else
     None), `unknown` (host (n_dofs, c) of the last solve or shown mode). K_ff is factorised by the first solve after an
     assembly (an eigenfrequency or frequency-response study never factorises K alone). `pml` (fem.pml.PMLStretch, set
-    by the caller) stretches the pencil operators (stiffness(stretched=True), mass, geometric_stiffness)."""
+    by the caller) stretches the pencil operators (stiffness(stretched=True), mass, geometric_stiffness). `periodic`
+    ((periodic_x, periodic_y), (k_x, k_y)) set by the caller makes every assembly build `bloch` (bloch2d BlochCell3D of
+    the solid map) and the rigid-mode check periodic."""
 
     def __init__(self, mesh, order, axisymmetric, label, linear_solver=None, backend='cpu', azimuthal_order=0):
         from ...solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
@@ -222,6 +224,9 @@ class ElasticFEMSystem(DirectElasticSystem):
         self.load = None                         # full load vector (c n_dofs) of the last static solve
         self.residual = None                     # f_int - f_ext (c n_dofs) of a nonlinear static solve: its reactions
         self.pml = None                         # fem.pml.PMLStretch of an elastic PML ring (set by the caller)
+        self.periodic = None                     # ((periodic_x, periodic_y), (k_x, k_y)) of a Bloch cell (caller)
+        self.bloch = None                        # bloch3d.BlochCell3D of the solid map of the last assembly
+        self._periodic_p = None                  # its real prolongation of a static solve (trivial phase)
         self._axis_ties = None                   # full-mesh ids of the m = 1 axis nodes (u_phi = -u_r there)
         self._solution = None                    # run-backend free-dof solution; None = nothing factorised
         self._factor_holds_operator = False      # the linear solver's factor is K_ff (not a Newton tangent)
@@ -304,6 +309,14 @@ class ElasticFEMSystem(DirectElasticSystem):
             raise ValueError(f'{self.label()}: no element of the physical window has stiffness (youngs_modulus or c11 '
                              '> 0)')
         self.dofs = lagrange_dofs(self.mesh, self.order, elements=solid)
+        self.bloch = None
+        self._periodic_p = None
+        if self.periodic is not None:
+            from .bloch2d import triangle_bloch_cell
+            try:
+                self.bloch = triangle_bloch_cell(self.dofs, *self.periodic)
+            except ValueError as exc:
+                raise ValueError(f'{self.label()}: {exc}') from None
         self.operator = self.stiffness(coefficients)
         held = self.held[self.dofs.global_ids]
         self._check_rigid_modes(held)
@@ -324,6 +337,40 @@ class ElasticFEMSystem(DirectElasticSystem):
     def _check_static(self) -> None:
         if self.prolongation is not None:
             raise RuntimeError(f'{self.label()}: an azimuthal order has no static solve')
+        if self.bloch is not None and not self.bloch.trivial:
+            raise RuntimeError(f'{self.label()}: periodic axes with a bloch_k != 0 (a Bloch phase) have no static '
+                               'solve; a plain periodic cell (every bloch_k 0) has')
+
+    def solve(self, load) -> None:
+        """DirectElasticSystem.solve; a plain periodic cell (bloch trivial): the reduced K_r = P^T K P of the periodic
+        masters (forces on a hi-side dof join its master), unknown = fixed + P x_r (one factor of K_r per assembly)."""
+        if self.bloch is None:
+            super().solve(load)
+            return
+        self._require_assembled()
+        self._check_static()
+        load = np.asarray(load, dtype=np.float64)
+        fixed = self.fixed_values()
+        prolongation = self._periodic_prolongation()
+        xp = array_module(self.backend)
+        if self._solution is None or not self._factor_holds_operator:
+            reduced = (prolongation.T @ self.operator @ prolongation).tocsr()
+            self.linear_solver.factorize(sparse_module(self.backend).csr_matrix(reduced))
+            self._factor_holds_operator = True
+            self._solution = xp.zeros(prolongation.shape[1], dtype=np.float64)
+        self.linear_solver.solve(xp.asarray(prolongation.T @ (load - self.operator @ fixed)), self._solution, 'rhs')
+        solution = fixed + prolongation @ np.array(to_host(self._solution), dtype=np.float64)
+        self.unknown = solution.reshape(-1, self.components)
+        self.load = load
+        self.residual = None
+        self.n_solves += 1
+
+    def _periodic_prolongation(self):
+        """Real host CSR P (c n_dofs, n_r) of a trivial-phase cell over the free dofs (kept until the next assembly)."""
+        if self._periodic_p is None:
+            from .bloch3d import bloch_prolongation
+            self._periodic_p = bloch_prolongation(*self.bloch.vector_masters(self.components), self.free)[1].tocsr()
+        return self._periodic_p
 
     def _reaction_mask(self, dof_mask) -> np.ndarray:
         return (np.asarray(dof_mask, dtype=bool) & self.held)[self.dofs.global_ids]
@@ -404,8 +451,9 @@ class ElasticFEMSystem(DirectElasticSystem):
         """ValueError for a solid region (elements joined through nodes) whose held dofs leave a rigid motion free:
         planar the rank of the (1, 0), (0, 1), (-y, x) rows at its held dofs must be 3, axisymmetric it needs a held
         u_z (u_r strains the hoop); azimuthal order 1: the (U_r, U_z, U_phi) rows of the lateral translation (1, 0, -1)
-        and the tilt (z, -r, -z) need rank 2, order >= 2 has no rigid motion. With rigid_motions_allowed the free
-        motions are counted in n_rigid_motions."""
+        and the tilt (z, -r, -z) need rank 2, order >= 2 has no rigid motion. A Bloch cell (`bloch`): regions join
+        through periodic partners; a wrapping one cannot rotate and keeps no motion at a non-trivial phase, its unheld
+        translations at a trivial one. With rigid_motions_allowed the free motions are counted in n_rigid_motions."""
         from scipy.sparse import coo_matrix
         from scipy.sparse.csgraph import connected_components
 
@@ -418,6 +466,12 @@ class ElasticFEMSystem(DirectElasticSystem):
         graph = coo_matrix((np.ones(first.size, dtype=np.int8), (first, local.ravel())),
                            shape=(dofs.n_dofs, dofs.n_dofs))
         n_regions, labels = connected_components(graph, directed=False)
+        wraps = None
+        if self.bloch is not None:   # a region continues across its periodic sides
+            from .bloch2d import joined_regions, wrapping_regions
+            labels = joined_regions(labels, self.bloch.master)
+            n_regions = int(labels.max()) + 1
+            wraps = wrapping_regions(labels, self.bloch.master)
         points = dofs.dof_points()
         scale = max(self._window[2] - self._window[0], self._window[3] - self._window[1])
         remedy = ('; a free body (free-free) solves only for its vibration modes in an eigenfrequency study with '
@@ -426,8 +480,21 @@ class ElasticFEMSystem(DirectElasticSystem):
         # dof indices per region (one sort, not a full-length comparison per region: arrays of many pillars)
         order = np.argsort(labels, kind='stable')
         groups = np.split(order, np.cumsum(np.bincount(labels, minlength=n_regions))[:-1])
-        for members in groups:
+        for region, members in enumerate(groups):
             where = self._region_text(points[members])
+            if wraps is not None and wraps[region]:
+                if not self.bloch.trivial:
+                    continue
+                free = [name for component, name in enumerate('xy') if not held[members, component].any()]
+                if not free:
+                    continue
+                if self.rigid_motions_allowed:
+                    self.n_rigid_motions += len(free)
+                    continue
+                raise ValueError(f"{self.label()}: the periodic solid region {where} holds no u_{', u_'.join(free)}, "
+                                 f"so with every periodic phase 1 (bloch_k 0) it can slide along {', '.join(free)}: "
+                                 'add a support, set a bloch_k != 0, or solve about an eigenfrequency target_frequency '
+                                 '> 0, where its rigid modes are dropped')
             if self.azimuthal_order == 1:
                 inside = np.zeros(dofs.n_dofs, dtype=bool)
                 inside[members] = True

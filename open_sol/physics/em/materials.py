@@ -6,6 +6,13 @@ from ...core.backend import array_module_of, host_copy, write_host_into
 from ...core.constants import DTYPE, EPS0
 
 
+# Gyration vector of a magneto-optic material (eps_ij += j e_ijk g_k, model axes; model.schema GYRATION_PROPERTY_NAMES):
+# polarisation -> the optional MaterialGrid arrays its solver reads (allocated only when a material sets them). hz: g_z
+# (eps_xy = eps_xy + j g_z, eps_yx = eps_xy - j g_z) in the operator; modes: g_x / g_y (eps_yz = j g_x, eps_zx = j g_y)
+# in the first-order non-reciprocal phase shift of every mode only.
+GYRATION_ARRAYS = {'hz': ('gyration_z',), 'modes': ('gyration_x', 'gyration_y')}
+GYRATION_Z = 'gyration_z'
+
 # polarisation -> MaterialGrid arrays (default value) an EM solver reads; hz never reads eps_r; 'modes' (em_modes, the
 # cross-section solver) reads all three (eps_r = eps_zz).
 EM_MATERIAL_SCHEMAS = {

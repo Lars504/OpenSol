@@ -6,7 +6,11 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 ## Registered EM types (catalogue; details in the sections below)
 - `em_fdtd_ez`, `em_fdtd_hz`, `em_fdfd_ez`, `em_fdfd_hz` (default instance 'em'; two EM physics need distinct names
   and equal bc_* / pml_* settings; FDFD registered after FDTD so the FDTD material Params stay first per name; only
-  em_fdfd_hz has eps_xy and its 'sum' slot eps_xy_update, section FDFD).
+  em_fdfd_hz has eps_xy and its 'sum' slot eps_xy_update, and the gyrotropic gyration_z, section FDFD).
+- Magneto-optic gyration vector (`schema.GYRATION_PROPERTY_NAMES`, `materials.GYRATION_ARRAYS`; eps_ij += j e_ijk g_k,
+  exp(+j omega t)): em_fdfd_hz reads gyration_z in its operator, em_modes gyration_x / _y in a first-order shift only;
+  every other EM type is refused by `definition_common._material_issues` (an error, not the generic unread warning:
+  model validate skips gyration names like permittivity names). A new type supporting one declares the Param.
 - `em_modes` (xy is the waveguide cross-section, so no in-plane EM type shares its model, except em_fdfd_ez / _hz in
   a thermal_noise study (same cross-section at k_z = 0 as illumination); default instance 'modes'; registered after the four in-plane types).
 - `em_fdfd_bor` ((r, z) half plane, one azimuthal order m or an order list (eigen orders; driven: the 3D sum of
@@ -427,6 +431,21 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   em_fdtd_hz / em_modes / BOR (couplings drop the xy row with a crystal warning), the NLFD cascade adjoint
   (`_check_differentiable` refuses). Renderer `eps_xy` parity 'even'. Self-tests em_fdfd_hz_rotated_slab,
   em_fdfd_hz_anisotropic_reciprocity.
+- hz gyrotropic gyration_z (harmonic.py header; material only, no slot, no renderer field): eps = [[eps_xx, eps_xy + j
+  g], [eps_xy - j g, eps_yy]]; `assembly_gyration` (same zeroing as eps_xy), `HarmonicSystem.cell_gyration`, entries
+  from `harmonic.off_diagonal_entries`; faces take eps_ii - (eps_xy^2 + g^2) / eps_jj and the two face couplings their
+  own eta_xy / eta_yx (`off_diagonal_face_couplings(eta_yx=)`), so A(-g) = D^-1 A(g)^T D: non-reciprocal, and code
+  assuming D A symmetric must check `cell_gyration` (`_symmetrizer` returns None with it: cuDSS / MUMPS / PARDISO
+  factor a general LU, eigen pencils too; the adjoint is the true transposed solve). Lossless g keeps the discrete
+  Poynting balance exact (W_f X_xy = (W_f X_yx)^H), q_abs unchanged (diagonal loss). The X maps take plain cell means
+  across an interface (no Kottke-like weighting), so a guide's non-reciprocal phase shift converges at first order
+  (~6 % at 10 nm cells, Si / Ce:YIG; omega itself second order): checks Richardson-extrapolate. Not seen by the port
+  modes / line-source calibrations / TFSF (finalize warning, as eps_xy). Refused by validation (`_gyration_issues`):
+  mirror faces and so parity sectors (the image reverses the magnetisation), triangles meshes (fdfd_2d_fem also
+  raises: its pencil is factored complex symmetric), every other EM type. Self-tests em_fdfd_hz_gyrotropic_reciprocity
+  (H(B; A, g) = H(A; B, -g), flux ring balance; flux lines measure on their cells' hi faces, so a closed ring needs
+  lines at cell centres spanning the cells between the other pair's faces), em_fdfd_hz_gyrotropic_nrps (Bloch eigen vs
+  the exact slab, selftests_gyrotropy.exact_slab_beta), em_fdfd_hz_gyrotropic_adjoint_gradient.
 - Dirty flags: `_system_dirty` (materials_changed of a read array, slots, PEC, poles, new omega) reassembles and
   refactorises; `_solution_dirty` (that or a new source) re-solves. scipy_splu at an unchanged omega (Picard step)
   solves by host GMRES preconditioned with the old factor, refactorising when the residual misses `RECYCLE_RTOL`
@@ -581,7 +600,9 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   mode_amplitudes and the mode objective. eps_xy: `EpsSensitivity.off_diagonal_density` ('eps_xy_sensitivity', hz
   only, parity 'even' although its true image is odd). physics/nlfd/adjoint.py chains `objective_cotangents` ->
   `adjoint_source` -> `solve_adjoint` -> `permittivity_gradients` -> `sensitivity_density`, so a signature change must
-  reach it. Self-tests em_fdfd_adjoint_gradient, em_fdfd_hz_eps_xy_adjoint_gradient.
+  reach it. Self-tests em_fdfd_adjoint_gradient, em_fdfd_hz_eps_xy_adjoint_gradient. gyration_z: one cotangent per
+  map (h_xy onto the hi-y faces, h_yx onto the hi-x faces), chain rule on q = eps_xy^2 + g^2 with g held fixed (no dJ /
+  dg output).
 - Design regions (`design_density.py`): `DesignMap` (host only) = conic filter -> tanh projection -> eps;
   `density_gradient` is its exact transpose (em_fdfd_design_chain_rule). `DesignRegion` writes eps into every
   permittivity array of its physics (hz: xx and yy, so dJ/d eps = the sum) via `MaterialGrid.assign_window`; the caller
@@ -829,6 +850,15 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   `bend_overlap` (BendOverlapMonitor): a straight `solve_detached(..., straight=True)`, each bent mode matched to the
   straight mode of largest `mode_overlap` (junction loss in dB; bend required; mirrors fine);
   self-test em_modes_bend_overlap. Self-test em_modes_shg_overlap (periodic-grid TEM modes: closed form to round-off).
+- Non-reciprocal phase shift (`cross_section_modes.nonreciprocal_shift`, `ModePhysics._nonreciprocal_shifts` after
+  every solve -> `delta_betas`, scalar outputs delta_beta_<k>, mode_table / mode_dispersion column delta_beta): first
+  order in the material gyration_x / gyration_y (they never enter the operator; FEMModePhysics gives 0, validation
+  refuses them on triangles, with a bend and with a mirror face normal to the other transverse axis). The normal E_x /
+  E_y reach the centres as (face eps x E) / cell eps (a plain E mean is first order at interfaces); with
+  solver_defaults.subpixel_smoothing the shift converges at second order, without it at first. gyration is never
+  smoothed (cell-centre staircase): keep magneto-optic interfaces on cell edges. Frame map to em_fdfd_hz: (x, y, z)_modes
+  = (z, y, -x)_plane, so gyration_x = -gyration_z of the in-plane guide (self-test em_modes_nrps_first_order vs the
+  exact slab; example analytic_modes_nrps_ce_yig_slab).
 - No absorbed power: no `take_absorbed_power`, `state()['q_accum']` None, no 'absorbed_power' output, which keeps
   em_modes out of em_heat_joule's sources (coupling/definitions). Thermo-optic writes all three arrays.
 - `definition_modes.register` (called last from definition.register) registers the type, templates,

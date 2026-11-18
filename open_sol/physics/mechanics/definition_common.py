@@ -1,9 +1,10 @@
 """Model-layer pieces shared by the solid_mechanics (2D) and solid_mechanics_3d definitions: the build's linear
 solver, the material vocabulary (one Param object per name), support helpers, the CPU material / state / modal-study /
-prestress checks, the study a solid takes (StudySpec.solved_physics) and the resonance_table / frequency_probe
-features."""
+prestress checks, the study a solid takes (StudySpec.solved_physics) and the resonance_table / frequency_probe /
+thermoelastic_damping features."""
 from dataclasses import replace
 
+from ...core.memory_estimate import MemoryEstimate, host_real_lu_bytes
 from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, optional_material_param,
                                          reports_model_checks)
 from ...model.expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
@@ -268,6 +269,36 @@ LOSS_PROPERTIES = (
                                  'capacitance. Default 0; typical 1e-4 to 1e-3 for lithium niobate, ~1e-2 for PZT.',
                        tip='Electric loss of the material as the loss tangent. Used only by the frequency response '
                            'study with Piezoelectric on.'),
+)
+
+
+# Thermoelastic damping (feature thermoelastic_damping): heat's conductivity and specific heat (the same names, units
+# and bounds as the heat type's Params: one property per name in a model with heat; arrays OPTIONAL_TED_SCHEMA).
+_TED_READ = ('read by solid_mechanics / solid_mechanics_3d only through the thermoelastic_damping feature (shared with '
+             'heat, see there)')
+TED_MATERIAL_PROPERTIES = (
+    _material_property('k', 'Thermal conductivity', 'W/(m K)', 0.0,
+                       help_text=f'Isotropic thermal conductivity (sets k_xx, k_yy, k_zz); {_TED_READ}: the heat '
+                                 'diffusion of the thermoelastic temperature of a vibration mode. Typical: silicon 130 '
+                                 '(library; pure bulk 148), silica 1.38, silicon nitride 10 (library; films 2-15).',
+                       tip='How well the material conducts heat. Solid mechanics uses it only for thermoelastic '
+                           'damping.\n\nTypical: silicon 130, silica 1.38.'),
+    _material_property('k_xx', 'Thermal conductivity along x', 'W/(m K)', 0.0,
+                       help_text=f'Conductivity along x; overrides k for this axis ({_TED_READ}).',
+                       tip="Thermal conductivity along x. Replaces 'Thermal conductivity' for this direction."),
+    _material_property('k_yy', 'Thermal conductivity along y', 'W/(m K)', 0.0,
+                       help_text=f'Conductivity along y; overrides k for this axis ({_TED_READ}).',
+                       tip="Thermal conductivity along y. Replaces 'Thermal conductivity' for this direction."),
+    _material_property('k_zz', 'Thermal conductivity along z', 'W/(m K)', 0.0,
+                       help_text=f'Conductivity along z, read in 3D only; overrides k for this axis ({_TED_READ}).',
+                       tip="Thermal conductivity along z (3D models only). Replaces 'Thermal conductivity' for this "
+                           'direction.'),
+    _material_property('cp', 'Specific heat capacity', 'J/(kg K)', 0.0,
+                       help_text=f'Specific heat capacity; with rho the heat capacity rho cp, {_TED_READ} (every solid '
+                                 'cell then needs rho > 0 and cp > 0). Typical: silicon 700, silica 746, silicon '
+                                 'nitride 700.',
+                       tip='Heat stored per kilogram and kelvin. Solid mechanics uses it only for thermoelastic '
+                           'damping.\n\nTypical: silicon 700, silica 746.'),
 )
 
 
@@ -723,6 +754,123 @@ def resonance_table_feature(order_text):
         summary="Lists the vibration frequencies found by an 'Eigenfrequency' study.",
         apply=_apply_resonance_table, result=_resonance_table_result, validate=_validate_resonance_table)
 
+
+
+# ---- thermoelastic_damping feature (both types; physics/mechanics/thermoelastic.py) ----
+TED_FEATURE = 'thermoelastic_damping'
+_TED_TEMPERATURE_PARAM = Param(
+    'T0', 'float', 293.15, label='Reference temperature', unit='K', min=0.0, min_exclusive=True,
+    help='Absolute temperature T0 [K] of the solid about which it vibrates (the heat type\'s T0 default): the '
+         'thermoelastic relaxation strength Delta = E alpha^2 T0 / (rho cp) and so 1 / Q_TED scale with it.',
+    tip='Temperature of the resonator, in kelvin. Thermoelastic damping grows in proportion to it.\n\nRoom '
+        'temperature: 293.15 K.')
+
+
+def _apply_thermoelastic_damping(ctx, solver, feature_spec, values, selection):
+    from .thermoelastic import ThermoelasticDamping
+    damping = ThermoelasticDamping(feature_spec.name, values['T0'])
+    if not hasattr(solver, 'thermoelastic_dampings'):   # name -> runtime (optomechanical_coupling quality_from)
+        solver.thermoelastic_dampings = {}
+    solver.thermoelastic_dampings[feature_spec.name] = damping
+    return damping
+
+
+def _thermoelastic_damping_result(session, solver, runtime, feature_spec, options):
+    return runtime.table(solver)
+
+
+def _validate_thermoelastic_damping(vctx, physics_spec, feature_spec, values):
+    """Warning outside the modal studies; errors for the solid variants TED does not model and for solid materials
+    with a thermal expansion but no specific heat cp / density rho."""
+    path = feature_path(physics_spec, feature_spec)
+    issues = []
+    if vctx.study_type not in MODAL_STUDIES:
+        issues.append(Issue('warning', path, f"thermoelastic_damping is evaluated only after an {EIGENFREQUENCY_STUDY} "
+                                             f"or {OPTOMECHANICS_STUDY} study (this model runs {vctx.study_type}): its "
+                                             'result will be missing'))
+    try:
+        settings = resolve_values(vctx.registry.physics_type(physics_spec.type).settings,
+                                  physics_spec.settings if isinstance(physics_spec.settings, dict) else {},
+                                  vctx.parameters)
+    except (KeyError, ValueError, TypeError):   # reported at the physics
+        settings = {}
+    refused = [text for name, text in (('piezoelectric', 'a piezoelectric solid'),
+                                       ('axial_wavenumber', 'guided (2.5D) modes (axial_wavenumber)'))
+               if settings.get(name) not in (None, False)]
+    if settings.get('azimuthal_order'):
+        refused.append('an azimuthal_order other than 0')
+    if refused:
+        issues.append(Issue('error', path, f"thermoelastic_damping does not model {', '.join(refused)}"))
+    for material, properties in merged_materials(vctx):
+        if properties is None or not material.selection:
+            continue
+        solid = any(properties.get(name) not in (None, 0, 0.0) for name in ('youngs_modulus', 'c11'))
+        expands = any(properties.get(name) not in (None, 0, 0.0)
+                      for name in ('alpha', 'alpha_xx', 'alpha_yy', 'alpha_zz'))
+        missing = [name for name in ('rho', 'cp') if properties.get(name) is None]
+        if solid and expands and missing:
+            issues.append(Issue('error', path, f"material '{material.name}' expands with temperature but sets no "
+                                               f"{' / '.join(missing)}: thermoelastic damping needs the heat capacity "
+                                               'rho cp of every solid cell'))
+    return issues
+
+
+def _thermoelastic_damping_memory(values, n_selected_cells, mesh):
+    """Host items of one thermoelastic_damping evaluation (heuristic, uncalibrated): the thermal conductance, capacity
+    and complex operator of the solid's scalar dofs (P2 on element meshes, cell corners on a tensor mesh) and the
+    complex SuperLU factor of one mode at a time."""
+    kind = getattr(mesh, 'kind', 'tensor')
+    if kind in FREE_MESH_KINDS:
+        unknowns = int(mesh.n_nodes) + int(mesh.n_edges)
+        entries = (27 if kind == 'tetrahedra' else 15) * unknowns
+    else:
+        unknowns = int(mesh.n_cells)
+        entries = 9 * unknowns
+    dimensions = 3 if kind == 'tetrahedra' else 2
+    return MemoryEstimate.from_items(host_items=(
+        ('thermoelastic damping thermal operators (conductance, capacity, complex sum)', 4 * 12 * entries),
+        ('thermoelastic damping complex SuperLU factor (heuristic)', 2 * host_real_lu_bytes(unknowns, dimensions))))
+
+
+def thermoelastic_damping_feature(grids, where_text):
+    """The thermoelastic_damping FeatureType on the mesh kinds grids; where_text names them for the description."""
+    from .thermoelastic import TABLE_COLUMNS
+    return FeatureType(
+        TED_FEATURE, 'Thermoelastic damping', 'monitor', None, params=(_TED_TEMPERATURE_PARAM,), result_kind='table',
+        summary='Estimates the quality factor each vibration mode loses to heat flow between compressed and stretched '
+                'regions (thermoelastic damping), the main intrinsic loss of silicon and silicon nitride resonators.',
+        description=(
+            'Thermoelastic damping (TED) of every vibration mode of the last eigenfrequency (or optomechanics) solve, '
+            f'{where_text}; perturbative and one-way (it does not change the modes). Per mode (omega = Re omega, '
+            'exp(+j omega t), strain eps in Voigt rows, engineering shear) the heat source of the strain rate q = -j '
+            'omega T0 (beta : eps) drives the harmonic heat equation j omega rho cp theta - div(k grad theta) = q on '
+            'the solid cells, adiabatic (no heat flux) on every boundary of the solid, theta on the solid\'s own '
+            'nodes (tensor mesh: bilinear on the cell corners; element meshes: the solid\'s P1 / P2 map); beta = C : '
+            'alpha is the thermal stress per kelvin (isotropic (3 lambda + 2 mu) alpha; plane stress the reduced '
+            'beta_I - c_I3 beta_3 / c_33 with sigma_zz = 0; plane strain without the zz row; axisymmetric with the hoop row '
+            'u_r / r). The thermal stress -beta theta adds the complex modal stiffness d = -int beta : eps* theta dV '
+            'to u^H K u = omega^2 u^H M u (twice the peak stored energy), so 1 / Q_TED = Im d / (u^H K u) = -Im(int '
+            'beta : eps* theta dV) / (omega^2 u^H M u) (> 0, energy lost per cycle / (2 pi x stored energy)) and the '
+            'relative frequency shift ted_frequency_shift = Re d / (2 u^H K u) (> 0: towards the adiabatic stiffness; '
+            'the modes themselves stay isothermal). Reproduces Zener Q^-1 = Delta omega tau / (1 + (omega tau)^2), '
+            'Delta = E alpha^2 T0 / (rho cp), tau = h^2 / (pi^2 k / (rho cp)), for the flexure of a thin beam of '
+            'thickness h (more precisely the exact Lifshitz-Roukes form, within 2 % of Zener). Material data: k '
+            '(k_xx, k_yy, k_zz; k_xy is not read), rho and cp as for heat (library silicon, silica and silicon_nitride '
+            'have them), alpha '
+            '(alpha_xx / _yy / _zz), the stiffness; '
+            'every solid cell needs rho > 0 and cp > 0. Result \'table\', one row per mode: '
+            f"{', '.join(TABLE_COLUMNS)} (Hz; Q inf without loss): q_other combines the other losses of the mode, the "
+            'Q of a damped pencil (elastic PML / anchor radiation and, on element meshes, mechanical_loss_factor), on '
+            'a tensor mesh (undamped pencil) the loss factor perturbatively, 1 / Q = u^H (eta K) u / u^H K u, on '
+            'tetrahedra also the squeeze-film gas Q (q_gas totals); 1 / q_total = 1 / q_ted + 1 / q_other. Extras T0 '
+            'and '
+            'selected_resonance. Damped (complex) modes use Re omega and Re(u^H M u). One complex host SuperLU '
+            'factorisation of the thermal operator per mode, on the first read of the result. Not modelled: '
+            'piezoelectric solids, guided (2.5D) modes, azimuthal_order m >= 1, Bloch cells; the PML ring / shell '
+            "elements take no part. For Q_TED versus a parameter add a derived value with source '<physics>.<this "
+            "feature>', expression q_ted, operation at and at = 0 (the first mode)."),
+        apply=_apply_thermoelastic_damping, result=_thermoelastic_damping_result,
+        validate=_validate_thermoelastic_damping, memory_estimate=_thermoelastic_damping_memory, grids=grids)
 
 # ---- frequency_probe feature and complex reactions (new_modules_plan K4; triangle / tetrahedron meshes) ----
 def _frequency_probe_result(session, solver, record, feature_spec, options):

@@ -35,21 +35,23 @@ from ...solvers.sparse_direct import CUDSS_BACK_ENDS, SPLU_3D_LIMIT_UNKNOWNS, SP
 from .definition_common import (DENSITY_PARAM, EIGENFREQUENCY_STUDY, GEOMETRIC_NONLINEARITY_PARAMS,
                                 INITIAL_STRESS_PROPERTIES_3D, LOSS_PROPERTIES, MATERIAL_PROPERTIES, MODAL_STUDIES,
                                 PIEZO_MATERIAL_PROPERTIES_3D, STIFFNESS_TENSOR_PROPERTIES_3D,
-                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, apply_body_force, apply_temperature_change,
-                                background_context, displacement_param, eigen_search_issues, electrode_result,
+                                STRESS_STIFFENING_PARAM, SUPPORT_FEATURES, TED_MATERIAL_PROPERTIES, apply_body_force,
+                                apply_temperature_change, background_context, displacement_param, eigen_search_issues,
+                                electrode_result,
                                 follow_held_values, follow_load, following, free_body_allowed, frequency_probe_feature,
                                 material_issues, materials_setting, modal_kept_count, modal_resonance_count,
                                 modal_study_issues,
                                 nonlinear_state_infos, outer_faces, piezo_material_issues, plain_value, prestress_issues,
                                 register_support, resonance_table_feature, solid_linear_solver, solid_study,
-                                stiffness_follows_state, support_holders, support_result, union_masks)
+                                stiffness_follows_state, support_holders, support_result,
+                                thermoelastic_damping_feature, union_masks)
 from .definition_frequency_response import ADMITTANCE_FEATURE, FREQUENCY_RESPONSE_STUDY, frequency_response_issues
 from .definition_optomechanics import OPTOMECHANICAL_COUPLING_FEATURE, OPTOMECHANICS_STUDY
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
                        OUTPUT_ARRAYS_3D)
 from .materials import (DENSITY_SCHEMA, LOSS_ARRAYS, MECHANICAL_SCHEMA, OPTIONAL_LOSS_SCHEMA, OPTIONAL_PIEZO_SCHEMA_3D,
-                        OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, PIEZO_DEFAULTS_3D,
-                        PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
+                        OPTIONAL_PRESTRESS_SCHEMA_3D, OPTIONAL_STIFFNESS_SCHEMA_3D, OPTIONAL_TED_SCHEMA,
+                        PIEZO_DEFAULTS_3D, PIEZO_TENSOR_ARRAYS_3D, SOLVER_PRECISIONS, STIFFNESS_TENSOR_ARRAYS_3D)
 from .modal import EXTRA_EIGENVALUES, LANCZOS_TOLERANCE_PER_CG, modal_table_result
 from .multigrid3d import (CHEBYSHEV_DEGREE, POWER_ITERATIONS, block_cycle_bytes, coarsest_host_bytes,
                           hierarchy_bytes,
@@ -1981,6 +1983,8 @@ _FEATURES = (
     _resonance_table_feature(),
     MODE_SHAPES_FEATURE,
     SQUEEZE_FILM_FEATURE,
+    thermoelastic_damping_feature((_TETRAHEDRA,), 'on tetrahedron meshes of solid_mechanics_3d (a tensor mesh '
+                                                 'refuses it: its modes are matrix-free)'),
     FeatureType('electrode', 'Electrode', 'boundary_condition', 'boundary', params=_ELECTRODE_PARAMS,
                 result_kind='table',
                 summary='Puts an electrode on the selected faces of a piezoelectric solid: a fixed voltage, ground, or '
@@ -2127,10 +2131,11 @@ SOLID_MECHANICS_3D = PhysicsType(
               _PIEZOELECTRIC_PARAM, _ELECTRODE_EDGE_SIZE_PARAM, *_periodic_params(), *_pml_params()),
     features=_FEATURES,
     material_properties=(MATERIAL_PROPERTIES + (DENSITY_PARAM,) + STIFFNESS_TENSOR_PROPERTIES_3D
-                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES_3D),
+                         + PIEZO_MATERIAL_PROPERTIES_3D + LOSS_PROPERTIES + INITIAL_STRESS_PROPERTIES_3D
+                         + TED_MATERIAL_PROPERTIES),
     material_schema={**MECHANICAL_SCHEMA, **DENSITY_SCHEMA},
     optional_material_schema={**OPTIONAL_STIFFNESS_SCHEMA_3D, **OPTIONAL_PIEZO_SCHEMA_3D, **OPTIONAL_LOSS_SCHEMA,
-                              **OPTIONAL_PRESTRESS_SCHEMA_3D},
+                              **OPTIONAL_PRESTRESS_SCHEMA_3D, **OPTIONAL_TED_SCHEMA},
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
@@ -2176,10 +2181,11 @@ def _selftest_cases():
     from .selftests_squeeze_film import SQUEEZE_FILM_CASES
     from .selftests_squeeze_film_model import SQUEEZE_FILM_MODEL_CASES
     from .selftests_swept_plate import SWEPT_PLATE_CASES
+    from .selftests_thermoelastic import THERMOELASTIC_3D_CASES
     return (SELFTEST_CASES_3D + EIGENFREQUENCY_3D_CASES + EIGEN_SEARCH_3D_CASES + FEM_3D_CASES + PIEZO_FEM_3D_CASES
             + FREQUENCY_RESPONSE_3D_CASES + BLOCH_FEM_3D_CASES + MESH_SYMMETRY_3D_CASES + PML_3D_CASES
             + FREE_MODES_3D_CASES + PRESTRESS_3D_CASES + NONLINEAR_3D_CASES + SQUEEZE_FILM_CASES
-            + SQUEEZE_FILM_MODEL_CASES + SWEPT_PLATE_CASES)
+            + SQUEEZE_FILM_MODEL_CASES + SWEPT_PLATE_CASES + THERMOELASTIC_3D_CASES)
 
 
 def register(registry):

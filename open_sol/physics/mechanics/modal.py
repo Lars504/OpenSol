@@ -272,10 +272,10 @@ class ModalPencil:
                 self.shift_pencil = self.eigen_solver.shift_pencil(
                     (self.stiffness,), self.mass, np.complex128 if hermitian else np.float64, symmetric=not hermitian,
                     symmetric_known=vouched)
-            else:
+            else:   # a complex Bloch P^H A P of a complex symmetric A (PML ring) is neither: a general LU
                 terms = (self.stiffness,) if self.kind == 'damped' else (self.stiffness, self.load_matrix)
-                self.shift_pencil = self.eigen_solver.shift_pencil(terms, self.mass, np.complex128, symmetric=True,
-                                                                   symmetric_known=vouched)
+                self.shift_pencil = self.eigen_solver.shift_pencil(terms, self.mass, np.complex128,
+                                                                   symmetric=vouched, symmetric_known=vouched)
             self.pencil_seconds += time.perf_counter() - started
         return self.shift_pencil
 

@@ -10,16 +10,18 @@ from .silver import SILVER
 from .aluminum import ALUMINUM
 from .silicon import SILICON
 from .silica import SILICA
+from .silicon_nitride import SILICON_NITRIDE
 from .lithium_niobate import LITHIUM_NIOBATE_X_CUT, LITHIUM_NIOBATE_Z_CUT
 from .air import AIR
 from .water import WATER
 from .heavy_water import HEAVY_WATER
 from .gst import GST_225_AMORPHOUS, GST_225_CRYSTALLINE
+from .ce_yig import CE_YIG
 
 
 REGISTRY = {
-    m.name: m for m in (GOLD, SILVER, ALUMINUM, SILICON, SILICA, LITHIUM_NIOBATE_Z_CUT, LITHIUM_NIOBATE_X_CUT, AIR,
-                        WATER, HEAVY_WATER, GST_225_AMORPHOUS, GST_225_CRYSTALLINE)
+    m.name: m for m in (GOLD, SILVER, ALUMINUM, SILICON, SILICA, SILICON_NITRIDE, LITHIUM_NIOBATE_Z_CUT,
+                        LITHIUM_NIOBATE_X_CUT, AIR, WATER, HEAVY_WATER, GST_225_AMORPHOUS, GST_225_CRYSTALLINE, CE_YIG)
 }
 
 
@@ -121,7 +123,7 @@ def fitted_library_poles(name, n_lorentz, wavelength_start, wavelength_stop):
 
 __all__ = [
     'Material', 'NkTable', 'fitted_library_poles',
-    'GOLD', 'SILVER', 'ALUMINUM', 'SILICON', 'SILICA', 'LITHIUM_NIOBATE_Z_CUT', 'LITHIUM_NIOBATE_X_CUT', 'AIR',
-    'WATER', 'HEAVY_WATER', 'GST_225_AMORPHOUS', 'GST_225_CRYSTALLINE',
+    'GOLD', 'SILVER', 'ALUMINUM', 'SILICON', 'SILICA', 'SILICON_NITRIDE', 'LITHIUM_NIOBATE_Z_CUT',
+    'LITHIUM_NIOBATE_X_CUT', 'AIR', 'WATER', 'HEAVY_WATER', 'GST_225_AMORPHOUS', 'GST_225_CRYSTALLINE',
     'REGISTRY', 'get', 'effective_material_data', 'crystal_entry', 'crystal_entries',
 ]

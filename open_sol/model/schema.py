@@ -46,6 +46,9 @@ SOURCE_FREE_DERIVED_OPERATIONS = FIELD_DERIVED_OPERATIONS + (GLOBAL_DERIVED_OPER
 DERIVED_OPERATIONS = SOURCE_DERIVED_OPERATIONS + ('mode_volume', GLOBAL_DERIVED_OPERATION)
 COUPLING_ROLES = ('source', 'target')
 PERMITTIVITY_PROPERTY_NAMES = ('eps_r', 'eps_xx', 'eps_yy', 'eps_zz')   # material properties writing permittivity
+# gyration vector g of a magneto-optic (gyrotropic) material, eps_ij += j e_ijk g_k: em_fdfd_hz reads gyration_z,
+# em_modes gyration_x / gyration_y; the other EM types refuse a non-zero value (physics/em definition_common)
+GYRATION_PROPERTY_NAMES = ('gyration_x', 'gyration_y', 'gyration_z')
 # PhysicsType.group -> GUI Add physics submenu (in this order; '' -> 'Other')
 PHYSICS_GROUPS = (('em', 'Electromagnetic waves'), ('heat', 'Heat transfer'),
                   ('electrical', 'Electric fields, currents and semiconductors'),
@@ -298,9 +301,10 @@ class PhysicsType:
     # (size_y null: a 2D Domain one cell across, symmetry 2.20); validate rejects a mismatch. A 3D-capable type builds
     # on core.domain3d.Domain3D (see the core sub file, 3D contracts)
     dimensions: tuple = (2,)
-    # MaterialGrid array -> (default, trigger property names): allocated (besides material_schema) only when a spec
-    # material (library merged) sets one of its trigger properties; the builder skips writes into unallocated ones
-    # (meshing.optional_material_arrays; em_fdtd_3d's eps_xx / eps_yy / sigma_m)
+    # MaterialGrid array -> (default, trigger property names[, feature types]): allocated (besides material_schema)
+    # only when a spec material (library merged) sets one of its trigger properties and, with feature types, a spec
+    # physics of this type has one of those features enabled; the builder skips writes into unallocated ones
+    # (meshing.optional_material_arrays; em_fdtd_3d's eps_xx / eps_yy / sigma_m; the solids' thermoelastic arrays)
     optional_material_schema: dict = field(default_factory=dict)
     group: str = ''                    # PHYSICS_GROUPS key (GUI Add physics submenu); '' = 'Other'
     # SPACES_2D the type runs in (used when 2 in dimensions), and space -> {setting: value} putting an instance into
