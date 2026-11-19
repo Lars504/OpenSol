@@ -171,7 +171,7 @@ CUDSS_SELFTEST_CASES = (
     SelfTestCase(
         name='semiconductor_cudss',
         label="Drift-diffusion cuDSS 'linear' back ends vs SuperLU",
-        description=('drift_diffusion solved by a sparse_direct node pinned to scipy_splu (host SuperLU, complex128: '
+        description=('drift_diffusion solved by a sparse_direct node pinned to scipy_splu (host SuperLU, real LU: '
                      "the reference), by one with back_end cudss and one with cudss_mixed as the 'linear' solver, and by "
                      "the Automatic sparse_direct (on the gpu the role's cuDSS back end; its record must show a cuDSS "
                      "back end of an 'auto' runtime with auto_fallbacks 0) (8 runs, gpu): "

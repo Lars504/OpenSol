@@ -14,7 +14,8 @@ from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, evaluates_to
                                          validate_points_inside)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
+                              feature_path)
 from .lattice import N_DIRECTIONS
 from .renderer import FluidRenderer
 from .selftests import HEATED_MICROCHANNEL_DESCRIPTION, HEATED_MICROCHANNEL_LABEL, heated_microchannel_spec
@@ -52,7 +53,7 @@ _SETTINGS = (
                'other fluids get tau = 1/2 + 3 nu dt_lbm / dx^2. The lattice Mach number sqrt(3) u dt_lbm / dx must '
                'stay small (validation warns above 0.2 for numeric inlet velocities; the run warns above 0.2, fails '
                'above 0.7): lower tau for fast flow, raise it (up to ~2) to reach a steady state in fewer steps. '
-               'Steady results do not depend on tau.'),
+               'Steady results do not depend on tau (weakly with conformal_boundaries: interpolated walls).'),
     Param('tolerance', 'float', 1e-6, label='Steady-state tolerance', unit='1', min=0.0, min_exclusive=True,
           tip='How close to the final steady flow each steady solve gets, relative to the peak speed.\n\n'
               'Keep 1e-6. The single-precision solver cannot get much closer: smaller values stop at its rounding '
@@ -210,7 +211,7 @@ def _validate_periodic(vctx, physics_spec, feature_spec, values):
 
 def _time_mode(vctx, settings_values):
     """'transient' only in a time-dependent study with time_mode transient, else 'stationary'."""
-    if vctx.study_type == 'time_dependent' and (settings_values or {}).get('time_mode') == 'transient':
+    if vctx.study_type == TIME_DEPENDENT_STUDY and (settings_values or {}).get('time_mode') == 'transient':
         return 'transient'
     return 'stationary'
 
@@ -313,7 +314,7 @@ def _validate_flow(vctx, physics_spec, settings_values):
     path = ('physics', physics_spec.name)
     issues = []
     time_mode = (settings_values or {}).get('time_mode')
-    if time_mode == 'transient' and vctx.study_type != 'time_dependent':
+    if time_mode == 'transient' and vctx.study_type != TIME_DEPENDENT_STUDY:
         issues.append(Issue('info', path, "time_mode 'transient' is ignored outside a time-dependent study: the flow is "
                                           'solved as a steady state'))
     issues.extend(_mesh_issues(vctx, path))
@@ -344,8 +345,7 @@ def _validate_flow(vctx, physics_spec, settings_values):
 
 # ---- physics factory callbacks ----
 def _create_flow(ctx, physics_spec, values):
-    time_mode = values['time_mode'] if ctx.study_type == 'time_dependent' else 'stationary'
-    return FluidPhysics(ctx.domain, time_mode=time_mode, relaxation_time=values['relaxation_time'],
+    return FluidPhysics(ctx.domain, time_mode=_time_mode(ctx, values), relaxation_time=values['relaxation_time'],
                         tolerance=values['tolerance'], max_steps=values['max_steps'],
                         precision=stepper_precision(ctx.solvers(physics_spec.name)))
 
@@ -604,8 +604,8 @@ LAMINAR_FLOW = PhysicsType(
                   'body_force_y': ('N/m^3', 'Coupled force density along y, e.g. Boussinesq buoyancy +rho g beta (T - '
                                             'T0) from heat T by field_transfer (g = 9.81, gravity along -y: warm '
                                             'fluid is pushed along +y); replaced by each transfer.')},
-    supported_studies=('stationary', 'time_dependent'),
-    default_study={'type': 'stationary'},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     create=_create_flow,
     steps_in_time=_steps_in_time,
     validate=_validate_flow,
