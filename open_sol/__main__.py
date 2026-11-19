@@ -154,7 +154,7 @@ def _build_parser():
     selftest_parser.set_defaults(handler=_selftest)
 
     mesh_study_parser = commands.add_parser(
-        'mesh-study', help='solver_plan S7.8 mesh study (mesh_study_plan.md): runs, records, gate report -> '
+        'mesh-study', help='solver_plan S7.8 mesh study: runs, records, gate report -> '
                            '<out>/mesh_study_report.json')
     mesh_study_parser.add_argument('parts', nargs='*', metavar='PART',
                                    help='per_physics, audit, prototypes (CPU), accuracy, pcg, line_block (GPU), '

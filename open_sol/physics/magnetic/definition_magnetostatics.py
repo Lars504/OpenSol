@@ -417,16 +417,7 @@ def _validate_magnetostatics(vctx, physics_spec, settings_values):
 
 def _selected_material_properties(spec):
     """(material, properties) of the selected materials, library merged (failures are reported at the material)."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    selected = []
-    for material in spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):
-            continue
-        if material.selection:
-            selected.append((material, properties))
-    return selected
+    return [(material, properties) for material, properties, _ in selected_material_data(spec)]
 
 
 def _saturating_materials(spec, parameters):

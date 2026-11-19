@@ -7,7 +7,8 @@ from dataclasses import replace
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate
 from ...model.definition_helpers import optimization_evaluations
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, known_physics
+from ...model.schema import (STATIONARY_STUDY, FeatureType, Issue, Param, PhysicsType, feature_path,
+                             known_physics)   # STATIONARY_STUDY re-exported for definition3d
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, arnoldi_basis_size
 from ..em.definition_common import (CPML_BC_HELP, DEFAULT_WAVELENGTH, EM_FAMILY, FREQUENCY_DOMAIN_STUDY,
                                     PERIODIC_BC_HELP, all_solved_wavelengths, apply_pec, boundary_settings_params,
@@ -26,7 +27,6 @@ from .solver import (LENGTH_SWEEP_LIVE_BLOCKS, MODE_CACHE_BYTES, EME_PERMITTIVIT
                      section_table_result)
 
 TYPE_NAME = 'em_eme'
-STATIONARY_STUDY = 'stationary'   # no model.schema constant yet (definition3d imports this one)
 PORTS_FEATURE = 'eme_ports'
 _DEFAULT_PORT_MODES = 4
 _DEFAULT_STRETCH_FACTORS = (0.5, 1.0, 1.5, 2.0)   # eme_length_sweep default (estimates of an unset value)

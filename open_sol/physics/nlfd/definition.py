@@ -15,7 +15,8 @@ from ...core import time_estimate as te
 from ...core.constants import C0, ETA0
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate,
                                      combine)
-from ...model.definition_helpers import DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end
+from ...model.definition_helpers import (DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end,
+                                         selected_material_data)
 from ...model.expressions import is_identifier
 from ...model.geometry import bounding_box, expand_entities
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path, resolve_values
@@ -940,16 +941,8 @@ _shared_validate = make_validate_physics(_SLOT_ARRAYS, time_domain=False, solved
 
 
 def _has_dispersive_material(vctx):
-    """True when a material (library merged) carries Drude / Lorentz poles or an nk_fit."""
-    from ...materials import effective_material_data
-    for material in vctx.spec.materials:
-        try:
-            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, KeyError, TypeError):
-            continue
-        if dispersion:
-            return True
-    return False
+    """True when a selected material (library merged) carries Drude / Lorentz poles or an nk_fit."""
+    return any(poles for _, _, poles in selected_material_data(vctx.spec))
 
 
 def _source_channels(physics_spec):

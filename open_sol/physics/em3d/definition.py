@@ -8,8 +8,8 @@ from ...core.domain import containing_cell
 from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
 from ...core.kernels import numba_available
 from ...core.time_estimate import Elementwise, PythonCalls, explicit_step_estimate
-from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, validate_points_inside,
-                                         wavelength_range_issues)
+from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, selected_material_data,
+                                         validate_points_inside, wavelength_range_issues)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.definition_resonance import resonance_monitor_feature
 from ...model.expressions import ExpressionError, referenced_names
@@ -543,14 +543,7 @@ def _half_storage_issues(vctx, physics_spec, settings_values, path):
     if vctx.study_type == FREQUENCY_DOMAIN_STUDY:
         issues.append(Issue('error', path, 'half_storage (fp16 fields) does not run the harmonic FDTD of a '
                                            'frequency_domain study: use a single-precision stepper solver'))
-    from ...materials import effective_material_data   # lazy: physics -> materials only inside functions
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for material, _, dispersion in selected_material_data(vctx.spec):   # unresolved: reported at the material
         if dispersion:
             issues.append(Issue('error', path, f"material '{material.name}' has dispersion poles, which half_storage "
                                                '(fp16 fields) does not support: use a single-precision stepper solver'))

@@ -1,4 +1,4 @@
-"""EMEPhysics: bidirectional eigenmode expansion of a 2D in-plane model along x or y (eme_plan stage 1): sections from
+"""EMEPhysics: bidirectional eigenmode expansion of a 2D in-plane model along x or y: sections from
 the mesh, slab line modes per section (PML modes kept), mode-matched interfaces, the S-matrix cascade, port results and
 the field reconstructed over the window. EMEBase holds the solve flow shared with the 3D EMEPhysics3D (solver3d)."""
 # FDFDPhysics attribute set (domain, polarization, boundary_config, sources, monitors, dispersive_regions, pec_cells,
