@@ -20,10 +20,10 @@ from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
 # FREQUENCY_DOMAIN_STUDY (the study whose wavelengths replace the wavelength setting) and EIGENFREQUENCY_STUDY are
 # re-exported to the EM definitions
-from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES,
-                             DomainRequirements, Issue, Param,
-                             array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
-                             resolve_values, state_field_names)
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES,
+                             PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param, array_owner,
+                             coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
+                             output_field_names, permittivity_arrays, resolve_values, state_field_names)
 from . import EMPhysics
 from .boundaries import BoundaryConfig
 from .eigenfrequency import ResonanceTable, resonance_filter_time_item
@@ -968,15 +968,10 @@ def write_dispersive_materials(ctx, physics_spec, solver, background_targets):
         solver.materials_changed(tuple(written_arrays))
 
 
-# coupling types whose CouplingTerm reads q_accum (coupling.standard joule_heating, definitions_semiconductor): the
-# runner enables loss accounting for them (coupling/runner.py _enable_loss_accounting)
-_Q_ACCUM_COUPLINGS = frozenset({'em_heat_joule', 'em_semiconductor_generation'})
-
-
 def _q_accum_referenced(spec, physics_name, registry):
     """True when the model reads q_accum of this physics: a material property names it, a derived value names it or
-    absorbed_power, an enabled field_transfer reads it, or an enabled _Q_ACCUM_COUPLINGS type reads it (pole values
-    are parameter-only)."""
+    absorbed_power, an enabled field_transfer reads it, or an enabled coupling type with reads_absorbed_power reads it
+    (pole values are parameter-only)."""
     q_accum_names = frozenset(name for name, (physics, field_name) in state_field_names(spec, registry).items()
                               if physics == physics_name and field_name == 'q_accum')
     if not q_accum_names:
@@ -989,7 +984,7 @@ def _q_accum_referenced(spec, physics_name, registry):
     for coupling in spec.couplings:
         if not coupling.enabled or coupling.source != physics_name:
             continue
-        if coupling.type in _Q_ACCUM_COUPLINGS:
+        if coupling_reads_absorbed_power(registry, coupling):
             return True
         if (coupling.type == 'field_transfer' and isinstance(coupling.params, dict)
                 and coupling.params.get('source_field') == 'q_accum'):

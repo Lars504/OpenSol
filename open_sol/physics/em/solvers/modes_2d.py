@@ -5,7 +5,7 @@ import math
 import time
 
 import numpy as np
-from ....core.backend import to_host
+from ....core.backend import check_backend_array, to_host
 
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.cut_cells import dual_cell_cuts, union_test
@@ -31,7 +31,7 @@ from ..nonlinear_overlap import ShgOverlapMonitor
 from ..renderer import ModeRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cpml_grading_cell_size, grid_cell_widths
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 
 MODE_POLARIZATION = 'modes'   # EM_MATERIAL_SCHEMAS key; no in-plane polarisation (placement helpers refuse it)
 MODE_PERMITTIVITY_ARRAYS = ('eps_r', 'eps_xx', 'eps_yy')   # eps_r holds eps_zz (as for the E_z types)
@@ -598,13 +598,13 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f"add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}")
         if mask is not None:
-            _check_cell_array(mask, self.mode_fields['ex'].shape, np.bool_, 'Pole mask', xp=self.domain.xp)
+            check_backend_array(mask, self.mode_fields['ex'].shape, np.bool_, 'Pole mask', xp=self.domain.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._material_serial += 1
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a run-backend bool (nx, ny) cell mask."""
-        _check_cell_array(mask, self.mode_fields['ex'].shape, np.bool_, 'PEC mask', xp=self.domain.xp)
+        check_backend_array(mask, self.mode_fields['ex'].shape, np.bool_, 'PEC mask', xp=self.domain.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self._material_serial += 1
 

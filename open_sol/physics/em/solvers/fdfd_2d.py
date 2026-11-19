@@ -6,7 +6,7 @@ import math
 import time
 
 import numpy as np
-from ....core.backend import host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
 
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.error_indicators import energy_interpolation_indicator
@@ -46,7 +46,7 @@ from ..sheet_conductivity import ConductingSheet, SheetConductivity
 from ..sources import bloch_line_phase
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
 
@@ -1072,13 +1072,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f"add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}")
         if mask is not None:
-            _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'Pole mask', xp=self.xp)
+            check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'Pole mask', xp=self.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._mark_system_dirty()
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a bool (nx, ny) cell mask of the run backend."""
-        _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'PEC mask', xp=self.xp)
+        check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'PEC mask', xp=self.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self.conformal_pec = None   # the free cells changed
         self._mark_system_dirty()
@@ -1459,7 +1459,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         (eps_max - eps_min) of initial_density into the permittivity arrays (ValueError when it overlaps an earlier
         region)."""
         self._require_cartesian('add_design_region')
-        _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'Design region mask', xp=self.xp)
+        check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'Design region mask', xp=self.xp)
         region = DesignRegion(self.domain, mask, self.permittivity_arrays, eps_min, eps_max, initial_density,
                               filter_radius, projection_beta, projection_eta, objective_unit=self.objective_unit)
         if any(region.overlaps(other) for other in self.design_regions):

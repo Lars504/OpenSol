@@ -4,7 +4,7 @@ discovered and registered by definitions.register."""
 from ..core.backend import array_module_of
 from ..core.constants import DTYPE, FACES
 from ..model.definition_helpers import evaluates_to, is_axisymmetric, selected_material_data
-from ..model.schema import CouplingType, Issue, Param
+from ..model.schema import EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, CouplingType, Issue, Param
 from .coupling_term import CouplingGroup, CouplingTerm
 from .index_terms import after_source_step, physics_and_type
 
@@ -17,7 +17,7 @@ STRESS_TO_TENSION = (('stress_xx', 'coupled_tension_xx'), ('stress_yy', 'coupled
                      ('stress_xy', 'coupled_tension_xy'))
 _PLANE_STRESS = 'plane_stress'                     # = physics.mechanics.solver_common PLANE_STRESS (not imported)
 _TRIANGLES = 'triangles'
-_STUDY_SOLVED_SOLID_STUDIES = ('eigenfrequency', 'frequency_response')   # where the solid would be solved itself
+_STUDY_SOLVED_SOLID_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY)   # where the solid is solved itself
 _MEMBRANE_TENSION_PROPERTIES = ('tension', 'tension_xx', 'tension_yy', 'tension_xy')
 
 

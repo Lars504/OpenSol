@@ -8,9 +8,6 @@ from .slot_sum import LOSS_FIELDS, SlotSum, slot_contributions, written_slots
 class MultiphysicsRunner:
     """Steps named solvers in whole ticks of a shared dt_sync (per-solver stride), then applies couplings."""
 
-    # State fields that need EM's J·E loss accounting to be live when a coupling reads them (ez jz_total is stepped
-    # with any Drude pole, accounting or not, so it is not one).
-    _LOSS_FIELDS = LOSS_FIELDS
     # Ticks per solve below which a `solves_every_step` quasi-static solver dominates the run time (as the heat
     # validation's MIN_EM_STEPS_PER_SOLVE).
     _MIN_TICKS_PER_SOLVE = 100
@@ -130,7 +127,7 @@ class MultiphysicsRunner:
 
     def _resolve_couplings(self) -> list:
         """Raise for a coupling naming an unattached physics, set every=None to the largest stride of its physics;
-        messages for a coupling reading _LOSS_FIELDS whose every differs from its target's (window != solve)."""
+        messages for a coupling reading LOSS_FIELDS whose every differs from its target's (window != solve)."""
         messages = []
         for coupling in self.couplings:
             label = getattr(coupling, 'name', '') or type(coupling).__name__
@@ -145,7 +142,7 @@ class MultiphysicsRunner:
                     raise ValueError(f"coupling '{label}': every=None needs a source or target physics")
                 coupling.every = max(self.strides[physics_name] for physics_name in sources | targets)
             every = getattr(coupling, 'every', None)
-            loss_fields = sorted(field for _, field in coupling.source_fields if field in self._LOSS_FIELDS)
+            loss_fields = sorted(field for _, field in coupling.source_fields if field in LOSS_FIELDS)
             for target in sorted(targets) if loss_fields and every is not None else ():
                 if every != self.strides[target]:
                     messages.append(
@@ -158,7 +155,7 @@ class MultiphysicsRunner:
     def _enable_loss_accounting(self):
         for coupling in self.couplings:
             for physics_name, field in coupling.source_fields:
-                if field not in self._LOSS_FIELDS:
+                if field not in LOSS_FIELDS:
                     continue
                 solver = self.physics[physics_name]   # attached: _resolve_couplings checked the names
                 engine = getattr(solver, 'engine', solver)

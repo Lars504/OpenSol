@@ -5,7 +5,8 @@ from ..physics.em.index_reference import INDEX_SLOTS, index_shift_to_permittivit
     reference_index
 from .coupling_term import CONTRIBUTIONS, _lookup
 
-# window-averaged EM loss fields (the runner enables their loss accounting; their readers transfer on phase 0)
+# window-averaged EM loss fields (the runner enables their loss accounting; their readers transfer on phase 0); ez
+# jz_total is not one: it is stepped with any Drude pole, accounting or not
 LOSS_FIELDS = frozenset({'q_accum', 'q_accum_time'})
 
 

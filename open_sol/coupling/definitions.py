@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from ..core.constants import C0, DTYPE
 from ..model.definition_helpers import evaluates_to, selected_material_data, study_duration
 from ..model.expressions import FIELD_COORDINATE_NAMES, compile_expression
-from ..model.schema import CouplingType, Issue, Param, effective_coupling_every, valid_every
+from ..model.schema import (TIME_DEPENDENT_STUDY, CouplingType, Issue, Param, coupling_reads_absorbed_power,
+                            effective_coupling_every, valid_every)
+from ..physics.heat.coupling import DNDT_ARRAYS
 from .coupling_term import CouplingTerm
 from .index_terms import after_source_step, index_slots, physics_and_type, writes_index_slots
 from .standard import THERMO_OPTIC_SLOTS, joule_heating, thermo_optic
@@ -17,13 +19,15 @@ from .standard import THERMO_OPTIC_SLOTS, joule_heating, thermo_optic
 HEAT_TYPE_NAME = 'heat'
 CURRENTS_TYPE_NAME = 'electric_currents'   # = physics.potential.definition.CURRENTS_TYPE_NAME (not imported here)
 # EM loss protocol (every solver of a family-'em' type): state()['q_accum'] always present (None allowed); a settable
-# getattr(solver, 'engine', solver).enable_q_accum; take_absorbed_power(merge_previous=False) -> mean W/m^3 since the
-# last call (merge_previous: also over the last completed window) or None.
+# getattr(solver, 'engine', solver).enable_q_accum; take_absorbed_power(merge_previous=False) -> FDTD: mean W/m^3 since
+# the last call, then reset (merge_previous: also over the last completed window), None for an empty window; FDFD: q_abs
+# of its last solve (never reset, None before the first). Each take resets an FDTD window: one reader per time-stepped
+# source (CouplingType.reads_absorbed_power, absorbed_power_reader_issues).
 _EM_FAMILY = 'em'
 _TRANSFER_NAMES = FIELD_COORDINATE_NAMES | {'value'}   # a field_transfer expression's names besides parameters
 _CW_RIPPLE_WARNING = 0.01   # relative cell-to-cell error of a CW Joule window mean above which validation warns
-_THERMO_OPTIC_DNDT = {'eps_r_update': 'dndT_zz', 'eps_xx_update': 'dndT_xx', 'eps_yy_update': 'dndT_yy'}
-# EM types whose plane is a cross-section transverse to the propagation (thermo-optic expansion on eps_zz only)
+# EM types whose plane is a cross-section transverse to the propagation (thermo-optic expansion on eps_zz only); a new
+# cross-section EM type joins it
 _CROSS_SECTION_EM_TYPES = frozenset({'em_modes'})
 _STRAIN_OPTIC_TYPE_NAME = 'solid_em_strain_optic'   # = physics.mechanics.selftests.STRAIN_OPTIC_COUPLING (not imported)
 _EXTENSION_PREFIX = 'definitions_'   # coupling/definitions_<topic>.py: register(registry, RegisteredPhysics)
@@ -116,6 +120,39 @@ def _writes_field_transfer(vctx, coupling_spec):
     return {slot: ''} if isinstance(slot, str) and slot else {}
 
 
+def source_steps_in_time(vctx, physics_spec):
+    """True when the physics' type steps in time with its settings (FDTD); False when unknown."""
+    try:
+        physics_type = vctx.registry.physics_type(physics_spec.type)
+    except KeyError:
+        return False
+    if physics_type.steps_in_time is None:
+        return False
+    settings = vctx.values(physics_type.settings, physics_spec.settings)
+    return bool(settings is not None and physics_type.steps_in_time(settings))
+
+
+def absorbed_power_reader_issues(vctx, coupling_spec):
+    """Error when another enabled reads_absorbed_power coupling takes the absorbed power of the same time-stepped
+    source: each take_absorbed_power() resets its window, so each reader would get only part of it."""
+    try:
+        source_spec = vctx.spec.physics_by_name(coupling_spec.source)
+    except KeyError:
+        return []
+    if not source_steps_in_time(vctx, source_spec):
+        return []
+    others = [other.name for other in vctx.spec.couplings
+              if other.enabled and other.name != coupling_spec.name and other.source == coupling_spec.source
+              and coupling_reads_absorbed_power(vctx.registry, other)]
+    if not others:
+        return []
+    noun, verb = ('couplings', 'take') if len(others) > 1 else ('coupling', 'takes')
+    return [Issue('error', ('coupling', coupling_spec.name),
+                  f"{noun} {', '.join(others)} also {verb} the absorbed power of the "
+                  f"time-stepped '{source_spec.name}': each transfer resets its averaging window, so each reader "
+                  'would get only part of it; keep one reader (or use an em_fdfd type)')]
+
+
 def _pulsed_sources(em_spec, em_type):
     """Names of enabled EM source features whose waveform is not 'cw'."""
     names = []
@@ -180,7 +217,7 @@ def _validate_joule(vctx, coupling_spec, values):
         return []
     heat_values = vctx.values(heat_type.settings, heat_spec.settings) or {}   # bad settings: param checks report
     issues = []
-    heat_mode = heat_values.get('time_mode') if vctx.study_type == 'time_dependent' else 'stationary'
+    heat_mode = heat_values.get('time_mode') if vctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     if heat_mode == 'stationary':
         pulsed = _pulsed_sources(em_spec, em_type)
         if pulsed:
@@ -205,9 +242,9 @@ def _validate_joule(vctx, coupling_spec, values):
         issues.append(Issue('warning', path,
                             f'study duration {duration:.4g} s is shorter than every * dt_EM = {every} * '
                             f"{em_dt:.4g} s: the Joule power reaches '{heat_spec.name}' only in the final flush"))
-    if vctx.study_type == 'time_dependent' and every is not None and em_dt:
+    if vctx.study_type == TIME_DEPENDENT_STUDY and every is not None and em_dt:
         issues.extend(_cw_ripple_issues(vctx, path, em_spec, em_type, every, em_dt))
-    return issues
+    return issues + absorbed_power_reader_issues(vctx, coupling_spec)
 
 
 def _validate_field_transfer(vctx, coupling_spec, values):
@@ -241,7 +278,7 @@ def _dispersive_thermo_optic_issues(vctx, slots, path):
     """Warning per selected dispersive material with a non-zero dndT of a written slot (or alpha, with a Lorentz
     pole): the transforms shift only the background permittivity, never the pole susceptibility."""
     parameters = vctx.parameters
-    dndT_names = sorted({_THERMO_OPTIC_DNDT[slot] for slot in slots})
+    dndT_names = sorted({DNDT_ARRAYS[slot] for slot in slots})
     issues = []
     for material, properties, poles in selected_material_data(vctx.spec):
         if not poles:
@@ -354,11 +391,13 @@ def _coupling_types(em_types, absorbing_em_types, has_currents):
                     '(validation warns above 1 % naming the nearest whole-half-period every). Transient heat lags one '
                     'window: its step over [kW, (k+1)W] uses the power of [(k-1)W, kW] (no source in the first, the '
                     'last window never stepped). Pulsed EM sources feeding steady heat, transient heat or such a short '
-                    'study: validation warning.',
+                    'study: validation warning. A second reader of the absorbed power of the same time-stepped EM '
+                    'physics (em_heat_joule, em_semiconductor_generation): validation error (each transfer resets '
+                    'the window).',
         create=_create_em_joule,
         validate=_validate_joule,
         writes=writes_heat_source,
-        mesh_transfer='value')
+        mesh_transfer='value', reads_absorbed_power=True)
     heat_em_thermo_optic = CouplingType(
         'heat_em_thermo_optic', 'Thermo-optic effect (heat -> electromagnetic waves)', HEAT_TYPE_NAME, em_types,
         summary='Updates the refractive index of a wave physics from the temperature of the heat physics. It uses '
@@ -421,7 +460,7 @@ def registered_physics(registry):
                  if any(info.name == 'absorbed_power' for info in physics_type.output_fields)}
     optical_types = tuple(sorted(physics_type.name for physics_type in em_physics_types
                                  if physics_type.steps_in_time is None
-                                 and 'time_dependent' in physics_type.supported_studies))
+                                 and TIME_DEPENDENT_STUDY in physics_type.supported_studies))
     return RegisteredPhysics(
         names=frozenset(physics_type.name for physics_type in physics_types), em_physics_types=em_physics_types,
         em_types=tuple(sorted(physics_type.name for physics_type in em_physics_types)),

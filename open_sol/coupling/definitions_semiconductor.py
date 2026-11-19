@@ -5,14 +5,13 @@ from ..model.schema import CouplingType, Issue, Param
 from ..physics.semiconductor.couplings import (PLASMA_ELECTRON_COEFFICIENT, PLASMA_HOLE_COEFFICIENT,
                                                PLASMA_HOLE_EXPONENT, make_generation_transform, make_plasma_transform)
 from .coupling_term import CouplingTerm
-from .definitions import INDEX_SUM_TEXT
+from .definitions import INDEX_SUM_TEXT, absorbed_power_reader_issues, source_steps_in_time
 from .index_terms import index_contributor, index_slots, target_type, writes_index_slots
 
 DRIFT_DIFFUSION_TYPE_NAME = 'drift_diffusion'   # = physics.semiconductor.definition.DRIFT_DIFFUSION_TYPE_NAME
 GENERATION_TYPE_NAME = 'em_semiconductor_generation'
 PLASMA_TYPE_NAME = 'semiconductor_em_plasma_dispersion'
 _GENERATION_SLOT = 'generation'
-_ABSORBED_POWER_READERS = frozenset({'em_heat_joule', GENERATION_TYPE_NAME})   # call take_absorbed_power()
 
 
 # ---- create callbacks (worker thread, the run backend) ----
@@ -32,41 +31,19 @@ def _create_plasma(ctx, coupling_spec, values, every):
 
 
 # ---- validation (CPU only) ----
-def _source_steps_in_time(vctx, physics_spec):
-    """True when the physics' type steps in time with its settings (FDTD); False when unknown."""
-    try:
-        physics_type = vctx.registry.physics_type(physics_spec.type)
-    except KeyError:
-        return False
-    if physics_type.steps_in_time is None:
-        return False
-    settings = vctx.values(physics_type.settings, physics_spec.settings)
-    return bool(settings is not None and physics_type.steps_in_time(settings))
-
-
 def _validate_generation(vctx, coupling_spec, values):
     """Errors: a time-stepped (FDTD) source without photon_wavelength, or whose absorbed power another coupling also
-    takes (each take_absorbed_power() resets the FDTD window). The writer rule is model.validate's (`writes`)."""
-    path = ('coupling', coupling_spec.name)
+    takes (definitions.absorbed_power_reader_issues). The writer rule is model.validate's (`writes`)."""
     try:
         source_spec = vctx.spec.physics_by_name(coupling_spec.source)
     except KeyError:
         return []
-    if not _source_steps_in_time(vctx, source_spec):
-        return []
     issues = []
-    if values['photon_wavelength'] is None:
-        issues.append(Issue('error', path, f"source '{source_spec.name}' steps in time and has no single solve "
-                                           'frequency: set photon_wavelength (the vacuum wavelength of the light)'))
-    others = [other.name for other in vctx.spec.couplings
-              if other.enabled and other.name != coupling_spec.name and other.source == coupling_spec.source
-              and other.type in _ABSORBED_POWER_READERS]
-    if others:
-        issues.append(Issue('error', path, f"coupling{'s' if len(others) > 1 else ''} {', '.join(others)} also take "
-                                           f"the absorbed power of the time-stepped '{source_spec.name}': each "
-                                           'transfer resets its averaging window, so each reader would get only part '
-                                           'of it; keep one reader (or use an em_fdfd type)'))
-    return issues
+    if values['photon_wavelength'] is None and source_steps_in_time(vctx, source_spec):
+        issues.append(Issue('error', ('coupling', coupling_spec.name),
+                            f"source '{source_spec.name}' steps in time and has no single solve frequency: set "
+                            'photon_wavelength (the vacuum wavelength of the light)'))
+    return issues + absorbed_power_reader_issues(vctx, coupling_spec)
 
 
 def _validate_plasma(vctx, coupling_spec, values):
@@ -111,7 +88,7 @@ def _generation_type(absorbing_em_types):
                     'the wavelength (library silicon is lossless). Use a stationary study (with a plasma-dispersion '
                     'coupling back it iterates to the fixed point); frequency_domain is a validation error.',
         create=_create_generation, validate=_validate_generation, writes=_writes_generation,
-        mesh_transfer='value')
+        mesh_transfer='value', reads_absorbed_power=True)
 
 
 def _plasma_type(em_types):

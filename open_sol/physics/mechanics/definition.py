@@ -14,7 +14,7 @@ from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, I
 from ...core.monitors import probe_result
 from ...fem.diffusion import cudss_back_end, cudss_diffusion_estimate
 from ...coupling.coupling_term import CouplingGroup, CouplingTerm
-from ...coupling.index_terms import index_contributor, index_slots, target_type, writes_index_slots
+from ...coupling.index_terms import after_source_step, index_contributor, index_slots, target_type, writes_index_slots
 from ..em.index_reference import INDEX_SLOTS
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, DIFFUSION_DIRECT_BACK_ENDS,
                                          axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of,
@@ -1995,8 +1995,7 @@ def _create_thermal_strain(ctx, coupling_spec, values, every):
     buffer of the material grid's shape)."""
     return CouplingTerm(coupling_spec.source, 'T', coupling_spec.target, 'temperature_rise',
                         make_temperature_rise_transform(tuple(ctx.domain.materials.shape), ctx.xp), every=every,
-                        name=coupling_spec.name,
-                        after_source_step=ctx.sim.runner.strides[coupling_spec.source] == every)
+                        name=coupling_spec.name, after_source_step=after_source_step(ctx, coupling_spec, every))
 
 
 def _validate_thermal_strain(vctx, coupling_spec, values):
@@ -2137,7 +2136,7 @@ def _create_optical_force(ctx, coupling_spec, values, every):
                           name=f'{coupling_spec.name}.{slot}', contribution='sum')
              for slot, transform in (('body_force_x', force_x), ('body_force_y', force_y))]
     return CouplingGroup(terms, every=every, name=coupling_spec.name,
-                         after_source_step=ctx.sim.runner.strides[coupling_spec.source] == every)
+                         after_source_step=after_source_step(ctx, coupling_spec, every))
 
 
 OPTICAL_FORCE_TYPE = CouplingType(

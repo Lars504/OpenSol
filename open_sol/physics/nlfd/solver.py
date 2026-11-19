@@ -10,7 +10,7 @@ pump-depleted self-consistent solution (Picard / Anderson or Newton-Krylov)."""
 import copy
 import math
 
-from ...core.backend import to_host
+from ...core.backend import check_backend_array, to_host
 from ...core.constants import C0, DTYPE
 from ...core.solver_base import PhysicsSolver
 from ...solvers.sparse_direct import SparseDirectSolver
@@ -206,9 +206,7 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
             self._check_mask(mask, 'medium mask')
 
     def _check_mask(self, mask, what):
-        xp = self.xp
-        if not isinstance(mask, xp.ndarray) or mask.dtype != xp.bool_ or mask.shape != self._zeros.shape:
-            raise TypeError(f"{what} must be a {xp.__name__} bool array of shape {self._zeros.shape}")
+        check_backend_array(mask, self._zeros.shape, self.xp.bool_, what, xp=self.xp)
 
     def _check_sheet_bloch(self, name):
         """NotImplementedError when a channel carries a Bloch phase: the sheet sites sample and deposit across the

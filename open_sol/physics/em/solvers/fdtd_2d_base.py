@@ -4,7 +4,7 @@ import math
 import warnings
 
 import numpy as np
-from ....core.backend import host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
 
 from ....core.constants import DTYPE, MU0
 from ....core.monitors import FieldProbe, FieldProbeRows
@@ -34,15 +34,6 @@ def _bounding_box(weight):
         return None
     columns = np.flatnonzero(to_host(positive.any(axis=0)))
     return (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(columns[0]), int(columns[-1]) + 1))
-
-
-def _check_cell_array(array, shape, dtype, what, *, xp):
-    """TypeError unless `array` is an `xp` (the run backend's array module: pass `domain.xp`) `dtype` array of exactly
-    the cell grid `shape` (no broadcast, no cast)."""
-    if not isinstance(array, xp.ndarray) or array.dtype != dtype or array.shape != shape:
-        raise TypeError(f"{what} must be a {getattr(xp, '__name__', xp)} {np.dtype(dtype).name} array of shape "
-                        f"{shape}, got {type(array).__name__} {getattr(array, 'dtype', '')} "
-                        f"{getattr(array, 'shape', '')}")
 
 
 def record_dispersive_region(regions, pole, mask):
@@ -256,8 +247,8 @@ class _YeeEngine2DBase(PhysicsSolver):
         source_slot = f'{self.polarization}_source'
         if name == source_slot:
             if array is not None:
-                _check_cell_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{source_slot}', ...) array",
-                                  xp=self.xp)
+                check_backend_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{source_slot}', ...) array",
+                                    xp=self.xp)
             self._out_of_plane_source = array
         elif name in slots:
             if getattr(array, 'shape', None) != (self.nx, self.ny):
@@ -615,7 +606,7 @@ class _YeeEngine2DBase(PhysicsSolver):
 
     def _check_cell_mask(self, mask, what):
         """TypeError unless `mask` is a run-backend bool (nx, ny) cell mask."""
-        _check_cell_array(mask, (self.nx, self.ny), np.bool_, what, xp=self.xp)
+        check_backend_array(mask, (self.nx, self.ny), np.bool_, what, xp=self.xp)
 
     def _check_weight_shape(self, weight, what):
         """ValueError unless the host weight array has the (nx, ny) cell shape and lies in [0, 1]."""

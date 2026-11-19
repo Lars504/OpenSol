@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from ....core.backend import to_host
+from ....core.backend import check_backend_array, to_host
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.monitors import FieldProbe
 from ....core.solver_base import PhysicsSolver
@@ -28,7 +28,7 @@ from ....solvers.sparse_direct import scipy_available
 from .fdfd_bor import (BOR_MATERIAL_SCHEMA_KEY, BOR_PERMITTIVITY_SLOTS, BOR_POLARIZATION,
                        FAR_FIELD_QUANTITY, bor_boundary_config, bor_far_field_angles, bor_far_field_box,
                        bor_flux_line)
-from .fdtd_2d_base import _check_cell_array, record_dispersive_region
+from .fdtd_2d_base import record_dispersive_region
 
 # Yee point of each probe component relative to its cell (r, z): E_r / H_z on the +r edge, E_z / H_r on the +z edge,
 # H_phi on the +r +z corner, E_phi at the centre
@@ -252,7 +252,8 @@ class BORFDTDPhysics(PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f'add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}')
         if mask is not None:
-            _check_cell_array(mask, (self.domain.grid.nx, self.domain.grid.ny), self.xp.bool_, 'Pole mask', xp=self.xp)
+            check_backend_array(mask, (self.domain.grid.nx, self.domain.grid.ny), np.bool_, 'Pole mask',
+                                xp=self.xp)
         if self.engine is not None:
             raise ValueError('BORFDTDPhysics.add_dispersive: the stepper exists already; add poles before finalize')
         record_dispersive_region(self.dispersive_regions, pole, mask)
@@ -260,10 +261,7 @@ class BORFDTDPhysics(PhysicsSolver):
     def add_pec_region(self, mask):
         """Perfect electric conductor on a bool (nx, ny) cell mask of the domain's array module (rings in 3D), before
         finalize (it removes E points from the operator)."""
-        shape = (self.domain.grid.nx, self.domain.grid.ny)
-        if not (isinstance(mask, self.xp.ndarray) and mask.dtype == np.bool_ and mask.shape == shape):
-            raise TypeError(f'PEC mask must be a bool array of shape {shape} on the domain backend, got '
-                            f"{type(mask).__name__} {getattr(mask, 'dtype', '')} {getattr(mask, 'shape', '')}")
+        check_backend_array(mask, (self.domain.grid.nx, self.domain.grid.ny), np.bool_, 'PEC mask', xp=self.xp)
         if self.engine is not None:
             raise ValueError('BORFDTDPhysics.add_pec_region: the stepper exists already; add PEC regions before '
                              'finalize')

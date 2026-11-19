@@ -548,6 +548,10 @@ class CouplingType:
     # the transform also reads the target's own state (fluid_heat_convection: heat T): a loop-back the stationary study
     # iterates, so the time estimate's fixed point counts it as a self-coupling of the target
     reads_target: bool = False
+    # the transform calls its EM source's take_absorbed_power() (em_heat_joule, em_semiconductor_generation): each call
+    # resets a time-stepped source's window, so validation allows one such reader per FDTD source; the EM definitions
+    # count it as a q_accum reference (definition_common._q_accum_referenced: memory, Bloch / em3d refusals)
+    reads_absorbed_power: bool = False
 
     def __post_init__(self):
         owner = f"CouplingType '{self.name}'"
@@ -583,6 +587,14 @@ def coupling_writes(vctx, coupling_spec) -> dict:
     except KeyError:
         return {}
     return dict(coupling_type.writes(vctx, coupling_spec)) if coupling_type.writes is not None else {}
+
+
+def coupling_reads_absorbed_power(registry, coupling_spec) -> bool:
+    """CouplingType.reads_absorbed_power of a coupling spec's type; False for an unknown type."""
+    try:
+        return registry.coupling_type(coupling_spec.type).reads_absorbed_power
+    except KeyError:
+        return False
 
 
 def coupling_type_accepts(coupling_type, role, physics_type_name) -> bool:
