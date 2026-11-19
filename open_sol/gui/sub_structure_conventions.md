@@ -399,5 +399,7 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   `memory_estimate` + `plain_roles()`, `run_time_estimate()` = estimate_time per_run (counters kept: solver items go to
   their role box), `time_overheads()`, `time_estimate()` for the whole-study total): GUI thread, nothing run, no
   `bridge.call`. Redraw debounced 400 ms after `changed` / `issues_invalidated`, only while visible (showEvent redraws a
-  dirty chart), keeping the selected step by key; the first draw fits the view. Box fills are light with dark text in
+  dirty chart), keeping the selected step by key; the first draw zooms to fit within _MIN / _MAX_READABLE_SCALE (a tall chart
+  scrolls from its top; 'Fit to window' fits whole), and showEvent sets the splitter share once (the text browser's size hint
+  would take most of the width). Box texts are one elided line each (full texts in the tooltip), so a box height fits them. Box fills are light with dark text in
   every theme; mesh / materials borders take `helpers.mesh_color`. A new step kind needs a `_KIND_COLORS` entry.

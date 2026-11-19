@@ -10,16 +10,22 @@ from ..model.solve_flow import MEMORY_GROUPS, TIME_SOURCES, op_text, solve_flow
 from .forms import hint_label, rich_tooltip
 from .helpers import ask_save_path, mesh_color
 
-BOX_WIDTH = 214
-BOX_HEIGHT = 76
-WIDE_BOX_WIDTH = 520      # largest width of a box spanning several lanes (model, couplings, study, results)
-LANE_WIDTH = 240
-ROW_HEIGHT = 116
-ROW_LABEL_WIDTH = 104
-LOOP_SPACING = 30
-_BAR_HEIGHT = 3
+BOX_WIDTH = 250
+BOX_HEIGHT = 86
+WIDE_BOX_WIDTH = 560      # largest width of a box spanning several lanes (model, couplings, study, results)
+LANE_WIDTH = 280
+ROW_HEIGHT = 126
+ROW_LABEL_WIDTH = 120
+LOOP_SPACING = 34
+_BAR_HEIGHT = 4
 _REFRESH_DELAY_MS = 400
 _PICTURE_SCALE = 2.0
+_TITLE_POINTS = 10.5      # box texts at 100 % zoom
+_TEXT_POINTS = 9.0
+# the opening zoom fits the chart but stays readable: between these scales (taller charts scroll)
+_MIN_READABLE_SCALE = 0.8
+_MAX_READABLE_SCALE = 1.15
+_CHART_SHARE = 0.6        # opening width share of the chart pane
 # box fills per step kind (light: the box text is always dark, whatever the application theme)
 _KIND_COLORS = {'model': '#dbe7f6', 'mesh': '#d5eee8', 'materials': '#e4efd0', 'solver': '#fbe1c4',
                 'physics': '#d3ebcf', 'couplings': '#e5dcf3', 'study': '#e1d8f4', 'output': '#e6e6e6',
@@ -30,6 +36,9 @@ _TEXT_COLOR = '#1b1f24'
 _SUBTEXT_COLOR = '#4a525c'
 _MEMORY_BAR_COLOR = '#3f7fbf'
 _TIME_BAR_COLOR = '#d9822b'
+_BAR_TRACK_COLOR = QtGui.QColor(0, 0, 0, 22)
+_ROW_BAND_COLOR = QtGui.QColor(128, 128, 128, 22)   # translucent: reads on light and dark view backgrounds
+_ROW_LABEL_COLOR = '#7a838e'
 _LINK_COLOR = '#8a4fbf'
 _LOOP_COLOR = '#7a5c2e'
 _INTRO = ('Every step of a run of this model, top to bottom: the build (mesh, materials, solver jobs, physics, '
@@ -72,13 +81,16 @@ class SolveFlowDialog(QtWidgets.QDialog):
         layout.addWidget(hint_label(_INTRO))
         buttons = QtWidgets.QHBoxLayout()
         fit_button = QtWidgets.QPushButton('Fit to window')
-        fit_button.clicked.connect(lambda _checked=False: self._fit())
+        fit_button.setToolTip(rich_tooltip('Show the whole chart (Ctrl + mouse wheel zooms, drag to pan).'))
+        fit_button.clicked.connect(lambda _checked=False: self._fit(readable=False))
+        actual_button = QtWidgets.QPushButton('100 %')
+        actual_button.clicked.connect(lambda _checked=False: self._zoom_to(1.0))
         save_button = QtWidgets.QPushButton('Save picture…')
         save_button.clicked.connect(lambda _checked=False: self._save_picture())
         overview_button = QtWidgets.QPushButton('Totals')
         overview_button.setToolTip(rich_tooltip('Show the estimate totals and notes instead of a step.'))
         overview_button.clicked.connect(lambda _checked=False: self._select(None))
-        for button in (fit_button, save_button, overview_button):
+        for button in (fit_button, actual_button, save_button, overview_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
         layout.addLayout(buttons)
@@ -88,11 +100,17 @@ class SolveFlowDialog(QtWidgets.QDialog):
         self.view = _FlowView(self.scene)
         self.details = QtWidgets.QTextBrowser()
         self.details.setOpenLinks(False)
+        self.details.setMinimumWidth(320)
+        self.details.document().setDefaultStyleSheet(_DETAILS_CSS)
+        self.view.setMinimumWidth(360)
         splitter.addWidget(self.view)
         splitter.addWidget(self.details)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
+        splitter.setChildrenCollapsible(False)
         layout.addWidget(splitter, 1)
+        self._splitter = splitter
+        self._split_set = False
         self._timer = QtCore.QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(_REFRESH_DELAY_MS)
@@ -112,6 +130,10 @@ class SolveFlowDialog(QtWidgets.QDialog):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self._split_set:   # the text browser's size hint would otherwise take most of the width
+            self._split_set = True
+            total = max(self._splitter.width(), 2)
+            self._splitter.setSizes([int(total * _CHART_SHARE), total - int(total * _CHART_SHARE)])
         if self._dirty:
             self.refresh()
 
@@ -133,6 +155,7 @@ class SolveFlowDialog(QtWidgets.QDialog):
         try:
             self.scene.clear()
             self._boxes = _draw_flow(self.scene, self.flow, document.spec)
+            self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
         finally:
             self.scene.blockSignals(False)
         self._select(keep if keep in self._boxes else None)
@@ -169,10 +192,25 @@ class SolveFlowDialog(QtWidgets.QDialog):
 
     # view actions
 
-    def _fit(self):
-        rect = self.scene.itemsBoundingRect().adjusted(-20, -20, 20, 20)
-        if rect.isValid():
-            self.view.fitInView(rect, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+    def _fit(self, readable=True):
+        """Scale to show the whole chart; readable: kept within _MIN / _MAX_READABLE_SCALE (the top shown first)."""
+        rect = self.scene.sceneRect()
+        viewport = self.view.viewport().rect()
+        if not rect.isValid() or viewport.width() < 10 or viewport.height() < 10:
+            return
+        scale = min(viewport.width() / rect.width(), viewport.height() / rect.height())
+        if readable:
+            scale = min(max(scale, _MIN_READABLE_SCALE), _MAX_READABLE_SCALE)
+        self._zoom_to(scale)
+
+    def _zoom_to(self, scale):
+        """Set the zoom to scale, centred across and showing the top of the chart."""
+        rect = self.scene.sceneRect()
+        self.view.resetTransform()
+        self.view.scale(scale, scale)
+        visible_height = self.view.viewport().height() / scale
+        top = rect.top() + 0.5 * min(visible_height, rect.height())
+        self.view.centerOn(QtCore.QPointF(rect.center().x(), top))
 
     def _save_picture(self):
         path = ask_save_path(self, self.document, 'Save solve flow picture', 'solve_flow.png', (('PNG image', '.png'),))
@@ -202,8 +240,10 @@ class _FlowView(QtWidgets.QGraphicsView):
 
     def __init__(self, scene):
         super().__init__(scene)
-        self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing | QtGui.QPainter.RenderHint.TextAntialiasing)
+        self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing | QtGui.QPainter.RenderHint.TextAntialiasing
+                            | QtGui.QPainter.RenderHint.SmoothPixmapTransform)
         self.setDragMode(QtWidgets.QGraphicsView.DragMode.ScrollHandDrag)
+        self.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop)
         self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def wheelEvent(self, event):
@@ -223,7 +263,7 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
         self.key = step.key
         self._border = QtGui.QColor(border)
         path = QtGui.QPainterPath()
-        path.addRoundedRect(rect, 8.0, 8.0)
+        path.addRoundedRect(rect, 10.0, 10.0)
         self.setPath(path)
         self.setBrush(QtGui.QColor(fill))
         self._set_border(False)
@@ -261,11 +301,21 @@ def _draw_flow(scene, flow, spec) -> dict:
     rects = {step.key: _box_rect(step) for step in flow.steps}
     largest_bytes = max((step.memory_bytes for step in flow.steps), default=0)
     largest_seconds = max((step.time_seconds for step in flow.steps), default=0.0)
+    right = ROW_LABEL_WIDTH + flow.lanes * LANE_WIDTH
+    band_right = right + 24 + len(flow.loops) * LOOP_SPACING
+    label_font = QtGui.QFont()
+    label_font.setPointSizeF(_TITLE_POINTS)
+    label_font.setBold(True)
+    margin = 0.5 * (ROW_HEIGHT - BOX_HEIGHT)
     for row, label in enumerate(flow.rows):
+        if row % 2 == 0:   # every other row banded, so a row reads across several lanes
+            band = scene.addRect(QtCore.QRectF(-8.0, row * ROW_HEIGHT - margin, band_right + 8.0, ROW_HEIGHT),
+                                 QtGui.QPen(QtCore.Qt.PenStyle.NoPen), QtGui.QBrush(_ROW_BAND_COLOR))
+            band.setZValue(-1)
         if label:
-            text = scene.addSimpleText(label)
-            text.setBrush(QtGui.QColor(_SUBTEXT_COLOR))
-            text.setPos(0.0, row * ROW_HEIGHT + 0.5 * BOX_HEIGHT - 0.5 * text.boundingRect().height())
+            text = scene.addSimpleText(label, label_font)
+            text.setBrush(QtGui.QColor(_ROW_LABEL_COLOR))
+            text.setPos(4.0, row * ROW_HEIGHT + 0.5 * BOX_HEIGHT - 0.5 * text.boundingRect().height())
     arrow_pen = QtGui.QPen(QtGui.QColor(_BORDER_COLOR), 1.2)
     for step in flow.steps:
         for before in step.after:
@@ -274,7 +324,6 @@ def _draw_flow(scene, flow, spec) -> dict:
     for index, link in enumerate(flow.links):
         if link.source in rects and link.target in rects:
             _draw_link(scene, rects[link.source], rects[link.target], link.label, index)
-    right = ROW_LABEL_WIDTH + flow.lanes * LANE_WIDTH
     for index, loop in enumerate(flow.loops):
         _draw_loop(scene, loop, right + 16 + index * LOOP_SPACING)
     boxes = {}
@@ -283,7 +332,7 @@ def _draw_flow(scene, flow, spec) -> dict:
                   else _BORDER_COLOR)
         box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border)
         box.setZValue(2)
-        box.setToolTip(rich_tooltip(step.explanation))
+        box.setToolTip(rich_tooltip(step.title, step.subtitle, step.explanation))
         scene.addItem(box)
         _add_box_text(box, step, rects[step.key])
         _add_bars(box, step, rects[step.key], largest_bytes, largest_seconds)
@@ -300,24 +349,42 @@ def _add_box_text(box, step, rect):
     if step.not_estimated:
         estimate.append(f'{len(step.not_estimated)} not estimated')
     text = QtWidgets.QGraphicsTextItem(box)
+    font = QtGui.QFont()
+    font.setPointSizeF(_TEXT_POINTS)
+    title_font = QtGui.QFont(font)
+    title_font.setPointSizeF(_TITLE_POINTS)
+    title_font.setWeight(QtGui.QFont.Weight.DemiBold)
+    text.setFont(font)
     text.setDefaultTextColor(QtGui.QColor(_TEXT_COLOR))
-    text.setHtml(f'<b>{html.escape(step.title)}</b><br>'
-                 f'<span style="color:{_SUBTEXT_COLOR}">{html.escape(step.subtitle)}</span>'
-                 + (f'<br><span style="color:{_SUBTEXT_COLOR}; font-size:small">{html.escape(" · ".join(estimate))}'
-                    '</span>' if estimate else ''))
-    text.setTextWidth(rect.width() - 10.0)
-    text.setPos(rect.left() + 5.0, rect.top() + 2.0)
+    width = rect.width() - 22.0   # one line each (full texts in the tooltip): the bars below stay clear
+    lines = [f'<div style="font-size:{_TITLE_POINTS}pt; font-weight:600">'
+             f'{html.escape(_elided(step.title, title_font, width))}</div>',
+             f'<div style="color:{_SUBTEXT_COLOR}">{html.escape(_elided(step.subtitle, font, width))}</div>']
+    if estimate:
+        lines.append(f'<div style="color:{_SUBTEXT_COLOR}">{html.escape(_elided("  ·  ".join(estimate), font, width))}'
+                     '</div>')
+    text.setHtml(''.join(lines))
+    text.setTextWidth(rect.width() - 16.0)
+    text.setPos(rect.left() + 8.0, rect.top() + 4.0)
+
+
+def _elided(text, font, width) -> str:
+    return QtGui.QFontMetricsF(font).elidedText(text, QtCore.Qt.TextElideMode.ElideRight, width)
 
 
 def _add_bars(box, step, rect, largest_bytes, largest_seconds):
     """Thin bars along the box bottom: memory (blue) and time (orange) relative to the largest step."""
-    width = rect.width() - 16.0
-    for offset, (value, largest, color) in enumerate(((step.memory_bytes, largest_bytes, _MEMORY_BAR_COLOR),
-                                                      (step.time_seconds, largest_seconds, _TIME_BAR_COLOR))):
+    width = rect.width() - 20.0
+    bars = ((step.memory_bytes, largest_bytes, _MEMORY_BAR_COLOR), (step.time_seconds, largest_seconds, _TIME_BAR_COLOR))
+    for offset, (value, largest, color) in enumerate(bars):
         if not largest or not value:
             continue
-        bar = QtWidgets.QGraphicsRectItem(rect.left() + 8.0, rect.bottom() - 10.0 + offset * (_BAR_HEIGHT + 2),
-                                          max(width * value / largest, 2.0), _BAR_HEIGHT, box)
+        top = rect.bottom() - 15.0 + offset * (_BAR_HEIGHT + 3)
+        track = QtWidgets.QGraphicsRectItem(rect.left() + 10.0, top, width, _BAR_HEIGHT, box)
+        track.setBrush(_BAR_TRACK_COLOR)
+        track.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
+        bar = QtWidgets.QGraphicsRectItem(rect.left() + 10.0, top, max(width * value / largest, 3.0), _BAR_HEIGHT,
+                                          box)
         bar.setBrush(QtGui.QColor(color))
         bar.setPen(QtGui.QPen(QtCore.Qt.PenStyle.NoPen))
 
@@ -385,11 +452,34 @@ def _arrow_head(scene, tip, direction, color):
 
 # --- details --------------------------------------------------------------------------------------------------------
 
+_DETAILS_CSS = '''
+h3 { margin-top: 2px; margin-bottom: 2px; }
+h4 { margin-top: 14px; margin-bottom: 4px; }
+p.sub { color: gray; margin-top: 0px; }
+p.note { color: gray; }
+table.facts td.name { color: gray; padding-right: 14px; }
+table.items { margin-top: 2px; }
+table.items th { background-color: #e9edf2; color: #1b1f24; padding: 4px 8px; text-align: left; }
+table.items td { padding: 4px 8px; border-bottom: 1px solid #d8dde3; vertical-align: top; }
+td.number { text-align: right; white-space: nowrap; }
+span.small { color: gray; font-size: small; }
+code { font-family: monospace; font-size: small; }
+'''
+
+
+def _units(count, unit) -> str:
+    """'1 upload', '8 passes', '2.5e+04 iterations'."""
+    if count == 1:
+        return f'1 {unit}'
+    plural = unit + ('es' if unit.endswith(('s', 'sh', 'ch', 'x')) else 's')
+    return f'{count:.4g} {plural}'
+
+
 def _overview_html(flow) -> str:
     parts = ['<h3>Solve flow totals</h3>', _table(flow.totals) if flow.totals else '<p>No estimates.</p>']
     if flow.notes:
         parts.append('<h4>Notes</h4><ul>' + ''.join(f'<li>{html.escape(note)}</li>' for note in flow.notes) + '</ul>')
-    parts.append('<p style="color:gray">Memory items are the arrays each step\'s estimator counts from the code '
+    parts.append('<p class="note">Memory items are the arrays each step\'s estimator counts from the code '
                  '(meshing.estimate_memory); time items are one study run priced on this computer\'s profile '
                  '(model.time_estimate, python -m open_sol profile). The whole-study time also counts every sweep '
                  'value, sector and estimation run. Click a box for its items.</p>')
@@ -399,7 +489,7 @@ def _overview_html(flow) -> str:
 def _step_html(flow, step) -> str:
     parts = [f'<h3>{html.escape(step.title)}</h3>']
     if step.subtitle:
-        parts.append(f'<p style="color:gray">{html.escape(step.subtitle)}</p>')
+        parts.append(f'<p class="sub">{html.escape(step.subtitle)}</p>')
     if step.explanation:
         parts.append(f'<p>{html.escape(step.explanation)}</p>')
     if step.facts:
@@ -420,14 +510,13 @@ def _memory_html(flow, step) -> str:
         group = MEMORY_GROUPS.get(entry.group, entry.group)
         if entry.phase:
             group += f' (phase: {entry.phase})'
-        rows.append(f'<tr><td>{html.escape(entry.label)}</td><td align="right">{format_bytes(entry.bytes)}</td>'
-                    f'<td style="color:gray">{html.escape(group)}</td></tr>')
-    note = ('<p style="color:gray">On the cpu backend the device arrays live in processor memory.</p>'
+        rows.append(f'<tr><td>{html.escape(entry.label)}</td><td class="number">{format_bytes(entry.bytes)}</td>'
+                    f'<td><span class="small">{html.escape(group)}</span></td></tr>')
+    note = ('<p class="note">On the cpu backend the device arrays live in processor memory.</p>'
             if flow.backend == 'cpu' else '')
     return (f'<h4>Memory items ({format_bytes(step.memory_bytes)} listed)</h4>'
-            '<table cellspacing="0" cellpadding="3" border="0">'
-            '<tr><th align="left">Item</th><th align="right">Bytes</th><th align="left">Kind</th></tr>'
-            + ''.join(rows) + '</table>' + note)
+            '<table class="items" width="100%" cellspacing="0">'
+            '<tr><th>Item</th><th>Bytes</th><th>Kind</th></tr>' + ''.join(rows) + '</table>' + note)
 
 
 def _time_html(step) -> str:
@@ -437,27 +526,28 @@ def _time_html(step) -> str:
     for entry in sorted(step.time, key=lambda entry: -entry.seconds):
         item = entry.item
         low, guess, high = item.counts()
-        count = f'{guess:.4g} {item.unit}s ({item.count_kind}'
-        count += f'; {low:.3g} - {high:.3g})' if item.count_kind != 'exact' else ')'
+        count = _units(guess, item.unit)
+        spread = f'{item.count_kind}; {low:.3g} - {high:.3g}' if item.count_kind != 'exact' else item.count_kind
         if item.limit is not None:
-            count += f', at most {item.limit:.4g}'
-        ops = '<br>'.join(html.escape(op_text(op)) for op in item.ops) or '—'
+            spread += f'; at most {item.limit:.4g}'
+        ops = '<br>'.join(f'<code>{html.escape(op_text(op))}</code>' for op in item.ops) or '—'
         measured = '.'.join(str(part) for part in item.counter) if item.counter else ''
-        rows.append(f'<tr><td>{html.escape(entry.label)}<br><span style="color:gray; font-size:small">'
+        rows.append(f'<tr><td>{html.escape(entry.label)}<br><span class="small">'
                     f'{html.escape(TIME_SOURCES.get(entry.source, entry.source))}'
-                    + (f'; measured by summary {html.escape(measured)}' if measured else '') + '</span></td>'
-                    f'<td align="right">{format_seconds(entry.seconds)}</td>'
-                    f'<td>{html.escape(count)}<br>x {format_seconds(item.seconds_per_unit or 0.0)} each</td>'
-                    f'<td style="font-family:monospace; font-size:small">{ops}</td></tr>')
+                    + (f'<br>checked against summary {html.escape(measured)}' if measured else '') + '</span></td>'
+                    f'<td class="number"><b>{format_seconds(entry.seconds)}</b></td>'
+                    f'<td>{html.escape(count)} x {format_seconds(item.seconds_per_unit or 0.0)}<br>'
+                    f'<span class="small">{html.escape(spread)}</span></td>'
+                    f'<td>{ops}</td></tr>')
     return (f'<h4>Run-time items ({format_seconds(step.time_seconds)})</h4>'
-            '<p style="color:gray">seconds = count x seconds per unit; each unit costs the listed operations, priced '
-            'on this computer\'s profile.</p>'
-            '<table cellspacing="0" cellpadding="3" border="0">'
-            '<tr><th align="left">Item</th><th align="right">Time</th><th align="left">Count</th>'
-            '<th align="left">Operations per unit</th></tr>' + ''.join(rows) + '</table>')
+            '<p class="note">time = count x time per unit; each unit costs the listed operations, priced on this '
+            'computer\'s profile.</p>'
+            '<table class="items" width="100%" cellspacing="0">'
+            '<tr><th>Item</th><th>Time</th><th>Count x per unit</th><th>Operations per unit</th></tr>'
+            + ''.join(rows) + '</table>')
 
 
 def _table(rows) -> str:
-    return ('<table cellspacing="0" cellpadding="2" border="0">'
-            + ''.join(f'<tr><td style="color:gray; padding-right:12px">{html.escape(str(name))}</td>'
+    return ('<table class="facts" cellspacing="0" cellpadding="2">'
+            + ''.join(f'<tr><td class="name">{html.escape(str(name))}</td>'
                       f'<td>{html.escape(str(value))}</td></tr>' for name, value in rows) + '</table>')
