@@ -198,3 +198,26 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   `snap_to_mirrors` (api calls it before computing the outlines, so they are the plane's sections); the page then
   skips the image that maps a layer onto itself (`selfImage`: field, mesh lines, outlines), else the coincident,
   for odd fields sign-flipped, copy z-fights.
+  3D volumes (field_viewer only; page block `// ---- fields3d ----`): `ViewerFrame.volume` (`ViewerVolume`: values
+  (nx, ny, nz), NaN = no value, ascending centres; every frame or none, never for a phase) is packed per frame as a
+  float16 3D texture (x fastest; value = frame `volume_offset` + `volume_scale` * r: linear frames r in [0, 1], log
+  frames r = v / hi, signed r = v / max |v|; a finite-mask channel (RG16F) only when a lattice holds NaN). Lattice:
+  per-axis block means within MAX_VOLUME_BYTES / MAX_VOLUME_SAMPLES / MAX_VOLUME_SIDE, an axis keeps >= 2 samples;
+  graded axes stay graded (`DATA.volume.axes`: their centres; the page maps a box position to a texture coordinate
+  through an R32F axis map read with texelFetch, and rays step by the finest cell), never resampled onto a uniform
+  lattice (a needle on fine cells vanishes). Volumes join the frame colour range. api `_viewer_volumes`: live Results
+  of Cartesian 3D models only (the current state; snapshots from their kept solutions through
+  `Session.restored_snapshot`, GUI runs, at most MAX_VOLUME_FRAMES; headless runs keep none, so their snapshot pages
+  have no volume), reduced at once (`reduced_volume`, element meshes averaged over half the smallest element: their
+  sample lattice is finer than the elements and P0 values speckle isosurfaces). A page with a volume is never
+  PLANAR (its one cut becomes a plane in the volume's box; the box joins hmin / hmax). One ray-march program draws
+  the volume box of every mirror image (front faces culled per image handedness, translucent images back to front):
+  View Cut planes / Slices (one per axis, from the texture) / Isosurface (signed: +-level; capped only at axis-limit
+  cuts, open at the box faces) / Shells / Cloud; levels are fractions of the shown colour scale (`limits()`, log
+  too), start levels from percentiles of the values (`volumeStartLevels`, which may also switch on the log scale or
+  lower Range). Visible cut planes are opaque and end the rays (they span the box); slices and the isosurface write
+  gl_FragDepth, so objects and the box test against them; volume views hide the cut planes (their buttons may hide
+  them all) and open with the objects as glass when solids have materials. Sample density adapts to the frame time
+  (full on PNG / recording / `fieldViewer3d.fullQuality()`). Non-planar 3D views fit the projected box corners into
+  the area the heading, colour bar and labels leave (`fitBoxCorners`) and open with a short eased turn
+  (`introTurn`; reduced-motion respected); mode_player keeps its own fit.
