@@ -76,29 +76,28 @@ MIXED_APPLICATIONS_PER_BASIS = 3.0
 NEDELEC_SUPERLU_SLOW_BYTES = 256 * 2 ** 20
 
 # ---- settings ----
-_BC_HELP = ('Boundary of this face of the 3D box, the em_fdtd_3d faces on the same Yee grid: cpml = the complex '
-            'coordinate stretch s = kappa + sigma / (alpha + j omega eps0) of the pml_* settings in pml_cells extra '
-            'cells outside the domain, evaluated at the target wavelength (frozen: the resonances near it see the '
-            'right stretch); pec = tangential E 0 at the centres of the outermost domain cell layer (that layer becomes '
-            'perfect conductor); pmc = tangential H 0 on the outer face of the outermost cell (the grid edge: pec and '
-            'pmc walls lie half a cell apart); periodic on both faces of an axis, with the Bloch phase bloch_k<axis> '
-            '(0 = plain periodic). Mirror planes (any face, E parity as em_fdtd_3d): symmetric = E mirror-even '
-            '(tangential H and normal E 0 on the plane, a PMC mirror), antisymmetric = E mirror-odd (tangential E odd: '
-            'a PEC mirror), on the domain edge itself (one ghost cell is added outside it); each mirror halves the '
-            'unknowns of the direct solve, and the eigenfrequency study setting parity_sectors solves every parity of '
-            'the mirror faces in turn. Unknowns are the live E faces only: faces between two PEC cells, the normal E on '
-            'a symmetric plane and the ghost cells are dropped.')
+_BC_HELP = ('The em_fdtd_3d faces on the same Yee grid: cpml = complex stretch s = kappa + sigma / (alpha + j omega '
+            'eps0) of the pml_* settings in pml_cells extra cells, frozen at the target wavelength (resonances near '
+            'it see the right stretch); pec = tangential E 0 at the centres of the outermost cell layer (it becomes '
+            'conductor); pmc = tangential H 0 on the outer face of the outermost cell (pec and pmc walls lie half a '
+            'cell apart); periodic on both faces of an axis, Bloch phase bloch_k<axis>. Mirror planes on the domain '
+            'edge itself (any face): symmetric = E mirror-even (PMC plane), antisymmetric = E mirror-odd (PEC plane); '
+            'a ghost cell outside holds the image. Each mirror halves the direct-solve unknowns; the eigenfrequency '
+            'setting parity_sectors solves every parity of the mirror faces in turn. Unknowns are the live E faces '
+            'only (faces between two PEC cells, the normal E on a symmetric plane and ghost cells dropped).')
+
+
+_BLOCH_HELP = ('Bloch wave vector k along this axis, used only when both its faces are periodic: fields repeat with '
+               'exp(-j k L) per period L (the meshed period; exp(+j omega t)); k and k + 2 pi / L are the same state; '
+               '0 = plain periodic. The resonances at fixed k are the lattice bands at that k (sweep a parameter for a '
+               'band diagram); the operator becomes complex (no extra unknowns). Typical pi / L at the zone edge.')
 
 
 def _bloch_params():
     return tuple(Param(
         f'bloch_k{axis}', 'float', 0.0, label=f'Bloch wave vector {axis}', unit='rad/m',
         visible_if=((f'bc_{axis}_lo', ('periodic',)),),
-        help=(f'Bloch wave vector along {axis} in rad/m, used only when bc_{axis}_lo and bc_{axis}_hi are periodic: '
-              f'the fields repeat with the phase exp(-j k{axis} L) per period L (the meshed period, exp(+j omega t)); '
-              f'k{axis} and k{axis} + 2 pi / L are the same state; 0 = plain periodic. The resonances at fixed k are '
-              'the bands of the lattice at that k (sweep a parameter for a band diagram); the operator becomes complex '
-              '(no extra unknowns). Typical: pi / L at the zone edge.'),
+        help=_BLOCH_HELP,   # axis-free: describe prints it once for the three axes
         tip=('Phase step of the wave from one period to the next along this axis, in radians per metre, for periodic '
              'faces.\n\n0 means no phase step. Swept, it gives the bands of a periodic structure.'))
         for axis in AXES)
@@ -113,13 +112,12 @@ def _settings():
                 if param.name.startswith('pml_'))
     wavelength = Param(
         'wavelength', 'float', DEFAULT_WAVELENGTH, label='Target wavelength', unit='m', min=0.0, min_exclusive=True,
-        help='Vacuum wavelength lambda_t of the target (omega_t = 2 pi C0 / lambda_t): the eigenfrequency study returns '
-             'the resonances nearest it. The operator is assembled there: sigma_e and the Drude / Lorentz poles enter '
-             'as eps(omega_t), the PML as its stretch at omega_t, so a resonance is exact for non-dispersive, PML-free '
-             'models and accurate to first order in |omega / omega_t - 1| otherwise: for an accurate Q of an open or '
-             'dispersive resonator set it near the resonance and re-run. It may coincide with a resonance (the '
-             'shift-invert shift sits 1e-4 above lambda_t^-2). The mesh needs >= 10 (better 20) cells per lambda_t / n. '
-             'Typical 0.4e-6 to 2e-6 m.',
+        help='Vacuum target wavelength lambda_t: the eigenfrequency study returns the resonances nearest it. The '
+             'operator is assembled at omega_t (sigma_e and poles as eps(omega_t), PML stretch at omega_t), so a '
+             'resonance is exact for non-dispersive PML-free models, else accurate to first order in |omega / omega_t '
+             '- 1|: for an accurate Q of an open or dispersive resonator set it near the resonance and re-run. It may '
+             'coincide with a resonance (shift 1e-4 above lambda_t^-2). Mesh: >= 10 (better 20) cells per lambda_t / '
+             'n. Typical 0.4e-6 to 2e-6 m.',
         tip='Wavelength in metres near which the resonances are searched: 1.55e-6 for 1550 nm.\n\nSet it close to the '
             'resonance you want; the result is most accurate near it.')
     discretization = replace(
@@ -127,9 +125,9 @@ def _settings():
         tip=('Order of the finite elements on a tetrahedron mesh; ignored on a rectangular-cell mesh.\n\n'
              '- Quadratic: far more accurate for the same mesh, the usual choice.\n'
              '- Linear: cheaper per element, needs a much finer mesh.'),
-        help=('Nedelec (edge element, first kind) degree on a tetrahedron mesh (MeshSpec kind tetrahedra; ignored on '
-              'tensor meshes): quadratic (degree 2, 20 unknowns per element: 2 per edge and face) or linear (degree '
-              '1, one per edge); straight-sided elements (curved surfaces are faceted at the mesh size).'))
+        help=('Nedelec (first kind) degree on a tetrahedra mesh (ignored on tensor): quadratic (degree 2, 20 '
+              'unknowns per element: 2 per edge and face) or linear (one per edge); straight-sided elements (curved '
+              'surfaces faceted at the mesh size).'))
     return faces + pml + (wavelength,) + _bloch_params() + (discretization,)
 
 
@@ -157,20 +155,18 @@ def _create(ctx, physics_spec, settings_values):
 
 # ---- features ----
 _RESONANCE_TABLE_DESCRIPTION = (
-    "Resonances of the last eigenfrequency solve, nearest the target (the wavelength setting) first. Result 'table', "
-    'one row per resonance: resonance_number (1-based rank by |omega - omega_target|), wavelength = 2 pi C0 / Re(omega) '
-    'in m, frequency = Re(omega) / (2 pi) and frequency_imag = Im(omega) / (2 pi) in Hz (exp(+j omega t): > 0 decays), '
-    'q_factor = Re(omega) / (2 Im(omega)) (inf when |Im omega| < 1e-12 Re omega: lossless and closed; negative = a '
-    'growing, non-physical solution, usually a PML artefact), pml_fraction (share of the electric energy sum |Re eps| '
-    '|E|^2 dV of the E faces in PML and padding cells: resonances above 0.5 are dropped, above ~1e-2 the PML shapes the '
-    'resonance: widen the cladding); extras target_wavelength (m) and selected_resonance. With parity_sectors each '
-    'sector has its own table (Results.sector_result). Optional domain selection = a region (e.g. a box around the '
-    f'cavity core): the table then ends with the column {REGION_COLUMN[0]} (share of the same energy weights on the E '
-    'faces of the selected cells (each cell owns its +x / +y / +z faces; a mirror plane face counts with the ghost '
-    'cell, so a region on a mirror face reads a little low), on tetrahedra in the dofs of the selected elements), and '
-    'resonances below min_region_fraction are dropped from the solve like PML modes (table rows, snapshots and '
-    'resonance numbers all skip them): a localised cavity mode passes, slab, rim, band-edge and cladding modes do not. '
-    "One region per physics (one resonance_table with a selection); 'all' is refused.")
+    "Resonances of the last eigenfrequency solve, nearest the target first. Result 'table', one row per resonance: "
+    'resonance_number (1-based rank by |omega - omega_target|), wavelength = 2 pi C0 / Re(omega) [m], frequency = '
+    'Re(omega) / (2 pi) and frequency_imag = Im(omega) / (2 pi) [Hz] (exp(+j omega t): > 0 decays), q_factor = '
+    'Re(omega) / (2 Im(omega)) (inf when |Im omega| < 1e-12 Re omega: lossless and closed; negative = growing, '
+    'non-physical, usually a PML artefact), pml_fraction (share of the electric energy sum |Re eps| |E|^2 dV on E '
+    'faces in PML and padding cells: > 0.5 dropped; above ~1e-2 the PML shapes the resonance: widen the cladding); '
+    'extras target_wavelength [m], selected_resonance. With parity_sectors each sector has its own table '
+    '(Results.sector_result). Optional domain selection = a region (e.g. a box around the cavity core): the table '
+    f'then ends with {REGION_COLUMN[0]} (the same energy share on the E faces of the selected cells, each owning its '
+    '+x / +y / +z faces; a mirror-plane face counts with the ghost cell, so a region on a mirror face reads a little '
+    'low; on tetrahedra the dofs of the selected elements), and resonances below min_region_fraction are dropped like '
+    "PML modes (rows, snapshots and resonance numbers skip them). One region per physics; 'all' is refused.")
 
 
 def _apply_resonance_table(ctx, solver, feature_spec, values, selection):
@@ -196,11 +192,11 @@ def _apply_resonance_table(ctx, solver, feature_spec, values, selection):
 
 _FEATURES = (
     FeatureType('pec_domain', 'Perfect electric conductor', 'domain_condition', 'domain',
-                description='Perfect electric conductor cells: every E face between two selected cells is dropped from '
-                            'the unknowns (E = 0 there; the surface lies at the centres of the outermost conductor '
-                            'cells), a face between a conductor and another cell takes the other cell\'s permittivity '
-                            "(the normal E on the surface stays free), as em_fdtd_3d. Select objects: 'all' is "
-                            'refused. Staircased (no conformal option yet).',
+                description='Perfect electric conductor cells, as em_fdtd_3d: every E face between two selected cells '
+                            'is dropped from the unknowns (E = 0; the surface lies at the centres of the outermost '
+                            "conductor cells), a face between a conductor and another cell takes the other cell's "
+                            "permittivity (normal E free). Select objects: 'all' is refused. Staircased (no conformal "
+                            'option).',
                 summary='Makes the selected objects perfect metal.',
                 apply=_apply_pec, validate=_validate_pec, memory_estimate=_pec_memory, grids=_GRIDS),
     FeatureType('resonance_table', 'Resonance table', 'monitor', 'domain', params=(MIN_REGION_FRACTION_PARAM,),
@@ -554,32 +550,24 @@ def _time_estimate(settings_values, mesh, context):
 
 # ---- type ----
 _DESCRIPTION = (
-    '3D finite-difference frequency-domain eigensolver on the em_fdtd_3d Yee grid: E_x, E_y, E_z on the +x / +y / +z '
-    'faces of each cell in V/m, H_x, H_y, H_z on its (+y +z) / (+x +z) / (+x +y) edges in A/m. The eigenfrequency '
-    'study solves curl (mu^-1 curl E) = (omega / C0)^2 eps E for the resonances nearest the target wavelength setting '
-    '(shift-invert of the operator assembled there by the eigen factorization: host SuperLU, cudss / cudss_mixed on '
-    f'the GPU or {HOST_DIRECT_NAMES} on the host, the last two the LDL^T of D A; ARPACK on the squared Cayley map, '
-    'which sends the '
-    'static gradient solutions to 0; materials and PML frozen at the target), on the live E faces only (PEC faces, '
-    'mirror planes and ghost cells dropped, Bloch phases in the wrap entries). Materials as em_fdtd_3d: eps_r or the '
-    'diagonal eps_xx / eps_yy / eps_zz, sigma_e and Drude / Lorentz poles as eps(omega_t) = eps - j sigma_e / (omega_t '
-    'eps0) + chi(omega_t) (face means of the two cells; solver_defaults.subpixel_smoothing replaces the background eps '
-    'of interface faces by the em_fdtd_3d anisotropic average, so curved surfaces converge smoothly), mu_r - j sigma_m '
-    '/ (omega_t mu0) of the lower cell per H edge. '
-    'Boundaries per face: cpml (complex stretch at omega_t), pec, pmc, periodic (Bloch k), symmetric / antisymmetric '
-    'mirror. Features: pec_domain, resonance_table. Outputs of the selected resonance (each scaled to 1 V/m real at its '
-    'largest E sample): the raw components ex / ey / ez / hx / hy / hz _re / _im / _abs (H = j curl E / (omega mu0 mu) '
-    'at the complex resonance omega), e_abs (primary), e_intensity, h_abs (cell centres), w_e = eps0 / 4 sum eps_c '
-    '|E_c|^2 and eps_r, shown as cut planes. Host memory dominates: the 3D factor grows ~ n^(4/3) with n = the E '
-    'unknowns (~3 per cell; a solver size rule warns above 1e6 and refuses 4e6); device: 48 B per cell of fields plus '
-    "the material arrays. heat_em_thermo_optic writes eps_r (+ eps_xx / eps_yy) as a background coupling. On a "
-    "'tetrahedra' mesh (finite elements): Nedelec edge elements of the discretization setting (quadratic default), "
-    'materials one value per element, the cpml faces a PML shell of pml_cells x the maximum element size meshed with '
-    'the window (complex stretch tensor), the same eigen solve (squared Cayley map, sparse mass) and outputs sampled '
-    'at points (cut planes on a uniform sample lattice, derived values at quadrature points); periodic faces (Bloch k: '
-    'hi-side unknowns identified with the lo side times the phase, a nonsymmetric LU factor) need the builtin mesher; '
-    'subpixel smoothing does not apply there. '
-    "The instance is usually named 'em'.")
+    '3D finite-difference frequency-domain eigensolver on the em_fdtd_3d Yee grid (E on cell faces, H on edges). The '
+    'eigenfrequency study solves curl (mu^-1 curl E) = (omega / C0)^2 eps E for the resonances nearest the target '
+    'wavelength: shift-invert of the operator assembled there (materials and PML frozen) by the eigen factorization '
+    f'(host SuperLU, cudss / cudss_mixed on the GPU, or {HOST_DIRECT_NAMES} on the host, the last two the LDL^T of D '
+    'A), ARPACK on the squared Cayley map (static gradient solutions sent to 0), on the live E faces only (Bloch phases '
+    'in the wrap entries). Materials as em_fdtd_3d, as eps(omega_t) = eps - j sigma_e / (omega_t eps0) + chi(omega_t) '
+    '(face means of the two cells; solver_defaults.subpixel_smoothing: the em_fdtd_3d anisotropic average on '
+    'interface faces, so curved surfaces converge smoothly) and mu_r - j sigma_m / (omega_t mu0) of the lower cell '
+    'per H edge. Outputs of the selected resonance (scaled to 1 V/m real at its largest E sample): ex / ey / ez / hx / '
+    'hy / hz _re / _im / _abs (H = j curl E / (omega mu0 mu) at the complex omega), e_abs (primary), e_intensity, '
+    'h_abs (cell centres), w_e = eps0 / 4 sum eps_c |E_c|^2 and eps_r, shown as cut planes. Memory: host dominates, '
+    'the 3D factor grows ~ n^(4/3), n = E unknowns (~3 per cell; a solver size rule warns above 1e6 and refuses 4e6); '
+    'device 48 B per cell of fields plus the material arrays. heat_em_thermo_optic writes eps_r (+ eps_xx / eps_yy) '
+    "as a background coupling. 'tetrahedra' mesh (finite elements): Nedelec edge elements (discretization), one "
+    'material value per element, cpml faces as a PML shell of pml_cells x the maximum element size meshed with the '
+    'window (complex stretch tensor), the same eigen solve (sparse mass), outputs sampled at points (cut planes on a '
+    'uniform sample lattice, derived values at quadrature points); periodic faces (Bloch k: hi-side unknowns = lo '
+    'side times the phase, nonsymmetric LU) need the builtin mesher; no subpixel smoothing.')
 
 EM_FDFD_3D = PhysicsType(
     name=TYPE_NAME,
