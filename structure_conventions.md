@@ -1,22 +1,17 @@
 # open_sol — structure & conventions
 
 Gotchas and cross-file code flow only; signatures and help texts live in the code. Current state, no changelog.
-Examples live outside the package (`examples/README.md`); `experiments/` holds the user's research models in the same
-format (one subfolder each, loaded by path; not in the Examples menu, not checked by selftest examples_validate).
-`gpu_tet_meshing/` is a side project outside the package (plan.md + prototypes; open_sol never imports it).
-`tools_profilers/` holds developer tooling outside the package (imports open_sol, never imported by it; not in the pip
-package, but public on GitHub with the repository, so every clone has it):
-`tools_profilers/time_profilers/solver_profiler` benchmarks every cpu / gpu solver choice (enumerated from the registry) on
-problems assembled by open_sol's own operator code and on whole model files; it is not `python -m open_sol profile` (the run-time estimate's profile).
-`tools_profilers/time_profilers/case_profilers` times the parts of whole selftest runs per solver engine (host hot spots,
-syncs); `tools_profilers/time_profilers/example_profilers` does the same on the analytic examples, one group per physics
-module (the performance set, on the case_profilers harness); `tools_profilers/memory_profilers/vram_profile` measures pool / cuDSS device bytes against the memory estimate.
-User-facing quickstarts: `README.md`; the conda install guide (environment, optional cupy, nvmath, MUMPS, PARDISO):
-`INSTALL.md`; `pyproject.toml` (setuptools, version from `open_sol.__version__`, numpy / scipy / matplotlib required,
-cupy / Qt / nvmath-python / python-mumps / pydiso as extras; ships api_reference.md and api_templates.md as package
-data) makes `pip install -e .` work, else run from the repository root.
 Folder-specific gotchas live in `sub_structure_conventions.md` next to the code (index in section 3): read those of the
-folders you work in. Only gotchas every agent needs stay here.
+folders you work in. Only gotchas every agent needs stay here. A sub file keeps cross-file rules, the why and traps at
+call sites, never what a module header, docstring, help text or comment already says.
+
+Outside the package: `examples/` (model files and scripts, indexed by `examples/README.md`); `experiments/` (the
+user's private research models in the same format, one subfolder each, loaded by path; not in the Examples menu, not
+checked by selftest examples_validate); `tools_profilers/` (developer benchmarks of solvers, selftest runs and VRAM:
+imports open_sol, never imported by it, not in the pip package; `tools_profilers/time_profilers/README.md`; its
+solver_profiler is not `python -m open_sol profile`, the machine profile of the run-time estimate). User-facing:
+`README.md`, `INSTALL.md` (conda, optional cupy / nvmath / MUMPS / PARDISO), `nvmath_guide.md` (cuDSS notes);
+`pyproject.toml` makes `pip install -e .` work, else run from the repository root.
 
 ## 1. Structure
 
@@ -25,224 +20,181 @@ folders you work in by its Contents line ranges). Folders:
 
 ```
 open_sol/
-├── __init__.py      # public API; importing open_sol loads cupy when it imports, else runs on stand-ins (core.backend;
-│                    # nothing allocates at import)
-├── api.py           # headless (no Qt): describe, template / load / save, check, scene_figure, run, selftest (+ the
-│                    # built-in cases), Results, RunError, ProgressPrinter (also the CLI's)
-├── __main__.py      # CLI describe | template | check | run | show | selftest | mesh-study | profile; check / run / show
-│                    # take --set NAME=EXPR; exit 0 ok / 1 model, run, selftest or doc-check failure / 2 usage
+├── __init__.py      # public scripting API; imports without cupy (core.backend stand-ins; nothing allocates at import)
+├── api.py           # headless (no Qt) entry points: describe, template / load / save, check, scene_figure, run,
+│                    # selftest, Results, RunError
+├── __main__.py      # CLI over api: describe | template | check | run | show | selftest | mesh-study | profile;
+│                    # exit 0 ok / 1 model, run, selftest or doc-check failure / 2 usage
 ├── api_reference.md # describe() text for agents ('## Contents' of line ranges: read it in offset / limit slices);
 │                    # api_templates.md the template JSON; both written only by `describe --update-reference`
 ├── simulation.py    # Simulation: Domain + named physics + one MultiphysicsRunner (scripting API)
-├── core/            # constants (DTYPE, C0, FACES, physical constants: import, never redefine), grids, graded meshes,
-│                    # Domain / Domain3D, MaterialGrid, PhysicsSolver ABC, backend (cpu / gpu), kernel twins, GPU / host
-│                    # memory, memory and run-time estimates, DiffusionSystem (fv_diffusion: heat, potential, magnetic),
-│                    # metric, mirror planes, cut cells, grid transfers, resonance finder (core sub file)
-├── materials/       # library Materials (one file each), REGISTRY, effective_material_data, crystal_tensors
-├── physics/<pkg>/   # one package per physics family: solvers, renderers, definition*.py (registered types, features,
-│                    # templates), selftests*.py and a sub file: em (2D FDTD / FDFD, em_modes, BOR, conical, nonlinear /
-│                    # gain / phase-change media, adjoint and design regions), em3d (3D FDTD / FDFD / tetrahedral FEM),
-│                    # eme, nlfd, heat (+ thermal noise), potential, mechanics (2D / 3D, modal, piezo, optomechanics),
-│                    # membrane (film / plate, triangles + 1D, ports, Bloch), semiconductor, acoustics (elastic_waves;
-│                    # frequency-domain pressure_acoustics), fluid, magnetic (static, AC, 3D)
-├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes: pcg (+ multigrid), line_block,
-│                    # sparse_direct, banded, arpack_shift_invert, block_eigen (factor-free LOBPCG, opt-in), cudss_factor,
-│                    # host_direct (MUMPS / PARDISO), explicit_kernels (solvers sub file)
-├── coupling/        # CouplingTerm / CouplingGroup, DynamicMaterialUpdate, MultiphysicsRunner, E13 SlotSum, the
-│                    # coupling type definitions per partner family (definitions*.py) and their self-tests
-├── model/           # spec, schema (registry), expressions, geometry, validate, meshing, builder (-> Session), session,
-│                    # studies (study*.py), describe, templates, memory / time estimates, selftest machinery (cache,
-│                    # examples, import_contracts, structure_index)
-├── fem/             # triangle and tetrahedron meshes, mesher, gmsh I/O, elements, dofs, assembly, sampling, FEM
-│                    # diffusion / elasticity / magnetostatics systems, complex scalar harmonic systems, PML
-│                    # stretches, neutral resonance solve, 1D line elements (fem sub file)
+├── core/            # constants (import, never redefine), grids and graded meshes, Domain / Domain3D, MaterialGrid,
+│                    # PhysicsSolver ABC, backend (cpu / gpu) and kernel twins, GPU / host memory, memory and run-time
+│                    # estimates, DiffusionSystem, metric, mirror planes, cut cells, grid transfers, resonance finder
+├── materials/       # library Materials (one file each), REGISTRY, crystal tensors
+├── physics/<pkg>/   # one package per physics family (solvers, renderers, definition*.py, selftests*.py): em (2D
+│                    # FDTD / FDFD, modes, BOR, conical), em3d, eme, nlfd, heat, potential (electric_currents,
+│                    # electrostatics), mechanics, membrane, semiconductor, acoustics, fluid, magnetic
+├── solvers/         # solver roles, SolverTypes (definition.py) and the role runtimes (pcg + multigrid, line_block,
+│                    # sparse_direct, banded, arpack_shift_invert, block_eigen, cudss_factor, host_direct,
+│                    # explicit_kernels)
+├── coupling/        # CouplingTerm / CouplingGroup, DynamicMaterialUpdate, MultiphysicsRunner, SlotSum, the coupling
+│                    # type definitions per partner family (definitions_*.py) and their self-tests
+├── model/           # spec, schema (registry), expressions, geometry, validate, meshing, builder (-> Session),
+│                    # session, studies (study*.py), analytic comparison, describe, templates, memory / time
+│                    # estimates, selftest machinery (cache, examples, import_contracts, structure_index)
+├── fem/             # triangle / tetrahedron / line meshes, mesher, gmsh I/O, elements, dofs, assembly, sampling,
+│                    # FEM systems (diffusion, elasticity, magnetostatics, complex harmonic), PML stretches
 ├── io/              # model JSON and exports (model_io), run directories (results_io)
-├── viz/             # Qt-free matplotlib figures: Visualizer, result_plots, curve_figure, scene_figure
-├── mesh_study/      # solver_plan S7.8 study (CLI mesh-study)
-└── gui/             # PySide6 + pyqtgraph application (gui sub file)
+├── viz/             # Qt-free matplotlib figures, HTML field / mode players
+├── mesh_study/      # the CLI mesh-study (runs, records, gate report)
+└── gui/             # PySide6 + pyqtgraph application
 ```
 
-Import rules live as data in `open_sol/model/import_contracts.py` (`CONTRACTS`: importers, allowed / refused targets,
-module level or anywhere, named exceptions, each with its rule text); the built-in selftest import_contracts checks every
-import of the package against them and flags stale rules. A new layer or exception is an edit there, not here. The
-ones that shape everyday code:
-- `core` imports nothing outside core but its listed exceptions (solvers.pcg in fv_diffusion; the rest inside
-  functions). cupy / cupyx at module level only in `core.backend` (others: `from <..>core.backend import cp` /
-  `cupyx_sparse as cpsp` / `cupyx_ndimage as cpndi`; a real `import cupy` only inside a GPU-only function), so open_sol
-  imports without cupy. scipy (installed: use it on the host where cupyx falls short: no `eigs`, no shift-invert,
-  `spsolve` refactorises per call) only inside functions. PySide6 / pyqtgraph only in gui. The optional direct solver
-  wrappers python-mumps (`mumps`) / pydiso only inside functions of `solvers.host_direct`.
-- `physics/<pkg>` <- core, solvers, fem and model.schema / spec / geometry / expressions / definition_helpers /
-  definition_resonance (a definition registering a coupling type also coupling.coupling_term / index_terms); never the
-  model runtime (meshing, builder, study, session, validate): shared study rules go to core or
-  model.definition_helpers. `open_sol.materials` only inside functions (materials imports physics.em). physics.em is
-  upstream (em3d, eme, nlfd, heat, ... import it, never the reverse); acoustics imports mechanics, never the reverse.
-  Chains inside physics/em: em sub file "Imports".
-- `selftests*.py`: at module level only core.constants, model.spec / schema / selftest_helpers and sibling selftests
-  modules (reuse `model.selftest_helpers`, never a local copy: SubChecks for pass / fail sub-checks, worst_result /
-  scaled_worst_result / normalized_result / tolerance_units_result / failed_count_result, relative errors,
-  solver_role, probe_phasor, skip_result; repeat type names as literals); physics modules and
-  scipy inside their checks. Nothing else imports a selftests module at module level or in `register` (contract
-  selftests_lazy): a definition imports its cases inside its selftest loader, so `get_registry()` (GUI, check,
-  describe) loads only the selftests modules that hold templates (`TEMPLATE_SOURCES` in import_contracts).
-- `get_registry()` imports `model.study`, `solvers.definition` (the SolverTypes, before any PhysicsType.solver_roles is
-  checked), every `physics/<pkg>/definition.py` (alphabetical), then `coupling.definitions`, calling each
-  `register(registry)` (coupling.definitions then discovers every `coupling/definitions_*.py` and calls its
-  `register(registry, physics)`: a new coupling topic needs no central edit); calling it inside a `register` raises.
-  model.study imports model.builder at module level:
-  nothing builder / session imports may import model.study.
-- `api` is imported only by the package root, `__main__` and mesh_study (gui only inside a worker-thread function);
-  gui is imported by nothing.
-- Cycles broken by an import inside a function (Python raises at import time otherwise): coupling/definitions imports
-  its `definitions_*` modules (by importlib) inside `register`; model.meshing imports triangle_meshing / tetrahedral_meshing inside
-  functions; physics/em3d `definition_fdfd3d` is imported inside its package's register.
+Import rules live as data in `open_sol/model/import_contracts.py` (`CONTRACTS`, each with its rule text; the built-in
+selftest import_contracts checks every import of the package against them and flags stale exceptions): a new layer or
+exception is an edit there, not here. The ones that shape everyday code:
+- Optional packages: cupy / cupyx at module level only in `core.backend` (others: `from <..>core.backend import cp` /
+  `cupyx_sparse as cpsp` / `cupyx_ndimage as cpndi`; a real `import cupy` only inside a GPU-only function), so
+  open_sol imports without cupy. scipy only inside functions (use it on the host where cupyx falls short: no `eigs`,
+  no shift-invert, `spsolve` refactorises per call). PySide6 / pyqtgraph only in gui; nvmath only inside functions;
+  python-mumps / pydiso only inside functions of `solvers.host_direct`.
+- Layers: core imports nothing outside core but its listed exceptions; fem never imports model, physics or coupling;
+  solvers runtimes import only solvers and core. `physics/<pkg>` never imports the model runtime (meshing, builder,
+  study, session, validate, ...): shared study rules go to core or `model.definition_helpers`; `open_sol.materials`
+  only inside functions (materials imports physics.em). physics.em is upstream (other physics packages import it,
+  never the reverse; per-polarisation permittivity array / slot names: `physics.em.placement`); acoustics imports
+  mechanics, never the reverse. Chains inside physics/em: em sub file "Imports".
+- `selftests*.py` import at module level only core.constants, model.spec / schema / selftest_helpers and sibling
+  selftests modules (physics modules and scipy inside the checks), and reuse `model.selftest_helpers` (case records,
+  sub-checks, relative errors, Results reads, skips), never a local copy. Nothing else imports a selftests module at
+  module level or in `register` (contract selftests_lazy): a definition imports its cases inside its selftest loader,
+  so `get_registry()` (GUI, check, describe) loads only the selftests modules that hold templates (`TEMPLATE_SOURCES`).
+- `get_registry()` imports model.study, solvers.definition, every `physics/<pkg>/definition.py`, then
+  `coupling.definitions` (which discovers every `coupling/definitions_*.py`), calling each `register`: a new physics
+  package or coupling topic needs no central edit; calling `get_registry()` inside a `register` raises.
+- model.study imports model.builder at module level: nothing builder / session imports may import model.study. `api`
+  is imported only by the package root, `__main__` and mesh_study (a few others inside functions); gui by nothing.
+- Cycles are broken by an import inside a function (e.g. coupling.definitions' `definitions_*`, model.meshing's
+  triangle / tetrahedral meshers, em3d `definition_fdfd3d`): keep such imports there.
 
-Code flow: `Simulation(size_x, size_y, dx)` / `from_mesh(cfg)` = Domain + one EMPhysics 'em' (`polarization` 'ez' /
-'hz'); `Simulation.multiphysics(domain or [domains])` + `add_physics(name, solver, every[, domain])` + `add_coupling`
-otherwise; unknown
-attributes fall through to a single physics. `run` = raise when nothing steps in time, `Simulation.finalize()` of
-the physics not finalized yet (`warnings.warn` of their `finalize_warnings`; `_finalized_names` keeps a later run
-from re-recording heat n0 from heated eps), `runner.prepare()` (`warnings.warn` of its `prepare_warnings`, every
-`run`), chunks of `advance(n, t_end)`, `flush()` (skipped with `flush=False`: chunked scripts flush only the last
-chunk, else every chunk adds a transfer). Model path: ModelSpec -> `validate` (CPU, Issues at GUI node paths)
--> `build` (worker thread: validate, parameters, geometry, domain, static materials, per physics `create` +
-`add_physics` + feature `apply`, dynamic updates `apply_now`, `sim.finalize([name])` per solver (then its
-`finalize_warnings`, if any, are logged as warnings and its optional `finalize_notes` as info lines, e.g. assembly
-timings), couplings, `runner.prepare`, `release_caches`) -> Session;
-`run_study` builds once per sweep value (SweepSpec.reuse_build: once, followed feature values re-set per value, model
-sub file "Reused sweep builds"; StudySpec.adaptation: once per mesh refinement level,
-`study_adaptation.run_adaptation`; StudySpec.estimation: once per evaluation, `study_estimation.run_estimation`) and runs the StudyType's `run`: time_dependent (`runner.advance` chunks),
-stationary (`solve_stationary` over every physics), frequency_domain (harmonic physics = solvers with
-`solve_harmonic`, background = the rest: `solve_stationary` on the background, every background -> harmonic coupling
-`apply_now` once, then the pulse of the time-stepped harmonic physics (solvers with `attach_harmonic`: em_fdtd_*,
-`_run_harmonic_pulse` steps only them, no coupling, until the window energy decayed; then S(omega) normalisation),
-then (after the optional hook `plan_harmonic_frequencies(omegas)`: FDFD / em_fdfd_bor / em_modes line-block batches) per wavelength
-in solve order `select_harmonic_frequency(index)` / `solve_harmonic(omega)` of each harmonic physics + one Snapshot labelled 'lambda = <nm> nm'; the last wavelength stays live; with a coupling / material reading
-a harmonic physics instead per wavelength `omega` set + `solve_stationary` over every physics, continued from the
-previous wavelength: `StudyType.coupled_points`), mode_analysis (the same background step, then
-`solve_modes()` of every solver that has it and one Snapshot per mode number via `select_mode(k)`, labelled 'mode k:
-n_eff = ...'; `select_mode(mode_index)` stays live), eigenfrequency (the same background step, then
-`solve_eigenfrequencies(n)` and one Snapshot per resonance via `select_resonance(k)`, labelled 'resonance k: lambda =
-... nm, Q = ...'; resonance 1 stays live), optimization (scipy L-BFGS-B over the design_region densities: per evaluation
-write eps, `solve_harmonic` + `eps_sensitivity()` of every FDFD / em_eme physics, chain rule; optional projection-beta
-continuation stages; one Snapshot per accepted iteration labelled 'iteration k: J = ...', design_density stored by
-default; the returned design stays live). Headless: `api.check` (CPU -> check.json), `api.run`
-(run_study on the calling thread -> Results + run directory), `api.selftest` (-> selftest_report_<subset>.json),
-`api.selftest_examples` (api.run of every analytic example, `tolerance` of derived values / analytic and derived
-curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --examples`); file formats in `describe('results')`.
+Code flow. Scripting: `Simulation(size_x, size_y, dx)` / `from_mesh(cfg)` = Domain + one EMPhysics 'em';
+`Simulation.multiphysics(domains)` + `add_physics(name, solver, every[, domain])` + `add_coupling` otherwise (unknown
+attributes fall through to a single physics); `run` finalizes new physics, prepares the runner, advances in chunks and
+flushes (its docstring: chunked scripts pass `flush=False` but for the last chunk). Model path: ModelSpec ->
+`validate` (CPU, Issues at GUI node paths) -> `build` (worker thread: validate, parameters, geometry, one Domain per
+used mesh, static materials, per physics `create` + `add_physics` + feature `apply`, dynamic updates `apply_now`,
+`sim.finalize([name])` per solver (its `finalize_warnings` logged as warnings, optional `finalize_notes` as info
+lines), couplings, `runner.prepare`, `release_caches`) -> Session. `run_study` builds once per sweep value (once for
+the whole sweep with `SweepSpec.reuse_build`: model sub file "Reused sweep builds"; once per refinement level or
+evaluation: `study_adaptation`, `study_estimation`) and runs the StudyType's `run` (built-in studies in
+`model/study.py`, the others in `model/study_*.py`; each `_run_*` docstring gives its order). Studies reach solvers
+only through the hooks of `model/solver_hooks.py` (section "Solver contract"). Harmonic, mode and resonance studies
+first bring the background physics (those without the study's hook) to a stationary fixed point and apply background
+-> study-physics couplings once (per point instead when a coupling reads the harmonic physics:
+`StudyType.coupled_points`); they store one labelled Snapshot per point and leave one solution live. Headless:
+`api.check` (CPU -> check.json), `api.run` (run_study on the calling thread -> Results + run directory),
+`api.selftest` / `api.selftest_examples` (-> selftest reports); the CLI wraps them; file formats in
+`describe('results')`.
 
 ## 2. General gotchas
+
+- Shared names come from their constants, never string literals in code: study names `model.schema.*_STUDY`, mesh
+  kinds `schema.MESH_KINDS` / `core.constants.FREE_MESH_KINDS`, faces `FACES` / `FACES_3D`, mirror signs
+  `core.mirror.MIRROR_SIGNS` (physics / feature type names stay literals).
 
 ### Arrays, coordinates
 - Per-cell state: float32 (`DTYPE`) arrays of the run backend (`domain.xp`: cupy on 'gpu', numpy on 'cpu'; code
   shared by both backends takes xp from the Domain or `core.backend.array_module_of`, never `cp` directly; core sub
-  file "Backends"), `(nx, ny)`, `[i, j]` i along x, SI, full grid incl. the PML ring (window
-  from `(ox, oy)`); renderer / Session fields and FieldData are window-shaped. Array dataclasses: `frozen=True,
-  eq=False`. Exceptions: a 'half_storage' stepper (em_fdtd_3d fields, elastic_waves fields, laminar_flow populations)
-  stores float16 in scaled units: code reading or writing those arrays converts through the engine's scale or refuses
-  half_storage, never with cupy's own float16 kernels (core sub file "Half storage"); a 'double' stepper (em_fdtd_ez /
-  _hz) steps float64 fields: code adding to them takes the engine's `dtype` (physics/em sub file "Stepper
-  precision"). Renderers and results always return float32 physical values.
+  file "Backends"), `(nx, ny)`, `[i, j]` i along x, SI, full grid incl. the PML ring (window from `(ox, oy)`);
+  renderer / Session fields and FieldData are window-shaped. Array dataclasses: `frozen=True, eq=False`. Exceptions:
+  a 'half_storage' stepper stores float16 in scaled units (code reading or writing those arrays converts through the
+  engine's scale or refuses half_storage, never with cupy's own float16 kernels: core sub file "Half storage"); a
+  'double' stepper (em_fdtd_ez / _hz) steps float64 fields (code adding to them takes the engine's `dtype`: em sub
+  file "Stepper precision"). Renderers and results always return float32 physical values.
 - numpy 2 reprs scalars as 'np.float64(0.25)': text for other programs (gmsh .geo, scripts, CSV headers) takes
   `float(value)` / `.tolist()` first, never `{value!r}` of a numpy scalar.
-- Coordinates only from `Domain.cell_widths/cell_edges/cell_centers` (float64, cached read-only: copy before
-  writing); Yee stencils and H_z source weights use `yee_grid.grid_cell_widths(grid)` instead. Face names:
-  `core.constants.FACES`. They are logical: on a polar `Domain.coordinates` (model: `DomainSpec.coordinates` 'polar'
-  / 'spherical') x is r - radius_min and y an angle in radians, and areas / volumes come from `core.metric` (core sub
-  file), never from products of widths; a physics runs there only when its `coordinate_grids` list the grid
-  (`Simulation.add_physics`; the model: `PhysicsType.coordinate_grids`). Model geometry stays in the drawing plane:
-  code mapping between it and the cells goes through `geometry.DomainMap` (model sub file "Polar / spherical
-  domains"), never through the logical widths. Vector / tensor components keep their _x / _y names in the grid frame
-  (radial / angular there; a renderer relabels them with `core.renderer.polar_field_infos`).
-- `pos_to_cell*` = containing cell (1e-9-cell snap, an edge coordinate goes to the upper cell), clamped;
-  `validate_physical_pos` and the model point check inclusive within 1e-9 max(size_x, size_y). Spans / boxes cover `[cell(lo), cell(hi)+1)`: an edge exactly on a cell edge
-  takes one extra cell. Rectangles / polygons test centres half-open, circles / ellipses closed.
-- `coordinate_grids(clamp_to_physical=True)` gives PML cells the nearest window centre (masks, x/y expressions);
-  `rect_mask/circle_mask` use unclamped centres. X / Y are zero-stride `broadcast_to` views of the 1D centres (cupy
-  does not make them read-only): consumers stay elementwise, never write into them (in-place ops only on results).
+- Coordinates only from `Domain.cell_widths / cell_edges / cell_centers` (float64, cached read-only: copy before
+  writing); Yee stencils and H_z source weights use `physics.em.yee_grid.grid_cell_widths(grid)` (the kernels'
+  widths). On a polar `Domain.coordinates` (model: `DomainSpec.coordinates` 'polar' / 'spherical') the logical x is
+  r - radius_min and y an angle in radians: areas / volumes come from `core.metric` (core sub file), never from
+  products of widths, and a physics runs there only when its `coordinate_grids` list the grid. Model geometry stays in
+  the drawing plane: code mapping between it and the cells goes through `geometry.DomainMap` (model sub file "Polar /
+  spherical domains"), never through the logical widths. Vector / tensor components keep their _x / _y names in the
+  grid frame (a renderer relabels them with `core.renderer.polar_field_infos`).
+- `pos_to_cell*` = containing cell (an edge coordinate goes to the upper cell), clamped. Spans / boxes cover
+  `[cell(lo), cell(hi)+1)`: an edge exactly on a cell edge takes one extra cell. Rectangles / polygons test centres
+  half-open, circles / ellipses closed.
+- `coordinate_grids()` X / Y are zero-stride views of the 1D centres (cupy does not make them read-only): consumers
+  stay elementwise and never write into them. They are clamped by default (PML cells take the nearest window centre:
+  masks, x / y expressions); `rect_mask / circle_mask` use unclamped centres.
 - `Domain.size_x/y` are requested; `physical_extent()` is the meshed window (use it for display). `Domain.dx` =
-  dx_min on graded grids. `boundary_config=None` pads `npml` (15) on every side (PML cell grading: core sub file
-  "Graded meshes").
-- `npml_sides` is padding, not only PML: an EM mirror face (symmetric / antisymmetric) pads one ghost cell of the
-  window edge cell's width (`BoundaryConfig.ghost_faces`), so the mirror plane is the window edge for every physics
-  of the model (heat / potential faces, drawn geometry). Code sizing CPML layers reads the bc type, not the count.
-  em_fdtd_3d mirrors likewise (em3d sub file). Membrane symmetry / antisymmetry and heat symmetry faces are model
-  mirror planes too (`core.mirror.MIRROR_FEATURES`): code listing mirror faces calls `mirror_faces(spec)`, never reads
-  bc settings; a field display unfolds over `unfold_faces(spec, physics)` (also the (r, z) axis of
-  `AXIS_UNFOLD_TYPES`: display only, the axis never doubles a total).
-  Results count the unfolded structure (core sub file "Mirror planes"):
-  integrals / fluxes / held currents reaching a mirror face x 2 per face, derived max / min over the images too, 2D / 3D far fields with the image currents
-  (results also carry the complex amplitude_re / _im), unfolded fields; a new signed renderer field declares
-  `FieldInfo.parity`, a new total over a selection / line uses `touch_factor`, a new far-field result its complex
-  amplitude (parity sectors combine it per angle), a new result that parity sectors should combine a rule's extras
-  (`combine_sector_result`: sector_rule 'linear', sector_modes).
+  dx_min on graded grids. `boundary_config=None` pads `npml` (15) on every side.
+- `npml_sides` is padding, not only PML: an EM mirror face (symmetric / antisymmetric) pads one ghost cell
+  (`BoundaryConfig.ghost_faces`), so the mirror plane is the window edge for every physics of the model; code sizing
+  CPML layers reads the bc type, not the count. Model mirror planes also come from features (membrane / heat
+  symmetry, `core.mirror.MIRROR_FEATURES`): code listing them calls `mirror_faces(spec[, physics])`, never reads bc
+  settings; displays unfold over `unfold_faces(spec, physics)`. Results count the unfolded structure: a new signed
+  renderer field declares `FieldInfo.parity`, a new total over a selection / line uses `touch_factor`, a new far-field
+  result keeps its complex amplitude, a new result kind that parity sectors combine gets its
+  `combine_sector_result` rule (core sub file "Mirror planes").
 - `geometry.resolve_geometry` returns more names than `spec.geometry`: array copies ('<array>[i,j]',
   `geometry.is_array_copy`) are resolved shapes of their own, so meshers and outlines see every copy; code listing
   objects from the resolved dict skips them (model sub file "Arrays").
-- Courant: `courant` / `courant_factor` always = fraction of the 2D CFL limit of the finest cells, in (0, 1], default
-  0.99; dt only from `core.grid.courant_time_step` (Grid2D, NonUniformGrid2D, `meshing.estimate_mesh`); uniform
-  cell counts and cell edges likewise only from `core.grid.uniform_cell_count` / `edges_from_widths`.
+- Courant: `courant` / `courant_factor` = fraction of the CFL limit of the finest cells (2D; 3D models: the 3D limit),
+  in (0, 1]; dt only from `core.grid.courant_time_step` (3D: `grid3d.courant_time_step_3d`); uniform cell counts and
+  cell edges only from `core.grid.uniform_cell_count` / `edges_from_widths`.
 
-### Meshes per physics (S7.2 / S7.5; model sub file "Per-physics meshes", "Triangle meshes"; GUI: gui sub file "Meshes")
+### Meshes per physics (model sub file "Per-physics meshes", "Per-mesh Session"; gui sub file "Meshes")
 - `ModelSpec.meshes` (named MeshSpecs, first = default) and `PhysicsSpec.mesh` ('' = meshes[0]): model code finds a
   physics' mesh by `spec.mesh_of(physics)` and passes mesh names to meshing; `spec.mesh` / `ModelSpec(mesh=)` are
-  meshes[0] conveniences for scripts and self-tests only. Inside a physics / feature / coupling validate callback
-  `vctx.mesh` is that physics' estimate (None on a mesh kind the type does not run on). A MeshSpec kind 'triangles'
-  runs only types / features / solvers whose `grids` hold it; code reading tensor fields of an estimate (nx, x_edges,
-  dx_cells) or of a Domain (`physical_window`) checks the kind first (a TriangleDomain has neither).
-- Build (P2): one Domain + BuildContext per used mesh; creates / applies get `ctx.for_physics(name)` (that mesh),
-  so `ctx.domain` is the physics' own mesh, never assume it is the Session's (`sim.domain` = the first mesh;
-  `sim.domain_of(name)`). Cross-mesh couplings: `CouplingType.mesh_transfer` + `partner_materials` (coupling sub file
-  "Couplings across meshes"); a transform must not reach into its partner beyond the view's state / domain / scalar
-  attributes. Session (P3): fields, snapshots and feature-result callbacks of a physics act on its own mesh (a result
-  callback never assumes the first mesh), derived values on the mesh of the first physics their expression names
-  (model sub file "Per-mesh Session"). Everything a Session read does per grid kind lives in `session.access`
-  (`model/field_access*.py`: one FieldAccess per kind; tensor windows split further by DomainMap), and everything a
-  BuildContext mask / coordinate / boundary lookup does per kind in `ctx.masks` (`model/build_masks.py`): a new mesh
-  kind or window map is a new subclass of each, never a `grid_kind` branch in Session or BuildContext.
-- MeshSpec kind 'tetrahedra' (3D Cartesian only; model sub file "Tetrahedron meshes", fem sub file "Tetrahedra"):
-  `schema.FREE_MESH_KINDS` = the element kinds (code testing "not tensor" must not test == 'triangles'); a
-  `fem.domain3d.TetrahedronDomain` has per-element MaterialGrid and NO tensor accessors: 3D code branches on
-  `domain.grid_kind` before physical_window / cell_centers / object_box_mask; MeshSpec.sweep_axis 'z' (swept prism
-  layers, model sub file) is neither the Kuhn split nor gmsh 3D: code branching on `sizing.mesher` checks
-  `sizing.sweep_axis` first; boundary selections are faces
-  (`BuildContext.boundary_faces`), points are located (`ctx.point_position`), never nodes. em_fdfd_3d, heat,
-  electric_currents, electrostatics (3D on tetrahedra only), magnetostatics_3d, solid_mechanics_3d and pressure_acoustics run on it.
-- A physics on a triangle mesh (em_modes, em_fdfd_ez / _hz (point sources, probes, resonances), em_fdfd_bor
-  (eigenfrequency, optomechanics optics) and em_fdfd_conical (eigenfrequency only), heat, electric_currents, electrostatics, solid_mechanics, magnetostatics,
-  magnetic_fields_ac, drift_diffusion, membrane, pressure_acoustics) keeps every state() array and source slot per element ((n_elements,), D12:
-  values at the element centroid / element means), `field_dofs(name)` their P0 DofMap, so state-dependent materials,
-  same-mesh couplings and contributor buffers see per-element arrays; its create branches on `ctx.domain.grid_kind`
-  (a type keeps its name, D4) and its renderer feeds the Session through `fem_field(component)`.
+  meshes[0] conveniences for scripts and self-tests only. Inside a validate callback `vctx.mesh` is that physics'
+  estimate (None on a mesh kind the type does not run on). Types, features and solvers run on the mesh kinds their
+  `grids` hold; code reading tensor fields of an estimate (nx, x_edges, dx_cells) or of a Domain (`physical_window`,
+  `cell_centers`) checks the kind first (an element domain has none).
+- Build: one Domain + BuildContext per used mesh; creates / applies get `ctx.for_physics(name)`, so `ctx.domain` is
+  the physics' own mesh, never assume it is the Session's (`sim.domain` = the first mesh; `sim.domain_of(name)`).
+  Cross-mesh couplings: coupling sub file "Couplings across meshes". Session reads of a physics (fields, snapshots,
+  feature-result callbacks) act on its own mesh (`Session` docstring): a result callback never assumes the first mesh.
+  Per-kind behaviour lives in `session.access` (`model/field_access*.py`) and `ctx.masks` (`model/build_masks.py`): a
+  new mesh kind or window map is a new subclass of each, never a `grid_kind` branch in Session or BuildContext.
+- Element meshes (`core.constants.FREE_MESH_KINDS`: 'triangles', 'tetrahedra' (3D Cartesian only); code testing "not
+  tensor" tests membership there, never == 'triangles'; model sub file "Triangle meshes" / "Tetrahedron meshes", fem
+  sub file): a `TriangleDomain` / `TetrahedronDomain` has a per-element MaterialGrid and no tensor accessors (3D code
+  branches on `domain.grid_kind` before physical_window / cell_centers / object_box_mask); boundary selections are
+  faces (`ctx.boundary_faces`), points are located (`ctx.point_position`), never nodes. A physics there keeps every
+  state() array and source slot per element ((n_elements,): centroid values / element means), `field_dofs(name)`
+  their P0 DofMap, so state-dependent materials, same-mesh couplings and contributor buffers see per-element arrays;
+  its create branches on `ctx.domain.grid_kind` (the type keeps its name) and its renderer feeds the Session through
+  `fem_field(component)`.
+- MeshSpec.sweep_axis 'z' (swept prism layers, model sub file) is neither the Kuhn split nor gmsh 3D: code branching
+  on `sizing.mesher` checks `sizing.sweep_axis` first.
 
-### 1D models (symmetry 2.20; model sub file "1D models")
-- `DomainSpec.size_y` None = 1D (`ModelSpec.dimensions` 1; types need 1 in `PhysicsType.dimensions`: heat,
-  electric_currents, electrostatics, membrane (its own line elements, fem.line_fem)): internally a padding-free 2D
-  `Domain` one cell across on
-  `Coordinates(line=True)`, so every 2D path runs unchanged. Code that must know branches on `spec.dimensions` /
-  `DomainMap.line` / `Coordinates.line`, never on ny == 1. Outer faces x_lo / x_hi only (`spec.outer_faces`).
-  Automatic solvers resolve per grid kind (`schema.solver_grid(spec)` 'line': solvers sub file "banded").
+### 1D models (model sub file "1D models")
+- `DomainSpec.size_y` None = 1D (`ModelSpec.dimensions` 1; a type runs there only with 1 in
+  `PhysicsType.dimensions`): internally a padding-free 2D `Domain` one cell across on `Coordinates(line=True)`, so
+  every 2D path runs unchanged. Code that must know branches on `spec.dimensions` / `DomainMap.line` /
+  `Coordinates.line`, never on ny == 1. Outer faces x_lo / x_hi only (`spec.outer_faces`). Automatic solvers resolve
+  per grid kind (`schema.solver_grid(spec)` 'line': solvers sub file "banded").
 
-### 3D models (spec v2, B1; contracts in the core sub file)
+### 3D models (core sub file "3D contracts")
 - `DomainSpec.size_z` None = 2D (every 2D path unchanged), a value = 3D: `make_domain` returns `core.domain3d.Domain3D`
   (`dimensions` 3; `Domain.dimensions` 2), arrays `(nx, ny, nz)` C-order (z contiguous), every per-axis accessor
   returns 3-tuples. Code shared by 2D and 3D unpacks `[:2]` or branches on `domain.dimensions`, never on shapes.
 - 'polar' + size_z = a cylindrical (r, phi, z) sector with logical (r, phi) cells: 3D code taking xy positions from
   `host_centres` / `rasterize_box` branches on `domain_map.mapped` (model sub file "Cylindrical (r, phi, z) sectors").
-- z cells are graded like x / y on nonuniform / auto meshes: 3D code reads per-axis widths (`cell_widths()`,
-  `grid.dz_arr`), never a scalar dz. Object shapes at a height only through `geometry` (prisms may be extruded along
-  x / y or tapered: model sub file "3D prisms").
+- z cells are graded like x / y: 3D code reads per-axis widths (`cell_widths()`, `grid.dz_arr`), never a scalar dz.
+  Object shapes at a height only through `geometry` (prisms may be extruded along x / y or tapered: model sub file "3D
+  prisms").
 - `FACES` stays the 2D tuple (PML sides, BCs, templates); `FACES_3D` / `spec.OUTER_FACES_3D` add z_lo / z_hi, which
   are reserved names in every model but valid entities only in 3D (`spec.outer_faces(spec)`).
 - `PhysicsType.dimensions` (default (2,)) decides where a type may run (validate); a type whose vocabulary changes in
-  3D is a separate 3D-only type (em_fdtd_3d, em_fdfd_3d, em_eme_3d, solid_mechanics_3d, magnetostatics_3d), else one
-  type with (2, 3) (heat; electric_currents / electrostatics, whose 3D runs only on tetrahedra: their validate refuses
-  a 3D tensor mesh). In 3D, courant = fraction of the 3D CFL limit (`grid3d.courant_time_step_3d`); results stay
-  2D cuts (`Session.field(..., plane=(axis, position))`; model sub file "3D field access").
+  3D is a separate 3D-only type (the `*_3d` types), else one type with (2, 3). Results stay 2D cuts
+  (`Session.field(..., plane=(axis, position))`; model sub file "3D field access").
 - 3D builds never allocate full-grid float temporaries: materials are painted per z-slab run, full-grid bool / int16
   build masks only through BuildContext 3D helpers, `eval_field` of x, y gives an (nx, ny, 1) layer and of z a
-  `BoxValues` on the mask's bounding box (core sub file "3D contracts"). z is a field coordinate only in 3D
-  (`expressions.THREE_D_COORDINATE_NAMES`; reserved everywhere, a validation error in 2D).
+  `BoxValues` on the mask's bounding box. z is a field coordinate only in 3D (`expressions.THREE_D_COORDINATE_NAMES`;
+  reserved everywhere, a validation error in 2D).
 
 ### Solver contract
 - Contract: `prepare / step / dt_limit / state / inject_source`, hooks `finalize / materials_changed`,

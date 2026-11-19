@@ -192,7 +192,7 @@ type's vocabulary and refusals are in its help texts and validation.
   docstring (the rate cap above T_fast keeps a melt-quench amorphous).
 
 ## Harmonic FDTD (em_fdtd_* in a frequency_domain study; harmonic_fdtd.py)
-- Flow in the root file (frequency_domain): `attach_harmonic` before the first step (after it: ValueError) appends a
+- Flow: `model.study._run_frequency_domain` docstring. `attach_harmonic` before the first step (after it: ValueError) appends a
   `HarmonicAccumulator` (DFTMonitor, complex64, own `dft_sample_interval`) to `monitors`; all sources share one
   gaussian / ricker waveform (`_shared_pulse`, validation `definition_harmonic_fdtd`).
 - `normalize` divides once by `results._shared_waveform_spectrum` (S over steps 1..n_step), so phasors follow the FDFD
@@ -286,7 +286,7 @@ type's vocabulary and refusals are in its help texts and validation.
   axis = the periodic one) and one kept factor, no GMRES recycling. An adjoint solve runs on the kept factor as
   x = D solve(g / D) when D A is complex symmetric (`_adjoint_symmetrizer`, measured once per system); a rejected solve
   marks the system `_REJECTED` (line_block_fallbacks) and, like a non-symmetric adjoint solve, goes to the private
-  `_reference_solver` (role-less 'auto' = host SuperLU). Wavelength batches (`plan_harmonic_frequencies`, root file):
+  `_reference_solver` (role-less 'auto' = host SuperLU). Wavelength batches (`plan_harmonic_frequencies`, `model.solver_hooks.HarmonicFrequencyPlanner`):
   each wavelength's own `_assemble` must give the identical operator, guarded by `_material_serial` (bumped by every
   `_mark_system_dirty` but `omega_only`), so any change of the assembled system must go through `_mark_system_dirty`.
   Self-tests em_fdfd_line_block, _line_block_wavelengths, em_fdfd_eigenfrequency_line_block.
