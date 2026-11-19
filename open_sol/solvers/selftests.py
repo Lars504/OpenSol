@@ -459,7 +459,8 @@ def _cudss_role_checks(failed):
         physics_type = registry.physics_type(physics_name)
         for back_end in CUDSS_BACK_ENDS:
             offered = back_end in offered_back_ends
-            misfit = solver_misfit(sparse_type, {'back_end': back_end}, physics_type, 'linear', 'stationary', 'gpu')
+            misfit = solver_misfit(sparse_type, {'back_end': back_end}, physics_type, 'linear', 'stationary', 'gpu',
+                                   'tensor')
             if bool(misfit) == offered:
                 failed.append(f'{physics_name}_{back_end}_offered_{offered}')
     for back_end in CUDSS_BACK_ENDS:

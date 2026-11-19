@@ -561,22 +561,14 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
 
 ## banded (`BandedSolver`; role 'linear' of 1D models, symmetry 2.20)
-- Grid kinds `roles.GRID_KINDS`: 'tensor', 'line' (1D model), 'tensor_3d', 'triangles', 'tetrahedra';
-  `schema.solver_grid(spec, physics_spec)` per physics. 'line' and 'tensor_3d' are tensor meshes
-  (`roles.TENSOR_GRID_KINDS`: code testing "tensor" tests that set); 'tensor_3d' exists only so grid_defaults can differ
-  from 2D. Callers of `automatic` / `solver_misfit` pass the grid (validate, resolved_solvers, api `_variant_spec`, GUI
-  combos and 'In use' list).
-- `SolverRole.grid_defaults` {grid: (type, settings)} wins over backend_defaults: CG_DIFFUSION_LINEAR_ROLE 'line' ->
-  banded, 'tensor_3d' -> pcg multigrid on both backends (cpu: 7-130x faster than 3D SuperLU); CG_DIFFUSION_LINEAR_ROLE /
-  SOLID_LINEAR_ROLE 'triangles' and CG_DIFFUSION_LINEAR_ROLE / CG_ELASTIC_3D_LINEAR_ROLE 'tetrahedra' -> sparse_direct
-  (so the gpu Automatic 'mixed' of both solid roles applies on tensor meshes only).
-  pcg, sparse_direct and arpack_shift_invert declare grids ('tensor', 'triangles', 'tetrahedra'); banded ('line',) only.
-  pcg on tetrahedra is an opt-in node of the scalar FEM systems; solid_mechanics_3d on tetrahedra refuses it at create
-  (sparse_direct only; its validation does not catch it yet).
-- The runtime is the PCGSolver protocol itself: `factorize` pulls the CSR to the host, refuses a bandwidth above
-  `max_bandwidth` (8, before the band array exists), an unsymmetric operator (`banded.SYMMETRY_TOLERANCE`: only the
-  upper triangle is read) and a non-positive-definite one (ValueError), keeps the `cholesky_banded` factor. Precision
-  'double'; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.
+- Grid kinds (`roles.GRID_KINDS`; per physics `schema.solver_grid`, a required argument of `SolverRole.automatic` /
+  `solver_misfit`): 'line' (1D, banded's only grid) and 'tensor_3d' are tensor meshes (test `TENSOR_GRID_KINDS`, never
+  == 'tensor'); 'tensor_3d' exists only so `grid_defaults` can differ from 2D. `grid_defaults` win over
+  backend_defaults (rationale at the roles in definition_helpers): 'line' -> banded, 'triangles' / 'tetrahedra' ->
+  sparse_direct, so the gpu Automatic 'mixed' of both solid roles applies on tensor meshes only.
+- The runtime is the PCGSolver protocol: `factorize` copies the CSR to the host and raises ValueError above
+  `max_bandwidth` (8, before allocating bands), for an unsymmetric operator (`SYMMETRY_TOLERANCE`) or a non-SPD one.
+  Double only; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.
 
 ## arpack_shift_invert (`ArpackShiftInvertSolver`; role 'eigen')
 - `eigs(matvec, n, k, v0, tolerance_floor, max_restarts, default_basis, device_matvec, real)` -> (theta, vectors,
@@ -809,21 +801,19 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   per store instead); the chunk scratch is booked as a flat 2·CHUNK_BYTES whatever n (over-books small meshes); the
   time recipe never prices a private multigrid build (`work.setup_ops` is only a flag), only the shared one through pcg.
 
-## Tried and dropped (tag `archive/four-new-solvers`)
-Three opt-in solvers were built, profiled on 2026-11-17 and dropped; their code is on that tag. Do not rebuild them
-without a reason that answers these findings.
-- batched_direct (same-pattern frequency sweeps factorised in cuDSS uniform / explicit batches): the cuDSS uniform
-  batch factorised at ~2x (up to 3x) the per-system numeric cost and solved at the same per-system cost at every
-  tested size (0.35M-1.8M stored entries), so direct sweeps ran 1.1-2.2x slower than per-system cudss_mixed, which
-  already keeps one analysis and refreshes values per frequency. Only the smallest pattern reached parity.
-- time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): missed resonances on open (CPML) disks
-  (0-3 of 6), residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells.
-  The tag predates gyration_z: a rebuild must refuse it (em_fdtd_hz never reads it, so the FDTD basis is of another
-  structure), in validation and unsupported_reason.
-- mumps_blr (block low-rank MUMPS refined by GMRES): MUMPS compressed 2-10 % of the entries on the profiled 3D
-  cases, the factor took 1.4-2.1x longer and no memory was saved (only ICNTL(35) / CNTL(7) were set, so MUMPS
-  allocated for the full-rank factor). A retry needs the memory flags, a looser drop threshold and a case much larger
-  than solid_mechanics_3d_tetrahedra_large.
+## Tried and dropped
+Three opt-in solvers, profiled on 2026-11-17 and dropped. Code: tag `archive/four-new-solvers`; the latest version
+(merged onto later main, with their sub-file sections): tag `archive/batched-direct-time-filter-mumps-blr`. Do not
+rebuild one without a reason that answers these findings.
+- batched_direct (same-pattern frequency sweeps in cuDSS uniform / explicit batches): the uniform batch factorised at
+  ~2x (up to 3x) the per-system numeric cost and solved at the same per-system cost (0.35M-1.8M stored entries), so
+  sweeps ran 1.1-2.2x slower than per-system cudss_mixed (one analysis, values refreshed per frequency).
+- time_filter (factor-free FDFD resonances from an FDTD run + Rayleigh-Ritz): found 0-3 of 6 resonances on open (CPML)
+  disks, residuals 5e-5-1e-3 even in double, and the stepping alone cost about the factor's wall at 4e5 cells. Both
+  tags predate gyration_z: a rebuild must refuse it in validation and unsupported_reason (em_fdtd_hz never reads it).
+- mumps_blr (block low-rank MUMPS + GMRES): compressed 2-10 % of the entries on the profiled 3D cases, factor 1.4-2.1x
+  slower, no memory saved (only ICNTL(35) / CNTL(7) set: MUMPS allocated for the full-rank factor). A retry needs the
+  memory flags, a looser drop threshold and a case much larger than solid_mechanics_3d_tetrahedra_large.
 
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
 - Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or

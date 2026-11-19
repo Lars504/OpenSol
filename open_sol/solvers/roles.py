@@ -65,7 +65,7 @@ class SolverRole:
     # solid Q1: 2); the host direct size rule and the fit guard count with it (definition_helpers.direct_unknowns)
     direct_components: int = 1
 
-    def automatic(self, backend='gpu', grid='tensor', study=None) -> tuple:
+    def automatic(self, backend, grid, study=None) -> tuple:
         """(SolverType name, settings dict) Automatic resolves to in the study (None: any) on the backend and grid
         kind."""
         by_study = study is not None and (not self.study_default_backends or backend in self.study_default_backends)
@@ -182,9 +182,10 @@ def resolved_precision(solver_type, values) -> str:
     return values.get('precision', solver_type.precisions[0])
 
 
-def solver_misfit(solver_type, values, physics_type, role, study, backend, grid='tensor') -> str:
+def solver_misfit(solver_type, values, physics_type, role, study, backend, grid) -> str:
     """'' when solver_type (with its resolved values) can fill `role` of physics_type in the study on the backend and
-    grid kind, else the GUI / validation reason (plain text, labels only)."""
+    grid kind (`schema.solver_grid` of the physics: no default, so no caller judges a line or an FEM mesh as 'tensor'),
+    else the GUI / validation reason (plain text, labels only)."""
     solver_role = getattr(physics_type, 'solver_roles', {}).get(role)
     physics_label = physics_type.label
     if solver_role is None:

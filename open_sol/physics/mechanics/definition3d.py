@@ -648,6 +648,20 @@ def eigen_host_direct(solvers, unknowns):
     return name
 
 
+def _linear_type_issues(vctx, physics_spec, path, tetrahedra):
+    """Error for a 'linear' node of the type the mesh kind's system refuses at create (both fit the role): a
+    tetrahedron mesh factorises (sparse_direct only: system_fem3d), the rectangular-cell solid iterates matrix-free (pcg
+    only: solver_common)."""
+    resolved = (vctx.solvers(physics_spec) or {}).get('linear')
+    needed = 'sparse_direct' if tetrahedra else 'pcg'
+    if resolved is None or resolved.solver_type.name == needed:
+        return []
+    how = ('on a tetrahedron mesh the solid solves with sparse_direct (host SuperLU, or cuDSS by its back ends)'
+           if tetrahedra else 'on a rectangular-cell mesh the solid solves by matrix-free pcg (no matrix to factor)')
+    return [Issue('error', path, f"linear solver '{resolved.node or resolved.solver_type.name}' is "
+                                 f'{resolved.solver_type.name}: {how}: assign Automatic or a {needed} node')]
+
+
 def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     """Tetrahedron mesh (FEM): the host SuperLU size rule of the factorised unknowns (displacement, + potential when
     piezoelectric: the 'linear' factor of a static solve or of the complex frequency-response pencil, the eigen factor
@@ -938,6 +952,7 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     issues.extend(_mirror_issues(vctx, physics_spec))
     issues.extend(_electrode_edge_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_squeeze_film_issues(vctx, physics_spec, settings_values, tetrahedra))
+    issues.extend(_linear_type_issues(vctx, physics_spec, path, tetrahedra))
     if tetrahedra:
         issues.extend(_tetrahedra_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} tetrahedron"

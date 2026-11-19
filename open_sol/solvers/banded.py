@@ -53,8 +53,9 @@ class BandedSolver(ExactSolveRecord):
         self._host_operator = None
 
     def factorize(self, operator, preconditioner=None, n_unknowns=None) -> None:
-        """Banded Cholesky of the assembled CSR (scipy on the cpu backend, cupyx on the gpu); preconditioner ignored;
-        ValueError for a bandwidth above max_bandwidth or an operator that is not positive definite."""
+        """Host scipy banded Cholesky of the assembled CSR on both backends (a cupyx CSR is copied to the host);
+        preconditioner ignored; ValueError for a bandwidth above max_bandwidth, an unsymmetric operator or one that is
+        not positive definite."""
         from scipy.linalg import LinAlgError, cholesky_banded
         require_backend_operator(self.label(), self.backend, operator)
         host_operator = operator if isinstance(operator.data, np.ndarray) else operator.get()
