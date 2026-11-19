@@ -75,6 +75,11 @@ header p { margin: 2px 0 0; color: var(--ink-3); font-size: 13px; }
 #gl:active { cursor: grabbing; }
 #axes { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
 .hint { position: absolute; left: 18px; bottom: 14px; font-size: 11px; color: var(--ink-3); pointer-events: none; }
+/* resize grip at the lower right corner of a face-on map (DOM, so pictures leave it out) */
+.grip { position: absolute; width: 12px; height: 12px; cursor: nwse-resize; touch-action: none; z-index: 2;
+        border-right: 2px solid var(--ink-3); border-bottom: 2px solid var(--ink-3); opacity: 0.7; }
+.grip:hover { border-color: var(--accent); opacity: 1; }
+.grip[hidden] { display: none; }
 /* Plot settings: a panel over the view (the canvas keeps its size, so the picture is exported as shown) */
 .settings { position: absolute; right: 14px; bottom: 14px; width: 310px; max-height: calc(100% - 28px); overflow: auto;
             background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; box-shadow: var(--shadow);
@@ -123,7 +128,7 @@ input#frame { width: 180px; }
          padding: 24px; }
 .empty[hidden] { display: none; }   /* the author display above would beat [hidden]: the empty overlay must not
                                       cover the canvas and take its pointer input */
-body.present .controls, body.present header p, body.present .hint, body.present .settings { display: none; }
+body.present .controls, body.present header p, body.present .hint, body.present .settings, body.present .grip { display: none; }
 body.present .app { padding: 10px; gap: 10px; }
 @media (max-width: 820px) {
   .app { height: auto; min-height: 100vh; }
@@ -143,7 +148,8 @@ body.present .app { padding: 10px; gap: 10px; }
   <section class="card view" aria-label="Field">
     <canvas id="gl"></canvas>
     <canvas id="axes"></canvas>
-    <div class="hint" id="hint">Drag to rotate · Shift-drag to pan · Scroll to zoom · Double-click to reset · Drag the material legend or scale bar to move it</div>
+    <div class="hint" id="hint">Drag to rotate · Right- or Shift-drag to pan · Scroll to zoom · Double-click to reset · Drag the colour bar, material legend or scale bar to move it, the plot corner to resize</div>
+    <div class="grip" id="grip" hidden title="Drag to resize the plot (double-click: full size)"></div>
     <div class="rec" id="rec">REC</div>
     <div class="empty" id="empty" hidden></div>
     <div class="settings" id="settings" hidden>
@@ -675,6 +681,12 @@ function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 const UP = [0, 0, 1];
 const E1 = [-1, 0, 0], E2 = [0, -1, 0];      // azimuth 0 looks from -x; +90 deg from -y (2D: x right, y up)
 const cam = { az: 0, el: 0, dist: 1, target: [0, 0, 0], moved: false };   // moved: panned / zoomed by hand since the last fit
+// size of a face-on map as a fraction of the free area inside the insets (the corner grip; remembered per file).
+// Zoom and pan of a face-on map change the axis limits instead of the camera, so the plot frame keeps its size
+const PLOT_SCALE_STORE = 'plot_scale:' + location.pathname, PLOT_SCALE_MIN = 0.15;
+let plotScale = (() => { const v = Number(store(PLOT_SCALE_STORE));
+  return isFinite(v) && v >= PLOT_SCALE_MIN && v <= 1 ? v : 1; })();
+function setPlotScale(v) { plotScale = Math.max(PLOT_SCALE_MIN, Math.min(1, v)); store(PLOT_SCALE_STORE, String(plotScale)); }
 function resetCamera() {
   if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
@@ -717,10 +729,11 @@ function overlayCentre() {
 function fitDistance() { const fov = 30 * Math.PI / 180, tan = Math.tan(fov / 2);
   const span = shownSpan(); cam.moved = false;
   if (faceOn() && state.relief === 0) {
-    // tight: the map rectangle fills the canvas minus the insets, its centre at theirs (at distance d the view is
-    // 2 d tan(fov / 2) high over canvas.height px)
+    // tight: the map rectangle fills plotScale of the canvas minus the insets, its centre at theirs (at distance d
+    // the view is 2 d tan(fov / 2) high over canvas.height px)
     const ins = viewInsets(), [iu, iv] = PLANE_AXES;
-    const freeW = Math.max(canvas.width - ins.left - ins.right, 1), freeH = Math.max(canvas.height - ins.top - ins.bottom, 1);
+    const freeW = Math.max(plotScale * (canvas.width - ins.left - ins.right), 1);
+    const freeH = Math.max(plotScale * (canvas.height - ins.top - ins.bottom), 1);
     cam.dist = Math.max(span[iu] / freeW, span[iv] / freeH) * canvas.height / (2 * tan) || 1;
     const perPixel = 2 * cam.dist * tan / Math.max(canvas.height, 1), { s, u } = cameraAxes();
     const right = 0.5 * (ins.left - ins.right), up = 0.5 * (ins.bottom - ins.top);   // map centre from the canvas centre, px
@@ -828,6 +841,7 @@ function draw() {
   drawGeometry(view, proj);
   drawAxes(view, proj);
   drawOverlay(view, proj);
+  if (renderScale === 1) placeGrip(view, proj);
 }
 const NO_CLIP_LO = [-1e30, -1e30, -1e30], NO_CLIP_HI = [1e30, 1e30, 1e30];
 
@@ -841,6 +855,94 @@ function project(point, view, proj) {
   if (!(c[2] > 1e-12)) return null;
   return [(c[0] / c[2] + 1) * 0.5 * canvas.width, (1 - c[1] / c[2]) * 0.5 * canvas.height];
 }
+// ---------- the plot frame of a face-on map: zoom / pan move the axis limits inside it, the grip resizes it ----------
+function mapNavigable() { return PLANAR && state.relief === 0 && faceOn(); }
+function planeCorner(u, v, view, proj) {
+  const p = center.slice(), [iu, iv] = PLANE_AXES; p[iu] = u; p[iv] = v;   // center[NORMAL] = the plane's position
+  return project(p, view, proj);
+}
+function mapFrame(view, proj) {
+  // device px [left, top, right, bottom] of the map's axis-limit rectangle on screen; null when a corner is not
+  const [iu, iv] = PLANE_AXES, xs = [], ys = [];
+  for (const u of [bmin[iu], bmax[iu]]) for (const v of [bmin[iv], bmax[iv]]) {
+    const s = planeCorner(u, v, view, proj); if (!s) return null; xs.push(s[0]); ys.push(s[1]); }
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+function devicePoint(e) { const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * canvas.width / Math.max(r.width, 1), (e.clientY - r.top) * canvas.height / Math.max(r.height, 1)]; }
+function planePoint(e, view, proj) {
+  // the (u, v) length units under the pointer of a face-on map (affine from three projected corners), null if none
+  const [iu, iv] = PLANE_AXES;
+  const o = planeCorner(bmin[iu], bmin[iv], view, proj), pu = planeCorner(bmax[iu], bmin[iv], view, proj);
+  const pv = planeCorner(bmin[iu], bmax[iv], view, proj);
+  if (!o || !pu || !pv) return null;
+  const [px, py] = devicePoint(e), x = px - o[0], y = py - o[1];
+  const ax = pu[0] - o[0], ay = pu[1] - o[1], bx = pv[0] - o[0], by = pv[1] - o[1], det = ax * by - ay * bx;
+  if (!(Math.abs(det) > 1e-9)) return null;
+  const s = (x * by - y * bx) / det, t = (ax * y - ay * x) / det;
+  return [bmin[iu] + s * (bmax[iu] - bmin[iu]), bmin[iv] + t * (bmax[iv] - bmin[iv])];
+}
+function setPlaneWindow(lo, hi) {
+  // in-plane axis limits [u, v] (length units) as the Plot settings limits: the frame keeps its size and place
+  const [iu, iv] = PLANE_AXES;
+  [iu, iv].forEach((c, k) => { fig[AXIS_NAMES[c] + '_min'] = lo[k] * LENGTH_SCALE; fig[AXIS_NAMES[c] + '_max'] = hi[k] * LENGTH_SCALE; });
+  applySettings(true);
+}
+function zoomMap(factor, e) {
+  // the limits scaled by factor about the point under the pointer; spans kept within 1e-4 .. 50 x the data's
+  const view = viewMatrix(), proj = projMatrix(), at = planePoint(e, view, proj);
+  if (!at) return;
+  const [iu, iv] = PLANE_AXES, [dlo, dhi] = dataBounds(state.mirror);
+  const span = [bmax[iu] - bmin[iu], bmax[iv] - bmin[iv]], data = [dhi[iu] - dlo[iu], dhi[iv] - dlo[iv]];
+  let f = factor;
+  for (const k of [0, 1]) if (span[k] > 0 && data[k] > 0) f = Math.max(1e-4 * data[k] / span[k], Math.min(50 * data[k] / span[k], f));
+  const lo = [bmin[iu], bmin[iv]], hi = [bmax[iu], bmax[iv]];
+  setPlaneWindow(lo.map((v, k) => at[k] + (v - at[k]) * f), hi.map((v, k) => at[k] + (v - at[k]) * f));
+}
+function panMap(from, to) {
+  // the limits shifted so the point under `from` (a pointer event) moves to `to`
+  const view = viewMatrix(), proj = projMatrix(), a = planePoint(from, view, proj), b = planePoint(to, view, proj);
+  if (!a || !b) return;
+  const [iu, iv] = PLANE_AXES, d = [b[0] - a[0], b[1] - a[1]];
+  setPlaneWindow([bmin[iu] - d[0], bmin[iv] - d[1]], [bmax[iu] - d[0], bmax[iv] - d[1]]);
+}
+function resetMapLimits() {
+  // double-click on a face-on map: automatic in-plane limits and full plot size
+  for (const c of PLANE_AXES) { fig[AXIS_NAMES[c] + '_min'] = null; fig[AXIS_NAMES[c] + '_max'] = null; }
+  setPlotScale(1); applySettings(true);
+}
+const grip = $('grip');
+let gripText = '';                           // the grip's last place ('' = hidden), so draw() touches the DOM only on a change
+let gripDrag = null;                         // { id, cx, cy, halfW, halfH } device px: the frame centre and half size at full scale
+function placeGrip(view, proj) {
+  // the DOM grip just outside the frame's lower right corner (CSS px), hidden unless the map is navigable
+  if (gripDrag) return;                      // the drag places it
+  const frame = mapNavigable() ? mapFrame(view, proj) : null;
+  const text = frame ? (frame[2] / pixelRatio) + ',' + (frame[3] / pixelRatio) : '';
+  if (text === gripText) return;
+  gripText = text; grip.hidden = !frame;
+  if (frame) { grip.style.left = (frame[2] / pixelRatio) + 'px'; grip.style.top = (frame[3] / pixelRatio) + 'px'; }
+}
+grip.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  const frame = mapFrame(viewMatrix(), projMatrix());
+  if (!frame) return;
+  e.preventDefault(); grip.setPointerCapture(e.pointerId);
+  gripDrag = { id: e.pointerId, cx: 0.5 * (frame[0] + frame[2]), cy: 0.5 * (frame[1] + frame[3]),
+               halfW: 0.5 * (frame[2] - frame[0]) / plotScale, halfH: 0.5 * (frame[3] - frame[1]) / plotScale };
+});
+grip.addEventListener('pointermove', (e) => {
+  if (!gripDrag || gripDrag.id !== e.pointerId) return;
+  const [x, y] = devicePoint(e), G = gripDrag;   // the corner follows the pointer; the frame stays centred
+  setPlotScale(Math.max((x - G.cx) / Math.max(G.halfW, 1), (y - G.cy) / Math.max(G.halfH, 1)));
+  fitDistance();
+  const frame = mapFrame(viewMatrix(), projMatrix());
+  if (frame) { grip.style.left = (frame[2] / pixelRatio) + 'px'; grip.style.top = (frame[3] / pixelRatio) + 'px'; }
+});
+const endGripDrag = (e) => { if (gripDrag && gripDrag.id === e.pointerId) { gripDrag = null; gripText = ''; } };
+grip.addEventListener('pointerup', endGripDrag);
+grip.addEventListener('pointercancel', endGripDrag);
+grip.addEventListener('dblclick', () => { setPlotScale(1); fitDistance(); gripText = ''; });
 function niceTicks(lo, hi, count) {
   // 1-2-5 ticks inside [lo, hi] and the decimals their labels need
   const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -946,7 +1048,9 @@ function drawHeading(c) {
   c.fillText(heading.meta, x, pad + 1.2 * size);
 }
 function drawColorbar(c) {
+  // home = the Plot settings place; dragged like the other MOVABLE parts (its offset is relative to that home)
   const where = fig.colorbar;
+  MOVABLE.colorbar.box = null;
   if (where === 'off') return;
   const px = pixelRatio, W = canvas.width, H = canvas.height, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F;
   const [lo, hi] = limits(), logScale = state.log && LOG_OK, S = barScale(lo, hi, Q.unit);
@@ -961,10 +1065,11 @@ function drawColorbar(c) {
   if (!upright) {
     // name, bar, ticks and labels from the top down
     const headH = headingHeight();
-    const x0 = where.endsWith('left') ? pad : where.endsWith('right') ? W - pad - length
+    const homeX = where.endsWith('left') ? pad : where.endsWith('right') ? W - pad - length
       : Math.max(pad, Math.min(cx - 0.5 * length, W - pad - length));
-    const y0 = where.startsWith('bottom') ? H - pad - B.height
+    const homeY = where.startsWith('bottom') ? H - pad - B.height
       : pad + (headH && TOP_SPOT[fig.title] === TOP_SPOT[where] ? headH + gap : 0);
+    const [x0, y0] = placePart(MOVABLE.colorbar, homeX, homeY, Math.max(length, c.measureText(name).width), B.height);
     const barY = y0 + 1.4 * F, labelY = barY + B.thick + B.tick + 0.2 * F;
     const gradient = c.createLinearGradient(x0, 0, x0 + length, 0);
     stops.forEach((s, i) => gradient.addColorStop(i / (stops.length - 1), s));
@@ -985,8 +1090,10 @@ function drawColorbar(c) {
   }
   // upright: from the canvas edge inwards the turned name, the labels, the ticks, the bar (lowest value at the bottom)
   const right = where === 'right', dir = right ? 1 : -1;
-  const y0 = Math.max(pad, Math.min(cy - 0.5 * length, H - pad - length)), y1 = y0 + length;
-  const barX = right ? W - pad - B.width : pad + B.width - B.thick, tickX = right ? barX + B.thick : barX;
+  const homeY = Math.max(pad, Math.min(cy - 0.5 * length, H - pad - length));
+  const homeLeft = right ? W - pad - B.width : pad;   // the block: bar, ticks, labels and turned name, B.width wide
+  const [left, y0] = placePart(MOVABLE.colorbar, homeLeft, homeY, B.width, length), y1 = y0 + length;
+  const barX = right ? left : left + B.width - B.thick, tickX = right ? barX + B.thick : barX;
   const gradient = c.createLinearGradient(0, y1, 0, y0);
   stops.forEach((s, i) => gradient.addColorStop(i / (stops.length - 1), s));
   c.fillStyle = gradient; c.fillRect(barX, y0, B.thick, length); c.strokeRect(barX, y0, B.thick, length);
@@ -1009,15 +1116,15 @@ function drawColorbar(c) {
   c.fillText(name, 0, 0);
   c.restore();
 }
-// overlay parts moved by dragging them (pointer handlers below; double-click puts one back): the material legend and
-// the scale bar. offset = CSS px from the part's home place, remembered per file like the limits; box = where it
-// was last drawn (device px), null while it is not shown
+// overlay parts moved by dragging them (pointer handlers below; double-click puts one back): the colour bar, the
+// material legend and the scale bar. offset = CSS px from the part's home place, remembered per file like the limits;
+// box = where it was last drawn (device px), null while it is not shown
 function movablePart(name) {
   const storeKey = name + ':' + location.pathname, v = storedJson(storeKey);
   return { storeKey, box: null,
     offset: Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && isFinite(n)) ? v : [0, 0] };
 }
-const MOVABLE = { legend: movablePart('legend'), scaleBar: movablePart('scale_bar') };
+const MOVABLE = { colorbar: movablePart('colorbar'), legend: movablePart('legend'), scaleBar: movablePart('scale_bar') };
 function placePart(part, homeLeft, homeTop, width, height) {
   // top left (device px) of a movable part of that size: home plus its offset, kept inside the canvas; the offset
   // follows, so a drag past an edge turns back at once
@@ -1058,7 +1165,7 @@ function niceDown(x) { const p = Math.pow(10, Math.floor(Math.log10(x)));
   for (const m of [5, 2, 1]) if (m * p <= x * (1 + 1e-9)) return m * p; return p; }
 function drawScaleBar(c, view, proj) {
   // Plot settings scale bar: a bar of a round (or the given) true length with that length above it. Only on a plane
-  // seen face-on, where the screen has one scale; home: the lower left corner inside the map
+  // seen face-on, where the screen has one scale; home: the lower right corner inside the plot frame (mapFrame)
   MOVABLE.scaleBar.box = null;
   if (!scaleBarOffered() || !faceOn()) return;
   const px = pixelRatio, F = fig.font_size * px, f = stretch(), right = cameraAxes().s;
@@ -1072,8 +1179,9 @@ function drawScaleBar(c, view, proj) {
   const length = fig.scale_bar_length !== null ? fig.scale_bar_length / LENGTH_SCALE : niceDown(0.2 * canvas.width / perUnit);
   const text = lengthText(length * LENGTH_SCALE), bar = length * perUnit, thick = Math.max(2 * px, Math.round(0.3 * F));
   c.font = '600 ' + F + 'px ' + themeColors.font;
-  const width = Math.max(bar, c.measureText(text).width), height = 1.3 * F + thick, ins = viewInsets();
-  const [left, top] = placePart(MOVABLE.scaleBar, ins.left + 1.2 * F, canvas.height - ins.bottom - 1.2 * F - height, width, height);
+  const width = Math.max(bar, c.measureText(text).width), height = 1.3 * F + thick;
+  const ins = viewInsets(), frame = mapFrame(view, proj) || [ins.left, ins.top, canvas.width - ins.right, canvas.height - ins.bottom];
+  const [left, top] = placePart(MOVABLE.scaleBar, frame[2] - 1.2 * F - width, frame[3] - 1.2 * F - height, width, height);
   c.fillStyle = overlayColor(fig.scale_bar_color, themeColors.headText); c.textAlign = 'center'; c.textBaseline = 'top';
   c.fillText(text, left + 0.5 * width, top);
   c.fillRect(left + 0.5 * (width - bar), top + 1.3 * F, bar, thick);
@@ -1339,6 +1447,7 @@ for (const k of SETTING_KEYS) {
     if (value === fig[k]) { el.classList.remove('bad'); return; }
     fig[k] = value;
     if (k === 'scale_bar') state.axes = !scaleBarOffered();   // the bar stands in for the axes (the Axes button brings them back)
+    if (k === 'colorbar') homePart(MOVABLE.colorbar);         // a new place: the drag offset belonged to the old one
     applySettings(/^[xyz]_/.test(k));
   };
   el.addEventListener('change', () => take(false));
@@ -1357,7 +1466,8 @@ $('settingsclose').onclick = () => { $('settings').hidden = true; syncControls()
 $('fs_reset').onclick = () => {
   Object.assign(fig, FIGURE_DEFAULTS, DATA.figure || {});
   state.axes = !scaleBarOffered();
-  Object.values(MOVABLE).forEach(homePart);   // the dragged material legend and scale bar too
+  Object.values(MOVABLE).forEach(homePart);   // the dragged colour bar, material legend and scale bar too
+  setPlotScale(1);                             // and the plot size of the corner grip
   applySettings(true);
 };
 $('fs_copy').onclick = () => {
@@ -1541,9 +1651,13 @@ canvas.addEventListener('pointermove', (e) => {
   pointers.set(e.pointerId, [e.clientX, e.clientY, pan]);
   if (pointers.size === 2) {
     const [a, b] = [...pointers.values()]; const d = Math.hypot(a[0] - b[0], a[1] - b[1]);
-    if (pinch) { cam.dist *= pinch / d; cam.moved = true; } pinch = d; return;
+    if (pinch && mapNavigable()) zoomMap(pinch / d, { clientX: 0.5 * (a[0] + b[0]), clientY: 0.5 * (a[1] + b[1]) });
+    else if (pinch) { cam.dist *= pinch / d; cam.moved = true; }
+    pinch = d; return;
   }
-  if (pan) {
+  if (pan && mapNavigable()) {
+    panMap({ clientX: px, clientY: py }, e);   // the frame stays; the map moves inside it
+  } else if (pan) {
     const { s, u } = cameraAxes();
     const k = cam.dist * 0.0018;
     cam.target = cam.target.map((t, i) => t - (s[i] * dx - u[i] * dy) * k); cam.moved = true;
@@ -1551,11 +1665,18 @@ canvas.addEventListener('pointermove', (e) => {
     cam.az -= dx * 0.008; cam.el = Math.max(-1.55, Math.min(1.56, cam.el + dy * 0.008));
   }
 });
-canvas.addEventListener('wheel', (e) => { e.preventDefault(); cam.dist *= Math.exp(e.deltaY * 0.0012); cam.moved = true; }, { passive: false });
+canvas.addEventListener('wheel', (e) => {
+  // a face-on map zooms its axis limits about the pointer (the frame keeps its size), any other view the camera
+  e.preventDefault();
+  if (mapNavigable()) zoomMap(Math.exp(e.deltaY * 0.0012), e);
+  else { cam.dist *= Math.exp(e.deltaY * 0.0012); cam.moved = true; }
+}, { passive: false });
 canvas.addEventListener('dblclick', (e) => {
-  // on the material legend or the scale bar: that part back to its home place; anywhere else: the view
+  // on a movable part: that part back to its home place; on a face-on map: automatic limits and full size; else the view
   const part = partUnder(e);
-  if (part) homePart(part); else resetCamera();
+  if (part) homePart(part);
+  else if (mapNavigable()) { resetMapLimits(); resetCamera(); }
+  else resetCamera();
 });
 
 // ---------- loop ----------

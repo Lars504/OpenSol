@@ -21,8 +21,13 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
   `api.export_session_html` (Results.export_html: viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing
   into `web_page_directory()` (temporary folder, one file per model and target, no save dialog), then opens it with
   QDesktopServices (failure names the file). A mode animation is first written with max_bytes =
-  `_MODE_PAGE_ASK_BYTES`: above it the worker returns the `ModePageTooLarge` (nothing written) and the GUI thread
-  asks which kept groups to take (`_ask_mode_page_fields`), then exports again with that `fields=`. It passes no `planes=`: a live 3D page gets api's default x, y and z
+  `_MODE_PAGE_ASK_BYTES` (only for a mode_shapes target: export_html refuses fields= / max_bytes= on a field page):
+  above it the worker returns the `ModePageTooLarge` (nothing written) and the GUI thread
+  asks which kept groups to take (`_ask_mode_page_fields`), then exports again with that `fields=`. Compute runs
+  `schema.with_gui_run_features` of the document spec (FeatureType.gui_run_studies: a mode_shapes feature on every
+  solved tetrahedra solid of an eigenfrequency / optomechanics study without one), so the animation needs no feature
+  in the model; the run spec (bridge results_spec, Save run's model.json) holds it, the document and tree do not.
+  `ResultsPanel.refresh` skips mode_shapes results (no panel shows them; View in browser fetches its own). It passes no `planes=`: a live 3D page gets api's default x, y and z
   cuts through the structure (one shown cut alone was a worse page: a single plane, often missing the objects).
 - "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
   derived_curves with the document (never revisions). The Derived values tab evaluates the document's current

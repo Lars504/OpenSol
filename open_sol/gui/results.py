@@ -522,10 +522,12 @@ class ResultsPanel(QtWidgets.QWidget):
         return self._summary is not None or self._study_summary is not None
 
     def refresh(self):
-        """Fetch every feature result of the current session (dft_fields: metadata only) via bridge.call."""
+        """Fetch every feature result of the current session (dft_fields: metadata only) via bridge.call; mode_shapes
+        results are left to View in browser (no panel shows them; their surface stress costs a pass per resonance)."""
         if self._summary is None:
             return
-        keys = tuple((physics, feature) for physics, feature, _ in self._summary.feature_results)
+        keys = tuple((physics, feature) for physics, feature, kind in self._summary.feature_results
+                     if kind != 'mode_shapes')
         if keys:
             self._call(lambda session, keys=keys: _fetch_feature_results(session, keys), self._on_feature_results)
 

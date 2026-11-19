@@ -1877,8 +1877,10 @@ MODE_SHAPES_FEATURE = FeatureType(
         'strain_re / _im (r, n, 6) float32: components xx, yy, zz, xy, xz, yz (tensor shear strain), the nodal '
         'averages the stress / strain fields of the selected mode show (modal: no thermal part, no initial stress), '
         "in the displacement's normalisation and phase. Size about r x n x 24 bytes per value for the displacement, "
-        '48 more for each tensor.'),
-    apply=_apply_mode_shapes, result=_mode_shapes_result, validate=_validate_mode_shapes, grids=(_TETRAHEDRA,))
+        '48 more for each tensor. A GUI Compute adds one (default fields) to a solid without one, so View in browser '
+        'animates the modes; headless runs (api.run, CLI) keep only the features of the model.'),
+    apply=_apply_mode_shapes, result=_mode_shapes_result, validate=_validate_mode_shapes, grids=(_TETRAHEDRA,),
+    gui_run_studies=MODAL_STUDIES)
 
 
 # ---- type ----

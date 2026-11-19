@@ -131,14 +131,23 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   a picture must hold is drawn on that overlay (`drawOverlay`: heading, colour bar, material legend), never as DOM
   over the view: DOM parts (hint, REC, the panel) are left out of PNG and recordings on purpose. The overlay takes
   no pointer input, so a part moved by hand is hit-tested in the GL canvas' pointer handlers against the box it was
-  last drawn in: `MOVABLE` (the material legend and the scale bar; `placePart` = home place plus the part's offset in
-  CSS px, kept inside the canvas, remembered per file; drag = move, double-click on it = home instead of the view
-  reset). A new movable part is an entry there and a `placePart` call in its draw function.
+  last drawn in: `MOVABLE` (the colour bar (home = its Plot settings place; a new place homes it), the material legend
+  and the scale bar; `placePart` = home place plus the part's offset in CSS px, kept inside the canvas, remembered per
+  file; drag = move, double-click on it = home instead of the view reset). A new movable part is an entry there and a
+  `placePart` call in its draw function.
+  Plot frame (field_viewer only; `mapNavigable`: planar, relief 0, face-on): wheel / pinch zoom and right- or
+  Shift-drag pan change the in-plane Plot settings axis limits (`zoomMap` / `panMap` -> `setPlaneWindow` ->
+  `applySettings(true)`), never the camera, so the frame (`mapFrame`: the limits' rectangle on screen) keeps its size
+  and place while the shaders clip the map to it; zoom and pan are therefore saved, shown in the panel and exported
+  like typed limits, and double-click on the map clears them (automatic limits, full size). Its size is `plotScale`
+  (fraction of the free area inside `viewInsets`, frame centred there, remembered per file, Reset = 1), set by the
+  DOM corner grip (`placeGrip` from draw, outside PNG / recordings). Other views keep the camera zoom / pan.
   Scale bar (Plot settings `scale_bar`, default 'on'; on = the axes start off on a planar view, the Axes button brings
   them back; a non-planar 3D view ignores it and keeps its axes: `scaleBarOffered`):
   drawn only on a planar view seen face-on (one scale on screen); its px per length come from projecting a step along
   the camera's right axis divided by the stretch, so it is right on a stretched axis; length a 1-2-5 value near a
-  fifth of the view (follows the zoom) or `scale_bar_length` (m, remembered per file with the limits).
+  fifth of the view (follows the zoom) or `scale_bar_length` (m, remembered per file with the limits); home: the lower
+  right corner inside the plot frame.
   Plot settings (field_viewer only; mode_player has none): one object `fig` on the page = the keys of
   `field_viewer.figure_settings` (`FIGURE_CHOICES` / `FIGURE_RANGES` / `FIGURE_LIMITS` / `FIGURE_LENGTHS`, repeated in the page: change
   both, plus the `fs_<key>` input of the panel and describe's export_html entry). Lengths are stored in m and colour

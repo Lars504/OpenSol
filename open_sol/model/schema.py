@@ -224,11 +224,16 @@ class FeatureType:
     precisions: tuple = tuple(PRECISIONS)
     # MESH_KINDS of the meshes the feature works on (validate refuses an enabled one on another kind)
     grids: tuple = ('tensor',)
+    # study types in which a GUI Compute adds the feature (default params) to a solved physics without one of its
+    # type (with_gui_run_features); headless runs never add it. Must mirror the feature's own validate rule.
+    gui_run_studies: tuple = ()
 
     def __post_init__(self):
         if not (isinstance(self.grids, tuple) and self.grids and set(self.grids) <= set(MESH_KINDS)):
             raise ValueError(f"FeatureType '{self.name}': grids must be a non-empty tuple of {', '.join(MESH_KINDS)}, "
                              f'got {self.grids!r}')
+        if self.gui_run_studies and (self.selection_kind is not None or self.result_kind is None):
+            raise ValueError(f"FeatureType '{self.name}': gui_run_studies needs a selection-free result feature")
         if self.category not in FEATURE_CATEGORIES:
             raise ValueError(f"FeatureType '{self.name}': unknown category {self.category!r}")
         if self.selection_kind is not None and self.selection_kind not in SELECTION_KINDS:
@@ -1042,6 +1047,35 @@ def scalar_output_names(spec, registry, parameters=None):
         for scalar in physics_type.scalar_outputs(settings_values, physics_spec):
             names[f'{physics_spec.name}_{scalar}'] = (physics_spec.name, scalar)
     return names
+
+
+def with_gui_run_features(spec, registry):
+    """Copy of spec a GUI Compute runs: each physics the study solves gets the FeatureTypes whose gui_run_studies hold
+    the study type (on their grids) unless it has one of that type, enabled or not; spec itself when none is added."""
+    from .spec import FeatureSpec   # spec imports schema at module level
+    added = {}
+    for physics_spec, physics_type in known_physics(spec, registry):
+        mesh_spec = spec.find_mesh(physics_spec)
+        if mesh_spec is None or not spec.study.solves(physics_spec.name):
+            continue
+        present = {feature.type for feature in physics_spec.features}
+        taken = {feature.name for feature in physics_spec.features} | {info.name for info in physics_type.output_fields}
+        for feature_type in physics_type.features:
+            if (spec.study.type not in feature_type.gui_run_studies or feature_type.name in present
+                    or mesh_spec.kind not in feature_type.grids):
+                continue
+            name, number = feature_type.name, 1
+            while name in taken:
+                number += 1
+                name = f'{feature_type.name}_{number}'
+            taken.add(name)
+            added.setdefault(physics_spec.name, []).append(FeatureSpec(name, feature_type.name))
+    if not added:
+        return spec
+    run_spec = spec.copy()
+    for physics_spec in run_spec.physics:
+        physics_spec.features.extend(added.get(physics_spec.name, ()))
+    return run_spec
 
 
 SOLVER_BACKENDS = ('auto', 'gpu', 'cpu')   # SolverDefaultsSpec.backend

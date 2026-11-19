@@ -875,6 +875,11 @@ templates, describe. Current state, no changelog.
 - StudySpec.stored_fields [] (the default) stores every `session.available_fields()` entry in each snapshot
   (`_stored_field_keys`: primaries first): a new renderer field must be readable after every study solve its
   `requires_study` allows, else every default run of that type fails at its first snapshot.
+- GUI run features (`FeatureType.gui_run_studies`, `schema.with_gui_run_features`): a GUI Compute adds such a
+  selection-free result feature (default params, name = the type, numbered when taken) to every physics the study
+  solves without one of its type (a disabled one counts), on the feature's grids; headless runs never do. The tuple
+  must mirror the feature's validate rule, else a GUI Compute fails at a feature the tree does not show. Today:
+  mechanics mode_shapes (eigenfrequency / optomechanics, tetrahedra).
 - Snapshot solutions (`RunControl.keep_solutions`: GUI worker on, `api.run` / CLI / self-tests off ->
   `session.keep_solutions` in `_run_built`): besides the stored fields each Snapshot keeps per physics in
   `Snapshot.solutions` what every field of it renders from, chosen by `_SnapshotRecorder._solutions`: the study's

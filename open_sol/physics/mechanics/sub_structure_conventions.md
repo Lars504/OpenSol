@@ -623,7 +623,8 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   cells). `_domain_requirements` declares periodic axes so gmsh writes periodic surfaces. Not built: static periodic
   solves.
 - mode_shapes feature (`mode_shapes.py`, result kind 'mode_shapes' in `schema.RESULT_KIND_DOCS`; tetrahedra only,
-  eigenfrequency / optomechanics, a validation error elsewhere): reads `eigen_solve` like resonance_table (same row
+  eigenfrequency / optomechanics, a validation error elsewhere; `gui_run_studies` = MODAL_STUDIES: a GUI Compute adds
+  one to a solid without it, model sub file "GUI run features"): reads `eigen_solve` like resonance_table (same row
   order) and the public `solid_elements` (read-only host copy of `_solid`) & window elements. Surface =
   `interface_faces` of that set, oriented outward by the owner element's centroid; P2 faces split 1 -> 4 at their edge
   dofs (`face_local_dofs` order a, b, c, ab, ac, bc), nodes = the used face dofs ascending (P1: unsplit). The ModeShapes

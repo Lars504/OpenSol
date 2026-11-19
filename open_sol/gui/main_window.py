@@ -14,7 +14,7 @@ from .. import __version__
 from ..core.gpu_memory import format_bytes
 from ..model.expressions import error_message
 from ..model.geometry import GEOMETRY_KINDS
-from ..model.schema import ISSUE_LEVELS, Issue
+from ..model.schema import ISSUE_LEVELS, Issue, with_gui_run_features
 from ..model.templates import template_entries
 from .canvas import ModelCanvas
 from .document import COMPUTED_RESULTS_NODE, issue_node_path
@@ -785,7 +785,9 @@ class MainWindow(QtWidgets.QMainWindow):
                              'fix them before computing')
             return
         self._start_job('run', 'Starting…')
-        self.bridge.run(self.document.spec)
+        # GUI-only features (FeatureType.gui_run_studies: the mode_shapes behind View in browser's animation); the run
+        # spec, not the document, holds them, so Save run records them and the model tree does not show them
+        self.bridge.run(with_gui_run_features(self.document.spec, self.document.registry))
 
     def _web_page_target(self):
         """export_session_html's what of the canvas field: its physics' only mode_shapes result (the animation), the
@@ -1179,6 +1181,10 @@ class MainWindow(QtWidgets.QMainWindow):
         suffix = file_stem(what)
         path = os.path.join(web_page_directory(), f'{stem}_{suffix}.html')
         log_entries = list(self._job_log)
+        # fields= / max_bytes= exist only for a mode animation (export_html raises on a field or DFT page)
+        mode_page = what in {f'{physics}.{feature}' for physics, feature, kind in build_summary.feature_results
+                             if kind == 'mode_shapes'}
+        size_cap = _MODE_PAGE_ASK_BYTES if mode_page and fields is None else None
 
         def export(session):
             from ..api import export_session_html   # worker thread: reads fields / results from the session
@@ -1186,8 +1192,7 @@ class MainWindow(QtWidgets.QMainWindow):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             try:
                 return export_session_html(path, what, spec, session, build_summary, study_summary, log_entries,
-                                           model_file, fields=fields,
-                                           max_bytes=_MODE_PAGE_ASK_BYTES if fields is None else None)
+                                           model_file, fields=fields, max_bytes=size_cap)
             except ModePageTooLarge as too_large:
                 return too_large   # the GUI thread asks which kept groups to take
 
