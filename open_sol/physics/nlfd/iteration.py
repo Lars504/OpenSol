@@ -108,8 +108,12 @@ class ScaledSource:
 
 
 def _real_view(vector):
-    """float64 view (real, imaginary parts interleaved) of a contiguous complex128 vector: Re <u, v> = view dot."""
-    return vector.view(array_module_of(vector).float64)
+    """float64 view (real, imaginary parts interleaved) of a contiguous complex128 vector: Re <u, v> = view dot;
+    TypeError for any other dtype (a complex64 view would silently pair the wrong numbers)."""
+    xp = array_module_of(vector)
+    if vector.dtype != xp.complex128:
+        raise TypeError(f'store-vector algebra needs complex128 vectors, got {vector.dtype}')
+    return vector.view(xp.float64)
 
 
 def block_norms(vectors, blocks):

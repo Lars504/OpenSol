@@ -12,9 +12,10 @@ from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
 from ...core import time_estimate as te
-from ...core.constants import C0, ETA0
+from ...core.constants import C0, ETA0, FACES
 from ...core.memory_estimate import (BOOL_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate,
                                      combine)
+from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import (DIRECT_LINEAR_ROLE, optimization_evaluations, resolved_back_end,
                                          selected_material_data)
 from ...model.expressions import is_identifier
@@ -26,7 +27,7 @@ from ..em.definition_common import (EM_FAMILY, em_material_params, make_validate
                                     quasi_static_domain_requirements, source_slot_docs, write_dispersive_materials)
 from ..em.definition_bloch import is_fdfd_port_feature
 from ..em.definition_conducting_sheet import sheet_conductivity_from_values
-from ..em.definition_design import design_region_feature
+from ..em.definition_design import OPTIMIZATION_STUDY, design_region_feature
 from ..em.definition_fdfd import ASSEMBLY_BYTES_PER_ENTRY, EM_FDFD_EZ, EM_FDFD_HZ, direct_solver_issues
 from ..em.definition_feature_validation import bloch_period_line_issues, conducting_sheet_line_issues
 from ..em.materials import EM_MATERIAL_SCHEMAS
@@ -65,11 +66,11 @@ _CHANNEL_FEATURE_NAMES = ('point_source', 'line_source', 'gaussian_beam', 'plane
                           'field_probe', 'flux_monitor', 'mode_monitor', 'far_field', 'adjoint_objective')
 # channel source params that follow a reused sweep build (Param.follows_parameters): the FDFD source re-set in place by
 # its set_amplitude(*values of its amplitude_params) (fdfd_sources / fdfd_ports phasors; point_source: the names of every
-# excitation, the built phasor follows its own)
+# excitation, the built phasor follows its own). A new entry needs such an in-place setter, never a rebuilt source: the
+# channel's source list and the nonlinear phasors hold the object.
 _FOLLOWING_SOURCE_PARAMS = {'line_source': ('amplitude', 'phase'), 'gaussian_beam': ('amplitude', 'phase'),
                             'point_source': ('current', 'magnetic_current', 'dipole_moment', 'phase'),
                             'plane_wave_tfsf': ('amplitude', 'phase'), 'mode_source': ('power', 'phase')}
-OPTIMIZATION_STUDY = 'optimization'   # = model.study_optimization.STUDY_NAME
 _SLOT_ARRAYS = {**PERMITTIVITY_SLOTS['ez'], **PERMITTIVITY_SLOTS['hz']}
 _LOW_ORDER_INFO_TERMS = 3   # near misses / off-set products listed by validation
 _DENSITY_TRANSIENT_ARRAYS = 3   # complex128 full-grid temporaries of one density evaluation (box products, magnitude)
@@ -1163,7 +1164,6 @@ def _mixing_issues(vctx, physics_spec, settings_values, path):
 
 
 _NONLINEAR_SHEET_FEATURES = (SURFACE_CHI2.name, SHEET_NONLINEARITY.name)
-_FACE_NAMES = ('x_lo', 'x_hi', 'y_lo', 'y_hi')
 
 
 def _channel_phase_issues(vctx, physics_spec, settings_values, path):
@@ -1203,7 +1203,7 @@ def _channel_phase_issues(vctx, physics_spec, settings_values, path):
     else:
         lengths = tuple(vctx.domain_size) if vctx.domain_size else (None, None)
     periods = tuple(length if periodic[axis] else None for axis, length in zip('xy', lengths))
-    odd_mirror = any(settings_values[f'bc_{face}'] == 'antisymmetric' for face in _FACE_NAMES)
+    odd_mirror = any(MIRROR_SIGNS.get(settings_values[f'bc_{face}']) == -1 for face in FACES)
     for text in inexact_term_issues(build_mixing_table(channels, media), periods, odd_mirror):
         issues.append(Issue('error', path, text))
     return issues

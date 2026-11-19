@@ -12,6 +12,7 @@ import math
 
 from ...core.backend import check_backend_array, to_host
 from ...core.constants import C0, DTYPE
+from ...core.mirror import MIRROR_SIGNS
 from ...core.solver_base import PhysicsSolver
 from ...solvers.sparse_direct import SparseDirectSolver
 from ..em.boundaries import BCType, solver_boundary_config
@@ -57,10 +58,14 @@ def channel_boundary_config(base, channel):
     return config
 
 
+def face_plane_signs(config):
+    """{mirror face: E parity +1 symmetric / -1 antisymmetric} of a BoundaryConfig."""
+    return {face: MIRROR_SIGNS[getattr(config, face).value] for face in config.ghost_faces}
+
+
 def channel_plane_signs(base, channel):
-    """{mirror face: +1 symmetric / -1 antisymmetric} of a channel's E field (channel_boundary_config)."""
-    return {face: (-1 if getattr(base, face) == BCType.ANTISYMMETRIC and channel.parity_exponent else 1)
-            for face in base.ghost_faces}
+    """face_plane_signs of a channel's E field (channel_boundary_config: an even channel is +1 everywhere)."""
+    return face_plane_signs(channel_boundary_config(base, channel))
 
 
 class NonlinearHarmonicPhysics(PhysicsSolver):
@@ -172,10 +177,14 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
                                                                self.boundary_config.periodic_y)))
 
     @property
+    def face_signs(self):
+        """face_plane_signs of the shared faces (the input channels' parity)."""
+        return face_plane_signs(self.boundary_config)
+
+    @property
     def has_odd_mirror(self):
         """True when a shared mirror face is antisymmetric (the input channels' parity -1 there)."""
-        return any(getattr(self.boundary_config, face) == BCType.ANTISYMMETRIC
-                   for face in self.boundary_config.ghost_faces)
+        return -1 in self.face_signs.values()
 
     def plane_signs(self, name):
         """{mirror face: E parity +1 / -1} of channel `name` (generated even combinations are +1 everywhere)."""

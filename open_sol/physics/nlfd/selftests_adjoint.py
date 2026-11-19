@@ -298,81 +298,6 @@ def _check_extension_gradient(results_by_name):
     return _check_weighted_gradients(results_by_name, {case: entry[3] for case, entry in _EXTENSION_CASES.items()})
 
 
-# Symmetrized transposed solve (adjoint.transposed_channel_solve, the route of a factor without a transposed solve, e.g.
-# cuDSS): a stub channel on a graded walls + CPML Helmholtz operator with random complex face weights / cell term and
-# an even pinned row, its forward solves by SuperLU; no model run.
-_TRANSPOSE_SHAPE = (14, 11)
-_TRANSPOSE_CELL = 20e-9              # m, base width (graded x 1 .. 1.5) and CPML grading cell
-_TRANSPOSE_NPML = 4
-_TRANSPOSE_SEED = 23
-_TRANSPOSE_TOLERANCE = 1e-9          # relative vs scipy's solve of A^T (first estimate; round-off ~1e-13 expected)
-
-
-class _StubChannel:
-    """The FDFDPhysics attributes transposed_channel_solve reads; solve_adjoint raises as a cuDSS factor does."""
-
-    def __init__(self, domain, config, omega, operator):
-        import types
-        import numpy as np
-        import scipy.sparse.linalg
-        self.domain, self.boundary_config, self.metric, self.xp = domain, config, None, np
-        self.system = types.SimpleNamespace(omega=omega, operator=operator)
-        self._lu = scipy.sparse.linalg.splu(operator.tocsc())
-
-    def solve_adjoint(self, flat_rhs):
-        raise NotImplementedError('stub factor: no transposed solve')
-
-    def _solve_linear(self, flat_rhs):
-        return self._lu.solve(flat_rhs)
-
-
-def _check_symmetrized_transpose(_results_by_name):
-    """transposed_channel_solve vs scipy's A^T solve on the stub channel; failed checks: no NotImplementedError with a
-    Bloch phase, no RuntimeError for an operator D does not symmetrize."""
-    import types
-    import numpy as np
-    import scipy.sparse.linalg
-    from ...core.constants import C0
-    from ..em.boundaries import BoundaryConfig
-    from ..em.operators import helmholtz_operator, pin_image_cells, yee_operators
-    from .adjoint import transposed_channel_solve
-    rng = np.random.default_rng(_TRANSPOSE_SEED)
-    nx, ny = _TRANSPOSE_SHAPE
-    widths = (_TRANSPOSE_CELL * (1.0 + 0.5 * rng.random(nx)), _TRANSPOSE_CELL * (1.0 + 0.5 * rng.random(ny)))
-    omega = 2.0 * math.pi * C0 / _WAVELENGTH
-    config = BoundaryConfig('pmc', 'cpml', 'pec', 'cpml')
-    config.cpml_npml = _TRANSPOSE_NPML
-    ops = yee_operators(widths, config, _TRANSPOSE_CELL, omega=omega)
-    weights = [1.0 / (1.0 + rng.random((nx, ny)) - 0.2j * rng.random((nx, ny))) for _ in range(2)]
-    cell_term = (omega / C0) ** 2 * (2.0 + rng.random((nx, ny)) - 0.3j * rng.random((nx, ny)))
-    pinned = np.zeros((nx, ny), dtype=bool)
-    pinned[0, :] = True   # an even image row, as a mirror plane
-    operator = pin_image_cells(helmholtz_operator(ops, weights[0], weights[1], cell_term), pinned,
-                               pinned.astype(np.float64)).tocsr()
-    domain = types.SimpleNamespace(non_uniform=True, mesh_config=types.SimpleNamespace(dx_base=_TRANSPOSE_CELL),
-                                   grid=types.SimpleNamespace(nx=nx, ny=ny, dx_arr=widths[0], dy_arr=widths[1]))
-    rhs = rng.standard_normal(nx * ny) + 1j * rng.standard_normal(nx * ny)
-    solution = transposed_channel_solve(_StubChannel(domain, config, omega, operator), rhs)
-    reference = scipy.sparse.linalg.spsolve(operator.T.tocsc(), rhs)
-    error = float(np.linalg.norm(solution - reference) / np.linalg.norm(reference))
-    failed = []
-    bloch = BoundaryConfig.with_bloch_y(_TRANSPOSE_NPML, ky=1e6)
-    try:
-        transposed_channel_solve(_StubChannel(domain, bloch, omega, operator), rhs)
-        failed.append('Bloch phase not refused')
-    except NotImplementedError:
-        pass
-    skewed = operator.tolil()
-    skewed[7 * ny, 2 * ny + 5] += 0.3 * abs(operator).max()   # cells (7, 0) <- (2, 5): no transposed partner
-    try:
-        transposed_channel_solve(_StubChannel(domain, config, omega, skewed.tocsr()), rhs)
-        failed.append('unsymmetrizable operator not refused')
-    except RuntimeError:
-        pass
-    return {'measured': error, 'expected': 0.0, 'error': error + len(failed),
-            'tolerance': _TRANSPOSE_TOLERANCE, 'details': {'relative_error': error, 'failed': failed}}
-
-
 # shg_metasurface_optimization template: y-periodic 0.5 um cell (below the SH wavelength in silica: zeroth order only),
 # CPML along x, uniform 20 nm mesh (window cell k spans [20 k, 20 (k + 1)] nm: layers on cell faces, lines at cell
 # centres). Air x < 2.3 um with the pump line source at 0.51 um, a 0.8 um design layer x 1.5..2.3 um (air to silicon
@@ -502,17 +427,4 @@ CASCADE_ADJOINT_SELFTESTS = (
                     '(inf when a forward solve did not converge), tolerance 1.',
         specs=_extension_specs,
         check=_check_extension_gradient),
-    SelfTestCase(
-        name='nlfd_symmetrized_transpose',
-        label='NLFD adjoint: transposed solve through the symmetrizer',
-        description='CPU check of adjoint.transposed_channel_solve (no model run), the route the channel adjoint takes '
-                    'when the channel factor has no transposed solve (a cuDSS back end): x = D A^-1 D^-1 b with D the '
-                    'stretched cell areas, on a stub channel with a graded 14 x 11 Helmholtz operator (pmc / pec walls, '
-                    'CPML on x_hi / y_hi at 1.55 um, random complex face weights and cell term, an even pinned row) '
-                    "and SuperLU forward solves, vs scipy's solve of A^T. measured = relative error; error = measured "
-                    '+ failed checks (a Bloch-phase channel must raise NotImplementedError, an operator with one '
-                    f'unpartnered entry RuntimeError); tolerance {_TRANSPOSE_TOLERANCE:g} (an estimate). Not yet '
-                    'confirmed by a run.',
-        specs=lambda: {},
-        check=_check_symmetrized_transpose),
 )

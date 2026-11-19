@@ -27,12 +27,10 @@ import numpy as np
 
 from ...core.backend import array_module_of
 from ...core.constants import EPS0, HBAR, MU0
-from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ..em.adjoint import (EpsSensitivity, adjoint_source, objective_cotangents, permittivity_gradients,
                           sensitivity_density)
 from ..em.harmonic import face_mean_at_centres
-from ..em.operators import stretched_cell_areas
-from ..em.yee_grid import cell_row, cpml_grading_cell_size, grid_cell_widths
+from ..em.yee_grid import cell_row
 from .iteration import _scale_blocks, block_norms, real_gmres
 from .mixing import solve_order
 from .sheets import sheet_cotangents
@@ -40,50 +38,6 @@ from .sources import centres_to_faces, collocation_weights
 
 ADJOINT_MAX_PRODUCTS = 200       # transposed sweeps (N adjoint solves each) of the pump-depleted adjoint GMRES
 ADJOINT_FAIL_RESIDUAL = 1e-4     # relative GMRES residual above which the pump-depleted gradient is refused
-# relative ||A^T x - b|| / ||b|| a transposed solve through the symmetrizer must reach (first estimate: forward SuperLU /
-# refined cuDSS solves reach ~1e-12; D spans the cell areas x CPML stretches, which may cost a few digits)
-SYMMETRIZED_TRANSPOSE_RESIDUAL = 1e-8
-# the MUMPS / PARDISO back ends as error-text words (their factors solve A^T natively, as SuperLU)
-_TRANSPOSING_HOST_BACK_ENDS = ' / '.join(f"'{name}'" for name in HOST_DIRECT_BACK_ENDS)
-
-
-def channel_symmetrizer(physics):
-    """Host complex128 flat stretched cell areas D of a Yee channel FDFDPhysics (D A complex symmetric, no Bloch
-    phase): as FDFDPhysics._eigen_symmetrizer, whatever the eigen solver."""
-    domain = physics.domain
-    cell_widths = grid_cell_widths(domain.grid)
-    polar = physics.metric is not None
-    pml_dx = float(cell_widths[0][-1]) if polar else cpml_grading_cell_size(domain)
-    return stretched_cell_areas(cell_widths, physics.boundary_config, pml_dx, physics.system.omega,
-                                polar_radius_min=domain.coordinates.radius_min if polar else None)
-
-
-def transposed_channel_solve(physics, flat_rhs):
-    """x of A^T x = rhs (unconjugated) for a channel's last system: its factor's transposed solve, or for a factor
-    without one (NotImplementedError, e.g. cuDSS) x = D A^-1 D^-1 rhs by a forward solve on that factor, checked."""
-    try:
-        return physics.solve_adjoint(flat_rhs)
-    except NotImplementedError as exc:
-        missing = exc
-    if physics.boundary_config.has_bloch_phase:
-        raise NotImplementedError(f'{missing} (a channel with a Bloch phase has no symmetrizer: D A is not complex '
-                                  'symmetric there)') from missing
-    xp = physics.xp
-    rhs = xp.asarray(flat_rhs, dtype=xp.complex128).ravel()
-    symmetrizer = xp.asarray(channel_symmetrizer(physics))
-    solution = symmetrizer * physics._solve_linear(rhs / symmetrizer)
-    rhs_norm = float(xp.linalg.norm(rhs))
-    if rhs_norm > 0.0:
-        residual = float(xp.linalg.norm(physics.system.operator.T @ solution - rhs)) / rhs_norm
-        if not residual <= SYMMETRIZED_TRANSPOSE_RESIDUAL:   # also NaN
-            raise RuntimeError(f'em_fdfd_nonlinear adjoint: the transposed solve through the symmetrizer D misses '
-                               f'{SYMMETRIZED_TRANSPOSE_RESIDUAL:g} (relative residual {residual:.3g}: D A is not '
-                               f'complex symmetric for this channel, {missing}); use the sparse_direct back end '
-                               f"'scipy_splu' (or {_TRANSPOSING_HOST_BACK_ENDS}: transposed solves on the host) for "
-                               "the 'linear' role")
-    return solution
-
-
 _UNIT_WEIGHTS = (0.5, 1.0, 1.0)   # collocation_weights of unit widths, as scalars (C^T: no array upload)
 
 
@@ -239,7 +193,7 @@ def _channel_backward(nl, index, cell_part, objective_faces, received, media, gr
                 _add(face_parts, face, received[face])
     if cell_part is None and all(part is None for part in face_parts):
         return   # nothing depends on this channel
-    adjoint = transposed_channel_solve(physics, adjoint_source(physics, cell_part, face_parts, physics._wall_rows))
+    adjoint = physics.solve_adjoint(adjoint_source(physics, cell_part, face_parts, physics._wall_rows))
     adjoint = _zero_pinned(adjoint.reshape(shape), physics)
     phasor = nl._sources.get(index)
     if gradients is not None:
