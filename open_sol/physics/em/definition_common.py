@@ -15,6 +15,7 @@ from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, Expression
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
+from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.schema import (GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
                              array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
@@ -825,7 +826,7 @@ def host_matrix_back_end_issues(solvers, type_name, path) -> list:
     resolved = (solvers or {}).get('linear')
     if resolved is None or resolved.values.get('back_end') != 'cusolver_qr':
         return []
-    choices = ', '.join(f"'{name}'" for name in ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS)
+    choices = ', '.join(f"'{name}'" for name in LINEAR_SOLVER_CHOICES if name != 'cusolver_qr')
     return [Issue('error', path, f"linear solver '{resolved.node}': {type_name} factorises a host matrix (SuperLU, "
                                  f'cuDSS, MUMPS or PARDISO): use back_end {choices}, or Automatic')]
 

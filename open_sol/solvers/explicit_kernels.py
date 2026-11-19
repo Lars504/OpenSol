@@ -5,27 +5,17 @@ elastic_waves, laminar_flow transient; core.half_storage). On the cpu backend th
 their kernels (single and double: backend_misfit)."""
 from dataclasses import dataclass
 
-# precision -> (storage dtype name, compute dtype name) of the engine's fields
-STORAGE_DTYPES = {'single': ('float32', 'float32'), 'double': ('float64', 'float64'),
-                  'half_storage': ('float16', 'float32')}
+PRECISIONS = ('single', 'double', 'half_storage')   # the one list (SolverType precisions and the precision choices)
 
 
 @dataclass(frozen=True)
 class StepperConfig:
-    """Precision of an explicit engine and the dtype names it stores / computes in."""
+    """Precision of an explicit engine (the engine picks its dtypes from it)."""
     precision: str = 'single'
 
     def __post_init__(self):
-        if self.precision not in STORAGE_DTYPES:
-            raise ValueError(f"stepper precision must be one of {', '.join(STORAGE_DTYPES)}, got {self.precision!r}")
-
-    @property
-    def storage_dtype(self) -> str:
-        return STORAGE_DTYPES[self.precision][0]
-
-    @property
-    def compute_dtype(self) -> str:
-        return STORAGE_DTYPES[self.precision][1]
+        if self.precision not in PRECISIONS:
+            raise ValueError(f"stepper precision must be one of {', '.join(PRECISIONS)}, got {self.precision!r}")
 
     def work_counters(self) -> dict:
         """Nothing: the engine counts its own steps (summary ticks)."""
@@ -47,6 +37,8 @@ def backend_misfit(values, backend) -> str:
 
 
 def stepper_precision(solvers) -> str:
-    """Precision of the build's 'stepper' runtime in ctx.solvers(name) ({role: runtime}), 'single' without one."""
-    stepper = (solvers or {}).get('stepper')
-    return 'single' if stepper is None else stepper.precision
+    """Precision of the build's 'stepper' runtime in ctx.solvers(name) ({role: runtime}); KeyError without one (every
+    type with a 'stepper' role gets it in every study, so a missing one is a build bug, never a silent 'single')."""
+    if 'stepper' not in solvers:
+        raise KeyError(f"no 'stepper' solver runtime among the built roles {sorted(solvers)}")
+    return solvers['stepper'].precision

@@ -259,137 +259,24 @@ rebuild one without a reason that answers these findings.
   memory flags, a looser drop threshold and a case much larger than solid_mechanics_3d_tetrahedra_large.
 
 ## host_direct (`HostDirectFactorization`; MUMPS / MKL PARDISO back ends of sparse_direct and arpack_shift_invert)
-- Factor of E = R S R (S = D A with a symmetrizer, R = |diag S|^-1/2 with zero / non-finite / missing diagonals 1, or
-  the caller's row_scale), entry by entry on an own copy of the canonical pattern, as CudssFactorization: LDL^T when
-  symmetry was requested (symmetric, positive_definite or a symmetrizer) and relative_asymmetry <= SYMMETRY_TOLERANCE
-  (complex symmetric, not Hermitian), else LU; PARDISO real positive_definite = Cholesky (matrix type 2; a zero-pivot
-  error -> LDL^T, sticky); MUMPS always LDL^T for symmetric kinds (python-mumps sets SYM=2 and exposes no SYM=1).
-  `back_end` = the library ('mumps' / 'pardiso'), `precision` the request, `factor_precision` what is factored;
-  `description` starts with the library label ('MUMPS LDL^T', 'PARDISO LU float32 + float64 GMRES refinement').
-  The scaling itself is `scaled_values` (a new array; a core.kernels.host_twin: numba prange over rows from
-  HOST_SCALE_MIN_ENTRIES entries when numba is already in sys.modules, else the numpy form `_scale_host`: it never
-  imports numba, ~1 s per process against ~30 ms of gathers at 3e6 entries; next-gains N6, self-test
-  solver_host_scale_numba).
-- Solves: A x = b as x = R E^-1 R (D) b; A^T x = b as R E^-T R b (no symmetrizer) or D R E^-T R b (symmetrizer;
-  E^-T = E^-1 for a symmetric kind); a real factor takes a complex rhs as two real solves; solve() of a cupy rhs moves it
-  to the host and the solution back (host_arrays / numpy rhs: numpy). `_lu_solve(rhs, trans)` serves
-  DiffusionDirectSolver and sparse_direct.recycled_gmres (solve_preconditioned*: recyclable).
-- Probe after every factorisation (cudss_factor gates: ACCEPT_RESIDUAL or BACKWARD_ERROR_TOLERANCE); a double miss
-  switches the factor to float64 GMRES-IR (gmres_refine with the double factor as preconditioner, every later solve;
-  refinement_steps = the probe's iterations), a second miss releases and raises HostDirectAccuracyError. The libraries'
-  own refinement (MUMPS ICNTL(10), PARDISO iparm[7]) is not used. PARDISO perturbs tiny pivots silently (1e-13
-  unsymmetric, 1e-8 symmetric): a singular operator mostly shows as an accuracy error, not HostDirectSingularError.
-- Mixed (*_mixed): float32 / complex64 factor, float64 E kept; full-accuracy solves by gmres_refine to
-  solve_backward_error, an int refinement_steps = plain steps; each low-precision solve scales its rhs to unit norm;
-  the probe's stall test and mixed gates as cuDSS; a miss refactors in double (sticky: last_double_fallback,
-  mixed_rejection). No low-precision Cholesky (as cuDSS), no remembered rejections per pattern (cuDSS H4).
-- Memory: after the analysis the library's estimate (MUMPS INFOG(17) MB read as MiB, PARDISO max(iparm[14],
-  iparm[15] + iparm[16]) KiB) above HOST_FRACTION (0.8) of `core.host_memory.available_bytes()` is
-  HostDirectMemoryError (no guard when unknown); library allocation errors map to it too. The factor lives in library
-  memory outside numpy: holders release() it before dropping or replacing it (host_direct_factorization releases a
-  `previous` it cannot refactorise). Estimators: `factor_host_bytes` (SuperLU heuristics x `superlu_bytes_scale`:
-  LU_FILL_OVER_SUPERLU / LDLT_FILL_OVER_SUPERLU x WORKSPACE_OVER_FACTOR x the mixed value share, uncalibrated: refit
-  from host_direct_lu_entries / host_factor_bytes) + `solver_host_bytes` (E, row scale, the wrapper's matrix copy,
-  mixed: the factor-dtype CSR and one solve's GMRES vectors).
-- Refactorize: the same canonical pattern and kind = numeric factorisation on the kept analysis (last_plan_reused);
-  pydiso's refactor checks only the nnz count, so the pattern is compared here first. The per-entry rows and diagonal
-  positions are kept per pattern and ||E|| (`operator_norm`) is lazy: a double probe whose relative residual passes
-  ACCEPT_RESIDUAL leaves probe_backward_error None (cuDSS R4).
-- Kept analyses (`host_analyses_kept()`, entered by run_study beside `cudss_orderings_kept`; off for scripts and
-  selftest checks): release() parks the library factor (analysis and factor memory) and a new analysis of another
-  factor object adopts a parked one of the same library, kind, real, factor dtype and canonical pattern (compared
-  entry by entry; pydiso checks only the nnz), so a sweep value or rebuilt session with a known pattern runs the
-  numeric factorisation only (`last_analysis_kept`, counted in host_direct_reused_analyses; no memory guard, the bytes
-  were already held). A miss releases every parked factor before it analyses (a changed mesh never holds a stale
-  factor beside the new one; a pattern released mid-build loses its entry to the next other pattern), at most
-  KEPT_ANALYSES (4) stay parked, a failed factorisation never parks, the block's end releases the rest. The parked
-  bytes are no estimate item: the adopting build's own factor item is that memory; until then
-  `core.host_memory.available_bytes()` (the host budget, the guard) sees them as used (`kept_analysis_bytes()`). MUMPS
-  takes the same path (`_MumpsFactor.refactor` reuses its Context's analysis).
-- PARDISO thread rule (gotcha): phase 22 on a handle whose phase 33 ran on one thread (the serial solve below
-  `_PARDISO_SERIAL_SOLVE_LU_ENTRIES`) gave garbage factors (probe residuals 1e20 - 1e125, "0 perturbed pivots") and
-  access violations (em_fdfd / em_modes / em_nlfd / semiconductor / magnetic example profilers, 2026-11-12); handles that
-  solved on all threads (>= 1e6 entries: potential cylinder, membrane) refactor fine. So `_PardisoFactor.solved_serially`
-  makes the handle not `refactorable` (`refactor` raises): it is neither reused in place nor parked. A factor object
-  that then refactorises in place analyses anew once with `keep_threads` (every phase on the library thread count, no
-  serial solves) and reuses that analysis afterwards; small-factor sweeps of new objects (em wavelengths) analyse per
-  value as before the kept analyses. Checked by solver_host_direct_cpu_gpu (value sweeps at the rule and with every
-  solve on all threads).
-- `refactorize_values(values, indptr, indices, row_scale, symmetric_known, defer_check)` (HostPencil route; no
-  symmetrizer): the pattern matched by identity with the last refactorize_values arrays (a plain refactorize clears
-  that), so its caller never modifies them in place. defer_check: a double factor on the kept analysis whose last
-  probe passed unrefined skips the probe and `_checked_solve` judges the next solve (miss: GMRES-IR and solve again;
-  second miss: released, HostDirectAccuracyError from solve / solve_host, which consumers translate as at factorize);
-  probe_residual lags one factor. Mixed factors always probe (no in-place double re-factor from a solve).
-- PARDISO values: `_PardisoFactor` checks once per analysis that pydiso's private `_data` / `_indptr` / `_indices`
-  hold the pattern as kept here (the upper take of a symmetric type) and then writes the values straight into the
-  handle and calls `_factor` (no sp.triu / sort / sum_duplicates per refactor); any other pydiso layout uses the
-  public refactor. A pydiso update that renames those: the check fails quietly and the gain is lost, never results.
-- Library notes (PARDISO: run on pydiso 0.3.1 / oneMKL 2026.2; MUMPS: verified against the python-mumps 0.0.6
-  sources, not run): python-mumps
-  `Context.set_matrix(a, symmetric=True)` keeps scipy.sparse.triu itself and creates the s/d/c/z instance only when
-  the dtype changes (SYM stays that of the first call: one Context per analysis); icntl / infog 1-based; ICNTL(9) = 2
-  solves A^T (believed unconjugated for complex: checked by solver_host_direct_cpu_gpu only); INFOG(12) negative
-  pivots of SYM=2; MUMPSError.error = INFOG(1) (-10 / -6 singular; -5, -7, -8, -9, -13, -17, -19, -20 memory);
-  `factor()` retries -8 / -9 itself. pydiso: symmetric types keep sp.triu of the matrix given; MKL needs every diagonal
-  entry of a symmetric type stored, so the factor adds explicit zero diagonal slots once per pattern (the same padded
-  pattern every refactorisation); `solve(transpose=True)` = iparm[11] = 2 (A^T, not A^H); float32 data sets iparm[27]
-  (single precision); PardisoError carries only a message (mapped back by `_err_messages`); release = dropping the
-  handle (dealloc phase -1). Every library call sits in `_MumpsFactor` / `_PardisoFactor` at the end of the module.
-- PARDISO ordering: the analysis asks for the OpenMP nested dissection (iparm[1] = 3, `_PARDISO_ORDERING`; an older
-  pydiso without the keyword, 0.2.0 in the conda env, runs `_ordered_pardiso_class`, which sets iparm[1] on the
-  handle before the analysis its constructor runs: without it the analysis was serial METIS, 2.4 s of a 6 s heat
-  profile): the same fill as METIS at half the analysis time on
-  2 - 4 threads (with METIS the analysis is 50 - 85 % of a cold PARDISO factorisation up to ~600 000 unknowns), equal
-  on one thread, every matrix type and both precisions. Measured and not adopted: minimum degree (iparm[1] = 0: the
-  fastest cold factor on 2D grids, 2 - 6 x slower solves and 1.7 x the fill in 3D), the two-level factorisation
-  (iparm[23]) and iparm[24] (nothing on 4 threads; untested on more).
-- Where a PARDISO refactorisation spends its time (2D FDFD, 160 000 unknowns, 4 threads: ~185 ms): the numeric
-  factorisation ~50 %, the equilibration + asymmetry check ~30 % (single-threaded numpy / scipy; `symmetric_known`
-  skips the check), pydiso's own `scipy.sparse.triu` of a symmetric type ~6 %, the probe solve ~12 % (before the
-  HostPencil route; FEM sweeps on factorize_host measured 2026-11: pressure_acoustics_tetrahedra ~250 ms per frequency
-  of which MKL ~100 ms, host A(omega) 20, equilibration 26, asymmetry 17, probe 17). *_mixed halves
-  the factor memory but costs time in 2D (every full-accuracy solve = 3 library solves + GMRES; the float32
-  factorisation is only ~1.4 x faster): it pays for memory, or where the factorisation dominates (large 3D).
-- Availability (GUI-thread safe, nothing imported): MUMPS = find_spec('mumps') and the python-mumps distribution
-  metadata (PyMUMPS installs another `mumps`); PARDISO = find_spec('pydiso') on x86-64. `missing_text(name)` is neutral
-  ("'<name>' needs ...": back_end and factorization settings alike), `install_hint`, `factor_label` (texts).
-- Threads: library defaults (MUMPS OpenMP / BLAS: OMP_NUM_THREADS, recorded; PARDISO MKL_NUM_THREADS,
-  get_mkl_pardiso_max_threads recorded); no open_sol setting, oversubscription with numba / scipy BLAS threads is the
-  user's to set. Exception: a PARDISO solve (phase 33) of a factor below `_PARDISO_SERIAL_SOLVE_LU_ENTRIES` (1e6)
-  runs on one MKL thread, and the count is restored after (fluid heat transient, 57 000 entries: 0.88 ms per solve on
-  16 threads, mostly barriers). Both wrappers release the GIL in their calls; the calls are uninterruptible like SuperLU.
-  `_PardisoFactor.solve` sums MKL's own refinement steps (iparm[6]; iparm[7] = 0 still refines twice per solve when the
-  factor has perturbed pivots, iparm[13]) into `solve_text` (solve_resonances' factor text via `library_solve_text`);
-  `OPEN_SOL_PARDISO_SOLVE_PARALLEL` (temporary measurement override) writes iparm[24] before a handle's first solve.
-- PARDISO beside OpenBLAS (pip wheels and conda-forge defaults: numpy / scipy on OpenBLAS, pydiso on MKL): both pools
-  spin after a call, so an MKL call right after a threaded BLAS call (a norm, a Gram-Schmidt product, ARPACK's own
-  BLAS) shares the cores with spinning OpenBLAS workers (4 cores: a solve 15 -> 70 ms, a mixed solve 75 -> 450 ms, an
-  ARPACK shift-invert run 0.16 -> 4 s). `host_direct.quiet_openblas(name)` (context; a back end / factorization /
-  library name) holds every loaded OpenBLAS pool at one thread through threadpoolctl and restores it on exit: nothing
-  for a name that is not PARDISO (MUMPS's BLAS may be that OpenBLAS), without threadpoolctl (optional, in the
-  `pardiso` extra) or with numpy on MKL (one pool, no conflict). HostDirectFactorization wraps refactorize, solve_host
-  and solve_preconditioned* itself (`openblas_pools` = pools held, 0 none); a consumer whose own loop does BLAS work
-  between PARDISO solves wraps the loop (arpack_shift_invert: the scipy eigs / eigsh calls, by `self.factorization`).
-  `limited_blas_threads(threads)` (every BLAS pool, MKL included, at `threads`; nothing for 0) is the other
-  threadpoolctl user, for arpack_shift_invert.host_blas_limit (E6; contract direct_wrappers_lazy keeps threadpoolctl here).
-  It is process-wide while held: only vector-sized BLAS work belongs inside, never a dense factorisation. BLAS calls
-  of a physics between two PARDISO calls stay outside it: OPENBLAS_NUM_THREADS=1 (INSTALL.md) covers those. The pools
-  are looked up once; `refresh=True` (refactorize / refactorize_values) looks again only when a scipy module that loads
-  scipy's OpenBLAS (`_SCIPY_BLAS_MODULES`) appeared in sys.modules since (a ThreadpoolController walks every loaded
-  library: 4.5 ms per Newton factorisation). A new lazily loaded BLAS user of scipy joins that list.
-- Not yet: out-of-core (MUMPS ooc / ICNTL(22), PARDISO iparm[59]), MUMPS BLR (ICNTL(35)), MPI, user orderings,
-  a HostPencil route for the em FDFD sweeps (host_fdfd, fdfd_2d_fem: A(omega) rebuilt for factorize_host), deferred
-  checks of mixed factors, pydiso >= 0.3 in the conda env (needs Python >= 3.12, the env is 3.11; 0.2.0 reaches the
-  same parallel ordering through `_ordered_pardiso_class`: analysis cpu/wall ~5 on 16 threads, measured), PARDISO
-  Hermitian types (4 / -4), remembered mixed rejections, a thread-count setting,
-  calibrated memory / time
-  constants and profile curves.
+Factor and solve maps, probes and mixed refinement, the memory guard, refactorisation and kept analyses, the PARDISO
+thread rule, value refreshes, threads and the OpenBLAS clash: host_direct.py header; library API notes, PARDISO matrix
+types and ordering: its adapter section (`_MumpsFactor`, `_PardisoFactor`). Rules across files:
+- Kept analyses are scoped like the cuDSS orderings (`host_analyses_kept()`, entered by run_study beside
+  `cudss_orderings_kept`; off for scripts and selftest checks), so a case never adopts another case's analysis.
+- `quiet_openblas` covers only a factor's own calls and loops wrapped in it; BLAS work of a physics between two PARDISO
+  calls stays outside it (OPENBLAS_NUM_THREADS=1, INSTALL.md). `limited_blas_threads` (every BLAS pool) is
+  arpack_shift_invert's host_blas_limit; both are process-wide while held: vector-sized BLAS work only.
+- Measured (2D FDFD, 160 000 unknowns, 4 threads, ~185 ms per PARDISO refactorisation): numeric factorisation ~50 %,
+  equilibration + asymmetry check ~30 % (single-threaded; `symmetric_known` skips the check), pydiso's triu ~6 %, probe
+  ~12 %. *_mixed halves the factor memory but costs time in 2D (a full-accuracy solve = 3 library solves + GMRES, the
+  float32 factorisation only ~1.4 x faster): it pays for memory, or where the factorisation dominates (large 3D).
+- Not yet: out-of-core (MUMPS ICNTL(22), PARDISO iparm[59]), MUMPS BLR, MPI, user orderings, a HostPencil route for
+  the em FDFD sweeps (host_fdfd, fdfd_2d_fem rebuild A(omega) for factorize_host), PARDISO Hermitian types (4 / -4), a
+  thread-count setting, calibrated memory / time constants and profile curves; pydiso >= 0.3 in the conda env (needs
+  Python >= 3.12, the env is 3.11; 0.2.0 reaches the parallel ordering through `_ordered_pardiso_class`).
 
 ## explicit_kernels (`StepperConfig`; role 'stepper')
-- Frozen settings bundle: precision 'single', 'double' or 'half_storage' (fp16 storage, float32 arithmetic;
-  `storage_dtype` / `compute_dtype`). Readers: em_fdtd_ez / _hz (STEPPER_ROLE; physics/em sub file "Stepper
-  precision"), em_fdtd_3d, elastic_waves, laminar_flow (HALF_STORAGE_STEPPER_ROLE). fp16 kernels use
-  `core.half_storage.storage_preamble`; each engine keeps values O(1) by its own power-of-two storage scale.
-- Backends ('gpu', 'cpu'): on the cpu the engines run the `core.kernels` twins; `backend_misfit` refuses half_storage
-  there (no twin of PTX fp16 storage); double runs there.
+Precisions and backends: explicit_kernels.py header; the roles: `STEPPER_ROLE` / `HALF_STORAGE_STEPPER_ROLE`
+(model.definition_helpers); fp16 storage and scales: core sub file "Half storage"; em_fdtd_ez / _hz double: physics/em
+sub file "Stepper precision".
