@@ -268,7 +268,7 @@ templates, describe. Current state, no changelog.
   by metric volumes (per m^2 / per m / whole sphere). validate: `check_physics` compares `spec.dimensions`,
   `_check_coordinate_grid` asks planar on a slab, interface selections and conformal boundaries refuse / ignore 1D,
   heat refuses out_of_plane_convection and the noise features. Not yet: GUI (forms, canvas, Add physics:
-  `schema.type_spaces` ignores 1, GUI solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D
+  `schema.type_spaces` ignores 1, GUI solver_misfit calls pass no grid), 1D EM other than em_fdfd_sphere (slab_modes), point-source units in 1D
   (heat P is per the 1D total: W/m^2, W/m or W; its help says W/m).
 - Spec: pass the registry to renames (typed 'ref' / 'names' params, field names). Geometry objects and selections
   share one namespace minus `RESERVED_ENTITY_NAMES` (FACES + 'all'). Material `dispersion` None inherits the library

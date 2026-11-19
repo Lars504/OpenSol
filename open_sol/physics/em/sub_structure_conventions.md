@@ -19,9 +19,13 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   (same operator, vocabulary and refusal; registered after it; real materials only; azimuthal_orders list = driven
   order sum, one stepper per order and source family).
 - `em_fdfd_conical` (symmetry 2.9: z-invariant structure at out-of-plane k_z, all six components on the em_modes
-  layout and walls; family 'em', default 'em', registered last; 'modes' vocabulary; stationary, frequency_domain,
-  eigenfrequency (resonances at k_z = guided modes of beta = k_z); point / line currents of any direction, probes,
-  W/m flux lines).
+  layout and walls; family 'em', default 'em', registered after em_fdtd_bor; 'modes' vocabulary; stationary,
+  frequency_domain, eigenfrequency (resonances at k_z = guided modes of beta = k_z); point / line currents of any
+  direction, probes, W/m flux lines).
+- `em_fdfd_sphere` (1D spherical models only: `dimensions` (1,), every radial cell a whole shell; multipole terms
+  (order l, family er / hr) on the radial line, exact outgoing boundary; family 'em', default 'em', registered last;
+  'ez' vocabulary without eps_zz (isotropic eps, mu); frequency_domain (default), stationary, eigenfrequency;
+  plane_wave (Mie), dipole_source, field_probe, pec_domain, resonance_table). Section "Spherical multipoles".
 - Root rule "allocate where needed": poles comply in E_z, H_z and FDFD (masks cropped to their box); not yet: H_z
   `eps_x` / `eps_y`, per-cell `da` / `db`, TFSF outline masks, FDFD CSR matrices. `fdtd_hz_2d_kernels.py`
   re-exports the shared launch / Lorentz / H-coefficient / `drude_e_correction` / `q_accum_je_half` kernels, never
@@ -29,7 +33,8 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
 
 ## Imports (inside physics/em; the cross-package rules are in the root file)
 - Host only / never cupy: `placement`, `slab_modes` (scipy lazily, numpy fallbacks), `cross_section_modes`
-  (`size_issue_for` / `line_block_bytes` GUI-thread safe), `eigenfrequency`, `body_of_revolution`, `fem_modes`.
+  (`size_issue_for` / `line_block_bytes` GUI-thread safe), `eigenfrequency`, `body_of_revolution`, `fem_modes`,
+  `spherical_multipoles` (scipy inside functions).
   yee_grid, operators and dispersion take the array module as `xp`.
 - Inside functions only: scipy in `sheet_conductivity`, `cross_section_modes` (and solvers.line_block),
   `body_of_revolution`, `fdtd_bor` (also the package's `_pole_step_term` in refresh_coefficients); memory_estimates
@@ -1195,6 +1200,41 @@ slots are in `open_sol/coupling/sub_structure_conventions.md`. Current state, no
   em_fdtd_bor_dispersive_model, em_fdtd_bor_cylindrical_pml (vs same-grid 5e-3 and far-PML em_fdfd_bor 3e-2: a PML
   reflection r moves a radial line's source power by up to 2 |r| at any radius, so a far-PML grid is no tighter
   reference), em_fdtd_bor_pipe_ports (heavy, launch at the carrier).
+
+## Spherical multipoles (em_fdfd_sphere; spherical_multipoles, solvers/fdfd_sphere, renderer_sphere, definition_sphere)
+- Formulation and conventions: `spherical_multipoles` module header (vector spherical harmonics with unit mean square
+  over the sphere, the y = r H_t ('er') / r E_t ('hr') radial equations, nodes on the radial cell edges, dual-cell
+  means, the Riccati-Hankel outgoing term, plane-wave / dipole sources, the resonance refinement). Families are named
+  by the radial field that exists (er = electric multipoles, Mie a_l; hr = magnetic, b_l), never TE / TM. Mie
+  coefficients are the complex conjugates of Bohren & Huffman's (exp(+j omega t)); cross sections and |a| agree.
+- Domain: a 1D spherical Domain (polar line one 0..pi cell, no padding; validate: `dimensions` (1,), the geometry
+  setting fixed to 'axisymmetric' so `_check_coordinate_grid` refuses slabs and cylinders; `coordinate_grids` holds
+  'cartesian' only because the schema requires it). `SpherePhysics` raises on any other Domain. bc_x_lo 'centre'
+  exactly when radius_min = 0 (validate and create). No domain_requirements (no BoundaryConfig, no PML): the outer
+  'radiation' end is the exact Dirichlet-to-Neumann term of each term, the last cell's medium continued to infinity
+  (it must not be PEC; plane waves need it lossless: `_lossless_exterior` raises otherwise).
+- Shown fields are sphere-RMS profiles summed over every solved term and source class (`SpherePhysics._show`):
+  components are non-negative magnitudes, so they carry no parity and no Re / phase; a probe's phase exists only for
+  one term and class (`single_phasors`). e_intensity / q_abs are sphere means, so Session integrals over the
+  whole-shell metric volumes are 3D integrals and em_heat_joule hands a 1D spherical heat physics the exact
+  angle-averaged power.
+- Driven source classes (`_source_classes`): the plane wave (m = +-1), radial dipoles (m = 0, er only), tangential
+  dipoles (m = +-1) are solved apart on one factor per term (radial vs tangential: orthogonal m); a plane wave beside
+  dipoles is refused (validation and solve), since their interference is not modelled. Dipoles of one orientation
+  share their (on-axis) angular coupling g, so they interfere correctly in one solve. A new source class must keep
+  its m set orthogonal to the others or be refused beside them.
+- Resonances: `solve_term_resonances` per term (eigen role eigs_shifted on the pencil with the radiation term frozen at
+  the target, deterministic start vector), then `refine_resonance` (Rayleigh-functional inverse iteration on T(k),
+  factorisations counted on the eigen role; materials frozen at the target). Closed (pec / pmc) ends skip the
+  refinement (the frozen pencil is exact). `SphereResonance` keeps its SphereSystem for select_resonance; the table
+  column pml_fraction is 0 (no PML) and multipole_order / family follow it.
+- The 'linear' role is DIRECT_LINEAR_ROLE (host SuperLU unless a cuDSS / MUMPS / PARDISO node is chosen; cusolver_qr
+  refused): the tridiagonal operator is factorised per term and wavelength, nothing kept (1D: cheap). Not yet:
+  anisotropic (radial / tangential) eps, a banded complex solver, coherent plane wave + dipole, off-axis sources,
+  GUI (1D models), a template / example.
+- Self-tests (selftests_sphere; CPU unless noted, not yet run, tolerances first estimates): em_sphere_mie,
+  em_sphere_pec_cavity, em_sphere_dipoles (vacuum power and the discrete Poynting identity), em_sphere_open_resonances
+  (vs Newton-polished exact Mie poles), em_sphere_mie_model (cpu + gpu variant), em_sphere_cavity_model.
 
 ## Subpixel smoothing (igor 1.5; subpixel_smoothing.py, geometry in model/subpixel_geometry.py)
 - Switch: `solver_defaults.subpixel_smoothing` (model-wide), honoured by the types with

@@ -41,7 +41,8 @@ open_sol/
 ├── materials/       # library Materials (one file each), REGISTRY, effective_material_data, crystal_tensors
 ├── physics/<pkg>/   # one package per physics family: solvers, renderers, definition*.py (registered types, features,
 │                    # templates), selftests*.py and a sub file: em (2D FDTD / FDFD, em_modes, BOR, conical, nonlinear /
-│                    # gain / phase-change media, adjoint and design regions), em3d (3D FDTD / FDFD / tetrahedral FEM),
+│                    # gain / phase-change media, adjoint and design regions, 1D spherical multipoles), em3d (3D FDTD
+│                    # / FDFD / tetrahedral FEM),
 │                    # eme, nlfd, heat (+ thermal noise), potential, mechanics (2D / 3D, modal, piezo, optomechanics),
 │                    # membrane (film / plate, triangles + 1D, ports, Bloch), semiconductor, acoustics (elastic_waves;
 │                    # frequency-domain pressure_acoustics), fluid, magnetic (static, AC, 3D)
@@ -215,7 +216,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 
 ### 1D models (symmetry 2.20; model sub file "1D models")
 - `DomainSpec.size_y` None = 1D (`ModelSpec.dimensions` 1; types need 1 in `PhysicsType.dimensions`: heat,
-  electric_currents, electrostatics, membrane (its own line elements, fem.line_fem)): internally a padding-free 2D
+  electric_currents, electrostatics, membrane (its own line elements, fem.line_fem), em_fdfd_sphere (spherical only:
+  multipole terms on the radial line, physics/em sub file "Spherical multipoles")): internally a padding-free 2D
   `Domain` one cell across on
   `Coordinates(line=True)`, so every 2D path runs unchanged. Code that must know branches on `spec.dimensions` /
   `DomainMap.line` / `Coordinates.line`, never on ny == 1. Outer faces x_lo / x_hi only (`spec.outer_faces`).
@@ -574,7 +576,8 @@ curves -> selftest_report_analytic.json); the CLI wraps them (`selftest --exampl
 - `open_sol/physics/em/`: EM type catalogue, imports inside physics/em, FDTD engines, sources, PML, walls, mirrors,
   Bloch, TFSF / NF2FF, monitors, slab modes, mode ports, nonlinear / gain / phase-change media, harmonic FDTD, FDFD
   (Bloch, ports, eigenfrequency, adjoint, design regions, conducting sheets), cross-section modes, em_modes,
-  body-of-revolution FDFD, subpixel smoothing, EM definitions and self-tests, effective index.
+  body-of-revolution FDFD, spherical multipoles (em_fdfd_sphere), subpixel smoothing, EM definitions and self-tests,
+  effective index.
 - `open_sol/physics/eme/`: sections, bilinear mode sets (2D slab / 3D cross-section, PML modes last), interface formula,
   discrete variant (exact ez and hz), cascade / partial cascades, periodic block, bends, absorbed power, mode tracking,
   EMEBase / EMEPhysics / EMEPhysics3D, cascade adjoint, EME self-tests.

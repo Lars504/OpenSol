@@ -1,7 +1,8 @@
 """Model definitions of the EM physics types (registry-discovered): FDTD em_fdtd_ez / _hz (definition_fdtd), FDFD
 em_fdfd_ez / _hz (definition_fdfd), cross-section em_modes (definition_modes), body-of-revolution em_fdfd_bor
-(definition_bor) and em_fdtd_bor (definition_fdtd_bor), conical k_z em_fdfd_conical (definition_conical), on shared
-helpers (definition_common), with their templates and self-tests."""
+(definition_bor) and em_fdtd_bor (definition_fdtd_bor), conical k_z em_fdfd_conical (definition_conical), spherically
+symmetric em_fdfd_sphere (definition_sphere), on shared helpers (definition_common), with their templates and
+self-tests."""
 from .definition_bloch import register as register_bloch
 from .definition_bor import EM_FDFD_BOR, register as register_bor
 from .definition_common import DISPERSION_POLE_PARAMS
@@ -13,6 +14,7 @@ from .definition_modes import EM_MODES, register as register_modes
 from .definition_nonlinear import register as register_nonlinear
 from .definition_phase_change import register as register_phase_change
 from .definition_resonance import register as register_resonance
+from .definition_sphere import EM_FDFD_SPHERE, register as register_sphere
 from .selftests import fresnel_interface_spec
 from .selftests_effective_index import RIB_TEMPLATE_DESCRIPTION, RIB_TEMPLATE_LABEL, rib_waveguide_spec
 from .selftests_eigenfrequency import (DISK_EIGENMODES_DESCRIPTION, DISK_EIGENMODES_LABEL, DISK_EIGENMODES_SUMMARY,
@@ -24,8 +26,8 @@ from .selftests_hz import GOLD_NANODISK_HZ_DESCRIPTION, GOLD_NANODISK_HZ_LABEL, 
 from .selftests_mode_ports import DIRECTIONAL_COUPLER_DESCRIPTION, DIRECTIONAL_COUPLER_LABEL, directional_coupler_spec
 from .selftests_optimization import BEND_DESCRIPTION, BEND_LABEL, BEND_SUMMARY, waveguide_bend_optimization_spec
 
-__all__ = ['DISPERSION_POLE_PARAMS', 'EM_FDFD_BOR', 'EM_FDFD_CONICAL', 'EM_FDFD_EZ', 'EM_FDFD_HZ', 'EM_FDTD_BOR',
-           'EM_FDTD_EZ', 'EM_FDTD_HZ', 'EM_MODES', 'register']
+__all__ = ['DISPERSION_POLE_PARAMS', 'EM_FDFD_BOR', 'EM_FDFD_CONICAL', 'EM_FDFD_EZ', 'EM_FDFD_HZ', 'EM_FDFD_SPHERE',
+           'EM_FDTD_BOR', 'EM_FDTD_EZ', 'EM_FDTD_HZ', 'EM_MODES', 'register']
 
 
 def _selftest_cases():
@@ -71,8 +73,8 @@ def register(registry):
     """Register the FDTD then the FDFD types (FDTD material Params stay first per name), the eight templates and the
     FDTD / FDFD selftest loader (_selftest_cases), then
     em_modes (definition_modes.register),
-    em_fdfd_bor (definition_bor.register), em_fdtd_bor (definition_fdtd_bor.register) and em_fdfd_conical
-    (definition_conical.register)."""
+    em_fdfd_bor (definition_bor.register), em_fdtd_bor (definition_fdtd_bor.register), em_fdfd_conical
+    (definition_conical.register) and em_fdfd_sphere (definition_sphere.register)."""
     # em_modes last, so the FDTD material Params stay the first per name (Registry.material_property_params)
     registry.register_physics(EM_FDTD_EZ)
     registry.register_physics(EM_FDTD_HZ)
@@ -116,3 +118,4 @@ def register(registry):
     register_bor(registry)         # em_fdfd_bor (symmetry 2.3): 'microdisk_bor_eigenmodes' template + BOR self-tests
     register_fdtd_bor(registry)    # em_fdtd_bor (symmetry 2.3): its self-tests
     register_conical(registry)     # em_fdfd_conical (symmetry 2.9): conical CPU and model-run self-tests
+    register_sphere(registry)      # em_fdfd_sphere (1D spherical multipoles): its self-tests

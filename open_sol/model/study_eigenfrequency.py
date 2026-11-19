@@ -13,8 +13,8 @@ from .study import (_PARITY_SECTORS_PARAM, _background_fixed_point_params, _back
 STUDY_NAME = 'eigenfrequency'
 _RESONANCE_STAGE = 'Resonance solve'
 # the eigen-solved types (missing-physics remedy and texts)
-_SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_3d, solid_mechanics, '
-                      'solid_mechanics_3d or membrane')
+_SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_sphere, em_fdfd_3d, '
+                      'solid_mechanics, solid_mechanics_3d or membrane')
 SEARCH_CHOICES = ('nearest', 'targets', 'band')   # setting search (PhysicsType.eigen_searches lists a type's)
 _TARGETS_SEARCH = (('search', ('targets',)),)     # visible_if
 _BAND_SEARCH = (('search', ('band',)),)
@@ -230,7 +230,11 @@ _DESCRIPTION = (
     'guided modes of propagation constant beta (a k_z sweep gives the dispersion). em_fdfd_3d: the same search on the '
     '3D curl-curl operator of the live Yee E faces (M = the face eps; squared Cayley map as em_fdfd_bor, static '
     'gradient solutions dropped), each resonance scaled to 1 V/m real at its largest E face; snapshots are its z cut '
-    'planes; its host factor grows ~ n^(4/3) (size rule 1e6 / 4e6 E unknowns). membrane (triangles, 1D): resonances '
+    'planes; its host factor grows ~ n^(4/3) (size rule 1e6 / 4e6 E unknowns). em_fdfd_sphere (1D spherical): the '
+    'same shift-invert search per multipole term (each listed order, er before hr) on its radial operator with the '
+    'outgoing-wave term frozen at the target, then every resonance refined with the exact outgoing condition at its '
+    'own complex omega (no PML; materials at the target), labels "resonance k: l = <l> <family>, lambda = ...", '
+    'fields scaled to a peak sphere-RMS |E| of 1 V/m. membrane (triangles, 1D): resonances '
     'of -div(T (1 + j eta) grad w) = rho_s omega^2 w nearest its target_frequency (fem.harmonic_resonances on the '
     'eigen role; complex with loss_factor / PML: Q = Re omega / (2 Im omega)), labels "resonance k: f = <Hz> Hz[, Q = '
     '...]", scaled to 1 m real at the peak; clamps held at 0, loads ignored. Setting search: nearest (the above), '
