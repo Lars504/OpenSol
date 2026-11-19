@@ -402,7 +402,7 @@ class FDTDEngine3D:
                            xp.ascontiguousarray(xp.asarray(face_extra, dtype=DTYPE)), *sparse_launch(count))
 
     def _conformal_h(self, fields):
-        """Sparse Dey-Mittra correction of one field set's H (after its Yee H kernel, before the CPML)."""
+        """Sparse Dey-Mittra correction of one field set's H (after its fused Yee + CPML H kernel)."""
         face_cell, face_axis, face_extra, grid, block, count = self._conformal
         self.kernels['conformal_h_3d'](grid, block, (
             fields.hx, fields.hy, fields.hz, fields.ex, fields.ey, fields.ez, self.material_id, self.table_mu,

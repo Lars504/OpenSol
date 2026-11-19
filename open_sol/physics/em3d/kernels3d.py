@@ -1005,7 +1005,9 @@ pole_work_half = twin('em3d.pole_work_half', cp.ElementwiseKernel(
 
 def launch(dims):
     """(grid, block) of a kernel over (d0, d1, d2) = (x, y, z) extents (threads along z fastest): _BLOCK on a bulk grid;
-    a thin extent (CPML z slab, TFSF plane) gets a block that fits it, so warps do not idle on its tail."""
+    a thin extent (CPML z slab, TFSF plane) gets a block that fits it, so warps do not idle on its tail. A kernel
+    launched through it indexes only by blockIdx * blockDim + threadIdx with a bounds check, never assumes _BLOCK
+    (no shared-memory tiles sized by it)."""
     extent_x, extent_y, extent_z = (max(1, int(value)) for value in dims)
     threads_z = min(_BLOCK[0], extent_z)
     threads_y = min(extent_y, max(_BLOCK[1], _BLOCK_THREADS // (2 * threads_z)))

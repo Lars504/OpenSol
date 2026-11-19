@@ -7,187 +7,64 @@ Params, Yee grid, faces and mirrors; eigenfrequency study only (host SuperLU 'ei
 subpixel smoothing), pec_domain and resonance_table; no conformal PEC.
 
 ## Engine (engine3d, kernels3d, boundaries3d)
-- CPML is fused into `update_h_3d` / `update_e_3d` (no CPML launch of its own): per axis and kind one
-  `boundaries3d.CPMLAxis3D` (lo and hi layers stacked along the axis, int32 row map grid row -> psi row, -1 outside),
-  passed as the kernels' 18 trailing arguments (`CPML_AXIS_PARAMS` x 3, `engine._cpml_args[set sign]`; placeholders
-  with 0 rows on axes without CPML). An edge / corner cell updates the psi of every layer it lies in, axes in x, y, z
-  order (the former slab-pass order: single precision unchanged up to FMA contraction). The psi difference is the Yee
-  curl's own one, so a layer row must never wrap (no CPML on a periodic axis; H rows <= n - 2, E rows >= 1). The
-  numpy twins keep the separate layer passes after the Yee update (`_cpml_h_rows` / `_cpml_e_rows`); the numba twins
-  fuse like the device. psi stays on the layers (never full-grid); every CPML array is fixed for the engine's life.
-- `kernels3d.launch(dims)` fits the block to thin extents (a TFSF z plane gets (1, n, m), a 10-row box (10, 12, 2)),
-  the bulk grid keeps `_BLOCK`. A 3D kernel indexes only through blockIdx * blockDim + threadIdx with the
-  bounds check, never assumes `_BLOCK` (no shared-memory tiles sized by it).
-- Step graphs (gpu, `STEP_GRAPHS`): `advance` runs the fixed-argument launches as two blocks, H (Yee with CPML per
-  set + conformal faces) and E (Yee with CPML per set), through `_fixed_block`: one eager run per key,
-  then a captured CUDA graph replayed per step. The key holds the ids of the inputs that may be replaced (tables, face
-  table, conformal arrays) and the curl factor, the entry keeps them alive. Valid only while fields, psi, material_id,
-  face_id and the 1D arrays are rewritten in place: a new kernel argument that can be reassigned joins the key, a
-  kernel with per-step scalars (sources, poles, mirrors, monitors) stays outside the blocks, and nothing inside them
-  may sync or allocate (no timed profiler part inside). A failed capture warns and steps eagerly. The run-time recipe
-  counts these kernels at weight 1 on the gpu (`_step_launches`).
-- Probes (gpu): the FieldProbes among the monitors are taken over at their first step (`_take_probe_launch`:
-  `core.monitors.FieldProbeRows` on the real set; float16 half_storage fields record their stored units through the
-  fp16 bits, value_scale as before) and sampled by one launch at the end of the E block (`_e_block`; the launch id
-  joins the 'e' key, the launch its kept inputs); `advance` stamps the row and skips their `record`. The E block ends
-  before the pole corrections, E sources and E mirror rows, so `_probes_need_resample` re-samples the row (one eager
-  launch) when an E component is probed and one of those may have written: any pole region or E mirror row, any
-  source except a DipoleSource3D at DTYPE(temporal(t_half)) == 0 (its add of +-0 leaves every value equal). A new
-  eager E writer after the block joins that check; H probes never re-sample. The recipe books no probe launches on
-  the gpu.
-- Contract members shared by the 3D EM physics live in physics3d (`EM3DSlots`: permittivity_arrays / inject_source;
-  `StaticEM3DContract` for em_fdfd_3d; `complex_cell_materials`, `check_pole`); the Yee renderers subclass
-  `renderer3d.YeeRenderer3D`; `mode_ports3d.AXIS_PERMITTIVITY` is the one E component -> permittivity array map;
-  `boundaries3d.along` the one axis index helper.
-- Layout = the A5 cross-section layout extended along z: E_x / E_y / E_z on the +x / +y / +z face of cell (i, j, k),
-  H_x on the (+y, +z) edge, H_y (+x, +z), H_z (+x, +y). An E face's eps (own component) / sigma_e = width-weighted
-  mean of its two cells (`yee_grid.face_shares`; subpixel overrides interface faces); an H edge's mu_r / sigma_m = its
-  lower cell's (`edge_coefficients`, semi-implicit 1 / (1 + sigma_m dt / (2 mu)); any H-side consumer, e.g. TFSF /
-  mode-port db, reads table_mu and table_sigma_m alike). Per axis 'e' rows = centres, 'h' rows = hi faces, so
-  `physics.em.boundaries.cpml_axis_profiles` is reused via `boundaries3d.axis_cpml_profile` (an axis view, never a copy).
-- Materials: MaterialGrid eps_r (= eps_zz) / sigma_e / mu_r always; eps_xx / eps_yy only when a material sets eps_xx /
-  _yy / _zz / dndT_xx / _yy / _zz (else E_x / E_y read eps_r), sigma_m only when set (`optional_material_schema`):
-  never assume the arrays exist (`engine.material_arrays`, `physics.permittivity_arrays`). `rebuild_materials` builds a
-  uint16 `material_id` + float32 tables per id (table_eps_x / _y / _z, table_sigma, table_mu, table_sigma_m) via
-  `material_index3d.build_material_index` in x-slab chunks (several host syncs; only at finalize and after a material
-  change: dirty flag checked in `step`).
-- Index fallback (thermo-optic, GRIN): > 65534 distinct values (or joint count) re-quantises instead of raising:
-  occupied bins of the smallest fitting width (geometric bisection to 10 %, previous width as hint), representative =
-  member mean, so a one-value bin (air 1.0) stays exact; error <= bin width (`engine.quantisation_errors`, note logged
-  once per array). Joint combinations ranked stage by stage (no int64 overflow, no per-cell storage); ValueError only
-  when halving every > 256-level array's budget still does not fit. Cost: ~10 full-grid passes per continuous array
-  per material change.
-- PEC = the last id (table eps -1): a face between two PEC cells is pinned (ca = cb = 0), PEC / other takes the other
-  cell. ca / cb are computed per step in the kernels (`face_coefficients`); any new coefficient consumer (TFSF, mode
-  source) calls the same device helper or `engine.face_cb_into`, never stores per-cell arrays. Host form:
-  `kernels3d.pec_face_values` (numpy twin and em_fdfd_3d face eps call it).
-- Edges: non-periodic axes get ih[n-1] = 0 and read cell 0's missing lo H as 0, so the grid edge is PMC half a cell
-  beyond the outermost centres: bc 'pmc' is a no-op, 'pec' gives the outermost window layer the PEC id. A dipole in the
-  wall layer of a pec face parallel to it is refused (validate and add_dipole); normal to it, it may sit next to it.
-  Periodic axes wrap in the kernels and the pole boxes.
-- Bloch k != 0 (symmetry 2.8): `BoundaryConfig3D(bloch_k=)` (bloch_kx / _ky / _kz on periodic axes), F(x + L) = F(x)
-  e^{-j k L}, L = summed grid widths. The engine then holds `fields.imag`, `cpml_imag` and per pole `imag_drude` /
-  `imag_lorentz`; both sets step with the same kernels whose wrap reads mix in the partner set (`kernels3d._WRAP_LOAD`;
-  real-only passes partner = itself, c 1, s 0: bit-identical). Walls / mirror rows act on both sets; sources drive the
-  real set only; PlaneFlux3D, DFTPlane3D and the harmonic accumulator add j ph F_im (`em.monitors._field_sets`), the
-  harmonic shutoff energy sums both; probes, renderer, state and couplings read the real set. A centre mean of cell 0
-  on a phased axis needs its wrapped lo face x e^{+j k L} (DFTPlane3D accumulates cell 0's own and wrapped faces apart,
-  combined in `spectrum()`; else ~10 % off in that row; harmonic3d wraps its whole-axis spectrum the same way; missing
-  still: a k = 0 layer on a phased z axis). q_accum and the TFSF plane wave raise with k != 0 (validation errors first); mode ports solve the
-  Bloch mode of the port plane's periodic transverse axes (`mode_ports3d.port_boundary`; the mode source drives the
-  real set, so DFT monitors read the +k mode). Self-tests in `selftests_bloch3d`: em3d_bloch_empty_lattice,
-  em3d_bloch_array_monitors (pins the e^{-j k L} sign; its flux plane opposite the dipole needs an odd x cell count),
-  em3d_bloch_port_modes; template photonic_crystal_slab_bands_3d. Open: oblique 3D TFSF, a Bloch mode-source model
-  run, harmonic3d with k != 0.
-- Mirrors (symmetry 2.5, E parity as 2D): one ghost cell (`MIRROR_GHOST_CELLS`; core.mesh copies the edge width on x /
-  y, `MeshConfig.z_cell_spacings(ghost_faces=)` on graded z), so the plane is the window edge. The ghost / inner /
-  plane-face rows and the pec wall layers come only from `boundaries3d.mirror_planes` / `pec_wall_layers` (engine3d and
-  operators3d both read them). `engine3d._mirror_rows`:
-  symmetric pins the plane row's tangential H and normal E (after inject_magnetic / after the E sources),
-  antisymmetric writes the ghost's tangential E = -inner (`cp.negative(..., out=)`). Mode ports map mirrors onto the
-  cross-section mirrors (powers of the full structure); flux planes / boxes reaching a mirror double
-  (`monitors3d.mirror_factor`); the far field unfolds by images (`NearToFar3D(mirrors=)`, signs from
-  `core.mirror.image_sign`, box faces on a plane dropped; mirrors on both faces of an axis or any periodic axis:
-  ValueError + validation error). A TFSF box face reaching a transverse mirror about which the incident wave is even
-  (`core.mirror.plane_wave_mirror_issue`: symmetric for a plane normal to the third axis, antisymmetric for one normal
-  to the polarisation; else ValueError + validation error) opens through the ghost layer. Far-field results carry
-  complex `far_field_amplitude` (amplitude_re / _im) for parity-sector combination. Self-tests `selftests_mirror3d`
-  (em3d_mirror_dipole_pair, em3d_tfsf_mirror): half and full runs agree only to float32 round-off (FMA rounding), so a
-  field compared after the pulse has left can miss 1e-4 by orders: compare mid-pulse snapshots.
-- CPML: psi only inside the layers, kappa folded into the 1D curl arrays, psi correction with live db / cb after the
-  Yee term inside the same kernel (Engine bullet above). Sigma grading cell size per axis = the larger outermost
-  width of that axis.
-- Poles (`add_pole`): one `_PoleRegion` per material region (keyed by its cropped mask, kept alive by the physics) on
-  the region box extended one cell lo-side; per component a face weight (membership share) and a live cb box (refreshed
-  every rebuild). The last face follows `face_shares`: on a periodic axis a region starting at cell 0 gets a box
-  spanning the axis (membership[n] = membership[0]); non-periodic: membership[n] = membership[n-1];
-  `deposit_pole_work` mirrors both, the estimator sizes the box from `MaterialRegionInfo.box_bounds`. Stability:
-  `stability_issue` (finest widths, region pole terms, min of the three eps tables) at finalize.
-- Losses (EM loss protocol; `enable_q_accum`: q_accum full grid + last window 8 B/cell at first enable): ohmic
-  `ohmic_loss_3d` over the box of sigma_e > 0 cells after the sources, each face's sigma E^2 V split to its two cells by
-  half-cell conductance (exact except next to PEC). Poles: time-centred face work in per-region `work` boxes, deposited
-  into the dispersive cells only by `deposit_pole_work` (take, reset, state(), renderer). sigma_m loss is not counted.
-- Kernel flat indices are `long long` (`idx_t`): `long` is 32 bit on Windows.
-- Backends (core sub file "Kernel twins"): every em3d kernel is a `core.kernels` twin (field kernels per precision
-  'em3d.<kernel>.<precision>'; 2D DFT / TFSF aux / port / pole correction twins shared), every array from `engine.xp`
-  (incl. CPML slabs `cpml_slabs(..., xp)`, monitor spectra `xp=`, port planes, harmonic accumulators); host reads via
-  `to_host`; material_index3d / subpixel_smoothing3d follow their inputs (`array_module_of`). Host twins compute in
-  float32 (cpu refuses half_storage). Numba twins for update_h / update_e (CPML fused) / ohmic_loss (CPU case
-  em3d_kernels_numba): the no-smoothing face id placeholder is (1, 1, 1) and the no-CPML psi placeholders too (numba
-  types fid[i, j, k] / psi[r, j, k] even when unread); they compile with `cache=True` (an uncached first cpu run
-  compiles inside its study: 17x step-time miss; a "Cannot cache" NumbaWarning = a closure value stopped pickling).
-  The face helper is the module global `_numba_face_scalar`, never a closure cell: as a cell, its per-process
-  dispatcher uuid missed the cache in every process. The numpy twins cache per-step coefficients in
-  `kernels3d._host_cached`, keyed by input array identity (weak refs; ~32 B/cell host, not estimated): valid only
-  because material_id / tables / face_id change solely in `rebuild_materials`, which writes new table arrays, so a new
-  writer must also replace the tables. A new kernel gets its numpy twin in the same edit; a new allocation takes
-  `engine.xp`.
-- Stepper precision (`FDTDEngine3D(precision=)`): field kernels compiled per precision (`kernels3d.field_kernels`,
-  FLOAD / FSTORE). half_storage stores the six components as float16 E / e_scale, H / h_scale (h_scale = e_scale /
-  eta0); e_scale (power of two, `set_field_scale`, fixed before the first step) puts the sources' `peak_field()` at
-  HALF_STORAGE_PEAK = 16; curl factors e_to_h = eta0, h_to_e = 1 / eta0 are kernel scalars (1 in single). Every
-  reader converts (`field_scale(component)`; flux `host_pairs`, `DFTPlane3D.intensity`, FieldProbe `value_scale` via
-  `EMPhysics3D._set_field_scale`, renderer, ohmic scale, dipole weight, `state()` Mapping of float32 copies). Writers in
-  physical units (TFSF, mode ports, poles, harmonic3d) refuse half_storage (`_require_single`, add_pole; definition
-  feature precisions / validate): a new field reader or writer must scale or refuse. psi, poles, q_accum, DFT stay
-  float32 / complex. float16 writes never use cupy's float16 kernels (unresolved `__half` on some CUDA / cupy pairs):
-  dipole add via `half_bits(target)` + `STORED_ACCESS`, mirror rows on the uint16 bits (core.half_storage).
-  Snapshot solutions (`EMPhysics3D.solution_state` / `restore_solution`) copy the six full-grid arrays as stored
-  (fp16 bits) and write them back the same way: the scale is fixed for the engine's life, so a raw copy needs no
-  conversion; with them the engine time, q_accum / last_q_accum windows (pole work deposited first) and, with
-  `materials`, eps_r. Harmonic phasors are selected (select_harmonic_frequency), not copied.
+- Layout, step order, edges, PEC, mirrors, Bloch and sector mechanics: `engine3d` header; coefficient, CPML (fused
+  into `update_h_3d` / `update_e_3d`, no launch of its own), radius, wrap and precision rules: `kernels3d` header and
+  preamble; CPML layers: `boundaries3d` (grading only through `axis_cpml_profile`, an axis view of the 2D
+  `cpml_axis_profiles`). Shared 3D EM members: physics3d (`EM3DSlots`, `StaticEM3DContract`, `complex_cell_materials`,
+  `check_pole`), `renderer3d.YeeRenderer3D`, `mode_ports3d.axis_permittivity` (E component -> MaterialGrid array),
+  `boundaries3d.along`: reuse, never a local copy.
+- Step graphs (gpu, `STEP_GRAPHS`; capture rules: root "Performance"): `advance` runs H (Yee + CPML per set +
+  conformal faces) and E (Yee + CPML per set + the probe launch) through `_fixed_block`. Fields, psi, material_id,
+  face_id and the 1D arrays are rewritten in place only; a new reassignable kernel argument joins the block's key. A
+  change of what the blocks hold updates `definition._step_launches` (gpu: weight 1, no probe launches).
+- Probes (gpu): FieldProbes are recorded at the end of the E block; a new eager E-side writer after it (source,
+  pole, mirror row) joins `_probes_need_resample`.
+- Materials: eps_r (= eps_zz), sigma_e, mu_r always; eps_xx / eps_yy / sigma_m only when a material sets them
+  (`optional_material_schema`): never assume them (`engine.material_arrays`, `physics.permittivity_arrays`,
+  `axis_permittivity`). The uint16 index (`material_index3d` header: re-quantisation of > 65534 values, error in
+  `engine.quantisation_errors`, ~10 full-grid passes per continuous array per material change) is rebuilt only at
+  finalize and after a material change (dirty flag in `step`).
+- E coefficients are computed per step in the kernels (PEC = the last id, eps -1; subpixel faces via
+  `_face_args`): a new consumer (TFSF, mode source, pole cb, dipole weight) calls `face_coefficients` /
+  `engine.face_cb_into` (host: `kernels3d.pec_face_values`), never stores per-cell arrays or its own face mean. An
+  H-side consumer reads table_mu and table_sigma_m alike (`edge_coefficients`).
+- Bloch k != 0: only monitors read the imaginary set (j ph F_im, `em.monitors._field_sets`); probes, renderer,
+  state() and couplings read the real set; q_accum and the TFSF plane wave raise; mode ports solve the Bloch mode of
+  the port plane (`mode_ports3d.port_boundary`; the source drives the real set). A centre mean of cell 0 on a phased
+  axis needs its wrapped lo face x e^{+j k L} (as DFTPlane3D, harmonic3d), else ~10 % off. Gaps: a z-normal DFT layer
+  at cell 0 of a phased z axis, oblique 3D TFSF, a Bloch mode-source model run. Self-tests `selftests_bloch3d`.
+- Mirrors: results unfold (root "Arrays, coordinates"): mode ports map them onto cross-section mirrors, flux planes /
+  boxes x `monitors3d.mirror_factor`, far field by images (`NearToFar3D(mirrors=)`; mirrors on both faces of an axis
+  or a periodic axis raise), a TFSF box face on a mirror only when the incident wave is even about it
+  (`core.mirror.plane_wave_mirror_issue`). Half vs full runs agree to float32 round-off only: compare mid-pulse
+  snapshots, not fields after the pulse left (`selftests_mirror3d`).
+- Poles: the region box rule of `_pole_region` (one cell lo-side, a periodic axis from cell 0 spans the axis) is
+  shared by `deposit_pole_work` and `definition._pole_box_cells` (the estimate): change them together. Losses: sigma_m loss is not counted.
+- Backends (core sub file "Kernel twins"): every array from `engine.xp`; numba twins only for update_h / update_e /
+  ohmic_loss (CPU case em3d_kernels_numba). The numpy twins cache coefficients by input identity
+  (`kernels3d._host_cached`): a new writer of material_id / tables / face_id must also replace the tables, as
+  `rebuild_materials` does.
+- half_storage (`kernels3d` header, `engine.set_field_scale`, `physics3d.HALF_STORAGE_PEAK`): a new field reader
+  converts with `engine.field_scale(component)`, a new writer in physical units refuses (`_require_single`); psi,
+  poles, q_accum and DFT stay float32 / complex.
 
 ## Cylindrical sectors (symmetry 2.21; engine3d, kernels3d, selftests_cylindrical3d)
-- A polar `Domain3D` (x = r - radius_min, y = phi [rad]) is an (r, phi, z) sector; scripts only (EMPhysics3D lists
-  'polar', the PhysicsType stays Cartesian). Components keep _x / _y names (= r / phi). The integral-form curls are
-  per-i 1D factors of the update kernels from `core.metric.yee_radii` (kernels3d header); Cartesian passes ones
-  (exact), so a new curl kernel takes the same arrays (`engine._radial_h` / `_radial_e`; the fused r-axis CPML psi
-  reads them too), never a Cartesian-only shortcut.
-- dt: `Grid3D.use_polar_time_step` uses the innermost arc r_c[0] dphi_min as phi width (`stability_issue` the same).
-  Annular only: radius_min > 0 (`_check_cylindrical`).
-- Faces: x_lo pec / pmc (no padding at r_lo), x_hi pec / pmc / cpml; pmc = tangential H 0 on the grid face, pec = the
-  outermost cell layer. The r_hi CPML stretches d/dr only (no complex-r stretch of 1 / r: approximate at small k r; a
-  ring-down keeps ~1.2e-2 of its first peak after 2000 steps: a clean open r_hi wants the complex radius stretch of
-  fdtd_bor). phi faces pec / pmc / mirrors, or periodic when angle_wrap joins them; wrap phase bloch_ky = azimuthal
-  order m [1/rad], F(phi + span) = F(phi) e^{-j m span} (the domain's antiperiodic sign is not read). Phase 0 or pi
-  (within 1e-5 rad) steps the real set alone with c = +-1 (`_real_phases`; sectors only, Cartesian Bloch keeps the
-  imaginary set at any k != 0).
-- Supported: dipoles (`engine.face_dual_volume`), probes, DFT layers, PEC, poles, losses, harmonic FDTD. Refused
-  (`EMPhysics3D._require_cartesian`): flux planes / boxes, TFSF, mode ports, far field, conformal PEC, subpixel.
-- Self-test em3d_cylindrical_sector_cavity (heavy; semi-discrete Bessel roots, nu = (2 / dphi) sin(m dphi / 2)).
+- Polar `Domain3D` (scripts only; mechanics, faces and the r_hi CPML approximation: `engine3d` header,
+  `_check_cylindrical`). A new curl kernel takes the radial factor arrays (`engine._radial_h` / `_radial_e`; ones on
+  Cartesian grids), never a Cartesian-only shortcut; a feature placed by Cartesian widths calls `_require_cartesian`
+  (grep it for the refused list). Self-test em3d_cylindrical_sector_cavity (heavy).
 
 ## Subpixel smoothing (igor 1.5; subpixel_smoothing3d, geometry in model/subpixel_geometry)
-- `set_subpixel_smoothing(InterfaceGeometry3D)` -> `engine.subpixel_smoothing`; `refresh(engine)` at the end of every
-  `rebuild_materials` (after PEC ids, before pole cb) averages the CURRENT table eps of the representative cells (0 =
-  no override next to PEC), re-quantises the triples into a uint16 `face_id` (full grid, 2 B/cell) + `table` (0 entry =
-  keep that component's mean); its deviation joins `quantisation_errors`.
-- `face_coefficients` takes FACE_PARAMS (fid, t_face, use_face) and replaces only eps when neither cell is PEC; every
-  caller (update_e_3d incl. its CPML, box_face_cb_3d -> pole cb, dipole weights, mode-port cb planes) passes
-  `engine._face_args()`. A new E coefficient consumer goes through these helpers, never its own face mean.
-- Mode ports: `port_materials` adds `_smoothing_deltas` as `CrossSectionMaterials.eps_point_deltas` so port modes see
-  the stepped eps.
-- Not smoothed: TFSF background, the stability check (raw tables), sigma_e / mu / pole membership. Self-test: em3d part
-  of `subpixel_smoothing_cpu_gpu`. em_fdfd_3d applies the same average on the host (`interface_eps`).
+- Refreshed by every `rebuild_materials` from the current tables; E consumers take it through `_face_args` (Engine
+  bullet on E coefficients); mode ports through `mode_ports3d._smoothing_deltas`. Not smoothed: TFSF background, the
+  stability check, sigma_e / mu / pole membership. Self-test: em3d part of `subpixel_smoothing_cpu_gpu`.
 
 ## Conformal PEC (solver_plan S7.6; conformal_pec3d, kernels3d conformal_h_3d)
-- conformal_boundaries reaches em_fdtd_3d in 3D models only (`conformal_dimensions` (3,)): `_apply_pec` calls
-  `add_conformal_pec_region(window, mask, locator.inside([object]))` per object = `add_pec` (staircase cells: sources,
-  ports, poles, calibrations, stability read them) + the outline test. `finalize` (after the first rebuild, once) builds
-  `ConformalPEC3D` on the regions' box + STABILITY_BAND_CELLS + 3 and hands it to `engine.set_conformal_faces`.
-- Dey-Mittra on the H faces (conformal_pec3d header). A cut face (a conformal and a free corner, no other PEC corner,
-  all corners in the window: no wraps, ghosts, PML) weights its edges (A / A_eff) l / L. Edges with both ends free stay
-  full (a cut no centre sees stays staircased; thin sheets between centres vanish); edges between two metal centres stay
-  pinned even when partly free (unlike 2D H_z).
-- Floor A_eff = max(A_free, min(A, stable)): a Gershgorin heuristic in 3D (overestimates; floored faces sharing an E
-  edge sum: a sphere cavity reached 1.01 x the leap-frog limit at row_scale 1). So the build measures the largest
-  eigenvalue of the vacuum C0^2 curl_h curl_e (operators3d, `weighted_curl_e`) on live E edges within
-  STABILITY_BAND_CELLS = 4 of the corrected faces (host `eigs`, dense below 400 edges) and lowers row_scale until <=
-  0.99^2 of the limit (6 rounds, then 0: A_eff = A). The check ignores mixed staircase / conformal contacts and
-  dielectrics. `finalize_warnings` only when > half the cut faces are floored or row_scale hit 0 (default courant 0.99
-  usually: ~70 % floored, TM101 9.5e-3 low vs staircase 5.2e-2: full accuracy needs a smaller courant). Weights reach ~4.
-- Kernel `conformal_h_3d` (per precision; numpy twin, no numba) right after `update_h_3d` of each field set (Bloch:
-  both), before the H CPML; 28 device B per face; estimate `boundary_locator.conformal_memory_estimate`.
-- Self-test em3d_conformal_pec_cavity (`selftests_conformal3d`, heavy).
+- Method and stability floor: `conformal_pec3d` header; wiring: `physics3d.add_conformal_pec_region` (staircase
+  cells at once) and `_apply_conformal_pec` (once at finalize). The floor's eigenvalue check ignores mixed staircase /
+  conformal contacts and dielectrics. At the default courant 0.99 ~70 % of cut faces are floored (TM101 9.5e-3 vs
+  staircase 5.2e-2): full accuracy needs a smaller courant (`_conformal_pec_note`). numpy twin, no numba; memory:
+  `boundary_locator.conformal_memory_estimate`. Self-test em3d_conformal_pec_cavity (heavy).
 
 ## Frequency-domain eigensolver em_fdfd_3d (operators3d, fdfd3d, renderer_fdfd3d, definition_fdfd3d; igor3d_plan)
 - Same grid / faces / walls / mirrors as em_fdtd_3d: a ring-down and the FDFD eigenvalues agree through asin(dt omega
