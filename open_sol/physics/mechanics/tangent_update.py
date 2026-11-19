@@ -1,6 +1,6 @@
 """Tangent refresh rule and Newton proposal of the total-Lagrangian solids (2D triangles, 3D tetrahedra): full Newton
 or modified Newton that keeps the factorised tangent while the residual falls fast (plan G4). Tangent data of a device
-TangentAssembler3D go to the system's device solve (plan G5). numpy only."""
+TangentAssembler3D go to the system's device solve. numpy only."""
 import math
 
 import numpy as np
@@ -50,7 +50,7 @@ class TangentPolicy:
 
 
 def _device(assembler) -> bool:
-    """A device TangentAssembler3D (plan G5): its tangent data live on the GPU."""
+    """A device TangentAssembler3D: its tangent data live on the GPU."""
     return bool(getattr(assembler, 'device', False))
 
 

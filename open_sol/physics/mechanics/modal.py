@@ -49,7 +49,9 @@ NEWTON_TOLERANCE = 1e-15
 SPLU_WARN_DOFS = 1_000_000     # free dofs: the host SuperLU factor of K - sigma M grows faster than the dofs
 SPLU_LIMIT_DOFS = 2_000_000    # L + U of order 10 GB of host memory
 EXTRA_EIGENVALUES = 4          # eigenvalues asked beyond n_resonances (ranking by |omega - omega_t|, ARPACK margin)
-RIGID_EIGENVALUE_FRACTION = 1e-8   # |omega^2| at or below this x omega_t^2: a rigid-body mode (f < 1e-4 f_t), dropped
+# |omega^2| at or below this x omega_t^2: a rigid-body mode (f < 1e-4 f_t), dropped; the floor assumes eigen tolerance
+# 0 (a loose one, ~1e-6, can return rigid modes at ~1e-3 f_t, above it)
+RIGID_EIGENVALUE_FRACTION = 1e-8
 RIGID_TEXT_HEAD = 'rigid-body mode(s)'   # warning text after the count of dropped rigid-body modes
 _START_VECTOR_SEED = 6         # deterministic Lanczos start vector
 # Matrix-free (3D): an inner CG to relative residual tol leaves a Ritz-residual floor of order tol, so the Lanczos

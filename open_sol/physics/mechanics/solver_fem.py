@@ -6,7 +6,7 @@ lines, body forces; one factor of K per assembly (system_fem.ElasticFEMSystem); 
 loss factor: damped modes; stress stiffening: K + K_sigma of the static state; a free body about a target > 0; an
 elastic PML ring: radiation Q; an azimuthal order m >= 1 of the axisymmetric solid) and the elastic frequency response
 with complex probes / reactions per frequency; strain / kinetic energy densities. Geometric nonlinearity
-(new_modules_plan K6, planar plane strain / plane stress and axisymmetric): total-Lagrangian Newton with load steps,
+(planar plane strain / plane stress and axisymmetric): total-Lagrangian Newton with load steps,
 reactions from the internal force, pencils on its tangent."""
 import math
 from types import SimpleNamespace
@@ -108,7 +108,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                  geometric_nonlinearity: bool = False, load_steps: int = 1, nonlinear_tolerance: float = 1e-8,
                  nonlinear_max_iterations: int = 25, tangent_update: str = 'when_slow', periodic=(False, False),
                  bloch_k=(0.0, 0.0)):
-        # K_sigma of the static state in every pencil (new_modules_plan K2); free rigid motions allowed (None: target > 0)
+        # K_sigma of the static state in every pencil; free rigid motions allowed (None: target > 0)
         self.stress_stiffening = bool(stress_stiffening)
         self._free_body = None if free_body is None else bool(free_body)
         if geometry not in GEOMETRIES:

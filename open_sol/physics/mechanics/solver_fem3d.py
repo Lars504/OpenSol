@@ -10,11 +10,11 @@ complex symmetric factor per frequency by the 'linear' runtime (frequency_respon
 / Floquet unit cells, eigenfrequency only): the complex Hermitian pencil P^H K P of bloch3d, complex modes. PML faces
 (eigenfrequency only, elastic): the mesh's shell stretched (pml3d), complex symmetric pencil, radiation Q. A free body
 (target_frequency > 0 or a frequency response): rigid motions counted, their modes dropped, static solves refused.
-Prestress (new_modules_plan K2): initial_stress materials load every static solve; stress_stiffening adds K_sigma of the
-static state to every pencil. A mechanical_loss_factor damps the modes (complex, K3). Complex probes / reactions per
-frequency (K4). Geometric nonlinearity (K6): total-Lagrangian Newton with load steps, reactions from the internal
-force, pencils on its tangent. Strain / kinetic energy densities (K5). Squeeze-film gas damping per resonance after
-each eigen solve (squeeze_film.SqueezeFilmDamping, S6w). Forces in N."""
+Prestress: initial_stress materials load every static solve; stress_stiffening adds K_sigma of the
+static state to every pencil. A mechanical_loss_factor damps the modes (complex). Complex probes / reactions per
+frequency. Geometric nonlinearity: total-Lagrangian Newton with load steps, reactions from the internal
+force, pencils on its tangent. Strain / kinetic energy densities. Squeeze-film gas damping per resonance after
+each eigen solve (squeeze_film.SqueezeFilmDamping). Forces in N."""
 import math
 import time
 
@@ -120,18 +120,18 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
             raise ValueError('geometric_nonlinearity is not available with piezoelectric on')
         if isinstance(load_steps, bool) or int(load_steps) != load_steps or load_steps < 1:
             raise ValueError(f'load_steps must be an integer >= 1, got {load_steps!r}')
-        # total-Lagrangian Newton of every static solve (new_modules_plan K6): load steps and the damped loop
+        # total-Lagrangian Newton of every static solve: load steps and the damped loop
         self.geometric_nonlinearity = bool(geometric_nonlinearity)
         self.load_steps = int(load_steps)
         self._newton = (DampedIteration(DampingSettings(tolerance=float(nonlinear_tolerance),
                                                         max_iterations=int(nonlinear_max_iterations)),
                                         lambda: f'{self._label()} geometrically nonlinear solve')
                         if self.geometric_nonlinearity else None)
-        # tangent refactorised per Newton iteration or kept while the residual falls fast (plan G4, modified Newton)
+        # tangent refactorised per Newton iteration or kept while the residual falls fast (modified Newton)
         self._tangent_policy = TangentPolicy(tangent_update)
         # (converged every load step, warning or None, Newton iterations, start origin text) of the last nonlinear solve
         self._nonlinear_record = None
-        # K_sigma of the static state in every pencil (new_modules_plan K2); free rigid motions allowed (None: target > 0)
+        # K_sigma of the static state in every pencil; free rigid motions allowed (None: target > 0)
         self.stress_stiffening = bool(stress_stiffening)
         self._free_body = None if free_body is None else bool(free_body)
         pml_faces = tuple(pml_faces)
@@ -363,7 +363,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
         self._write_outputs(green_lagrange=self.geometric_nonlinearity)
         self._loads_dirty = False
 
-    # --- geometric nonlinearity (total-Lagrangian Newton, new_modules_plan K6) ----
+    # --- geometric nonlinearity (total-Lagrangian Newton) ----
 
     def _fixed_stress(self, thermal=True):
         """fem.elasticity.StressField of the stress that is no strain response: sigma0 (initial stress) - beta dT
@@ -412,7 +412,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
 
     def _tangent_assembler_3d(self):
         """fem.elasticity3d.TangentAssembler3D of the last assembly (solid elements, free set), built on first use; on
-        the GPU with a cuDSS 'linear' back end a device assembler (plan G5: tangents assembled and refactorised there)."""
+        the GPU with a cuDSS 'linear' back end a device assembler (tangents assembled and refactorised there)."""
         if self._tangent_assembler is None:
             self._tangent_assembler = TangentAssembler3D(self.system.full, self._stiffness, elements=self._solid,
                                                          free=self.system.free, device=self.system.device_tangent)
@@ -429,7 +429,7 @@ class SolidMechanicsFEMPhysics3D(FEMSolidCommon, MultiShiftModes, PhysicsSolver)
                              'available: add Fixed, Roller or Displacement supports or a Fixed (domain) region that '
                              'stop every rigid motion')
 
-    # --- prestress (stress stiffening, new_modules_plan K2) -------------------------
+    # --- prestress (stress stiffening) -------------------------
 
     def solve_static_state(self, with_loads=True) -> str:
         """PrestressSolver hook: the static state whose K_sigma (int grad N . sigma grad N dV x I3 of its total stress)

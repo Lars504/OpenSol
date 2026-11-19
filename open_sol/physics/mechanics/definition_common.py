@@ -328,7 +328,7 @@ STRESS_STIFFENING_PARAM = Param(
 
 
 _NONLINEAR_VISIBLE = (('geometric_nonlinearity', (True,)),)
-GEOMETRIC_NONLINEARITY_PARAMS = (   # new_modules_plan K6 (solid_mechanics_3d on tetrahedra, solid_mechanics on triangles)
+GEOMETRIC_NONLINEARITY_PARAMS = (   # solid_mechanics_3d on tetrahedra, solid_mechanics on triangles
     Param('geometric_nonlinearity', 'bool', False, label='Geometric nonlinearity',
           help='Triangle and tetrahedron meshes: large deflections and rotations in every static solve (stationary, '
                'time_dependent, the static state of eigenfrequency / frequency_response). Total-Lagrangian Saint '
