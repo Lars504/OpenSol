@@ -570,7 +570,7 @@ def _mesh_facts(estimate):
 
 _BACKGROUND = ('Background stage', 'stationary solve of the physics the study does not solve itself',
                'Physics the study does not solve itself run as stationary background physics: solve_stationary over '
-               'them, then every background coupling applies once (study._background_stage).')
+               'them, then every background coupling applies once (study._background_stage).', [])
 
 
 def _study_steps(spec, study_type, counts, run_time, registry):
