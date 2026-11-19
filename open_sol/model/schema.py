@@ -13,6 +13,7 @@ from functools import cached_property
 
 import numpy as np
 
+from ..core.constants import FREE_MESH_KINDS   # element mesh kinds (sized by h_max / h_min / growth), re-exported
 from ..core.mesh import has_uniform_spacing
 from ..core.metric import GRIDS
 from ..core.renderer import FieldInfo
@@ -61,8 +62,7 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 # DomainSpec.coordinates of a polar grid -> the SPACES its physics take (validate's _check_coordinate_grid: the
 # coordinates fix how the drawing extends into 3D); a Cartesian domain restricts nothing
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
-MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
-FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
+MESH_KINDS = ('tensor',) + FREE_MESH_KINDS   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 # MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: the industry-standard
 # growth 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
@@ -217,10 +217,11 @@ class FeatureType:
     apply: Callable | None = None    # apply(ctx, solver, feature_spec, values, selection) -> runtime obj | None
     result: Callable | None = None   # result(session, solver, runtime_obj, feature_spec, options: dict) -> dict
     validate: Callable | None = None  # validate(vctx, physics_spec, feature_spec, values) -> list[Issue]
-    # memory_estimate(values, n_selected_cells, mesh_estimate) -> core.memory_estimate.MemoryEstimate (CPU only);
+    # memory_estimate(values, n_selected_cells, mesh_estimate) -> core.memory_estimate.MemoryEstimate (CPU only;
+    # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing._selection_cells);
     # set on features that allocate per-region or per-frequency arrays (meshing.estimate_memory)
     memory_estimate: Callable | None = None
-    # stepper precisions the feature works at (solver_plan S3.3; validate checks the resolved 'stepper' solver)
+    # stepper precisions the feature works at (validate checks the resolved 'stepper' solver)
     precisions: tuple = tuple(PRECISIONS)
     # MESH_KINDS of the meshes the feature works on (validate refuses an enabled one on another kind)
     grids: tuple = ('tensor',)
@@ -295,7 +296,7 @@ class PhysicsType:
     memory_estimate: Callable | None = None
     # time_estimate(settings_values, mesh_estimate, context) -> core.time_estimate.TimeEstimate (CPU, unpriced; context
     # = model.time_estimate.TimeContext): the work per step / solve / wavelength as ops and solver roles' work, never
-    # seconds; None = 'not estimated' (time_estimation_plan)
+    # seconds; None = 'not estimated'
     time_estimate: Callable | None = None
     # scalar_outputs(settings_values, physics_spec) -> tuple of names the solver's scalars() reports (derived values:
     # <physics>_<name>; physics_spec for names that follow its features, CPU only); scalar_outputs_help (units,
@@ -317,13 +318,13 @@ class PhysicsType:
     # (physics_type_misfit; '3d' from dimensions)
     spaces_2d: tuple = ('planar',)
     space_settings: dict = field(default_factory=dict)
-    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out (solver_plan S3.3);
+    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out;
     # register_physics checks every default_type is a registered SolverType
     solver_roles: dict = field(default_factory=dict)
     # honours solver_defaults.subpixel_smoothing (igor 1.5): the builder hands its solver the interface geometry by
     # set_subpixel_smoothing(geometry) right after create (subpixel_smoothing_physics decides where it applies)
     subpixel_smoothing: bool = False
-    # honours solver_defaults.conformal_boundaries (solver_plan S7.6): the builder hands its solver a
+    # honours solver_defaults.conformal_boundaries: the builder hands its solver a
     # model.boundary_locator.GeometryLocator by set_conformal_boundaries(locator) right after create, in models of
     # the conformal_dimensions (em_fdtd_3d: (3,), a 3D locator) whose 2D DomainSpec.coordinates are in
     # conformal_coordinates (heat / potential also 'polar' / 'spherical': the locator then takes logical coordinates)
@@ -331,7 +332,7 @@ class PhysicsType:
     conformal_dimensions: tuple = (2,)
     conformal_coordinates: tuple = ('cartesian',)
     # run backends (solvers.roles BACKENDS) the type's own code runs on: engine, renderer, features, the couplings it
-    # owns (solver_plan S6); a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
+    # owns; a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
     backends: tuple = ('gpu',)
     # core.metric GRIDS of the 2D in-plane grid the type solves on (DomainSpec.coordinates 'polar' / 'spherical' map to
     # 'polar'); validate refuses the others; its solver's PhysicsSolver.coordinate_grids must agree
@@ -375,6 +376,8 @@ class PhysicsType:
                                  f"{role!r}: {solver_role!r}")
         if not isinstance(self.family, str):
             raise TypeError(f'{owner}: family must be text, got {type(self.family).__name__}')
+        if self.family == 'em' and not self.uses_dispersion:   # the builder would drop every pole silently
+            raise ValueError(f"{owner}: a family 'em' type needs uses_dispersion=True")
         if not (isinstance(self.dimensions, tuple) and self.dimensions
                 and set(self.dimensions) <= {1, 2, 3}):
             raise ValueError(f'{owner}: dimensions must be a non-empty tuple of 1, 2, 3, got {self.dimensions!r}')
@@ -545,6 +548,10 @@ class CouplingType:
     # the transform also reads the target's own state (fluid_heat_convection: heat T): a loop-back the stationary study
     # iterates, so the time estimate's fixed point counts it as a self-coupling of the target
     reads_target: bool = False
+    # the transform calls its EM source's take_absorbed_power() (em_heat_joule, em_semiconductor_generation): each call
+    # resets a time-stepped source's window, so validation allows one such reader per FDTD source; the EM definitions
+    # count it as a q_accum reference (definition_common._q_accum_referenced: memory, Bloch / em3d refusals)
+    reads_absorbed_power: bool = False
 
     def __post_init__(self):
         owner = f"CouplingType '{self.name}'"
@@ -582,6 +589,14 @@ def coupling_writes(vctx, coupling_spec) -> dict:
     return dict(coupling_type.writes(vctx, coupling_spec)) if coupling_type.writes is not None else {}
 
 
+def coupling_reads_absorbed_power(registry, coupling_spec) -> bool:
+    """CouplingType.reads_absorbed_power of a coupling spec's type; False for an unknown type."""
+    try:
+        return registry.coupling_type(coupling_spec.type).reads_absorbed_power
+    except KeyError:
+        return False
+
+
 def coupling_type_accepts(coupling_type, role, physics_type_name) -> bool:
     """True when a physics of type physics_type_name may be the role ('source' | 'target') of the coupling type."""
     accepted = _coupling_role_types(coupling_type, role)
@@ -592,6 +607,17 @@ def coupling_role_text(coupling_type, role) -> str:
     """Accepted physics types of a coupling role for messages: "'a'", "'a' or 'b'", or 'any'."""
     accepted = _coupling_role_types(coupling_type, role)
     return 'any' if accepted is None else ' or '.join(f"'{name}'" for name in accepted)
+
+
+# built-in study names (model.study / study_eigenfrequency / study_frequency_response / study_optomechanics
+# register them); physics compare study names against these, never the literal (FieldInfo.requires_study of harmonic
+# fields, wavelength settings frequency_domain overrides)
+FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # the wavelength-based harmonic study
+EIGENFREQUENCY_STUDY = 'eigenfrequency'
+TIME_DEPENDENT_STUDY = 'time_dependent'
+STATIONARY_STUDY = 'stationary'
+FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # the frequency-list (Hz) harmonic study
+OPTOMECHANICS_STUDY = 'optomechanics'
 
 
 @dataclass(frozen=True)
@@ -620,6 +646,9 @@ class StudyType:
     default_stored_fields: Callable | None = None
     # StudySpec.adaptation allowed (S7.7: mesh refinement levels, model.study_adaptation); validate refuses it else
     supports_adaptation: bool = False
+    # StudySpec.solved_physics allowed (the physics it leaves out run as background_study physics, so one is needed);
+    # validate refuses it else
+    supports_solved_physics: bool = False
     # time_counts(values) -> {name: number} the run-time recipes read (model.time_estimate.StudyCounts: duration,
     # harmonic_points, max_duration, eigenpairs, iterations, fixed_point_limit); None = no counts (recipes assume one
     # solve)
@@ -636,6 +665,8 @@ class StudyType:
         unknown = sorted(set(self.final_state_settings) - {param.name for param in self.params})
         if unknown:
             raise ValueError(f"StudyType '{self.name}': final_state_settings names no param {unknown}")
+        if self.supports_solved_physics and not self.background_study:
+            raise ValueError(f"StudyType '{self.name}': supports_solved_physics needs a background_study")
         if not (isinstance(self.solver_protocols, tuple) and all(
                 getattr(protocol, '_is_runtime_protocol', False) for protocol in self.solver_protocols)):
             raise TypeError(f"StudyType '{self.name}': solver_protocols must be a tuple of runtime-checkable "
@@ -670,7 +701,7 @@ class TemplateEntry:
 @dataclass(frozen=True)
 class SelfTestVariant:
     """A repeat of a SelfTestCase's runs on another backend and / or solver precision, passed against its own
-    tolerance (solver_plan S3.6): api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
+    tolerance: api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
     name: str                       # identifier, unique within the case (report key, run directory variant_<name>)
     tolerance: float                # replaces the tolerance check() returns
     backend: str | None = None      # 'cpu' | 'gpu': solver_defaults.backend of every run; None = the specs' own
@@ -811,7 +842,8 @@ class ValidationContext:
 
     @property
     def mesh_uniform(self):
-        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6)."""
+        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6) over
+        the full grid, PML included (MeshEstimate.uniform judges the window only)."""
         return (self.mesh is not None and self.mesh.kind == 'tensor' and has_uniform_spacing(self.mesh.dx_cells)
                 and has_uniform_spacing(self.mesh.dy_cells)
                 and (self.mesh.dz_cells is None or has_uniform_spacing(self.mesh.dz_cells)))
@@ -872,6 +904,7 @@ class Registry:
         self._selftests = {}
         self._selftest_loaders = []
         self._selftest_lock = threading.Lock()
+        self._selftest_loading_thread = None   # thread running the loaders (a loader calling selftests() raises)
 
     @staticmethod
     def _add(table, item, expected_type):
@@ -957,13 +990,21 @@ class Registry:
         self._selftest_loaders.append(loader)
 
     def selftests(self):
-        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise)."""
+        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise). A loader that
+        raises registers no case and the next call retries every loader, so a broken selftests module fails selftest
+        runs, not get_registry."""
+        if self._selftest_loading_thread == threading.get_ident():
+            raise RuntimeError('Registry.selftests() called from a selftest loader')
         with self._selftest_lock:
             if self._selftest_loaders:
-                cases = dict(self._selftests)
-                for loader in self._selftest_loaders:
-                    for case in loader():
-                        self._add(cases, case, SelfTestCase)
+                self._selftest_loading_thread = threading.get_ident()
+                try:
+                    cases = dict(self._selftests)
+                    for loader in self._selftest_loaders:
+                        for case in loader():
+                            self._add(cases, case, SelfTestCase)
+                finally:
+                    self._selftest_loading_thread = None
                 self._selftests, self._selftest_loaders = cases, []
         return list(self._selftests.values())
 
@@ -1093,7 +1134,7 @@ def memory_check_level(spec) -> str:
 
 def solver_backend(spec) -> str:
     """Backend of a run: solver_defaults.backend, 'auto' = 'gpu' when cupy imports, else 'cpu' (no driver query:
-    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu', solver_plan S6 stage 0)."""
+    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu')."""
     backend = spec.solver_defaults.backend
     if backend == 'auto':
         return 'gpu' if cupy_installed() else 'cpu'
@@ -1118,7 +1159,7 @@ SOLVER_DEFAULT_PRECISIONS = ('auto', *PRECISIONS)   # SolverDefaultsSpec.precisi
 
 
 def with_default_precision(spec, solver_type, settings, solver_role=None) -> dict:
-    """settings (raw) plus 'precision' = solver_defaults.precision (solver_plan S9) when settings set none and
+    """settings (raw) plus 'precision' = solver_defaults.precision when settings set none and
     solver_type (and solver_role, when given) offer it; else settings unchanged. An explicit node precision wins."""
     precision = getattr(spec.solver_defaults, 'precision', 'auto')
     if (precision == 'auto' or 'precision' in settings or precision not in solver_type.precisions
@@ -1137,7 +1178,7 @@ def with_node_precision(spec, solver_type, settings, solver_role, backend, grid,
         return filled
     automatic_type, automatic_settings = solver_role.automatic(backend, grid, study)
     if automatic_type != solver_type.name and study is not None:
-        automatic_type, automatic_settings = solver_role.automatic(backend, grid)
+        automatic_type, automatic_settings = solver_role.automatic(backend, grid, None)
     if automatic_type != solver_type.name or 'precision' not in automatic_settings:
         return filled
     return {**filled, 'precision': automatic_settings['precision']}
@@ -1271,8 +1312,7 @@ def resolved_solvers(spec, registry, physics_spec, study, parameters, plain_role
                                                 {key: value for key, value in raw.items() if key != 'precision'},
                                                 solver_role)
                 raw = filled if 'precision' in filled else raw
-            values = resolve_values(solver_type.params, with_default_precision(spec, solver_type, raw, solver_role),
-                                    parameters)
+            values = resolve_values(solver_type.params, raw, parameters)   # raw has the default precision already
         except (KeyError, ValueError) as exc:
             text = exc.args[0] if isinstance(exc, KeyError) and exc.args else exc
             raise ValueError(f"physics '{physics_spec.name}' {role} solver: {text}") from exc
@@ -1332,7 +1372,7 @@ def auto_back_end_values(values, solver_role, backend, grid) -> dict:
 
 
 def restricted_feature_precisions(feature_type) -> tuple:
-    """The stepper precisions feature_type is limited to, () when it works at every precision (solver_plan S3.3)."""
+    """The stepper precisions feature_type is limited to, () when it works at every precision."""
     return () if set(feature_type.precisions) == set(PRECISIONS) else feature_type.precisions
 
 
@@ -1346,7 +1386,7 @@ def feature_precision_note(feature_type) -> str:
 
 def feature_precision_misfit(feature_type, resolved) -> str:
     """'' when feature_type works at the precision of the resolved 'stepper' solver ({role: ResolvedSolver}; no
-    stepper = no restriction), else the reason naming that precision (solver_plan S3.3)."""
+    stepper = no restriction), else the reason naming that precision."""
     stepper = resolved.get('stepper')
     if stepper is None:
         return ''
@@ -1694,10 +1734,9 @@ def fill_defaults(params, values):
 
 
 def param_visible(param, values):
-    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`.
-    `values` must include defaults (fill_defaults) — a missing controlling key reads as None."""
-    return not param.visible_if or any(values.get(controller) in accepted
-                                       for controller, accepted in param.visible_if)
+    """visible_if semantics: no conditions, or ANY (param, accepted values) pair matches `values`, which must include
+    the defaults (fill_defaults): a missing controlling key raises KeyError."""
+    return not param.visible_if or any(values[controller] in accepted for controller, accepted in param.visible_if)
 
 
 def resolve_values(params, values, parameters):

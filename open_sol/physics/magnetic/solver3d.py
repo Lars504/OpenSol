@@ -1,4 +1,4 @@
-"""3D magnetostatics by the reduced magnetic scalar potential on the 7-point DiffusionSystem (magnetostatics_3d_plan):
+"""3D magnetostatics by the reduced magnetic scalar potential on the 7-point DiffusionSystem:
 unknown u = mu0 Omega [T m] with c = mu_dc per axis, so the physical face flux c (w - grad u) is B itself; the drive w =
 mu0 T + B_r / mu_dc enters as face terms (stranded coils by T-Omega: T along the coil axis, J = curl T), symmetry (u =
 0) / insulation (Neumann) faces, ideal-iron held regions, a uniform external field on the held outer ring and a corner
@@ -28,7 +28,7 @@ from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, ref
                          Float32StallWatch, saturation_permeability, tabulated_reluctivity)
 
 _ANCHOR_TEXT = 'symmetry face, ideal iron region, external-field ring or the corner anchor'
-_REMEDY_TEXT = 'Give every window cell mu_dc > 0.'
+REMEDY_TEXT_3D = 'Give every window {item} mu_dc > 0.'   # item: cell / element (solver_fem3d)
 _PERMEABILITY_NAMES = ('mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')
 _AXES = 'xyz'
 
@@ -64,7 +64,8 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
             raise ValueError(f'{self.type_label} needs a 3D domain (2D models: magnetostatics)')
         system = DiffusionSystem(
             domain, precision, tol, max_iter, label=lambda: f"{self.type_label} '{self.name}'",
-            unknown_name='magnetic scalar potential', anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT,
+            unknown_name='magnetic scalar potential', anchor_text=_ANCHOR_TEXT,
+            remedy_text=REMEDY_TEXT_3D.format(item='cell'),
             compute_residual=compute_residual,
             linear_solver=kept_preconditioner_solver(linear_solver))   # kept across the saturation loop
         self._init_diffusion(domain, ScalarBoundaryConfig(), system)   # every face insulated (Neumann, decision 4)
@@ -457,17 +458,22 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
     def _saturating_flux_magnitude(self):
         """float64 centre |B| (k,) of the saturating cells from the latest solve: operator flux plus the drive face
         terms, as _update_fields computes B there."""
-        system = self.system
         flat = self._nonlinear_flat
-        flux = system.flux_at_centres()   # -c grad u per axis [T]
-        if self._face_drives is not None:
-            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, ~system.fixed_user)
-            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
         magnitude_squared = 0.0
-        for flux_density in flux:
+        for flux_density in self._flux_density_at_centres(~self.system.fixed_user):
             component = flux_density.ravel()[flat].astype(np.float64)
             magnitude_squared = magnitude_squared + component * component
         return self.xp.sqrt(magnitude_squared)
+
+    def _flux_density_at_centres(self, free):
+        """Window (B_x, B_y, B_z) = operator face flux + drive face terms averaged to the centres (held cells 0): the
+        one B of _update_fields and _saturating_flux_magnitude (never T - grad u)."""
+        system = self.system
+        flux = system.flux_at_centres()   # -c grad u per axis [T]
+        if self._face_drives is not None:
+            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, free)
+            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
+        return flux
 
     def _saturated_log_permeability(self, field_magnitude):
         """ln of the secant mu_r (float64 (k,)) of the curves on the saturating cells at their float64 centre |H| =
@@ -616,10 +622,7 @@ class MagneticPhysics3D(DiffusionPhysicsBase):
         fields = self.fields
         self._write_potential_field()
         free = ~system.fixed_user
-        flux = system.flux_at_centres()   # -c grad u per axis [T]
-        if self._face_drives is not None:
-            drive = face_terms_at_centres_3d(self._face_drives, system.geometry_3d, free)
-            flux = tuple(operator_part + drive_part for operator_part, drive_part in zip(flux, drive))
+        flux = self._flux_density_at_centres(free)
         names = self.domain.materials.property_names()
         coefficients = (system.assembled_c_xx, system.assembled_c_yy, system.assembled_c_zz)
         magnitude_squared = 0.0

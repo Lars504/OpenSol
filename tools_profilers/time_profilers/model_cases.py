@@ -136,10 +136,14 @@ def run_model(case, registry, run_dir) -> dict:
     wall = time.perf_counter() - started
     summary_path = Path(run_dir) / 'summary.json'
     summary = json.loads(summary_path.read_text(encoding='utf-8')) if summary_path.is_file() else {}
-    build_seconds, study_seconds = _seconds(summary.get('build_seconds_total')), _seconds(summary.get('study_seconds'))
+    status = 'ok' if summary.get('status', run_status) == 'completed' else 'failed'
+    if status == 'ok':   # a completed run's summary has both: a renamed key raises (status 'error'), never empty cells
+        build_seconds, study_seconds = float(summary['build_seconds_total']), float(summary['study_seconds'])
+    else:
+        build_seconds = _seconds(summary.get('build_seconds_total'))
+        study_seconds = _seconds(summary.get('study_seconds'))
     output = None if build_seconds is None or study_seconds is None else max(wall - build_seconds - study_seconds, 0.0)
     build = summary.get('build') or {}
-    status = 'ok' if summary.get('status', run_status) == 'completed' else 'failed'
     details = {'run_status': summary.get('status', run_status), 'message': summary.get('message') or '',
                'errors': list(summary.get('errors') or [])[:3], 'node': node,
                'solvers': summary.get('solvers') or {}, 'solver_work': summary.get('solver_work') or {},

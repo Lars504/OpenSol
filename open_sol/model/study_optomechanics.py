@@ -3,13 +3,13 @@ solid's optomechanical_coupling features (em_modes modes or em_fdfd_ez / _hz / _
 modes, the g0 tables, then one labelled snapshot per mechanical mode."""
 import time
 
-from .schema import Issue, Param, StudyType
+from .schema import OPTOMECHANICS_STUDY, Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, ModeSolver, OptomechanicalSolver
 from .study import (LogEvent, _background_fixed_point_params, _background_stage, _count_progress,
                     _log_eigen_solve, _numbered_snapshots, _refuse_stepping_background, _reselect_first_resonance,
                     _scipy_issues, _selected_physics, _solve_static_states)
 
-STUDY_NAME = 'optomechanics'
+STUDY_NAME = OPTOMECHANICS_STUDY
 _OPTICAL_STAGE = 'Optical solve'
 _MECHANICAL_STAGE = 'Mechanical modes'
 _FEATURE = 'optomechanical_coupling'
@@ -183,6 +183,6 @@ def register(registry):
                 'shifts the light frequency (vacuum optomechanical coupling rate). Heat or current physics are first '
                 'solved to a steady state.',
         description=_DESCRIPTION, params=_PARAMS, background_study='stationary', run=_run_optomechanics,
-        validate=_validate_optomechanics,
+        validate=_validate_optomechanics, supports_solved_physics=True,
         feedback_alternative='the optical and mechanical modes are only tabulated, not fed back',
         time_counts=_time_counts, solver_protocols=(ModeSolver, EigenfrequencySolver)))

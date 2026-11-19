@@ -9,7 +9,9 @@ from .optomechanics import face_jump, face_mean
 class OpticalForceDensity:
     """Full-grid body_force_x / _y [N/m^3] buffers of the em_solid_optical_force coupling, refreshed once per EM solve:
     each face carries -(eps0 / 4) |E_z|^2 (eps_r jump) times its length, split between its solid cells (the solver's
-    c11 > 0; equally when both are solid, dropped when neither is) and divided by their area. Arrays on domain.xp."""
+    c11 > 0; equally when both are solid, dropped when neither is) and divided by their area. Arrays on domain.xp.
+    The face |E_z|^2 is the mean of its two cells (not the conserved Re(E_i conj(E_i+1))): O((n k0 dx)^2 / 2) error
+    per interface."""
 
     def __init__(self, domain):
         xp = domain.xp

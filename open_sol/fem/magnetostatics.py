@@ -1,4 +1,4 @@
-"""Magnetostatics on triangle meshes (magnetic plan section 10, stage 5): the curl operator Q of Lagrange P1 / P2 A in
+"""Magnetostatics on triangle meshes: the curl operator Q of Lagrange P1 / P2 A in
 B-space (planar A_z: B = (dA/dy, -dA/dx); axisymmetric A_phi: B = (-dA/dz, dA/dr + A / r), weights r per radian),
 cached at the quadrature points of a dof map's elements (curl_quadrature), B at those points, vectors int Q^T v dV
 (residual of H, load of nu B_r), the tangent int Q^T D Q dV and integrals of point values. W, R and K_t share the rule

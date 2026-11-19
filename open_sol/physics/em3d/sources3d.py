@@ -1,5 +1,6 @@
 """Electric point dipole of em_fdtd_3d: a current moment I l [A m] on the one E face nearest the point, calibrated
-on the device from the live face cb (no host sync). TFSF / mode sources are extension points (package sub file)."""
+on the device from the live face cb (no host sync). Plane wave: tfsf3d, mode source: mode_ports3d (source protocol:
+package sub file)."""
 import math
 
 import numpy as np

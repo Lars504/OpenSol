@@ -9,16 +9,21 @@ from ...core import time_estimate as te
 from ...core.constants import C0, EPS0, FACE_LABELS, FACES, MU0
 from ...core.sources import GaussianPulse, RickerWavelet
 from ...core.wavelengths import resolved_wavelengths, wavelength_range
-from ...model.definition_helpers import eigen_factorization, evaluates_to, study_duration, validate_points_inside
-from ...model.expressions import (FIELD_COORDINATE_NAMES, TIME_NAMES, ExpressionError, evaluate_scalar,
+from ...model.definition_helpers import (dynamic_material_values, eigen_factorization, evaluates_to, study_duration,
+                                         validate_points_inside)
+from ...model.expressions import (FIELD_COORDINATE_NAMES, ExpressionError, evaluate_scalar,
                                   referenced_names)
 from ...model.geometry import line_orientation, preview_pixel_centers
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
+from ...solvers.sparse_direct import LINEAR_SOLVER_CHOICES
 from ...solvers.explicit_kernels import stepper_precision
-from ...model.schema import (GYRATION_PROPERTY_NAMES, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
-                             array_owner, coupling_writes, feature_path, known_physics, output_field_names, permittivity_arrays,
-                             resolve_values, state_field_names)
+# FREQUENCY_DOMAIN_STUDY (the study whose wavelengths replace the wavelength setting) and EIGENFREQUENCY_STUDY are
+# re-exported to the EM definitions
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES,
+                             OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
+                             array_owner, coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
+                             output_field_names, permittivity_arrays, resolve_values, state_field_names)
 from . import EMPhysics
 from .boundaries import BoundaryConfig
 from .eigenfrequency import ResonanceTable, resonance_filter_time_item
@@ -678,7 +683,6 @@ def steps_in_time(settings_values):
 
 
 # ---- solved wavelengths of the quasi-static EM types (FDFD, em_modes): the setting, or a frequency_domain list ----
-FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # study whose wavelengths replace the wavelength setting
 DEFAULT_WAVELENGTH = 1.55e-6                  # [m] wavelength setting default (no unused-setting info at it)
 
 
@@ -726,8 +730,6 @@ def unused_wavelength_issues(vctx, settings_values, path):
 
 
 # ---- eigen-solved FDFD physics: an eigenfrequency study or the optical side of an optomechanics study ----
-EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
-OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
 _OPTOMECHANICAL_FEATURE = 'optomechanical_coupling'   # solid_mechanics feature naming its optical physics
 BOTH_GRIDS = ('tensor', 'triangles')   # PhysicsType / FeatureType.grids of host-solved types running on triangles too
 
@@ -825,7 +827,7 @@ def host_matrix_back_end_issues(solvers, type_name, path) -> list:
     resolved = (solvers or {}).get('linear')
     if resolved is None or resolved.values.get('back_end') != 'cusolver_qr':
         return []
-    choices = ', '.join(f"'{name}'" for name in ('auto', 'scipy_splu', 'cudss', 'cudss_mixed') + HOST_DIRECT_BACK_ENDS)
+    choices = ', '.join(f"'{name}'" for name in LINEAR_SOLVER_CHOICES if name != 'cusolver_qr')
     return [Issue('error', path, f"linear solver '{resolved.node}': {type_name} factorises a host matrix (SuperLU, "
                                  f'cuDSS, MUMPS or PARDISO): use back_end {choices}, or Automatic')]
 
@@ -965,15 +967,10 @@ def write_dispersive_materials(ctx, physics_spec, solver, background_targets):
         solver.materials_changed(tuple(written_arrays))
 
 
-# coupling types whose CouplingTerm reads q_accum (coupling.standard joule_heating, definitions_semiconductor): the
-# runner enables loss accounting for them (coupling/runner.py _enable_loss_accounting)
-_Q_ACCUM_COUPLINGS = frozenset({'em_heat_joule', 'em_semiconductor_generation'})
-
-
 def _q_accum_referenced(spec, physics_name, registry):
     """True when the model reads q_accum of this physics: a material property names it, a derived value names it or
-    absorbed_power, an enabled field_transfer reads it, or an enabled _Q_ACCUM_COUPLINGS type reads it (pole values
-    are parameter-only)."""
+    absorbed_power, an enabled field_transfer reads it, or an enabled coupling type with reads_absorbed_power reads it
+    (pole values are parameter-only)."""
     q_accum_names = frozenset(name for name, (physics, field_name) in state_field_names(spec, registry).items()
                               if physics == physics_name and field_name == 'q_accum')
     if not q_accum_names:
@@ -986,7 +983,7 @@ def _q_accum_referenced(spec, physics_name, registry):
     for coupling in spec.couplings:
         if not coupling.enabled or coupling.source != physics_name:
             continue
-        if coupling.type in _Q_ACCUM_COUPLINGS:
+        if coupling_reads_absorbed_power(registry, coupling):
             return True
         if (coupling.type == 'field_transfer' and isinstance(coupling.params, dict)
                 and coupling.params.get('source_field') == 'q_accum'):
@@ -1313,8 +1310,9 @@ def _em_physics_types(vctx):
 
 def _material_issues(vctx, em_types):
     """Model-wide checks over the permittivity arrays of every present EM type: dispersion dicts build valid poles;
-    warnings for a Drude material whose permittivity is set and for a user permittivity property no array uses; the
-    nk_fit report (definition_material_fit)."""
+    warnings for a Drude material whose permittivity is set and for a user permittivity property no array uses; an
+    error for a non-zero gyration_* a present EM type does not declare (model validate skips gyration names like
+    permittivity names); the nk_fit report (definition_material_fit)."""
     em_params = [physics_type.material_properties for physics_type in em_types]
     # permittivity properties some present EM type knows (a registered component of an absent type is dropped)
     em_permittivity_names = tuple(name for name in PERMITTIVITY_PROPERTY_NAMES
@@ -1355,11 +1353,12 @@ def _material_issues(vctx, em_types):
             ignoring = [physics_type.name for physics_type, params in zip(em_types, em_params)
                         if not any(param.name == name for param in params)]
             if ignoring and evaluates_to(properties.get(name), vctx.parameters, lambda value: value != 0.0):
+                # the readers are the registered types declaring the Param (a new reader needs no edit here)
+                readers = [physics_type.name for physics_type in vctx.registry.physics_types()
+                           if any(param.name == name for param in physics_type.material_properties)]
                 issues.append(Issue('error', path, f"{name} (a magneto-optic, non-reciprocal medium) is not supported "
-                                                   f"by {', '.join(ignoring)}: only em_fdfd_hz reads gyration_z "
-                                                   '(magnetisation out of the plane, in its operator) and em_modes '
-                                                   'gyration_x / gyration_y (transverse magnetisation, the first-order '
-                                                   'non-reciprocal phase shift); remove it or use one of those types'))
+                                                   f"by {', '.join(ignoring)}: only {', '.join(readers) or 'no type'} "
+                                                   'reads it; remove it or use one of those types'))
         for name, value in user_properties.items():
             if name in PERMITTIVITY_PROPERTY_NAMES and value is not None and name not in em_permittivity_names:
                 issues.append(Issue('warning', path, f"{name} is not used by the present EM physics "
@@ -1378,28 +1377,28 @@ def _permittivity_writer_issues(vctx, physics_spec, slot_arrays, material_proper
         if coupling.enabled and coupling.target == physics_spec.name:
             for slot in _written_permittivity_slots(vctx, coupling, slot_arrays):
                 writers_by_slot[slot].append(coupling.name)
-    state_names = frozenset(vctx.state_names) | TIME_NAMES   # both make the property a DynamicMaterialUpdate
     issues, collisions = [], {}   # (material, property) -> (coupling, slot) of its first collision
     if not any(writers_by_slot.values()):
         return issues
-    merged = {}   # material name -> its effective properties, merged once (not per slot)
-    for material in vctx.spec.materials:
+    # library values are floats, so only a spec property can be dynamic (the builder's DynamicMaterialUpdate rule)
+    dynamic = {}   # selected material -> {its dynamic property names}
+    for material, name in dynamic_material_values(vctx.spec, vctx.registry):
         if material.selection:
-            try:
-                merged[material.name] = _effective_material(material)[0]
-            except ValueError:   # unknown library / malformed properties: reported by the generic material checks
-                continue
+            dynamic.setdefault(material.name, (material, set()))[1].add(name)
+    merged = {}   # material name -> its effective properties, merged once (not per slot)
+    for material_name, (material, _) in dynamic.items():
+        try:
+            merged[material_name] = _effective_material(material)[0]
+        except ValueError:   # unknown library / malformed properties: reported by the generic material checks
+            continue
     for slot, writers in writers_by_slot.items():
         if not writers:
             continue
-        for material in vctx.spec.materials:
-            properties = merged.get(material.name) if material.selection else None
-            if properties is None:
-                continue
+        for material_name, properties in merged.items():
             # only the owner writes the array (a static component beside a state-dependent eps_r is no second writer)
             owner = array_owner(slot_arrays[slot], material_property_params, properties)
-            if owner is not None and _references_any(properties[owner], state_names):
-                collisions.setdefault((material.name, owner), (writers[0], slot))
+            if owner is not None and owner in dynamic[material_name][1]:
+                collisions.setdefault((material_name, owner), (writers[0], slot))
     for (material_name, property_name), (writer, slot) in collisions.items():
         issues.append(Issue('error', ('material', material_name),
                             f"{property_name} depends on physics fields or t while coupling '{writer}' rewrites slot "

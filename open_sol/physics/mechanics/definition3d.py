@@ -26,7 +26,8 @@ from ...model.definition_helpers import (CG_ELASTIC_3D_LINEAR_ROLE, DISCRETIZATI
                                          linear_solver_precision, on_tetrahedra,
                                          point_cells, reduced_sweep_memory_items, validate_points_inside,
                                          validated_linear_precision)
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, DomainRequirements, FeatureType, Issue, Param,
+                             PhysicsType, feature_path)
 from ...solvers.arpack_shift_invert import APPLICATIONS_PER_BASIS_GUESS, CUDSS_FACTORIZATIONS, arnoldi_basis_size
 from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, double_of, factor_label, host_direct_precision,
                                     solver_host_bytes, superlu_bytes_scale)
@@ -115,10 +116,6 @@ _FUSED_UPDATE_FLOPS_PER_DOF = 10
 _FUSED_DIRECTION_FLOPS_PER_DOF = 3
 _PROBE_FIELDS = OUTPUT_ARRAYS_3D + ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D
 _TETRAHEDRA_ONLY_FIELDS = ELECTRIC_OUTPUT_ARRAYS_3D + ENERGY_OUTPUT_ARRAYS_3D   # the tensor state() has none
-# frequency response: a complex factor over the real one at equal unknowns (complex multiply-adds ~4 real flops, each
-# value 2 x the bytes); uncalibrated
-_COMPLEX_LU_FLOPS = 4.0
-_COMPLEX_SOLVE_BYTES = 2.0
 _COMPLEX_BYTES = 16
 _INT64_BYTES = 8
 # = piezo.ELECTRODE_CONNECTIONS + (piezo.RESISTIVE_LOAD,) (piezo imports cupy)
@@ -648,6 +645,20 @@ def eigen_host_direct(solvers, unknowns):
     return name
 
 
+def _linear_type_issues(vctx, physics_spec, path, tetrahedra):
+    """Error for a 'linear' node of the type the mesh kind's system refuses at create (both fit the role): a
+    tetrahedron mesh factorises (sparse_direct only: system_fem3d), the rectangular-cell solid iterates matrix-free (pcg
+    only: solver_common)."""
+    resolved = (vctx.solvers(physics_spec) or {}).get('linear')
+    needed = 'sparse_direct' if tetrahedra else 'pcg'
+    if resolved is None or resolved.solver_type.name == needed:
+        return []
+    how = ('on a tetrahedron mesh the solid solves with sparse_direct (host SuperLU, or cuDSS by its back ends)'
+           if tetrahedra else 'on a rectangular-cell mesh the solid solves by matrix-free pcg (no matrix to factor)')
+    return [Issue('error', path, f"linear solver '{resolved.node or resolved.solver_type.name}' is "
+                                 f'{resolved.solver_type.name}: {how}: assign Automatic or a {needed} node')]
+
+
 def _tetrahedra_issues(vctx, physics_spec, settings_values, path):
     """Tetrahedron mesh (FEM): the host SuperLU size rule of the factorised unknowns (displacement, + potential when
     piezoelectric: the 'linear' factor of a static solve or of the complex frequency-response pencil, the eigen factor
@@ -938,6 +949,7 @@ def _validate_solid_3d_rules(vctx, physics_spec, settings_values, path, tetrahed
     issues.extend(_mirror_issues(vctx, physics_spec))
     issues.extend(_electrode_edge_issues(vctx, physics_spec, settings_values, path))
     issues.extend(_squeeze_film_issues(vctx, physics_spec, settings_values, tetrahedra))
+    issues.extend(_linear_type_issues(vctx, physics_spec, path, tetrahedra))
     if tetrahedra:
         issues.extend(_tetrahedra_issues(vctx, physics_spec, settings_values, path))
         element_name = f"{settings_values.get('discretization', 'quadratic')} tetrahedron"
@@ -1225,8 +1237,8 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     _TET_SOLVE_TIME_SCALE: static = 'linear' factorisations (one per assembly; per solve when the stiffness follows a
     state field) and back substitutions; eigenfrequency = one 'eigen' shift factorisation (SuperLU, or the cuDSS 3D
     recipe fitted to curl-curl systems, uncalibrated here) and its Lanczos applications; frequency_response = one
-    complex 'linear' factorisation and solve per frequency (_COMPLEX_LU_FLOPS / _COMPLEX_SOLVE_BYTES over the real
-    recipe; a Bloch cell with bloch_k != 0 or an elastic PML prices its eigen factor so too). Geometric nonlinearity:
+    complex 'linear' factorisation and solve per frequency (value_bytes 16: the roles price complex operators; a Bloch
+    cell with bloch_k != 0 or an elastic PML prices its eigen factor so too). Geometric nonlinearity:
     each static solve (once for the pencil of the modal / response studies) is _newton_time. Piezoelectric: every
     recipe at the coupled unknowns (the scales of the vector stiffness, uncalibrated for it); a resistive_load
     electrode: the complex 'loaded' pencil of three terms (SolverWork.pencil_terms); losses make only a non-piezo pencil
@@ -1238,8 +1250,7 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
     scales = dict(nnz=float(_tetrahedra_entries(settings_values, mesh, context.spec)), dimensions=3,
                   factor_scale=_TET_LU_TIME_SCALE[order] * periodic_factor,
                   solve_scale=_TET_SOLVE_TIME_SCALE[order] * periodic_fill)
-    complex_scales = dict(scales, factor_scale=_COMPLEX_LU_FLOPS * scales['factor_scale'],
-                          solve_scale=_COMPLEX_SOLVE_BYTES * scales['solve_scale'])
+    complex_scales = dict(scales, value_bytes=_COMPLEX_BYTES)
     nonlinear = bool(settings_values.get('geometric_nonlinearity'))
     if nonlinear and context.study.type in (*MODAL_STUDIES, FREQUENCY_RESPONSE_STUDY):
         # the nonlinear static state of the pencils (once, in place of the linear one), then the study's linear recipe
@@ -1252,10 +1263,9 @@ def _tetrahedra_time_estimate(settings_values, mesh, context):
                       + _estimated_rigid_motions(settings_values, context))
         loaded = _resistive_load(settings_values, context.physics_spec)
         complex_pencil = _complex_pencil(settings_values) or loaded or _lossy_pencil(settings_values, context)
-        if eigen_factorization(context.solvers) in CUDSS_FACTORIZATIONS:   # the device recipe reads value_bytes
-            factor = dict(scales, value_bytes=_COMPLEX_BYTES if complex_pencil else FLOAT64_BYTES)
-        else:   # host SuperLU: the complex cost is in complex_scales
-            factor = dict(complex_scales if complex_pencil else scales, backend='cpu')
+        factor = complex_scales if complex_pencil else scales
+        if eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS:   # SuperLU / MUMPS / PARDISO: host
+            factor = dict(factor, backend='cpu')
         shift_work, _ = eigen_search_counts(context)   # one shift-invert per shift of the eigenfrequency search
         parts = [context.solver_work('eigen', unknowns=unknowns, eigenpairs=eigenpairs, plan_reused=True,
                                      pencil_terms=3 if loaded else 2, **shift_work, **factor)]
@@ -1338,7 +1348,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
     scatter_bytes = _TANGENT_SCATTER_BYTES_PER_COO * coo_entries
     linear = (context.solvers or {}).get('linear')
     if context.backend == 'gpu' and linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS:
-        # device TangentAssembler3D (plan G5) on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
+        # device TangentAssembler3D on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
         # block per element, the block scatter_add, the displacement up and the force down
         chunks = -(-int(mesh.n_elements) // device_tangent_chunk_elements(local, points, element_kernel=True))
         ops = (te.DenseFlops(kernel_flops),
@@ -1359,7 +1369,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
 
 
 def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries, factored):
-    """(run items, transient items) of the device Newton tangents (plan G5, uncalibrated): the kept TangentAssembler3D
+    """(run items, transient items) of the device Newton tangents (uncalibrated): the kept TangentAssembler3D
     caches, values, vectors and cuDSS index maps; one chunk's temporaries per tangent assembly."""
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
@@ -1437,7 +1447,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, fill,
                         linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
-    # Newton tangents on the GPU (plan G5): system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
+    # Newton tangents on the GPU: system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
     device_tangent = (bool(settings_values.get('geometric_nonlinearity')) and static_solve
                       and on_gpu and linear_back_end in CUDSS_BACK_ENDS)
     if device_tangent:
@@ -2041,9 +2051,9 @@ SOLID_MECHANICS_3D = PhysicsType(
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent', EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY,
                        OPTOMECHANICS_STUDY),
-    default_study={'type': 'stationary'},
+    default_study={'type': STATIONARY_STUDY},
     # eigen: the factor-free eigsh_inverse on tensor meshes; on tetrahedra eigsh_shifted (SuperLU or cuDSS LDL^T of the
     # real SPD / symmetric pencil; cudss_mixed refines every solve to full accuracy). Automatic is the double factor:
     # ARPACK applies it 37-63 times, double wins from ~11 applications (2 ms per solve against 6-14 ms refined).

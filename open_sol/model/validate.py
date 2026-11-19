@@ -40,7 +40,8 @@ from .schema import (ADAPTATION_METHODS, BACKENDS, DERIVED_OPERATIONS, FIELD_DER
                      conformal_boundaries_physics, coupling_role_text, coupling_type_accepts, coupling_writes,
                      default_precision_ignored, effective_coupling_every, with_default_precision, with_node_precision,
                      feature_precision_misfit, fill_defaults, get_registry, memory_check_level,
-                     output_field_names, param_visible, short_repr, solver_backend, solver_grid, solver_misfit,
+                     output_field_names, param_visible, restricted_feature_precisions, short_repr, solver_backend,
+                     solver_grid, solver_misfit,
                      state_field_names,
                      subpixel_smoothing_physics, valid_every)
 from .spec import OUTER_FACES_3D, REFINEMENT_PLACES, RESERVED_ENTITY_NAMES, SWEEP_SPACINGS, outer_faces
@@ -58,8 +59,6 @@ _ENTITY_LISTINGS = {'domain': domain_entities, 'boundary': boundary_entities, 'p
                     'line': line_entities, 'interface': interface_entities}   # selection kind -> entity listing
 # studies whose physics share one mesh (S7.2 1.2: they combine the physics' solutions on one grid)
 _ONE_MESH_STUDIES = ('thermal_noise', 'optomechanics', 'nonlinear_frequency_domain')
-# studies whose run picks its solved physics by StudySpec.solved_physics (study._solver_roles / the optomechanics roles)
-_SOLVED_PHYSICS_STUDIES = ('frequency_domain', 'mode_analysis', 'eigenfrequency', 'frequency_response', 'optomechanics')
 _GMSH_ENVIRONMENT = 'OPEN_SOL_GMSH'   # path of the gmsh program (MeshSpec.mesher 'gmsh'), else the PATH
 
 
@@ -1246,7 +1245,7 @@ class _Validator:
         and the gmsh program; builtin (tensor-graded bricks): no size_points, an info; subpixel smoothing / conformal
         boundaries do not apply (info)."""
         self._check_element_mesh_space(path, 'tetrahedra', 3)
-        swept = mesh_spec.sweep_axis == 'z'   # prism layers (plan D5): meshing refuses their other rules
+        swept = mesh_spec.sweep_axis == 'z'   # prism layers: meshing refuses their other rules
         builtin = mesh_spec.mesher == 'builtin' and not swept
         if swept:
             self._check_swept_mesh(path, mesh_spec)
@@ -1296,7 +1295,7 @@ class _Validator:
             self.info(path, f"{' and '.join(flags)} do not apply on {kind}: {reason}")
 
     def _check_swept_mesh(self, path, mesh_spec):
-        """sweep_axis 'z' (swept prism layers, plan D5): the meshing rules (swept_mesh_problem) as an error, an info,
+        """sweep_axis 'z' (swept prism layers): the meshing rules (swept_mesh_problem) as an error, an info,
         a warning naming the primitives tagged per element (no vertical side walls)."""
         from .geometry import is_array_copy
         from .swept_meshing import footprint_shapes, swept_mesh_problem
@@ -1486,7 +1485,7 @@ class _Validator:
 
     # ---- solvers ----
     def check_solvers(self):
-        """Solver defaults, solver nodes (type, settings, unused) and the physics' role assignments (solver_plan S3.6)."""
+        """Solver defaults, solver nodes (type, settings, unused) and the physics' role assignments."""
         spec = self.spec
         if spec.solver_defaults.backend not in SOLVER_BACKENDS:
             self.error(('solvers',), f'backend {short_repr(spec.solver_defaults.backend)} is not one of '
@@ -1515,7 +1514,7 @@ class _Validator:
                 self._delegate_issues(path, f"solver type '{solver_type.name}' validate", solver_type.validate,
                                       self.vctx, values, path)
         for physics, physics_type, _settings_values in self.physics_entries:
-            if backend not in physics_type.backends:   # solver_plan S6: the physics' own arrays and kernels
+            if backend not in physics_type.backends:   # the physics' own arrays and kernels
                 self.error(('physics', physics.name),
                            f'{physics_type.label} runs on the {BACKENDS[physics_type.backends[0]]} only so far (its '
                            f'fields, materials and kernels have no {BACKENDS[backend]} path yet): set the Solvers '
@@ -1536,7 +1535,7 @@ class _Validator:
 
     def _check_default_precision(self):
         """solver_defaults.precision: 'auto' or a precision; when set, an info naming the (physics, role) solvers that
-        keep their own precision and why (solver_plan S9)."""
+        keep their own precision and why."""
         value = self.spec.solver_defaults.precision
         if value not in SOLVER_DEFAULT_PRECISIONS:
             self.error(('solvers',), f'precision {short_repr(value)} is not one of '
@@ -1647,7 +1646,7 @@ class _Validator:
                 feature_type = physics_type.feature_type(feature.type)
             except KeyError:   # reported by check_features
                 continue
-            if feature.enabled and set(feature_type.precisions) != set(PRECISIONS):
+            if feature.enabled and restricted_feature_precisions(feature_type):
                 restricted.append((feature, feature_type))
         if not restricted:
             return
@@ -1775,17 +1774,18 @@ class _Validator:
                                   values)
 
     def _check_solved_physics(self, path, solved_physics, study_type):
-        """StudySpec.solved_physics: a list of distinct physics names, only in a study of _SOLVED_PHYSICS_STUDIES, each
-        physics supporting the study itself; every physics left out must support its background study."""
+        """StudySpec.solved_physics: a list of distinct physics names, only in a study with supports_solved_physics,
+        each physics supporting the study itself; every physics left out must support its background study."""
         if isinstance(solved_physics, list) and not solved_physics:
             return
         if not isinstance(solved_physics, list) or not all(isinstance(name, str) for name in solved_physics):
             self.error(path, f'solved_physics must be a list of physics names, got {short_repr(solved_physics)}')
             return
-        if study_type.name not in _SOLVED_PHYSICS_STUDIES or not study_type.background_study:
-            self.error(path, f'solved_physics applies to the {", ".join(_SOLVED_PHYSICS_STUDIES)} studies (the physics '
-                             f'it leaves out run as stationary background physics); the {study_type.label} study solves '
-                             'every physics itself: clear solved_physics')
+        if not study_type.supports_solved_physics:
+            supported = _name_list(other.name for other in self.registry.study_types() if other.supports_solved_physics)
+            self.error(path, f'solved_physics applies to the {supported} studies (the physics it leaves out run as '
+                             f'stationary background physics); the {study_type.label} study solves every physics '
+                             'itself: clear solved_physics')
             return
         duplicates = sorted(name for name, count in Counter(solved_physics).items() if count > 1)
         if duplicates:
@@ -1916,9 +1916,9 @@ class _Validator:
                 self.error(path, f"stored field '{entry}': physics '{physics_name}' has no output field "
                                  f"'{component}'; available: {', '.join(components)}")
                 continue
-            required_study = physics_type.output_fields[components.index(component)].requires_study
-            if required_study and required_study != self.spec.study.type:
-                self.error(path, f"stored field '{entry}' exists only in a {required_study} study (this study: "
+            info = physics_type.output_fields[components.index(component)]
+            if not info.available_in(self.spec.study.type):
+                self.error(path, f"stored field '{entry}' exists only in a {info.requires_study} study (this study: "
                                  f'{self.spec.study.type}); remove it or change the study type')
 
     def _check_stored_cuts(self, path, stored_cuts):

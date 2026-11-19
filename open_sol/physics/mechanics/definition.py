@@ -14,7 +14,7 @@ from ...core.memory_estimate import (BOOL_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, I
 from ...core.monitors import probe_result
 from ...fem.diffusion import cudss_back_end, cudss_diffusion_estimate
 from ...coupling.coupling_term import CouplingGroup, CouplingTerm
-from ...coupling.index_terms import index_contributor, index_slots, target_type, writes_index_slots
+from ...coupling.index_terms import after_source_step, index_contributor, index_slots, target_type, writes_index_slots
 from ..em.index_reference import INDEX_SLOTS
 from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, DIFFUSION_DIRECT_BACK_ENDS,
                                          axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of,
@@ -28,8 +28,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          reduced_sweep_memory_items,
                                          reduced_sweep_time_items, validate_points_inside)
 from ...model.geometry import expand_entities, line_orientation
-from ...model.schema import (CouplingType, DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole,
-                             feature_path, solver_backend)
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, CouplingType, DomainRequirements, FeatureType,
+                             Issue, Param, PhysicsType, SolverRole, feature_path, solver_backend)
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LANCZOS_APPLICATIONS_PER_BASIS, arnoldi_basis_size
 from ...solvers.host_direct import factor_label
 from ...solvers.pcg import workspace_bytes
@@ -90,14 +90,14 @@ _PLANE_DISPLACEMENTS = ('u_x', 'u_y')   # load / held value names (follow_load /
 _PLANE_TRACTIONS = ('t_x', 't_y')
 _PLANE_BODY_FORCES = ('f_x', 'f_y')
 _BOTH_GRIDS = ('tensor', _TRIANGLES)   # features the triangle solid (solver_fem) runs too
-_FEM_STUDIES = ('stationary', 'time_dependent', EIGENFREQUENCY_STUDY,   # studies of the solid on a triangle mesh
+_FEM_STUDIES = (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY,   # studies of the solid on a triangle mesh
                 FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)
 
 # The 'linear' SolverRole of solid_mechanics (local: no other type uses it): tensor
 # mesh = block-Jacobi CSR pcg (no scalar multigrid: it does not fit the vector problem), 'mixed' = float32 inner CG on
 # float32 copies of the CSR and the 2 x 2 inverse blocks (system.ElasticSystem._bind_linear_solver); Automatic on the
-# gpu backend = pcg mixed (3D speed plan A1: float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
-# ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh (mesh plan D11) = sparse_direct
+# gpu backend = pcg mixed (float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
+# ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh = sparse_direct
 # on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double, thin-film K is badly
 # conditioned and its frequency response near resonance converges worst in float32). Stationary / time_dependent on a
 # tensor mesh, gpu backend: sparse_direct, a double cuDSS Cholesky of A_solve kept per assembly (speed review 3.1: the
@@ -110,8 +110,8 @@ SOLID_LINEAR_ROLE = SolverRole('spd', 'pcg', precisions=('single', 'double', 'mi
                                mixed_preconditioners=('jacobi',),
                                backend_defaults={'gpu': ('pcg', {'precision': 'mixed'})},
                                grid_defaults={_TRIANGLES: ('sparse_direct', {})},
-                               study_defaults={('stationary', 'tensor'): ('sparse_direct', {}),
-                                               ('time_dependent', 'tensor'): ('sparse_direct', {})},
+                               study_defaults={(STATIONARY_STUDY, 'tensor'): ('sparse_direct', {}),
+                                               (TIME_DEPENDENT_STUDY, 'tensor'): ('sparse_direct', {})},
                                auto_back_ends={'tensor': 'cudss', _TRIANGLES: 'cudss'}, direct_components=2)
 
 _DISCRETIZATION_PARAM = Param(
@@ -858,7 +858,7 @@ def _create_solid(ctx, physics_spec, values):
     """SolidMechanicsPhysics on ctx.domain with the build's linear (pcg) solver (solid_linear_solver), the 'eigen'
     (arpack_shift_invert) runtime in a modal study and, in an eigenfrequency study, the guided axial_wavenumber (an
     optomechanics study with backward scattering: guided, k_z set by the study). A triangle mesh:
-    SolidMechanicsFEMPhysics with the 'linear' sparse_direct runtime (mesh plan D11), the azimuthal order, the elastic
+    SolidMechanicsFEMPhysics with the 'linear' sparse_direct runtime, the azimuthal order, the elastic
     PML faces and the geometric nonlinearity settings."""
     if ctx.domain.grid_kind == _TRIANGLES:
         runtimes = ctx.solvers(physics_spec.name)
@@ -1966,9 +1966,9 @@ SOLID_MECHANICS = PhysicsType(
     state_fields=_STATE_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent', EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY,
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY,
                        FREQUENCY_RESPONSE_STUDY),
-    default_study={'type': 'stationary'},
+    default_study={'type': STATIONARY_STUDY},
     # eigen: the real symmetric eigsh_shifted pencil (piezo: indefinite), cudss_mixed refined to full accuracy per solve
     solver_roles={'linear': SOLID_LINEAR_ROLE, 'eigen': eigen_role(MODAL_STUDIES, mixed_factorization=True,
                                                                 auto_factorizations={'triangles': 'cudss'})},
@@ -1995,8 +1995,7 @@ def _create_thermal_strain(ctx, coupling_spec, values, every):
     buffer of the material grid's shape)."""
     return CouplingTerm(coupling_spec.source, 'T', coupling_spec.target, 'temperature_rise',
                         make_temperature_rise_transform(tuple(ctx.domain.materials.shape), ctx.xp), every=every,
-                        name=coupling_spec.name,
-                        after_source_step=ctx.sim.runner.strides[coupling_spec.source] == every)
+                        name=coupling_spec.name, after_source_step=after_source_step(ctx, coupling_spec, every))
 
 
 def _validate_thermal_strain(vctx, coupling_spec, values):
@@ -2137,7 +2136,7 @@ def _create_optical_force(ctx, coupling_spec, values, every):
                           name=f'{coupling_spec.name}.{slot}', contribution='sum')
              for slot, transform in (('body_force_x', force_x), ('body_force_y', force_y))]
     return CouplingGroup(terms, every=every, name=coupling_spec.name,
-                         after_source_step=ctx.sim.runner.strides[coupling_spec.source] == every)
+                         after_source_step=after_source_step(ctx, coupling_spec, every))
 
 
 OPTICAL_FORCE_TYPE = CouplingType(

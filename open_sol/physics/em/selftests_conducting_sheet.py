@@ -1,4 +1,4 @@
-"""conducting_sheet self-tests (nonlinear_optics_plan self-test 10): the graphene Kubo conductivity against its T -> 0
+"""conducting_sheet self-tests: the graphene Kubo conductivity against its T -> 0
 closed forms (CPU) and the normal-incidence transmission / absorption of a sheet in em_fdfd_ez / em_fdfd_hz against
 the discrete delta-potential closed form (cpu model runs)."""
 import math

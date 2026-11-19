@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-# Layout (module notes; solvers sub file "block_eigen"): one search block of b = wanted + guard rows. Three row stores
+# Layout (consumer rules: solvers sub file "block_eigen"): one search block of b = wanted + guard rows. Three row stores
 # S, KS = K S, MS = M S of (3 b, n) in the phase dtype hold the basis [X (b rows) | W (active rows) | P (active rows)]
 # and its two products, every row a C-contiguous vector (what the physics' kernels take): 9 b n values, nothing else
 # of that size. Per iteration (Knyazev 2001; implicit P and soft locking after Hetmaniuk-Lehoucq 2006 / Duersch et al.
@@ -29,7 +29,8 @@ import numpy as np
 # Mixed: the float32 phase stops at max(tolerance, SINGLE_PHASE_TOLERANCE) or when the worst wanted residual stalls
 # (STALL_ITERATIONS without a STALL_RATIO gain, counted only once it has been below STALL_ARMED_RESIDUAL: the float32
 # rounding floor ~eps32 lambda_max / lambda of the products, not the O(1) start-up plateau of a weak preconditioner);
-# X is cast to float64 (the float32 stores freed first) and LOBPCG continues there to the tolerance. Float32 halves the
+# X is cast to float64 (the float32 stores are the first halves of the float64 stores' buffers, allocated once per
+# run, so the cast holds no second set) and LOBPCG continues there to the tolerance. Float32 halves the
 # operator bandwidth and runs the dense block products (Gram matrices, projections, rotations) at the full float32 rate
 # of consumer GPUs (float64 there: 1/32 - 1/64); the float64 phase starts near the answer.
 # Problems with fewer free unknowns than DENSE_MAX_RATIO x b go to a dense eigh of the applied K and M (no LOBPCG).
@@ -65,13 +66,17 @@ def block_size(n_wanted, guard_vectors=0) -> int:
 
 
 def block_bytes(n_unknowns, n_wanted, guard_vectors=0, precision='mixed') -> int:
-    """Device (or host on the cpu) bytes of one block_eigen solve: the three (3 b, n) row stores of the float64 phase
-    (mixed: its float32 phase holds half, and the cast keeps the float32 X beside the float64 S once) + the chunk
-    scratch."""
-    rows = 3 * block_size(n_wanted, guard_vectors)
-    stores = 3 * rows * 8 * int(n_unknowns)
-    cast = (rows // 3) * 4 * int(n_unknowns) if precision == 'mixed' else 0
-    return int(stores + cast + 2 * CHUNK_BYTES)
+    """Device (or host on the cpu) bytes of one block_eigen solve (a transient of the eigen solve; the consumer adds
+    its own copies, e.g. float32 operator copies, a private multigrid): the three (3 b, n) float64 row-store buffers
+    (the float32 phase of mixed runs on their first halves; the cast keeps the float32 X beside them once) + the chunk
+    scratch (at most what one chunk of the whole rows takes on a small mesh)."""
+    block = block_size(n_wanted, guard_vectors)
+    n_unknowns = int(n_unknowns)
+    stores = 3 * 3 * block * 8 * n_unknowns
+    cast = block * 4 * n_unknowns if precision == 'mixed' else 0
+    # a chunk product reads <= 5 b rows (dense path: < DENSE_MAX_RATIO b unit rows) of n float64 values
+    scratch = 2 * min(CHUNK_BYTES, DENSE_MAX_RATIO * block * 8 * n_unknowns)
+    return int(stores + cast + scratch)
 
 
 def _host(array):
@@ -150,10 +155,14 @@ class BlockEigenSolver:
     def lowest(self, n_unknowns, n_wanted, stiffness, mass, precondition, xp, mask=None, default_max_iterations=0):
         """BlockEigenResult of the n_wanted lowest eigenpairs of K x = lambda M x on n_unknowns, K symmetric and M SPD
         on the masked unknowns. Callbacks take (rows_in, rows_out): C-contiguous (m, n) arrays of the backend `xp`
-        (numpy / cupy), float32 or float64 (mixed: both, one dtype per call), rows_out = K rows_in / M rows_in / the
-        preconditioner (an SPD approximation of K^-1, e.g. one multigrid V-cycle); mask: a backend bool (n,) array of
-        the unknowns that take part (None: all), rows are 0 elsewhere and the callbacks keep them 0. A callback gets
-        every row of a step at once (up to the block size; rows_in and rows_out never overlap)."""
+        (numpy / cupy), float32 or float64 (mixed: both, one dtype per call: keep an operator copy per dtype), rows_out
+        = K rows_in / M rows_in / the preconditioner (an SPD approximation of K^-1, e.g. one symmetric multigrid V-cycle
+        or block Jacobi; never an inner solve to a tolerance); rows_in may be the runtime's scratch (do not keep it).
+        mask: a backend bool (n,) array of the unknowns that take part (None: all), rows are 0 elsewhere and K / M keep
+        them 0 (the runtime masks the preconditioner output itself). A callback gets every row of a step at once (up to
+        the block size; rows_in and rows_out never overlap) and runs them in ONE launch (a per-row loop of
+        single-vector launches is latency-bound). default_max_iterations: the caller's cap when the node sets none
+        (never a linear CG limit: thousands of block iterations)."""
         started = time.perf_counter()
         n_unknowns, n_wanted = int(n_unknowns), int(n_wanted)
         rows = block_size(n_wanted, self.guard_vectors)
@@ -251,15 +260,21 @@ class _Lobpcg:
         self.tolerance = owner.tolerance
         self.warnings = []
         self.store = None   # S, KS, MS
+        self._buffers = None   # their float64-sized buffers (_allocate)
         self.theta = None   # host Ritz values (b,)
         self.have_p = False
 
     # --- stores ---------------------------------------------------------------------------------------------------
 
     def _allocate(self, dtype):
+        """S, KS, MS as (3 b, n) rows of `dtype` on three float64-sized buffers made once per run: a float32 phase uses
+        their first halves, so the float64 phase allocates no second set (block_bytes)."""
         xp = self.xp
         self.dtype = np.dtype(dtype)
-        self.store = [xp.empty((3 * self.b, self.n), dtype=self.dtype) for _ in range(3)]
+        size = 3 * self.b * self.n
+        if self._buffers is None:
+            self._buffers = [xp.empty(size, dtype=np.float64) for _ in range(3)]
+        self.store = [buffer.view(self.dtype)[:size].reshape(3 * self.b, self.n) for buffer in self._buffers]
         self.drop = DROP[self.dtype]
 
     def _start(self):
@@ -398,7 +413,8 @@ class _Lobpcg:
         self._ritz(self.b)
 
     def _to_double(self):
-        """Float32 stores -> float64 (X cast, products re-applied in float64; P dropped)."""
+        """Float32 stores -> float64 on the same buffers (X copied out and cast back, products re-applied in float64;
+        P dropped)."""
         single_x = self.store[0][:self.b].copy()
         self.store = None
         self._allocate(np.float64)
@@ -435,7 +451,7 @@ class _Lobpcg:
                                  f'{float(np.max(relative)):.2e} above the tolerance {self.tolerance:.1e}: {reason}')
         vectors = _host(self.store[0][:self.k]).astype(np.float64, copy=False).T
         eigenvalues = np.asarray(self.theta[:self.k], dtype=np.float64)
-        self.store = None
+        self.store = self._buffers = None
         method = f"LOBPCG ({'float32 + float64' if mixed else 'float64'}, block {self.b})"
         return BlockEigenResult(eigenvalues, vectors, np.asarray(relative, dtype=np.float64), converged,
                                 single_iterations, double_iterations,

@@ -1,4 +1,4 @@
-"""Model definition of 'em_fdfd_conical' (symmetry plan 2.9: three-component 2D FDFD of a z-invariant structure at a
+"""Model definition of 'em_fdfd_conical' (three-component 2D FDFD of a z-invariant structure at a
 fixed out-of-plane wave number k_z) on definition_common, with its self-tests; definition.register calls register."""
 from dataclasses import replace
 

@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import (available_host_direct, normalized_result, skip_without_host_direct, solver_role,
                                        with_direct_node)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
@@ -16,7 +16,7 @@ from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, 
 
 TYPE_NAME = 'pressure_acoustics'   # = definition_harmonic.TYPE_NAME (selftests never import definitions)
 PHYSICS = 'pressure_acoustics'
-_STUDY = 'frequency_response'      # = model.study_frequency_response.STUDY_NAME
+_STUDY = FREQUENCY_RESPONSE_STUDY
 _AIR_DENSITY = 1.2                 # kg/m^3
 _AIR_SPEED = 343.0                 # m/s
 _AIR = {'rho': _AIR_DENSITY, 'sound_speed': _AIR_SPEED}
@@ -265,7 +265,7 @@ def _check_empty(results_by_name):
 
 _EMPTY_DESCRIPTION = (
     f'Axisymmetric (r, z) air domain {_EMPTY_RADIUS:g} x {_EMPTY_HEIGHT:g} m at {_EMPTY_FREQUENCY:g} Hz, rigid floor '
-    f'y_lo, P2 at {_EMPTY_ELEMENT:g} m (new_modules_plan S5, Basiri E2 check i). scattered: background standing wave 2 '
+    f'y_lo, P2 at {_EMPTY_ELEMENT:g} m (Basiri E2 check i). scattered: background standing wave 2 '
     'p0 cos(k z) (p0 1 Pa, direction -y, rigid plane 0) with PMLs on x_hi and y_hi: no contrast, no obstacle and a zero '
     'floor flux, so the scattered field must vanish (probes p_s / 2 p0 <= '
     f'{_EMPTY_SCATTERED_TOLERANCE:g}: no spurious PML-interface or face source) and the total probes read 2 p0 cos(k z); '

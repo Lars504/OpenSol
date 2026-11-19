@@ -1,6 +1,6 @@
 """Analytic validation of 3D heat (B3, 7-point stencil): a Robin slab along z on a graded z axis (exact discrete
-identity), z-dependent k_zz and Q (igor 1.10), the exact product-of-sines eigenvector read through cuts / segments /
-the volume (igor 1.3), plus the 'heated_chip_3d' template; registered by definition.register."""
+identity), z-dependent k_zz and Q, the exact product-of-sines eigenvector read through cuts / segments /
+the volume, plus the 'heated_chip_3d' template; registered by definition.register."""
 import math
 
 import numpy as np
@@ -423,7 +423,7 @@ def _check_field_access(results_by_name):
 SELFTEST_CASES_3D = (
     SelfTestCase(
         name='heat_3d_field_access', label='Heat 3D: one analytic field through x / y / z cuts, segments, the volume',
-        description=(f'igor 1.3: stationary 3D heat in a {BOX_SIZE[0] * 1e3:g} x {BOX_SIZE[1] * 1e3:g} x '
+        description=(f'Stationary 3D heat in a {BOX_SIZE[0] * 1e3:g} x {BOX_SIZE[1] * 1e3:g} x '
                      f'{BOX_SIZE[2] * 1e3:g} mm box of uniform {CELL_SIZE * 1e6:g} um cubic cells, anisotropic k_xx, '
                      f'k_yy, k_zz = {CONDUCTIVITY[0]:g}, {CONDUCTIVITY[1]:g}, {CONDUCTIVITY[2]:g} W/(m*K) (a swapped '
                      'component or axis changes lambda; this also pins the z face conductances, the z_lo / z_hi '
@@ -446,7 +446,7 @@ SELFTEST_CASES_3D = (
         specs=_field_access_runs, check=_check_field_access),
     SelfTestCase(
         name='heat_3d_graded_z_robin', label='Heat 3D: Robin slab along z on a graded z axis',
-        description=('igor 1.4: the heat_3d_field_access box (k_zz = '
+        description=('The heat_3d_field_access box (k_zz = '
                      f'{CONDUCTIVITY[2]:g} W/(m*K)) with {WALL_TEMPERATURE:g} K on z_lo, convection h = {ROBIN_H:g} '
                      f'W/(m^2*K), T_ext = {ROBIN_AMBIENT:g} K on z_hi and no source (q = (T_ext - T_w) / (L_z / k_zz + '
                      '1 / h); also the only 3D Robin face case), on mesh nonuniform: a centred box (z '
@@ -462,7 +462,7 @@ SELFTEST_CASES_3D = (
         specs=_graded_robin_runs, check=_check_graded_robin),
     SelfTestCase(
         name='heat_3d_z_expressions', label='Heat 3D: z-dependent conductivity and heat source',
-        description=('igor 1.10: the heat_3d_field_access box with expressions of the height z. Run z_material: k_zz = '
+        description=('The heat_3d_field_access box with expressions of the height z. Run z_material: k_zz = '
                      f'{CONDUCTIVITY[2]:g} (1 + z / L_z) (a material property written one z plane at a time), z_lo at '
                      f'{WALL_TEMPERATURE:g} K, z_hi at {Z_HIGH_TEMPERATURE:g} K, no source (closed form T_lo + (T_hi - '
                      'T_lo) ln(1 + z / L_z) / ln 2). Run z_source: k_zz = '
@@ -475,7 +475,7 @@ SELFTEST_CASES_3D = (
         specs=_z_expression_runs, check=_check_z_expressions),
     SelfTestCase(
         name='heat_3d_z_couplings', label='Heat 3D: z in a field transfer and in a state-dependent conductivity',
-        description=('igor 1.10: the heat_3d_field_access box (k_zz = '
+        description=('The heat_3d_field_access box (k_zz = '
                      f'{CONDUCTIVITY[2]:g} W/(m*K)). Run z_transfer: a second heat physics {REFERENCE_PHYSICS!r} '
                      f'between z faces at {WALL_TEMPERATURE:g} / {Z_HIGH_TEMPERATURE:g} K (exact linear T at the cell '
                      'centres) feeds a field_transfer into the volumetric_power slot of heat, expression Q0 (value - '

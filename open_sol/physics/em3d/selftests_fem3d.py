@@ -1,4 +1,4 @@
-"""Self-tests of the tetrahedral Nedelec eigen path (igor3d_plan section 7, T0 / T3 / T4 / T4b): the sparse-mass eigen
+"""Self-tests of the tetrahedral Nedelec eigen path: the sparse-mass eigen
 layer, PEC cube spectra on structured Kuhn meshes (static count, convergence orders, mirror sectors), FEMPhysics3D on
 a lossy dielectric cube with PML symmetry checks (CPU, specs() empty, check({})), Bloch faces on periodic Kuhn cubes,
 em_fdfd_3d on a builtin 'tetrahedra' mesh through the model layer (CPU runs: PEC cube; Bloch cube with field derived
@@ -404,7 +404,7 @@ FEM_3D_CASES = (
     SelfTestCase(
         name='em_eigen_sparse_mass',
         label='Eigen layer: sparse mass matrix = diagonal mass',
-        description='CPU (igor3d_plan T0): a 200-unknown chain pencil with a varying diagonal mass solved by '
+        description='CPU: a 200-unknown chain pencil with a varying diagonal mass solved by '
                     'eigenfrequency.solve_resonances (shift-invert, host SuperLU) with the mass and energy weights as '
                     'arrays and as scipy sparse matrices: 4 resonances each, equal to 1e-10, and equal to the dense '
                     'generalised eigenvalues (1e-10). error = number of failed sub-checks, tolerance 0.',
@@ -414,7 +414,7 @@ FEM_3D_CASES = (
     SelfTestCase(
         name='em3d_fem_pec_cube',
         label='em3d FEM: PEC cube spectra on tetrahedra',
-        description='CPU (igor3d_plan T3): dense generalised eigenvalues of the Nedelec curl-curl / mass pair of a '
+        description='CPU: dense generalised eigenvalues of the Nedelec curl-curl / mass pair of a '
                     'vacuum PEC cube (L = 1 um) on uniform Kuhn meshes: the static count equals the interior Lagrange '
                     'dofs (nodes, + edges for degree 2: no spurious modes); the (1,1,0) triple and the (1,1,1) pair '
                     '((pi / L)^2 x 2, 3) converge with order >= 1.6 (degree 1, 3 / 6 cells per side) and >= 3.2 '
@@ -428,7 +428,7 @@ FEM_3D_CASES = (
     SelfTestCase(
         name='em3d_fem_eigen_solver',
         label='em3d FEM: FEMPhysics3D resonances of a lossy cube',
-        description='CPU (igor3d_plan T4): FEMPhysics3D (degree 2, 3 cells per side, host SuperLU, squared Cayley, '
+        description='CPU: FEMPhysics3D (degree 2, 3 cells per side, host SuperLU, squared Cayley, '
                     'sparse mass) on a PEC cube of eps 2.25 with sigma_e for Q = 100, target on the (1,1,0) triple: '
                     '3 resonances equal to k^2 = lambda_h / (eps - j sigma / (omega_t eps0)) of the dense vacuum '
                     'spectrum (1e-8: exact at the frozen target); sampled E / H finite; with a PML shell on the hi '
@@ -440,7 +440,7 @@ FEM_3D_CASES = (
     SelfTestCase(
         name='em3d_fem_model_cube',
         label="em3d FEM: em_fdfd_3d on a 'tetrahedra' mesh (model layer)",
-        description='CPU (igor3d_plan T4b): the eigenfrequency study of em_fdfd_3d on a builtin tetrahedra mesh (Kuhn '
+        description='CPU: the eigenfrequency study of em_fdfd_3d on a builtin tetrahedra mesh (Kuhn '
                     'split, dx = L / 3) of a PEC cube (L = 1 um, eps 2.25 on all, quadratic Nedelec) through the model '
                     'layer (mesh kind, TetrahedronDomain, per-element materials, FEMResonancePhysics3D, resonance '
                     'table): 3 resonances equal to C0 sqrt(k^2 / eps) of the dense spectrum of the same mesh nearest '
@@ -451,7 +451,7 @@ FEM_3D_CASES = (
     SelfTestCase(
         name='em3d_fem_bloch_lattice',
         label='em3d FEM: Bloch faces on tetrahedra',
-        description='CPU (igor3d_plan T6 Bloch): vacuum cubes (L = 1 um, all faces periodic, uniform Kuhn meshes of L / 4) '
+        description='CPU (Bloch): vacuum cubes (L = 1 um, all faces periodic, uniform Kuhn meshes of L / 4) '
                     'at bloch_kx = 0.25 x 2 pi / L: the dense spectrum of P^H (K, M) P has the Bloch Lagrange masters '
                     'as static count (degree 1 and 2; at k = 0 two more: the harmonic constant fields), a Hermitian '
                     '(1e-12) complex operator, and degree 2 gives the 12 lowest empty-lattice bands |k + G|^2 within '

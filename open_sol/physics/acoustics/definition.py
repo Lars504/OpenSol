@@ -18,7 +18,7 @@ from ...model.definition_helpers import (AXISYMMETRIC, AXISYMMETRIC_SPACE_SETTIN
 from ...model.definition_resonance import ResonanceProbe, point_trace_items, resonance_monitor_feature
 from ...model.expressions import Expression, ExpressionError
 from ...model.geometry import line_orientation
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, feature_path
 from ..mechanics.material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                                          YOUNGS_MODULUS_PARAM)
 from .axisymmetric import KERNEL_ROWS, radial_stability_factor
@@ -1159,8 +1159,8 @@ ELASTIC_WAVES = PhysicsType(
                                    'first transfer counts as already present (no stress: the initial state is its '
                                    'equilibrium). Ignored without piezo_e* arrays.')
                      for slot in ELECTRIC_FIELD_SLOTS}},
-    supported_studies=('time_dependent',),
-    default_study={'type': 'time_dependent', 'settings': {'duration': 20e-6}},
+    supported_studies=(TIME_DEPENDENT_STUDY,),
+    default_study={'type': TIME_DEPENDENT_STUDY, 'settings': {'duration': 20e-6}},
     create=_create,
     steps_in_time=lambda settings_values: True,
     validate=_validate_physics,

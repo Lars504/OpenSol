@@ -1,17 +1,18 @@
-"""The 'frequency_response' StudyType (piezoelectric plan stage 5): background physics to a stationary fixed point, then
+"""The 'frequency_response' StudyType: background physics to a stationary fixed point, then
 the driven time-harmonic response of every solver with solve_frequency_response (solid_mechanics, membrane, pressure_acoustics) at each
 frequency of a list in Hz, one labelled snapshot per frequency (setting snapshots: all, last or none)."""
 # A frequency-domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays
 # wavelength-based. Each frequency is one complex factorisation per solved physics (a cuDSS factor reuses its plan).
 import time
 
-from .schema import Issue, Param, StudyType
+from .definition_helpers import study_frequencies
+from .schema import FREQUENCY_RESPONSE_STUDY, Issue, Param, StudyType
 from .solver_hooks import FrequencyResponseSolver, ReducedSweepSolver
 from .study import (_PARITY_SECTORS_PARAM, LogEvent, _background_fixed_point_params, _background_stage,
-                    _count_progress, _frequency_list, _frequency_range_issues, _scipy_issues, _selected_physics,
+                    _count_progress, _frequency_range_issues, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
-STUDY_NAME = 'frequency_response'
+STUDY_NAME = FREQUENCY_RESPONSE_STUDY
 _FREQUENCY_STAGE = 'Frequency solves'
 _SOLVED_TYPES_TEXT = 'solid_mechanics, solid_mechanics_3d, membrane or pressure_acoustics'   # the frequency-response types (missing-physics remedy)
 SNAPSHOT_CHOICES = ('all', 'last', 'none')   # setting snapshots: frequencies that keep a snapshot
@@ -28,7 +29,7 @@ def _run_frequency_response(session, values, emit, control, service):
     """Background stationary solve, background -> solved couplings once, then per frequency solve_frequency_response
     of every solved physics and a snapshot labelled 'f = <Hz> Hz' as the snapshots setting selects."""
     runner = session.runner
-    frequencies = _frequency_list(values)
+    frequencies = study_frequencies(values)
     snapshots = values['snapshots']
     solved, background = _solver_roles(runner.physics, FrequencyResponseSolver, 'frequency response',
                                        f'add a {_SOLVED_TYPES_TEXT} physics', selected=_selected_physics(session))
@@ -243,11 +244,10 @@ _DESCRIPTION = (
 def _time_counts(values):
     """Run-time estimate counts (StudyType.time_counts): frequencies, driven factorisations (a reduced sweep: at most
     rom_max_points + 1 / two), the background iteration limit."""
-    frequencies = values.get('frequencies') or []
+    frequencies = values['frequencies'] or []
     points = len(frequencies) if frequencies else int(values['n_frequencies'])
-    method = values.get('sweep_method', 'direct')
-    factorizations = {'direct': points, 'adaptive': min(points, int(values.get('rom_max_points', 40))) + 1,
-                      'modal': 2}.get(method, points)
+    factorizations = {'direct': points, 'adaptive': min(points, int(values['rom_max_points'])) + 1,
+                      'modal': 2}[values['sweep_method']]
     return {'harmonic_points': points, 'harmonic_factorizations': factorizations,
             'fixed_point_limit': int(values['max_iterations'])}
 
@@ -260,6 +260,6 @@ def register(registry):
                 'electrical admittance of a piezoelectric resonator. Any heat or current physics is first solved to a '
                 'steady state.',
         description=_DESCRIPTION, params=_PARAMS, background_study='stationary', run=_run_frequency_response,
-        validate=_with_parity_sectors(_validate_frequency_response),
+        validate=_with_parity_sectors(_validate_frequency_response), supports_solved_physics=True,
         feedback_alternative='the frequency response study feeds no harmonic solution back into other physics',
         time_counts=_time_counts, solver_protocols=(FrequencyResponseSolver,)))

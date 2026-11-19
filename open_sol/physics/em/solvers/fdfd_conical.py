@@ -10,7 +10,7 @@ from ....core.backend import to_host
 
 from ....core.constants import C0, EPS0
 from ....core.solver_base import PhysicsSolver
-from ..boundaries import BCType, solver_boundary_config
+from ..boundaries import solver_boundary_config
 from ..conical import (COMPONENTS, FIELD_COMPONENTS, assemble_conical, centre_phasors, conical_fields,
                        conical_row_scale, driven_rhs, line_flux, point_current_terms, size_issue_for,
                        solve_conical_resonances, source_power)
@@ -18,7 +18,7 @@ from ..cross_section_modes import CrossSectionMaterials
 from ..fdfd_monitors import _ascending_wavelength, probe_phasor_result
 from ..harmonic import cell_permeability, cell_permittivity, shown_phasor_fields
 from ..materials import register_em_arrays
-from ..placement import flux_line_cells, line_mirror_factor
+from ..placement import cpml_extended_span, flux_line_cells, line_mirror_factor, port_cells, window_cell
 from ..renderer_conical import ConicalRenderer
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cpml_grading_cell_size, grid_cell_widths
@@ -225,8 +225,7 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
     def add_point_source(self, x, y, component='z', current=1e-3, phase=0.0):
         """Current element (conical.point_current_terms) along `component` 'x' | 'y' | 'z' in the cell containing (x, y)
         carrying `current` [A] (integral of J over the cell), phasor e^{j phase} (phase in degrees, FDTD sign)."""
-        self.domain.validate_physical_pos(x, y, 'Point source')
-        ix, iy = self.domain.pos_to_cell(x, y)
+        ix, iy = window_cell(self.domain, x, y, 'Point source')
         phasor = float(current) * cmath.exp(1j * math.radians(float(phase)))
         source = ConicalCurrent(point_current_terms(self._cell_widths, self.boundary_config, ix, iy,
                                                     _component(component), phasor))
@@ -236,8 +235,6 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
         """Sheet of surface current K = amplitude [A/m] along `component` on an axis-aligned line (axis 'x': along x at
         y = position) over span [m]: per cell K x its length, times exp(-j k s) along a Bloch axis (_line_cells)."""
         component = _component(component)
-        if axis not in ('x', 'y'):
-            raise ValueError(f"Line source axis (along the line) must be 'x' or 'y', got {axis!r}")
         line_cell, along_cells = self._line_cells(axis, position, span, 'Line source')
         along = 0 if axis == 'x' else 1
         widths = self._cell_widths[along]
@@ -263,29 +260,10 @@ class ConicalPhysics(HostFDFDBase, PhysicsSolver):
         return self._add_source(ConicalCurrent(terms))
 
     def _line_cells(self, axis, position, span, label):
-        """(line cell across the line, [start, stop) cells along it) of a line source; a span end on a cpml window edge
-        extends to the grid end (a uniform sheet then does not diffract like a slit)."""
-        if span is None or len(span) != 2:
-            raise ValueError(f'{label} needs span = (start, end) along the line [m], got {span!r}')
-        start, end = sorted((float(span[0]), float(span[1])))
-        domain = self.domain
-        if axis == 'x':
-            domain.validate_physical_pos(start, position, f'{label} start')
-            domain.validate_physical_pos(end, position, f'{label} end')
-            line_cell = domain.pos_to_cell_y(position)
-            lo, hi = domain.pos_to_cell_x(start), domain.pos_to_cell_x(end) + 1
-        else:
-            domain.validate_physical_pos(position, start, f'{label} start')
-            domain.validate_physical_pos(position, end, f'{label} end')
-            line_cell = domain.pos_to_cell_x(position)
-            lo, hi = domain.pos_to_cell_y(start), domain.pos_to_cell_y(end) + 1
-        window = domain.physical_window()[0 if axis == 'x' else 1]
-        n_along = domain.grid.nx if axis == 'x' else domain.grid.ny
-        if lo == window.start and getattr(self.boundary_config, f'{axis}_lo') == BCType.CPML:
-            lo = 0
-        if hi == window.stop and getattr(self.boundary_config, f'{axis}_hi') == BCType.CPML:
-            hi = n_along
-        return line_cell, (lo, hi)
+        """(line cell across the line, [start, stop) cells along it) of a line source (placement.port_cells, a span end
+        on a cpml window edge extended to the grid end: placement.cpml_extended_span)."""
+        line_cell, span_cells, _ = port_cells(self.domain, axis, position, span, label)
+        return line_cell, cpml_extended_span(self.domain, self.boundary_config, axis, span_cells)
 
     def add_flux_monitor(self, axis, position, span):
         """Power per unit z length [W/m] through a line per driven solve (axis 'x' = along x at y = position: flux along

@@ -1,4 +1,4 @@
-"""Heat conduction on a triangle mesh (mesh plan 2.7, stage T4): FEMHeatPhysics, P1 / P2 Lagrange on the conducting
+"""Heat conduction on a triangle mesh: FEMHeatPhysics, P1 / P2 Lagrange on the conducting
 window elements (fem.diffusion), steady or implicit-Euler transient, planar or axisymmetric (r, z); the HeatPhysics
 field names, slots and feature API where they apply. State arrays are per element (D12: T at the element centroid);
 FEMHeatMixin is the heat physics shared with FEMHeatPhysics3D."""
@@ -16,11 +16,8 @@ from ..em.index_reference import record_reference_index
 from .fields import heat_state
 from .materials import THERMAL_SCHEMA
 from .renderer import HeatRenderer
-from .solver import RADIATION_MAX_ITERATIONS, RADIATION_TOLERANCE
-
-_CAPACITY_MATERIALS = frozenset({'rho', 'cp'})
-ANCHOR_TEXT = 'temperature / convection {boundary}, fixed-temperature domain or volumetric loss'
-REMEDY_TEXT = 'Anchor every conducting region, or solve in transient mode with rho and cp set there.'
+from .solver import (ANCHOR_TEXT, CAPACITY_MATERIALS, RADIATION_MAX_ITERATIONS, RADIATION_TOLERANCE, REMEDY_TEXT,
+                     check_radiation, check_time_settings, radiation_linearisation, radiation_unconverged)
 
 
 class FEMHeatMixin:
@@ -38,10 +35,7 @@ class FEMHeatMixin:
 
     def _init_heat(self, T0, time_mode, time_step) -> None:
         """Checked time settings and the reference temperature (before _init_fem)."""
-        if time_mode not in ('stationary', 'transient'):
-            raise ValueError(f"time_mode must be 'stationary' or 'transient', got {time_mode!r}")
-        if time_mode == 'transient' and not (math.isfinite(time_step) and time_step > 0.0):
-            raise ValueError(f'transient heat needs a finite time_step > 0, got {time_step}')
+        check_time_settings(time_mode, time_step)
         self.T0 = float(T0)
         self.reference_value = self.T0
         self.time_mode = time_mode
@@ -81,7 +75,7 @@ class FEMHeatMixin:
         names = set(names)
         if self._operator_materials & names:
             self.system.operator_dirty = True
-        if _CAPACITY_MATERIALS & names:
+        if CAPACITY_MATERIALS & names:
             self._capacity_stale = True
 
     def step(self, t: float = 0.0, dt: float = math.inf) -> None:
@@ -108,10 +102,7 @@ class FEMHeatMixin:
             self.system.solve(self._source())
         else:
             if iterations > 1:
-                self.runtime_warnings.append(
-                    f"heat '{self.name}': the radiation re-linearisation did not converge in {iterations} solves "
-                    f'(largest relative temperature change on radiating boundaries above {RADIATION_TOLERANCE:g}); '
-                    'the last solve is kept')
+                self.runtime_warnings.append(radiation_unconverged(self.name, iterations, 'boundaries'))
         self._publish()
         record_time = t + time_step if transient else t
         if transient:
@@ -219,9 +210,7 @@ class FEMHeatMixin:
     def _add_radiation_term(self, entities, emissivity, ambient_temperature) -> None:
         """Register one radiation term on mesh edges (2D) / faces (3D): a Robin condition whose per-entity h and
         external are the Newton linearisation at the entity's T, re-linearised by every step."""
-        if not (0.0 <= emissivity <= 1.0 and ambient_temperature > 0.0):
-            raise ValueError(f"heat '{self.name}': radiation needs 0 <= emissivity <= 1 and T_amb > 0 K, got "
-                             f'{emissivity}, {ambient_temperature}')
+        check_radiation(self.name, emissivity, ambient_temperature)
         entities = np.unique(np.asarray(entities, dtype=np.int64))
         if not entities.size or emissivity == 0.0:
             return
@@ -239,9 +228,7 @@ class FEMHeatMixin:
         for term in self._radiation:
             entities, handle, coefficient, ambient, linearised_at = term
             temperature = self.T0 + self._entity_rise(entities)
-            cube = temperature * temperature * temperature
-            slope = 4.0 * coefficient * cube
-            loss = coefficient * (cube * temperature - ambient ** 4)
+            slope, loss = radiation_linearisation(temperature, coefficient, ambient)
             h, external = np.zeros(count), np.zeros(count)
             h[entities] = slope
             external[entities] = np.where(slope > 0.0, temperature - loss / np.where(slope > 0.0, slope, 1.0)
@@ -306,7 +293,8 @@ class FEMHeatPhysics(FEMHeatMixin, FEMDiffusionPhysicsBase):
                  require_anchor: bool = True):
         self._init_heat(T0, time_mode, time_step)
         self._init_fem(domain, order, linear_solver, axisymmetric, lambda: f"heat '{self.name}'", 'temperature',
-                       ANCHOR_TEXT.format(boundary='boundary'), REMEDY_TEXT, require_anchors=require_anchor)
+                       ANCHOR_TEXT.format(boundary='boundary', held='domain'), REMEDY_TEXT,
+                       require_anchors=require_anchor)
         self.prepare(domain)
 
     def renderer(self):
@@ -359,7 +347,7 @@ class FEMHeatPhysics(FEMHeatMixin, FEMDiffusionPhysicsBase):
         self.add_point_source_node(node, line_power)
 
     def error_indicator(self):
-        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7, mesh plan A3):
+        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7):
         fem.indicators.diffusion_indicator with the heat sources Q_ext + Q (steady residual)."""
         return diffusion_indicator(self.system, self._tensor, self._source())
 

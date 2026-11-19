@@ -1,7 +1,7 @@
 """NonlinearHarmonicPhysics (physics type em_fdfd_nonlinear): one private FDFDPhysics per harmonic channel on a
 shared Domain, chi(2) / chi(3) bulk media, nonlinear sheets and the mixing table, solved as the undepleted cascade or the
 pump-depleted self-consistent solution (Picard / Anderson or Newton-Krylov)."""
-# Composition (nonlinear_optics_plan decision 1): every channel keeps its own HarmonicSystem, factor, sources, monitors
+# Composition: every channel keeps its own HarmonicSystem, factor, sources, monitors
 # and ports; features apply to channel(name). Nonlinear terms are NonlinearPolarizationPhasor sources appended to the
 # target channels at finalize (or the first solve), reading the ChannelFieldStore snapshot of the source channels;
 # pump-depleted Kerr terms also get a KerrOperatorTerm (lagged operator permittivity). Only this physics is registered
@@ -10,8 +10,9 @@ pump-depleted self-consistent solution (Picard / Anderson or Newton-Krylov)."""
 import copy
 import math
 
-from ...core.backend import to_host
+from ...core.backend import check_backend_array, to_host
 from ...core.constants import C0, DTYPE
+from ...core.mirror import MIRROR_SIGNS
 from ...core.solver_base import PhysicsSolver
 from ...solvers.sparse_direct import SparseDirectSolver
 from ..em.boundaries import BCType, solver_boundary_config
@@ -57,10 +58,14 @@ def channel_boundary_config(base, channel):
     return config
 
 
+def face_plane_signs(config):
+    """{mirror face: E parity +1 symmetric / -1 antisymmetric} of a BoundaryConfig."""
+    return {face: MIRROR_SIGNS[getattr(config, face).value] for face in config.ghost_faces}
+
+
 def channel_plane_signs(base, channel):
-    """{mirror face: +1 symmetric / -1 antisymmetric} of a channel's E field (channel_boundary_config)."""
-    return {face: (-1 if getattr(base, face) == BCType.ANTISYMMETRIC and channel.parity_exponent else 1)
-            for face in base.ghost_faces}
+    """face_plane_signs of a channel's E field (channel_boundary_config: an even channel is +1 everywhere)."""
+    return face_plane_signs(channel_boundary_config(base, channel))
 
 
 class NonlinearHarmonicPhysics(PhysicsSolver):
@@ -172,10 +177,14 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
                                                                self.boundary_config.periodic_y)))
 
     @property
+    def face_signs(self):
+        """face_plane_signs of the shared faces (the input channels' parity)."""
+        return face_plane_signs(self.boundary_config)
+
+    @property
     def has_odd_mirror(self):
         """True when a shared mirror face is antisymmetric (the input channels' parity -1 there)."""
-        return any(getattr(self.boundary_config, face) == BCType.ANTISYMMETRIC
-                   for face in self.boundary_config.ghost_faces)
+        return -1 in self.face_signs.values()
 
     def plane_signs(self, name):
         """{mirror face: E parity +1 / -1} of channel `name` (generated even combinations are +1 everywhere)."""
@@ -206,9 +215,7 @@ class NonlinearHarmonicPhysics(PhysicsSolver):
             self._check_mask(mask, 'medium mask')
 
     def _check_mask(self, mask, what):
-        xp = self.xp
-        if not isinstance(mask, xp.ndarray) or mask.dtype != xp.bool_ or mask.shape != self._zeros.shape:
-            raise TypeError(f"{what} must be a {xp.__name__} bool array of shape {self._zeros.shape}")
+        check_backend_array(mask, self._zeros.shape, self.xp.bool_, what, xp=self.xp)
 
     def _check_sheet_bloch(self, name):
         """NotImplementedError when a channel carries a Bloch phase: the sheet sites sample and deposit across the

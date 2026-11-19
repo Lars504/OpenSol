@@ -26,7 +26,8 @@ from .builder import build as build_model, external_memory_record, run_memory_re
 from .meshing import element_meshes_kept
 from .definition_helpers import wavelength_range_issues
 from .expressions import evaluate_parameters, evaluate_scalar
-from .schema import RESULT_KINDS, Issue, Param, StudyType, get_registry, known_physics, resolve_values
+from .schema import (FREQUENCY_DOMAIN_STUDY, RESULT_KINDS, TIME_DEPENDENT_STUDY, Issue, Param, StudyType, get_registry,
+                     known_physics, resolve_values)
 from ..core import host_memory
 from .session import (LIVE_SOLUTION, SelectedSolution, Snapshot, StoredSolution, earlier_derived_names,
                       live_snapshot_index, snapshot_solution_names, solution_bytes)
@@ -456,7 +457,8 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
         reuse_build = spec.study.sweep.reuse_build is True   # build once, re-set the following loads per value
         live_parameters = frozenset()
         if reuse_build:
-            from .sweep_reuse import live_parameter_names, non_rerun_physics, reuse_issues   # reused sweeps only
+            from .sweep_reuse import (live_parameter_names, non_rerun_physics, reuse_issues,   # reused sweeps only
+                                      unfollowed_values)
             refusals = reuse_issues(spec, registry)
             if refusals:   # validation of the full spec names every one at its node (_fail_sweep_setup)
                 raise ValueError(f'reuse_build is refused: {refusals[0][1]}'
@@ -510,10 +512,16 @@ def _run_sweep_values(spec, registry, build, emit, control, service, on_session)
             table['builds'] += 1
             if failure is None and reuse_build:
                 cannot_rerun = non_rerun_physics(session)
+                unfollowed = [] if cannot_rerun else unfollowed_values(session, registry, live_parameters)
                 if cannot_rerun:   # their solvers cannot rerun a kept build: one build per value, as without reuse
                     reuse_build, live_parameters = False, frozenset()
                     emit(LogEvent('info', f"sweep reuse_build: physics {', '.join(cannot_rerun)} cannot rerun a kept "
                                           'build (no reset_records); every sweep value is built'))
+                elif unfollowed:   # a flagged value whose apply set no follower would keep its build value
+                    reuse_build, live_parameters = False, frozenset()
+                    emit(LogEvent('warning', f"sweep reuse_build: {'; '.join(unfollowed)} follows parameters but this "
+                                             'build re-sets nothing for it (its apply calls no follow_parameters here: '
+                                             'a definition gap); every sweep value is built'))
                 else:
                     reused_session = session
                     emit(LogEvent('info', f'sweep reuse_build: this build takes every value of {parameter} (the '
@@ -715,6 +723,7 @@ def _run_built(session, spec, registry, emit, control, service):
         additions = {'status': 'cancelled'}
     session.domain.backend.synchronize()   # kernels still queued belong to the study time (cpu: nothing)
     study_seconds = time.perf_counter() - study_start
+    session.context.check_dynamic_ranges()   # range exits after the last periodic check raise too
     # the pool keeps its freed blocks during a run: reserved - baseline = kept + run high-water mark (VER-5); the cpu
     # backend has no pool and traces the build only (MemoryLedger), so it records no run memory; free blocks stranded
     # before the build are left out (a lower bound when the run reused them), at least the used-bytes growth
@@ -1276,11 +1285,11 @@ class _BackgroundStage:
 
 def _background_stage(session, background, solved, values, emit, control, service, refused, intro, stage_names,
                       feedback=()):
-    """Shared start of the studies with a stationary background (frequency_domain, mode_analysis, eigenfrequency,
-    thermal_noise): refuse couplings reading the solved physics (refused = (kind, reason); `feedback` couplings
-    excepted, which then apply in the background solve with the solved physics as inputs), runner.prepare, recorder,
-    live feed, the intro log line, stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed
-    point, then (completed) the background couplings once."""
+    """Shared start of every study with a stationary background (StudyType.background_study): refuse couplings
+    reading the solved physics (refused = (kind, reason); `feedback` couplings excepted, which then apply in the
+    background solve with the solved physics as inputs), runner.prepare, recorder, live feed, the intro log line,
+    stages ([_BACKGROUND_STAGE] with a background + stage_names), the background fixed point, then (completed) the
+    background couplings once."""
     runner = session.runner
     _refuse_solution_readers(runner.couplings, solved, *refused, allowed=feedback)
     runner.prepare()
@@ -1388,7 +1397,7 @@ def _feedback_rounds(session, background, solved, feedback, values, solve, emit,
 
 def _solve_wavelengths(session, harmonic, wavelengths, recorder, live, emit, control, service, pulsed=()):
     """_solve_wavelength_list between plan_harmonic_frequencies(omegas) and (): physics with that hook (FDFD
-    line-block wavelength batches, solver_plan Part II stage 3) learn the solve order first."""
+    line-block wavelength batches) learn the solve order first."""
     planners = [session.runner.physics[name] for name in harmonic
                 if isinstance(session.runner.physics[name], HarmonicFrequencyPlanner)]
     for solver in planners:
@@ -1689,7 +1698,7 @@ _PARITY_SECTORS_PARAM = Param(
 def _parity_sector_issues(vctx, values):
     """parity_sectors: an error without a mirror face, a warning with enabled couplings (the combination assumes a
     linear model), else an info naming the sector runs (per sweep value with a sweep)."""
-    if not values.get('parity_sectors'):
+    if not values['parity_sectors']:
         return []
     faces = sorted(mirror_faces(vctx.spec))
     if not faces:
@@ -1766,19 +1775,6 @@ def _study_solved_types(vctx, study_name):
     for physics, physics_type in known_physics(vctx.spec, vctx.registry):
         if study_name in physics_type.supported_studies and (listed is None or physics.name in listed):
             yield physics, physics_type
-
-
-def _frequency_list(values, ascending=False) -> list:
-    """Study frequencies [Hz] in solve order: the explicit list (sorted with ascending), else n_frequencies from
-    frequency_start to frequency_stop, linear or (log_spacing) geometric; 1 = the arithmetic / geometric mean."""
-    if values['frequencies']:
-        frequencies = [float(frequency) for frequency in values['frequencies']]
-        return sorted(frequencies) if ascending else frequencies
-    start, stop, count = values['frequency_start'], values['frequency_stop'], values['n_frequencies']
-    if count == 1:
-        return [math.sqrt(start * stop) if values['log_spacing'] else 0.5 * (start + stop)]
-    spaced = np.geomspace(start, stop, count) if values['log_spacing'] else np.linspace(start, stop, count)
-    return [float(frequency) for frequency in spaced]
 
 
 def _frequency_range_issues(values) -> list:
@@ -1924,9 +1920,9 @@ def _frequency_domain_counts(values):
 
 def _selftest_cases():
     """The model-layer and fem SelfTestCases (imported on the first registry.selftests(), not by get_registry)."""
-    from ..fem.selftests import FEM_SELFTEST_CASES   # mesh plan T1+: the fem package's cases
+    from ..fem.selftests import FEM_SELFTEST_CASES   # the fem package's cases
     from .selftests_3d_core import CORE_3D_SELFTEST_CASES
-    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # mesh plan A1 (S7.7 refinement levels)
+    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # S7.7 refinement levels
     from .selftests_analytic import ANALYTIC_SELFTEST_CASES
     from .selftests_conformal import CONFORMAL_SELFTEST_CASES
     from .selftests_conformal_cuts import CONFORMAL_CUT_SELFTEST_CASES
@@ -1937,7 +1933,7 @@ def _selftest_cases():
     from .selftests_interface import INTERFACE_SELFTEST_CASES
     from .selftests_line import LINE_SELFTEST_CASES
     from .selftests_mesh import MESH_SELFTEST_CASES
-    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # mesh plan P3 (Session / results per mesh)
+    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # Session / results per mesh
     from .selftests_snapshot_solutions import SNAPSHOT_SOLUTION_SELFTEST_CASES   # GUI snapshot solutions
     from .selftests_subpixel import SUBPIXEL_SELFTEST_CASES
     from .selftests_sweep import SWEEP_SELFTEST_CASES
@@ -1958,7 +1954,7 @@ def register(registry):
     (study_thermal_noise), 'nonlinear_frequency_domain' (study_nonlinear), 'optomechanics' (study_optomechanics) and
     'frequency_response' (study_frequency_response), then the model-layer selftest loader."""
     registry.register_study(StudyType(
-        'time_dependent', 'Time dependent',
+        TIME_DEPENDENT_STUDY, 'Time dependent',
         summary='Steps every physics forward in time and stores field snapshots along the way. Needs at least one '
                 'physics that changes in time, such as time-domain light or transient heat.',
         description='Advances every physics in ticks of dt_sync, the smallest dt_limit of the physics (EM: its '
@@ -1979,7 +1975,7 @@ def register(registry):
         params=_STATIONARY_PARAMS, run=_run_stationary, validate=_with_parity_sectors(), supports_adaptation=True,
         time_counts=_fixed_point_counts))
     registry.register_study(StudyType(
-        'frequency_domain', 'Frequency domain',
+        FREQUENCY_DOMAIN_STUDY, 'Frequency domain',
         summary='Solves the frequency-domain wave physics at a list of wavelengths. Any heat or current physics is '
                 'first solved to a steady state, which every wavelength then shares; when the absorbed light heats '
                 'the model back, each wavelength is solved together with the heat instead, continuing from the '
@@ -2013,6 +2009,7 @@ def register(registry):
                     'snapshot labels keep the solve order).',
         params=_FREQUENCY_DOMAIN_PARAMS, background_study='stationary', run=_run_frequency_domain,
         validate=_with_parity_sectors(_validate_frequency_domain), coupled_points=True, supports_adaptation=True,
+        supports_solved_physics=True,
         feedback_alternative='use a stationary study for one wavelength, a parameter sweep over the wavelength for '
                              'several', time_counts=_frequency_domain_counts,
         solver_protocols=(HarmonicSolver, PulsedHarmonicSolver)))
@@ -2030,8 +2027,8 @@ def register(registry):
                     'mode_number mode; ticks = the mode snapshots. n_eff versus a parameter: a sweep with a derived '
                     'value of mode_table; versus wavelength: frequency_domain.',
         params=_MODE_ANALYSIS_PARAMS, background_study='stationary', run=_run_mode_analysis,
-        validate=_with_parity_sectors(), supports_adaptation=True, time_counts=_fixed_point_counts,
-        solver_protocols=(ModeSolver,)))
+        validate=_with_parity_sectors(), supports_adaptation=True, supports_solved_physics=True,
+        time_counts=_fixed_point_counts, solver_protocols=(ModeSolver,)))
     from . import (study_eigenfrequency, study_frequency_response, study_nonlinear, study_optimization,
                    study_optomechanics, study_thermal_noise)   # they import this module's helpers
     for module in (study_eigenfrequency, study_optimization, study_thermal_noise, study_nonlinear, study_optomechanics,
@@ -2059,7 +2056,7 @@ class _SnapshotRecorder:
         targets = [_coupling_targets(coupling) for coupling in session.runner.couplings]
         self.changing_materials = (frozenset(session.runner.physics) if any(not names for names in targets)
                                    else frozenset().union(*targets))
-        self._keep_solutions = bool(getattr(session, 'keep_solutions', False))
+        self._keep_solutions = session.keep_solutions
         available = host_memory.available_bytes() if self._keep_solutions else None
         self._solution_budget = (_SOLUTION_FALLBACK_BYTES if available is None
                                  else int(_SOLUTION_HOST_FRACTION * available))
@@ -2631,7 +2628,7 @@ def _stored_field_keys(session):
     requested = list(session.spec.study.stored_fields)
     if requested:
         return requested
-    frequency_domain = session.spec.study.type == 'frequency_domain'
+    frequency_domain = session.spec.study.type == FREQUENCY_DOMAIN_STUDY
     keys = []
     for physics, component in _primary_fields(session):
         harmonic_primary = getattr(session.renderer(physics), 'harmonic_primary', '') if frequency_domain else ''

@@ -20,11 +20,12 @@ def history_runs(folder, history=HISTORY) -> list:
 
 def _exclusive_ms(run) -> dict:
     """{part label: exclusive ms} of one run record of runs.json."""
-    return {label: 1e3 * part['exclusive_seconds'] for label, part in (run.get('parts') or {}).items()}
+    return {label: 1e3 * part['exclusive_seconds'] for label, part in run['parts'].items()}
 
 
 def _calls(run, label) -> int:
-    return int(((run.get('parts') or {}).get(label) or {}).get('calls', 0))
+    part = run['parts'].get(label)   # None: a part new or dropped in this run
+    return 0 if part is None else int(part['calls'])
 
 
 def delta_text(before, after, min_ms=DEFAULT_MIN_MS, min_percent=DEFAULT_MIN_PERCENT) -> str:

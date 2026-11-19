@@ -61,12 +61,9 @@ def save_result_figure(result, path, title='', freq_index=None, curves=()):
     fig = _new_figure(_figure_size(result, kind))
     if kind == 'timeseries':
         ax = fig.add_subplot()
-        _draw_timeseries(ax, result, title or f"Probe {result.get('component', '')}", ascii_text=True)
-        times = np.asarray(result['t'], dtype=np.float64)
-        if times.size > 1 and np.ptp(times) > 0:
-            _draw_curves(ax, curves, _ascii_unit(time_unit(float(np.max(np.abs(times)))))[0], '#2166AC')
-        elif times.size:   # 1-based iteration axis: curves of `iteration`
-            _draw_curves(ax, curves, 1.0, '#2166AC')
+        t_scale = _draw_timeseries(ax, result, title or f"Probe {result.get('component', '')}", ascii_text=True)
+        if t_scale is not None:   # 1.0 on the 1-based iteration axis: curves of `iteration`
+            _draw_curves(ax, curves, t_scale, '#2166AC')
     elif kind == 'flux_spectrum':
         ax = fig.add_subplot()
         wavelength_scale = _draw_flux_panel(ax, [result], title or 'Flux spectrum')

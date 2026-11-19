@@ -13,7 +13,8 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, CUDSS_LINE
                                          host_direct_back_end, is_axisymmetric, linear_solver_cudss,
                                          material_follows_state, numpy_calls, reports_model_checks, resolved_back_end)
 from ...model.expressions import ExpressionError, is_identifier, referenced_names
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, resolve_values
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType,
+                              resolve_values)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, factor_device_bytes, index_map_bytes, operator_copy_bytes,
                                      refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
 from ...solvers.host_direct import factor_label, host_direct_precision, solver_host_bytes, superlu_bytes_scale
@@ -265,10 +266,11 @@ def _create(ctx, physics_spec, values):
                          max_bias_step=values['max_bias_step'], axisymmetric=is_axisymmetric(values))
 
 
-# Host bytes per window cell of one Newton step: ~49 COO entries (20 per face, 2 faces per cell, 9 per cell), three
-# 8-byte arrays each: the kept CSR slot map (int64, drift_diffusion._PinnedPattern), the block values and their
-# concatenation (float64); rows / cols are never formed (the pattern expands the scalar site graph).
-_COO_ENTRIES_PER_CELL = 49
+# Host bytes per window cell of one Newton step: ~47 COO entries (drift_diffusion._COUPLED_LAYOUT: 20 face blocks x 2
+# faces per cell + 7 site blocks), three 8-byte arrays each: the kept CSR slot map (int64, its _PinnedPattern), the
+# block values and their concatenation (float64); rows / cols are never formed (the pattern expands the scalar site
+# graph).
+_COO_ENTRIES_PER_CELL = 47
 _COO_ARRAYS = 3
 # CSR entries per window cell of that Jacobian once duplicates are summed (the cuDSS device copies): Poisson row 5 V
 # + n + p, each continuity row 5 of its carrier + 5 V + the other carrier (recombination)
@@ -693,8 +695,8 @@ DRIFT_DIFFUSION = PhysicsType(
     state_fields=_FIELD_INFOS,
     output_fields=_FIELD_INFOS,
     source_slots=_SLOT_DOCS,
-    supported_studies=('stationary', 'time_dependent'),
-    default_study={'type': 'stationary'},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=False,
     create=_create,
     validate=_validate_physics,
@@ -703,7 +705,7 @@ DRIFT_DIFFUSION = PhysicsType(
     scalar_outputs=_scalar_outputs,
     scalar_outputs_help=_SCALAR_OUTPUTS_HELP,
     solver_roles={'linear': CUDSS_LINEAR_ROLE},
-    backends=('gpu', 'cpu'),   # host float64 system; output fields on the Domain's xp; its EM couplings stay gpu
+    backends=('gpu', 'cpu'),   # host float64 system; output fields and EM coupling buffers on the Domain's xp
 )
 
 

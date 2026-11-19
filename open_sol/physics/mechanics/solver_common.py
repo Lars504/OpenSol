@@ -342,7 +342,8 @@ class SupportRegion:
 
 class SolidMechanicsBase(PhysicsSolver):
     """Static elasticity on the physical window, one system solve per change. Subclasses set output_arrays /
-    input_arrays / source_slots and supply _new_fields, _pml_copy_pairs, _assemble, _build_rhs, _write_outputs, renderer."""
+    input_arrays / source_slots and supply _new_fields, _pml_copy_pairs, _assemble, _build_rhs, _write_outputs (window
+    only: callers go through _show_outputs / _extend_into_pml), renderer."""
 
     name = 'solid'
     material_schema = MECHANICAL_SCHEMA
@@ -396,9 +397,7 @@ class SolidMechanicsBase(PhysicsSolver):
                 self._assemble()
             self._build_rhs()
             self._solve_system()
-            self._write_outputs()
-            for destination, source in self._pml_copies:   # in order: later 3D axes span the extended earlier ones
-                self.system.xp.copyto(destination, source)
+            self._show_outputs()
             self._loads_dirty = False
         if re_solve or dt is None or not math.isfinite(dt):
             for probe in self.probes:
@@ -494,7 +493,7 @@ class SolidMechanicsBase(PhysicsSolver):
         return ()
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): Kelly traction-jump eta^2 parts (2, *window), host float64, of the shown stresses
+        """S7.7 hook: Kelly traction-jump eta^2 parts (2, *window), host float64, of the shown stresses
         across faces between solid elements, weighted 1 / c11 per element (2D; (r, z) faces ring-weighted)."""
         if self.domain.dimensions != 2 or getattr(self, '_stiffness', None) is None:
             raise NotImplementedError(f'{self.system.label()}: the traction-jump error indicator needs a solved 2D '
@@ -516,6 +515,16 @@ class SolidMechanicsBase(PhysicsSolver):
                                    stiffness_scale)
 
     # --- shared internals -----------------------------------------------------
+
+    def _show_outputs(self, thermal=True) -> None:
+        """_write_outputs (window only), then _extend_into_pml."""
+        self._write_outputs(thermal=thermal)
+        self._extend_into_pml()
+
+    def _extend_into_pml(self) -> None:
+        """Edge-extend the window outputs into the PML ring (after every output write)."""
+        for destination, source in self._pml_copies:   # in order: later 3D axes span the extended earlier ones
+            self.system.xp.copyto(destination, source)
 
     def _solve_system(self):
         """The static solve of step (the system's PCG; the 2D piezoelectric solid overrides it)."""

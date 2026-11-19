@@ -64,6 +64,8 @@ _ARRAY_FUNCTIONS = {   # expression function -> numpy / cupy attribute
 }
 # real special functions of one argument: scipy.special on numpy (imported on first call), cupyx.scipy.special on cupy
 _SPECIAL_FUNCTIONS = ('j0', 'j1', 'y0', 'y1', 'i0', 'i1', 'k0', 'k1', 'erf', 'erfc')
+# elementwise only: 3D derived values reduce one z plane at a time (field_access_tensor._evaluate_planes) and 3D
+# builds evaluate per z-slab, so a non-local function (a gradient, a neighbour read) would silently break both
 FUNCTION_NAMES = frozenset(_ARRAY_FUNCTIONS) | frozenset(_SPECIAL_FUNCTIONS)
 _VARIADIC_FUNCTIONS = frozenset({'min', 'max'})
 # (min args, max args or None) in _ARRAY_FUNCTIONS then _SPECIAL_FUNCTIONS order (independent of the hash seed)

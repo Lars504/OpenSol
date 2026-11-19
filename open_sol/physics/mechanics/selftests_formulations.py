@@ -1,4 +1,4 @@
-"""Self-tests of the solid_mechanics out-of-plane conditions and geometry (symmetry plan 2.4): plane stress (uniform
+"""Self-tests of the solid_mechanics out-of-plane conditions and geometry: plane stress (uniform
 plate, bilayer), generalized plane strain (two layers side by side, uniform and with the bending terms), axisymmetric
 (r, z) operator identities (CPU), pressurised heated cylinder (exact), spinning shaft (convergence) and radial breathing
 modes (Bessel roots)."""
@@ -331,7 +331,7 @@ def _operator_check(_results_by_name):
     lame_lambda = rng.uniform(0.5, 2.0, (n_x, n_y))
     mu = rng.uniform(0.5, 2.0, (n_x, n_y))
     longitudinal = lame_lambda + 2.0 * mu
-    pattern = ElasticPattern(n_x + 1, n_y + 1)
+    pattern = ElasticPattern(n_x + 1, n_y + 1, xp=np)
     errors = {}
 
     closed = stiffness_stencil(longitudinal, lame_lambda, longitudinal, mu, dx, dy, np.float64)

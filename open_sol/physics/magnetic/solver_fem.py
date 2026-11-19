@@ -1,4 +1,4 @@
-"""2D magnetostatics on a triangle mesh (magnetic plan section 10, stage 5): MagneticFEMPhysics, Lagrange P1 / P2 A
+"""2D magnetostatics on a triangle mesh: MagneticFEMPhysics, Lagrange P1 / P2 A
 (planar A_z, axisymmetric A_phi) on the window elements over system_fem.MagneticFEMSystem; the MagneticPhysics feature
 API (faces, held regions, external field, sources, stranded coils, B-H tables, probes), scalars and the field names.
 State arrays are per element (D12: A at the centroid, B / H / w_mag element means); display fields by fem_field (A
@@ -19,12 +19,12 @@ from .materials import MAGNETIC_SCHEMA, PERMEABILITY_ARRAYS, REMANENCE_ARRAYS, S
 from .renderer import MAGNETIC_FIELD_INFOS
 from .saturation import (TRIANGLE_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts, saturation_curve_terms,
                          tabulated_curve_terms)
+from .solver import REMEDY_TEXT
 from .system_fem import MagneticFEMSystem
 
-DISCRETIZATIONS = {'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order (mesh plan D5)
+DISCRETIZATIONS = {'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order
 ELEMENT_FIELDS = ('A', 'B_x', 'B_y', 'B_abs', 'H_x', 'H_y', 'w_mag', 'J_coupled', 'J_applied')
 NODAL_FIELDS = ('B_x', 'B_y', 'H_x', 'H_y')
-_REMEDY_TEXT = 'Keep magnetic insulation (the default) on at least one face, or add an external field.'
 
 
 @dataclass(frozen=True, eq=False)
@@ -209,7 +209,7 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         self.xp = domain.xp
         domain.materials.add_properties(self.material_schema)
         self.system = MagneticFEMSystem(domain.mesh, self.order, self._axisymmetric, self._label, self.linear_solver,
-                                        backend=domain.backend.name, remedy_text=_REMEDY_TEXT)
+                                        backend=domain.backend.name, remedy_text=REMEDY_TEXT)
         self.fields = ElementFields(ELEMENT_FIELDS, domain.mesh.n_elements, self.xp)
         self.coils = []
         self.probes = []             # (FieldProbe, node)
@@ -392,7 +392,7 @@ class MagneticFEMPhysics(TriangleMagneticBase):
         raise KeyError(f"{self._label()} has no field '{component}'")
 
     def error_indicator(self):
-        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7, mesh plan A3): Kelly
+        """eta^2 per element (float64 (n_elements,)) of the last solve for mesh refinement (S7.7): Kelly
         jumps h_E / nu int_E [H . t]^2 ds of the tangential H over edges between window elements (1/2 per side) and
         H . t on symmetry faces (one-sided), nu the element's mean reluctivity; r weights axisymmetric."""
         system = self.system

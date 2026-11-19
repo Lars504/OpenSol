@@ -4,7 +4,7 @@ import math
 from dataclasses import replace
 
 from ...core.backend import to_host
-from ...core.constants import FACES_3D, N_A
+from ...core.constants import FACES_3D, FREE_MESH_KINDS, N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, host_lu_bytes, window_cell_count)
 from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
@@ -25,7 +25,8 @@ from ...model.definition_helpers import (
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path, known_physics
+from ...model.schema import (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, SolverRole,
+                              feature_path, known_physics)
 from ...model.spec import RESERVED_ENTITY_NAMES
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.line_block import (MAX_CHUNK_SHIFTS, operator_bytes as line_block_operator_bytes,
@@ -500,7 +501,7 @@ def _time_mode(vctx, physics_spec, settings_values=None):
 
 def _is_steady(study_type, time_mode):
     """True when heat is solved as a steady state (any study but time_dependent, or stationary time_mode)."""
-    return study_type != 'time_dependent' or time_mode != 'transient'
+    return study_type != TIME_DEPENDENT_STUDY or time_mode != 'transient'
 
 
 def _study_text(vctx):
@@ -632,7 +633,7 @@ def _cadence_issues(vctx, physics_spec, settings, steady, path):
             return [Issue('error', path, f'transient heat with every = {every} advances {every} * {dt_sync:.4g} s '
                                          f'per step, more than its time_step {time_step:.4g} s; {remedy}')]
     em_dt = getattr(vctx.mesh, 'dt', None)
-    if vctx.study_type == 'time_dependent' and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
+    if vctx.study_type == TIME_DEPENDENT_STUDY and em_dt and every < MIN_EM_STEPS_PER_SOLVE:
         return [Issue('warning', path,
                       f'heat is solved every {every} EM step(s) ({every * em_dt:.3g} s), and one CG solve costs far '
                       'more than an EM step: set every to a few hundred (one heat solve per Joule averaging window)')]
@@ -742,7 +743,7 @@ def _mode_pair_issues(vctx, path, values):
             issues.append(Issue('error', path, f"{role}_mode {values[f'{role}_mode']} exceeds n_modes "
                                                f"{mode_values['n_modes']} of '{name}'"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors and values['collected_selection'] == 'te_and_tm':
         issues.append(Issue('warning', path, f"collected_selection te_and_tm with the mirror face(s) "
                                              f"{', '.join(mirrors)} of '{name}': a mirror keeps one mode family "
@@ -780,7 +781,7 @@ def _illumination_issues(vctx, path, values):
         issues.append(Issue('error', path, f"illumination_physics '{name}' solves at {wavelength:.6g} m, mode_physics "
                                            f"'{mode_spec.name}' at {mode_wavelength:.6g} m: set equal wavelengths"))
     mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-               if mode_values.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+               if mode_values.get(f'bc_{face}') in MIRROR_SIGNS]
     if mirrors:
         issues.append(Issue('info', path, f"mirror face(s) {', '.join(mirrors)}: the illumination is mirrored with the "
                                           'parity of the collected mode, so only illumination of that parity is '
@@ -803,7 +804,7 @@ def _thermorefractive_noise_memory(values, n_selected_cells, mesh):
 
 
 def _triangle_issues(vctx, settings_values, path):
-    """Rules of heat on a triangle mesh (FEMHeatPhysics, mesh plan T4): no azimuthal order m != 0, no thermal_noise
+    """Rules of heat on a triangle mesh (FEMHeatPhysics): no azimuthal order m != 0, no thermal_noise
     study (its operator is the finite-volume one)."""
     issues = []
     if azimuthal_order_of(settings_values):
@@ -880,7 +881,7 @@ def _validate_heat(vctx, physics_spec, settings_values):
     issues = []
     time_mode = _time_mode(vctx, physics_spec, settings_values)
     steady = _is_steady(vctx.study_type, time_mode)
-    if time_mode == 'transient' and vctx.study_type != 'time_dependent':
+    if time_mode == 'transient' and vctx.study_type != TIME_DEPENDENT_STUDY:
         issues.append(Issue('info', path, f"time_mode 'transient' is ignored in a {_study_text(vctx)} study: heat "
                                           'is solved as a steady state (only a time-dependent study runs it '
                                           'transient)'))
@@ -923,10 +924,10 @@ def _create_heat(ctx, physics_spec, values):
     """HeatPhysics on ctx.domain (insulated faces until features apply) with the build's linear (pcg) and, in a
     thermal_noise study, shifted solvers; every study but time_dependent forces steady mode; thermal_noise needs no
     anchor (never CG-solved). Triangles: FEMHeatPhysics; tetrahedra: FEMHeatPhysics3D."""
-    time_mode = values['time_mode'] if ctx.study_type == 'time_dependent' else 'stationary'
+    time_mode = values['time_mode'] if ctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     solvers = ctx.solvers(physics_spec.name)
     time_step = values['time_step'] if time_mode == 'transient' else math.inf
-    if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order, no azimuthal order / noise
+    if ctx.domain.grid_kind == 'triangles':   # FEM: discretization order, no azimuthal order / noise
         return FEMHeatPhysics(ctx.domain, T0=values['T0'], order=element_order(values), time_mode=time_mode,
                               time_step=time_step, axisymmetric=is_axisymmetric(values),
                               linear_solver=solvers['linear'])
@@ -972,14 +973,15 @@ def _memory_estimate(settings_values, mesh, context):
     the window voxels, 9 slots with a cylindrical sector's phi wrap) at the linear solver's precision with its flux
     post-processing (transient phase), a cuDSS 'linear' factor (fem.diffusion.cudss_diffusion_estimate) and the
     line_block noise solver's run items; element meshes: the FEM system on the active elements."""
-    transient = context.spec.study.type == 'time_dependent' and settings_values['time_mode'] == 'transient'
+    transient = context.spec.study.type == TIME_DEPENDENT_STUDY and settings_values['time_mode'] == 'transient'
     cudss = cudss_back_end(context.solvers)
     refactorizes = _operator_follows_state(context, transient)
-    if mesh.kind in ('triangles', 'tetrahedra'):   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
+    if mesh.kind in FREE_MESH_KINDS:   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
         estimator = fem_diffusion_estimate if mesh.kind == 'triangles' else fem_diffusion_estimate_3d
         return estimator(mesh, element_order(settings_values), element_fields=4, direct=linear_solver_direct(context),
                          multigrid=linear_solver_multigrid(context), cudss=cudss, refactorizes=refactorizes,
-                         active_fraction=_active_fraction(context, mesh, transient))
+                         active_fraction=_active_fraction(context, mesh, transient),
+                         precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     fields = MemoryEstimate.from_items((('T, Q, Q_ext (3 x float32)', 3 * FLOAT32_BYTES * int(mesh.n_cells)),))
     precision = linear_solver_precision(context)
     # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve; backend: where a multigrid
@@ -1023,7 +1025,7 @@ def _time_estimate(settings_values, mesh, context):
     held = None if transient else _HELD_TEMPERATURE   # implicit steps: the capacity term is not in the estimate
     # the operator is re-assembled only when k changes (a coupling writing Q leaves the build's factorisation)
     operator_changes = material_follows_state(context, ('k', 'k_xx', 'k_yy', 'k_zz', 'k_xy'))
-    if mesh.kind in ('triangles', 'tetrahedra'):
+    if mesh.kind in FREE_MESH_KINDS:
         order = element_order(settings_values)
         unknowns, entries = fem_time_system(mesh, order)
         estimate = diffusion_time_estimate(context, unknowns, 3 if mesh.kind == 'tetrahedra' else 2,
@@ -1427,9 +1429,11 @@ _FEATURES = (
                               help='Planar 2D: a line source along z, Q_ext += P / cell area in the cell containing '
                                    'the point; its temperature grows as the cell shrinks (logarithmic singularity). '
                                    "Axisymmetric: the ring's total power (on the axis cell a point source); 3D: a "
-                                   'point source. Follows reuse_build.',
+                                   'point source. 1D: per the 1D total (slab W/m^2 although the unit reads W/m; '
+                                   'cylinder W/m; sphere W). Follows reuse_build.',
                               tip='Power per metre of depth, deposited in the cell that contains the point. In an '
-                                  'axisymmetric or 3D model it is the total power in watts instead.\n\n'
+                                  'axisymmetric or 3D model it is the total power in watts instead; in a 1D slab '
+                                  'model it is watts per square metre of the plane.\n\n'
                                   'The temperature at the point keeps rising as the mesh is refined, as for any ideal '
                                   'line source.'),),
                 object_kinds=('point',),
@@ -1526,7 +1530,7 @@ HEAT_PHYSICS = PhysicsType(
                 'unknowns.',
     settings=_SETTINGS,
     features=_FEATURES,
-    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics (mesh plan T4) / FEMHeatPhysics3D
+    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics / FEMHeatPhysics3D
     material_properties=_MATERIAL_PROPERTIES,
     material_schema=THERMAL_SCHEMA,
     state_fields=_STATE_FIELDS,
@@ -1534,8 +1538,8 @@ HEAT_PHYSICS = PhysicsType(
     source_slots={'volumetric_power': ('W/m^3', 'Field Q: each transfer replaces it (PML ring ignored) with the sum '
                                                 'of the heating couplings (em_heat_joule, currents_heat_joule, '
                                                 'fluid_heat_convection).')},
-    supported_studies=('stationary', 'time_dependent', THERMAL_NOISE_STUDY),
-    default_study={'type': 'stationary'},
+    supported_studies=(STATIONARY_STUDY, TIME_DEPENDENT_STUDY, THERMAL_NOISE_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     # linear: the CG solves; shifted: (j omega C + q^2 k_zz A + K) u = w of the noise spectra (sparse_direct =
     # host SuperLU per shift, the reference, or an opt-in MUMPS / PARDISO host factor through the same factorize_host /
     # solve_host; line_block = batched GPU solves, mixed or double)
@@ -1544,7 +1548,7 @@ HEAT_PHYSICS = PhysicsType(
                                         precisions=('mixed', 'double'),
                                         setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
                                                          + HOST_DIRECT_BACK_ENDS})},
-    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
+    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels
     conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter heat_flux / convection; 2D)
     conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too
     create=_create_heat,

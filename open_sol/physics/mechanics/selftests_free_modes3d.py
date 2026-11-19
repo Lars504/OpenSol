@@ -1,4 +1,4 @@
-"""Free-free vibration modes of solid_mechanics_3d on tetrahedra (new_modules_plan K0): one case, the eigenfrequency
+"""Free-free vibration modes of solid_mechanics_3d on tetrahedra: one case, the eigenfrequency
 study of an unsupported nu = 0 bar plus its counted rigid motions and dropped rigid-body modes (CPU, no model), both
 against the exact longitudinal mode f = c / (2 L). definition3d registers it."""
 import math

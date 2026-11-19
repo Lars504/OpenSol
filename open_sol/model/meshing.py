@@ -13,7 +13,7 @@ from functools import partial
 import numpy as np
 
 from ..core import host_memory
-from ..core.constants import C0, FACES, FACES_3D, Z_FACES
+from ..core.constants import C0, FACES, FACES_3D, FREE_MESH_KINDS, Z_FACES
 from ..core.domain import Domain, containing_cell
 from ..core.domain3d import Domain3D
 from ..core.grid import DEFAULT_COURANT_FACTOR, courant_time_step, edges_from_widths, uniform_cell_count
@@ -22,15 +22,15 @@ from ..core.memory_estimate import BOOL_BYTES, FLOAT32_BYTES, MemoryEstimate, co
 from ..core.mesh import SEGMENT_PROFILES, MeshConfig, complete_axis_edges, has_uniform_spacing, segment_widths
 from ..materials import effective_material_data
 from ..physics.em.dispersion import complex_permittivity
-from .expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
+from .expressions import ExpressionError, evaluate_scalar
 from .geometry import (GEOMETRY_KINDS, axis_parallel_faces, bounding_box, contains_points_3d, domain_map, domain_size,
                        domain_size_z, expand_entities, is_plain, line_orientation, material_selections,
                        paint_material_index, point_z, rasterize_window, resolve_geometry, z_extent)
 from .schema import (MESH_KIND_DEFAULTS, MESH_PARAMS, DomainRequirements, array_owner, get_registry,
-                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, state_field_names,
-                     study_default_roles)
+                     permittivity_arrays, resolve_values, resolved_solvers, solver_backend, study_default_roles)
 from .spec import REFINEMENT_PLACES
 from .boundary_locator import conformal_memory_estimate
+from .definition_helpers import dynamic_material_values
 from .subpixel_geometry import subpixel_memory_estimate
 
 MAX_MESH_CELLS = 400_000_000
@@ -56,7 +56,7 @@ TRIANGLE_EDGE_FILL = 1.72
 _TRIANGLE_RASTER = 256          # raster pixels along the longer side
 _TRIANGLE_MIN_RASTER = 8        # ... at least this many along the shorter one
 _TRIANGLE_TRANSFER_ENTRIES = 6  # grid-transfer entries per target cell / element when a triangle mesh is involved
-# tetrahedron element-count estimate (igor3d_plan T4b): N ~ fill x integral 6 sqrt(2) / h^3 dV (a regular tetrahedron
+# tetrahedron element-count estimate: N ~ fill x integral 6 sqrt(2) / h^3 dV (a regular tetrahedron
 # of edge h has volume h^3 / (6 sqrt 2)) on a voxel raster of the size field over the box, PML shell included. Fill
 # uncalibrated (gmsh's Delaunay elements are less regular than the edge-h one): recalibrate on built meshes (T5)
 TETRAHEDRON_FILL = 1.5
@@ -159,7 +159,7 @@ class TriangleSizing:
     # gmsh tetrahedra: geometry object -> element size at its surface [m] (RefinementSpec.where 'surface', < h_max
     # only): size + (growth - 1) x |distance to the surface| (tetrahedral_meshing.sized_surfaces)
     surface_sizes: dict = field(default_factory=dict)
-    # tetrahedra with MeshSpec.sweep_axis 'z' (plan D5, model.swept_meshing): 'z', and the float64 z node coordinates
+    # tetrahedra with MeshSpec.sweep_axis 'z' (model.swept_meshing): 'z', and the float64 z node coordinates
     # [m] of the prism layers (graded_window_edges z, PML shell included); repr shows their sha1; '' / () elsewhere
     sweep_axis: str = ''
     layer_edges: tuple | np.ndarray = field(default=(), repr=False)
@@ -222,14 +222,14 @@ class TriangleMeshEstimate:
 
 
 class TetrahedronSizing(TriangleSizing):
-    """Resolved sizes of a 'tetrahedra' mesh (industry-standard free tetrahedral sizing; igor3d_plan T4b): the
+    """Resolved sizes of a 'tetrahedra' mesh (industry-standard free tetrahedral sizing): the
     TriangleSizing fields, pml_widths over the six 3D faces (the shell thickness), size_points [x, y, z, h], pml_layers
     and mirror_axes unused."""
 
 
 @dataclass
 class TetrahedronMeshEstimate(TriangleMeshEstimate):
-    """CPU estimate of a 'tetrahedra' mesh (igor3d_plan T4b): element / node / edge / face counts (exact for the
+    """CPU estimate of a 'tetrahedra' mesh: element / node / edge / face counts (exact for the
     builtin Kuhn split, from the size field on a voxel raster with gmsh); extent (x0, x1, y0, y1, z0, z1) [m] of the
     meshed box, PML shell included; material_elements = estimated elements each spec material paints (the builder's
     paint order on centres clamped into the window), e.g. a solid's share of the dofs."""
@@ -409,7 +409,7 @@ def largest_adjacent_ratio(estimate, axis) -> float:
 
 
 def line_block_hint(estimate) -> str:
-    """'' in 3D, else the line_block cost of both block axes (n_blocks b^3) and the cheaper one (solver_plan S7.0)."""
+    """'' in 3D, else the line_block cost of both block axes (n_blocks b^3) and the cheaper one."""
     if not estimate.line_blocks:
         return ''
     costs = {axis: n_blocks * float(block_size) ** 3 for axis, (n_blocks, block_size) in estimate.line_blocks.items()}
@@ -520,7 +520,8 @@ class _KeptElementMeshes:
 
 def element_mesh_key(sizing, size, shapes) -> str:
     """Text naming what an element mesh is made from (resolved sizes, window size, resolved geometry); equal text =
-    the same mesh (the built-in meshers are deterministic; gmsh is taken as such)."""
+    the same mesh (the built-in meshers are deterministic; gmsh is taken as such). A mesher input outside these three
+    must enter the key, else element_mesh reuses a stale mesh."""
     geometry = [(name, shape.kind, sorted(shape.values.items(), key=lambda item: item[0]))
                 for name, shape in shapes.items()]
     return repr((sizing, tuple(float(length) for length in size), geometry))
@@ -586,7 +587,7 @@ def has_estimated_counts(estimate) -> bool:
     """True for an element mesh estimate whose counts are still size-based; tensor estimates and the builtin
     tetrahedra (grid boxes split into 6) are exact."""
     kind = getattr(estimate, 'kind', 'tensor')
-    if kind not in ('triangles', 'tetrahedra') or estimate.counts_built:
+    if kind not in FREE_MESH_KINDS or estimate.counts_built:
         return False
     return not (kind == 'tetrahedra' and estimate.sizing.mesher == 'builtin' and not estimate.sizing.sweep_axis)
 
@@ -594,7 +595,7 @@ def has_estimated_counts(estimate) -> bool:
 def awaits_built_mesh(estimate) -> bool:
     """True for an element mesh estimate not yet counted on its built mesh: size-based counts, or exact builtin
     tetrahedra counts still without the built mesh's factor count (MeshEstimate.dissection)."""
-    return getattr(estimate, 'kind', 'tensor') in ('triangles', 'tetrahedra') and not estimate.counts_built
+    return getattr(estimate, 'kind', 'tensor') in FREE_MESH_KINDS and not estimate.counts_built
 
 
 def built_mesh_estimates(spec, parameters, registry, mesh_estimates, shapes=None, log=None) -> dict:
@@ -619,7 +620,7 @@ def make_domain(spec, parameters, registry=None, *, resolved_geometry=None, mesh
     mesh_spec = spec.mesh_by_name(default_mesh_name(spec) if mesh is None else mesh)
     shapes = resolve_geometry(spec, parameters) if resolved_geometry is None else resolved_geometry
     kind = mesh_values(mesh_spec, parameters)['kind']
-    if kind in ('triangles', 'tetrahedra'):
+    if kind in FREE_MESH_KINDS:
         element_grid, reused = element_mesh(spec, parameters, registry, mesh_spec.name, shapes=shapes, log=log)
         if reused and log is not None:
             log('info', f"mesh '{mesh_spec.name}': reused the {element_grid.n_elements:,} {kind} made earlier from "
@@ -1417,7 +1418,7 @@ def _element_sizing(sizing_class, faces, kind_text, spec, mesh_spec, parameters,
     if mesh_spec.face_sizes and not three_d:
         raise ValueError(f'{label}: face_sizes apply to tetrahedron meshes only; use refinements for {kind_text}')
     mesh = mesh_values(mesh_spec, parameters)
-    swept = mesh['sweep_axis'] == 'z'   # prism layers (plan D5): the 2D mesher in-plane, z graded like builtin
+    swept = mesh['sweep_axis'] == 'z'   # prism layers: the 2D mesher in-plane, z graded like builtin
     if swept:
         from .swept_meshing import layer_edges, swept_mesh_problem, swept_refinement_problem
         problem = swept_mesh_problem(mesh_spec, three_d)
@@ -1920,7 +1921,7 @@ def _size_point_density(sizing, shapes, centres, pixel_sides) -> tuple:
     return density.reshape(x.shape), smallest
 
 
-# ---- tetrahedron meshes (igor3d_plan T4b, CPU only) ----
+# ---- tetrahedron meshes (CPU only) ----
 def tetrahedron_box(spec, parameters, sizing) -> tuple:
     """(low (3,), high (3,)) float64 corners [m] of the meshed box of a 'tetrahedra' mesh: the window plus the PML
     shell of sizing.pml_widths."""
@@ -2166,12 +2167,12 @@ def _tetrahedron_estimate(spec, mesh_spec, parameters, registry, shapes):
     size_z = domain_size_z(spec, parameters)
     window_low = np.zeros(3)
     window_high = np.array([*domain_size(spec, parameters), size_z], dtype=np.float64)
-    if sizing.sweep_axis:   # swept prism layers (plan D5): footprint triangles x 3 x layers
+    if sizing.sweep_axis:   # swept prism layers: footprint triangles x 3 x layers
         from .swept_meshing import swept_estimate
         n_elements, n_nodes, n_edges, smallest, centres, elements = swept_estimate(spec, parameters, shapes, sizing)
     elif sizing.mesher == 'builtin':
         edges = sizing_axis_edges(sizing, window_high)
-        cells =[len(axis_edges) - 1 for axis_edges in edges]
+        cells = [len(axis_edges) - 1 for axis_edges in edges]
         nodes = [count + 1 for count in cells]
         n_elements = 6 * math.prod(cells)
         n_nodes = math.prod(nodes)
@@ -2432,7 +2433,8 @@ def mesh_transfers(spec, registry, meshes) -> list:
     """[{coupling, source_mesh, target_mesh, kind, nnz, bytes}] of the enabled couplings whose source and target run
     on different meshes with a CouplingType.mesh_transfer ('field': interpolate; 'value': its value_kind); meshes =
     {name: estimate} (couplings touching a missing one are skipped). Tensor pairs: core grid_transfer_estimate; a
-    triangle mesh: _TRIANGLE_TRANSFER_ENTRIES per target cell / element (calibrated by T2)."""
+    triangle mesh: _TRIANGLE_TRANSFER_ENTRIES per target cell / element (calibrated by T2; a conservative transfer
+    holds more, ~ the size ratio squared, plus a host float64 copy)."""
     records = []
     for coupling in spec.couplings:
         if not coupling.enabled:
@@ -2652,20 +2654,7 @@ def _feedback_copy_count(spec, registry, n_updates, names=None):
 def _state_dependent_property_count(spec, registry, property_names=None):
     """Material property values (of property_names; None: any) that reference a physics state field or time t (one
     DynamicMaterialUpdate each)."""
-    state_names = frozenset(state_field_names(spec, registry)) | TIME_NAMES
-    count = 0
-    for material in spec.materials:
-        if not isinstance(material.properties, dict):
-            continue
-        for name, value in material.properties.items():
-            if not isinstance(value, str) or (property_names is not None and name not in property_names):
-                continue
-            try:
-                if not referenced_names(value).isdisjoint(state_names):
-                    count += 1
-            except ExpressionError:   # reported by validate
-                continue
-    return count
+    return sum(1 for _ in dynamic_material_values(spec, registry, property_names))
 
 
 def _build_cache_bytes(mesh, regions):

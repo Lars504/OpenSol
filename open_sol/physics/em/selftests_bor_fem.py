@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list, skip_without_cudss
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_bor import _analytic_cavity, _match
@@ -15,7 +15,7 @@ from .selftests_modes_fem import _report, _sizing
 _TYPE = 'em_fdfd_bor'
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_EIGEN_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_EIGEN_STUDY = EIGENFREQUENCY_STUDY
 
 # ---- PEC cylinder cavity on triangles (radius = height = 1 um, pec r_hi / z_lo / z_hi, the em_bor_pec_cylinder closed
 # forms): the three axis classes m = 0, 1, 2; quadratic elements at h = 50 nm (k h ~ 0.2), linear at the same mesh for

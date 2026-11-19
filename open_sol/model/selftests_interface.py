@@ -1,5 +1,5 @@
-"""Self-tests of interface-aware sampling (igor 1.8: outline samples, one-sided least-squares extrapolation on
-Cartesian and polar windows) and of max / min over mirror images (igor 1.9); registered by model.study.register."""
+"""Self-tests of interface-aware sampling (outline samples, one-sided least-squares extrapolation on
+Cartesian and polar windows) and of max / min over mirror images; registered by model.study.register."""
 import math
 from types import SimpleNamespace
 

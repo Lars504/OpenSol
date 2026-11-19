@@ -12,8 +12,8 @@ from ...core.mirror import mirror_faces
 from ...model.definition_helpers import (FDFD_LINEAR_ROLE, eigen_factorization, eigen_role, evaluates_to,
                                          host_direct_back_end, linear_solver_cudss, optimization_evaluations,
                                          resolved_back_end, selected_material_sets, validate_points_inside)
-from ...model.schema import (FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path, known_physics,
-                             solver_backend)
+from ...model.schema import (TIME_DEPENDENT_STUDY, FeatureType, Issue, Param, PhysicsType, coupling_writes, feature_path,
+                             known_physics, solver_backend)
 from .definition_common import (BOTH_GRIDS, BOX_CELLS, CPML_BC_HELP, DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY,
                                 EZ_GAUSSIAN_BEAM_DESCRIPTION, EZ_LINE_SOURCE_DESCRIPTION, PLANE_WAVE_SPAN,
                                 EM_FAMILY, EZ_CURRENT_TIP, EZ_PROBE_COMPONENT_TIP, FACE_MEAN, FREQUENCY_DOMAIN_STUDY,
@@ -508,7 +508,6 @@ def _make_create(polarization, background_targets):
 
 
 # ---- eigenfrequency study (A6): resonance_table feature ----
-TIME_DEPENDENT_STUDY = 'time_dependent'     # stroboscopic re-solves beside a time-stepped physics (acoustics)
 _RESONANCE_TABLE_DESCRIPTION = (
     "Resonances of the last eigenfrequency solve, nearest the target (the wavelength setting) first. Result 'table', "
     'one row per resonance: resonance_number (rank by |omega - omega_target|), wavelength = 2 pi C0 / Re(omega) (m), '
@@ -892,6 +891,7 @@ def _fdfd_physics_type(polarization):
         state_fields=state_fields,
         output_fields=tuple(renderer_class.field_infos.values()),
         source_slots=source_slots,
+        # time_dependent: stroboscopic re-solves beside a time-stepped physics (acoustics)
         supported_studies=('stationary', FREQUENCY_DOMAIN_STUDY, EIGENFREQUENCY_STUDY, OPTIMIZATION_STUDY,
                            TIME_DEPENDENT_STUDY, OPTOMECHANICS_STUDY),
         default_study={'type': 'stationary'},

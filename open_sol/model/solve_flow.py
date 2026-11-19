@@ -18,7 +18,9 @@ import re
 from dataclasses import dataclass, fields, replace
 
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
-from .schema import resolved_solvers, solver_backend, solver_grid
+from .schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
+                     STATIONARY_STUDY, TIME_DEPENDENT_STUDY, known_physics, resolved_solvers, solver_backend,
+                     solver_grid)
 from .time_estimate import estimation_runs, study_counts
 
 # row kind -> row label (left margin of the chart); study rows are 'study' too, one per study step
@@ -733,7 +735,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
     name = study_type.name
     values = counts.counts if counts is not None else {}
     background = [_BACKGROUND] if study_type.background_study and _has_background(spec, registry, name) else []
-    if name == 'time_dependent':
+    if name == TIME_DEPENDENT_STUDY:
         duration = values.get('duration')
         dt = run_time.dt_limit if run_time is not None else math.inf
         ticks = (f'{int(round(duration / dt)):,} ticks of {dt:.4g} s' if duration and math.isfinite(dt) and dt > 0
@@ -745,11 +747,11 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                  else []),
                 ('Flush', 'quasi-static physics solve once more',
                  'runner.flush(): pending quasi-static solves run once at the end, also after a cancel.', [])]
-    if name == 'stationary':
+    if name == STATIONARY_STUDY:
         return [('Stationary solve', 'fixed point over every physics',
                  'solve_stationary: every physics solves in order and the couplings apply; with a coupling cycle the '
                  'loop repeats until the relative change is below the tolerance (fixed_point in the summary).', [])]
-    if name == 'frequency_domain':
+    if name == FREQUENCY_DOMAIN_STUDY:
         points = values.get('harmonic_points')
         return background + [
             ('Pulsed harmonic physics', 'time-stepped physics only, if any',
@@ -762,7 +764,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
     if name == 'mode_analysis':
         return background + [('Mode solve', '', 'solve_modes() of every mode physics, then one snapshot per mode '
                                                 "number ('mode k: n_eff = ...').", [])]
-    if name == 'eigenfrequency':
+    if name == EIGENFREQUENCY_STUDY:
         pairs = values.get('eigenpairs')
         return background + [
             ('Eigen solve', f'{pairs} resonances' if pairs else '',
@@ -770,7 +772,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
              'factorises the shifted pencil and runs the Krylov iterations.', []),
             ('Resonance snapshots', '', "select_resonance(k) and one snapshot per resonance ('resonance k: lambda = "
                                         "..., Q = ...'); resonance 1 stays live.", [])]
-    if name == 'frequency_response':
+    if name == FREQUENCY_RESPONSE_STUDY:
         points = values.get('harmonic_points')
         return background + [('Frequency loop', f'{points} frequencies' if points else '',
                               'One driven solve per frequency (reduced / modal sweeps where chosen) and one snapshot '
@@ -781,7 +783,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
                  'scipy L-BFGS-B over the design-region densities: per evaluation the densities are written to eps, '
                  'every FDFD / EME physics solves and its adjoint gives the sensitivities; one snapshot per accepted '
                  'iteration.', [])]
-    if name == 'optomechanics':
+    if name == OPTOMECHANICS_STUDY:
         return background + [('Mechanical and optical solves', '',
                               'Mechanical eigenmodes and the optical modes / resonances of the physics the coupling '
                               'feature names, then the optomechanical coupling g0 per pair.', [])]
@@ -797,11 +799,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
 
 def _has_background(spec, registry, study_name):
     """True when a physics runs as background in the study (not listed as solved, or its type does not list it)."""
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if not spec.study.solves(physics_spec.name) or study_name not in physics_type.supported_studies:
             return True
     return False

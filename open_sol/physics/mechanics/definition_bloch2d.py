@@ -3,7 +3,7 @@ bloch_kx / bloch_ky): the settings, their validation rules and the estimator fla
 type (the 3D twins live in definition3d)."""
 from ...core.constants import FACES
 from ...model.definition_helpers import is_axisymmetric
-from ...model.schema import Issue, Param, feature_path
+from ...model.schema import STATIONARY_STUDY, TIME_DEPENDENT_STUDY, Issue, Param, feature_path
 from .definition_common import (EIGENFREQUENCY_STUDY, SUPPORT_FEATURES, outer_faces, support_holders)
 
 AXES_2D = ('x', 'y')
@@ -69,7 +69,7 @@ def complex_bloch_pencil_2d(settings_values) -> bool:
     return bool(periodic_axes_2d(settings_values)) and not trivial_bloch_phase_2d(settings_values)
 
 
-STATIC_PERIODIC_STUDIES = ('stationary', 'time_dependent')   # a plain periodic cell on triangles (every bloch_k 0)
+STATIC_PERIODIC_STUDIES = (STATIONARY_STUDY, TIME_DEPENDENT_STUDY)   # a plain periodic cell on triangles (bloch_k 0)
 
 
 def static_periodic_cell(vctx, settings_values, triangles) -> bool:

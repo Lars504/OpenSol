@@ -1,5 +1,5 @@
 """Line-block factors (solvers/line_block) of the body-of-revolution operator family A(m) = base + m K1 + m^2 K2 of one
-BORAssembly (symmetry 2.3, solver_plan Part II stage 4): line layout of the (E_r, u, E_z) unknowns, batched order
+BORAssembly (symmetry 2.3): line layout of the (E_r, u, E_z) unknowns, batched order
 factors for shift-invert eigen-solves, single driven factors and frequency_domain wavelength batches (Part II stage 3);
 numpy at module level."""
 # Layout: block_axis 0 = z rows (E_r and u of cell row j, E_z of z-edge l on line l), 1 = r columns (E_r of r-edge k on

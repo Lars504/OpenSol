@@ -32,6 +32,7 @@ FULL_PIEZO_PROPERTIES = tuple(f'piezo_e{row}{column}' for row in range(1, 4) for
 FULL_PERMITTIVITY_PROPERTIES = {'eps_dc_xx': (0, 0), 'eps_dc_yy': (1, 1), 'eps_dc_zz': (2, 2), 'eps_dc_yz': (1, 2),
                                 'eps_dc_xz': (0, 2), 'eps_dc_xy': (0, 1)}
 ZERO_RELATIVE = 1e-12          # rotated entries below this fraction of the largest of their tensor are set to 0
+#                                (a round-off eps_dc_xy or c16 would demand a uniform mesh / the monoclinic arrays)
 MIRROR_RELATIVE = 1e-9         # mirror_violation: sign-flipping entries above this fraction break the mirror symmetry
 PIEZO_PROPERTIES = ('piezo_e11', 'piezo_e12', 'piezo_e16', 'piezo_e21', 'piezo_e22', 'piezo_e26')
 STIFFNESS_PROPERTIES = ('c11', 'c12', 'c22', 'c66')   # always expanded; c16 / c26 only when either is non-zero
@@ -67,7 +68,7 @@ class CrystalData:
     optical_reference: str = ''
 
 
-# Values transcribed without the source at hand (piezoelectric_plan status): verify against the cited tables. Signs:
+# Values transcribed without the source at hand: verify against the cited tables before trusting digits. Signs:
 # for 3m / 32 the sign of c14 and e22 (3m) / e11, e14 (32) depend on the +Y (+X) choice of the axis standard; only the
 # products c14 e22 (3m) are convention independent, e15, e31, e33 are not affected.
 CRYSTALS = {

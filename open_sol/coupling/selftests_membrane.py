@@ -1,4 +1,4 @@
-"""Self-tests of solid_membrane_tension (new_modules_plan S9): a uniformly stressed plane-stress film whose exact
+"""Self-tests of solid_membrane_tension: a uniformly stressed plane-stress film whose exact
 tension sets the anisotropic modes of the clamped membrane rectangle (plus the coupling's validation refusals), the
 Mauranyapin M-E1 perforated cell <sigma> / sigma_0 = 0.7186 and its Bloch band against c_eff = sqrt(<N> / <rho_s>);
 eigenfrequency studies with solved_physics ['membrane']."""
@@ -140,7 +140,7 @@ def _check_strip(results_by_name):
     return scaled_worst_result(errors, tolerances, **details)
 
 
-# ---- the perforated cell (Mauranyapin plan E1(a) through the coupling; checked by the Bloch band case): a p = 3 um
+# ---- the perforated cell (Mauranyapin E1(a) through the coupling; checked by the Bloch band case): a p = 3 um
 # cell with a centred a = 1 um square hole (phi = 1/9, sharp corners), 80 nm Si3N4 (E 250 GPa, nu 0.22) with sigma0 = 1 GPa
 # equibiaxial initial stress, plane stress, rollers on all four faces (= periodicity at zero macroscopic strain for this
 # mirror-symmetric cell), the hole void for the solid and a hole for the membrane (areal_density 0). The stationary
@@ -154,7 +154,7 @@ _CELL_PRESTRESS = 1e9           # Pa
 _CELL_ELASTIC = (250e9, 0.22)
 _CELL_DENSITY = 3200.0          # kg/m^3
 _CELL_MESH_H = _CELL_PITCH / 60.0
-_CELL_REFERENCE = 0.7186        # <sigma> / sigma0, sharp corners (mauranyapin2021 plan, Section 6)
+_CELL_REFERENCE = 0.7186        # <sigma> / sigma0, sharp corners (Mauranyapin reference)
 _CELL_TOLERANCE = 1e-2
 
 
@@ -171,12 +171,12 @@ def _cell_parts():
     return materials, [GeometrySpec('hole', 'rectangle', {'x0': low, 'y0': low, 'x1': high, 'y1': high})]
 
 
-# ---- membrane_film_tension_cell_bloch_band (Mauranyapin plan E1(b), r_c = 0): the perforated cell above, the relaxed
+# ---- membrane_film_tension_cell_bloch_band (Mauranyapin E1(b), r_c = 0): the perforated cell above, the relaxed
 # solid as background, then the membrane Bloch cell (periodic_x / _y, no clamp, no bending) at |k| p = 0.1 and 0.2 along
-# x and along the diagonal. Long-wave homogenisation (plan Section 4: div N = 0 with traction-free holes, so the corrector
+# x and along the diagonal. Long-wave homogenisation (div N = 0 with traction-free holes, so the corrector
 # is constant) gives omega = c_eff |k| with c_eff^2 = n.<N>.n / <rho_s> (cell averages, holes 0; <rho_s> = rho h (1 -
 # phi)); the lowest band's phase velocity 2 pi f / |k| against c_eff from the same run's tension / density integrals
-# within 0.3 % (plan: (a) <-> (b)), axis vs diagonal within 0.3 %, and c_eff at the axis' smallest k vs the plan's
+# within 0.3 % ((a) <-> (b)), axis vs diagonal within 0.3 %, and c_eff at the axis' smallest k vs the reference
 # 502.6 m/s within 0.5 % (half the static 1 % on <sigma>).
 # Solid periodicity: the 2D solid_mechanics has no periodic / Bloch setting (only solid_mechanics_3d on tetrahedra has),
 # so the solid keeps the rollers on all four faces of the static case. The mesh is meshed mirror_x / mirror_y: the mirror
@@ -192,8 +192,8 @@ _BAND_KP = (0.1, 0.2)            # |k| p
 _BAND_DIRECTIONS = {'x': (1.0, 0.0), 'diagonal': (math.sqrt(0.5), math.sqrt(0.5))}
 _BAND_MODES = 2
 _BAND_TOLERANCE = 3e-3           # band phase velocity vs c_eff of the same run, and axis vs diagonal
-_BAND_REFERENCE_TOLERANCE = 5e-3  # c_eff vs the plan's extrapolated 502.6 m/s
-_BAND_REFERENCE_SPEED = 502.6    # m/s (mauranyapin2021 plan E1 target; also recomputed from 0.7186 in the details)
+_BAND_REFERENCE_TOLERANCE = 5e-3  # c_eff vs the reference's extrapolated 502.6 m/s
+_BAND_REFERENCE_SPEED = 502.6    # m/s (Mauranyapin E1 target; also recomputed from 0.7186 in the details)
 
 
 def _band_run_name(direction, index):
@@ -311,14 +311,14 @@ MEMBRANE_TENSION_CASES = (
                      'discrete periodic state at zero mean strain) relaxes as background (solved_physics '
                      "['membrane']), solid_membrane_tension (thickness param 80 nm) writes N = h sigma: <N_ii> / (h "
                      'sigma0) = int tension_ii dA / (h sigma0 p^2) of the first run against the extrapolated Q4 '
-                     f'reference {_CELL_REFERENCE:g} (mauranyapin2021 plan E1, Section 6) within {_CELL_TOLERANCE:g} '
+                     f'reference {_CELL_REFERENCE:g} (mauranyapin2021 E1) within {_CELL_TOLERANCE:g} '
                      'for xx and yy; and the membrane eigen solve runs on '
                      'the Bloch cell (periodic_x / _y, no clamp, no bending) at |k| p = '
                      f"{', '.join(f'{value:g}' for value in _BAND_KP)} along x and the diagonal: the lowest band "
                      'phase velocity 2 pi f / |k| against c_eff = sqrt(n.<N>.n / <rho_s>) from the same run\'s cell '
                      f'integrals within {_BAND_TOLERANCE:g}, axis vs diagonal within {_BAND_TOLERANCE:g}, and c_eff '
-                     f'against the plan\'s {_BAND_REFERENCE_SPEED:g} m/s within {_BAND_REFERENCE_TOLERANCE:g} '
-                     '(mauranyapin2021 plan E1). measured = error in tolerance units, tolerance 1 (first estimates, not '
+                     f'against the target {_BAND_REFERENCE_SPEED:g} m/s within {_BAND_REFERENCE_TOLERANCE:g} '
+                     '(mauranyapin2021 E1). measured = error in tolerance units, tolerance 1 (first estimates, not '
                      'yet run).'),
         specs=_band_specs, check=_check_band, heavy=True),
 )

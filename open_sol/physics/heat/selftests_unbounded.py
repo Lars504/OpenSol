@@ -1,4 +1,4 @@
-"""Unbounded decaying physics by outer grading (symmetry plan 2.15): an axisymmetric disc heater on a half-space whose
+"""Unbounded decaying physics by outer grading: an axisymmetric disc heater on a half-space whose
 held far faces sit 1000 radii away on a few dozen geometrically growing cells, against the infinite-medium closed
 forms; one CPU case (cpu backend, Automatic sparse_direct), registered by definition.register."""
 import numpy as np
@@ -98,7 +98,7 @@ def _check_unbounded(results_by_name):
 UNBOUNDED_SELFTEST_CASES = (
     SelfTestCase(
         name='heat_unbounded_disc_heater', label='Heat: disc heater on an unbounded half-space by outer grading',
-        description=('Symmetry plan 2.15 (far-field grading of decaying quasi-static physics): stationary axisymmetric '
+        description=('Far-field grading of decaying quasi-static physics: stationary axisymmetric '
                      f'heat, a uniform flux q = {HEAT_FLUX:g} W/m^2 into a disc of radius a = {DISC_RADIUS * 1e3:g} mm '
                      f'(q / dx in the top cell layer) on the insulated surface of a half-space (k = {CONDUCTIVITY:g} '
                      f'W/(m*K)) whose far faces x_hi and y_lo, L = {DOMAIN_SIZE / DISC_RADIUS:g} a away, are held at '

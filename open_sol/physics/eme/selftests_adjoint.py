@@ -1,4 +1,4 @@
-"""Self-tests of the EME cascade adjoint (eme_plan 6b): dJ/d eps of complete-basis ez and hz cascades, plain or with a
+"""Self-tests of the EME cascade adjoint: dJ/d eps of complete-basis ez and hz cascades, plain or with a
 periodic cell, vs central differences (CPU, adjoint.py on hand-built slab lines), the same for EMEPhysics3D on a cpu
 Domain3D with complete (dense) cross-section bases, and a small em_eme taper optimisation in ez and hz (model runs,
 optimization study)."""

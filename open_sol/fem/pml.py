@@ -1,4 +1,4 @@
-"""Physics-neutral PML coordinate stretches (new_modules_plan S1): PMLStretch of the layer ring of a TriangleMesh (planar
+"""Physics-neutral PML coordinate stretches: PMLStretch of the layer ring of a TriangleMesh (planar
 or the axisymmetric stretched radius) or the shell of a TetrahedronMesh, with the coefficient transforms of a scalar
 operator -div(a grad u) + b u. Host numpy."""
 # Stretch (exp(+j omega t)): s = 1 - j beta (d / w)^n at depth d into the layer of face f (thickness w, n =

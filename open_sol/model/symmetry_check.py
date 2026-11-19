@@ -1,5 +1,6 @@
 """Symmetry check of mirror and axisymmetric models (symmetry 2.7; CPU, numpy, GUI-thread safe): geometry drawn beyond
-a mirror plane or the (r, z) axis must be the mirror image of the half the run solves, else one warning per plane."""
+a mirror plane or the (r, z) axis must be the mirror image of the half the run solves, else one warning per plane.
+Not checked: material expressions of x / y, sources."""
 import itertools
 
 import numpy as np

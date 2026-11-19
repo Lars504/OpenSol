@@ -226,8 +226,8 @@ CUDSS_REGIONS = ('refactorize', 'refactorize_device_values', 'refactorize_device
                  '_device_asymmetry', '_plan', '_device_plan')
 _missing = [name for name in ('_plan_solver', '_factorize_and_probe', *CUDSS_REGIONS) if not hasattr(Factorization, name)]
 if _missing:
-    raise AttributeError(f'vram_profile: CudssFactorization has no {", ".join(_missing)} (renamed? update the profiler '
-                         'and its sub_structure_conventions.md)')
+    raise AttributeError(f'vram_profile: CudssFactorization has no {", ".join(_missing)} (renamed? update the '
+                         'profiler)')
 original_plan_solver = Factorization._plan_solver
 original_factorize = Factorization._factorize_and_probe
 

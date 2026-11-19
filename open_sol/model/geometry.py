@@ -465,7 +465,7 @@ def domain_size_z(spec, parameters):
     return size_z
 
 
-# ---- domain coordinates (symmetry plan 2.16) ----
+# ---- domain coordinates ----
 DOMAIN_COORDINATES = ('cartesian', 'polar', 'spherical')
 # 1D models (DomainSpec.size_y null, symmetry 2.20): logical y span of the one cell across ([m] Cartesian: totals per
 # m^2; [rad] the full circle of a cylinder per m of length, theta 0..pi of a whole sphere)

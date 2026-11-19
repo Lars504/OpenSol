@@ -8,14 +8,15 @@ from ...core.domain import containing_cell
 from ...core.memory_estimate import COMPLEX64_BYTES, COMPLEX128_BYTES, FLOAT32_BYTES, BOOL_BYTES, MemoryEstimate
 from ...core.kernels import numba_available
 from ...core.time_estimate import Elementwise, PythonCalls, explicit_step_estimate
-from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, validate_points_inside,
-                                         wavelength_range_issues)
+from ...model.definition_helpers import (HALF_STORAGE_STEPPER_ROLE, resolved_stepper_precision, selected_material_data,
+                                         validate_points_inside, wavelength_range_issues)
 from ...solvers.explicit_kernels import stepper_precision
 from ...model.definition_resonance import resonance_monitor_feature
 from ...model.expressions import ExpressionError, referenced_names
 from ...model.geometry import expand_entities
 from ...core.renderer import FieldInfo
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, array_owner, feature_path
+from ...model.schema import (FREQUENCY_DOMAIN_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
+                             array_owner, feature_path)
 from ..em.definition_common import (EM_FAMILY, FLUX_PARAMS, POINT_SOURCE_SIGN, _monitor_wavelengths,
                                     _q_accum_referenced, background_permittivity, boundary_settings_params,
                                     em_material_params, make_pole,
@@ -539,17 +540,10 @@ def _half_storage_issues(vctx, physics_spec, settings_values, path):
     if resolved_stepper_precision(vctx.solvers(physics_spec)) != 'half_storage':
         return []
     issues = []
-    if vctx.study_type == 'frequency_domain':
+    if vctx.study_type == FREQUENCY_DOMAIN_STUDY:
         issues.append(Issue('error', path, 'half_storage (fp16 fields) does not run the harmonic FDTD of a '
                                            'frequency_domain study: use a single-precision stepper solver'))
-    from ...materials import effective_material_data   # lazy: physics -> materials only inside functions
-    for material in vctx.spec.materials:
-        if not material.selection:
-            continue
-        try:
-            _, dispersion = effective_material_data(material.library, material.properties, material.dispersion)
-        except ValueError:   # reported at the material
-            continue
+    for material, _, dispersion in selected_material_data(vctx.spec):   # unresolved: reported at the material
         if dispersion:
             issues.append(Issue('error', path, f"material '{material.name}' has dispersion poles, which half_storage "
                                                '(fp16 fields) does not support: use a single-precision stepper solver'))
@@ -729,7 +723,7 @@ EM_FDTD_3D = PhysicsType(
                   _Q_ACCUM_INFO),
     output_fields=tuple(EMRenderer3D.field_infos.values()),
     source_slots=source_slot_docs(_SLOT_ARRAYS),
-    supported_studies=('time_dependent', 'frequency_domain'),
+    supported_studies=('time_dependent', FREQUENCY_DOMAIN_STUDY),
     default_study={'type': 'time_dependent', 'settings': {'duration': 50e-15}},
     uses_dispersion=True,
     create=_create,

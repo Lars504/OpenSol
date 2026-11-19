@@ -26,12 +26,12 @@ from .materials import MAGNETIC_3D_SCHEMA, PERMEABILITY_3D_ARRAYS, REMANENCE_3D_
 from .renderer import MAGNETIC_3D_FIELD_INFOS
 from .saturation import (ANDERSON_DEPTH, TENSOR_NONLINEAR_METHODS, bh_curve, refuse_curve_conflicts,
                          saturation_permeability, tabulated_reluctivity)
+from .solver3d import REMEDY_TEXT_3D
 
 RULE_DEGREE = 2          # exact for every product here: affine elements, P0 mu, linear B (P2 grad u, Nedelec-1 T)
 POST_CHUNK = 20_000      # elements per post-processing / load block (bounds the (m, q, 10, 3) P2 temporaries)
 COIL_FIELD_CACHE_BYTES = 256 * 2 ** 20   # total-T rule values kept across saturation iterations (host), at most
 _ANCHOR_TEXT = 'symmetry face, ideal iron region, external field or the corner anchor'
-_REMEDY_TEXT = 'Give every window element mu_dc > 0.'
 _PERMEABILITY_NAMES = ('mu_dc_xx', 'mu_dc_yy', 'mu_dc_zz')
 _AXES = 'xyz'
 _ELEMENT_FIELDS = ('B_x', 'B_y', 'B_z', 'B_abs', 'H_x', 'H_y', 'H_z', 'w_mag')
@@ -62,7 +62,7 @@ class MagneticFEMPhysics3D(FEMDiffusionPhysicsBase3D):
                  nonlinear_max_iterations: int = 100, nonlinear_relaxation: float = 0.5,
                  nonlinear_method: str = 'auto'):
         self._init_fem(domain, order, linear_solver, lambda: f"{self.type_label} '{self.name}'",
-                       'magnetic scalar potential', _ANCHOR_TEXT, _REMEDY_TEXT)
+                       'magnetic scalar potential', _ANCHOR_TEXT, REMEDY_TEXT_3D.format(item='element'))
         nonlinear_method = 'anderson' if nonlinear_method == 'auto' else nonlinear_method
         if nonlinear_method not in TENSOR_NONLINEAR_METHODS:
             raise ValueError(f"{self.type_label}: nonlinear_method must be 'auto' or one of {TENSOR_NONLINEAR_METHODS}, "

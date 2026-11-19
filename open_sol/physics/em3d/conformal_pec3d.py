@@ -1,4 +1,4 @@
-"""Conformal PEC of em_fdtd_3d (solver_plan S7.6; host numpy / scipy, built once at finalize): Dey-Mittra on the H
+"""Conformal PEC of em_fdtd_3d (host numpy / scipy, built once at finalize): Dey-Mittra on the H
 faces, each cut face (the square between four cell centres) takes the free lengths of its four E edges over its free
 area, floored per face so the unchanged time step stays stable (the smallest cut never sets dt)."""
 # Geometry (engine3d layout): E_d of cell q is the link from centre q to centre q + e_d (the 2D staircase rule: pinned

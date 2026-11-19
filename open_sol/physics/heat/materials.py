@@ -1,6 +1,7 @@
 """Thermal material vocabulary: THERMAL_SCHEMA (MaterialGrid arrays and defaults), THERMAL_PROPERTY_ARRAYS and
 attach_thermal_properties."""
-# rho = cp = 0 by default: a cell without k and capacity has an empty row in both time modes (pinned, ignores Q).
+# k = rho = cp = 0 by default: a cell without k does not conduct; one without k, loss and (transient) capacity has an
+# empty row in both time modes (pinned, ignores Q: a default capacity would integrate Q adiabatically and run away).
 # k_zz is read only on a 3D domain (2D heat has no out-of-plane conduction).
 THERMAL_SCHEMA = {
     'k_xx': 0.0, 'k_yy': 0.0, 'k_zz': 0.0, 'k_xy': 0.0,

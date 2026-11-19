@@ -1,4 +1,4 @@
-"""Self-test of the nonlinear -> heat solution feedback (nonlinear_optics_plan stage 5 (a)): two-photon absorption of
+"""Self-test of the nonlinear -> heat solution feedback: two-photon absorption of
 an em_fdfd_nonlinear strip heats a heat physics through em_heat_joule, feed-forward and with heat_em_thermo_optic back;
 exact discrete identities, no physics imports."""
 import math

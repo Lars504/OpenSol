@@ -1,4 +1,4 @@
-"""Tetrahedron mesh data (igor3d_plan section 7, T4): the frozen TetrahedronMesh with ascending element nodes, unique
+"""Tetrahedron mesh data: the frozen TetrahedronMesh with ascending element nodes, unique
 edges / faces and their element maps, outer-face and object-interface tags, region tags and quality; window / interface
 face selections; periodic node partners; the structured box mesh (Kuhn split of a tensor grid, conforming and
 gmsh-free: the CPU self-tests).
@@ -14,8 +14,8 @@ from .elements3d import LOCAL_EDGES, LOCAL_FACES
 from .mesh import one_sided
 
 OUTER_FACES_3D = ('x_lo', 'x_hi', 'y_lo', 'y_hi', 'z_lo', 'z_hi')
-PLANE_TOLERANCE = 1e-9   # x the longest bounding-box side: nodes this close to a box side lie on it
-POOR_RADIUS_RATIO = 0.1   # first value (igor3d_plan 7.2 T4): tune from the T5 measurements
+PLANE_TOLERANCE = 1e-9   # x the longest bounding-box side (plane_slack): nodes this close to a box side lie on it
+POOR_RADIUS_RATIO = 0.1   # first value: tune from the T5 measurements
 OBTUSE_DIHEDRAL_COS = -1e-6   # cos of a dihedral angle below this = obtuse (orthoschemes: exactly 90 deg at most)
 DEGENERATE_VOLUME_RTOL = 1e-13   # 6 |V| / longest edge^3 at or below which an element counts as flat (refused)
 ENTITY_MAJORITY = 0.9     # share of a mesher volume's elements whose common tag / membership it takes throughout
@@ -97,7 +97,7 @@ class TetrahedronMesh:
         """Bool per point (n, 3): inside the closed window (tolerance default PLANE_TOLERANCE x the longest side)."""
         points = np.asarray(points, dtype=np.float64)
         low, high = np.array(self.window[:3]), np.array(self.window[3:])
-        slack = PLANE_TOLERANCE * float((high - low).max()) if tolerance is None else float(tolerance)
+        slack = plane_slack(self.window) if tolerance is None else float(tolerance)
         return ((points >= low - slack) & (points <= high + slack)).all(axis=-1)
 
     def inset_centroids(self) -> np.ndarray:
@@ -108,9 +108,7 @@ class TetrahedronMesh:
 
     @cached_property
     def _inset_centroids(self) -> np.ndarray:
-        low, high = np.array(self.window[:3]), np.array(self.window[3:])
-        inset = PLANE_TOLERANCE * float((high - low).max())
-        centroids = np.clip(self.centroids(), low + inset, high - inset)
+        centroids = clamp_into_window_3d(self.centroids(), self.window)
         centroids.setflags(write=False)
         return centroids
 
@@ -135,6 +133,23 @@ class TetrahedronMesh:
         its elements set to that value throughout (centroid tests misread elements next to faceted curved
         interfaces); unchanged without entities."""
         return values if self.entities is None else entity_majority(values, self.entities, self._entity_groups)
+
+
+def clamp_into_window_3d(points, window) -> np.ndarray:
+    """Float64 copy of points (..., 3) clamped PLANE_TOLERANCE x the longest side inside the window (x0, y0, z0, x1,
+    y1, z1): the one rule that extends window values into the PML shell (inset_centroids: element memberships and
+    region tags; shell dofs), the 3D mesher.clamp_into_window."""
+    low, high = np.array(window[:3], dtype=np.float64), np.array(window[3:], dtype=np.float64)
+    inset = plane_slack(window)
+    return np.clip(np.asarray(points, dtype=np.float64), low + inset, high - inset)
+
+
+def plane_slack(box) -> float:
+    """PLANE_TOLERANCE x the longest side of box (lo..., hi...) (a 3D window / bounds or a 2D (x0, y0, x1, y1)): the
+    distance within which a node lies on a box or window plane."""
+    box = np.asarray(box, dtype=np.float64)
+    half = box.size // 2
+    return PLANE_TOLERANCE * float((box[half:] - box[:half]).max())
 
 
 def sliver_warnings(mesh) -> list:
@@ -181,7 +196,7 @@ def window_faces(mesh, face) -> np.ndarray:
     with all three nodes on that window plane (the PML shell's inner side when there is one)."""
     axis = 'xyz'.index(face[0])
     plane = mesh.window[axis + (3 if face.endswith('hi') else 0)]
-    slack = PLANE_TOLERANCE * float(np.max(np.array(mesh.window[3:]) - np.array(mesh.window[:3])))
+    slack = plane_slack(mesh.window)
     candidates = interface_faces(mesh, mesh.window_elements())
     on_plane = (np.abs(mesh.points[mesh.faces[candidates]][:, :, axis] - plane) <= slack).all(axis=1)
     return candidates[on_plane]
@@ -192,7 +207,7 @@ def periodic_node_partners(mesh, axis) -> np.ndarray:
     side at the same other two coordinates, -1 elsewhere; ValueError when the two sides' nodes do not match."""
     from scipy.spatial import cKDTree
     low, high = mesh.points.min(axis=0), mesh.points.max(axis=0)
-    slack = PLANE_TOLERANCE * float((high - low).max())
+    slack = plane_slack(np.r_[low, high])
     lo_nodes = np.flatnonzero(np.abs(mesh.points[:, axis] - low[axis]) <= slack)
     hi_nodes = np.flatnonzero(np.abs(mesh.points[:, axis] - high[axis]) <= slack)
     others = [other for other in range(3) if other != axis]
@@ -301,7 +316,7 @@ def build_tetrahedron_mesh(points, tets, window=None, region=None, region_names=
     face_elements[sorted_faces[first], 0] = owner[order[first]]
     face_elements[sorted_faces[~first], 1] = owner[order[~first]]
     low, high = points.min(axis=0), points.max(axis=0)
-    slack = PLANE_TOLERANCE * float((high - low).max())
+    slack = plane_slack(np.r_[low, high])
     boundary = np.flatnonzero(face_elements[:, 1] < 0)
     face_points = points[faces[boundary]]   # (k, 3, 3)
     face_tags = {}
@@ -329,10 +344,12 @@ def region_tags(points, solids) -> np.ndarray:
     return region
 
 
-def structured_box_mesh(x_edges, y_edges, z_edges, window=None, solids=()) -> TetrahedronMesh:
+def structured_box_mesh(x_edges, y_edges, z_edges, window=None) -> TetrahedronMesh:
     """Kuhn split (6 tetrahedra per cell along the monotone paths 000 -> 111, conforming between cells) of the tensor
     grid of these increasing edge coordinates [m]; window None = the grid box (cells outside a given window form a PML
-    shell); regions by `solids` (objects with name / contains) at centroids clamped into the window."""
+    shell). Untagged (region -1): callers tag at inset_centroids (model.tetrahedral_meshing). Every tetrahedron is an
+    orthoscheme (all dihedrals <= 90 deg at any aspect: no slivers, only the radius ratio drops) and periodic sides pair
+    under any grading."""
     axes = [np.asarray(edges, dtype=np.float64) for edges in (x_edges, y_edges, z_edges)]
     if any(edges.ndim != 1 or len(edges) < 2 or not (np.diff(edges) > 0.0).all() for edges in axes):
         raise ValueError('structured_box_mesh needs increasing 1D edge coordinates with >= 2 entries per axis')
@@ -356,9 +373,4 @@ def structured_box_mesh(x_edges, y_edges, z_edges, window=None, solids=()) -> Te
     tets = np.concatenate(tets)
     mesh_window = tuple(float(value) for value in ((*(edges[0] for edges in axes), *(edges[-1] for edges in axes))
                                                    if window is None else window))
-    region = None
-    if solids:
-        centroids = np.clip(points[tets].mean(axis=1), mesh_window[:3], mesh_window[3:])
-        region = region_tags(centroids, solids)
-    return build_tetrahedron_mesh(points, tets, window=mesh_window, region=region,
-                                  region_names=tuple(solid.name for solid in solids))
+    return build_tetrahedron_mesh(points, tets, window=mesh_window)

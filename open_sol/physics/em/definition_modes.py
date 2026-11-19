@@ -2,6 +2,7 @@
 dispersion features) on definition_common, with its templates and self-tests; definition.register calls register."""
 from ...core import time_estimate as te
 from ...core.memory_estimate import COMPLEX128_BYTES, FLOAT64_BYTES, MemoryEstimate
+from ...core.mirror import MIRROR_SIGNS
 from ...model.definition_helpers import eigen_factorization, eigen_role, selected_material_sets
 from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, MIXED_FACTORIZATIONS
@@ -29,7 +30,8 @@ from .selftests_em_modes import (STRIP_WAVEGUIDE_MODES_DESCRIPTION, STRIP_WAVEGU
                                  THERMO_OPTIC_PHASE_SHIFTER_DESCRIPTION, THERMO_OPTIC_PHASE_SHIFTER_LABEL,
                                  strip_waveguide_modes_spec, thermo_optic_phase_shifter_spec)
 from .solvers.modes_2d import (MODE_PERMITTIVITY_ARRAYS, MODE_PERMITTIVITY_SLOTS, MODE_POLARIZATION, ModePhysics,
-                               bend_factor_message, bend_overlap_result, mode_dispersion_result, mode_table_result)
+                               bend_factor_message, bend_overlap_result, bend_reference, mode_dispersion_result,
+                               mode_table_result)
 from .solvers.modes_fem import FEMModePhysics
 
 _TYPE_NAME = 'em_modes'
@@ -101,7 +103,8 @@ _SETTINGS = boundary_settings_params(_BC_HELP) + (
                '(outer side -x); x_ref = bend_reference_x; radius r = |R| s, s = 1 + (x - x_ref) / R. n_eff refers to '
                'the radius at x_ref: angular propagation constant (ring azimuthal order) nu = beta R = k0 n_eff R. '
                'Bend radiation toward the outer side shows as Im n_eff < 0 / loss_db_per_cm: keep a cpml face and '
-               'cladding there (validation warns otherwise). s > 0 over the whole grid incl. PML and a non-periodic x '
+               'cladding there (validation warns otherwise) and set pml_kappa_max 1 (the default 15 reflects grazing '
+               'radiation). s > 0 over the whole grid incl. PML and a non-periodic x '
                'axis are required (validation errors). Typical 5e-6 to 1e-4 m.',
           tip='Radius of a bend of the waveguide, in metres; 0 means straight.\n\n'
               'Positive values bend toward -x, so light leaks toward +x; keep an absorbing layer on that side.'),
@@ -185,6 +188,8 @@ _GYRATION_HELPS = {
         'modes (E along y), and only where the guide is not mirror symmetric across y (magneto-optic cladding on one '
         'side, or opposite magnetisations: push-pull). L_pi = pi / |delta_beta|. Ce:YIG at 1550 nm (library ce_yig, '
         'n ~ 2.2): |g| ~ 0.009 (g = theta_F lambda n / pi, theta_F ~ -4500 deg/cm); the sign is the material\'s. '
+        'Never subpixel-smoothed (cell-centre staircase): put magneto-optic interfaces on cell edges. The same guide '
+        'drawn in plane for em_fdfd_hz: (x, y, z) here = (z, y, -x) there, so gyration_x = -gyration_z. '
         'Allocated only when a material sets it. Validation errors: a y_lo / y_hi mirror face (its image reverses the '
         'magnetisation), a bend, a triangles mesh, any other EM type (em_fdfd_hz takes gyration_z).'),
     'gyration_y': (
@@ -313,7 +318,7 @@ def _validate_shg_overlap(vctx, physics_spec, feature_spec, values):
     settings = vctx.values(EM_MODES.settings, raw_settings(physics_spec))
     if settings is not None:
         mirrors = [face for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi')
-                   if settings.get(f'bc_{face}') in ('symmetric', 'antisymmetric')]
+                   if settings.get(f'bc_{face}') in MIRROR_SIGNS]
         if mirrors:
             issues.append(Issue('error', path, f"shg_overlap needs the whole cross-section, but {', '.join(mirrors)} "
                                                'is a mirror (the overlap integrand has no single parity); use pec, '
@@ -516,9 +521,8 @@ def _bend_issues(vctx, settings_values, path):
     issues = []
     size = vctx.domain_size
     if mesh_kind(vctx) == 'tensor' and size is not None:   # triangles: refused by _triangle_issues
-        reference_x = settings_values['bend_reference_x']
-        reference_x = 0.5 * size[0] if reference_x is None else reference_x
-        message = bend_factor_message(vctx.mesh.x_edges, radius, reference_x)
+        message = bend_factor_message(vctx.mesh.x_edges, radius,
+                                      bend_reference(settings_values['bend_reference_x'], size[0]))
         if message is not None:
             issues.append(Issue('error', path, message))
     outer_face = 'x_hi' if radius > 0.0 else 'x_lo'
@@ -605,7 +609,7 @@ def _gyration_issues(vctx, settings_values, path):
     set_names = [name for name in GYRATION_ARRAYS[MODE_POLARIZATION] if selected_material_sets(vctx, (name,))]
     for name, axis in (('gyration_x', 'y'), ('gyration_y', 'x')):
         faces = [face for face in (f'{axis}_lo', f'{axis}_hi')
-                 if name in set_names and settings_values[f'bc_{face}'] in ('symmetric', 'antisymmetric')]
+                 if name in set_names and settings_values[f'bc_{face}'] in MIRROR_SIGNS]
         if faces:
             issues.append(Issue('error', path, f"a material sets {name} while {' / '.join(faces)} is a mirror face: "
                                                f'the mirror image of a magnetisation along {name[-1]} is reversed, so '
@@ -778,8 +782,8 @@ EM_MODES = PhysicsType(
                   'shifted': SolverRole('general', 'sparse_direct', precisions=('mixed', 'double'))},
     subpixel_smoothing=True,
     conformal_boundaries=True,   # pec_domain cut cells (cross_section_modes pec_cuts; 2D Cartesian)
-    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp (solver_plan S6)
-    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem (mesh plan 2.6)
+    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp
+    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem
 )
 
 

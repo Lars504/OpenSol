@@ -1,8 +1,8 @@
-"""Linear elasticity on triangle meshes (mesh plan 2.7, stage T5): vector Lagrange P1 / P2 with interleaved dofs
+"""Linear elasticity on triangle meshes: vector Lagrange P1 / P2 with interleaved dofs
 (2 d + component), planar Voigt rows (xx, yy, g = 2 strain_xy) or axisymmetric (r, z) rows (rr, zz, tt, g) with the
 hoop strain u_r / r and whole-ring weights 2 pi r; stiffness, consistent mass, stress / body / edge loads and element
 strains (nodal recovery: fem.assembly.nodal_average), the strain source int phi beta . eps (thermoelastic damping).
-Prestress pieces (new_modules_plan K1): StressField, geometric
+Prestress pieces: StressField, geometric
 stiffness K_sigma, initial-stress force, stress sampling and the total-Lagrangian Green-Lagrange internal force /
 tangent (geometric nonlinearity, K6; Newton iterations on TangentAssembler, a fixed pattern). PML coordinate stretches (stretch= of the stiffness / mass / K_sigma, K5) and the
 azimuthal order m >= 1 form (U_r, U_z, U_phi) of the axisymmetric solid (K7). Host numpy, scipy inside functions (via
@@ -280,7 +280,7 @@ def element_strains(dofs, displacement, reference_points, *, axisymmetric=False)
     return values, strains
 
 
-# ---- prestress (new_modules_plan K1): stress fields, geometric stiffness, initial-stress force ----
+# ---- prestress: stress fields, geometric stiffness, initial-stress force ----
 @dataclass(frozen=True, eq=False)
 class StressField:
     """Stress [Pa] in the Voigt rows of its module, evaluated by the assemblers at their own points: prescribed + C
@@ -669,7 +669,7 @@ class TangentAssembler:
         return self.full(self.force_and_tangent(displacement, initial_stress)[1], copy_pattern=True)
 
 
-# ---- azimuthal order m >= 1 of the axisymmetric solid (new_modules_plan K7; module header) ----
+# ---- azimuthal order m >= 1 of the axisymmetric solid (module header) ----
 def _check_azimuthal_order(order) -> int:
     if isinstance(order, bool) or int(order) != order or int(order) < 1:
         raise ValueError(f'azimuthal order must be an integer >= 1 (0 is the axisymmetric form), got {order!r}')

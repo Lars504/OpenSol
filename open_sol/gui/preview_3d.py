@@ -6,7 +6,7 @@ from PySide6 import QtCore, QtWidgets
 from ..model.expressions import error_message
 from ..model.scene_3d import build_scene
 from ..viz.scene_figure import DEFAULT_VIEW, PLANE_CELLS, draw_scene_3d, new_scene_axes
-from .canvas import _CATEGORY_COLORS, _HIGHLIGHT_COLOR, _MATERIAL_COLORS
+from .canvas import CATEGORY_COLORS, HIGHLIGHT_COLOR, MATERIAL_COLORS
 from .forms import rich_tooltip, wrapped_label
 from .helpers import ask_save_path, remember_directory
 
@@ -144,8 +144,8 @@ class Preview3DPanel(QtWidgets.QWidget):
         cmap, symmetric = self._field_source.cut_plane_colors() if field_planes else (None, None)
         self._figure.clear()
         self._axes = new_scene_axes(self._figure)
-        draw_scene_3d(scene, self._axes, material_colors=_MATERIAL_COLORS, category_colors=_CATEGORY_COLORS,
-                      highlight_color=_HIGHLIGHT_COLOR, z_stretch=self._z_stretch(scene.size), view=self._view,
+        draw_scene_3d(scene, self._axes, material_colors=MATERIAL_COLORS, category_colors=CATEGORY_COLORS,
+                      highlight_color=HIGHLIGHT_COLOR, z_stretch=self._z_stretch(scene.size), view=self._view,
                       field_planes=field_planes, cmap=cmap, symmetric=symmetric)
         self._canvas.draw_idle()
         problems = scene.problems[:_PROBLEMS_SHOWN] + (['…'] if len(scene.problems) > _PROBLEMS_SHOWN else [])

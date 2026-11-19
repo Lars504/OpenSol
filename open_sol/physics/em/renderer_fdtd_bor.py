@@ -4,11 +4,11 @@ of the harmonic accumulator."""
 from ...core.backend import array_module_of
 from ...core.constants import DTYPE
 from ...core.renderer import FieldInfo
+from ...model.schema import FREQUENCY_DOMAIN_STUDY
 from .body_of_revolution import yee_centres
 from .renderer import _MODULUS_FIELD_INFOS, _EMRendererBase
 from .renderer_bor import BORRenderer
 
-_HARMONIC_STUDY = 'frequency_domain'   # FieldInfo.requires_study of the phasor fields
 # (name, label, unit, azimuthal profile of the standing wave: fdtd_bor module header)
 _COMPONENTS = (('er', 'E_r', 'V/m', 'cos'), ('ephi', 'E_phi', 'V/m', 'sin'), ('ez', 'E_z', 'V/m', 'cos'),
                ('hr', 'H_r', 'A/m', 'sin'), ('hphi', 'H_phi', 'A/m', 'cos'), ('hz', 'H_z', 'A/m', 'sin'))
@@ -25,11 +25,11 @@ def _field_infos():
     infos.update({name: BORRenderer.field_infos[name] for name in _MATERIAL_NAMES})
     for name, label, unit, _ in _COMPONENTS:
         infos[f'{name}_re'] = FieldInfo(f'{name}_re', f'Re {label} (phasor)', unit=unit, signed=True, cmap='RdBu_r',
-                                        requires_study=_HARMONIC_STUDY)
+                                        requires_study=FREQUENCY_DOMAIN_STUDY)
         infos[f'{name}_abs'] = FieldInfo(f'{name}_abs', f'|{label}| (phasor)', unit=unit, cmap='inferno',
-                                         requires_study=_HARMONIC_STUDY)
+                                         requires_study=FREQUENCY_DOMAIN_STUDY)
     infos['e_abs_harmonic'] = FieldInfo('e_abs_harmonic', '|E| (phasor)', unit='V/m', cmap='inferno',
-                                        requires_study=_HARMONIC_STUDY)
+                                        requires_study=FREQUENCY_DOMAIN_STUDY)
     return infos
 
 

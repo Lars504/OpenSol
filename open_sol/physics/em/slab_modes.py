@@ -24,6 +24,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
+from ...solvers.arpack_shift_invert import MAX_RESTARTS
 
 END_CONDITIONS = ('dirichlet', 'neumann', 'odd', 'periodic')
 _POLARIZATIONS = ('ez', 'hz')
@@ -32,7 +33,6 @@ _POLARIZATIONS = ('ez', 'hz')
 _END_DIAGONAL_FACTOR = {'dirichlet': 1.0, 'neumann': 0.0, 'odd': 2.0, 'periodic': 1.0}
 DENSE_COMPLEX_MAX_CELLS = 600   # larger complex systems use scipy shift-invert (dense numpy eig without scipy)
 _SHIFT_RELATIVE_OFFSET = 1e-6    # shift-invert sigma this far above (omega_t/C0)^2 max Re q: never exactly singular
-_ARPACK_MAX_RESTARTS = 300        # sparse eigs restarts, then the exact dense / inverse-iteration fallback below
 # Dense complex lines: numpy eigvals, then inverse iteration (scipy solve_banded, O(m) per step) for the ranked vectors
 # only, at least two steps (one passes the residual test while the vector still carries ~1e-9 of its neighbours); a
 # residual above _INVERSE_RESIDUAL ||T||_inf after _INVERSE_STEPS, or two eigenvalues closer than _DEGENERATE_GAP
@@ -306,7 +306,7 @@ def _complex_eigenpairs(diagonal, coupling, corner, n_wanted, shift, complex_str
                                          shape=(n_cells, n_cells)).tocsc()
         try:
             return _drop_pml_modes(*sparse_linalg.eigs(matrix, k=n_nearest, sigma=shift, which='LM',
-                                                       maxiter=_ARPACK_MAX_RESTARTS), complex_stretch)
+                                                       maxiter=MAX_RESTARTS), complex_stretch)
         except RuntimeError:   # ARPACK non-convergence or a singular factorisation: the dense solve is equivalent
             pass
     if corner == 0 and n_cells > 1 and _optional_scipy('linalg') is not None:

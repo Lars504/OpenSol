@@ -3,7 +3,8 @@ j eta) grad w) - rho_s omega^2 w = p on MembraneTriangleSystem (fem.harmonic.Sca
 penalty plate terms + port Dirichlet-to-Neumann terms per frequency), clamped / simply supported / mirror faces and outlines,
 pressure, line and point forces, ports, an optional fem.pml ring, Bloch cells (eigenfrequency); state per element
 (D12), display by fem_field."""
-# Bloch (periodic_x / _y, fem.dofs.bloch_masters): K and M of the free dofs (+ the bending seam terms) are reduced by
+# Bloch (periodic_x / _y, fem.dofs.bloch_masters on the ACTIVE DofMap): K and M of the free dofs (+ the bending seam
+# terms, added before the reduction: without them the hi-side slope is a hinge) are reduced by
 # the prolongation P to P^H K P, P^H M P (complex Hermitian with a complex phase: the 'general' resonance pencil; real
 # when every k L is a multiple of pi). Ports (ports.py; a plate face plate_ports.PlatePort, chosen in _new_system from D
 # at the port elements, its block on every P2 dof of those elements): the DtN block depends on omega, so it is kept
@@ -24,13 +25,12 @@ from ...fem.dofs import bloch_masters, bloch_prolongation, lagrange_dofs
 from ...fem.elements import lagrange_basis
 from ...fem.harmonic import HarmonicCondition, ScalarHarmonicSystem
 from ...fem.mesh import FACE_BITS
-from ...fem.mesher import MERGE_TOLERANCE
 from ...fem.pml import DEFAULT_PML_REFLECTION, pml_ring
 from ...fem.renderer import FEMFieldRenderer
 from .bending_fem import assemble_plate_bending, assemble_seam_bending, seam_phase
 from .plate_ports import PlatePort, link_twin_strips
-from .ports import (PORT_UNIFORM_RTOL, MembranePort, ProjectionRecord, folded_mode, mode_projector, port_edges,
-                    unfolded_modes)
+from .ports import (PORT_UNIFORM_RTOL, MembranePort, ProjectionRecord, folded_mode, guide_tolerance, mode_projector,
+                    port_edges, unfolded_modes)
 from .renderer import MEMBRANE_FIELD_INFOS, PHASOR_FIELD_NAMES, shown_label
 from .solver_common import MembraneBase, complex_amplitude, pencil_shift_solver
 
@@ -182,7 +182,7 @@ class MembraneFEMPhysics(MembraneBase):
         self._projections = {}      # mode_projection name -> (ModeProjector, ProjectionRecord per driven frequency)
         self._pressure = np.zeros(mesh.n_elements, dtype=np.complex128)   # [Pa] per window element
         self._centroid_basis = lagrange_basis(self.order, _CENTROID)[0][0]
-        self._device_phasor_maps = None   # (coefficients, full_dofs, device element dofs, basis, solved) of _publish
+        self._phasor_maps = None   # (coefficients, full_dofs, xp element dofs, basis, solved) of _publish
 
     def _field_shape(self) -> tuple:
         return (int(self.domain.mesh.n_elements),)
@@ -259,7 +259,7 @@ class MembraneFEMPhysics(MembraneBase):
         (0 x / 1 y): the walls lying on the window edge."""
         x0, y0, x1, y1 = self.domain.mesh.window
         low, high = (x0, x1) if cross_axis == 0 else (y0, y1)
-        tolerance = 1e3 * MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        tolerance = guide_tolerance(self.domain.mesh.window)
         axis = 'xy'[cross_axis]
         return (f'{axis}_lo' if abs(float(start) - low) <= tolerance else None,
                 f'{axis}_hi' if abs(float(end) - high) <= tolerance else None)
@@ -437,24 +437,17 @@ class MembraneFEMPhysics(MembraneBase):
     def _probe_value(self, probe, values) -> complex:
         return complex(values[probe.location])
 
-    def _element_phasors(self) -> np.ndarray:
-        """Complex128 w at every element's centroid (0 on holes and elements outside the solved region)."""
-        coefficients = self._read_coefficients()
-        solved = self._default_elements() & ~coefficients.hole
-        return np.where(solved, self.values[self.full_dofs.element_dofs] @ self._centroid_basis, 0.0)
-
     def _publish(self) -> None:
-        """MembraneBase._publish; on a cupy domain the centroid phasors are formed on the device (one upload of values,
-        the element maps kept until the coefficients or dofs change; a direct cuDSS solve's device values when kept,
-        else one upload of values): a sweep publishes each frequency its field policy asks for."""
+        """MembraneBase._publish, the complex w at every element's centroid (0 on holes and elements outside the solved
+        region) formed on the Domain's xp (cupy: the element maps kept until the coefficients or dofs change, a direct
+        cuDSS solve's device values when kept, else one upload of values): a sweep publishes each frequency its field
+        policy asks for."""
         xp = self.xp
-        if xp is np:
-            return super()._publish()
         coefficients = self._read_coefficients()
-        maps = self._device_phasor_maps
+        maps = self._phasor_maps
         if maps is None or maps[0] is not coefficients or maps[1] is not self.full_dofs:
             solved = self._default_elements() & ~coefficients.hole
-            maps = self._device_phasor_maps = (coefficients, self.full_dofs, xp.asarray(self.full_dofs.element_dofs),
+            maps = self._phasor_maps = (coefficients, self.full_dofs, xp.asarray(self.full_dofs.element_dofs),
                                                xp.asarray(self._centroid_basis, dtype=np.float64), xp.asarray(solved))
         _, _, element_dofs, basis, solved = maps
         values = self._device_values if self._device_values is not None else xp.asarray(self.values)

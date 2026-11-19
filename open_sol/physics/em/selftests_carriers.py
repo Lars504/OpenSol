@@ -34,7 +34,8 @@ _EPS_SILICON = 11.7                    # static relative permittivity (= library
 
 
 def plasma_dispersion(n0, electrons, holes):
-    """(eps_r, sigma_e [S/m]) of silicon of index n0 with electron / hole densities [m^-3] (numbers or numpy arrays)."""
+    """(eps_r, sigma_e [S/m]) of silicon of index n0 with electron / hole densities [m^-3] (numbers or numpy arrays):
+    the numpy twin of plasma_dispersion_expressions (the checks compare the two; keep them in step)."""
     coefficients = SOREF_BENNETT_1550
     electrons_cm, holes_cm = 1e-6 * electrons, 1e-6 * holes
     index = (n0 - coefficients['electron_index'] * electrons_cm
@@ -68,7 +69,8 @@ def plasma_dispersion_expressions(n0, electrons=None, holes=None):
 # electrostatic potential, so the neutral regions stay field-free). Carriers: prescribed = 0 inside the depletion
 # region, the doping outside; from V = Boltzmann with the quasi-Fermi level of each side flat at its contact (reverse
 # bias), p = N_A exp(min(-V, 0) / V_T), n = N_D exp(min(V - V_bi - V_R, 0) / V_T): the doping in the neutral regions,
-# the Debye tails of the depletion edges inside (the V_T -> 0 limit is the prescribed profile).
+# the Debye tails of the depletion edges inside (the V_T -> 0 limit is the prescribed profile). The space charge stays
+# prescribed: self-consistent carriers need Newton (a Picard iteration on exp(V / V_T) diverges).
 _ACCEPTOR_CHARGE = 'where(x >= x_j - x_p, -q_e * N_A, 0)'   # C/m^3 on the p objects
 _DONOR_CHARGE = 'where(x < x_j + x_n, q_e * N_D, 0)'        # C/m^3 on the n objects
 _PRESCRIBED_CARRIERS = {'electrons': 'where(x < x_j + x_n, 0, N_D)', 'holes': 'where(x >= x_j - x_p, 0, N_A)'}

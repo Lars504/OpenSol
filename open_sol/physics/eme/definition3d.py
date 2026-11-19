@@ -25,17 +25,16 @@ from ..em.materials import EM_MATERIAL_SCHEMAS
 from ..em.memory_estimates import host_factor_items
 from ..em3d.boundaries3d import BoundaryConfig3D
 from .definition import (COMPLEX_EPS_HELP, OBJECTIVE_FEATURE, PORTS_FEATURE, SCALAR_OUTPUTS_HELP,
-                         SECTION_TABLE_DESCRIPTION, SIGMA_M_HELP, TRUNCATED_BASIS_HELP, adjoint_time_estimate,
-                         apply_ports, apply_section_table, bend_feature, follow_wavelength_setting, length_sweep_feature,
-                         length_sweep_host_items, lossy_materials, other_em_issues, periodic_feature, physics_counter,
-                         port_params,
-                         scalar_outputs, shared_time_estimate, validate_ports)
+                         SECTION_TABLE_DESCRIPTION, SIGMA_M_HELP, STATIONARY_STUDY, TRUNCATED_BASIS_HELP,
+                         adjoint_time_estimate, apply_ports, apply_section_table, bend_feature,
+                         follow_wavelength_setting, length_sweep_feature, length_sweep_host_items, lossy_materials,
+                         other_em_issues, periodic_feature, physics_counter, port_params, scalar_outputs,
+                         shared_time_estimate, validate_ports)
 from .renderer3d import EME_3D_FIELD_INFOS
 from .solver import MODE_CACHE_BYTES, EME_PERMITTIVITY_ARRAYS, EME_PERMITTIVITY_SLOTS, ports_result, section_table_result
 from .solver3d import FIELD_BLOCK_SLICES, EMEPhysics3D
 
 TYPE_NAME_3D = 'em_eme_3d'
-_STATIONARY_STUDY = 'stationary'
 _PORT_FACE_TYPE = 'pec'          # z faces of the BoundaryConfig3D: ports, never read, no padding
 
 # ---- settings ----
@@ -436,8 +435,8 @@ EM_EME_3D = PhysicsType(
     state_fields=tuple(EME_3D_FIELD_INFOS[name] for name in EME_PERMITTIVITY_ARRAYS),
     output_fields=tuple(EME_3D_FIELD_INFOS.values()),
     source_slots=source_slot_docs(EME_PERMITTIVITY_SLOTS),
-    supported_studies=(_STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY),
-    default_study={'type': _STATIONARY_STUDY},
+    supported_studies=(STATIONARY_STUDY, FREQUENCY_DOMAIN_STUDY),
+    default_study={'type': STATIONARY_STUDY},
     uses_dispersion=True,
     create=_create,
     domain_requirements=_domain_requirements,
@@ -449,5 +448,5 @@ EM_EME_3D = PhysicsType(
     scalar_outputs_help=SCALAR_OUTPUTS_HELP,
     dimensions=(3,),
     solver_roles={'eigen': eigen_role()},
-    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp (solver_plan S6)
+    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp
 )

@@ -1,4 +1,4 @@
-"""Model-layer definition of the 'membrane' physics type (new_modules_plan S4 / S7: a tensioned film, optionally with
+"""Model-layer definition of the 'membrane' physics type (a tensioned film, optionally with
 plate bending, on triangle meshes and in 1D models; settings, tension / areal density / loss / bending vocabulary,
 clamps, supports, loads, probes, ports, mode projections, the resonance table, PML padding, Bloch cells, validation,
 memory and run-time estimates) plus its template and selftest loader."""
@@ -10,12 +10,13 @@ import numpy as np
 
 from ...core import time_estimate as te
 from ...core.constants import FACES
-from ...core.harmonic_probe import harmonic_probe_result
+from ...core.harmonic_probe import harmonic_probe_result, phasor_series
 from ...core.mirror import mirror_faces
 from ...core.memory_estimate import (COMPLEX128_BYTES, COMPLEX128_CSR_ENTRY_BYTES, FLOAT32_BYTES, MemoryEstimate,
                                      host_lu_bytes, window_cell_count)
 from ...fem.diffusion import FEM_FILL_FACTOR, lagrange_entries_per_dof
 from ...fem.harmonic_resonances import resonance_table
+from ...fem.mesher import window_inset
 from ...fem.pml import DEFAULT_PML_REFLECTION
 from ...fem.squeeze_film import GAS_TABLE_COLUMNS, GAS_TABLE_UNITS, gas_damping_totals
 from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZATION_SETTING,
@@ -26,8 +27,8 @@ from ...model.definition_helpers import (DIFFUSION_DIRECT_BACK_ENDS, DISCRETIZAT
                                          reduced_sweep_memory_items, reports_model_checks, resolved_back_end,
                                          selected_material_data, squeeze_film_gas_issues, validate_points_inside)
 from ...model.geometry import expand_entities
-from ...model.schema import (DomainRequirements, FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path,
-                             resolve_values, solver_backend)
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, DomainRequirements, FeatureType, Issue,
+                             Param, PhysicsType, SolverRole, feature_path, resolve_values, solver_backend)
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, DEVICE_PENCIL_MIN_ENTRIES, MIXED_EIGEN_MIN_UNKNOWNS,
                                             arnoldi_basis_bytes, arnoldi_basis_size)
 from ...solvers.cudss_factor import operator_copy_bytes, solve_buffer_bytes, solve_peak_bytes
@@ -45,8 +46,6 @@ from .solver_common import DISCRETIZATIONS, ResonanceTableMonitor
 from .squeeze_film import MEMBRANE_VENT_CHOICES
 
 MEMBRANE_TYPE_NAME = 'membrane'   # = selftests._MEMBRANE_TYPE (selftests never import this)
-EIGENFREQUENCY_STUDY = 'eigenfrequency'
-FREQUENCY_RESPONSE_STUDY = 'frequency_response'
 _GRIDS = ('tensor', 'triangles')   # tensor = 1D models only (validation refuses a 2D tensor mesh)
 DEFAULT_PML_CELLS = 8
 _PML_FACE_SETTINGS = tuple(f'pml_{face}' for face in FACES)
@@ -239,7 +238,9 @@ _MATERIAL_PROPERTIES = (
                        'penalty form (discretization quadratic; a PML stretches it too; ports take numeric plate strip '
                        'modes; mode_projection is refused). Then clamped also holds dw/dn = 0, simply_supported and '
                        'antisymmetry hold w only, symmetry the slope only. The clamped boundary layer sqrt(D / T) (0.38 '
-                       'um for the example at 80 N/m) must be resolved near clamps.',
+                       'um for the example at 80 N/m) must be resolved near clamps; even unresolved it moves a clamped '
+                       'wall inward by sqrt(D / T), so a tiny D is no film limit there (D = 1e-12 N m at 80 N/m '
+                       'lowered the transmission through a 44 um barrier near cut-off by 17 %).',
                        'Bending stiffness of the film: Young modulus times thickness cubed over 12 (1 - Poisson ratio '
                        'squared).\n\nEmpty means a membrane without bending.'),
     _material_property('plate_poisson_ratio', 'Plate Poisson ratio', '1', None,
@@ -382,7 +383,7 @@ def _apply_mode_projection(ctx, solver, feature_spec, values, selection):
     x0, y0, x1, y1 = ctx.domain.mesh.window
     axis = _AXES.index(values['guide_axis'])
     along, cross = ((x0, x1), (y0, y1)) if axis == 0 else ((y0, y1), (x0, x1))
-    inset = 1e-9 * (along[1] - along[0])   # sample points on the window edge stay inside the mesh
+    inset = window_inset(ctx.domain.mesh.window)   # sample points on the window edge stay inside the mesh
 
     def chosen(name, default):
         return float(default) if values[name] is None else float(values[name])
@@ -400,10 +401,7 @@ def _projection_series(projection) -> tuple:
     """({mode_<n>_re / _im / _abs / _phase: real array}, units) of complex projections (mode_count, ...) [m]."""
     series, units = {}, {}
     for number, values in enumerate(projection, start=1):
-        for part, data in (('re', values.real), ('im', values.imag), ('abs', np.abs(values)),
-                           ('phase', np.angle(values))):
-            series[f'mode_{number}_{part}'] = np.ascontiguousarray(data)
-            units[f'mode_{number}_{part}'] = 'rad' if part == 'phase' else 'm'
+        phasor_series(f'mode_{number}', values, 'm', series, units)
     return series, units
 
 
@@ -829,6 +827,8 @@ def _bending_issues(vctx, physics_spec, settings_values, path, one_d) -> list:
         issues.append(Issue('error', path, f'bending_stiffness (material(s) {names}) needs discretization quadratic (the '
                                            'interior penalty plate form uses second derivatives)'))
     cells, layers = int(settings_values.get('pml_cells') or DEFAULT_PML_CELLS), _ring_layers(vctx, physics_spec)
+    # the stretch targets the propagating plate wave; its evanescent partner only gains a phase, so the ring must
+    # resolve it per cell (a weaker stretch reflected more)
     if _pml_faces(settings_values) and layers is not None and layers < cells:
         issues.append(Issue('warning', path, f'bending_stiffness (material(s) {names}) with a PML: the mesh ring has '
                                              f'pml_layers {layers} element layers across pml_cells {cells} x dx, so they '
@@ -1081,13 +1081,15 @@ PLATE_PORT_ENTRY_FACTOR = 4.0
 # dense work per port and frequency / (2 n)^3 in real flops: the complex128 companion pencil goes through zggev
 # (Hessenberg-triangular reduction + QZ with the transforms accumulated ~66 N^3 complex operations, Golub & Van Loan
 # 7.7; eigenvectors included; one complex operation ~4 real flops; 30 N^3 is the eigenvalues-only real count), then
-# lu_factor of the traces (8 / 3 x 4), the N-column lu_solve for Z (8) and the Pi^T Z Pi block (k ~ N: 8 x 2)
+# lu_factor of the traces (8 / 3 x 4), the N-column lu_solve for Z (8) and the Pi^T Z Pi block (k ~ N: 8 x 2); a lower
+# bound (QZ does not reach the gemm rate)
 PLATE_STRIP_EIG_FLOPS = 4.0 * 66.0
 PLATE_STRIP_DTN_FLOPS = 4.0 * 8.0 / 3.0 + 8.0 + 16.0
 
 
 def _plate(context) -> bool:
-    """A selected material sets bending_stiffness (the plate elements)."""
+    """A selected material sets bending_stiffness (the plate elements). Estimates only: a literal 0 counts as unset
+    here, while the solver (MembraneBase.prepare) and validation (_materials_setting) switch on any value."""
     return bool(context.material_sets(BENDING_ARRAY))
 
 
@@ -1106,7 +1108,8 @@ def _discretisation(settings_values, mesh, context):
         entries = lagrange_entries_per_dof(mesh, order) * dofs * (BENDING_ENTRY_FACTOR if plate else 1.0)
         entries += (PORT_ENTRIES_PER_NODE * (PLATE_PORT_ENTRY_FACTOR if plate else 1.0) * int(mesh.n_nodes)
                     * _feature_count(context, 'port'))
-        return dofs, int(mesh.n_elements), int(entries), int(FEM_FILL_FACTOR * host_lu_bytes(dofs)), True
+        fill = FEM_FILL_FACTOR * (BENDING_SEPARATOR_WIDTH ** 2 if plate else 1.0)   # as _time_estimate's solve fill
+        return dofs, int(mesh.n_elements), int(entries), int(fill * host_lu_bytes(dofs)), True
     cells = window_cell_count(mesh)
     if plate:
         dofs = 2 * (cells + 1)
@@ -1646,8 +1649,9 @@ _FEATURES = (
                              'mode shape (peak 1 m), p = 0 on vented edges, no flux on sealed ones. Columns per mode: '
                              f'resonance_number, frequency [Hz], effective_mass [kg], {_GAS_COLUMNS_TEXT}; extras area '
                              '[m^2], gap [m], film_elements, vent_edges. Complex modes (PML, loss) use Re omega and '
-                             'm_eff = Re(w^H M w). Refused: Bloch cells, a footprint reaching a PML ring (build '
-                             'error), 1D models.'),
+                             'm_eff = Re(w^H M w). On a half model (mirror faces) c, k and m_eff are those of the '
+                             'drawn part, not doubled (gamma_gas and q_gas are unchanged). Refused: Bloch cells, a '
+                             'footprint reaching a PML ring (build error), 1D models.'),
                 apply=_apply_squeeze_film, result=_squeeze_film_result, validate=_validate_squeeze_film,
                 memory_estimate=_squeeze_film_memory, grids=('triangles',)),
     FeatureType('port', 'Port', 'boundary_condition', 'boundary', params=_PORT_PARAMS, max_entities=1,

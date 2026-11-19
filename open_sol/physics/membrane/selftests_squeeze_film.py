@@ -1,4 +1,4 @@
-"""Self-test of the membrane squeeze_film_damping feature (experiment plan F4): the clamped drum's (0, 1) mode over a
+"""Self-test of the membrane squeeze_film_damping feature: the clamped drum's (0, 1) mode over a
 vented gas gap against the closed-form Reynolds pressure, full disc and a half model with a sealed symmetry face."""
 import math
 
@@ -14,7 +14,7 @@ _AMBIENT_PRESSURE = 101325.0    # Pa
 # incompressible gap 2 um; compressible 15 um: squeeze term 12 mu omega / (H^2 p_a) ~ 1.1 (j01 / R)^2 at f_01 = 435 kHz
 _FILMS = {'film_incompressible': (2e-6, 0.0, 'open_edges'), 'film_vented_all': (2e-6, 0.0, 'all'),
           'film_compressible': (15e-6, _AMBIENT_PRESSURE, 'open_edges')}
-_DRUM_TOLERANCE = 1e-3          # c, k, gamma, m_eff vs the closed form on P2 h = R / 20 (plan F4; first estimate)
+_DRUM_TOLERANCE = 1e-3          # c, k, gamma, m_eff vs the closed form on P2 h = R / 20 (first estimate)
 _SAME_TOLERANCE = 1e-10         # open_edges = all on the drum (its rim is a hole outline), table totals = film sums
 
 

@@ -1,4 +1,4 @@
-"""Self-tests of the plate PML (experiment plan F1): a simply supported plate strip guide ending in a PML (two-wave fit,
+"""Self-tests of the plate PML: a simply supported plate strip guide ending in a PML (two-wave fit,
 analytic plate dispersion) and the fem.pml stretch derivative against central differences."""
 import math
 from dataclasses import replace

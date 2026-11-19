@@ -1,4 +1,4 @@
-"""Body-of-revolution (BOR) FDFD of the (r, z) half plane, fields ~ exp(j omega t - j m phi) (symmetry plan 2.3):
+"""Body-of-revolution (BOR) FDFD of the (r, z) half plane, fields ~ exp(j omega t - j m phi):
 full-vector finite-integration Yee operator, driven solve and shift-invert resonances; host numpy / scipy only."""
 # Grid: x = r, y = z. The axis r = 0 is the lo edge of grid cell 0 (no PML side there); edge k = lo edge of cell k,
 # edge n = the hi grid edge. Unknowns (3D cylindrical Yee cell projected, as cross_section_modes with x -> r, y -> z,
@@ -621,7 +621,9 @@ def _r_face_power(system, fields, edge, column, cells, edge_weights):
 def line_flux(system, fields, normal, line_cell, cells):
     """Power [W] through the hi face of line cell `line_cell` along `normal` 'z' (an annulus over r cells [lo, hi))
     or 'r' (a cylinder over z cells [lo, hi)), > 0 toward +normal: E of the line cells, H on the face (the exactly
-    conserved pairing; span ends by their share); ValueError when the face is the outer grid edge."""
+    conserved pairing; span ends by their share); ValueError when the face is the outer grid edge. A 'z' line across
+    a conductor surface should start on the axis: the surface E_r's dual is half in the PEC cell, which an annular
+    line's span end drops."""
     if normal not in ('z', 'r'):
         raise ValueError(f"line_flux normal must be 'z' or 'r', got {normal!r}")
     n_normal = system.shape[1] if normal == 'z' else system.shape[0]

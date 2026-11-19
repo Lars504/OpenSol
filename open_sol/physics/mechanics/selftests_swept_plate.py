@@ -1,4 +1,4 @@
-"""Model-run self-test of solid_mechanics_3d on swept prism layers (experiment plan D5): the first mode of a clamped
+"""Model-run self-test of solid_mechanics_3d on swept prism layers: the first mode of a clamped
 square plate meshed with 3 P2 layers across its thickness against the Kirchhoff clamped-plate value. definition3d
 registers it."""
 import math

@@ -1,4 +1,4 @@
-"""Cross-section eigenmodes on a TriangleDomain (em_modes on a 'triangles' mesh, mesh plan 2.6): FEMModePhysics solves
+"""Cross-section eigenmodes on a TriangleDomain (em_modes on a 'triangles' mesh): FEMModePhysics solves
 physics/em/fem_modes on the host and exposes the selected mode per element (state) and as nodal / per-element
 fem_field coefficients (renderer, Session); the ModePhysics table / dispersion monitors record every solve."""
 import math
@@ -87,7 +87,7 @@ class FEMModePhysics(_ModeStudyMixin, TriangleEMPhysics):
                 f'{info["pml_modes_dropped"]} PML modes dropped)')
 
     def error_indicator(self):
-        """eta^2 per element (float64 (n_elements,)) of the shown mode for mesh refinement (S7.7, mesh plan A3):
+        """eta^2 per element (float64 (n_elements,)) of the shown mode for mesh refinement (S7.7):
         fem_modes.mode_error_indicator; ValueError before a solve or without modes."""
         if self.selected_mode is None:
             raise ValueError('em_modes on triangles: no solved mode to estimate the mesh error of')

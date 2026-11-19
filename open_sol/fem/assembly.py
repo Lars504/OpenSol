@@ -1,4 +1,4 @@
-"""Vectorised FEM assembly (mesh plan 2.4): element blocks by batched matmul / einsum over quadrature points in element
+"""Vectorised FEM assembly: element blocks by batched matmul / einsum over quadrature points in element
 chunks, COO -> scipy CSR; Lagrange stiffness / mass / load, Nedelec curl-curl / mass / gradient coupling, edge (Robin / flux) terms,
 Dirichlet elimination with lifting, integrals and L2 errors. Host numpy, scipy inside functions.
 

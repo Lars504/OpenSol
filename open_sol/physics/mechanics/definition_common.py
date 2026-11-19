@@ -5,12 +5,12 @@ thermoelastic_damping features."""
 from dataclasses import replace
 
 from ...core.memory_estimate import MemoryEstimate, host_real_lu_bytes
-from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, optional_material_param,
-                                         reports_model_checks)
-from ...model.expressions import TIME_NAMES, ExpressionError, evaluate_scalar, referenced_names
+from ...model.definition_helpers import (conducting_fraction, eigen_search, evaluates_to, material_follows_state,
+                                         optional_material_param, reports_model_checks)
+from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
-from ...model.schema import (FREE_MESH_KINDS, FeatureType, Issue, Param, feature_path, resolve_values,
-                             state_field_names)
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
+                             STATIONARY_STUDY, FeatureType, Issue, Param, feature_path, resolve_values)
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
@@ -22,11 +22,8 @@ from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', 'displacement', 'fixed_domain', 'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
-EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
-OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
-FREQUENCY_RESPONSE_STUDY_NAME = 'frequency_response'   # = model.study_frequency_response.STUDY_NAME
-BACKGROUND_STUDY = 'stationary'           # the background study of the modal / response studies
-PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY_NAME, OPTOMECHANICS_STUDY)   # read stress_stiffening
+BACKGROUND_STUDY = STATIONARY_STUDY       # the background study of the modal / response studies
+PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)   # read stress_stiffening
 MODAL_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # studies running solve_eigenfrequencies
 
 
@@ -330,7 +327,7 @@ STRESS_STIFFENING_PARAM = Param(
 
 
 _NONLINEAR_VISIBLE = (('geometric_nonlinearity', (True,)),)
-GEOMETRIC_NONLINEARITY_PARAMS = (   # new_modules_plan K6 (solid_mechanics_3d on tetrahedra, solid_mechanics on triangles)
+GEOMETRIC_NONLINEARITY_PARAMS = (   # solid_mechanics_3d on tetrahedra, solid_mechanics on triangles
     Param('geometric_nonlinearity', 'bool', False, label='Geometric nonlinearity',
           help='Triangle and tetrahedron meshes: large deflections and rotations in every static solve (stationary, '
                'time_dependent, the static state of eigenfrequency / frequency_response). Total-Lagrangian Saint '
@@ -465,7 +462,7 @@ def free_body_allowed(study_type, settings_values) -> bool:
     """A free body may be solved (triangles, tetrahedra): the eigenfrequency / optomechanics study at target_frequency >
     0 (its 0 Hz modes dropped) or the frequency_response study (K - omega^2 M is regular at f > 0)."""
     return bool((study_type in MODAL_STUDIES and settings_values.get('target_frequency'))
-                or study_type == FREQUENCY_RESPONSE_STUDY_NAME)
+                or study_type == FREQUENCY_RESPONSE_STUDY)
 
 
 def nonlinear_state_infos(vctx, path, static_refused) -> list:
@@ -474,7 +471,7 @@ def nonlinear_state_infos(vctx, path, static_refused) -> list:
     if static_refused:
         return [Issue('info', path, f'geometric_nonlinearity: {static_refused} has no static solve, so the pencil takes '
                                     'K + K_sigma of the initial stress (the tangent at u = 0)')]
-    if vctx.study_type == FREQUENCY_RESPONSE_STUDY_NAME:
+    if vctx.study_type == FREQUENCY_RESPONSE_STUDY:
         return [Issue('info', path, 'geometric_nonlinearity: the frequency response stays linear (small vibrations) '
                                     'about the nonlinear static state of the initial stress and thermal strain alone; '
                                     'the loads are its harmonic drive')]
@@ -846,7 +843,7 @@ def thermoelastic_damping_feature(grids, where_text):
         apply=_apply_thermoelastic_damping, result=_thermoelastic_damping_result,
         validate=_validate_thermoelastic_damping, memory_estimate=_thermoelastic_damping_memory, grids=grids)
 
-# ---- frequency_probe feature and complex reactions (new_modules_plan K4; triangle / tetrahedron meshes) ----
+# ---- frequency_probe feature and complex reactions (triangle / tetrahedron meshes) ----
 def _frequency_probe_result(session, solver, record, feature_spec, options):
     from ...core.harmonic_probe import harmonic_probe_result   # lazy: core.harmonic_probe imports core.backend (cupy)
     return harmonic_probe_result(record)
@@ -856,9 +853,9 @@ def _validate_frequency_probe(vctx, physics_spec, feature_spec, values):
     """The point inside the domain; a warning outside the frequency_response study (no frequency is recorded)."""
     from ...model.definition_helpers import validate_points_inside
     issues = list(validate_points_inside(vctx, physics_spec, feature_spec, values))
-    if vctx.study_type != FREQUENCY_RESPONSE_STUDY_NAME:
+    if vctx.study_type != FREQUENCY_RESPONSE_STUDY:
         issues.append(Issue('warning', feature_path(physics_spec, feature_spec),
-                            f'frequency_probe is filled only by a {FREQUENCY_RESPONSE_STUDY_NAME} study (this model '
+                            f'frequency_probe is filled only by a {FREQUENCY_RESPONSE_STUDY} study (this model '
                             f'runs {vctx.study_type}): its result will be missing'))
     return issues
 
@@ -903,21 +900,9 @@ def support_result(solver, region, axes, unit):
 
 
 def stiffness_follows_state(context):
-    """True when a spec material's youngs_modulus or poisson_ratio references a physics state field or time t (the
-    operator is re-assembled during the run)."""
-    state_names = frozenset(state_field_names(context.spec, context.registry)) | TIME_NAMES
-    for material in context.spec.materials:
-        properties = material.properties if isinstance(material.properties, dict) else {}
-        for name in STIFFNESS_ARRAYS:
-            value = properties.get(name)
-            if not isinstance(value, str):
-                continue
-            try:
-                if not referenced_names(value).isdisjoint(state_names):
-                    return True
-            except ExpressionError:   # reported by validate
-                continue
-    return False
+    """True when a spec material's stiffness (youngs_modulus, poisson_ratio, c_ij) references a physics state field or
+    time t (the operator is re-assembled during the run)."""
+    return material_follows_state(context, STIFFNESS_ARRAYS)
 
 
 # ---- reused sweep builds (SweepSpec.reuse_build; model.sweep_reuse) ----

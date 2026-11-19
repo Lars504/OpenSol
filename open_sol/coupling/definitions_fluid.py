@@ -40,9 +40,12 @@ FLUID_HEAT_CONVECTION = CouplingType(
                 'outer faces only where heat holds a temperature (the inflow temperature: set a Temperature condition '
                 'on the inflow face), other outer faces are zero-gradient outlets. It vanishes for uniform T, so '
                 'energy is conserved only to the accuracy of the flow. Explicit (lagged): a stationary study iterates '
-                'heat and this coupling (Picard gain ~ the Peclet number rho cp U L / k over the heat diffusion length '
-                '/ pi; use a study relaxation < 1 if it oscillates or diverges at Pe >~ 3); transient heat steps with '
-                'the source of the previous state (stable for u dt / dx < ~1).',
+                'heat and this coupling, converging only while transverse conduction damps every mode (temperature '
+                'held on the walls: Picard gain ~ Pe / (2 pi), Pe = rho cp U H / k over the channel height H). With '
+                'only the inflow face holding T the axial mode has gain ~ 2 Pe L / (pi H) over the length L and no '
+                'study relaxation helps: march a time_dependent study instead (steady flow, transient heat, a few '
+                'flow-through times). Transient heat steps with the source of the previous state (stable for u dt / '
+                'dx < ~1).',
     create=_create_convection,
     validate=_validate_convection,
     writes=writes_heat_source,

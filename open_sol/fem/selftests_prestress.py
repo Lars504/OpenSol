@@ -1,4 +1,4 @@
-"""Self-tests of the prestress pieces of fem.elasticity / fem.elasticity3d (new_modules_plan K1; CPU, specs() empty,
+"""Self-tests of the prestress pieces of fem.elasticity / fem.elasticity3d (CPU, specs() empty,
 check({}) on structured meshes, no gmsh): geometric stiffness identities, initial-stress force patch tests, stress
 sampling, Green-Lagrange internal force / tangent, and tensioned-string frequencies of (K + K_sigma, M). error =
 number of failed sub-checks (tolerance 0), values in details."""

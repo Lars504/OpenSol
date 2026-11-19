@@ -1,4 +1,4 @@
-"""Element stiffness of the 2D solid (piezoelectric plan stage 5): the isotropic Lame pair or the anisotropic c_ij
+"""Element stiffness of the 2D solid: the isotropic Lame pair or the anisotropic c_ij
 material arrays (per component, NaN = the isotropic value), reduced to the operator coefficients of each out-of-plane
 condition, the thermal stress per kelvin and the stress of a strain; elementwise on the solve backend (numpy / cupy)."""
 # Voigt order of the model axes (1 xx, 2 yy, 3 zz, 6 xy; engineering shear g = 2 strain_xy): T_I = c_IJ S_J - beta_I dT

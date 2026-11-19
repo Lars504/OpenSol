@@ -1,4 +1,4 @@
-"""Run backends (solver_plan S6): 'gpu' = cupy + cupyx.scipy.sparse, 'cpu' = numpy + scipy.sparse. The only module
+"""Run backends: 'gpu' = cupy + cupyx.scipy.sparse, 'cpu' = numpy + scipy.sparse. The only module
 importing cupy at module level: `cp` / `cupyx_sparse` / `cupyx_ndimage` are cupy's modules, or stand-ins when cupy
 does not import (kernel objects build, every other use raises BackendUnavailable). No driver call at import."""
 import functools
@@ -159,6 +159,15 @@ def array_module_of(array):
 def backend_of(array) -> str:
     """'gpu' for a cupy array, else 'cpu'."""
     return 'gpu' if array_module_of(array) is not np else 'cpu'
+
+
+def check_backend_array(array, shape, dtype, what, *, xp) -> None:
+    """TypeError unless `array` is an `xp` (the run backend's array module: pass `domain.xp`) `dtype` array of exactly
+    `shape` (no broadcast, no cast): the check of masks and slot arrays a solver keeps or reads on its own backend."""
+    if not isinstance(array, xp.ndarray) or array.dtype != dtype or array.shape != tuple(shape):
+        raise TypeError(f"{what} must be a {getattr(xp, '__name__', xp)} {np.dtype(dtype).name} array of shape "
+                        f"{tuple(shape)}, got {type(array).__name__} {getattr(array, 'dtype', '')} "
+                        f"{getattr(array, 'shape', '')}")
 
 
 def to_host(array):

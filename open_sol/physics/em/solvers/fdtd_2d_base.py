@@ -4,7 +4,7 @@ import math
 import warnings
 
 import numpy as np
-from ....core.backend import cp, host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
 
 from ....core.constants import DTYPE, MU0
 from ....core.monitors import FieldProbe, FieldProbeRows
@@ -34,15 +34,6 @@ def _bounding_box(weight):
         return None
     columns = np.flatnonzero(to_host(positive.any(axis=0)))
     return (slice(int(rows[0]), int(rows[-1]) + 1), slice(int(columns[0]), int(columns[-1]) + 1))
-
-
-def _check_cell_array(array, shape, dtype, what, xp=cp):
-    """TypeError unless `array` is an `xp` (cupy default, numpy on the cpu backend) `dtype` array of exactly the cell
-    grid `shape` (no broadcast, no cast)."""
-    if not isinstance(array, xp.ndarray) or array.dtype != dtype or array.shape != shape:
-        raise TypeError(f"{what} must be a {getattr(xp, '__name__', 'cupy')} {np.dtype(dtype).name} array of shape "
-                        f"{shape}, got {type(array).__name__} {getattr(array, 'dtype', '')} "
-                        f"{getattr(array, 'shape', '')}")
 
 
 def record_dispersive_region(regions, pole, mask):
@@ -112,10 +103,11 @@ class _FieldSet:
 
 class _YeeEngine2DBase(PhysicsSolver):
     """Shared part of the 2D FDTD engines: curl spacings, launch scalars, field sets (Bloch), da / db, solver contract,
-    J.E window. Subclasses set polarization, the coefficient material sets, _rebuild_e_coefficients and
-    _accumulate_e_new_half. Field dtype (stepper precision) = the fields' (float32 single, float64 double): every
-    field-side array (coefficients, spacings, CPML, poles) and kernel scalar is in it; materials, PEC keep masks and
-    q_accum stay float32."""
+    J.E window. Subclasses set polarization, _E_COEFFICIENT_MATERIALS / _E_COMPONENTS, _rebuild_e_coefficients,
+    _update_e_set and _accumulate_e_new_half, plus the hooks _permittivity_written / _nonlinear_added / _sigma_e_changed
+    where they differ (never a copy of the shared code). Field dtype (stepper precision) = the fields' (float32 single,
+    float64 double): every field-side array (coefficients, spacings, CPML, poles) and kernel scalar is in it;
+    materials, PEC keep masks and q_accum stay float32."""
 
     name = "em"
     polarization = None
@@ -255,8 +247,8 @@ class _YeeEngine2DBase(PhysicsSolver):
         source_slot = f'{self.polarization}_source'
         if name == source_slot:
             if array is not None:
-                _check_cell_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{source_slot}', ...) array",
-                                  xp=self.xp)
+                check_backend_array(array, (self.nx, self.ny), DTYPE, f"inject_source('{source_slot}', ...) array",
+                                    xp=self.xp)
             self._out_of_plane_source = array
         elif name in slots:
             if getattr(array, 'shape', None) != (self.nx, self.ny):
@@ -291,6 +283,12 @@ class _YeeEngine2DBase(PhysicsSolver):
         return
 
     def _rebuild_e_coefficients(self):
+        raise NotImplementedError
+
+    def _update_e_set(self, field_set):
+        raise NotImplementedError
+
+    def _accumulate_e_new_half(self):
         raise NotImplementedError
 
     def _rebuild_h_coefficients(self):
@@ -608,7 +606,7 @@ class _YeeEngine2DBase(PhysicsSolver):
 
     def _check_cell_mask(self, mask, what):
         """TypeError unless `mask` is a run-backend bool (nx, ny) cell mask."""
-        _check_cell_array(mask, (self.nx, self.ny), np.bool_, what, xp=self.xp)
+        check_backend_array(mask, (self.nx, self.ny), np.bool_, what, xp=self.xp)
 
     def _check_weight_shape(self, weight, what):
         """ValueError unless the host weight array has the (nx, ny) cell shape and lies in [0, 1]."""

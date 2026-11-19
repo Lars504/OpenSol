@@ -1,17 +1,17 @@
-"""Model-run self-tests of the FDFD conformal PEC (solver_defaults.conformal_boundaries, solver_plan S7.6): PEC disk
+"""Model-run self-tests of the FDFD conformal PEC (solver_defaults.conformal_boundaries): PEC disk
 cavity eigenfrequencies vs the Bessel zeros at two resolutions (cpu backend), and the reciprocity of a point pair around
 a curved PEC disk (em_fdfd_hz and em_fdfd_ez); no physics imports."""
 import math
 
 from ...core.constants import C0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import checks_result, probe_phasor
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverDefaultsSpec,
                            StudySpec)
 
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_STUDY = EIGENFREQUENCY_STUDY
 
 # ---- disk cavity: vacuum disk cut out of a PEC block (as model/selftests_conformal, repeated: selftest import rule),
 # radius 15.37 coarse cells, centre (0.31, 0.17) coarse cells off a cell centre; the fine mesh halves the cells ----

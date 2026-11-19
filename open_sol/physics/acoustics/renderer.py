@@ -47,6 +47,7 @@ class AcousticRenderer(PhysicsRenderer):
             self.field_infos = {name: info for name, info in type(self).field_infos.items() if name != 'stt'}
 
     def device_field(self, component):
+        """Window view; pressure / elastic_strain_* view persistent buffers the next call rewrites (copy to keep)."""
         self.field_info(component)
         physics = self.acoustics
         window = physics.window

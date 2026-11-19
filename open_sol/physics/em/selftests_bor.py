@@ -7,14 +7,14 @@ import math
 import numpy as np
 
 from ...core.constants import C0, ETA0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list, skip_without_cudss
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, StudySpec)
 _TYPE = 'em_fdfd_bor'
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_EIGEN_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_EIGEN_STUDY = EIGENFREQUENCY_STUDY
 
 # ---- PEC cylinder cavity: radius a, height L, walls on the grid edges (r_hi, z_lo, z_hi pec). Exact: TM_mnp k^2 =
 # (x_mn / a)^2 + (p pi / L)^2 (p >= 0), TE_mnp k^2 = (x'_mn / a)^2 + (p pi / L)^2 (p >= 1), x_mn / x'_mn the zeros of

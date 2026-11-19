@@ -116,7 +116,7 @@ HOOP_TOLERANCE = 1e-4                 # float32 sums of ~100 increments and the 
 # explicit_kernels stepper node at precision half_storage; each error over HALF_STORAGE_FACTOR x its single tolerance.
 HALF_STORAGE_FACTOR = 2.0
 
-# elastic_monoclinic_plane_waves (piezoelectric plan stage 3): MONOCLINIC_SOLID (positive definite with c16, c26 != 0).
+# elastic_monoclinic_plane_waves: MONOCLINIC_SOLID (positive definite with c16, c26 != 0).
 # Ring runs (x_ring / y_ring): fully periodic boxes of RING_CELLS along the axis (4 across) at courant 0.99, x + y
 # traction sheets, a resonance_monitor; plane modes k = 2 pi n / L along the axis, discrete symbol sk^2 [[c11, c16 a],
 # [c16 a, c66]] (x; y: [[c66, c26 a], [c26 a, c22]]), sk = (2 / h) sin(k h / 2), a = cos(k h / 2) (the corner / centre

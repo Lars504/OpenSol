@@ -41,7 +41,7 @@ _GEOMETRY_PARAM = geometry_param(
     'Currents circle the axis.',
     axis_text='psi = 0, exact half-cell axis conductance; a face feature on x_lo is a validation error')
 _SATURATION_TEXT = 'materials with saturation_polarization > 0 or a bh_curve'
-_NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration; plans_overview decision 7)
+_NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration)
     Param('nonlinear_tolerance', 'float', 1e-6, label='Saturation iteration tolerance', unit='1', min=0.0,
           min_exclusive=True,
           help=f'Saturation loop stop ({_SATURATION_TEXT}; ignored without one). Tensor mesh: converged when a '
@@ -314,10 +314,8 @@ def _validate_external_field(vctx, physics_spec, feature_spec, values):
     """Selection 'all' only; axisymmetric: B_x = 0."""
     path = feature_path(physics_spec, feature_spec)
     issues = _validate_whole_window(vctx, physics_spec, feature_spec, values)
-    try:   # magnetostatics or magnetic_fields_ac (they share this feature)
-        settings = vctx.registry.physics_type(physics_spec.type).settings
-    except KeyError:
-        settings = _SETTINGS
+    # magnetostatics or magnetic_fields_ac (they share this feature): read the physics' own type settings
+    settings = vctx.registry.physics_type(physics_spec.type).settings
     if is_axisymmetric(vctx.values(settings, physics_spec.settings)) and values.get('B_x', 0.0) != 0.0:
         issues.append(Issue('error', path, 'an axisymmetric external field is axial only: set B_x (= B_r) to 0 and '
                                            'the axial field in B_y'))
@@ -419,16 +417,7 @@ def _validate_magnetostatics(vctx, physics_spec, settings_values):
 
 def _selected_material_properties(spec):
     """(material, properties) of the selected materials, library merged (failures are reported at the material)."""
-    from ...materials import effective_material_data   # lazy: physics -> materials stays out of module import time
-    selected = []
-    for material in spec.materials:
-        try:
-            properties, _ = effective_material_data(material.library, material.properties, material.dispersion)
-        except (ValueError, TypeError):
-            continue
-        if material.selection:
-            selected.append((material, properties))
-    return selected
+    return [(material, properties) for material, properties, _ in selected_material_data(spec)]
 
 
 def _saturating_materials(spec, parameters):
@@ -682,7 +671,8 @@ def _triangle_memory_estimate(settings_values, mesh, context):
     system = fem_diffusion_estimate(mesh, order, element_fields=_N_FIELDS, nodal_fields=_FEM_NODAL_FIELDS,
                                     direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
                                     cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
-                                    kept_terms=False)
+                                    kept_terms=False, precision=linear_solver_precision(context),
+                                    mixed=linear_solver_mixed(context))
     own = MemoryEstimate.from_items(host_items=(
         ('curl quadrature cache (float64)', (2 * local + 3) * points * FLOAT64_BYTES * elements),
         ('quadrature point state of one evaluation (float64)', _FEM_POINT_STATE * points * FLOAT64_BYTES * elements)))
@@ -787,8 +777,8 @@ MAGNETOSTATICS = PhysicsType(
     scalar_outputs=_scalar_outputs,
     scalar_outputs_help=_SCALARS_HELP,
     dimensions=(2,),
-    backends=('gpu', 'cpu'),   # MagneticPhysics on the Domain's xp (solver_plan S6 stage 2); FEM: host + run backend
-    grids=('tensor', 'triangles'),   # triangles: MagneticFEMPhysics (solver_fem.py, magnetic plan stage 5)
+    backends=('gpu', 'cpu'),   # MagneticPhysics on the Domain's xp; FEM: host + run backend
+    grids=('tensor', 'triangles'),   # triangles: MagneticFEMPhysics (solver_fem.py)
     mesh_method=_mesh_method,
 )
 

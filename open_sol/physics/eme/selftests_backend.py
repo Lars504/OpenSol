@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of em_eme / em_eme_3d (solver_plan S6): the lossy-film closed forms and the 3D PEC CPU
+"""CPU vs GPU backend case of em_eme / em_eme_3d: the lossy-film closed forms and the 3D PEC CPU
 cascade on the cpu backend, a radiating 2D step and the 3D PEC step on both backends; no physics imports."""
 import math
 

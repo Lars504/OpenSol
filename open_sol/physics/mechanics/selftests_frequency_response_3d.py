@@ -1,4 +1,4 @@
-"""Frequency-response self-tests of solid_mechanics_3d on tetrahedra (piezo_3d_plan stage 4): the lossy z-rotated lithium
+"""Frequency-response self-tests of solid_mechanics_3d on tetrahedra: the lossy z-rotated lithium
 niobate thickness bar driven by a voltage against the continuum admittance with its BVD fit against the short / open
 thickness modes, an elastic forced run against the continuum response, and the cuDSS complex LDL^T of the harmonic
 pencil against host SuperLU with plan reuse (GPU, no model). definition3d registers them."""
@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ...core.constants import EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase
 from ...model.selftest_helpers import float32_value, lithium_niobate_entry, scaled_worst_result, skip_without_cudss
 from ...model.spec import FeatureSpec, MaterialSpec, StudySpec
 from .selftests import _lame
@@ -16,7 +16,7 @@ from .selftests_piezo_fem3d import (_BAR_EULER, _PIEZO, _THICKNESS_CELL, _THICKN
                                     _thickness_references)
 
 _SOLID = 'solid'
-_STUDY = 'frequency_response'          # = model.study_frequency_response.STUDY_NAME
+_STUDY = FREQUENCY_RESPONSE_STUDY
 
 # ---- solid_fem3d_frequency_response_bar: the thickness bar of solid_fem3d_piezo_thickness_modes with losses ----
 # Rollers on the four sides and z_lo, ground z_lo, drive z_hi at V. With c' = c33 (1 + j eta), eps' = eps0 eps33 (1 - j

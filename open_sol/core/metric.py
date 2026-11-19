@@ -1,7 +1,7 @@
-"""Coordinate metric of the 2D window (symmetry plan 2.16; numpy only, GUI-thread safe): the Domain's in-plane grid
+"""Coordinate metric of the 2D window (numpy only, GUI-thread safe): the Domain's in-plane grid
 (Coordinates: Cartesian or polar) times the solve's out-of-plane reduction (planar or axisymmetric) gives exact,
 separable face areas, physical cell widths and cell volumes (WindowMetric), the one geometry an FV operator reads;
-WindowMetric3D likewise for a 3D window, Cartesian or a cylindrical (r, phi, z) sector (symmetry plan 2.21)."""
+WindowMetric3D likewise for a 3D window, Cartesian or a cylindrical (r, phi, z) sector."""
 import math
 from dataclasses import dataclass
 

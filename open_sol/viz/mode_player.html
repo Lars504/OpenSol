@@ -4,7 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mode player</title>
-<!-- open_sol mode player: one self-contained page (no network). viz/mode_player.py fills the data block below. -->
+<!-- open_sol mode player: one self-contained page (no network). viz/mode_player.py fills the data block below.
+     viz/field_viewer.html copies its camera, colour maps (CMAPS / CMAP_CHOICES) and recording blocks: keep the two
+     in step. -->
 <style>
 :root {
   --bg: #f4f5f7;
@@ -1276,6 +1278,8 @@ canvas.addEventListener('dblclick', () => resetCamera());
 // ---------- loop ----------
 function layout() { resize(); fitDistance(); drawBands(); }
 let last = performance.now();
+// the page's clocks by dt seconds; a recording calls advance + draw per frame instead of frame(), so anything that
+// moves with time goes here or recordings miss it
 function advance(dt) { if (state.playing) state.theta = (state.theta + 2 * Math.PI * state.speed * dt) % (2 * Math.PI); }
 function frame(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;

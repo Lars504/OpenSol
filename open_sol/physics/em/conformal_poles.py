@@ -1,4 +1,4 @@
-"""Conformal pole weights of dispersive (Drude / Lorentz) materials in the 2D FDTD engines (solver_plan S7.6; host
+"""Conformal pole weights of dispersive (Drude / Lorentz) materials in the 2D FDTD engines (host
 numpy, built once per material region): the pole current of a cell / E face is scaled by the share of its control area
 inside the drawn material instead of the staircase 0 / 1. E_z: the cell itself (E_z is tangential to every in-plane
 interface, so the arithmetic mean f eps_metal + (1 - f) eps_out is the exact first-order cut-cell permittivity); H_z:

@@ -1,4 +1,4 @@
-"""CPU run-time estimates (time_estimation_plan): the op catalogue, TimeItem / TimeEstimate, pricing by a machine profile
+"""CPU run-time estimates: the op catalogue, TimeItem / TimeEstimate, pricing by a machine profile
 and the post-run time_check. Pure Python (no numpy, no cupy): GUI-thread safe. Recipes count ops, never seconds."""
 import math
 from dataclasses import dataclass, replace

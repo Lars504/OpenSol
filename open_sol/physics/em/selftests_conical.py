@@ -7,11 +7,10 @@ import numpy as np
 
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import (float_list, probe_phasor, single_value, skip_result, solver_role,
-                                       vertical_line)
+from ...model.selftest_helpers import (float_list, normalized_result, probe_phasor, single_value, skip_result,
+                                       solver_role, vertical_line)
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec)
-from .selftests import normalized_result
 from .selftests_cross_section import _isotropic
 
 _TYPE = 'em_fdfd_conical'

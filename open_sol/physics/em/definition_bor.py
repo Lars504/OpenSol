@@ -1,4 +1,4 @@
-"""Model definition of 'em_fdfd_bor' (body-of-revolution FDFD, symmetry plan 2.3: (r, z) half plane, azimuthal order
+"""Model definition of 'em_fdfd_bor' (body-of-revolution FDFD: (r, z) half plane, azimuthal order
 m) on definition_common, with its template and self-tests; definition.register calls register."""
 from dataclasses import replace
 
@@ -620,7 +620,8 @@ def _order_list_issues(vctx, physics_spec, settings_values, path):
 
 # run-time estimate: CSR entries per row of A(m) (bor_line_block's figure) and host bytes moved per stored entry by one
 # BORAssembly (material points, curl split, K0 / K1 / K2 per axis class; calibrate against the assembly share of a
-# frequency_domain run)
+# frequency_domain run). The memory estimate counts the stencil instead (memory_estimates._bor_entries_per_row: 19/3,
+# 9); this 25 stays together with BOR_ASSEMBLY_BYTES_PER_ENTRY, which is priced per these entries.
 _BOR_ENTRIES_PER_ROW = 25
 BOR_ASSEMBLY_BYTES_PER_ENTRY = 800
 _CSR_ENTRY_BYTES = 20   # complex128 value + int32 column

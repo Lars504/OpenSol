@@ -1,4 +1,4 @@
-"""Model-layer definition of the 'magnetostatics_3d' physics type (stages 1-3 of magnetostatics_3d_plan: fields of
+"""Model-layer definition of the 'magnetostatics_3d' physics type (fields of
 permeable and saturating materials, permanent magnets, ideal iron, a uniform applied field and stranded coils by the
 reduced scalar potential; settings, features, material vocabulary, validation, memory estimate, scalars) plus its
 template and selftests; registered through definition.py. On a 'tetrahedra' mesh the create builds MagneticFEMPhysics3D
@@ -356,7 +356,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     n_fields = len(MAGNETIC_3D_FIELD_NAMES) + len(MAGNETIC_3D_CURRENT_NAMES) * int(coils) + int(saturation)
     system = fem_diffusion_estimate_3d(mesh, element_order(settings_values), element_fields=n_fields,
                                        direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation))
+                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
+                                       precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     loop_arrays = int(saturation) * (_SATURATION_ARRAYS + (
         _ANDERSON_STATE_ARRAYS if settings_values.get('nonlinear_method') in ('auto', 'anderson') else 0))
     own = MemoryEstimate.from_items(host_items=(

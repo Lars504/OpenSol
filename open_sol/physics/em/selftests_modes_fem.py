@@ -1,16 +1,16 @@
-"""Self-tests of em_modes on triangle meshes (mesh plan stage T3: fem_modes, solvers/modes_fem): CPU cases on fem_modes
+"""Self-tests of em_modes on triangle meshes (fem_modes, solvers/modes_fem): CPU cases on fem_modes
 directly against closed forms (walled slab, PML leaky slab) and cpu-backend model runs (PEC circular pipe, the S7.8
-TFLN rib as the S7.5 gain measurement, a heated strip with heat on a tensor mesh and em_modes on triangles)."""
+TFLN rib as the S7.5 gain measurement, a heated strip with heat on a tensor mesh and em_modes on triangles). _report,
+_sizing and the slab helpers are shared: the other triangle EM self-tests and model/selftests_adaptation import them."""
 import math
 
 import numpy as np
 
 from ...core.constants import C0, FACES
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import skip_result, skip_without_cudss
+from ...model.selftest_helpers import normalized_result, skip_result, skip_without_cudss
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec)
-from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'
@@ -551,7 +551,7 @@ MODES_FEM_SELFTEST_CASES = (
     SelfTestCase(
         name='em_modes_fem_slab',
         label='EM modes on triangles: walled slab',
-        description='CPU (fem_modes directly, mesh plan T3): a 0.5 um core (n 2.0) centred between pec x walls 1.8 um '
+        description='CPU (fem_modes directly): a 0.5 um core (n 2.0) centred between pec x walls 1.8 um '
                     'apart in n 1.45, y-invariant (0.09 um high), 1.55 um. y faces pec keep the TE family (E_y(x)), '
                     'pmc the TM family (H_y(x), E_x, E_z); expected: the fundamental n_eff of each = the exact '
                     'transcendental root (TE kx tan(kx d) = gamma coth(gamma (L - d)), TM with 1 / n^2 and tanh) to '
@@ -635,7 +635,7 @@ MODES_FEM_SELFTEST_CASES = (
     SelfTestCase(
         name='em_modes_fem_rib',
         label='EM modes on triangles: TFLN rib (S7.5 gain)',
-        description='S7.5 gain measurement (solver_plan S7.8): the TFLN rib of mesh_study rib_modes (half structure, '
+        description='S7.5 gain measurement: the TFLN rib of mesh_study rib_modes (half structure, '
                     'antisymmetric x_lo mirror on the window edge, cpml elsewhere with 4 x 120 nm rings) on a '
                     'triangles mesh with rib and slab elements of 80 and 40 nm (120 nm elsewhere), quadratic, '
                     f'cpu backend. Expected: quasi-TE0 n_eff_1 within {_RIB_TOLERANCE:g} of the reference '

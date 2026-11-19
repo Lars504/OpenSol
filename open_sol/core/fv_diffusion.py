@@ -18,7 +18,7 @@ from .fv_diffusion_3d import (FACE_AXIS_3D, FaceGeometry, anchor_link_graph, bui
                               face_cells, face_lower_shares, flux_at_centres)
 from .fv_diffusion_fused import (face_parameters, geometry_factors, launch_shape, positive_pattern_moved,
                                  reassemble_elimination, reassemble_entries)
-from .kernels import axis_first_reduce
+from .kernels import axis_first_reduce, twin
 from .metric import GRIDS, face_positions, ring_angle, window_metric, window_metric_3d
 from .monitors import FieldProbe
 from .solver_base import PhysicsSolver
@@ -205,28 +205,8 @@ def edge_extension_views(array, x_range, y_range):
     return edge_extension_views_3d(array, (slice(*x_range), slice(*y_range)))
 
 
-# Eliminated rhs (solved) and un-eliminated rhs (flux accounting) of a steady solve, one fused pass.
-_source_rhs = cp.ElementwiseKernel(
-    'float32 coupled_source, float32 applied_source, T cell_area, T free_mask, T rhs_offset, T rhs_drive',
-    'T rhs, T rhs_full',
-    'rhs = free_mask * ((T)coupled_source + (T)applied_source) * cell_area + rhs_offset;'
-    'rhs_full = ((T)coupled_source + (T)applied_source) * cell_area + rhs_drive;',
-    'fv_source_rhs')
-
-# Same with the implicit-Euler capacity term C/dt * u_old.
-_source_rhs_capacity = cp.ElementwiseKernel(
-    'float32 coupled_source, float32 applied_source, T cell_area, T free_mask, T rhs_offset, T rhs_drive, '
-    'T capacity_over_dt, T unknown_old',
-    'T rhs, T rhs_full',
-    'rhs = free_mask * (((T)coupled_source + (T)applied_source) * cell_area'
-    ' + capacity_over_dt * unknown_old) + rhs_offset;'
-    'rhs_full = ((T)coupled_source + (T)applied_source) * cell_area + rhs_drive'
-    ' + capacity_over_dt * unknown_old;',
-    'fv_source_rhs_capacity')
-
-
 def _source_rhs_host(coupled_source, applied_source, cell_area, free_mask, rhs_offset, rhs_drive, rhs, rhs_full):
-    """numpy twin of _source_rhs (same arguments, writes rhs / rhs_full; a change there changes this)."""
+    """numpy twin of _source_rhs."""
     source = (np.asarray(coupled_source, dtype=rhs.dtype) + np.asarray(applied_source, dtype=rhs.dtype)) * cell_area
     np.add(free_mask * source, rhs_offset, out=rhs)
     np.add(source, rhs_drive, out=rhs_full)
@@ -241,25 +221,9 @@ def _source_rhs_capacity_host(coupled_source, applied_source, cell_area, free_ma
     np.add(source + rhs_drive, capacity, out=rhs_full)
 
 
-# A_solve values of the fixed-cell elimination: entry x free(row) x free(column), one pass over the CSR entries.
-_eliminate_fixed_entries = cp.ElementwiseKernel(
-    'T data, I row, I column, raw T free', 'T solve_data',
-    'solve_data = data * free[row] * free[column]',
-    'fv_eliminate_fixed_entries')
-
-
 def _eliminate_fixed_entries_host(data, row, column, free, solve_data):
     """numpy twin of _eliminate_fixed_entries."""
     np.multiply(data * free[row], free[column], out=solve_data)
-
-
-# Per-cell code of what the anchor check reads (bits 0-6: c_xx, c_yy, c_zz > 0, held, fixed, loss anchor, capacity >
-# 0; bit 7, an outer face with conductance > 0, is added by the caller): an unchanged code skips the labelling.
-_anchor_code = cp.ElementwiseKernel(
-    'T c_xx, T c_yy, T c_zz, bool held, bool fixed, bool loss, T capacity', 'uint8 code',
-    'code = (unsigned char)((c_xx > 0) | ((c_yy > 0) << 1) | ((c_zz > 0) << 2) | (held << 3) | (fixed << 4)'
-    ' | (loss << 5) | ((capacity > 0) << 6))',
-    'fv_anchor_code')
 
 
 def _anchor_code_host(c_xx, c_yy, c_zz, held, fixed, loss, capacity, code):
@@ -268,6 +232,40 @@ def _anchor_code_host(c_xx, c_yy, c_zz, held, fixed, loss, capacity, code):
     for bit, flag in enumerate((c_xx > 0, c_yy > 0, np.asarray(c_zz) > 0, held, fixed, loss,
                                 np.asarray(capacity) > 0)):
         code |= np.asarray(flag, dtype=np.uint8) << np.uint8(bit)
+
+
+# Eliminated rhs (solved) and un-eliminated rhs (flux accounting) of a steady solve, one fused pass.
+_source_rhs = twin('core.fv_source_rhs', cp.ElementwiseKernel(
+    'float32 coupled_source, float32 applied_source, T cell_area, T free_mask, T rhs_offset, T rhs_drive',
+    'T rhs, T rhs_full',
+    'rhs = free_mask * ((T)coupled_source + (T)applied_source) * cell_area + rhs_offset;'
+    'rhs_full = ((T)coupled_source + (T)applied_source) * cell_area + rhs_drive;',
+    'fv_source_rhs'), _source_rhs_host)
+
+# Same with the implicit-Euler capacity term C/dt * u_old.
+_source_rhs_capacity = twin('core.fv_source_rhs_capacity', cp.ElementwiseKernel(
+    'float32 coupled_source, float32 applied_source, T cell_area, T free_mask, T rhs_offset, T rhs_drive, '
+    'T capacity_over_dt, T unknown_old',
+    'T rhs, T rhs_full',
+    'rhs = free_mask * (((T)coupled_source + (T)applied_source) * cell_area'
+    ' + capacity_over_dt * unknown_old) + rhs_offset;'
+    'rhs_full = ((T)coupled_source + (T)applied_source) * cell_area + rhs_drive'
+    ' + capacity_over_dt * unknown_old;',
+    'fv_source_rhs_capacity'), _source_rhs_capacity_host)
+
+# A_solve values of the fixed-cell elimination: entry x free(row) x free(column), one pass over the CSR entries.
+_eliminate_fixed_entries = twin('core.fv_eliminate_fixed_entries', cp.ElementwiseKernel(
+    'T data, I row, I column, raw T free', 'T solve_data',
+    'solve_data = data * free[row] * free[column]',
+    'fv_eliminate_fixed_entries'), _eliminate_fixed_entries_host)
+
+# Per-cell code of what the anchor check reads (bits 0-6: c_xx, c_yy, c_zz > 0, held, fixed, loss anchor, capacity >
+# 0; bit 7, an outer face with conductance > 0, is added by the caller): an unchanged code skips the labelling.
+_anchor_code = twin('core.fv_anchor_code', cp.ElementwiseKernel(
+    'T c_xx, T c_yy, T c_zz, bool held, bool fixed, bool loss, T capacity', 'uint8 code',
+    'code = (unsigned char)((c_xx > 0) | ((c_yy > 0) << 1) | ((c_zz > 0) << 2) | (held << 3) | (fixed << 4)'
+    ' | (loss << 5) | ((capacity > 0) << 6))',
+    'fv_anchor_code'), _anchor_code_host)
 
 
 def _join_wrapped_regions(labels_last, labels_first, wrap_links, anchored, wrap_sign):
@@ -882,7 +880,7 @@ class DiffusionSystem:
         free = (~fixed).astype(dtype)
         free_flat = free.ravel()
         solve_data = xp.empty_like(effective_data)
-        (_eliminate_fixed_entries_host if self.backend == 'cpu' else _eliminate_fixed_entries)(
+        _eliminate_fixed_entries(
             effective_data, pattern.entry_rows, pattern.indices, free_flat, solve_data)
         solve_data[diagonal_positions] += fixed.ravel().astype(dtype)
         self.A_solve = sparse_module(self.backend).csr_matrix((solve_data, pattern.indices, pattern.indptr),
@@ -1139,7 +1137,7 @@ class DiffusionSystem:
         xp = self.xp
         zero = self.dtype(0.0)
         code = xp.empty(fixed.shape, dtype=np.uint8)
-        (_anchor_code_host if self.backend == 'cpu' else _anchor_code)(
+        _anchor_code(
             c_xx, c_yy, zero if c_zz is None else c_zz, self.fixed_user, fixed, loss_anchor_cells,
             zero if capacity_over_dt is None else capacity_over_dt, code)
         for cells, conductance, _ in face_terms.values():
@@ -1213,13 +1211,12 @@ class DiffusionSystem:
         with a capacity term it reads the previous unknown, so call before solve()."""
         if self.A_solve is None:
             raise RuntimeError('assemble before build_rhs')
-        on_cpu = self.backend == 'cpu'
         if self.capacity_over_dt is None:
-            (_source_rhs_host if on_cpu else _source_rhs)(
+            _source_rhs(
                 coupled_source, applied_source, self.cell_area, self.free, self.rhs_offset,
                 self.rhs_drive, self.rhs2d, self._rhs_full_buffer)
         else:
-            (_source_rhs_capacity_host if on_cpu else _source_rhs_capacity)(
+            _source_rhs_capacity(
                 coupled_source, applied_source, self.cell_area, self.free, self.rhs_offset,
                 self.rhs_drive, self.capacity_over_dt, self.unknown2d, self.rhs2d, self._rhs_full_buffer)
         self.rhs_full = self._rhs_full_buffer
@@ -1559,7 +1556,7 @@ class DiffusionPhysicsBase(PhysicsSolver):
         return self.add_probe(*self.domain.pos_to_cell(*position))
 
     def error_indicator(self):
-        """S7.7 mesh refinement hook (mesh plan A2): Kelly flux-jump eta^2 parts (2, *window), host float64, of the
+        """S7.7 mesh refinement hook: Kelly flux-jump eta^2 parts (2, *window), host float64, of the
         shown solution (DiffusionSystem.flux_jump_indicator of _indicator_flux())."""
         return self.system.flux_jump_indicator(self._indicator_flux())
 

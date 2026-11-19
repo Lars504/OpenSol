@@ -1,4 +1,4 @@
-"""Self-tests of NLFD-chi (nonlinear_optics_plan section 9): CPU cases 1-3 (mixing table, tensors, C / C* power
+"""Self-tests of NLFD-chi: CPU cases 1-3 (mixing table, tensors, C / C* power
 identity) + the Kerr linearisation and the Newton-Krylov tangents, GPU model cases 4, 12 (undepleted SHG vs the
 3-point lattice Green's function), 8 (SPM), 6 (pump-depleted tanh^2) with picard and newton runs, and the templates;
 QPM, THG and OPA gain are checked by the examples/em analytic_nlfd_* models."""

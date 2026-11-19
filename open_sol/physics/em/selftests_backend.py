@@ -1,4 +1,4 @@
-"""CPU vs GPU backend cases of em_fdtd_ez / _hz (solver_plan S6, core.kernels twins): existing analytic FDTD cases run
+"""CPU vs GPU backend cases of em_fdtd_ez / _hz (core.kernels twins): existing analytic FDTD cases run
 on solver_defaults.backend 'cpu' (numpy / numba twins of every kernel) and 'gpu'; each wrapped case's own check grades
 the cpu runs and their measured value must match the gpu runs'. `backend_parity_case` is the reusable wrapper (em3d /
 acoustics / fluid cases can wrap theirs the same way); registered by definition.register."""

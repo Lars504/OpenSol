@@ -1,4 +1,4 @@
-"""Electric currents / electrostatics on a tetrahedron mesh (piezo_3d_plan stage 6; the 3D analogue of solver_fem.py):
+"""Electric currents / electrostatics on a tetrahedron mesh (the 3D analogue of solver_fem.py):
 FEMPotentialPhysics3D, P1 / P2 Lagrange V on the window elements (fem.diffusion3d), diagonal sigma_dc / eps_dc tensors;
 the PotentialPhysics field names, slot, held regions and scalar outputs where they apply (no electrolytes, driven
 terminals, Stern layers or mirror planes). State arrays are per element (D12: V at the centroid, E / J / D element

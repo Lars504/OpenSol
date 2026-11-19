@@ -6,8 +6,8 @@ tangent in parallel with the motional R1 - L1 - C1 branch, by least squares from
 # weighs like the peak. Start: f_s0 = the sample of max |Y|, f_p0 = the sample of min |Y| above it, r0 = (f_p0 / f_s0)^2
 # - 1, C0 from the lossless model at the band end farthest from f_s0, R1 from Re Y at f_s0. The lossless parallel
 # resonance f_p = f_s sqrt(1 + r) and k_eff^2 = (f_p^2 - f_s^2) / f_p^2 = C1 / (C0 + C1) follow. A resistive load Z in
-# series with the motional branch adds Z / L1 to its energy decay rate R1 / L1 (= omega_s / Q_s): kappa_e = Z / L1
-# (piezo_3d_plan D8), valid while omega C0 Z << 1.
+# series with the motional branch adds Z / L1 to its energy decay rate R1 / L1 (= omega_s / Q_s): kappa_e = Z / L1,
+# valid while omega C0 Z << 1.
 import math
 
 import numpy as np

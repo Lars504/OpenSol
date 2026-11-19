@@ -24,7 +24,8 @@ beta z), lossy Im n_eff < 0."""
 # E_z) obey ghost = s x inner neighbour (s = -1 pec / antisymmetric, +1 pmc / symmetric) through a column map on
 # Dx^h / Dy^h; plane-face unknowns are free (s = -1) or zero (s = +1, dropped); faces beyond the plane are dropped.
 # Half a cell off the FDTD ez pec / hz pmc walls. A natural (cpml) end drops its last face (the never-updated FDTD
-# face: PMC half a cell beyond the outermost centres, as the A1 'e' row 0 at the lo end).
+# face: PMC half a cell beyond the outermost centres, as the A1 'e' row 0 at the lo end). Mirror images are exact only
+# for mu uniform across the plane: H_y / H_z take the mu of their lower cell (not mirror symmetric).
 # Bloch k on a periodic axis (em_modes, the em_fdtd_3d ports, conical): the operators phase their wrap entries, F(x + L)
 # = F(x) e^{-j k L}; walls live only on non-periodic axes, so the column maps are unchanged; face-to-centre means across
 # the wrap take bloch_wrap_factors. Callers that keep k = 0 refuse it themselves (EME: operators.check_zero_bloch).
@@ -39,16 +40,18 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from ...core.constants import C0, EPS0, ETA0
-from .boundaries import BCType, cpml_axis_profiles
+from ...core.constants import C0, EPS0, ETA0, FACES
+from .boundaries import MIRROR_TYPES, BCType, cpml_axis_profiles
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver, device_factor_matvec, guarded_start_vector
 from ...solvers.sparse_direct import size_issue
 from .operators import bloch_wrap_phases, pml_stretch, yee_operators
 from .slab_modes import _transverse_wavenumber, peak_cell
 from .yee_grid import face_average, face_partner, lower_face_partner, yee_inverse_spacings
 
-_WALL_SIGNS = {BCType.PEC: -1.0, BCType.ANTISYMMETRIC: -1.0, BCType.PMC: 1.0, BCType.SYMMETRIC: 1.0}
-_MIRROR_TYPES = frozenset({BCType.SYMMETRIC, BCType.ANTISYMMETRIC})
+# Image sign s of the centre-indexed fields about a wall plane (along x: h_x, E_y, E_z; module header "Walls"): ghost =
+# s x inner neighbour, plane-face unknowns free (s -1) or dropped (s +1). Not boundaries.WALL_SIGNS (the 2D out-of-plane
+# field's row per polarisation, 0 = pinned)
+_CENTRE_IMAGE_SIGNS = {BCType.PEC: -1.0, BCType.ANTISYMMETRIC: -1.0, BCType.PMC: 1.0, BCType.SYMMETRIC: 1.0}
 _SHIFT_RELATIVE_OFFSET = 1e-6   # sigma this far above (k0 n_guess)^2: never exactly on an eigenvalue (TEM modes)
 _PML_MODE_FRACTION = 0.5        # modes with more of their |h|^2 dA energy on PML-stretched points are dropped
 _POWER_FLOOR = 1e-6             # |power| below this share of sum |E||H| dA: bilinear (evanescent) normalisation
@@ -177,7 +180,8 @@ class AxisLayout:
 @dataclass(frozen=True, eq=False)
 class CrossSectionLayout:
     """Both axes plus the 2D masks / areas: active over [h_x; h_y] (2 nx ny), areas (nx, ny) [m^2] (x_face_area at
-    the E_x / H_y points, y_face_area at E_y / H_x, centre_area at E_z), stretched_hx / _hy at E_y / E_x too."""
+    the E_x / H_y points, y_face_area at E_y / H_x, centre_area at E_z), stretched_hx / _hy at E_y / E_x too;
+    mirror_factor 2 per mirror face (power and areas count the unfolded mode)."""
     x: AxisLayout
     y: AxisLayout
     active: np.ndarray
@@ -225,7 +229,8 @@ class CrossSectionProblem:
     assembly_seconds: float
     # lossless positive eps / mu, no bend, default guess: the shift lies above the spectrum, so the nearest eigenvalues
     # are the highest-ranked (exactly without PML; with PML up to the dropped or, kept, beyond-the-cut PML modes:
-    # mode_eigen_count, _kept_pml_near_cut)
+    # mode_eigen_count, _kept_pml_near_cut). A new operator term that can put beta^2 above k0^2 max(eps mu) (beyond
+    # what _lossless_positive tests: complex / negative eps^-1, mu, a bend, a guess) must clear it
     default_shift_above_spectrum: bool = False
 
 
@@ -249,8 +254,8 @@ def _axis_layout(boundary_config, axis, widths, face_widths, pml_dx):
     image_values = np.ones(n_cells)
     lo_sign = hi_sign = None
     if not periodic:
-        lo_sign = _WALL_SIGNS.get(getattr(boundary_config, f'{axis}_lo'))
-        hi_sign = _WALL_SIGNS.get(getattr(boundary_config, f'{axis}_hi'))
+        lo_sign = _CENTRE_IMAGE_SIGNS.get(getattr(boundary_config, f'{axis}_lo'))
+        hi_sign = _CENTRE_IMAGE_SIGNS.get(getattr(boundary_config, f'{axis}_hi'))
         n_ghosts = int(lo_sign is not None) + int(hi_sign is not None)
         if n_cells < n_ghosts + 1:
             raise ValueError(f"{axis} axis: {n_cells} cells leave no cell between the wall planes (the outermost cell "
@@ -280,7 +285,7 @@ def cross_section_layout(cell_widths, boundary_config, pml_dx):
     y_axis = _axis_layout(boundary_config, 'y', dy_cells, 1.0 / spacings.inv_dy_h, pml_dx)
     hx_active = np.outer(x_axis.centre_active, y_axis.face_active)     # h_x: x centre, y face
     hy_active = np.outer(x_axis.face_active, y_axis.centre_active)     # h_y: x face, y centre
-    n_mirrors = sum(getattr(boundary_config, face) in _MIRROR_TYPES for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi'))
+    n_mirrors = sum(getattr(boundary_config, face) in MIRROR_TYPES for face in FACES)
     return CrossSectionLayout(
         x=x_axis, y=y_axis, active=np.concatenate((hx_active.ravel(), hy_active.ravel())),
         x_face_area=np.outer(x_axis.face_length, y_axis.centre_length),
@@ -509,7 +514,8 @@ def assemble_cross_section(cell_widths, boundary_config, pml_dx, materials, omeg
     else:
         mu_x = mu_y = mu_z = mu
     # E_x / E_y sit on faces normal to them: a face is PEC only inside the conductor (both cells), never yee_grid.face_pec
-    # (either cell, the H_z engine's tangential rule), which would zero the normal E on a conductor surface.
+    # (either cell, the H_z engine's tangential rule), which would zero the normal E on a conductor surface (a parallel
+    # plate of N gap cells would give n_eff^2 ~ eps (N + 1) / (N - 1)).
     inv_ezz = _inverse_or_zero(eps_zz, pec).ravel()
     inv_exx = _inverse_or_zero(eps_x_faces, pec & face_partner(pec, 0, layout.x.periodic)).ravel()
     inv_eyy = _inverse_or_zero(eps_y_faces, pec & face_partner(pec, 1, layout.y.periodic)).ravel()
@@ -751,7 +757,8 @@ def mode_eigen_count(n_modes, n_unknowns=None, narrow=False, keep_pml_modes=Fals
 
 
 def _rank_order(values, k0):
-    """Candidate order of descending Re beta^2 (ties to _RANK_DECIMALS of beta^2 / k0^2 by descending Im)."""
+    """Candidate order of descending Re beta^2 (ties to _RANK_DECIMALS of beta^2 / k0^2 by descending Im), as
+    slab_modes: Re n_eff would let evanescent modes outrank weakly guided ones."""
     return np.lexsort((-values.imag, -np.round(values.real / k0 ** 2, _RANK_DECIMALS)))
 
 
@@ -868,7 +875,7 @@ def mode_default_basis(n_wanted, pml_clusters):
 
 def cpml_cross_section(settings_values):
     """True when an em_modes settings dict puts a cpml on any outer face (estimators: mode_default_basis)."""
-    return any(settings_values.get(f'bc_{face}') == 'cpml' for face in ('x_lo', 'x_hi', 'y_lo', 'y_hi'))
+    return any(settings_values.get(f'bc_{face}') == 'cpml' for face in FACES)
 
 
 def line_block_layout(problem):

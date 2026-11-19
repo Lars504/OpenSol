@@ -5,12 +5,12 @@ LineHarmonicSystem: fem.harmonic.HarmonicSystemBase on a line."""
 # Dofs ascend along the line (fem.line_fem: P1 node k; P2 node 2 k, midpoint 2 e + 1; Hermite w 2 k, w' 2 k + 1); the
 # system numbering is the dofs of the active (non-hole) elements in that order. Hermite slope dofs are scaled by the
 # mean cell width h (the system solves for h w': dof_scale 1 / h, the slope basis / h), so the w and w' rows of the SI
-# operator, ~1 / h^2 apart, are
-# equilibrated for the factor and ARPACK; `values` and resonance fields are physical. Units per unit length along y:
-# loads N/m (end forces, point forces), pressure Pa. Bending: clamped ends hold w and w', simply supported ends w only,
-# symmetry ends w' only;
-# the plate Poisson ratio enters only free-end moments, which the energy D (W''^2 + 2 k_y^2 W'^2 + k_y^4 W^2) leaves out
-# (exact for clamped / simply supported ends).
+# operator, ~1 / h^2 apart, are equilibrated for the factor and ARPACK (line_fem's slope basis is already h x O(1): a
+# scale of h instead of 1 / h widens the gap to 1 / h^4, which broke plate_ports' strip eig); `values` and resonance
+# fields are physical. Units per unit length along y: loads N/m (end forces, point forces), pressure Pa. Bending:
+# clamped ends hold w and w', simply supported ends w only, symmetry ends w' only; the plate Poisson ratio enters only
+# free-end moments, which the energy D (W''^2 + 2 k_y^2 W'^2 + k_y^4 W^2) leaves out (exact for clamped / simply
+# supported ends).
 from dataclasses import dataclass, fields
 
 import numpy as np

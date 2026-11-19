@@ -24,14 +24,11 @@ from profiler_solver_em_fdfd_3d_tetrahedra import load_example as load_gmsh_sphe
 
 EXAMPLES = REPOSITORY / 'examples'
 OUT_ROOT = HERE / 'out'
-# study hooks timed on each engine class that defines them (an open_sol base counts); see engine_parts
-ENGINE_HOOKS = (
-    'prepare', 'finalize', 'step', 'materials_changed', 'solve_harmonic', 'attach_harmonic',
-    'select_harmonic_frequency', 'plan_harmonic_frequencies', 'solve_modes', 'select_mode', 'solve_eigenfrequencies',
-    'select_resonance', 'solve_eigenfrequencies_targets', 'solve_eigenfrequencies_band', 'reset_frequency_response',
-    'plan_frequency_response', 'solve_frequency_response', 'publish_frequency_response', 'solve_static_state',
-    'solve_nonlinear', 'solve_thermal_noise', 'eps_sensitivity', 'solve_design', 'error_indicator',
-)
+# hooks timed on each engine class that defines them (an open_sol base counts; engine_hooks): these lifecycle calls,
+# then every method of the study hook Protocols of model/solver_hooks.py but the light accessors / state copies below
+LIFECYCLE_HOOKS = ('prepare', 'finalize', 'step', 'materials_changed')
+UNTIMED_HOOKS = ('n_eff_text', 'select_channel', 'channel_index', 'mixing_lines', 'set_axial_wavenumber',
+                 'warm_start_fields', 'seed_warm_start', 'solution_state', 'restore_solution', 'reset_records')
 # parts every group times: study / runner / output / Session reads and the solver-role runtimes
 GROUP_COMMON_PARTS = COMMON_PARTS + STUDY_LOOP_PARTS + STUDY_RUNNERS
 
@@ -119,8 +116,23 @@ GROUPS = {
 }
 
 
+def engine_hooks() -> tuple:
+    """LIFECYCLE_HOOKS, then the methods of every hook Protocol of model/solver_hooks.py (a new study hook is timed
+    without an edit here) but UNTIMED_HOOKS. open_sol is imported here, not at module level (run_all_examples imports
+    GROUPS, and run_all must not load open_sol)."""
+    from open_sol.model import solver_hooks
+    names = list(LIFECYCLE_HOOKS)
+    for protocol in vars(solver_hooks).values():
+        if not (isinstance(protocol, type) and getattr(protocol, '_is_protocol', False)
+                and protocol.__module__ == solver_hooks.__name__):
+            continue
+        names += [name for name in solver_hooks.hook_names(protocol) if callable(getattr(protocol, name, None))
+                  and name not in names and name not in UNTIMED_HOOKS]
+    return tuple(names)
+
+
 def engine_parts(target, explicit=False) -> tuple:
-    """(target, label) parts of the ENGINE_HOOKS the engine class 'module:Class' (or an open_sol base) defines; an
+    """(target, label) parts of the engine_hooks the engine class 'module:Class' (or an open_sol base) defines; an
     explicit stepper leaves out step (one GPU sync per time step: the runner's advance times the stepping)."""
     module_name, _, class_name = target.partition(':')
     try:
@@ -128,7 +140,7 @@ def engine_parts(target, explicit=False) -> tuple:
     except (ImportError, AttributeError):
         return ((f'{target}.prepare', f'{class_name}: prepare'),)   # the harness lists it as unresolved
     defined = {name for klass in engine.__mro__ if klass.__module__.startswith('open_sol') for name in vars(klass)}
-    return tuple((f'{target}.{name}', f'{class_name}: {name}') for name in ENGINE_HOOKS
+    return tuple((f'{target}.{name}', f'{class_name}: {name}') for name in engine_hooks()
                  if name in defined and not (explicit and name == 'step'))
 
 

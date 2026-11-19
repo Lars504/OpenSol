@@ -1,4 +1,4 @@
-"""Own conforming Delaunay mesher (solver_plan S7.5, decision D8): size field, PSLG from straight pieces and closed
+"""Own conforming Delaunay mesher: size field, PSLG from straight pieces and closed
 curves, Ruppert / Shewchuk refinement on scipy.spatial.Delaunay (rebuilt, or updated locally in rounds adding few
 nodes), smoothing, the PML layer ring, mirror images of a half mesh, periodic window sides (matching vertices,
 paired segment splits).
@@ -30,6 +30,22 @@ _QHULL_FRAME = True          # Qhull with a far triangle added: thousands of col
 _FRAME_RADIUS = 4.0          # frame circumradius / half the points' longest box side (its incircle holds the box)
 _FRAME_DIRECTIONS = np.column_stack([np.cos(np.radians([90.0, 210.0, 330.0])),
                                      np.sin(np.radians([90.0, 210.0, 330.0]))])
+
+
+def window_inset(window) -> float:
+    """MERGE_TOLERANCE x the longest side [m] of a window (x0, y0, x1, y1): points this close to a side lie on it."""
+    x0, y0, x1, y1 = window
+    return MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+
+
+def clamp_into_window(points, window) -> np.ndarray:
+    """Float64 (n, 2) copy of points clamped window_inset inside the window: the one rule that extends window values
+    into the PML ring (element masks, ring centroids and dofs, transfer evaluation points)."""
+    x0, y0, x1, y1 = window
+    inset = window_inset(window)
+    points = np.asarray(points, dtype=np.float64)
+    return np.column_stack([np.clip(points[:, 0], x0 + inset, x1 - inset),
+                            np.clip(points[:, 1], y0 + inset, y1 - inset)])
 
 
 @dataclass(frozen=True, eq=False)
@@ -511,7 +527,7 @@ def _small_angles(vertices, segments) -> tuple:
     return found, acute
 
 
-# ---- periodic window sides (new_modules_plan G3) ----
+# ---- periodic window sides ----
 def periodic_pslg(pslg, axes) -> PSLG:
     """PSLG whose window sides of each periodic axis ('x' / 'y') carry matching vertices: every side vertex gets a
     partner at the same position along the opposite side (that side's segment split there, tags / pieces kept;
@@ -520,8 +536,7 @@ def periodic_pslg(pslg, axes) -> PSLG:
     if requested - {'x', 'y'}:
         raise ValueError(f"periodic_pslg: axes must be 'x' / 'y', got {sorted(requested)}")
     axes = tuple(name for name in ('x', 'y') if name in requested)
-    x0, y0, x1, y1 = pslg.window
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(pslg.window)
     vertices = np.array(pslg.vertices, dtype=np.float64)
     segments = pslg.segments.astype(np.int64)
     segment_curve, segment_piece = pslg.segment_curve.astype(np.int64), pslg.segment_piece.astype(np.int64)
@@ -1159,7 +1174,7 @@ def add_layer_ring(points, triangles, window, thickness, n_layers) -> tuple:
     thickness[face] > 0 [m], extruded from the window-edge nodes (corner blocks where two such faces meet; the x
     faces' strips hold them), each quad split into two triangles."""
     x0, y0, x1, y1 = window
-    tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    tolerance = window_inset(window)
     widths = {face: float(thickness.get(face) or 0.0) for face in FACE_BITS}
     pml_faces = np.zeros(len(triangles), dtype=np.uint8)
     if not any(widths.values()):
@@ -1213,7 +1228,7 @@ def add_layer_ring(points, triangles, window, thickness, n_layers) -> tuple:
     return all_points, all_triangles, np.concatenate([pml_faces, np.array(ring_bits, dtype=np.uint8)])
 
 
-# ---- mirror symmetry (new_modules_plan G2) ----
+# ---- mirror symmetry ----
 def reflect_mesh(points, triangles, pml_faces, axis, plane) -> tuple:
     """(points, triangles, pml_faces, image) of a mesh on one side of the line coordinate[axis] = plane plus its
     mirror image: nodes within MERGE_TOLERANCE x the node extent of the line snapped onto it and shared, image

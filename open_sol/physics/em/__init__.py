@@ -8,8 +8,8 @@ from ...core.backend import to_host
 from ...core.constants import C0, DTYPE, ETA0
 from ...core.solver_base import PhysicsSolver
 from .fields import Fields2D_Ez, Fields2D_Hz
-from .materials import (DrudePole, LorentzPole, material_solution_state, restore_material_solution,
-                        tfsf_outline_warnings)
+from .materials import (DrudePole, LorentzPole, _pole_label, _pole_step_term, material_solution_state,
+                        restore_material_solution, tfsf_outline_warnings)
 from .boundaries import BCType, BoundaryConfig, BoundaryManager, CPMLSided, solver_boundary_config
 from .sources import (
     GaussianPulse, ContinuousWave, RickerWavelet,
@@ -585,24 +585,6 @@ def _make_temporal(waveform, frequency, bandwidth):
     if waveform == 'ricker':
         return RickerWavelet(frequency)
     raise ValueError(f"unknown waveform {waveform!r}; valid: 'gaussian', 'cw', 'ricker'")
-
-
-def _pole_step_term(pole, dt) -> float:
-    """Pole term of the leap-frog bound (z = -1 mode, independent of gamma and sigma_e): Drude (omega_p dt)^2 / 4,
-    Lorentz delta_eps (omega_0 dt)^2 / (4 - (omega_0 dt)^2); ValueError when omega_0 dt >= 2."""
-    if isinstance(pole, DrudePole):
-        return (float(pole.omega_p) * dt) ** 2 / 4.0
-    resonance_step_squared = (float(pole.omega_0) * dt) ** 2
-    if resonance_step_squared >= 4.0:
-        raise ValueError(f'{_pole_label(pole)}: omega_0 dt = {math.sqrt(resonance_step_squared):.4g} >= 2, so the '
-                         f'Lorentz update is unstable; lower courant_factor or refine the mesh')
-    return float(pole.delta_eps) * resonance_step_squared / (4.0 - resonance_step_squared)
-
-
-def _pole_label(pole) -> str:
-    if isinstance(pole, DrudePole):
-        return f'Drude pole omega_p = {float(pole.omega_p):.4g} rad/s'
-    return f'Lorentz pole delta_eps = {float(pole.delta_eps):.4g}, omega_0 = {float(pole.omega_0):.4g} rad/s'
 
 
 def _region_contains(box, cropped_mask, ix, iy) -> bool:

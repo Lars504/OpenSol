@@ -6,7 +6,7 @@ import math
 import time
 
 import numpy as np
-from ....core.backend import host_copy, to_host, write_host_into
+from ....core.backend import check_backend_array, host_copy, to_host, write_host_into
 
 from ....core.constants import C0, DTYPE, EPS0, MU0
 from ....core.error_indicators import energy_interpolation_indicator
@@ -23,8 +23,7 @@ from ..eigenfrequency import solve_resonances
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, ArpackShiftInvertSolver
 from ....solvers.cudss_factor import CudssAccuracyError
 from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
-from ....solvers.line_block import (LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve,
-                                    operator_shift_bytes)
+from ....solvers.line_block import LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve
 from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SparseDirectSolver, host_size_back_end, qr_workspace_bytes,
                                        size_issue)
 from ..fdfd_line_block import LINE_BLOCK_TEXT, MAX_BATCH_WAVELENGTHS, fdfd_block_axis, fdfd_layout
@@ -47,13 +46,13 @@ from ..sheet_conductivity import ConductingSheet, SheetConductivity
 from ..sources import bloch_line_phase
 from ..subpixel_smoothing import SubpixelSmoothing
 from ..yee_grid import cell_row, cpml_grading_cell_size, face_average, face_pec, grid_cell_widths
-from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_region
+from .fdtd_2d_base import add_pec_cells, record_dispersive_region
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
 
-# Wall / mirror faces: outermost cell = sign x its inner neighbour, as the FDTD BoundaryManager writes the row (sign 0:
-# pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current there drops.
-_WALL_SIGNS = WALL_SIGNS
+# Wall / mirror faces (boundaries.WALL_SIGNS, shared with the FDTD rows): outermost cell = sign x its inner neighbour
+# (sign 0: pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current
+# there drops.
 _REJECTED = 'rejected'   # _line_factor of a system whose line-block solve missed the accept tolerance
 _SPARSE_DIRECT_TEXT = 'sparse direct'
 _NOT_KEPT = 'not kept'   # _restored_sensitivity of a restored snapshot whose solve kept no adjoint gradient
@@ -169,6 +168,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
         self.solution = None          # xp complex128 (nx, ny) E_z / H_z of the last solve
         self.system = None            # HarmonicSystem of the last assembly
+        self._system_solved = False   # the last driven solve used self.system (solve_adjoint's guard)
         self.solved_omega = None      # rad/s of the last solve
         self.host_factor_bytes = None   # host factor bytes (SuperLU L + U, MUMPS / PARDISO; Simulation.memory_report)
         self.last_factor_seconds = None   # host wall time of the last factorisation
@@ -273,7 +273,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def solve_eigenfrequencies(self, n_resonances):
         """eigenfrequency study hook: up to n_resonances resonances nearest the wavelength setting (shift-invert on the
         system assembled there, eigenfrequency.solve_resonances; a line_block linear solver's factor of that system,
-        host SuperLU otherwise or after it rejects a solve) -> EigenSolve, kept as eigen_solve."""
+        else the eigen role's own factor; host SuperLU after a line-block rejection) -> EigenSolve, kept as
+        eigen_solve."""
         self.eigen_solve = None
         # SuperLU: the scipy_splu size rule below; line_block: the block-axis rule
         system = self._refresh_system(check_driven_size=self._line_block is not None)
@@ -416,7 +417,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         return self._face_fields
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): energy-weighted interpolation eta^2 parts (2, *window) of the shown solution (driven
+        """S7.7 hook: energy-weighted interpolation eta^2 parts (2, *window) of the shown solution (driven
         or the selected resonance): out-of-plane field and face fields, E x eps0 |eps| of the cells, H x mu0."""
         if self.solution is None or self.system is None:
             raise ValueError(f"em_fdfd_{self.polarization} '{self.name}' has no solution yet")
@@ -522,6 +523,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._restored_sensitivity = None   # a solve is live again (restore_solution never outlives a read)
         self._refresh_state(system, lazy=not record_monitors)
         self._solution_dirty = False
+        self._system_solved = True
         self.n_solves += 1
         if record_monitors:
             self.record_monitors()
@@ -546,6 +548,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             self._reference_factorization = None
             if check_driven_size:
                 self._check_solver_size()
+            self._system_solved = False
             self.system = self._assemble(self.omega)
             self._system_dirty = False
         return self.system
@@ -639,10 +642,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         upcoming = list(dict.fromkeys(self._planned_omegas[self._planned_omegas.index(omega):]))
         layout = self._line_layout
         host_operator = _host_sparse(self.system.operator)
-        per_operator = operator_shift_bytes(layout.n_blocks, layout.block_size, layout.n_unknowns, host_operator.nnz,
-                                            self._line_block.precision)
         n_batch = min(len(upcoming), MAX_BATCH_WAVELENGTHS,
-                      self._line_block.chunk_size(len(upcoming), 1, layout, per_operator, kept=True))
+                      self._line_block.batch_size(len(upcoming), layout, host_operator.nnz))
         if n_batch < 2:
             return None
         batch_omegas = upcoming[:n_batch]   # the other omegas assembled here and again at their solve (deterministic)
@@ -867,7 +868,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def _assemble(self, omega):
         """HarmonicSystem of the current materials (+ extra_permittivity) at omega: A1 operators with the complex PML
         stretch, complex128 Helmholtz operator (ez: PEC cells pinned; hz: PEC face weights 0; wall / mirror rows:
-        _WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps."""
+        WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps."""
         domain = self.domain
         materials = domain.materials
         xp = self.xp
@@ -1071,13 +1072,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         if not isinstance(pole, (DrudePole, LorentzPole)):
             raise TypeError(f"add_dispersive needs a DrudePole or LorentzPole, got {type(pole).__name__}")
         if mask is not None:
-            _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'Pole mask', xp=self.xp)
+            check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'Pole mask', xp=self.xp)
         record_dispersive_region(self.dispersive_regions, pole, mask)
         self._mark_system_dirty()
 
     def add_pec_region(self, mask):
         """Perfect electric conductor on a bool (nx, ny) cell mask of the run backend."""
-        _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'PEC mask', xp=self.xp)
+        check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'PEC mask', xp=self.xp)
         self.pec_cells = add_pec_cells(self.pec_cells, mask)
         self.conformal_pec = None   # the free cells changed
         self._mark_system_dirty()
@@ -1256,7 +1257,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         bc = self.boundary_config
         periodic_y = bc.periodic_y
         # a box reaching a y mirror face of the wave's parity opens onto it: the pinned ghost row and the zero face
-        # weight of an even mirror (_WALL_SIGNS +1) leave no correction there, so nothing else changes
+        # weight of an even mirror (WALL_SIGNS +1) leave no correction there, so nothing else changes
         cells = tfsf_box_cells(d, x0, y0, x1, y1, full_period_y=periodic_y, boundary_config=bc,
                                polarization=self.polarization)
         ix0, ix1, iy0, iy1 = cells
@@ -1343,9 +1344,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def solve_adjoint(self, flat_rhs):
         """x of operator^T x = flat_rhs (unconjugated) for the system of the last solve, on its factorisation (SuperLU
-        trans='T', MUMPS / PARDISO transposed solves; GMRES-recycled or refactorised like a forward solve)."""
+        trans='T', MUMPS / PARDISO transposed solves; GMRES-recycled or refactorised like a forward solve); ValueError
+        when the solution shown is not the driven solve of self.system (a resonance, or a reassembly since)."""
         if self.solution is None or self.system is None:
             raise ValueError("not solved yet: FDFDPhysics.solve_adjoint needs a solve (step or solve_harmonic) first")
+        if not self._system_solved or self.selected_resonance is not None:
+            raise ValueError('FDFDPhysics.solve_adjoint: the assembled system is not that of the last driven solve (a '
+                             'resonance is shown, or an eigenfrequency solve reassembled it since); solve again first')
         return self._solve_linear(self.xp.asarray(flat_rhs, dtype=self.xp.complex128), transpose=True)
 
     def eps_sensitivity(self):
@@ -1454,7 +1459,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         (eps_max - eps_min) of initial_density into the permittivity arrays (ValueError when it overlaps an earlier
         region)."""
         self._require_cartesian('add_design_region')
-        _check_cell_array(mask, self._field_re.shape, self.xp.bool_, 'Design region mask', xp=self.xp)
+        check_backend_array(mask, self._field_re.shape, self.xp.bool_, 'Design region mask', xp=self.xp)
         region = DesignRegion(self.domain, mask, self.permittivity_arrays, eps_min, eps_max, initial_density,
                               filter_radius, projection_beta, projection_eta, objective_unit=self.objective_unit)
         if any(region.overlaps(other) for other in self.design_regions):
@@ -1480,12 +1485,12 @@ def _is_cudss(factorization) -> bool:
 
 
 def _outer_wall_rows(boundary_config, polarization):
-    """(axis, outermost index, inner neighbour index, inner face index, _WALL_SIGNS sign) per wall / mirror face, x
+    """(axis, outermost index, inner neighbour index, inner face index, WALL_SIGNS sign) per wall / mirror face, x
     faces first (indices along the axis; hi side negative)."""
     rows = []
     for axis, axis_name in ((0, 'x'), (1, 'y')):
         for side, outer, inner, inner_face in (('lo', 0, 1, 0), ('hi', -1, -2, -2)):
-            sign = _WALL_SIGNS[polarization].get(getattr(boundary_config, f'{axis_name}_{side}'))
+            sign = WALL_SIGNS[polarization].get(getattr(boundary_config, f'{axis_name}_{side}'))
             if sign is not None:
                 rows.append((axis, outer, inner, inner_face, sign))
     return tuple(rows)

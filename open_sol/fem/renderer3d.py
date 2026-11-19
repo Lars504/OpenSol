@@ -1,4 +1,4 @@
-"""Shared renderer of tetrahedron-mesh scalar physics (igor3d_plan T4b; the 2D fem.renderer.FEMFieldRenderer
+"""Shared renderer of tetrahedron-mesh scalar physics (the 2D fem.renderer.FEMFieldRenderer
 analogue): sample(component, points) of the physics' lagrange_field(component) -> (DofMap3D, host coefficients) (nodal
 P1 / P2 unknowns, P0 element fields), NaN outside the mesh: the Session's tetrahedron reads; device_field = the values
 at the element centroids as a float32 run-backend (n_elements,) vector (not a window image)."""

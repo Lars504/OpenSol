@@ -15,7 +15,8 @@ from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrd
 # Shift-invert across several shifts (B1): the shifted operator K - sigma M is built on one fixed pattern (ShiftPencil
 # below; pattern_combination keeps explicit zeros), so its sparsity pattern never depends on sigma and a cuDSS factor passed back as `previous` is refactorised in place (plan
 # reused); SuperLU refactors from scratch. Inertia (Sylvester): n_negative(K - sigma M) = eigenvalues below sigma of a
-# real symmetric / Hermitian pencil with M positive definite; read from the cuDSS LDL^T pivots (real only, the
+# real symmetric / Hermitian pencil with M positive definite (semi-definite with a fixed massless block, e.g. piezo
+# phi: only count differences mean anything); read from the cuDSS LDL^T pivots (real only, the
 # equilibration is a congruence; mixed: float32 pivots, exact=False) or from a SuperLU factor whose pivots stayed on the
 # diagonal (else one counting SuperLU with diag_pivot_thresh 0, counted as an eigen factorisation). Pencils and the
 # shifted operator stay host CSR: SuperLU converts to CSC itself (_ordered_superlu). MUMPS / PARDISO factorizations
@@ -34,9 +35,11 @@ from .sparse_direct import LOWER_STORED_FRACTION, SparseDirectSolver, SuperLUOrd
 # cuDSS factor) the Arnoldi basis stays on the device as (m + 1, n) rows: classical Gram-Schmidt twice (CGS2: both passes
 # always, cuBLAS gemv on the rows seen as F-order (n, k) columns, no conjugated copies; a second pass on cancellation
 # only cost a host read each time, and Arnoldi on a shift-invert map cancels on almost every step: em_modes 4857 reads
-# for 2429 applications), the next unit row normalised on the device, then ONE packed read per application into pinned
-# memory: coefficients, |w|^2 and, around a host matvec, the next row itself (the vector the host solve needs: no
-# asnumpy of its own). Per restart the host
+# for 2429 applications), the next unit row normalised on the device. Around a host matvec ONE packed read per
+# application into pinned memory: coefficients, |w|^2 and the next row itself (the vector the host solve needs: no
+# asnumpy of its own); on a device matvec (E4, _expand_device) the H columns and |w|^2 stay in device rows and are read
+# once per expansion (m - keep steps; a breakdown found there redoes the steps after its column on a fresh direction;
+# the time recipe prices Sync(1 / (m - keep)) per application). Per restart the host
 # takes the complex Schur form of the small H[:m, :m], moves the `keep` largest |Ritz values| to the front (LAPACK trsen
 # by position), tests ARPACK's criterion on the Ritz estimates |b Q y| and keeps V Q[:, :keep] (device products by
 # column chunks of KRYLOV_CHUNK_BYTES, in place: no (keep, n) temporary; likewise the Ritz vectors).
@@ -293,8 +296,10 @@ LDLT_FACTORIZATIONS = CUDSS_FACTORIZATIONS + HOST_DIRECT_FACTORIZATIONS   # an o
                                                                          # symmetrizer / row_scale (SuperLU: LU)
 MIXED_FACTORIZATIONS = ('cudss_mixed',) + HOST_DIRECT_MIXED_BACK_ENDS   # a float32 / complex64 factor + refinement
 SCIPY_DEFAULT_BASIS = 20   # scipy eigs ncv default: min(n, max(2 k + 1, 20))
-# Arnoldi / Lanczos restarts of eigs / eigsh_shifted: converging solves need tens; scipy's own default 10 n let a solve
-# whose rounding noise exceeds the tolerance (a shift on a resonance) run uninterruptibly for minutes
+# Arnoldi / Lanczos restarts of eigs / eigsh_shifted / eigsh_inverse: converging solves need tens; scipy's own default
+# 10 n let a solve whose rounding noise exceeds the tolerance (a shift on a resonance) run uninterruptibly for minutes
+# (one host call: a GUI stop waits). Unconverged: the converged part with converged False (callers warn). Direct scipy
+# shift-invert calls outside the runtime import it (bor_ports, slab_modes)
 MAX_RESTARTS = 300
 # eigsh_shifted factors and runs eigsh at sigma = shift (1 + this): a target exactly on a resonance would give a
 # (near-)singular factor; 1e-4 bounds the rounding amplification along it (as physics/em/conical). A zero shift stays 0:
@@ -625,7 +630,8 @@ class ArpackShiftInvertSolver:
 
     def count_below(self, stiffness, mass, sigma, previous=None, pencil=None):
         """(ShiftInertia or None, factor) of a real symmetric / complex Hermitian pencil (M positive definite) at sigma
-        itself (no offset; a singular factor retried once at sigma (1 + COUNT_SHIFT_NUDGE)); previous as factorize_host;
+        itself (no offset; a singular factor retried once at sigma (1 + COUNT_SHIFT_NUDGE); counting factorisations
+        count in eigen_factorizations, where a band search's time recipe prices them); previous as factorize_host;
         pencil: this pencil's ShiftPencil (None: one is built). A Hermitian pencil on cuDSS (general LU, no count):
         None, nothing factorised (factor = previous); a runtime resolved from 'auto' counts it by one counting host
         SuperLU instead (factor = previous), so band searches stay verified; on a host direct factorization (MUMPS /

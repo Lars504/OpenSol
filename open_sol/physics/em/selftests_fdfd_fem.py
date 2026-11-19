@@ -6,7 +6,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list, skip_without_cudss
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_bor import _match
@@ -15,7 +15,7 @@ from .selftests_modes_fem import _report, _sizing
 
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_EIGEN_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_EIGEN_STUDY = EIGENFREQUENCY_STUDY
 
 # ---- PEC box on triangles: 1.0 x 0.6 um; ez eps 2: k0^2 eps = kc^2 (m, n >= 1); hz eps_xx 2, eps_yy 3, mu 1: k0^2 =
 # (m pi / a)^2 / eps_yy + (n pi / b)^2 / eps_xx (m, n >= 0, not both 0: pec walls are natural for H_z)

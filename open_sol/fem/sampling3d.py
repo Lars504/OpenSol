@@ -1,4 +1,4 @@
-"""Point location and field evaluation on a TetrahedronMesh (igor3d_plan section 7, T7): the containing element of
+"""Point location and field evaluation on a TetrahedronMesh: the containing element of
 physical points by a k-d tree over element centroids, Lagrange fields (values and gradients) and Nedelec fields (values
 and curls) there, Lagrange values at element centroids. Host numpy, scipy inside functions."""
 import numpy as np

@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import no_runs, scaled_worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests import _lame
@@ -13,7 +13,7 @@ from .selftests_eigenfrequency import _add_rank_items, _symbols, _table_frequenc
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'   # = selftests.SOLID_TYPE_NAME
-_STUDY = 'eigenfrequency'         # = model.study_eigenfrequency.STUDY_NAME
+_STUDY = EIGENFREQUENCY_STUDY
 _TABLE = 'modes'
 _YOUNGS_MODULUS = 70e9            # Pa
 _POISSON_RATIO = 0.25

@@ -4,13 +4,13 @@ snapshot per
 resonance number."""
 import math
 
-from .schema import Issue, Param, StudyType
+from .schema import EIGENFREQUENCY_STUDY, Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, MultiShiftEigenSolver
 from .study import (_PARITY_SECTORS_PARAM, _background_fixed_point_params, _background_stage, _log_eigen_solve,
                     _numbered_snapshots, _reselect_first_resonance, _scipy_issues, _selected_physics,
                     _solve_static_states, _solver_roles, _study_solved_types, _with_parity_sectors)
 
-STUDY_NAME = 'eigenfrequency'
+STUDY_NAME = EIGENFREQUENCY_STUDY
 _RESONANCE_STAGE = 'Resonance solve'
 # the eigen-solved types (missing-physics remedy and texts)
 _SOLVED_TYPES_TEXT = ('em_fdfd_ez, em_fdfd_hz, em_fdfd_bor, em_fdfd_conical, em_fdfd_3d, solid_mechanics, '
@@ -25,7 +25,7 @@ _BAND_COUNT_FACTORIZATIONS = 2      # inertia counts at the band edges (symmetri
 
 def _search_text(values) -> str:
     """Log text of the search: nearest the target setting, the listed targets, or the band."""
-    search = values.get('search', 'nearest')
+    search = values['search']
     if search == 'targets':
         targets = ', '.join(f'{target:.6g}' for target in values['target_frequencies'] or ())
         return f"up to {values['n_resonances']} resonance(s) nearest each of f = {targets} Hz"
@@ -62,7 +62,7 @@ def _run_eigenfrequency(session, values, emit, control, service):
 def _search_solve(name, solver, values):
     """The eigen solve of one physics as the search setting asks: solve_eigenfrequencies (nearest), or the
     MultiShiftEigenSolver hooks (targets / band; ValueError for a solver without them)."""
-    search = values.get('search', 'nearest')
+    search = values['search']
     n_resonances = values['n_resonances']
     if search == 'nearest':
         return solver.solve_eigenfrequencies(n_resonances)
@@ -98,7 +98,7 @@ def _validate_eigenfrequency(vctx, values):
 def _search_issues(vctx, values):
     """Errors for an empty target list, a band whose end does not exceed its start, and a search a solved physics'
     type does not list in eigen_searches (at that physics)."""
-    search = values.get('search', 'nearest')
+    search = values['search']
     if search == 'nearest':
         return []
     issues = []
@@ -210,7 +210,7 @@ def _time_counts(values):
     n_resonances = int(values['n_resonances'])
     counts = {'eigenpairs': n_resonances, 'eigen_shifts': 1, 'resonances': n_resonances,
               'fixed_point_limit': int(values['max_iterations'])}
-    search = values.get('search', 'nearest')
+    search = values['search']
     if search == 'targets':
         shifts = max(len(values.get('target_frequencies') or ()), 1)
         counts.update(eigen_shifts=shifts, resonances=n_resonances * shifts)
@@ -232,5 +232,6 @@ def register(registry):
         description=_DESCRIPTION,
         params=_EIGENFREQUENCY_PARAMS, background_study='stationary', run=_run_eigenfrequency,
         validate=_with_parity_sectors(_validate_eigenfrequency), supports_adaptation=True,
+        supports_solved_physics=True,
         feedback_alternative='use a stationary study with a source to couple the FDFD field into other physics',
         time_counts=_time_counts, solver_protocols=(EigenfrequencySolver,)))

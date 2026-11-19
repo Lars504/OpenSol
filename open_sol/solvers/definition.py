@@ -1,6 +1,6 @@
 """SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen',
 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
-model.study, before the physics definitions (solver_plan S3.5)."""
+model.study, before the physics definitions."""
 from ..model.schema import Issue, Param, solver_backend
 from . import (arpack_shift_invert, banded, block_eigen, explicit_kernels, host_direct, line_block, multigrid, pcg,
                sparse_direct)
@@ -331,7 +331,7 @@ def _validate_banded(vctx, values, path):
 
 BANDED = SolverType(
     'banded', 'Banded direct solver (1D)', roles=('linear',),
-    description='Direct solve of 1D models (domain size_y null: a line of cells, symmetry plan 2.20): the operator of '
+    description='Direct solve of 1D models (domain size_y null: a line of cells): the operator of '
                 'a window one cell across is banded (tridiagonal for heat, electric_currents, electrostatics), so one '
                 'host banded Cholesky (scipy.linalg cholesky_banded, double precision) per assembly gives exact '
                 'solves at a cost linear in the cells; on the GPU backend the operator, rhs and solution move to the '
@@ -511,7 +511,7 @@ BLOCK_EIGEN = SolverType(
 
 
 EXPLICIT_KERNELS_PARAMS = (
-    Param('precision', 'choice', 'single', label='Solver precision', choices=('single', 'double', 'half_storage'),
+    Param('precision', 'choice', 'single', label='Solver precision', choices=explicit_kernels.PRECISIONS,
           choice_labels=(('single', 'Single precision'), ('double', 'Double precision'),
                          ('half_storage', 'Half-precision storage')),
           help='single: float32 fields and arithmetic (every engine). double (em_fdtd_ez / em_fdtd_hz): float64 '
@@ -545,7 +545,7 @@ EXPLICIT_KERNELS = SolverType(
     summary='Time stepping on the graphics card (or the processor for small 2D light models), in single or double '
             'precision or with half-precision field storage.',
     operators=('spd', 'complex_symmetric', 'general'), backends=('gpu', 'cpu'),
-    precisions=('single', 'double', 'half_storage'), grids=('tensor',), create=_create_explicit_kernels,
+    precisions=explicit_kernels.PRECISIONS, grids=('tensor',), create=_create_explicit_kernels,
     memory_estimate=_empty_memory_estimate, backend_misfit=explicit_kernels.backend_misfit,
     time_estimate=explicit_kernels.time_estimate)
 

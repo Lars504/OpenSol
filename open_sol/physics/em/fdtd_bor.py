@@ -1,4 +1,4 @@
-"""Body-of-revolution FDTD (symmetry plan 2.3): leap-frog stepping of one azimuthal order m on the (r, z) half plane
+"""Body-of-revolution FDTD: leap-frog stepping of one azimuthal order m on the (r, z) half plane
 with the em_fdfd_bor finite-integration curl (body_of_revolution, real metric), CPML (cylindrical along r), Drude /
 Lorentz poles, current sources and DFT spectra; operators host-built (scipy), stepped on numpy or cupy."""
 # State: x = the full E layout of body_of_revolution (E_r (nr+1, nz), u (nr, nz), E_z (nr, nz+1); inactive points of
@@ -66,12 +66,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ...core.backend import cp, host_copy, write_host_into
+from ...core.backend import cp, host_copy, to_host, write_host_into
 from ...core.constants import DTYPE, C0, EPS0, MU0
+from ...core.kernels import twin
 from ...core.sources import sampled_waveform_spectrum
 from .body_of_revolution import BOR_SOURCE_COMPONENTS, BORAssembly, _regular_axis, axis_class, mirrored_yee
 from .boundaries import cpml_axis_profiles
-from .materials import DrudePole, LorentzPole
+from .materials import DrudePole, LorentzPole, _pole_step_term
 
 _EIGEN_TOLERANCE = 1e-6          # eigsh tolerance of the largest operator eigenvalue (its Ritz value lies below it)
 _STABILITY_MARGIN = 1e-5         # omega_max x (1 + this) covers that tolerance
@@ -266,51 +267,110 @@ def order_time_step_limit(assembly, order, warm_start=None) -> float:
                             np.abs(assembly.a_volumes), e_active, warm_start=warm_start)
 
 
-# ---- device kernels (numpy twins next to them) ----
-_UPDATE = cp.ElementwiseKernel(
+# ---- device kernels: core.kernels twins (their numpy twins first) ----
+def _update_host(decay, gain, curl, field):
+    field *= decay
+    field += gain * curl
+
+
+def _update_pml_host(decay, gain, curl, drive, a, b, psi, field):
+    psi *= b
+    psi += a * drive
+    term = curl + psi
+    term *= gain
+    field *= decay
+    field += term
+
+
+def _radial_poles_host(rows, inner, integral, order, a_inner, b_inner, a_outer, b_outer, psi_inner, psi_outer, curl):
+    total = inner + integral
+    psi_inner *= b_inner
+    psi_inner += a_inner * total
+    term = total + psi_inner + order
+    psi_outer *= b_outer
+    psi_outer += a_outer * term
+    curl[rows] += term + psi_outer   # rows distinct
+
+
+def _radial_integrate_host(columns, interval, source, integrated):
+    integrated += interval * source[columns]
+
+
+def _drude_step_host(points, damping, drive, field, current):
+    current += damping * current + drive * field[points]
+
+
+def _lorentz_step_host(points, damping, restoring, drive, field, polarization, change):
+    change += damping * change - restoring * polarization + drive * field[points]
+    polarization += change
+
+
+def _pole_correct_host(points, weight, value, field):
+    field[points] -= weight * value
+
+
+def _field_inject_host(points, weight_re, weight_im, signal, quadrature, field):
+    field[points] += weight_re * signal + weight_im * quadrature
+
+
+def _point_add_host(points, weight, value, field):
+    field[points] += weight * value
+
+
+def _axis_copy_host(targets, sources, factor, field):
+    field[targets] = factor * field[sources]
+
+
+def _accumulate_host(phase, points, offsets, values, total):
+    total += phase * values[offsets + points]
+
+
+_UPDATE = twin('em.bor_fdtd_update', cp.ElementwiseKernel(
     'float32 decay, float32 gain, float32 curl', 'float32 field', 'field = decay * field + gain * curl',
-    'bor_fdtd_update')
-_UPDATE_PML = cp.ElementwiseKernel(
+    'bor_fdtd_update'), _update_host)
+_UPDATE_PML = twin('em.bor_fdtd_update_pml', cp.ElementwiseKernel(
     'float32 decay, float32 gain, float32 curl, float32 drive, float32 a, float32 b', 'float32 psi, float32 field',
-    'psi = b * psi + a * drive; field = decay * field + gain * (curl + psi)', 'bor_fdtd_update_pml')
-_RADIAL_POLES = cp.ElementwiseKernel(
+    'psi = b * psi + a * drive; field = decay * field + gain * (curl + psi)', 'bor_fdtd_update_pml'),
+    _update_pml_host)
+_RADIAL_POLES = twin('em.bor_fdtd_radial_poles', cp.ElementwiseKernel(
     'int64 row, float32 inner, float32 integral, float32 order, float32 a_inner, float32 b_inner, float32 a_outer, '
     'float32 b_outer',
     'float32 psi_inner, float32 psi_outer, raw float32 curl',
     'float total = inner + integral; psi_inner = b_inner * psi_inner + a_inner * total; '
     'float term = total + psi_inner + order; psi_outer = b_outer * psi_outer + a_outer * term; '
     'curl[row] += term + psi_outer',
-    'bor_fdtd_radial_poles')
-_RADIAL_INTEGRATE = cp.ElementwiseKernel(
+    'bor_fdtd_radial_poles'), _radial_poles_host)
+_RADIAL_INTEGRATE = twin('em.bor_fdtd_radial_integrate', cp.ElementwiseKernel(
     'int64 column, float32 interval, raw float32 source', 'float32 integrated',
-    'integrated += interval * source[column]', 'bor_fdtd_radial_integrate')
-_DRUDE_STEP = cp.ElementwiseKernel(
+    'integrated += interval * source[column]', 'bor_fdtd_radial_integrate'), _radial_integrate_host)
+_DRUDE_STEP = twin('em.bor_fdtd_drude_step', cp.ElementwiseKernel(
     'int64 point, float32 damping, float32 drive, raw float32 field', 'float32 current',
-    'current += damping * current + drive * field[point]', 'bor_fdtd_drude_step')
-_LORENTZ_STEP = cp.ElementwiseKernel(
+    'current += damping * current + drive * field[point]', 'bor_fdtd_drude_step'), _drude_step_host)
+_LORENTZ_STEP = twin('em.bor_fdtd_lorentz_step', cp.ElementwiseKernel(
     'int64 point, float32 damping, float32 restoring, float32 drive, raw float32 field',
     'float32 polarization, float32 change',
     'change += damping * change - restoring * polarization + drive * field[point]; polarization += change',
-    'bor_fdtd_lorentz_step')
-_POLE_CORRECT = cp.ElementwiseKernel(
+    'bor_fdtd_lorentz_step'), _lorentz_step_host)
+_POLE_CORRECT = twin('em.bor_fdtd_pole_correct', cp.ElementwiseKernel(
     'int64 point, float32 weight, float32 value', 'raw float32 field', 'field[point] -= weight * value',
-    'bor_fdtd_pole_correct')
-_FIELD_INJECT = cp.ElementwiseKernel(
+    'bor_fdtd_pole_correct'), _pole_correct_host)
+_FIELD_INJECT = twin('em.bor_fdtd_field_inject', cp.ElementwiseKernel(
     'int64 point, float32 weight_re, float32 weight_im, float32 signal, float32 quadrature', 'raw float32 field',
-    'field[point] += weight_re * signal + weight_im * quadrature', 'bor_fdtd_field_inject')
-_POINT_ADD = cp.ElementwiseKernel(
+    'field[point] += weight_re * signal + weight_im * quadrature', 'bor_fdtd_field_inject'), _field_inject_host)
+_POINT_ADD = twin('em.bor_fdtd_point_add', cp.ElementwiseKernel(
     'int64 point, float32 weight, float32 value', 'raw float32 field', 'field[point] += weight * value',
-    'bor_fdtd_point_add')
-_AXIS_COPY = cp.ElementwiseKernel(
+    'bor_fdtd_point_add'), _point_add_host)
+_AXIS_COPY = twin('em.bor_fdtd_axis_copy', cp.ElementwiseKernel(
     'int64 target, int64 source, float32 factor', 'raw float32 field', 'field[target] = factor * field[source]',
-    'bor_fdtd_axis_copy')
-# DFT of stacked member rows: total (k, n_f, n) += phase (n_f) x values[offset (k) + point (n)] (values flat)
-_ACCUMULATE_DOUBLE = cp.ElementwiseKernel(
+    'bor_fdtd_axis_copy'), _axis_copy_host)
+# DFT of stacked member rows: total (k, n_f, n) += phase (1, n_f, 1) x values[offset (k, 1, 1) + point (1, 1, n)]
+# (values = the flat stacked rows)
+_ACCUMULATE_DOUBLE = twin('em.bor_fdtd_dft_double', cp.ElementwiseKernel(
     'complex128 phase, int64 point, int64 offset, raw float32 values', 'complex128 total',
-    'total += phase * (double)values[offset + point]', 'bor_fdtd_dft_double')
-_ACCUMULATE_SINGLE = cp.ElementwiseKernel(
+    'total += phase * (double)values[offset + point]', 'bor_fdtd_dft_double'), _accumulate_host)
+_ACCUMULATE_SINGLE = twin('em.bor_fdtd_dft_single', cp.ElementwiseKernel(
     'complex128 phase, int64 point, int64 offset, raw float32 values', 'complex64 total',
-    'total += complex<float>(phase * (double)values[offset + point])', 'bor_fdtd_dft_single')
+    'total += complex<float>(phase * (double)values[offset + point])', 'bor_fdtd_dft_single'), _accumulate_host)
 _CSR_PRODUCT = cp.RawKernel(r'''
 extern "C" __global__ void bor_fdtd_csr_product(const int* row_starts, const int* columns, const float* values,
                                                  const float* vector, float* out, const int n_rows) {
@@ -324,39 +384,6 @@ extern "C" __global__ void bor_fdtd_csr_product(const int* row_starts, const int
 }
 ''', 'bor_fdtd_csr_product')
 _CSR_BLOCK = 256   # threads per block of _CSR_PRODUCT (one row each)
-
-
-def _update_host(field, decay, gain, curl, pml):
-    """numpy twin of _UPDATE / _UPDATE_PML (pml = (drive, a, b, psi) of the z CPML or None); overwrites the curl work
-    buffer."""
-    if pml is not None:
-        drive, a, b, psi = pml
-        psi *= b
-        psi += a * drive
-        curl += psi
-    field *= decay
-    field += gain * curl
-
-
-def _radial_host(rows, inner, integral, order, a_inner, b_inner, a_outer, b_outer, psi_inner, psi_outer, curl):
-    """numpy twin of _RADIAL_POLES (rows distinct)."""
-    total = inner + integral
-    psi_inner *= b_inner
-    psi_inner += a_inner * total
-    term = total + psi_inner + order
-    psi_outer *= b_outer
-    psi_outer += a_outer * term
-    curl[rows] += term + psi_outer
-
-
-def _accumulate_stack(total, phase, points, offsets, rows, values, flat_values):
-    """total (k, n_f, n) += phase (n_f,) x values[rows][:, points] of stacked member rows values (k_all, n_values);
-    cupy: the kernels above on flat_values at offsets = rows x n_values (numpy twin)."""
-    if isinstance(total, np.ndarray):
-        total += phase[None, :, None] * values[rows][:, points][:, None, :]
-        return
-    kernel = _ACCUMULATE_DOUBLE if total.dtype == np.complex128 else _ACCUMULATE_SINGLE
-    kernel(phase[None, :, None], points[None, None, :], offsets[:, None, None], flat_values, total)
 
 
 class _SparseProduct:
@@ -481,11 +508,6 @@ class _BatchRadial:
         takes the source sample."""
         if self._integral is not None:
             self._integral.apply(self.integrated, self.values[1])
-        if isinstance(curl, np.ndarray):
-            _radial_host(self.rows, *self.values, *self.coefficients, *self.psi, curl)
-            if self.columns.size:
-                self.integrated += self.interval * source[self.columns]
-            return
         _RADIAL_POLES(self.device_rows, *self.values, *self.coefficients, *self.psi, curl)
         if self.columns.size:
             _RADIAL_INTEGRATE(self.device_columns, self.interval, source, self.integrated)
@@ -539,9 +561,7 @@ class _BatchSide:
         self._product.apply(source, self._out)
         if self.radial is not None:
             self.radial.add(source, self.curl)
-        if isinstance(field, np.ndarray):
-            _update_host(field, self.decay, self.gain, self.curl, self.pml)
-        elif self.pml is None:
+        if self.pml is None:
             _UPDATE(self.decay, self.gain, self.curl, field)
         else:
             _UPDATE_PML(self.decay, self.gain, self.curl, *self.pml, field)
@@ -595,25 +615,14 @@ class _BatchPole:
 
     def update(self, x):
         """J^{n+1/2} (Drude) or P^{n+1}, dP (Lorentz) from E^n = x (flat stacked) before the E update."""
-        if isinstance(x, np.ndarray):
-            sample = x[self.indices]
-            if self.drude:
-                self.current += self.damping * self.current + self.drive * sample
-            else:
-                self.change += self.damping * self.change - self.restoring * self.current + self.drive * sample
-                self.current += self.change
-        elif self.drude:
+        if self.drude:
             _DRUDE_STEP(self.device_index, self.damping, self.drive, x, self.current)
         else:
             _LORENTZ_STEP(self.device_index, self.damping, self.restoring, self.drive, x, self.current, self.change)
 
     def correct(self, x):
         """E^{n+1} -= g J (Drude) or (g / dt) dP (Lorentz) after the E update."""
-        value = self.current if self.drude else self.change
-        if isinstance(x, np.ndarray):
-            x[self.indices] -= self.correction * value
-        else:
-            _POLE_CORRECT(self.device_index, self.correction, value, x)
+        _POLE_CORRECT(self.device_index, self.correction, self.current if self.drude else self.change, x)
 
 
 class _Injection:
@@ -676,7 +685,7 @@ class BORSpectra:
         parts = []
         for spectra, host_index, size in ((self.e_spectra, self.host_e_index, self.sizes[0]),
                                           (self.a_spectra, self.host_a_index, self.sizes[1])):
-            values = np.asarray(_host(spectra[index]), dtype=np.complex128) * scale
+            values = np.asarray(to_host(spectra[index]), dtype=np.complex128) * scale
             if host_index is None:
                 parts.append(values)
                 continue
@@ -684,11 +693,6 @@ class BORSpectra:
             full[host_index] = values
             parts.append(full)
         return tuple(parts)
-
-
-def _host(array):
-    """numpy view / copy of a numpy or cupy array."""
-    return array if isinstance(array, np.ndarray) else array.get()
 
 
 class _SpectraGroup:
@@ -705,27 +709,29 @@ class _SpectraGroup:
         self.positions = np.asarray(positions, dtype=np.int64)
         host_indices = tuple(None if index is None else np.asarray(index, dtype=np.int64)
                              for index in (e_index, a_index))
-        self._sides = []   # (stack, phase view, device points, device offsets) of x, then h
+        self._sides = []   # (stack, phase view, points, offsets) of x, then h, shaped for the (k, n_f, n) stack
         stacks = []
         for host_index, size in zip(host_indices, sizes):
             points = np.arange(size, dtype=np.int64) if host_index is None else host_index
             stack = xp.zeros((self.positions.size, omega.size, points.size), dtype=dtype)
             stacks.append(stack)
-            self._sides.append([stack, None, xp.asarray(points), xp.asarray(self.positions * size)])
+            self._sides.append([stack, None, xp.asarray(points)[None, None, :],
+                                xp.asarray(self.positions * size)[:, None, None]])
         # complex128 phases of the next samples (device recursion: ~1e-16 per step): row 0 x, row 1 h
         self._phases = xp.asarray(np.stack((np.exp(-1j * omega * next_step * dt) * dt,
                                             np.exp(-1j * omega * (next_step - 0.5) * dt) * dt)))
         self._rotation = xp.asarray(np.exp(-1j * omega * dt))[None, :]
         for row, side in enumerate(self._sides):
-            side[1] = self._phases[row]
+            side[1] = self._phases[row][None, :, None]
         self.views = [BORSpectra(frequencies, sizes, *host_indices, stacks[0][member], stacks[1][member])
                       for member in range(self.positions.size)]
 
-    def accumulate(self, stacked_x, flat_x, stacked_h, flat_h):
-        """Add the samples of the step that just ended (x at n dt, h at (n - 1/2) dt) of the stacked member rows."""
-        for (stack, phase, points, offsets), values, flat_values in zip(self._sides, (stacked_x, stacked_h),
-                                                                        (flat_x, flat_h)):
-            _accumulate_stack(stack, phase, points, offsets, self.positions, values, flat_values)
+    def accumulate(self, flat_x, flat_h):
+        """Add the samples of the step that just ended (x at n dt, h at (n - 1/2) dt) of the flat stacked member
+        rows."""
+        for (stack, phase, points, offsets), flat_values in zip(self._sides, (flat_x, flat_h)):
+            kernel = _ACCUMULATE_DOUBLE if stack.dtype == np.complex128 else _ACCUMULATE_SINGLE
+            kernel(phase, points, offsets, flat_values, stack)
         self._phases *= self._rotation
 
 
@@ -842,22 +848,15 @@ class _LockstepBatch:
         for injection, index, weight_re, weight_im in self._field_injections:
             if injection.side != side:
                 continue
-            signal, quadrature = DTYPE(injection.temporal(time)), DTYPE(injection.temporal.quadrature(time))
-            if self.xp is np:
-                field[index] += weight_re * signal + weight_im * quadrature
-            else:
-                _FIELD_INJECT(index, weight_re, weight_im, signal, quadrature, field)
+            _FIELD_INJECT(index, weight_re, weight_im, DTYPE(injection.temporal(time)),
+                          DTYPE(injection.temporal.quadrature(time)), field)
 
     def _slave(self, kind, field):
         """|m| = 1 axis recovery of the flat field (module header): field[target] = factor field[source]."""
         slaving = self._slaving[kind]
         if slaving is None:
             return
-        targets, sources, factors = slaving
-        if self.xp is np:
-            field[targets] = factors * field[sources]
-        else:
-            _AXIS_COPY(targets, sources, factors, field)
+        _AXIS_COPY(*slaving, field)
 
     def step(self):
         """One leap-frog step of every member: h to (n + 1/2) dt (its field injections at n dt), the poles from x^n, x
@@ -877,14 +876,11 @@ class _LockstepBatch:
             value = float(temporal(source_time))
             if value == 0.0:
                 continue
-            if self.xp is np:
-                x[points] += weights * DTYPE(value)
-            else:
-                _POINT_ADD(points, weights, DTYPE(value), x)
+            _POINT_ADD(points, weights, DTYPE(value), x)
         self._slave('e', x)
         self.n_step += 1
         for group in self._spectra:
-            group.accumulate(self.x, x, self.h, h)
+            group.accumulate(x, h)
 
 
 class BORTimeStepper:
@@ -1047,7 +1043,6 @@ class BORTimeStepper:
                 raise ValueError(f'em_fdtd_bor: a relative {name} below 1 ({float(np.min(values[active])):.4g}) at '
                                  'a field point breaks the time step (computed for eps = mu_r = 1)')
         if self._poles and self.e_active.any():
-            from . import _pole_step_term   # the 2D engines' z = -1 pole term (package init done by then)
             pole_terms = np.zeros(self.sizes[0])
             for points in self._poles:
                 pole_terms[points.indices] += points.weights * _pole_step_term(points.pole, dt)
@@ -1217,7 +1212,8 @@ def order_term_fields(order, family, e_values, a_values, shape):
 
 
 def combine_terms(term_lists):
-    """[(signed order, summed yee dict)] of term lists [(signed order, yee dict)], equal signed orders added."""
+    """[(signed order, summed yee dict)] of term lists [(signed order, yee dict)], equal signed orders added (the two
+    families of one order must add before a flux: their cross terms cancel only between +m and -m)."""
     combined = {}
     for terms in term_lists:
         for order, fields in terms:

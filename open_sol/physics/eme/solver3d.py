@@ -1,4 +1,4 @@
-"""EMEPhysics3D: bidirectional eigenmode expansion of a Domain3D along z (eme_plan stage 2): one slice per z cell
+"""EMEPhysics3D: bidirectional eigenmode expansion of a Domain3D along z: one slice per z cell
 layer, full-vector cross-section modes per section (cross_section_modes, PML modes kept), the shared EMEBase cascade and
 port results, and the E phasor reconstructed at the cell centres of the whole grid."""
 # The xy plane of every z layer is the cross-section: its x / y faces are the EM transverse boundaries (a 2D

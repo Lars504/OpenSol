@@ -1,4 +1,4 @@
-"""Kottke / Farjadpour averaging (igor 1.5) of one 2D EM physics' current eps on the build's interface locations
+"""Kottke / Farjadpour averaging of one 2D EM physics' current eps on the build's interface locations
 (core.interface_geometry): 1 / eps_d = n_d^2 <1/eps> + (1 - n_d^2) / <eps> over the two materials of the location
 (E_z: <eps>), reapplied in every E-coefficient rebuild (FDTD) / assembly (FDFD) / mode solve (em_modes) and given to
 the mode-port lines."""

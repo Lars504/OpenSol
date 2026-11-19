@@ -1,4 +1,4 @@
-"""Kernel twins (solver_plan S6): each fused cupy kernel paired with a numpy twin of the same call signature (and an
+"""Kernel twins: each fused cupy kernel paired with a numpy twin of the same call signature (and an
 optional numba twin, built lazily when numba imports), so engine code is one path on both backends: a twin call runs
 the cupy kernel for cupy arrays and the host twin for numpy arrays. Imports numpy and core.backend only."""
 import importlib.util

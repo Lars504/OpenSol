@@ -27,12 +27,15 @@ from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE
                             INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS, MESH_KINDS,
                             MESH_PARAMS, PRECISIONS, SELECTION_KINDS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                             SOURCE_DERIVED_OPERATIONS, SOLVER_ROLES, Param, coupling_type_accepts, feature_precision_note, fill_defaults,
+                            known_physics,
                             instance_space, output_field_names, param_in_space,
                             memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
                             with_default_precision, with_node_precision)
+from ..model.definition_helpers import DISCRETIZATION_SETTING
 from ..model.meshing import PHYSICS_BASE_DIVISOR, PHYSICS_OBJECT_DIVISOR, line_block_hint, mesh_values
 from ..model.spec import AdaptationSpec, MeshAxisSpec, MeshBandSpec, MeshSegmentSpec, RefinementSpec, SweepSpec
 from ..physics.em.definition import DISPERSION_POLE_PARAMS
+from ..physics.em.material_fit import NK_FIT_MODEL
 from .forms import (DERIVED_OPERATION_LABELS, ERROR_COLOR, HINT_COLOR, SELECTION_KIND_LABELS, CheckList, CommitLineEdit,
                     CommitTextEdit, CurveInputsEdit, ExpressionEdit, FormContext, IntSpinBox, NameEdit, NumberEdit,
                     ParamForm, SelectionPicker, StoredCutsEdit, TableEdit, ValueComboBox, display_number, error_label,
@@ -52,7 +55,7 @@ from .solve_flow_view import show_solve_flow
 
 _MAX_EVERY = 1_000_000_000
 _REFINED_MESH_MODES = ('nonuniform', 'auto')   # mesh modes that apply the explicit refinements (model/meshing)
-_TRIANGLE_ONLY_SETTINGS = frozenset({'discretization'})   # physics settings shown only on a triangle mesh (FEM order)
+_ELEMENT_MESH_SETTINGS = frozenset({DISCRETIZATION_SETTING})   # physics settings shown only on an element mesh
 # forms built from spec lists: rebuilt on every external edit
 _LIST_BACKED_NODES = (('model',), ('parameters',), ('couplings',), MESHES_NODE, ('solvers',), ESTIMATION_NODE)
 _LEVEL_COLORS = {'error': ERROR_COLOR, 'warning': '#ef6c00', 'info': '#1565c0'}
@@ -516,7 +519,7 @@ _POLE_MODEL_TIP = ('Kind of frequency response this pole adds.\n\n'
                    'reports how well it fits.\n\n'
                    'Switching resets the values except the damping rate.')
 _POLE_MODEL_TEXTS = {'drude': 'Drude (free electrons)', 'lorentz': 'Lorentz (resonance)',
-                     'nk_fit': 'Fit to the library table of measured optical data'}
+                     NK_FIT_MODEL: 'Fit to the library table of measured optical data'}
 _NO_POLES_TEXT = 'No frequency dependence: the material has the same properties at every wavelength.'
 _INHERIT_POLES_TIP = ('Checked: use the frequency dependence of the library material (none without a library).\n\n'
                       'Unchecked: edit your own poles below, starting from a copy of the library ones.')
@@ -618,7 +621,7 @@ _CURVE_TARGET_HINTS = {   # target kind -> what its expression may use besides t
     'table': 'x = the X column value in its unit (the row index from 0 when empty)',
     'line': 'x, y [m] on the line (3D: also z) and s [m] = distance from the start point',
     'sweep': 'the swept parameter (every parameter is re-evaluated per point)'}
-_POLE_MODEL_ENTRIES = tuple((model, {'nk_fit': 'Tabulated-data fit'}.get(model, model.capitalize()))
+_POLE_MODEL_ENTRIES = tuple((model, {NK_FIT_MODEL: 'Tabulated-data fit'}.get(model, model.capitalize()))
                             for model in DISPERSION_POLE_PARAMS)   # (value, label)
 _COUPLINGS_INTRO = ('Couplings pass a result of one physics into another: for example, light absorbed in a metal '
                     'heats it, or a rise in temperature changes the refractive index.')
@@ -1895,12 +1898,12 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         """Settings Params of the physics form: element-mesh-only settings (FEM 'discretization') only on a triangle /
         tetrahedron mesh, elsewhere only while stored (to clear them)."""
         try:
-            on_triangles = self._document.spec.mesh_of(physics).kind in FREE_MESH_KINDS
+            on_elements = self._document.spec.mesh_of(physics).kind in FREE_MESH_KINDS
         except KeyError:   # unknown mesh name: the validation names it; show everything
-            on_triangles = True
+            on_elements = True
         stored = physics.settings if isinstance(physics.settings, dict) else {}
         return tuple(param for param in physics_type.settings
-                     if on_triangles or param.name not in _TRIANGLE_ONLY_SETTINGS or param.name in stored)
+                     if on_elements or param.name not in _ELEMENT_MESH_SETTINGS or param.name in stored)
 
     def _physics_mesh_row(self, physics_name):
         """Mesh combo of a physics (the model's meshes, then 'New mesh for this physics') beside a swatch in the
@@ -2764,11 +2767,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         layout.addWidget(_group('Defaults', defaults_form))
         self._refreshers.append(lambda: defaults_form.refresh(default_values()))
         lines = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             for role, solver_role in physics_type.solver_roles.items():
                 if solver_role.used_in(spec.study.type):
                     node = self._assigned_solver(physics.name, role)
@@ -2868,13 +2867,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _add_stored_fields(self, layout, spec):
         entries = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             for info in physics_type.output_fields:
-                if info.requires_study and info.requires_study != spec.study.type:
+                if not info.available_in(spec.study.type):
                     continue   # e.g. harmonic FDTD phasors exist only in a frequency_domain study
                 key = f'{physics.name}.{info.name}'
                 label = f'{physics.name}: {info.label}' + ('  (main field)' if info.primary else '')
@@ -3289,13 +3284,9 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         """[(physics name, FieldInfo)] of every output field of the registered physics available in the study type, in
         model order."""
         entries = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             entries.extend((physics.name, info) for info in physics_type.output_fields
-                           if not info.requires_study or info.requires_study == spec.study.type)
+                           if info.available_in(spec.study.type))
         return entries
 
     # ---- current values (read by name) ----
