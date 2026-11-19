@@ -10,6 +10,7 @@ from ..core.constants import FACE_LABELS
 from ..core.renderer import primary_field_info
 from ..materials import REGISTRY as MATERIAL_LIBRARY
 from ..materials.crystal_tensors import CRYSTALS
+from ..viz.field_viewer import FIGURE_CHOICES, FIGURE_RANGES
 from .expressions import (BUILTIN_CONSTANTS, CONSTANT_DESCRIPTIONS, COORDINATE_NAMES, FUNCTION_ARITY,
                           FUNCTION_DESCRIPTIONS, MAX_EXPRESSION_LENGTH, RESERVED_NAMES)
 from .analytic import (CURVE_FUNCTION_DESCRIPTIONS, CURVE_RESULT_KINDS, DERIVED_RESULT_KINDS, FIT_QUANTITIES,
@@ -750,6 +751,17 @@ _MATERIAL_NOTES = (
     'c66 (Voigt 1 xx, 2 yy, 3 zz, 4 yz, 5 xz, 6 xy), the 18 piezo_e11 .. piezo_e36, eps_dc_xx / _yy / _zz / _yz / '
     '_xz / _xy and rho (no optical entries).',
 )
+def _figure_choices(key) -> str:
+    """The choices of a field-viewer Plot setting as help text ('a' | 'b')."""
+    return ' | '.join(repr(choice) for choice in FIGURE_CHOICES[key])
+
+
+def _figure_range(key) -> str:
+    """The range of a numeric field-viewer Plot setting as help text (low - high)."""
+    low, high = FIGURE_RANGES[key]
+    return f'{low:g} - {high:g}'
+
+
 _RESULTS_NOTES = (
     ('Command line', (
         'Run the commands from the folder that contains the open_sol package (python -m open_sol ...).',
@@ -1310,16 +1322,18 @@ _RESULTS_NOTES = (
         '(named in the page subtitle).',
         "  - figure (field and dft_fields pages): {setting: value} the page's Plot settings panel opens with (its "
         'Copy settings gives this dict; None / missing = automatic; ValueError on a mode_shapes page, for an '
-        "unknown key, a value outside its choices / range or min >= max): font_size (px, 6 - 40, default 11), "
-        "title_size (px, 8 - 72, default 26), title 'top_left' | 'top_center' | 'top_right' | 'off', color_min / "
+        f"unknown key, a value outside its choices / range or min >= max): font_size (px, "
+        f"{_figure_range('font_size')}, default 11), title_size (px, {_figure_range('title_size')}, default 26), "
+        f"title {_figure_choices('title')}, color_min / "
         'color_max (field unit; a signed field with one of them stays symmetric about 0), x_min / x_max / y_min / '
         'y_max / z_min / z_max (axis limits in m; not along the normal of a single plane), colorbar '
-        "'bottom_right' | 'bottom_left' | 'top_right' | 'top_left' | 'right' | 'left' | 'top' | 'bottom' | 'off', "
-        "colorbar_length (fraction of the view side, 0.1 - 1), horizontal_axis 'bottom' | 'top', vertical_axis "
-        "'left' | 'right', scale_bar 'on' | 'off' (default 'on': a true-length bar on a face-on map in place of "
-        'the axes), scale_bar_length (m, > 0; default a round length near a fifth of the view), scale_bar_color '
-        "and legend_color 'auto' | 'white' | 'black', background 'theme' | 'white', export_scale 1 | 2 | 4 (PNG "
-        'pixels per screen pixel).',
+        f"{_figure_choices('colorbar')}, colorbar_length (fraction of the view side, "
+        f"{_figure_range('colorbar_length')}), horizontal_axis {_figure_choices('horizontal_axis')}, vertical_axis "
+        f"{_figure_choices('vertical_axis')}, scale_bar {_figure_choices('scale_bar')} (default 'on': a "
+        'true-length bar on a face-on map in place of the axes), scale_bar_length (m, > 0; default a round length '
+        f"near a fifth of the view), scale_bar_color {_figure_choices('scale_bar_color')}, legend_color "
+        f"{_figure_choices('legend_color')}, background {_figure_choices('background')}, export_scale "
+        f"{_figure_choices('export_scale')} (PNG pixels per screen pixel).",
         'Stored states (live, closed and loaded alike): snapshots() -> [(time, label, [physics.component keys])] '
         '(frequency_domain: one per wavelength, field() holds only the last); snapshot_field(index, name, '
         'physics=None, plane=None) -> FieldData of one snapshot, float32 on the native window cells (x_centers / '

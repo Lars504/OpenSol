@@ -1,4 +1,4 @@
-"""Heat conduction on a tetrahedron mesh (igor3d_plan T4b; the 3D analogue of solver_fem.py): FEMHeatPhysics3D, P1 /
+"""Heat conduction on a tetrahedron mesh (the 3D analogue of solver_fem.py): FEMHeatPhysics3D, P1 /
 P2 Lagrange on the conducting window elements (fem.diffusion3d), steady or implicit-Euler transient, diagonal k_xx /
 k_yy / k_zz; the HeatPhysics field names, slot and feature API where they apply. State arrays are per element (D12: T
 at the element centroid); the renderer samples T at points (fem.renderer3d)."""
@@ -11,7 +11,8 @@ from ...fem.diffusion3d import FEMDiffusionPhysicsBase3D, coefficient_tensor_3d
 from ...fem.mesh3d import sliver_warnings
 from ...fem.renderer3d import LagrangeSampleRenderer
 from .renderer import HeatRenderer
-from .solver_fem import ANCHOR_TEXT, REMEDY_TEXT, FEMHeatMixin
+from .solver import ANCHOR_TEXT, REMEDY_TEXT
+from .solver_fem import FEMHeatMixin
 
 
 class FEMHeatPhysics3D(FEMHeatMixin, FEMDiffusionPhysicsBase3D):
@@ -26,7 +27,7 @@ class FEMHeatPhysics3D(FEMHeatMixin, FEMDiffusionPhysicsBase3D):
         self._init_heat(T0, time_mode, time_step)
         self.finalize_warnings = []
         self._init_fem(domain, order, linear_solver, lambda: f"heat '{self.name}'", 'temperature',
-                       ANCHOR_TEXT.format(boundary='face'), REMEDY_TEXT, require_anchors=require_anchor)
+                       ANCHOR_TEXT.format(boundary='face', held='domain'), REMEDY_TEXT, require_anchors=require_anchor)
         self.prepare(domain)
 
     def finalize(self) -> None:

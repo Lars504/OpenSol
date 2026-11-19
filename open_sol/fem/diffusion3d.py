@@ -1,4 +1,4 @@
-"""FEM scalar diffusion on tetrahedron meshes (the 2D fem.diffusion analogue, igor3d_plan T4b): -div(C grad u) + a u
+"""FEM scalar diffusion on tetrahedron meshes (the 2D fem.diffusion analogue): -div(C grad u) + a u
 (+ c du/dt) = f by Lagrange P1 / P2 on the active window elements (full 3 x 3 tensor C). FEMDiffusionSystem3D: host
 assembly (fem.assembly3d), Dirichlet / Neumann / Robin face conditions (outer faces on the window, object interface
 faces), held element regions and fixed dofs, P0, point and gradient (extra) loads, implicit-Euler capacity; the linear
@@ -23,7 +23,7 @@ from .diffusion import (EdgeCondition as FaceCondition,   # FaceCondition: the s
                         robin_assembled)
 from .dofs3d import lagrange_dofs_3d
 from .mesh import side_members
-from .mesh3d import PLANE_TOLERANCE, clamp_into_window_3d, window_faces
+from .mesh3d import clamp_into_window_3d, plane_slack, window_faces
 from .sampling3d import PointLocator3D, centroid_values_3d, evaluate_lagrange_3d
 
 FEM_FILL_FACTOR_3D = {1: 2.0, 2: 3.0}      # SuperLU fill over the 7-point 3D heuristic at equal unknowns (uncalibrated)
@@ -311,7 +311,7 @@ def shell_dof_locations(full) -> tuple:
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), np.zeros((0, 3))
     points = full.dof_points()
     clamped = clamp_into_window_3d(points, mesh.window)
-    inset = PLANE_TOLERANCE * float(np.max(np.subtract(mesh.window[3:], mesh.window[:3])))
+    inset = plane_slack(mesh.window)
     ids = np.flatnonzero(np.any(np.abs(clamped - points) > 2.0 * inset, axis=1))
     elements, reference = PointLocator3D(mesh).locate(clamped[ids])
     return ids, elements, reference

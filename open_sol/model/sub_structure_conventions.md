@@ -117,8 +117,8 @@ templates, describe. Current state, no changelog.
 - 1D models (root file "1D models"): `DomainMap(line=True)` on every kind (`_line_domain_map`), so the polar path
   carries them. Objects select the cells whose centres lie on the drawing's x axis: circles about the origin = shells /
   layers, rectangles across y = 0. Not yet: GUI (forms, canvas, Add physics: `schema.type_spaces` ignores 1, GUI
-  solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D (heat P is per the 1D total: W/m^2,
-  W/m or W; its help says W/m).
+  solver_misfit calls pass no grid), 1D EM (slab_modes), point-source units in 1D (the 1D slab's P unit reads W/m;
+  it is W/m^2, the help says so: `SPACES` has no 1D entry).
 - Arrays (kind 'array'; `geometry._array_copies`; root file "Arrays, coordinates"): copy values = base + i pitch
   (exact float sums, so written-out copies mesh identically); the resolved array's values['inputs'] = the copies. So
   code walking composites treats an array as a union (`geometry.UNION_KINDS`; `composite_inputs` of a resolved array =
@@ -229,8 +229,9 @@ templates, describe. Current state, no changelog.
 - Subpixel smoothing (averaging and ownership: em sub file "Subpixel smoothing"):
   `subpixel_geometry.interface_geometry` runs once per mesh in a 'subpixel geometry' ledger stage after 'materials'
   (issues at ('solvers',)). `subpixel_memory_estimate` is rough (bounding-box perimeters), within the ledger
-  tolerance only because the arrays are small. The build is backend neutral (`array_module_of` the coarse index / `domain.xp`, host work by `to_host`):
-  a new array op there must exist in numpy and cupy alike (no `cp.` names, no cupy-only kernels).
+  tolerance only because the arrays are small. The build is backend neutral (`array_module_of` the coarse index /
+  `domain.xp`, host work by `to_host`): a new array op there must exist in numpy and cupy alike (no `cp.` names, no
+  cupy-only kernels).
 - Static materials: `geometry.material_paint_order` / `paint_material_index` is the one painting order (later
   materials win whole cells, a selection containing 'all' only fills uncovered cells) for builder, preview,
   validation, meshing estimates and the symmetry check: never a local order. Only properties the material sets are
@@ -362,9 +363,9 @@ templates, describe. Current state, no changelog.
   write background physics (validate info; solved -> solved and material readers stay errors). Run side generic in
   study.py: `_feedback_couplings` (never a DMU), `_background_stage(feedback=)` (`solve_stationary(inputs=solved)`:
   the solved physics are not stepped, their couplings land in schedule[0], applied before every sweep, unrelaxed),
-  then `_feedback_rounds` after the study's first solve. The monitor's copies are the run item `meshing._feedback_copy_count` (a change of its members updates
-  it). A SlotSum mixing solved and background sources is a feedback coupling: its background contributor then also
-  only refreshes before each background sweep.
+  then `_feedback_rounds` after the study's first solve. The monitor's copies are the run item
+  `meshing._feedback_copy_count` (a change of its members updates it). A SlotSum mixing solved and background sources
+  is a feedback coupling: its background contributor then also only refreshes before each background sweep.
 - Snapshot list rebuilds: summaries carry `live_snapshot` (the `Snapshot.live` index, None = the last); code rebuilding
   a snapshot list (sectors, refinement levels, a failed last sweep value) recomputes or clears it.
 - Parity sectors (`study_sectors.py`, study setting `study._PARITY_SECTORS_PARAM`, validate `_with_parity_sectors`):

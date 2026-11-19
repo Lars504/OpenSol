@@ -23,15 +23,45 @@ from .thermal_noise import HarmonicHeatOperator, HarmonicParticleOperator, solve
 # MaterialGrid arrays the assembled conduction operator depends on (k_zz only on a 3D domain); rho / cp enter only the
 # transient capacity term, replaced by DiffusionSystem.refresh_capacity (steady heat never reads them).
 _OPERATOR_MATERIALS = frozenset({'k_xx', 'k_yy', 'k_zz', 'k_xy'})
-_CAPACITY_MATERIALS = frozenset({'rho', 'cp'})
+CAPACITY_MATERIALS = frozenset({'rho', 'cp'})
 
-# Anchor message parts of the DiffusionSystem singular-system check.
-_ANCHOR_TEXT = 'temperature/convection boundary, fixed-temperature cell or volumetric loss'
-_REMEDY_TEXT = 'Anchor every conducting region, or solve in transient mode with rho and cp set there.'
+# Anchor message parts of the singular-system check (FV DiffusionSystem and the FEM systems: solver_fem).
+ANCHOR_TEXT = 'temperature / convection {boundary}, fixed-temperature {held} or volumetric loss'
+REMEDY_TEXT = 'Anchor every conducting region, or solve in transient mode with rho and cp set there.'
 # Surface-to-ambient radiation (Newton-linearised at the radiating cells' T): re-linearisations of a steady solve, and
 # its convergence = the largest change of a radiating cell's T between two linearisations over the largest T
 RADIATION_MAX_ITERATIONS = 50
 RADIATION_TOLERANCE = 1e-7
+
+
+# Rules HeatPhysics and solver_fem.FEMHeatMixin (triangles, tetrahedra) share.
+def check_time_settings(time_mode, time_step) -> None:
+    """ValueError unless time_mode is 'stationary' / 'transient' and a transient time_step is finite and > 0."""
+    if time_mode not in ('stationary', 'transient'):
+        raise ValueError(f"time_mode must be 'stationary' or 'transient', got {time_mode!r}")
+    if time_mode == 'transient' and not (math.isfinite(time_step) and time_step > 0.0):
+        raise ValueError(f'transient heat needs a finite time_step > 0, got {time_step}')
+
+
+def check_radiation(name, emissivity, ambient_temperature) -> None:
+    """ValueError unless 0 <= emissivity <= 1 and T_amb > 0 K."""
+    if not (0.0 <= emissivity <= 1.0 and ambient_temperature > 0.0):
+        raise ValueError(f"heat '{name}': radiation needs 0 <= emissivity <= 1 and T_amb > 0 K, got "
+                         f'{emissivity}, {ambient_temperature}')
+
+
+def radiation_linearisation(temperature, coefficient, ambient_temperature) -> tuple:
+    """(slope g = 4 c T_k^3, loss q_k = c (T_k^4 - T_amb^4)) of the Newton linearisation c (T^4 - T_amb^4) ~ q_k +
+    g (T - T_k) at temperature T_k (coefficient c = eps sigma)."""
+    cube = temperature * temperature * temperature
+    return 4.0 * coefficient * cube, coefficient * (cube * temperature - ambient_temperature ** 4)
+
+
+def radiation_unconverged(name, iterations, radiating) -> str:
+    """The runtime warning of a steady radiation loop that did not settle in `iterations` solves."""
+    return (f"heat '{name}': the radiation re-linearisation did not converge in {iterations} solves (largest "
+            f'relative temperature change on radiating {radiating} above {RADIATION_TOLERANCE:g}); the last solve is '
+            'kept')
 
 def _rise_to_temperature_host(rise, reference_temperature, temperature):
     """numpy twin of _rise_to_temperature (float64 sum, float32 result)."""
@@ -78,16 +108,14 @@ class HeatPhysics(DiffusionPhysicsBase):
                  linear_solver=None, shifted_solver=None, azimuthal_order: int = 0):
         if bcs is not None and not isinstance(bcs, HeatBoundaryConfig):
             raise TypeError(f"bcs must be a HeatBoundaryConfig, got {type(bcs).__name__}")
-        if time_mode not in ('stationary', 'transient'):
-            raise ValueError(f"time_mode must be 'stationary' or 'transient', got {time_mode!r}")
-        if time_mode == 'transient' and not (math.isfinite(time_step) and time_step > 0.0):
-            raise ValueError(f"transient heat needs a finite time_step > 0, got {time_step}")
+        check_time_settings(time_mode, time_step)
         # precision, tol and max_iter are validated by the DiffusionSystem below (a linear_solver replaces them)
 
         system = DiffusionSystem(
             domain, precision, float(tol), int(max_iter),
             label=lambda: f"heat '{self.name}'", unknown_name='temperature',
-            anchor_text=_ANCHOR_TEXT, remedy_text=_REMEDY_TEXT, compute_residual=compute_residual,
+            anchor_text=ANCHOR_TEXT.format(boundary='boundary', held='cell'), remedy_text=REMEDY_TEXT,
+            compute_residual=compute_residual,
             axisymmetric=axisymmetric, linear_solver=linear_solver, azimuthal_order=azimuthal_order)
         system.require_anchors = bool(require_anchor)   # False only for the thermal noise solve (never CG-solved)
         self._init_diffusion(domain, bcs if bcs is not None else HeatBoundaryConfig(), system)
@@ -148,7 +176,7 @@ class HeatPhysics(DiffusionPhysicsBase):
         if _OPERATOR_MATERIALS & names:
             # values only (k(T)): the re-assembly tests the c > 0 pattern instead of the full anchor check
             self.system.mark_coefficients_changed()
-        if _CAPACITY_MATERIALS & names:
+        if CAPACITY_MATERIALS & names:
             self._capacity_stale = True
         if 'k_xy' in names:
             self.system.cross_term_dirty = True   # kxy_active re-decided at the next assembly
@@ -190,10 +218,7 @@ class HeatPhysics(DiffusionPhysicsBase):
             system.solve()
         else:
             if iterations > 1:
-                self.runtime_warnings.append(
-                    f"heat '{self.name}': the radiation re-linearisation did not converge in {iterations} solves "
-                    '(largest relative temperature change on radiating cells above '
-                    f'{RADIATION_TOLERANCE:g}); the last solve is kept')
+                self.runtime_warnings.append(radiation_unconverged(self.name, iterations, 'cells'))
         _rise_to_temperature(system.unknown2d, self.T0, self._T_window)
         self._extend_into_pml()
 
@@ -302,9 +327,7 @@ class HeatPhysics(DiffusionPhysicsBase):
     def _add_radiating_cells(self, cells, area, emissivity, ambient_temperature):
         """Register one radiation term (flat window cells, radiating area [m^2 per m; m^2 in 3D; whole ring W/K
         weights axisymmetric]) and linearise it at the current T."""
-        if not (0.0 <= emissivity <= 1.0 and ambient_temperature > 0.0):
-            raise ValueError(f"heat '{self.name}': radiation needs 0 <= emissivity <= 1 and T_amb > 0 K, got "
-                             f'{emissivity}, {ambient_temperature}')
+        check_radiation(self.name, emissivity, ambient_temperature)
         if not int(cells.size) or emissivity == 0.0:
             return
         zeros = self.xp.zeros(cells.shape, dtype=self.system.dtype)
@@ -323,9 +346,7 @@ class HeatPhysics(DiffusionPhysicsBase):
         for term in self._radiation:
             cells, area, coefficient, ambient, conductance_old, drive_old, linearised_at = term
             temperature = rise[cells].astype(np.float64) + self.T0
-            cube = temperature * temperature * temperature
-            slope = 4.0 * coefficient * cube
-            loss = coefficient * (cube * temperature - ambient ** 4)
+            slope, loss = radiation_linearisation(temperature, coefficient, ambient)
             conductance = (area * slope).astype(system.dtype)
             drive = (area * (slope * (temperature - self.T0) - loss)).astype(system.dtype)
             system.add_cell_loss(cells, conductance - conductance_old, drive - drive_old)

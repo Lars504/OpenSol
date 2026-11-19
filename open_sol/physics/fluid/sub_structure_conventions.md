@@ -16,10 +16,9 @@ and docstrings; settings: their help texts.
 - Transient: the published velocity lags the probe time by ~half a lattice step (`selftests_time.py` tolerances).
 
 ## Convection (`convection.py`)
-- The stationary Picard loop of fluid_heat_convection converges only while transverse conduction damps every mode
-  (held walls: gain ~ Pe / (2 pi)). With only the inflow face holding T, the y-uniform axial mode has gain ~ 2 Pe L /
-  (pi H) (~20 in parallel_plate_uniform_flux_nusselt): no relaxation helps. Such models march a time_dependent study
-  instead (steady flow, transient heat, u dt / dx < ~1, a few flow-through times).
+- When the stationary Picard loop of fluid_heat_convection converges (held walls vs only the inflow face holding T,
+  whose axial-mode gain is ~20 in parallel_plate_uniform_flux_nusselt) and the time_dependent alternative: the
+  coupling description (`coupling/definitions_fluid.py`).
 
 ## Self-tests
 - The gpu store modes, strides and step graphs are covered only by the fluid_cpu_gpu parities (`selftests_backend.py`).

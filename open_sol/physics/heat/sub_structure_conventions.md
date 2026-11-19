@@ -9,8 +9,9 @@ on tetrahedra"). What each feature, setting and validation rule does: their help
 ## Solvers
 - Three solvers share the field names, the 'volumetric_power' slot and the feature API: `HeatPhysics` (tensor meshes,
   `solver.py`), `FEMHeatPhysics` (triangles) and `FEMHeatPhysics3D` (tetrahedra), both on `solver_fem.FEMHeatMixin`
-  (a change to steps, state, sources, radiation or T0 handling goes there, for both). Apply callbacks branch on
-  `ctx.domain.grid_kind`.
+  (a change to steps, state, sources, radiation or T0 handling goes there, for both). Rules all three follow (time
+  settings, radiation check / linearisation / warning, anchor texts) are module functions and constants of
+  `solver.py`. Apply callbacks branch on `ctx.domain.grid_kind`.
 - Values of t (temperature, heat_flux, heat_source Q, point_heat_source P) are taken at the step start t_n while the
   implicit step solves for t_n + dt: a first-order lag, the convention of every value of t.
 - Direct back ends of the 'linear' role (`CG_DIFFUSION_LINEAR_ROLE`, shared with potential and magnetic): cuDSS pays

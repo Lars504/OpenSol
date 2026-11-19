@@ -54,8 +54,9 @@ PARTS = STUDY_PARTS + SOLVER_ROLE_PARTS + (
 ) + methods(f'{EM3D}.fem_solver3d:FEMResonancePhysics3D', 'physics', (
     'finalize', 'solve_eigenfrequencies', 'select_resonance', '_element_materials', 'state')
 ) + methods(f'{EM3D}.fem3d:FEMPhysics3D', 'fem physics', (
-    '_assemble', '_pinned', '_bloch_prolongation', 'select_resonance', 'fields_located')
+    '_assemble', '_pinned', 'select_resonance', 'fields_located')
 ) + (
+    ('open_sol.fem.dofs:bloch_prolongation', 'fem: bloch_prolongation'),
     (f'{EM3D}.fem3d:pml_shell_3d', 'fem: pml_shell_3d'),
     (f'{EM3D}.fem3d:bloch_identification', 'fem: bloch_identification'),
     (f'{EM3D}.fem3d:PMLShell3D.tensor', 'fem: PMLShell3D.tensor'),

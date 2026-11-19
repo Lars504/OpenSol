@@ -1,4 +1,4 @@
-"""Planar triangle meshes of flat tetrahedron boundary faces (new_modules_plan S6): surface_triangle_mesh builds a
+"""Planar triangle meshes of flat tetrahedron boundary faces: surface_triangle_mesh builds a
 TriangleMesh with node / edge / face maps back into the TetrahedronMesh from faces on one coordinate plane,
 normal_displacement transfers a P1 / P2 displacement onto it, lagrange_field_function evaluates such a field at
 quadrature points and boundary_edges_where selects rim edges. Host numpy."""
@@ -16,7 +16,7 @@ import numpy as np
 
 from .elements import _inverse_2x2, lagrange_values
 from .mesh import build_triangle_mesh, side_members
-from .mesh3d import PLANE_TOLERANCE
+from .mesh3d import plane_slack
 from .quality import mesh_quality
 
 IN_PLANE_AXES = {0: (1, 2), 1: (2, 0), 2: (0, 1)}   # surface (x, y) = these tet axes (cyclic: right-handed with axis)
@@ -61,8 +61,7 @@ def surface_triangle_mesh(tet_mesh, faces, solid_elements=None, *, axis=None) ->
     elif axis not in IN_PLANE_AXES:
         raise ValueError(f'surface_triangle_mesh: axis must be 0, 1 or 2, got {axis!r}')
     name = 'xyz'[axis]
-    bounds = np.array(tet_mesh.bounds)
-    slack = PLANE_TOLERANCE * float((bounds[3:] - bounds[:3]).max())
+    slack = plane_slack(tet_mesh.bounds)
     plane = float(np.mean(corners[:, :, axis]))
     offset = float(np.abs(corners[:, :, axis] - plane).max())
     if offset > slack:

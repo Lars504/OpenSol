@@ -266,10 +266,11 @@ def _create(ctx, physics_spec, values):
                          max_bias_step=values['max_bias_step'], axisymmetric=is_axisymmetric(values))
 
 
-# Host bytes per window cell of one Newton step: ~49 COO entries (20 per face, 2 faces per cell, 9 per cell), three
-# 8-byte arrays each: the kept CSR slot map (int64, drift_diffusion._PinnedPattern), the block values and their
-# concatenation (float64); rows / cols are never formed (the pattern expands the scalar site graph).
-_COO_ENTRIES_PER_CELL = 49
+# Host bytes per window cell of one Newton step: ~47 COO entries (drift_diffusion._COUPLED_LAYOUT: 20 face blocks x 2
+# faces per cell + 7 site blocks), three 8-byte arrays each: the kept CSR slot map (int64, its _PinnedPattern), the
+# block values and their concatenation (float64); rows / cols are never formed (the pattern expands the scalar site
+# graph).
+_COO_ENTRIES_PER_CELL = 47
 _COO_ARRAYS = 3
 # CSR entries per window cell of that Jacobian once duplicates are summed (the cuDSS device copies): Poisson row 5 V
 # + n + p, each continuity row 5 of its carrier + 5 V + the other carrier (recombination)

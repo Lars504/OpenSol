@@ -37,7 +37,8 @@ plot, imports of `viz.common` / `DARK_CMAPS`, canvas cell edges) live in the gui
   comment of each page says so).
 - Plot settings (field_viewer only): the page takes the keys and checks from `DATA.figure_rules` (`FIGURE_CHOICES` /
   `_RANGES` / `_LIMITS` / `_LENGTHS` of field_viewer.py); a new setting also needs its default in the page's
-  `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry.
+  `FIGURE_STYLE`, an `fs_<key>` panel input and a line in describe's export_html entry (choices and ranges there are
+  read from `FIGURE_*`; defaults are prose).
 - Per-sample arrays of a `ViewerLayer` follow every layer rebuild (the class docstring lists them): a new one joins all.
 - One page shows one animation clock per thing: api drops the phasor partner when the deformed shape oscillates
   (`ViewerMotion.oscillate`) or a volume is attached, `viewer_data` refuses a phasor page with volumes, and the page's

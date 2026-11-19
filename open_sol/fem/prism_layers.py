@@ -1,9 +1,9 @@
-"""Swept prism layers (experiment plan D5): a triangle mesh extruded through z layers, each prism split into 3
+"""Swept prism layers: a triangle mesh extruded through z layers, each prism split into 3
 tetrahedra by the minimum-vertex rule (conforming between prisms, periodic sides matched by an order key). Host numpy;
 coordinates in m."""
 import numpy as np
 
-from .mesh3d import PLANE_TOLERANCE, build_tetrahedron_mesh
+from .mesh3d import build_tetrahedron_mesh, plane_slack
 
 
 def _prism_permutations() -> np.ndarray:
@@ -50,7 +50,7 @@ def periodic_order_key(points_2d, periodic_axes) -> np.ndarray:
     points_2d = np.asarray(points_2d, dtype=np.float64).reshape(-1, 2)
     keys = np.arange(len(points_2d), dtype=np.int64)
     low, high = points_2d.min(axis=0), points_2d.max(axis=0)
-    slack = PLANE_TOLERANCE * float((high - low).max())
+    slack = plane_slack(np.r_[low, high])
     for name in periodic_axes:
         axis = 'xy'.index(name)
         lo_nodes = np.flatnonzero(np.abs(points_2d[:, axis] - low[axis]) <= slack)
