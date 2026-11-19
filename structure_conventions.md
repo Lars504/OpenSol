@@ -66,8 +66,8 @@ exception is an edit there, not here. The ones that shape everyday code:
   never the reverse; per-polarisation permittivity array / slot names: `physics.em.placement`); acoustics imports
   mechanics, never the reverse. Chains inside physics/em: em sub file "Imports".
 - `selftests*.py` import at module level only core.constants, model.spec / schema / selftest_helpers and sibling
-  selftests modules (physics modules and scipy inside the checks), and reuse `model.selftest_helpers` (case records,
-  sub-checks, relative errors, Results reads, skips), never a local copy. Nothing else imports a selftests module at
+  selftests modules (physics modules and scipy inside the checks), and reuse `model.selftest_helpers` (multi-check
+  case records, relative errors, Results reads, skips), never a local copy. Nothing else imports a selftests module at
   module level or in `register` (contract selftests_lazy): a definition imports its cases inside its selftest loader,
   so `get_registry()` (GUI, check, describe) loads only the selftests modules that hold templates (`TEMPLATE_SOURCES`).
 - `get_registry()` imports model.study, solvers.definition, every `physics/<pkg>/definition.py`, then
@@ -197,36 +197,20 @@ first bring the background physics (those without the study's hook) to a station
   reserved everywhere, a validation error in 2D).
 
 ### Solver contract
-- Contract: `prepare / step / dt_limit / state / inject_source`, hooks `finalize / materials_changed`,
-  `material_schema`, plus `renderer()` (not on the ABC, but called). `state()` keys are public; unknown slots raise.
-  Quasi-static solvers (steady heat, potential, FDFD) have dt_limit inf and solve in `step(t, inf)` (FDFD and
-  potential only when dirty); the study hooks `solve_harmonic(omega)` (FDFD, em_modes) and `solve_modes()` /
-  `select_mode(k)` / `n_eff_text(k)` / `mode_index` (em_modes) are not on the ABC and are called only by the
-  frequency_domain / mode_analysis study (em_modes `step` does nothing: the stationary study cannot drive it);
-  likewise `solve_eigenfrequencies(n)` / `select_resonance(k)` (FDFD incl. em_fdfd_3d, solid_mechanics,
-  solid_mechanics_3d (tensor meshes: lowest modes only), membrane; eigenfrequency and optomechanics (2D, 3D
-  tetrahedra) studies;
-  the returned solve is duck-typed: `summary()`, `info['warnings']`, resonances with `text()`; eigenfrequency search
-  targets / band: optional `MultiShiftEigenSolver`, listed in `PhysicsType.eigen_searches`) and
-  `attach_harmonic(frequencies)` / `select_harmonic_frequency(index)` (EMPhysics, frequency_domain only).
-- Study hooks are the runtime-checkable Protocols of `model/solver_hooks.py` (studies test `isinstance(solver,
-  ModeSolver)`, never `hasattr`; `StudySpec.solved_physics` restricts the solved ones to a list, the rest run as
-  background physics: model sub file); `StudyType.solver_protocols` lists those a solver of a physics whose type lists the
-  study satisfies (one of them), and the builder raises right after create when it satisfies none, so a solver
-  variant missing a hook fails at build instead of running silently as background. A new study hook: add it to its
-  Protocol (or a new Protocol there); a new solver variant of a type: it needs the hooks of every study the type
-  lists, unless validate refuses that study for the variant.
-- Scalar outputs (E5): `PhysicsSolver.scalars()` -> {name: float} (default {}) with the names declared by
-  `PhysicsType.scalar_outputs(settings_values, physics_spec)` (CPU; physics_spec for names following features, e.g.
-  drift_diffusion `current_<contact>`) (+ required `scalar_outputs_help`); derived values read them as
-  `<physics>_<name>` only (`schema.scalar_output_names`; no plain alias), a declared name the solver did not report
-  gives NaN + warning. Validate rejects a scalar named like a field of its type and a parameter named like one.
-- Quasi-static solvers record probes with `replace_same_time=t > 0.0` (a re-solve at the same time replaces the sample).
+- Contract: `core.solver_base.PhysicsSolver` plus `renderer()` (not on the ABC, but called); `state()` keys are
+  public, unknown slots raise. Quasi-static solvers (steady heat, potential, FDFD) have dt_limit inf, solve in
+  `step(t, inf)` and record probes with `replace_same_time=t > 0.0` (a re-solve at the same time replaces the sample).
+- Studies reach solvers only through the runtime-checkable Protocols of `model/solver_hooks.py` (`isinstance`, never
+  `hasattr`). The builder raises right after create when a solver satisfies none of the `StudyType.solver_protocols`
+  of a study its type lists, so a new solver variant of a type needs the hooks of every study the type lists (unless
+  validate refuses that study for the variant), and a new study hook goes into its Protocol, never a bare method name.
 - Snapshot solutions (GUI runs only: `RunControl.keep_solutions`; model sub file): a solver whose state a study
   changes between snapshots (time stepping, per-wavelength / per-frequency / per-iteration solves) implements
-  `solver_hooks.SolutionStateSolver` (`solution_state(materials)` -> host copies of everything its renderer reads,
-  `restore_solution(state)` writing them back in place and invalidating cached derived fields), else its intermediate
-  snapshots show only the stored fields. A new renderer input changed during a study joins its solution_state.
+  `solver_hooks.SolutionStateSolver`, else its intermediate snapshots show only the stored fields; a new renderer
+  input changed during a study joins its `solution_state`.
+- Work counters: a new quasi-static solver adds `work_counters()` (not on the ABC; summary.json `solvers`, model sub
+  file "Timing") with cumulative, machine-independent counts (iterations, factorisations) besides any seconds, on its
+  role runtime when the solve is a solver role, else on the physics (never both).
 - Nonlinear loop state that warm-starts later loops (saturation, k(T), ...) is cleared when the nonlinear set of
   cells / elements changes or empties. Fixed-point maps on conjugated fields are only real-linear: their mixing /
   least-squares / Krylov coefficients are real.
@@ -236,76 +220,55 @@ first bring the background physics (those without the study's hook) to a station
   would lose M's own entries).
 
 ### Physics definitions
-- Polarisations are named by the out-of-plane field (`ez`, `hz`), never TE / TM. The type / coupling / study
-  catalogue (default instances, registration order, which material Params types share, when a coupling registers) is
-  in `api_reference.md` and the sub files: physics/<pkg> "type" bullets, coupling sub file "Registered coupling
-  types", model sub file "Study catalogue". A material property shared by several types is ONE Param object (the
-  first registered type's per name; e.g. rho: heat, laminar_flow, elastic_waves, solid_mechanics; k / cp: heat and
-  both solids), so editing it
-  changes every type. `PhysicsType.family` ('em', 'heat', '' none): coupling/definitions builds its CouplingTypes
-  from the registered family-'em' types (heat_em_thermo_optic: all; em_heat_joule: those with an 'absorbed_power'
-  output field, so not em_modes), so a new EM type needs family='em', `state()['q_accum']` (None allowed), the EM loss
-  protocol when it absorbs, and thermo-optic source slots among eps_r_update / eps_xx_update / eps_yy_update (coupling
-  sub file). `PhysicsType.source_slots` is a dict slot -> (unit, meaning) (describe prints both; consumers use it as
-  the name sequence); EM types build theirs with `definition_common.source_slot_docs`.
-- Source slot writers (E13): every CouplingType declares `writes(vctx, spec) -> {slot: '' | 'sum' | 'index'}`;
-  model.validate allows one overwriting ('') writer per (target, slot) or several contributors of one kind and one
-  every; the runner sums contributors through one SlotSum per slot ('index': eps = (n0 + sum dn)^2, n0 from
-  physics/em/index_reference). A new coupling into an existing slot is a contributor (API: coupling sub file).
-- `PhysicsType.group` (schema `PHYSICS_GROUPS`) and `spaces_2d` / `space_settings` (schema `SPACES`: planar,
-  cross_section, axisymmetric = what the drawn plane is, plus '3d' from `dimensions`) are GUI only (describe ignores
-  them, validate keeps its own rules; Add physics: gui sub file). A new type sets both; a new symmetry option that
-  changes what the plane is adds a space instead of a free-standing setting.
-- Axisymmetric (r, z) is the per-physics setting `geometry` (heat, electric_currents, electrostatics, magnetostatics,
-  magnetic_fields_ac, drift_diffusion, elastic_waves (its space also sets bc_x_lo 'rigid', the axis rule),
-  solid_mechanics (the solver holds u_r = 0 on the axis itself; whole-ring forces in N)),
-  always through `definition_helpers`: `geometry_param` (shared help / tip around the type's sentences; the shared
-  (r, z) help rules are one describe spec note),
-  `is_axisymmetric`, `AXISYMMETRIC_SPACE_SETTINGS` and `axisymmetric_issues` (x_lo axis features, <prefix>_xy
-  materials, one warning naming the coupled partners that are planar = their type has no `geometry` setting or it is
-  'planar'), so moving the setting to the domain (symmetry plan 2.12 / 2.16) touches one place. The solver exposes
-  `axisymmetric` (Session ring-weights the derived values reading its fields; field-free expressions: those on its
-  mesh). heat / electric_currents / electrostatics add `azimuthal_order` m (symmetry 2.14, `definition_helpers.AZIMUTHAL_ORDER_PARAM`; solid_mechanics too: triangles,
-  eigenfrequency / optomechanics studies only): fields are cos(m phi) amplitudes
-  and m != 0 rings carry pi, so code weighting (r, z) rings takes `core.metric.ring_angle` / the solver's `ring_angle`,
-  never a literal 2 pi. em_fdfd_bor and em_fdtd_bor have the same
-  `geometry` setting with the single choice 'axisymmetric' (so the partner rule counts them as axisymmetric) and
-  always set `axisymmetric`.
+- Catalogue (types, couplings, studies, default instances): `api_reference.md`, physics/<pkg> sub files, coupling sub
+  file "Registered coupling types", model sub file "Study catalogue". Polarisations are named by the out-of-plane
+  field (`ez`, `hz`), never TE / TM. Same-named material properties of several types (rho, k, cp, ...) are one
+  property: `register_physics` raises unless kind, unit, bounds and flags agree.
+- A new EM type sets `family='em'` (coupling/definitions builds heat_em_thermo_optic / em_heat_joule from the
+  registered family-'em' types), keeps `state()['q_accum']` (None allowed) and the EM loss protocol when it absorbs
+  (`coupling/definitions.py` header), takes thermo-optic writes through `index_reference.INDEX_SLOTS`, and builds its
+  `source_slots` with `definition_common.source_slot_docs`.
+- A type solving on several mesh kinds (one solver class per kind) keeps the rules every kind follows as module
+  functions of its tensor `solver.py` that the element solvers call, never a copy (potential / heat sub files).
+- Source slot writers: every CouplingType declares `writes(vctx, spec)` (schema comment); validate allows one
+  overwriting writer per (target, slot) or several contributors of one kind and one every, summed by one SlotSum per
+  slot. A new coupling into an existing slot is a contributor (API: coupling sub file "Additive source slots"). A
+  coupling create (also in a physics definition) takes `after_source_step` from `index_terms.after_source_step(ctx,
+  spec, every)`, never a stride test of its own.
+- Axisymmetric (r, z) is the per-physics setting `geometry`, always through the `definition_helpers` 'geometry'
+  helpers (`geometry_param`, `is_axisymmetric`, `AXISYMMETRIC_SPACE_SETTINGS`, `axisymmetric_issues`), so moving it
+  to the domain touches one place; the BOR types carry it with the single choice 'axisymmetric'. The solver exposes
+  `axisymmetric` (Session ring-weights the derived values reading its fields). With `azimuthal_order` m != 0 rings
+  carry pi: code weighting (r, z) rings takes `core.metric.ring_angle` / the solver's `ring_angle`, never a literal
+  2 pi. A symmetry option that changes what the drawn plane is becomes a space (`schema.SPACES`, GUI only), never a
+  free-standing setting.
 - Help texts are API contract (describe -> api_reference.md): units, sign / axis conventions, typical values and
-  gotchas, ASCII only (describe raises); describe prints the Param's unit, default, range and choices on the param
-  line, so the help need not restate them. Unit '1' = dimensionless (GUI hides it, also for integer counts / numbers),
-  '' non-numeric; units with spaces ('W/(m K)'), never '*'. A unit that depends on the space (planar W/m, axisymmetric
-  / 3D W) goes in `Param.space_units` (`schema.param_in_space`). A gotcha a user can hit belongs in a help text or
-  validation message, not only here.
+  gotchas, ASCII only (describe raises); describe prints the Param's unit, default, range and choices, so the help
+  need not restate them. Unit '1' = dimensionless, '' non-numeric; units with spaces ('W/(m K)'), never '*'; a unit
+  that depends on the space goes in `Param.space_units`. A gotcha a user can hit belongs in a help text or validation
+  message, not only here.
+- GUI texts (`Param.tip`, `choice_labels`, every `summary`, `PhysicsType.mesh_method`; empty falls back to help /
+  description; describe ignores them) are for a first-time user: no abbreviations, formulas or snake_case keys, refer
+  to settings by their label. Labels appear in both.
 - Shared names (industry-standard if any): magnitudes `<name>_abs` (u_abs, e_abs, heat_flux_abs); resonance tables
-  resonance_number / frequency / frequency_imag [Hz, > 0 decays] / q_factor (FDFD / BOR eigenfrequency and every
-  resonance_monitor; + region_energy_fraction last with a region selection); mode results n_eff (real part) / n_eff_imag; 1-based mode choices `mode_number`; a body force
-  feature `body_force` (params f_x / f_y, slots and coupled fields body_force_x / _y); probe choice `component`.
-  Field names are scoped by physics: u is the velocity in laminar_flow, the displacement in solid_mechanics.
-- Time t (simulated time, 0 outside a time_dependent study): state_dependent material properties and feature params
-  flagged `Param.time_dependent` (parameters and t only) may use it; both are re-evaluated before every step at its
-  start time (the runner clock moves before the couplings apply; implicit steps see a one-step lag). A feature param
-  only gets the flag together with an incremental setter in its apply (`BuildContext.follow_time`; model sub file
-  "Feature values of t"). Likewise `Param.follows_parameters` (SweepSpec.reuse_build; feature values and physics
-  settings) needs a `BuildContext.follow_parameters` setter on every grid kind whose solver is a RerunSolver, else a
-  reused build silently keeps the build value; values are not range-checked per sweep value unless the setter checks
-  them. Material values follow by a repaint + `materials_changed` when every type reading them is non-EM and flags
-  the property `state_dependent`, so that flag promises a full re-read of the array (model sub file "Reused sweep
+  resonance_number / frequency / frequency_imag [Hz, > 0 decays] / q_factor (+ region_energy_fraction last); mode
+  results n_eff (real part) / n_eff_imag; 1-based mode choices `mode_number`; a body force feature `body_force`
+  (params f_x / f_y, slots and coupled fields body_force_x / _y); probe choice `component`. Field names are scoped by
+  physics: u is the velocity in laminar_flow, the displacement in solid_mechanics.
+- Time t (simulated time, 0 outside a time_dependent study): state_dependent material properties and
+  `Param.time_dependent` feature params (parameters and t only) may use it, re-evaluated before every step at its
+  start time (implicit steps see a one-step lag). A feature param gets the flag only together with an incremental
+  setter in its apply (`BuildContext.follow_time`; model sub file "Feature values of t"); likewise
+  `Param.follows_parameters` needs a `BuildContext.follow_parameters` setter (an apply that skips it on some grid
+  kind makes the sweep warn and build every value: `sweep_reuse.unfollowed_values`); followed values are
+  range-checked per sweep value only in the setter (material values are, by their Param). `state_dependent` on a
+  material property promises a full re-read of its array on `materials_changed` (model sub file "Reused sweep
   builds").
-- GUI texts are separate: `Param.tip` (tooltip; '\n\n' between paragraphs, '- ' list lines), `Param.choice_labels`
-  (drop-down texts; a `replace(param, choices=...)` that narrows the choices must narrow choice_labels too, else
-  Param.__post_init__ raises) and `summary` on PhysicsType / FeatureType / CouplingType / StudyType / TemplateEntry /
-  GeometryKind / Material (tree / menu tooltips, settings panel), `PhysicsType.mesh_method` (mesh form: how a type
-  solves on each mesh kind + what that method cannot handle, mirroring validation; a type whose method changes with
-  the mesh kind sets it); empty falls back to help / description. They are
-  for a first-time user: no abbreviations, formulas or snake_case keys, refer to settings by their label; describe
-  ignores them. Labels appear in both (they are in api_reference.md).
 - After any change to the registry, a help text, a template or library data regenerate `api_reference.md` and
-  `api_templates.md` (`python -m open_sol describe --update-reference` from the package's parent, writes both) or
-  selftest `api_reference_current` fails
-  (the documentation rules of describe: model sub file). The same command rewrites `structure_index.md`: after adding,
-  moving or removing a module or changing the first sentence of a module docstring, else selftest
-  `structure_index_current` fails. Every new module starts with a docstring whose first sentence says what it holds.
+  `api_templates.md` (`python -m open_sol describe --update-reference` from the package's parent) or selftest
+  `api_reference_current` fails. The same command rewrites `structure_index.md`: needed after adding, moving or
+  removing a module or changing the first sentence of a module docstring (selftest `structure_index_current`). Every
+  new module starts with a docstring whose first sentence says what it holds.
 - Selftest structure:
   - Cases span each module as light as possible: every physics type, feature, solver role and mesh kind it supports.
   - Each case runs once, on its natural backend; each example once, on its own (`solver_defaults.backend`: an
@@ -316,102 +279,67 @@ first bring the background physics (those without the study's hook) to a station
     as both.
   - A backend variant is only for a module with no other case on that backend. Precision variants are a separate
     question and stay.
-- Self-tests (E12): `physics/<name>/selftests*.py` and `coupling/selftests.py` hold SelfTestCases and template
-  factories; `definition.register` registers types, templates, then its selftest loader
-  (`registry.register_selftests(_selftest_cases)`: a module-level function that imports the selftests modules inside
-  and returns their cases; `registry.selftests()` runs the loaders once, on first use), `coupling.definitions.register`
-  its coupling types, then its loader. A new template still lives in a selftests module: add the (definition,
-  selftests module) pair to `TEMPLATE_SOURCES`. api built-ins templates_validate, examples_validate (every examples/**/*.json of a
-  repository checkout), api_reference_current, import_contracts and structure_index_current run first (a named run:
-  only the built-ins it names); the
-  registered cases (and the examples of an examples run) then run never-timed first, then by the cache's last
-  wall time, ties in registration (example: path) order. A
-  case with `specs()` {} runs `check({})` directly. `check` gets each run's live Results (closed afterwards), may use
-  only `status`, `summary()`, `field(name[, plane=, unfold=True, native=True])`, `snapshot_field(index, name[, plane=])`,
-  `volume(name)`, `result(physics, feature, **options)`, `sector_result(physics, feature[, combined=True])`,
-  `sweep_field(index, name)`, and returns {'measured', 'expected', 'error', 'tolerance', 'details'} (passed when error
-  <= tolerance). Backends of a case: `SelfTestCase.backends` (model sub file). A variant (another backend / solver
-  precision with its own tolerance, within the rules above) is a `SelfTestCase.variants` entry (`SelfTestVariant`,
-  solvers sub file), not a copied case. Case and template notes live in the sub files.
-- `SelfTestCase.heavy`: set True on a case that took >= 5 s in a selftest run (record wall_time). CLI `selftest`
-  runs the non-heavy cases, `--heavy` the heavy ones, `--all` everything (subsets and report files: model sub file).
-- Selftest reuse (`model.selftest_cache`): with an out_dir, an unnamed case whose last run passed (an example: passed or
-  no_tolerance; 'failed' / 'error' always rerun) is not rerun while the package code units it depended on (sys.settrace call events at
-  function level; model sub file) and the environment are unchanged; CLI `--reset` (api `reset=True`) reruns all. A
-  dependency the tracer cannot see (a non-.py data file read at run time, code run in a subprocess) needs `--reset`,
-  or its reader adding the file to the traced set. Built-ins are never reused.
-- Selftest reuse and shared code: `selftest_cache.UNTRACKED_PATHS` (the runner, model building / validation / specs /
-  estimates, the study runner `model/study.py` + `study_adaptation.py` (the per-type study_*.py files with their own
-  numerics stay tracked), `materials/__init__`, io, gui) is no dependency of any case and the names its code uses are not
-  followed, so editing those files reruns nothing: run `selftest --reset` (e.g. overnight) after such edits. A new
-  shared plumbing file belongs on that list. Tracked code every case runs (a solver, mesher or fem module used by
-  all) still reruns everything when its module-level code changes; untracked code must not call into a
+- Self-tests: `selftests*.py` modules hold SelfTestCases and template factories; a definition's `register` registers
+  types, templates, then its selftest loader (`registry.register_selftests`); a new template's (definition, selftests
+  module) pair joins `TEMPLATE_SOURCES`. `check` gets each run's live Results (closed afterwards) and may use only
+  `status`, `summary()`, `field(name[, plane=, unfold=True, native=True])`, `snapshot_field(index, name[, plane=])`,
+  `volume(name)`, `result(physics, feature, **options)`, `sector_result(physics, feature[, combined=True])` and
+  `sweep_field(index, name)` (helpers: `model.selftest_helpers`). Backends: `SelfTestCase.backends` (model sub file);
+  another backend or solver precision with its own tolerance is a `SelfTestCase.variants` entry (solvers sub file),
+  not a copied case. Set `SelfTestCase.heavy` on a case that took >= 5 s (record wall_time). Case and template notes
+  live in the sub files.
+- Self-test modules never rebind a module-level constant later in the file (later cases silently read the new value).
+- Self-test runs store only the final state (`StudyType.final_state_settings`): a case whose check reads
+  intermediate snapshots sets output_interval / n_snapshots itself, an example names the snapshot in an analytic
+  curve (open_sol sub file "api.run").
+- Selftest reuse (`model.selftest_cache`): with an out_dir, an unnamed case whose last run passed is not rerun while
+  the package code units it depended on (traced per function) and the environment are unchanged; CLI `--reset` (api
+  `reset=True`) reruns all. A dependency the tracer cannot see (a non-.py data file read at run time, code run in a
+  subprocess) needs `--reset`, or its reader adding the file to the traced set. Built-ins are never reused.
+- Selftest reuse and shared code: editing a `selftest_cache.UNTRACKED_PATHS` file (shared plumbing) reruns nothing:
+  run `selftest --reset` (e.g. overnight) after such edits; a new shared plumbing file joins that list. Tracked code
+  every case runs still reruns everything when its module-level code changes; untracked code must not call into a
   model-specific module for every build (`materials._is_crystal_entry` checks the dict itself instead of running
   crystal_tensors code), or every case depends on that module. An in-process cache of expensive results (meshes,
-  factors) kept across api runs hides code from the tracer (a case reusing another case's result never calls the
-  code that made it): scope such caches to one `run_study`, as `meshing.element_meshes_kept` and
-  `cudss_factor.cudss_orderings_kept` (cuDSS re-plans of a known pattern, also the remembered rejected mixed factors
-  and the parked plans; its on-disk ordering store is the GUI worker's only: solvers sub file "Ordering reuse"). A disk cache across processes is off inside the self-tests (the gmsh tetrahedron
-  cache, on by default otherwise: `gmsh3d.default_disk_cache_off`, entered before the trace; fem sub file).
-- Self-test modules never rebind a module-level constant later in the file (later cases silently read the new value).
-- Self-test runs store only the final state (`StudyType.final_state_settings`; time_dependent defaults to 20
-  snapshots elsewhere): a case whose check reads intermediate snapshots sets output_interval / n_snapshots itself, an
-  example names the snapshot in an analytic curve (root sub file "api.run").
-- Work counters: a new quasi-static solver adds `work_counters()` (not on the ABC; summary.json `solvers`, model sub
-  file "Timing") with cumulative, machine-independent counts (iterations, factorisations) besides any seconds, on its
-  role runtime when the solve is a solver role, else on the physics (never both).
-- Solver roles (solver_plan Part I, stage A): a physics' numerical jobs are `PhysicsType.solver_roles`; the build
-  creates their runtimes in a stage of its own and the physics create takes them from `ctx.solvers(name)`, never
-  building one itself (scripts still may). Solver knobs are never physics settings (a new type declares a role, a
-  shared one from definition_helpers when it fits); validate and estimators read the resolution
-  (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting. Automatic = the role's default
-  type at its defaults (per study, grid and backend: `SolverRole.automatic(backend, grid, study)`, every caller passes
-  the study; a study default (kept direct factor) whose gpu estimate exceeds the budget (cuDSS) or whose host estimate
-  exceeds the RAM / the host SuperLU size limit (host factor) resolves without the study:
-  `meshing.fitted_memory_estimate` -> `plain_roles`, which validate, estimators, build and api.check share, solvers sub
-  file; a sparse_direct back_end 'auto' may resolve to cuDSS per role and grid on the gpu:
-  `SolverRole.auto_back_ends`, solvers sub file; the optional host MUMPS / PARDISO back ends of `solvers.host_direct`
-  are opt-in only, never auto: a role lists them in its `setting_choices`, every such tuple derived from
-  `host_direct.HOST_DIRECT_*`, never spelled out); a model / template / self-test that needs other values (e.g. a CG tolerance) adds a solver
-  node and assigns it (`PhysicsSpec.solvers`; self-tests: `selftest_helpers.with_exact_cg`). The model-wide
-  `solver_defaults.precision` (S9) fills the precision of every solver that offers it and sets none: resolve solver
-  values only through `schema.resolved_solvers` / `with_node_precision` (a node of the Automatic type without a
-  precision takes the Automatic one) / `with_default_precision`, never `fill_defaults` of the node settings alone.
-  Rules: solvers sub file.
-- Subpixel smoothing (igor 1.5) and conformal boundaries (solver_plan S7.6) are model-wide
-  (`solver_defaults.subpixel_smoothing` / `conformal_boundaries`), never physics settings: a type honours them by
-  `PhysicsType.subpixel_smoothing` + `set_subpixel_smoothing(geometry)` / `PhysicsType.conformal_boundaries` +
-  `set_conformal_boundaries(locator)` right after create (before its features apply); where they apply is
-  `schema.subpixel_smoothing_physics` / `schema.conformal_boundaries_physics`. The averaged eps never enters the
-  MaterialGrid: every face / cell eps consumer of an honouring type reads the averaged values (physics/em sub file
-  "Subpixel smoothing"). Conformal: cell masks stay the cell-centre staircase (sources, ports, couplings, results read
-  them); only the operator links at the wall change, each correction limited so the time step / conditioning is
+  factors) kept across api runs hides code from the tracer: scope it to one `run_study`, as
+  `meshing.element_meshes_kept`, `cudss_factor.cudss_orderings_kept` and `host_direct.host_analyses_kept`. A disk
+  cache across processes is off inside the self-tests (`gmsh3d.default_disk_cache_off`).
+- Solver roles: a physics' numerical jobs are `PhysicsType.solver_roles`; the build creates their runtimes in a stage
+  of its own and the physics create takes them from `ctx.solvers(name)`, never building one itself (scripts still
+  may). Solver knobs are never physics settings (a new type declares a role, a shared one from definition_helpers
+  when it fits). Validate, estimators and every other reader take a role's type and values from the one resolution
+  `schema.resolved_solvers` (`ValidationContext.solvers`, `MemoryContext.solvers`), never a physics setting or a
+  node's raw settings. A model / template / self-test that needs other values (a CG tolerance) adds a solver node
+  (`PhysicsSpec.solvers`; self-tests: `selftest_helpers.with_exact_cg`). Automatic per backend / grid / study, study
+  defaults that do not fit, opt-in back ends, precision: solvers sub file "Model path".
+- Subpixel smoothing and conformal boundaries are model-wide (`solver_defaults.subpixel_smoothing` /
+  `conformal_boundaries`), never physics settings: a type honours them through its `PhysicsType` flags (schema
+  comments: the builder hands the solver the geometry / locator right after create). The averaged eps never enters
+  the MaterialGrid: every face / cell eps consumer of an honouring type reads the averaged values (em sub file
+  "Subpixel smoothing"). Conformal: cell masks stay the cell-centre staircase (sources, ports, couplings, results
+  read them); only the operator links at the wall change, each correction limited so the time step / conditioning is
   unchanged (the smallest cut never sets dt); honouring types and the locator: core sub file "Cut geometry".
 - Estimates mirror the solver: a setting where 0 = auto is resolved through the solver's own resolver (e.g.
-  `fluid.solver.steady_march_steps`), never used raw. Every memory budget check goes through `meshing.backend_memory`
-  and takes its issue level from `schema.memory_check_level(spec)` (`solver_defaults.memory_check` 'warning' runs an
-  over-budget model anyway; a refusal is final only on a built element mesh (its counts and `estimate.dissection`, the
-  counted factor fill), so build / api.check mesh first when the estimate of an unbuilt triangle / tetrahedron mesh is
-  over; model sub file "Memory estimate parts").
+  `fluid.solver.steady_march_steps`), never used raw. Every memory budget check judges
+  `meshing.fitted_memory_estimate` through `meshing.backend_memory` at `schema.memory_check_level(spec)` (model sub
+  file "Memory estimate").
   A new physics / allocating feature MUST add its memory estimator (`PhysicsType.memory_estimate` /
   `FeatureType.memory_estimate`), counted from its own allocations (not the MaterialGrid arrays): the big arrays the
   solver holds, summed where they are held together, sizes derived from the code (stencil entry counts, dtypes),
-  never fitted to measured bytes, so it sits just below the measured bytes (small arrays left out). An estimate
-  above the measured bytes ('over') books what the solver does not hold; far below ('unaccounted') an array no item
-  lists: a missing item or memory the code could free; both are leads on the solver (`builder.estimate_verdict`); a new allocation in
-  an engine updates its estimator (else the build ledger warns), and anything allocated lazily after `finalize` is a
-  run item, or a transient item of its phase when it is freed again (arrays of one solve / adjoint / refactorisation:
-  phases never overlap, the estimate takes the largest; split a solve into phases in the order the code allocates, so
-  no phase sums arrays that are never live together; build temporaries are the part's build_extra); a cuDSS factor
-  (outside the cupy pool) is an external item from `cudss_factor.factor_device_bytes`, bound to the phases it lives in
-  when it is released after its solve (`cudss_external(phases=)`); a MUMPS / PARDISO factor (host memory outside
-  numpy) is a host item from `host_direct.factor_host_bytes` (or a SuperLU item x `superlu_bytes_scale`) plus
-  `solver_host_bytes`, its constants uncalibrated. A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` /
-  `SolverType.time_estimate`: machine-independent op counts, never seconds; iteration counts derived a priori, never
-  fitted to run counters: a count deviation is a lead on the solver; a kernel bound by arithmetic, not bytes, also
-  counts its `Elementwise.flops`, since float64 runs at 1/64 rate on consumer GPUs: core sub file "Run-time
-  estimate"). Model sub file "Memory estimate parts",
-  "Run-time estimate rules".
+  never fitted to measured bytes, so it sits just below the measured bytes. 'over' (books what the solver does not
+  hold) and 'unaccounted' (an array no item lists, or memory the code could free) are leads on the solver
+  (`builder.estimate_verdict`). A new allocation in an engine updates its estimator (else the build ledger warns);
+  anything allocated lazily after `finalize` is a run item, or a transient item of its phase when it is freed again
+  (phases never overlap, the estimate takes the largest: split a solve into phases in the order the code allocates;
+  build temporaries are the part's build_extra). Factors outside the pools: cuDSS an external item from
+  `cudss_factor.factor_device_bytes` (`definition_helpers.cudss_external(phases=)` when released after its solve),
+  MUMPS / PARDISO a host item from `host_direct.factor_host_bytes` (or SuperLU x `superlu_bytes_scale`) plus
+  `solver_host_bytes` (uncalibrated). Item kinds: `core.memory_estimate.MemoryEstimate` docstring.
+  A new physics / solver type adds its run-time recipe (`PhysicsType.time_estimate` / `SolverType.time_estimate`:
+  machine-independent op counts, never seconds; iteration counts derived a priori, never fitted to run counters: a
+  count deviation is a lead on the solver; a kernel bound by arithmetic also counts its `Elementwise.flops`, since
+  float64 runs at 1/64 rate on consumer GPUs: core sub file "Run-time estimate"; model sub file "Run-time estimate
+  rules").
 
 ### GPU memory and session lifetime
 - GPU functions only on the GPU-owning thread (the worker, or the `api.run` caller); `gpu_memory.format_bytes` is the
