@@ -35,6 +35,7 @@ _Q_SPAN = 65534                       # int16 codes -32767 .. 32767 map lo .. hi
 _Q_NAN = -32768
 _Q_LOW = -_Q_SPAN // 2                # lowest value code (log codes: at or below the floor, decoded as the frame's lo)
 LOG_DECADES = 9                       # log codes span hi * 10^-9 .. hi (step ~0.03 % of the value)
+ROBUST_PERCENTILE = 99.5              # frame 'robust' of signed fields (`_robust_magnitude`)
 LOG_CODE_RATIO = 1e-3                 # non-negative frames with lo <= this * hi get log codes (intensities, |E|)
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 _TIME_UNITS = ((1e-15, 'fs'), (1e-12, 'ps'), (1e-9, 'ns'), (1e-6, 'µs'), (1e-3, 'ms'), (1.0, 's'))
@@ -793,6 +794,8 @@ def viewer_data(frames, quantity, title='', subtitle='', frame_kind='labelled', 
                        'values': [_b64(_quantised(layer.values, low, high, log_low)) for layer in frame.layers]})
         if phasor:   # the partner on the same codes: [lo, hi] = -+ the largest modulus, so every phase fits
             packed[-1]['quadrature'] = [_b64(_quantised(layer.quadrature, low, high)) for layer in frame.layers]
+        if quantity.signed and not quantity.phase:
+            packed[-1]['robust'] = _robust_magnitude(frame.layers, phasor)
     if not ranges:
         raise ValueError('the field has no finite value in any frame')
     low, high = min(lo for lo, _ in ranges), max(hi for _, hi in ranges)
@@ -829,6 +832,21 @@ def _phasor_frames(frames, quantity, frame_kind):
         raise ValueError("phasor partners on time frames: the page plays either the snapshots or the phase "
                          "(frame_kind 'labelled')")
     return True
+
+
+def _robust_magnitude(layers, phasor):
+    """ROBUST_PERCENTILE of the finite |values| (phasor: moduli) of a frame's layers, None without any: the page's
+    wave pages open with their colour Range there, so a hot spot (a source cell, a field enhancement) does not wash
+    the waves out."""
+    parts = []
+    for layer in layers:
+        values = np.asarray(layer.values, dtype=np.float64).reshape(-1)
+        if phasor:
+            values = np.hypot(values, np.asarray(layer.quadrature, dtype=np.float64).reshape(-1))
+        values = np.abs(values[np.isfinite(values)])
+        if values.size:
+            parts.append(values)
+    return float(np.percentile(np.concatenate(parts), ROBUST_PERCENTILE)) if parts else None
 
 
 def _phasor_range(layers):

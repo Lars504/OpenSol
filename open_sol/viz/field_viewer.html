@@ -314,10 +314,11 @@ const CMAPS = {
   rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
   puor: ['#542788', '#8073ac', '#b2abd2', '#d8daeb', '#f7f7f7', '#fee0b6', '#fdb863', '#e08214', '#b35806'],
   icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
+  seismic: ['#00004d', '#0000a6', '#0000ff', '#8080ff', '#ffffff', '#ff8080', '#ff0000', '#bf0000', '#800000'],   // vivid waves
 };
 const CMAP_CHOICES = {
   sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
-  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
+  diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)'], ['seismic', 'Seismic (vivid)']],
 };
 
 // ---------- data ----------
@@ -562,8 +563,7 @@ function limits() {
 }
 function autoLimits() {
   // colour limits [lo, hi] of the data and the Range slider (log: hi and the decades below it)
-  const F = FRAMES[state.frame];
-  let lo = state.scale === 'frame' ? F.lo : DATA.range[0], hi = state.scale === 'frame' ? F.hi : DATA.range[1];
+  let [lo, hi] = state.scale === 'frame' ? shownFrameRange() : DATA.range;
   if (SIGNED) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
   if (state.log && LOG_OK) { const top = Math.max(hi * state.range, 1e-300); return [top * Math.pow(10, -state.decades), top]; }
   hi = lo + (hi - lo) * state.range;
@@ -1727,6 +1727,15 @@ function waveTick(dt) {
     wave.mixA = 1 - blend; wave.mixB = blend;
   }
 }
+function shownFrameRange() {
+  // [lo, hi] of the shown frame; while a time frame blends into the next, blended too (the colour scale glides
+  // instead of jumping once per snapshot)
+  const F = FRAMES[state.frame];
+  if (!(SMOOTH_OK && wave.mixB > 0)) return [F.lo, F.hi];
+  const G = FRAMES[(state.frame + 1) % NF], b = wave.mixB;
+  if (F.empty || G.empty) return [F.lo, F.hi];
+  return [F.lo + (G.lo - F.lo) * b, F.hi + (G.hi - F.hi) * b];
+}
 function waveReadout(parts) {
   // heading: the phase a still phasor page shows (a moving page names the animation once)
   if (!PHASOR) return;
@@ -1766,6 +1775,18 @@ if (PHASOR) {
   });
 }
 if (KIND === 'time' && NF > 1) state.playing = true;      // time frames open playing, as the mode animation
+// a wave pulse decays and spreads: signed time frames each on their own scale (blended while playing)
+if (SMOOTH_OK && SIGNED) { state.scale = 'frame'; $('scale').value = 'frame'; }
+// waves (phasor or signed time frames): the vivid diverging map until one is chosen (remembered for signed fields)
+if ((PHASOR || SMOOTH_OK && SIGNED) && !store('cmap_signed')) { state.cmap = 'seismic'; $('cmap').value = 'seismic'; }
+{ // signed fields open with the Range at the frames' typical robust magnitude (frame 'robust', the 99.5th percentile
+  // of |value|) over their largest one, so a source cell or a field enhancement does not wash the waves out; the
+  // slider shows the saturation and 100 % brings the full range back
+  const ratios = FRAMES.filter((F) => !F.empty && F.robust > 0)
+    .map((F) => F.robust / Math.max(Math.abs(F.lo), Math.abs(F.hi))).sort((a, b) => a - b);
+  const typical = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
+  if (SIGNED && typical < 0.9) { state.range = Math.max(0.3, Math.round(100 * typical) / 100); $('range').value = String(state.range); }
+}
 
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
