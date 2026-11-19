@@ -19,8 +19,8 @@ from ..model.meshing import (MESH_ESTIMATE_ERRORS, element_mesh_key, element_win
                              fitted_memory_estimate, physics_settings, with_built_counts)
 from ..model.schema import (FREE_MESH_KINDS, GLOBAL_DERIVED_OPERATION, INTERFACE_SIDES, MESH_KINDS, SELECTION_KINDS,
                             SOLVER_ROLES, coupling_role_text,
-                            coupling_type_accepts, fill_defaults, new_physics_space, output_field_names,
-                            scalar_output_names, solver_backend, solver_misfit, state_field_names,
+                            coupling_type_accepts, fill_defaults, known_physics, new_physics_space, output_field_names,
+                            scalar_output_names, solver_backend, solver_grid, solver_misfit, state_field_names,
                             with_default_precision)
 from ..model.spec import (RESERVED_ENTITY_NAMES, AnalyticCurveSpec, CouplingSpec, DerivedCurveSpec,
                           DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
@@ -1375,15 +1375,12 @@ def solver_fits(spec, registry, solver_type, values, roles=None):
     if backend not in BACKENDS:   # an invalid backend value: reported by validation
         backend = 'gpu'
     fits = []
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         for role in (solver_type.roles if roles is None else roles):
             if role in physics_type.solver_roles and role in solver_type.roles:
                 fits.append((physics_spec.name, role,
-                             solver_misfit(solver_type, values, physics_type, role, study, backend)))
+                             solver_misfit(solver_type, values, physics_type, role, study, backend,
+                                           solver_grid(spec, physics_spec))))
     return fits
 
 

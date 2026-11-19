@@ -1096,49 +1096,17 @@ templates, describe. Current state, no changelog.
   first study step). Items are timed per group only: an item's measured seconds = its count x the group ratio.
 
 ## Registry, templates, describe
-- CouplingType source_type / target_type are None, a name or a tuple: test only with `schema.coupling_type_accepts` /
-  `coupling_role_text`, never ==.
 - A loop over `spec.physics` that skips unregistered types (validate reports them) takes
   `schema.known_physics(spec, registry)` -> (PhysicsSpec, PhysicsType).
-- Templates: read only through `templates.template_entries(registry)` (built-ins first; duplicate key raises; a fresh
-  ModelSpec by `template_model(entry)` / `make_template(key)`, both refusing a factory that returns no ModelSpec); every
-  template must validate cleanly (selftest templates_validate), likewise every examples/**/*.json (examples_validate,
-  api.EXAMPLES_DIR; mirrors the GUI catalog's file rule). `app.main` starts with dielectric_cylinder.
-- `describe()` is deterministic (sorted sets, declared order, floats '%.6g', ASCII, no addresses / timestamps) and
-  checks its tables first (`_checked_reference`): a new spec field / expression function / builtin constant / result
-  kind / Param kind needs its entry in `_SPEC_FIELD_HELP` (MeshSpec fields of MESH_PARAMS: derived from the Param) /
-  `FUNCTION_DESCRIPTIONS` / `CONSTANT_DESCRIPTIONS` / `RESULT_KIND_DOCS` / `_PARAM_KIND_HELP`; a new nested spec
-  dataclass goes in `spec._NESTED_FIELDS`. Each rule lives in one topic; others carry a one-line pointer.
-  `reference_files()` returns both texts ({file name: text}); api_reference.md's Templates section is an index
-  (`_template_uses`); the JSON is in api_templates.md (header + own Contents + describe('templates'), compact
-  examples/*.json layout `_json_lines`). Markdown size: selftest cases appear only in the 'selftests' topic;
-  consecutive params differing only in name / label share one entry; in the full reference only, a physics / coupling
-  / study text of >= `_SHARED_TEXT_MIN_CHARS` occurring twice is printed once under '## Shared help texts' with "Help:
-  shared `<key>`" at each occurrence (a param's ends its param line): keep repeated help texts identical word for word
-  so they merge. Param lines print only deviations (`_param_lines`, notation in `_PARAM_LEGEND`: spec notes 'Param
-  lines', and atop every topic view with params): `name` [unit] (kind unless float, default / required, range as
-  > a / [a, b], choices a | b, nullable, may use x, y / fields / t, visible when, writes); material properties imply
-  "may use x, y, fields" and their own-name array (deviations: "no fields", "writes ..."). The unit, range, default and
-  choices are printed from the Param, so a help text does not repeat them. Fields list the output fields once, marking
-  "[state]", then the state-only ones. Lead-ins repeated per entry (physics / feature / coupling / study fact lines)
-  live once in the spec notes 'Physics, couplings and study'; the header Topics line comes from `_topic_groups` (a new
-  topic group goes there only).
+- Templates: list them by `templates.template_entries(registry)`, build one by `template_model(entry)` /
+  `make_template(key)` (they check the factory's return), never `entry.factory()`.
+- `describe()` is deterministic (sorted sets, declared order, floats '%.6g', ASCII, no addresses / timestamps). Its
+  hand-written tables are checked (`_table_problems` names the one a new key misses); a new nested spec dataclass
+  also goes in `spec._NESTED_FIELDS` (unchecked; load reads it too). Help texts: each rule lives in one topic, others
+  carry a one-line pointer; lead-ins shared by every physics / feature / coupling / study entry live once in the spec
+  notes 'Physics, couplings and study'; keep repeated help texts identical word for word, so consecutive params share
+  one entry and the full reference prints a long text once under '## Shared help texts'.
 
-## Import contracts, structure index
-- `import_contracts.CONTRACTS` patterns are fnmatch on module names relative to the package ('*' crosses dots);
-  packages are '<package>.__init__' (the root '__init__'), so `tree('core')` = ('core', 'core.*') covers a package and
-  everything below, while 'fem.__init__' alone is the package file. `from x import y` resolves to x.y when y is a
-  module, else to x. Scope 'module' = imports run at import time (also inside a module-level try / if); scope
-  'registration' adds those inside a top-level function named `register` (nested defs count as their outermost
-  function); an `allowed` entry with 'function' excuses only imports inside functions. An exception no import uses,
-  or an importer pattern matching no module, fails import_contracts as stale: delete it with the code it excused.
-  Imports by `importlib.import_module` are invisible to the check.
-- Both modules use the standard library only and read the package's .py files with ast (no package module imported,
-  so a module that fails to import still gets checked).
-- `Registry.selftests()` runs the `register_selftests` loaders once, under a lock (a loader never calls selftests());
-  a loader that raises registers none of its cases and the next call retries every loader, so a broken selftests
-  module fails `selftest` / `describe('selftests')`, not get_registry.
-- `structure_index` takes the first sentence of each module docstring: the first paragraph up to '. ' + a capital /
-  bracket / quote (not after e.g. / i.e. / vs / cf / etc), cut at MAX_SUMMARY_CHARS; a missing docstring shows as
-  NO_DOCSTRING. The file lives beside structure_conventions.md, so outside a repository checkout
-  structure_index_current passes with a note.
+## Import contracts
+- `import_contracts.CONTRACTS`: pattern and scope rules in its comments. A stale exception or importer pattern fails
+  the check: delete it with the code it excused. Imports by `importlib.import_module` are invisible to it.

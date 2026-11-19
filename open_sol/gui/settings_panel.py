@@ -27,6 +27,7 @@ from ..model.schema import (ADAPTATION_METHODS, GLOBAL_DERIVED_OPERATION, SOURCE
                             INTERFACE_VARIABLES, FREE_MESH_KINDS, MESH_KIND_DEFAULTS, MESH_KINDS,
                             MESH_PARAMS, PRECISIONS, SELECTION_KINDS, SOLVER_BACKENDS, SOLVER_DEFAULT_PRECISIONS,
                             SOURCE_DERIVED_OPERATIONS, SOLVER_ROLES, Param, coupling_type_accepts, feature_precision_note, fill_defaults,
+                            known_physics,
                             instance_space, output_field_names, param_in_space,
                             memory_check_level, scalar_output_names, solver_backend, solver_grid, solver_misfit,
                             with_default_precision, with_node_precision)
@@ -2764,11 +2765,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         layout.addWidget(_group('Defaults', defaults_form))
         self._refreshers.append(lambda: defaults_form.refresh(default_values()))
         lines = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             for role, solver_role in physics_type.solver_roles.items():
                 if solver_role.used_in(spec.study.type):
                     node = self._assigned_solver(physics.name, role)
@@ -2868,11 +2865,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
 
     def _add_stored_fields(self, layout, spec):
         entries = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             for info in physics_type.output_fields:
                 if info.requires_study and info.requires_study != spec.study.type:
                     continue   # e.g. harmonic FDTD phasors exist only in a frequency_domain study
@@ -3289,11 +3282,7 @@ class SettingsPanel(EstimationFormMixin, QtWidgets.QWidget):
         """[(physics name, FieldInfo)] of every output field of the registered physics available in the study type, in
         model order."""
         entries = []
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             entries.extend((physics.name, info) for info in physics_type.output_fields
                            if not info.requires_study or info.requires_study == spec.study.type)
         return entries

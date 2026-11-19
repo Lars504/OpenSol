@@ -872,6 +872,7 @@ class Registry:
         self._selftests = {}
         self._selftest_loaders = []
         self._selftest_lock = threading.Lock()
+        self._selftest_loading_thread = None   # thread running the loaders (a loader calling selftests() raises)
 
     @staticmethod
     def _add(table, item, expected_type):
@@ -957,13 +958,21 @@ class Registry:
         self._selftest_loaders.append(loader)
 
     def selftests(self):
-        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise)."""
+        """Every SelfTestCase in loader order; the first call runs the loaders (duplicate names raise). A loader that
+        raises registers no case and the next call retries every loader, so a broken selftests module fails selftest
+        runs, not get_registry."""
+        if self._selftest_loading_thread == threading.get_ident():
+            raise RuntimeError('Registry.selftests() called from a selftest loader')
         with self._selftest_lock:
             if self._selftest_loaders:
-                cases = dict(self._selftests)
-                for loader in self._selftest_loaders:
-                    for case in loader():
-                        self._add(cases, case, SelfTestCase)
+                self._selftest_loading_thread = threading.get_ident()
+                try:
+                    cases = dict(self._selftests)
+                    for loader in self._selftest_loaders:
+                        for case in loader():
+                            self._add(cases, case, SelfTestCase)
+                finally:
+                    self._selftest_loading_thread = None
                 self._selftests, self._selftest_loaders = cases, []
         return list(self._selftests.values())
 

@@ -57,7 +57,7 @@ from .model.study import (BuildFailed, Built, LiveFrame, LiveResults, LogEvent, 
                           run_study, tick_count_text)
 from .model.study_sectors import ordered_sector_specs
 from .model.time_estimate import estimate_overheads, estimate_time, estimated_runs, stored_profile
-from .model.templates import make_template, template_entries
+from .model.templates import make_template, template_entries, template_model
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
 from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFlow, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
@@ -2773,7 +2773,7 @@ def _templates_validate_case(registry, record):
     details = {}
     for entry in template_entries(registry):
         try:
-            issues = validate(entry.factory(), registry)
+            issues = validate(template_model(entry), registry)
         except Exception as exc:   # a crashing factory is a template error, not a selftest crash
             issues = [Issue('error', ('model',), f'the template factory failed: {_error_text(exc)}')]
         errors = [_issue_record(issue) for issue in issues if issue.level == 'error']

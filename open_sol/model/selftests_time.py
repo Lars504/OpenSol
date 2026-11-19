@@ -173,7 +173,7 @@ def _check_recipes(results_by_name):
     from ..core import time_estimate as te
     from .expressions import evaluate_parameters
     from .schema import get_registry
-    from .templates import template_entries
+    from .templates import template_entries, template_model
     from .time_estimate import estimate_overheads, estimate_time
 
     registry = get_registry()
@@ -245,7 +245,7 @@ def _check_recipes(results_by_name):
     failures, unestimated = {}, {}
     for entry in template_entries(registry):
         try:
-            spec = entry.factory()
+            spec = template_model(entry)
             estimate, message = estimate_time(spec, evaluate_parameters(spec.parameters, errors={}), registry,
                                               profile=profile)
         except Exception as exc:   # a crashing estimate is this template's failure, not a selftest crash

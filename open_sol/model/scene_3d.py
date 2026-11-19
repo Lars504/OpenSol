@@ -8,6 +8,7 @@ import numpy as np
 from .geometry import (GEOMETRY_KINDS, UNION_KINDS, composite_inputs, consumed_objects, domain_size, domain_size_z,
                        expand_entities, is_array_copy, material_paint_order, material_selections, outline, point_z,
                        resolve_geometry, surface_faces, vertical_section)
+from .schema import known_physics
 from .spec import outer_faces
 
 _FACE_BUDGET = 6000          # automatic n_segments keeps about this many faces over all round objects
@@ -200,11 +201,7 @@ def _leaves(name, shapes, solid) -> list:
 def _glyph_categories(spec, registry) -> dict:
     """{point / line object name: FeatureType.category of the first enabled feature selecting it}."""
     categories = {}
-    for physics in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics.type)
-        except KeyError:
-            continue
+    for physics, physics_type in known_physics(spec, registry):
         for feature in physics.features:
             if not feature.enabled:
                 continue

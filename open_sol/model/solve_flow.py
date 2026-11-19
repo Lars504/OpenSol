@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, fields, replace
 
 from ..solvers.roles import BACKENDS, PRECISIONS, SOLVER_ROLES, resolved_precision
-from .schema import resolved_solvers, solver_backend, solver_grid
+from .schema import known_physics, resolved_solvers, solver_backend, solver_grid
 from .time_estimate import estimation_runs, study_counts
 
 # row kind -> row label (left margin of the chart); study rows are 'study' too, one per study step
@@ -797,11 +797,7 @@ def _study_steps(spec, study_type, counts, run_time, registry):
 
 def _has_background(spec, registry, study_name):
     """True when a physics runs as background in the study (not listed as solved, or its type does not list it)."""
-    for physics_spec in spec.physics:
-        try:
-            physics_type = registry.physics_type(physics_spec.type)
-        except KeyError:
-            continue
+    for physics_spec, physics_type in known_physics(spec, registry):
         if not spec.study.solves(physics_spec.name) or study_name not in physics_type.supported_studies:
             return True
     return False

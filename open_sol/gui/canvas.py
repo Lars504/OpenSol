@@ -19,7 +19,7 @@ from ..model.geometry import (GEOMETRY_KINDS, PRISM_KINDS, bounding_box, consume
                               preview_pixel_centers, rasterize, rasterize_window, resolve_geometry, section_mask,
                               vertical_section, z_extent)
 from ..model.interface_sampling import interface_objects, interface_selection, object_outline
-from ..model.schema import FREE_MESH_KINDS, fill_defaults, solver_backend
+from ..model.schema import FREE_MESH_KINDS, fill_defaults, known_physics, solver_backend
 from ..model.spec import outer_faces
 from ..model.study import sweep_values_of
 from ..viz.common import (color_limits, containing_cells, edges_from_centers, length_unit, line_profile,
@@ -1849,11 +1849,7 @@ class ModelCanvas(QtWidgets.QWidget):
         spec = self._document.spec
         faces = outer_faces(spec)
         texts = {face: [] for face in faces}
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             settings = fill_defaults(physics_type.settings, physics.settings if isinstance(physics.settings, dict)
                                      else {})
             settings_by_name = {param.name: param for param in physics_type.settings}
@@ -1897,11 +1893,7 @@ class ModelCanvas(QtWidgets.QWidget):
 
     def _draw_feature_glyphs(self, model):
         spec = self._document.spec
-        for physics in spec.physics:
-            try:
-                physics_type = self._registry.physics_type(physics.type)
-            except KeyError:
-                continue
+        for physics, physics_type in known_physics(spec, self._registry):
             for feature, feature_type, entities in _enabled_features(spec, physics, physics_type):
                 color =_CATEGORY_COLORS.get(feature_type.category, '#555555')
                 feature_type = self._channel_glyph_type(physics, feature, feature_type)
