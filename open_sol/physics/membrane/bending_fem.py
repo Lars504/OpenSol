@@ -24,7 +24,8 @@ functions."""
 # Straight elements (affine map) have constant Hessians G^T H_ref G (G = J^-1): their volume term is one point (area x
 # H : M) and their edge sides take the Hessians once per element instead of per point (the same values up to round-off;
 # the batched per-point matmuls / einsums of p2_derivatives were most of the assembly). The stretch is 1 (s' = 0) inside
-# the window, so only PML ring elements and edges touching the ring take the stretched form.
+# the window, so only PML ring elements and edges touching the ring take the stretched form. A new term on straight
+# elements takes the constant path too.
 import numpy as np
 
 from ...fem.assembly import _to_csr
@@ -224,7 +225,8 @@ def _isoparametric_side_values(mesh, elements, reference, normals, rigidity, poi
 
 def penalty_scale(terms, normals):
     """(k, q) stretched penalty factor J (n . S^-2 n)^2 of stretch_terms at edge points with unit normals (k, q, 2);
-    None without a stretch (terms None)."""
+    None without a stretch (terms None). Not J / s_n^2: that rotates the penalty's phase against the rest of the
+    form."""
     if terms is None:
         return None
     directions = normals * terms[0]

@@ -30,7 +30,7 @@ from ...core.harmonic_probe import FREQUENCY_MATCH_RTOL, harmonic_probe_result
 from ...fem.assembly import assemble_edge_load
 from ...fem.diffusion import window_face_edges
 from ...fem.elements import lagrange_values
-from ...fem.mesher import MERGE_TOLERANCE
+from ...fem.mesher import window_inset
 from ...fem.quadrature import gauss_line
 from ...fem.sampling import locator
 
@@ -42,6 +42,15 @@ PROJECTION_SEGMENTS_PER_MODE = 4  # mode_projection: composite Gauss segments ac
 PROJECTION_MIN_SEGMENTS = 16
 PROJECTION_DEGREE = 5            # Gauss degree per segment (3 points)
 CLAMPED_WALLS = (False, False)
+# guide wall / span matches allow this many window_insets (1e-6 of the longest side): a typed cross_start / cross_end
+# and a sum of many edge lengths still meet the window edge / the span (guide_tolerance)
+GUIDE_TOLERANCE_INSETS = 1e3
+
+
+def guide_tolerance(window) -> float:
+    """[m] slack of a guide wall on a window face and of a port span's covered length: GUIDE_TOLERANCE_INSETS
+    window_insets."""
+    return GUIDE_TOLERANCE_INSETS * window_inset(window)
 
 
 def transverse_wavenumbers(numbers, width, free_walls=CLAMPED_WALLS) -> np.ndarray:
@@ -243,9 +252,7 @@ def port_edges(mesh, face, active) -> tuple:
     ends = mesh.points[mesh.edges[edges]][:, :, tangent]
     start, end = float(ends.min()), float(ends.max())
     covered = float(np.abs(ends[:, 1] - ends[:, 0]).sum())
-    x0, y0, x1, y1 = mesh.window
-    tolerance = 1e3 * MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
-    if abs(covered - (end - start)) > tolerance:
+    if abs(covered - (end - start)) > guide_tolerance(mesh.window):
         raise ValueError(f'port on {face}: the membrane meets that face in more than one piece (covered '
                          f'{covered:.6g} m of the span {end - start:.6g} m); a port is one clamped guide cross-section')
     return edges, start, end - start

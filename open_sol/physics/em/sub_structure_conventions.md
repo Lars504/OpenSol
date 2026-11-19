@@ -36,8 +36,8 @@ type's vocabulary and refusals are in its help texts and validation.
   FDFDPhysics) and the EM material_schema, so an eps_r write before any E_z solver exists raises; code outside EM
   checks `property_names()` first.
 - Both FDTD engines subclass `fdtd_2d_base._YeeEngine2DBase` (the hooks a new engine fills: its class docstring); the
-  cell-mask helpers there (`_check_cell_array`, `record_dispersive_region`, `add_pec_cells`) also serve FDFD, em_modes,
-  BOR and EME. EM solvers take cell geometry and per-polarisation vocabulary from `placement` and
+  cell-mask helpers there (`record_dispersive_region`, `add_pec_cells`; array checks: `core.backend.check_backend_array`)
+  also serve FDFD, em_modes, BOR and EME. EM solvers take cell geometry and per-polarisation vocabulary from `placement` and
   `boundaries.solver_boundary_config`: reuse, never copy (messages and checking order stay those of EMPhysics).
 - Backends: every FDTD-path kernel is a `core.kernels` twin (core sub file "Kernel twins"): a new kernel gets its numpy
   twin in the same edit, host reads via `to_host`; sources and monitors take `xp=` (None = the default backend: EM
