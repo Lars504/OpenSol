@@ -254,9 +254,8 @@ def check_solver_size(back_end, nx, ny, periodic_x, periodic_y) -> None:
     workspace = qr_workspace_bytes(nx, ny, periodic_x, periodic_y)
     if workspace <= QR_WARN_BYTES:
         return
-    import cupy as cp
-    from ..core.gpu_memory import memory_status
-    cp.get_default_memory_pool().free_all_blocks()   # e.g. the previous omega's dropped system, an earlier FDTD run
+    from ..core.gpu_memory import memory_status, release_cached_blocks
+    release_cached_blocks()   # e.g. the previous omega's dropped system, an earlier FDTD run
     device_free = memory_status().device_free
     if workspace > _QR_DEVICE_FRACTION * device_free:
         raise ValueError(f"the sparse_direct back end 'cusolver_qr' needs an estimated {_format_bytes(workspace)} of "

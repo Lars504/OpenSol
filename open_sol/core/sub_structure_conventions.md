@@ -3,206 +3,136 @@
 Sub file of the root `structure_conventions.md` (read that first). Gotchas of core modules only; general array /
 coordinate rules stay in the root file.
 
-## Backends (`backend`; solver_plan S6)
-- `core.backend` alone imports cupy / cupyx at module level (try / except, no driver call): `cp`, `cupyx_sparse`,
-  `cupyx_ndimage` are the real modules or stand-ins. Stand-ins pass numpy's scalar types through (`cp.float32` is
-  `np.float32`), return a stand-in kernel from RawKernel / RawModule / ElementwiseKernel / ReductionKernel (module-level
-  kernel definitions import), never match isinstance and raise `BackendUnavailable` on any other call.
-  `cupy_installed()` = cupy imported; `gpu_available()` adds one cached CUDA device query (worker thread only);
-  `default_backend_name()` = 'gpu' with cupy, else 'cpu' (script objects built without a backend).
-- The run backend lives on the Domain (`domain.backend` = `Backend(name, xp)`, `domain.xp`; Domain / Domain3D take it
-  from their MaterialGrid); `use_backend(name)` switches an array-free domain (the builder calls it right after
-  `make_domain` with `schema.solver_backend(spec)`). Build arrays come from `domain.xp` / `ctx.xp` /
-  `array_module_of(input)`, host copies from `to_host`, device syncs from `domain.backend.synchronize()`. A cupy kernel
-  used on a cpu path needs a numpy twin with the same arguments next to it (fv_diffusion `_source_rhs_host`, heat
-  `_rise_to_temperature_host`, potential `_add_scaled_host`; explicit engines: "Kernel twins"), changed in the same
-  edit. Never pass `where=None` to `xp.copyto`: cupy reads it as no mask, numpy as False (nothing written); branch on
-  a None mask instead (MaterialGrid.assign / assign_window).
-- `gpu_memory` without cupy: pool counters 0 (`_NoPool`; the ledger records 0 B per stage), `release_all` = gc;
-  `cpu_device_info()` / `cpu_memory_status()` (host RAM as device memory, no budget) are what the worker emits without
-  a usable GPU. `MemoryLedger(backend='cpu')` counts tracemalloc current / peak bytes (`_TracedHost`: pre-imports
-  `_CPU_BUILD_MODULES` so their module objects are not booked, starts tracing unless already on, resets the peak; the
-  builder calls `stop()` in a finally), compared with gpu_steady / gpu_build_peak like the pool; no run-memory record
-  on the cpu (tracing would slow the run). `MemoryLedger.track` also times each stage (`stage_seconds`; `add_time`
-  books the untracked validation / geometry phases; `ledger_time_text` = the "Build time by stage" line, logged also
-  after a failed build; summary.json build.stage_seconds). `owned_bytes(..., backend='cpu')` counts numpy buffers (a
-  view counts its base once; every reachable array incl. small host tables); the default 'gpu' ignores numpy arrays.
-  `Simulation.memory_report` passes the Domain's backend and prints `cpu_memory_status()` on the cpu.
-- Every physics type declares 'cpu' (`PhysicsType.backends`): host solves through scipy, fields on `domain.xp`,
-  explicit-engine kernels and coupling-transform kernels are `core.kernels` twins (other transforms allocate on their
-  input's / the Domain's xp); `FieldProbe` keeps its buffer on the first record's module. `FieldProbe.record` of a
-  float32 / float64 cupy field is one `core.probe_store` launch (`trace[slot] = field[element offset]`, any strides);
-  numpy, float16 (em3d half_storage), complex or out-of-shape cells take the indexed `record_value`. Step-graph
-  recording: `ProbeRows` (host side of a (rows, columns) device table filled by ONE fixed-argument launch per step that
-  advances a device row counter; `next_launch(rows=)` grows first, `stamp` per step; acoustics' ProbeRecorder) and
-  `FieldProbeRows` (gpu only: a table of field pointers + element offsets, one dtype: float32 / float64, or float16
-  read as its bits (em3d half_storage, stored units); `add` takes a FieldProbe over,
-  whose `get_data` then reads its column and `record` raises; `rewrite_last_row` = the rewind variant, eager).
-  `replace_same_time` stays on the per-probe path (FDTD never uses it). A coupling runs on the cpu
-  once both partner types declare it. gpu only: the half_storage steppers and the cusolver_qr back end (solver
-  backend_misfit).
-- Memory estimates: `diffusion_system_estimate(direct=True)` (a host SuperLU sparse_direct linear solver, the cpu
-  Automatic) adds the host factor (`host_real_lu_bytes`: 2D n log2 n, 3D n^(4/3) fill, LU_3D_ENTRIES_PER_UNKNOWN_4_3
-  uncalibrated) and its CSC input copy as host items; on the cpu `check_memory` counts them with the device items.
-  `direct=<host direct name>` (MUMPS / PARDISO; `definition_helpers.linear_solver_direct` returns the back end name)
-  books instead `host_direct.factor_host_bytes` (the SuperLU heuristic x `superlu_bytes_scale`: LDL^T / LU fill,
-  workspace and mixed ratios, all uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes)
-  + `solver_host_bytes` (function-level import of solvers.host_direct, a listed exception of the core rule). A
-  cuDSS 'linear' back end is not in it (core may not import solvers.cudss_factor): the caller combines
-  `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (fem sub file). Its build extra is the larger of the
-  pattern build + anchor check and the multigrid setup with assemble's locals alive at `factorize`
-  (_FACTORIZE_ALIVE_*): the pattern-build temporaries are freed before it, so the two never add. flux temporaries
-  are the transient phase 'flux post-processing'.
+## Backends (`backend`)
+- Without cupy, `cp` / `cupyx_sparse` / `cupyx_ndimage` are stand-ins (module docstring): module-level kernel
+  definitions still import, `isinstance(x, cp.ndarray)` is False, any other call raises `BackendUnavailable`.
+  `gpu_available()` is a driver query (worker thread only); `cupy_installed()` is GUI-thread safe.
+- The run backend lives on the Domain (`domain.backend`, `domain.xp`, from its MaterialGrid); the builder calls
+  `domain.use_backend(schema.solver_backend(spec))` right after `make_domain`, before any array exists. Host copies
+  come from `to_host` / `host_copy`, device syncs from `domain.backend.synchronize()` (nothing on the cpu).
+- Never `xp.copyto(..., where=None)`: cupy reads it as no mask, numpy as False (nothing written); branch on a None
+  mask (MaterialGrid.assign / assign_window).
+- Every physics type declares 'cpu' (`PhysicsType.backends`, enforced by validate); a coupling runs on the cpu once
+  both partner types declare it. gpu only: the half_storage steppers and the cusolver_qr / cuDSS back ends (their
+  SolverType `backend_misfit`). Engines on the cpu record probes per FieldProbe (`FieldProbeRows` is gpu only), and
+  `replace_same_time` stays on that per-probe path (FDTD never uses it).
 
-## GPU memory (`gpu_memory`, `host_memory`)
-- `gpu_memory.set_budget()` limits cupy's pool to min(90 % of the device, free + pool reserved - 512 MiB): overruns
-  raise OutOfMemoryError instead of spilling. Recomputed before every job (worker: after `release_session`; `api.run`:
-  at start); when it raises the job fails (Issue at ('model',)), never runs without a pool limit (Windows sysmem
-  fallback is 10-100x slower). Pool counters are process-wide (`BuildSummary.session_gpu_bytes` is one build's share).
-  `memory_status()` is a driver query: <= ~1 Hz. `set_budget` keeps its memory query: `budget_device_info()` (the
-  run's device line, `api._log_device`) reuses it, so a run makes one memory query; device names are cached per process.
-- Code sizing a batch to the free memory at run time (line_block chunks) asks `pool_room_bytes(release_cached=True)`,
-  not budget - pool used: the budget never sees outside-pool memory (cuDSS factors of other physics), so pool + factors
-  could pass the device and spill. It returns the cached blocks while the device is the tighter bound; the run memory
-  measurement reads `pool_high_water_bytes()`, which keeps the reserved bytes such a release returned.
-- `Simulation.memory_report()` / `owned_bytes` count a shared array for its first owner (materials, physics,
-  couplings); memory_report also lists host bytes of CPU factorisations (`host_owners`: FDFD `host_factor_bytes` = L +
-  U of the last scipy_splu), which the model path reports only in the study log (`solve_summary`). Outside the cupy
-  pool: the cusolver_qr workspace (guarded by `solvers.sparse_direct.check_solver_size`) and every cuDSS factor
-  (guarded by cuDSS's own plan estimate in `solvers.cudss_factor`; estimated as MemoryEstimate gpu_external by
-  `cudss_factor.factor_device_bytes`, measured by the process-wide live / high-water counters of cudss_factor). A
-  MUMPS / PARDISO factor (`solvers.host_direct`) holds host memory outside numpy (its `host_bytes`): guarded by the
-  library's own estimate after analysis against HOST_FRACTION of `host_memory.available_bytes()` (no guard when that is
-  None), estimated as host items; a check measuring numpy host arrays does not see it.
-- `release_all`'s full `gc.collect` walks every tracked object (modules, registry: ~25 ms). A sweep
-  (`study._run_sweep`) calls `freeze_collect_baseline()` after its first value's collect and `thaw_collect_baseline()`
-  at its end, so the per-value collects walk only sweep-made objects; skipped when the gc is frozen already
-  (selftest_cache freezes for the whole selftest), never unfreezing a freeze of its own caller.
+## GPU memory (`gpu_memory`, `host_memory`, `memory_estimate`)
+- `set_budget()` runs before every job (worker: after `release_session`; `api.run`: at start); when it raises the job
+  fails (Issue at ('model',)), never runs without a pool limit (the Windows sysmem fallback is 10-100x slower).
+  `budget_device_info()` reuses its memory query: one per run. Pool counters are process-wide
+  (`BuildSummary.session_gpu_bytes` is one build's share); `memory_status()` is a driver query: <= ~1 Hz.
+- Sizing to the free memory at run time (line_block chunks, eigen batches) asks `pool_room_bytes(release_cached=True)`,
+  not budget - pool used: the budget never sees outside-pool memory (cuDSS factors of other physics). A mid-run release
+  of the pool's cached blocks goes through `release_cached_blocks()` (also inside pool_room_bytes), never a bare
+  `free_all_blocks()`: it keeps the reserved high water that the run memory measurement (`pool_high_water_bytes`)
+  reads. Between jobs: `release_all` (gc + cuFFT plan cache, cleared only when non-empty: cupy's `clear()` of an
+  empty cache is a full `gc.collect`).
+- Outside the cupy pool: the cusolver_qr workspace (`sparse_direct.check_solver_size`), every cuDSS factor (its own
+  plan estimate in `cudss_factor`; estimated as MemoryEstimate gpu_external) and MUMPS / PARDISO factors (host memory
+  outside numpy, guarded against HOST_FRACTION of `host_memory.available_bytes()`, no guard when None): numpy-based
+  checks (`owned_bytes(backend='cpu')`, the cpu MemoryLedger's tracemalloc) do not see them. `Simulation.memory_report`
+  counts a shared array for its first owner and lists CPU factorisations (`host_factor_bytes`) separately; the model
+  path reports those only in the study log.
+- cpu backend: `MemoryLedger(backend='cpu')` traces numpy bytes with tracemalloc (the builder `stop()`s it in a
+  finally) against the same gpu_steady / gpu_build_peak estimate; there is no run-memory record on the cpu (tracing
+  would slow the run). `memory_estimate.diffusion_system_estimate` books the host factors of its `direct` options (all
+  heuristics uncalibrated: refit from summary.json host_direct_lu_entries / host_direct_peak_bytes); a cuDSS 'linear'
+  back end is the caller's `fem.diffusion.cudss_diffusion_estimate(input_copy=False)` (core may not import
+  solvers.cudss_factor).
+- `release_all`'s full `gc.collect` walks every tracked object (~25 ms): a sweep (`study._run_sweep`) freezes the gc
+  after its first value (`freeze_collect_baseline` / `thaw_collect_baseline`), never undoing a freeze of its caller
+  (selftest_cache freezes for the whole selftest).
 
 ## Accepted host syncs (the root rule: none per step in hot loops)
-- The build's Courant check; one `Device().synchronize()` per study chunk and one at the end of each study run
-  (`study_seconds`); heat / potential CG, one at the start (||b|| and ||r0|| together) and one per check interval of
-  the bound preconditioner (pcg `_check_interval`: gpu 16, a multigrid V-cycle 2; the gpu anchor-code comparison of a
-  re-assembly is read right before it); one per
-  `DiffusionSystem.refresh_diagonal` / `refresh_capacity` (pinned / anchor cells unchanged) and `refresh_held_values`
-  (held count); one per radiation term
-  and steady heat radiation re-linearisation (its convergence test); the FDFD solve
-  (scipy_splu: one rhs / solution transfer each); one HarmonicModeMonitor transfer per solve; one grid-row transfer per
-  FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first step (material drift
-  check, re-solve above 1e-3); the E_z ohmic-box refresh per `materials_changed` of sigma_e; the builder's material
-  range checks (model sub file, Schema); the laminar-flow velocity check once per lattice check interval (>= 100
-  steps); per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the displacement
-  up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter sums are
-  cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call); per assembly of a solid_mechanics_3d system
-  with the multigrid preconditioner (`physics.mechanics.multigrid3d.BrickMultigrid.build`) the power-iteration dots of
-  every level (2 x POWER_ITERATIONS + norms) and the 81 coarsest probe reads (never inside a V-cycle).
+A new accepted sync joins this list.
+- Study: the build's Courant check; one `domain.backend.synchronize()` per study chunk and one at the end of each run
+  (`study_seconds`); the builder's material range checks (model sub file, Schema).
+- DiffusionSystem (heat, potential): CG reads one at the start (||b|| and ||r0|| together) and one per check
+  interval (`solvers.pcg` CG_CHECK_INTERVAL / MULTIGRID_CHECK_INTERVAL; the gpu anchor-code comparison of a
+  re-assembly is read right before it); one per `refresh_diagonal` / `refresh_capacity` (pinned / anchor cells
+  unchanged) and `refresh_held_values` (held count); one per radiation term and per steady radiation
+  re-linearisation (its convergence test).
+- EM: the FDFD solve (scipy_splu: one rhs / solution transfer each); one HarmonicModeMonitor transfer per solve; one
+  grid-row transfer per FDFD port mode re-solve (per reassembly) and per FDTD mode-port recalibration after the first
+  step (material drift check, re-solve above `mode_ports._RESOLVE_DRIFT`); the E_z ohmic-box refresh per
+  `materials_changed` of sigma_e.
+- laminar_flow: the velocity check once per lattice check interval (>= 100 steps).
+- Mechanics: per Newton iteration of a device tangent (fem.elasticity3d.TangentAssembler3D(device=True)) the
+  displacement up / force down and the operator norm of `CudssFactorization.refactorize_device_values` (its scatter
+  sums are cupyx.scatter_add, never cupy.bincount, which syncs on max(x) per call); per assembly with the
+  solid_mechanics_3d multigrid preconditioner (`multigrid3d.BrickMultigrid.build`) the power-iteration dots of every
+  level and the coarsest probe reads (never inside a V-cycle).
 
-## Kernel twins (`kernels`; solver_plan S6, the explicit engines on the cpu backend)
-- `twin(name, gpu_kernel, cpu_fn, numba=None)` (Elementwise / Reduction / any cupy callable) and `raw_twin(...)`
-  (RawKernel, called `kernel(grid, block, args)`) return a registered `KernelTwin` (`REGISTRY`, unique names
-  '<package>.<kernel>', a duplicate raises), kept under the old kernel name so call sites never change: the cupy kernel
-  runs when the first array argument (raw: first array in args) is cupy, the host twin when it is numpy. One code path
-  per engine: arrays from the Domain's `xp`, kernels are twins. `axis_first_reduce(kernel, *args, combine=None)`: a
-  ReductionKernel (or twin; kwargs reach the cupy kernel only) to one value, on cupy arrays of >= AXIS_FIRST_MIN_SIZE
-  values first over args[0]'s shortest axis, then combine (default sum; study's `_peak` recurses for 3D partials);
-  numpy / small / 1D: the plain call.
+## Kernel twins (`kernels`)
+- A cupy kernel that a cpu-capable path launches is a `twin` / `raw_twin` / `real_raw_twin` (dispatch on the first
+  array argument: cupy -> the kernel, numpy -> the host twin), never a hand-rolled `X_host if on_cpu else X` branch.
+  Names are '<package>.<kernel>' (a duplicate raises); the twin keeps the old kernel name so call sites never change.
 - Host twin contract: the same positional arguments as the cupy call (Elementwise: inputs then outputs; Raw: the args
   tuple, grid / block ignored), outputs written IN PLACE (`out[...] =`, `+=`: outputs are often box / line views,
   never rebind them), the same dtypes (float64 where the cuda body uses double; numpy keeps float32 for float32 arrays
   with numpy / Python scalars), the same branch rules (periodic wraps, own faces) and broadcasting (1D spacings per row
-  / column). Reductions return a 0-d numpy array (callers take float()). A wrong twin shows as an analytic-case or
-  parity failure of the CPU-vs-GPU self-tests (physics/em selftests_backend). Twins may allocate per call (cpu
-  reference path); numpy scalars of the GPU path work unchanged (`int(...)` them before slicing).
-- numba (optional, never required): `numba=factory(numba_module) -> compiled callable` with the numpy twin's
-  signature, built lazily at the first host call when `numba_available()` (importable, not switched off by
-  `set_numba(False)` / OPEN_SOL_CPU_KERNELS=numpy). A factory failure or a numba error / TypeError at a call (typing,
-  dispatch: before the twin writes) warns once and falls back to numpy for good; any other exception is re-raised
-  (in-place outputs may be partly updated). numba twins only for per-step / per-iteration kernels (2D / 3D Yee updates,
-  em3d CPML / ohmic loss, elastic_waves velocity / stress, laminar_flow lattice step, solid_mechanics_3d CG step:
-  stiffness / mass products, block preconditioner, fused CG pair; fem.element_tangent_3d per Newton iteration).
-  Host-only numba loops without a cupy kernel are `host_twin(name, numpy_form, numba_factory)` (pcg short-vector dot /
-  axpy, fixed_pattern row sum / block expansion / restriction, host_direct scaled_values): never a hand-rolled
-  try / except around njit. It registers at its first call and returns the same twin later, so modules that must not
-  import core.kernels at module level (pcg, host_direct, fixed_pattern) call it inside the function. The numpy form
-  takes the numba loop's arguments; a size threshold calls `twin.cpu` below it, `add(numba=True)`-style switches check
-  `twin.host_kind == 'numba'`.
-  `@njit(parallel=True)` loops over i with prange reading arrays by [i, j(, k)]: every array a numba twin
-  indexes must have that dimensionality even when unread (placeholders (1, 1, 1)), numba types every branch. The prange
-  index is uint64: a conditional mixing it with a signed int (`j if c else i`, `0 if c else i + 1`) unifies to float64
-  and fails as an index (the twin then falls back to numpy), so every numba twin rebinds it at the loop top: `for
-  prange_i in numba.prange(n): i = np.int64(prange_i)`. Variant flags are closure constants of the factory; a Python
-  wrapper may unpack / reshape the args (absent arrays -> same-type dummies). Each numba twin gets a CPU case
-  `<...>_numba` (numba vs numpy on random inputs, `selftest_helpers.numba_twin_result`). `host_kinds()` lists which
-  host twin each name runs.
-- Precision variants (the 2D FDTD 'double' stepper, mechanics kernels3d / multigrid3d): `real_raw_twin(name, source, entry, cpu, numba=None,
-  dtype_argument=0)` wraps a `RealRawKernel` (CUDA source with `real_t` / `REAL_IS_DOUBLE`, compiled per dtype of
-  args[dtype_argument]; intrinsics such as __fmul_rn need an `#if REAL_IS_DOUBLE` branch); ElementwiseKernels take the
-  field dtype as a type placeholder (T / F) and cast float32 material inputs explicitly. Their scalars must be numpy
-  scalars of the field dtype (cupy casts Elementwise scalars to T, so a float32 dt silently rounds the step; a RawKernel
-  reads the wrong bytes). Numpy twins lift float32 material arrays to the output dtype first (`astype(out.dtype,
-  copy=False)`: under numpy 1.x value-based casting float32 array x float64 scalar stays float32).
-- A new explicit engine on the cpu: wrap every RawKernel / ElementwiseKernel / ReductionKernel with twin / raw_twin,
-  take every array module from the Domain / an input (`array_module_of`), pass `xp=` into the objects that allocate
-  (fields, CPML, sources, monitors), declare `PhysicsType.backends = ('gpu', 'cpu')`, refuse what stays gpu-only
-  (half_storage: explicit_kernels backend_misfit), add a `selftests_backend.backend_parity_case` wrapping its analytic
-  cases.
+  / column). Reductions return a 0-d numpy array (callers take float()). Twins may allocate per call; numpy scalars of
+  the GPU path work unchanged (`int(...)` them before slicing). A wrong twin shows as an analytic-case or parity
+  failure of the CPU-vs-GPU self-tests (`selftests_backend`).
+- numba (optional, never required): only for per-step / per-iteration kernels (grep `numba=`), built lazily at the
+  first host call; a build failure or a numba typing / dispatch error falls back to numpy for good with one warning,
+  any other exception re-raises (in-place outputs may be partly written). Host-only numba loops without a cupy kernel
+  are `host_twin(name, numpy_form, numba_factory)`, never a hand-rolled try / except around njit; modules that may not
+  import core.kernels at module level (pcg, host_direct, fixed_pattern) call it inside the function.
+- numba traps: `@njit(parallel=True)` types every branch, so every array a numba twin indexes has the loop's
+  dimensionality even when unread (placeholders (1, 1, 1)). The prange index is uint64: a conditional mixing it with a
+  signed int (`j if c else i`, `0 if c else i + 1`) unifies to float64 and fails as an index (the twin then falls back
+  to numpy), so every numba twin rebinds it at the loop top: `for prange_i in numba.prange(n): i = np.int64(prange_i)`.
+  Variant flags are closure constants of the factory; a Python wrapper may unpack / reshape the args (absent arrays ->
+  same-type dummies). Each numba twin gets a CPU case `<...>_numba` (`selftest_helpers.numba_twin_result`).
+- Precision variants (2D FDTD 'double', mechanics kernels3d / multigrid3d): `real_raw_twin` compiles a RealRawKernel
+  per dtype of args[dtype_argument] (intrinsics such as __fmul_rn need an `#if REAL_IS_DOUBLE` branch);
+  ElementwiseKernels take the field dtype as a type placeholder (T / F) and cast float32 material inputs explicitly.
+  Their scalars are numpy scalars of the field dtype (cupy casts Elementwise scalars to T, so a float32 dt silently
+  rounds the step; a RawKernel reads the wrong bytes). Numpy twins lift float32 material arrays to the output dtype
+  first (`astype(out.dtype, copy=False)`: under numpy 1.x value-based casting float32 array x float64 scalar stays
+  float32).
+- A new explicit engine on the cpu: every kernel a twin, every array module from the Domain / an input, `xp=` into the
+  objects that allocate (fields, CPML, sources, monitors), `PhysicsType.backends = ('gpu', 'cpu')`, refuse what stays
+  gpu-only (half_storage: explicit_kernels backend_misfit), a `selftests_backend.backend_parity_case` wrapping its
+  analytic cases.
 
-## Half storage (`half_storage`; solver_plan S5)
+## Half storage (`half_storage`)
 - float16 arrays (em_fdtd_3d / elastic_waves fields, laminar_flow populations) are touched only by own kernels:
   RawKernels through `storage_preamble` (FLOAD / FSTORE), ElementwiseKernels with a T placeholder through
-  `STORED_ACCESS` (`stored_load` / `stored_set` overloaded on float and unsigned short) called with `half_bits(array)`
-  (the uint16 view). cupy's own float16 kernels (astype / copyto / arithmetic / fills INTO float16) construct `__half`
-  from float / int, which fails at ptxas ("Unresolved extern function '_ZN6__halfC1Ef'") on some CUDA / cupy pairs;
-  bit-level ops on the uint16 view are fine (zero fill, `*= bool mask`, sign flip by xor 0x8000). Reading float16 into
-  float32 by cupy (astype, `(float)` in a kernel) still works there (convert those readers too if one fails).
+  `STORED_ACCESS` called with `half_bits(array)` (the uint16 view). cupy's own float16 kernels (astype / copyto /
+  arithmetic / fills INTO float16) fail at ptxas on some CUDA / cupy pairs ("Unresolved extern function
+  '_ZN6__halfC1Ef'"); bit-level ops on the uint16 view are fine (zero fill, `*= bool mask`, sign flip by xor 0x8000).
+  Reading float16 into float32 by cupy (astype, `(float)` in a kernel) still works there (convert those readers too if
+  one fails).
 
 ## Graded meshes (`mesh`)
-- Graded grids are rectilinear: a refinement fills whole columns / rows (3D: also z layers, same march).
-  `_build_1d_mesh` marches on the target profile graded to slope (r - 1) / r (`_graded_profile`), each cell at the
-  smaller target of its two ends (`_march_segment`; else the ratio clamp lifts a refinement's first cell: selftest
-  mesh_tensor_options anisotropic_y_fine), so refinements keep their target and the ramps (growth 2 - 1/r per cell,
-  also in `_graded_axis_cell_bound`, which bounds the same profile piecewise so overlapping refinements count once) lie
-  outside them. Rectangle edges are snap nodes (`snap_positions`: exact cell edges, so masks see no staircase; dropped
-  within 0.25 dx_target of the window edge or of a kept snap); the march runs per segment between them. A segment
-  shorter than its target caps it (one cell; a slot sets dt; the bound adds the same cap). Each segment's remainder is
-  rounded to whole cells and its cells rescaled to its length (never a short last cell: it would set dx_min, hence dt;
-  selftest mesh_graded_end_cells), the correction tapered to ~0 toward snap nodes: adjacent ratios there can exceed
-  max_ratio by ~3/n^2 for an n-cell segment, and an object spanning no whole number of target cells gets dx_min up to
-  ~0.7 / n (relative) below target, so a self-test pinning dx_min sizes its box in whole target cells (e.g.
-  heat_3d_graded_z_robin).
-- S7.1 options (model side: model sub file, Meshing): `add_refinement_band(axis, lo, hi, dx, snap_edges)` refines one
-  axis (the model meshes every object refinement through it, per axis; script regions / circles give the same
-  profile); `MeshConfig(axis_max_ratios=)` per-axis ratio (`ratio(axis)`: march, slope and that axis' PML ramp;
-  `max_ratio` the default); outer grading (`outer_dx`, `outer_ratio`): outside `outer_core(axis)` (span of that
-  axis' refinement intervals; none without refinements) the target is outer_dx and slope / clamp use the outer ratio
-  (`_graded_profile` takes per-sample ratios, `climb`), so cells grow from the refinement edge straight to outer_dx
-  (dx_base matters only inside the core; PML cells still grade toward dx_base, i.e. shrink beside outer cells);
-  `set_axis_edges` (via `complete_axis_edges`) replaces an axis' march (no snaps, bands or refinements along it);
-  `segment_widths` = uniform / geometric / tanh pieces. `add_snap_edges` adds snap nodes without a band (no effect on
-  `outer_core`); `window_edges(axis)` = float64 physical edges with snaps and ends exact (the float32 widths drift
-  ~1e-7 relative): the builtin tetrahedron mesher's axes.
-- Padding (`cell_spacings` / `build`, 3D `z_cell_spacings`): PML cells grow outward from the window edge cell by the
-  axis max_ratio up to dx_base (adjacent ratios never exceed it); the CPML sigma grading still assumes dx_base cells,
-  so a long ramp (finely meshed edge) absorbs somewhat less. `ghost_faces` (an EM mirror's ghost, duck-typed
-  `boundary_config.ghost_faces`, passed by Domain.from_mesh and model.meshing) copy the edge cell's width exactly (a
-  mirror image needs equal widths across the plane).
+- Graded grids are rectilinear: a refinement fills whole columns / rows (3D: also z layers, same march). Refinements
+  keep their target and the ramps (growth 2 - 1/r per cell) lie outside them; `meshing._graded_axis_cell_bound`
+  bounds the same profile piecewise (overlapping refinements count once): change both together.
+- Rectangle edges and band snap faces are snap nodes (exact cell edges, so masks see no staircase); each segment between
+  them is rounded to whole cells and rescaled to its length (never a short last cell: it would set dx_min, hence dt),
+  the correction tapered toward the snap nodes: adjacent ratios there can exceed max_ratio by ~3/n^2 for an n-cell
+  segment, and an object spanning no whole number of target cells gets dx_min up to ~0.7 / n (relative) below target,
+  so a self-test pinning dx_min sizes its box in whole target cells (e.g. heat_3d_graded_z_robin).
+- Outer grading (`outer_dx`, `outer_ratio`; model side: model sub file, Meshing): outside `outer_core(axis)` cells grow
+  from the refinement edge straight to outer_dx, so dx_base matters only inside the core, while PML cells still grade
+  toward dx_base (they shrink beside outer cells). `window_edges(axis)` = float64 edges with snaps and ends exact (the
+  float32 widths drift ~1e-7 relative): code needing exact edges reads it (the builtin tetrahedron mesher).
+- Padding: PML cells grow outward from the window edge cell by the axis ratio up to pml_dx (default dx_base), but the
+  CPML sigma grading assumes dx_base cells, so a long ramp (finely meshed edge) absorbs somewhat less. `ghost_faces`
+  (an EM mirror's ghost cells, passed by Domain.from_mesh and model.meshing) copy the edge cell's width exactly: a
+  mirror image needs equal widths across the plane.
 
-## Grid transfers (`grid_transfer`; S7.2 per-physics meshes)
-- `GridTransfer(kind, source_edges, source_windows, target_edges, target_windows, measures, backend)` (or
-  `.between(kind, source_domain, target_domain, axisymmetric)`): one CSR per axis (float32 values, int32 indices;
-  scipy on 'cpu', cupyx on 'gpu'; float64 originals in `host_matrices`), applied separably. Edges are the Domains'
-  full-grid edges in one frame (window lower corner = 0); only source WINDOW cells are read.
-- 'conservative': weights = measure of each piece of the merged window edges / measure of its target cell, target
-  window ends snapped onto the source's (float32 width sums differ by ulps; uniform meshes may overshoot the window by
-  < 1 cell); measures from `axis_measures(coordinates, axisymmetric, dimensions)` (length; r dr of (r, z) / (r, phi);
-  r^2 dr and sin(theta) dtheta of (r, theta)): the window integral is exact in float64 (`host_matrices`; the float32
-  matrices ~1e-7 relative); target padding rows are empty (0). 'interpolate': linear between source window centres at
-  every target centre (padding included), clamped to the outer centres (edge extension): exact for linear fields; no
+## Grid transfers (`grid_transfer`)
+- Built through `model.mesh_transfer.make_transfer` (a triangle mesh on either side: `TriangleTransfer`, fem sub
+  file); edges are the Domains' full-grid edges in one frame (window lower corner = 0) and only source WINDOW cells are
+  read. 'conservative' keeps the window integral exactly in the float64 `host_matrices` (the applied float32 ones to
+  ~1e-7 relative) and leaves target padding 0; 'interpolate' extends the edge values into padding and has no
   angle-wrap seam handling.
-- Real arrays only (complex raises; float64 rounded to float32). Allocates the products per apply (fine at the
-  coupling cadence; not timed: a time needs a device sync). Estimate: `memory_estimate.grid_transfer_estimate`.
-  Domains carry `grid_kind` ('tensor'; fem 'triangles') and `mesh_name`; `model.mesh_transfer.make_transfer`
-  dispatches (a triangle mesh on either side: `TriangleTransfer`, fem sub file).
+- Real arrays only (complex raises). `apply` allocates its products per call (fine at the coupling cadence; not
+  timed: a time needs a device sync). Estimate: `memory_estimate.grid_transfer_estimate`.
 - `MaterialGrid(n)` (ny None) is the 1D per-element grid of a triangle mesh: code taking `materials.nx / ny` as a cell
   grid checks the domain's `grid_kind`.
 

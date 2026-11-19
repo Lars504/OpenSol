@@ -14,6 +14,7 @@ from ...core.damped_iteration import DampedIteration, DampingSettings
 from ...core.mirror import touch_factor
 from ...core.fv_diffusion import (BCSide, DiffusionPhysicsBase, DiffusionSystem, ScalarBoundaryConfig,
                                   edge_extension_views, host_copies, write_host_copies)
+from ...core.kernels import twin
 from ...core.sources import ContinuousWave, GaussianPulse, RickerWavelet
 from .electrolyte import (ELECTROLYTE_MODELS, boltzmann_terms, number_densities, screening_coefficient,
                           species_concentration, thermal_voltage)
@@ -86,13 +87,14 @@ TERMINAL_WAVEFORMS = ('none', 'ricker', 'gaussian', 'cw')   # 'none' = held at t
 _DRIVEN_QUANTITIES = 5   # V, E_x, E_y, flux_x, flux_y per basis solution
 
 # V, E, D = basis_dc + sum_w s_w(t) basis_w (elementwise, all quantities stacked): work += value * basis
-_add_scaled = cp.ElementwiseKernel('float32 basis, float32 value', 'float32 work', 'work += value * basis',
-                                   'potential_add_scaled_basis')
-
-
 def _add_scaled_host(basis, value, work):
     """numpy twin of _add_scaled."""
     work += value * basis
+
+
+_add_scaled = twin('potential.add_scaled_basis', cp.ElementwiseKernel(
+    'float32 basis, float32 value', 'float32 work', 'work += value * basis', 'potential_add_scaled_basis'),
+    _add_scaled_host)
 
 
 @dataclass(frozen=True)
@@ -757,14 +759,13 @@ class PotentialPhysics(DiffusionPhysicsBase):
     def _superpose(self, time):
         """V, E, D of the window = DC + sum_w s_w(time) basis_w, edge-extended into the PML ring."""
         xp = self.xp
-        add_scaled = _add_scaled_host if self.system.backend == 'cpu' else _add_scaled
         work = self._superposition
         xp.copyto(work, self._bases[None])
         for waveform, basis in self._bases.items():
             if waveform is not None:
                 value = waveform(time)
                 if value != 0.0:
-                    add_scaled(basis, DTYPE(value), work)
+                    _add_scaled(basis, DTYPE(value), work)
         fields, window = self.fields, self.system.window
         for plane, array in zip(work, (fields.V, fields.E_x, fields.E_y, fields.flux_x, fields.flux_y)):
             xp.copyto(array[window], plane)

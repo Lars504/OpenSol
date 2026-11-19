@@ -1125,9 +1125,8 @@ def _direct_solver(operator, rhs, kind):
 
 def _free_device_bytes() -> int:
     """Free device memory after returning the cupy pool's cached blocks (cuDSS allocates outside the pool)."""
-    import cupy as cp
-    from ..core.gpu_memory import memory_status
-    cp.get_default_memory_pool().free_all_blocks()
+    from ..core.gpu_memory import memory_status, release_cached_blocks
+    release_cached_blocks()
     return int(memory_status().device_free)
 
 

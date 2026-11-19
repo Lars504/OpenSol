@@ -8,6 +8,7 @@ from ...core.backend import cp, to_host
 from ...core.constants import DTYPE, STEFAN_BOLTZMANN
 from ...core.cut_cells import locate_held_edges
 from ...core.fv_diffusion import DiffusionPhysicsBase, DiffusionSystem, host_copies, write_host_copies
+from ...core.kernels import twin
 from ...solvers.line_block import LineBlockSolver
 from ...solvers.sparse_direct import SparseDirectSolver
 
@@ -32,19 +33,6 @@ _REMEDY_TEXT = 'Anchor every conducting region, or solve in transient mode with 
 RADIATION_MAX_ITERATIONS = 50
 RADIATION_TOLERANCE = 1e-7
 
-_rise_to_temperature = cp.ElementwiseKernel(
-    'T rise, float64 reference_temperature',
-    'float32 temperature',
-    'temperature = (float)(reference_temperature + (double)rise)',
-    'heat_rise_to_temperature')
-
-_temperature_to_rise = cp.ElementwiseKernel(
-    'float32 temperature, float64 reference_temperature',
-    'T rise',
-    'rise = (T)((double)temperature - reference_temperature)',
-    'heat_temperature_to_rise')
-
-
 def _rise_to_temperature_host(rise, reference_temperature, temperature):
     """numpy twin of _rise_to_temperature (float64 sum, float32 result)."""
     np.copyto(temperature, (reference_temperature + rise.astype(np.float64)).astype(DTYPE))
@@ -53,6 +41,19 @@ def _rise_to_temperature_host(rise, reference_temperature, temperature):
 def _temperature_to_rise_host(temperature, reference_temperature, rise):
     """numpy twin of _temperature_to_rise."""
     np.copyto(rise, (temperature.astype(np.float64) - reference_temperature).astype(rise.dtype))
+
+
+_rise_to_temperature = twin('heat.rise_to_temperature', cp.ElementwiseKernel(
+    'T rise, float64 reference_temperature',
+    'float32 temperature',
+    'temperature = (float)(reference_temperature + (double)rise)',
+    'heat_rise_to_temperature'), _rise_to_temperature_host)
+
+_temperature_to_rise = twin('heat.temperature_to_rise', cp.ElementwiseKernel(
+    'float32 temperature, float64 reference_temperature',
+    'T rise',
+    'rise = (T)((double)temperature - reference_temperature)',
+    'heat_temperature_to_rise'), _temperature_to_rise_host)
 
 
 class HeatPhysics(DiffusionPhysicsBase):
@@ -128,9 +129,6 @@ class HeatPhysics(DiffusionPhysicsBase):
         self._applied_source_window = self.fields.Q_ext[window]
         self._bind_window(self.fields.T)
         self._T0_device = self.xp.asarray(self.T0, dtype=DTYPE)
-        on_cpu = self.system.backend == 'cpu'
-        self._rise_to_temperature = _rise_to_temperature_host if on_cpu else _rise_to_temperature
-        self._temperature_to_rise = _temperature_to_rise_host if on_cpu else _temperature_to_rise
 
         self._assembled_time_step = None
         self._capacity_stale = False   # rho / cp changed since the last assembly (only a transient step reads them)
@@ -193,7 +191,7 @@ class HeatPhysics(DiffusionPhysicsBase):
                     f"heat '{self.name}': the radiation re-linearisation did not converge in {iterations} solves "
                     '(largest relative temperature change on radiating cells above '
                     f'{RADIATION_TOLERANCE:g}); the last solve is kept')
-        self._rise_to_temperature(system.unknown2d, self.T0, self._T_window)
+        _rise_to_temperature(system.unknown2d, self.T0, self._T_window)
         self._extend_into_pml()
 
         record_time = t + solve_time_step if transient else t
@@ -383,7 +381,7 @@ class HeatPhysics(DiffusionPhysicsBase):
         """Write warm_start_fields() of another build (rise on free cells, Q); returns the state slots now seeded."""
         self._current_rise()   # resync a stale rise first: the seed must not be overwritten by the next assembly
         self.system.seed_unknown(fields['rise'])
-        self._rise_to_temperature(self.system.unknown2d, self.T0, self._T_window)
+        _rise_to_temperature(self.system.unknown2d, self.T0, self._T_window)
         self._extend_into_pml()
         self.xp.copyto(self._Q_window, self.xp.asarray(fields['Q'], dtype=DTYPE))
         return ('T', 'Q')
@@ -506,7 +504,7 @@ class HeatPhysics(DiffusionPhysicsBase):
         return heat_capacity / time_step
 
     def _sync_rise_from_temperature(self):
-        self._temperature_to_rise(self._T_window, self.T0, self.system.unknown2d)
+        _temperature_to_rise(self._T_window, self.T0, self.system.unknown2d)
         self._theta_stale = False
 
     def _current_rise(self):
