@@ -13,6 +13,7 @@ from functools import cached_property
 
 import numpy as np
 
+from ..core.constants import FREE_MESH_KINDS   # element mesh kinds (sized by h_max / h_min / growth), re-exported
 from ..core.mesh import has_uniform_spacing
 from ..core.metric import GRIDS
 from ..core.renderer import FieldInfo
@@ -61,8 +62,7 @@ SPACES = {**SPACES_2D, '3d': 'a 3D model'}
 # DomainSpec.coordinates of a polar grid -> the SPACES its physics take (validate's _check_coordinate_grid: the
 # coordinates fix how the drawing extends into 3D); a Cartesian domain restricts nothing
 COORDINATE_SPACES = {'polar': ('planar', 'cross_section'), 'spherical': ('axisymmetric',)}
-MESH_KINDS = ('tensor', 'triangles', 'tetrahedra')   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
-FREE_MESH_KINDS = ('triangles', 'tetrahedra')   # element meshes sized by h_max / h_min / growth (no tensor options)
+MESH_KINDS = ('tensor',) + FREE_MESH_KINDS   # MeshSpec.kind; also the grid kinds PhysicsType.grids name
 # MeshSpec values whose null means a default of the mesh kind (free triangle / tetrahedron meshes: the industry-standard
 # growth 1.3; five quadratic elements per wavelength)
 MESH_KIND_DEFAULTS = {'tensor': {'max_ratio': 1.15, 'points_per_wavelength': 20.0},
@@ -811,7 +811,8 @@ class ValidationContext:
 
     @property
     def mesh_uniform(self):
-        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6)."""
+        """True when a tensor mesh estimate exists and its dx, dy (3D: dz) cell widths are each constant (rel 1e-6) over
+        the full grid, PML included (MeshEstimate.uniform judges the window only)."""
         return (self.mesh is not None and self.mesh.kind == 'tensor' and has_uniform_spacing(self.mesh.dx_cells)
                 and has_uniform_spacing(self.mesh.dy_cells)
                 and (self.mesh.dz_cells is None or has_uniform_spacing(self.mesh.dz_cells)))

@@ -451,8 +451,9 @@ def _host_update_direction(preconditioned, rho_new, rho_old, direction):
     direction += preconditioned
 
 
-# numpy twins of the fused kernels (same call signatures, outputs written in place); the cpu Jacobi preconditioner
-# forms z = r / diag(A) once per iteration in the dead product vector instead of the two Jacobi kernels
+# numpy twins of the fused kernels (same call signatures, outputs written in place; a kernel change changes its twin in
+# the same edit); the cpu Jacobi preconditioner forms z = r / diag(A) once per iteration in the dead product vector
+# instead of the two Jacobi kernels
 _HOST_KERNELS = {'vector_dot': _host_vector_dot, 'update_solution': _host_update_solution,
                  'update_direction': _host_update_direction}
 
@@ -494,18 +495,24 @@ def auto_max_iterations(longest_window_axis) -> int:
     return max(AUTO_CG_MAX_ITERATIONS_FLOOR, 2 * CG_ITERATIONS_PER_AXIS_CELL * int(longest_window_axis))
 
 
+def element_longest_axis(sides, n_elements) -> int:
+    """The 'longest window axis' of an element mesh (window sides, window elements): 2 nodes (P2) per mean element
+    size along its longest side (resolve_max_iterations, the run-time estimate's SolverWork.longest_axis)."""
+    mean_element_size = (max(math.prod(sides), 1e-300) / max(int(n_elements), 1)) ** (1.0 / len(sides))
+    return max(2 * math.ceil(max(sides) / mean_element_size), 1)
+
+
 def resolve_max_iterations(max_iterations, domain) -> int:
-    """max_iterations setting -> iteration limit on the domain's physical window (0 = auto; a triangle / tetrahedron
-    mesh counts 2 nodes (P2) per mean window element size along its longest window side)."""
+    """max_iterations setting -> iteration limit on the domain's physical window (0 = auto; element meshes:
+    element_longest_axis)."""
     if max_iterations:
         return int(max_iterations)
+    from ..core.constants import FREE_MESH_KINDS
     grid_kind = getattr(domain, 'grid_kind', 'tensor')
-    if grid_kind in ('triangles', 'tetrahedra'):
-        n_window_elements = max(int(domain.window_elements().sum()), 1)
+    if grid_kind in FREE_MESH_KINDS:
         sides = ((domain.size_x, domain.size_y) if grid_kind == 'triangles'
                  else (domain.size_x, domain.size_y, domain.size_z))
-        mean_element_size = (math.prod(sides) / n_window_elements) ** (1.0 / len(sides))
-        return auto_max_iterations(2 * math.ceil(max(sides) / mean_element_size))
+        return auto_max_iterations(element_longest_axis(sides, domain.window_elements().sum()))
     return auto_max_iterations(max(len(range(*window.indices(count)))   # 3D: z included
                                    for window, count in zip(domain.physical_window(), domain.materials.shape)))
 

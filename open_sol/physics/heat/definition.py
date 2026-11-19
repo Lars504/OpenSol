@@ -4,7 +4,7 @@ import math
 from dataclasses import replace
 
 from ...core.backend import to_host
-from ...core.constants import FACES_3D, N_A
+from ...core.constants import FACES_3D, FREE_MESH_KINDS, N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, host_lu_bytes, window_cell_count)
 from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
@@ -975,7 +975,7 @@ def _memory_estimate(settings_values, mesh, context):
     transient = context.spec.study.type == 'time_dependent' and settings_values['time_mode'] == 'transient'
     cudss = cudss_back_end(context.solvers)
     refactorizes = _operator_follows_state(context, transient)
-    if mesh.kind in ('triangles', 'tetrahedra'):   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
+    if mesh.kind in FREE_MESH_KINDS:   # FEMHeatPhysics[3D]: T, Q, Q_ext, |q| per element + the FEM system
         estimator = fem_diffusion_estimate if mesh.kind == 'triangles' else fem_diffusion_estimate_3d
         return estimator(mesh, element_order(settings_values), element_fields=4, direct=linear_solver_direct(context),
                          multigrid=linear_solver_multigrid(context), cudss=cudss, refactorizes=refactorizes,
@@ -1023,7 +1023,7 @@ def _time_estimate(settings_values, mesh, context):
     held = None if transient else _HELD_TEMPERATURE   # implicit steps: the capacity term is not in the estimate
     # the operator is re-assembled only when k changes (a coupling writing Q leaves the build's factorisation)
     operator_changes = material_follows_state(context, ('k', 'k_xx', 'k_yy', 'k_zz', 'k_xy'))
-    if mesh.kind in ('triangles', 'tetrahedra'):
+    if mesh.kind in FREE_MESH_KINDS:
         order = element_order(settings_values)
         unknowns, entries = fem_time_system(mesh, order)
         estimate = diffusion_time_estimate(context, unknowns, 3 if mesh.kind == 'tetrahedra' else 2,

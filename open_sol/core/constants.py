@@ -21,3 +21,6 @@ FACE_LABELS = dict(zip(FACES, ('Left edge', 'Right edge', 'Bottom edge', 'Top ed
 Z_FACES = ('z_lo', 'z_hi')
 FACES_3D = FACES + Z_FACES
 FACE_LABELS.update(zip(Z_FACES, ('Lower z face', 'Upper z face')))
+# element (finite element) mesh kinds: MeshSpec.kind and grid_kind of fem TriangleDomain / TetrahedronDomain (else
+# 'tensor'); code testing "not tensor" tests membership here, never == 'triangles'
+FREE_MESH_KINDS = ('triangles', 'tetrahedra')

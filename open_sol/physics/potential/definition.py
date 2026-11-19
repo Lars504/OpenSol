@@ -25,7 +25,7 @@ from ...model.definition_helpers import (AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_
                                          reports_model_checks, validate_points_inside, validated_linear_precision)
 from ...model.expressions import is_identifier
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, feature_path
+from ...model.schema import FREE_MESH_KINDS, FeatureType, Issue, Param, PhysicsType, feature_path
 from .electrolyte import (ELECTROLYTE_MODELS, ION_CONCENTRATION_FIELDS, MAX_BOLTZMANN_EXPONENT, MAX_SPECIES_FIELDS,
                           debye_length, ionic_strength, screening_coefficient, stern_capacitance)
 from .renderer import THREE_D_FIELD_INFOS, CurrentsRenderer, ElectrostaticsRenderer
@@ -874,7 +874,7 @@ def _make_memory_estimate(kind):
     def estimate(settings_values, mesh, context):
         cudss = cudss_back_end(context.solvers)
         refactorizes = _operator_changes(context, spec)
-        if mesh.kind in ('triangles', 'tetrahedra'):   # FEMPotentialPhysics[3D]: the fields per element + FEM system
+        if mesh.kind in FREE_MESH_KINDS:   # FEMPotentialPhysics[3D]: the fields per element + FEM system
             triangles = mesh.kind == 'triangles'
             estimator = fem_diffusion_estimate if triangles else fem_diffusion_estimate_3d
             return estimator(mesh, element_order(settings_values), element_fields=n_fields + (0 if triangles else 2),
@@ -953,7 +953,7 @@ def _make_time_estimate(kind):
 
     def estimate(settings_values, mesh, context):
         operator_changes = _operator_changes(context, spec)
-        if mesh.kind in ('triangles', 'tetrahedra'):
+        if mesh.kind in FREE_MESH_KINDS:
             unknowns, entries = fem_time_system(mesh, element_order(settings_values))
             return diffusion_time_estimate(context, unknowns, 3 if mesh.kind == 'tetrahedra' else 2,
                                            every_step=False, held=_HELD_POTENTIAL, operator_changes=operator_changes,

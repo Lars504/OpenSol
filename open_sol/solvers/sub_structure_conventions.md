@@ -65,150 +65,51 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   counter or timer joins work_counters and the recipe in the same edit (iteration counts: pcg.py header).
 
 ## pcg (`PCGSolver`)
-- `factorize(operator, preconditioner=None, n_unknowns=None, single_operator=None, single_preconditioner=None,
-  fused_iteration=None, single_fused_iteration=None, capture_blocks=False)` (all but the first three only for pcg;
-  sparse_direct / banded factorize do not take them, so a caller passes them only to a PCGSolver): cupyx / scipy CSR or
-  matrix-free `apply(vector, out)` (the CSR product writes one owned vector that the next product overwrites);
-  preconditioner None = Jacobi from the diagonal, a flat inverse diagonal (fused, z never stored on the gpu) or
-  `precondition(residual, out)` (block Jacobi). gpu dots are multi-block RawKernels (deterministic per size and device),
-  so gpu inputs must be C-contiguous (solve raises).
-- Fused iteration (speed plan A3, `FUSED_ITERATION_PROTOCOL`; matrix-free + callback preconditioner only, else
-  TypeError; mixed: the float32 `single_fused_iteration`): the caller's object runs `start` (z0, rho, p0, q0) and
-  `step` (x / r update, z, rho_next, the next direction into the second direction buffer, its product and p . q) in its
-  own launches, keeping its own partial sums, and `rescale(direction, product, factor)` (mixed residual replacement:
-  the p . q partials x factor^2); scalars and directions ping-pong, so CG blocks of an even length start in
-  the same order. User: ElasticSystem3D (kernels3d.FusedBrickIteration, 2 launches per step instead of 8).
-  `workspace_bytes(fused=True)` books the second direction.
-- CUDA graphs (`capture_blocks`, gpu, `CG_BLOCK_GRAPHS`): each full even-length check block runs once eagerly per
-  (operator, fused object, solution pointer, length), then is captured once and replayed as one launch (`_BlockGraphs`,
-  at most MAX_BLOCK_GRAPHS kept); a failed capture warns and stays eager. Graphs bake every pointer the callbacks read:
-  an opting-in caller calls `release_block_graphs()` whenever it replaces those arrays (ElasticSystem3D.assemble);
-  factorize drops them. Nothing inside a block may sync or allocate (the residual read sits between blocks). The own
-  multigrid hierarchy (`_multigrid_bound`: the bound callback is `self._multigrid.precondition`) is a `_BlockGraphs`
-  participant: its `inside_capture` flag is set during a capture, so `_DeviceCycle.apply` launches its plan's kernels
-  into the block's graph instead of launching / capturing its own (a graph launch inside a capture is not relied on);
-  the hierarchy is rebuilt only by factorize, which makes new _BlockGraphs. Caller-built V-cycles (multigrid3d) are no
-  participants.
-- cpu: numpy twins of the fused kernels (`_HOST_KERNELS`, same signatures: a kernel change changes its twin),
-  allocation-free (BLAS axpy, scipy's private `_sparsetools.csr_matvec` into the workspace product, falling back to
-  `dot` when missing or dtypes differ; Jacobi z in the product vector); dots / axpys of vectors shorter than
-  HOST_SMALL_VECTOR_LIMIT run as serial numba loops when numba imports (threaded BLAS start-up was ~20 us per call:
-  speed plan A6). Workspace reallocated only when size, dtype or kinds change; `workspace_bytes` is what the physics'
-  estimator counts (SolverType estimate empty). The solution vector stays physics-owned.
-- `solve(rhs, solution, reference)`: warm start, in place; flat arrays of the solver dtype (ValueError otherwise); b = 0
-  returns 0 (||b||^2 and ||r0||^2 come back in one read: `start_norms`). The residual is read every
-  `_check_interval()` iterations of the BOUND preconditioner (gpu 16, a callback bound under the 'multigrid' setting 2;
-  cpu 4 / 1): a Jacobi bind of 'multigrid' reads every 16, and magnetic `kept_preconditioner._bind_callback` (binds
-  under 'jacobi', restores 'multigrid') relies on the callback rule. cg_iterations round up to that block (the
-  estimate rounds too, by `SolverWork.backend` and `bound_preconditioner`). A
-  NaN / inf residual (start or block read; mixed: the outer residual) stops at once, unconverged, with a 'non-finite
-  residual' last_warning (`_non_finite`), never iterating to max_iterations.
-- Stop reference: 'rhs' (tol ||b||) for steady solves (warm re-solves cheap); 'initial_residual' (tol ||b - A x0||,
-  floored at ROUNDOFF_FLOOR_EPSILONS eps ||b||) for implicit steps: against ||b|| the C/dt u_old term dominates and CG
-  stopped before the step moved. The caller picks it per solve; `last_residual` is relative to it.
-- Precision names are solver ones ('single' / 'double' / 'mixed'); `SOLVER_DTYPE_NAMES` maps them to the assembled
-  dtype ('mixed' -> 'float64').
-- 'mixed' (`_iterate_mixed`): CSR + Jacobi (float32 copy of the values sharing the float64 indices + float32 inverse
-  diagonal; a block preconditioner with a CSR: TypeError) or matrix-free (float64 apply + the caller's float32
-  `single_operator` / `single_preconditioner` on its own float32 copy; TypeError without both). One float32 CG on A d = r / s,
-  s = ||r|| (unit scale: physical residuals underflow float32 dots at 1e-12), with residual replacement: when the
-  recurrence residual fell by MIXED_REPLACEMENT_RATIO (or met the stop) at a check-block boundary (never inside a
-  captured block), x += s d and the float64 r = b - A x replaces it at the new unit. Within MIXED_DRIFT_LIMIT of the
-  recurrence norm the direction is kept and the recurrence state (direction, rho x factor^2; fused: product and p . q
-  via `rescale`) rescaled, so the CG coefficients stay consistent (van der Vorst-Ye); beyond it CG restarts from r
-  (recomputing rho against a kept direction diverged on stiff 2D / 3D models). Stops at the float64 reference, the
-  iteration limit, or a replacement shrinking ||r|| by less than MIXED_STALL_RATIO while the recurrence did (the
-  round-off floor of the system: `last_stalled`, named in last_warning; a caller with a fallback preconditioner must
-  not take that stop for a weak preconditioner, ElasticSystem3D._guarded_solve);
-  `refinements` counts the float64 refreshes. `workspace_bytes(..., 'mixed')` / `mixed_extra_bytes` count the solver's copies; a
-  matrix-free caller counts its own float32 operator.
-- Users: the 'linear' role of heat, electric_currents, electrostatics, magnetostatics (`DiffusionSystem(linear_solver=)`)
-  and solid_mechanics(_3d) (`ElasticSystemBase(linear_solver=)`: block-Jacobi, 'rhs'; Automatic and max_iterations 0
-  get twice the auto limit, `definition_common.solid_linear_solver`; 3D 'mixed' via ElasticSystem3D's float32
-  callbacks). Both take the injected solver's precision and set its label and compute_residual. A workspace change here
-  updates `memory_estimate.diffusion_system_estimate` and the mechanics estimators.
+- `factorize` options after (operator, preconditioner, n_unknowns) exist only on PCGSolver (sparse_direct, banded and
+  DiffusionDirectSolver factorize do not take them): a caller passes them only to a PCGSolver.
+- Fused iteration (`FUSED_ITERATION_PROTOCOL`; ElasticSystem3D: kernels3d.FusedBrickIteration): the caller's object
+  runs whole CG iterations in its own launches and keeps its own partial sums; its estimator books the second direction
+  (`workspace_bytes(fused=True)`) and those partial sums.
+- CUDA graphs (`capture_blocks`, gpu): a captured check block bakes every pointer and scalar the callbacks read, so a
+  caller replacing those arrays calls `release_block_graphs()` (ElasticSystem3D.assemble, its multigrid guard);
+  factorize drops them. Callbacks and fused objects launch plain kernels inside a block (no sync, no allocation, no
+  graph of their own); the own multigrid hierarchy launches into the capture through its `inside_capture` flag.
+- Memory: `workspace_bytes` / `mixed_extra_bytes` are what the physics' estimators count (the pcg SolverType estimate
+  is empty, the solution vector is physics-owned, a matrix-free mixed caller counts its own float32 operator):
+  `core.memory_estimate.diffusion_system_estimate` and the mechanics estimators; a workspace change updates them.
+  `fem.diffusion.fem_system_estimate` books its CG vectors by hand (no mixed copies).
+- Residual reads (`check_interval`) follow the BOUND preconditioner: a callback bound under the setting 'multigrid'
+  reads every 2 (gpu) / 1 (cpu) iterations, everything else every 16 / 4 (a Jacobi bind of 'multigrid' too);
+  cg_iterations and the time estimate round up to that block. magnetic `kept_preconditioner._bind_callback` relies on
+  it (binds its callback under 'jacobi', so the own hierarchy stays out, then restores 'multigrid').
+- Stop reference per solve (`STOP_REFERENCES`): 'rhs' for steady solves, 'initial_residual' for implicit steps
+  (DiffusionSystem: core sub file); `last_residual` is relative to it.
+- 'mixed' (`_iterate_mixed`: one float32 CG with residual replacement against the float64 residual): `last_stalled`
+  means it stopped at the system's round-off floor, not at the iteration limit, so a caller with a fallback
+  preconditioner must not take it for a weak preconditioner (ElasticSystem3D._guarded_solve).
+- Users: the 'linear' role of the DiffusionSystem types (`DiffusionSystem(linear_solver=)`) and solid_mechanics(_3d)
+  (`ElasticSystemBase(linear_solver=)`: block Jacobi, 'rhs'; `definition_common.solid_linear_solver` doubles the auto
+  iteration limit). Both take the injected solver's precision and set its label and compute_residual.
 
 ## multigrid (`MultigridPreconditioner`, pcg setting preconditioner 'multigrid')
-- Smoothed-aggregation AMG, one symmetric V(1,1)-cycle per application (l1-Jacobi, 1 / a_ii on rows without
-  off-diagonals: SPD for any SPD A); P = (I - W_F A_F) T with the filtered A_F (`_filtered_rows`: weak entries lumped
-  into the diagonal; built by array masks, since cupyx `eliminate_zeros` failed with INSUFFICIENT_RESOURCES); Galerkin
-  R A P with the full A; coarsest <= COARSEST_DENSE_LIMIT by a host dense inverse (densified on the host,
-  `_host_dense`: cupyx toarray always copies and coosorts; raises on a non-finite inverse):
-  LAPACK potrf / potri (`_cholesky_inverse`, ~4x cheaper than eigh) when min pivot^2 > PSEUDO_INVERSE_CUTOFF x max
-  pivot^2, else the eigh pseudo-inverse (floating regions, pure Neumann; counter multigrid_coarsest_eigh). Rounding
-  only weakens the preconditioner (SPD holds for any symmetric A_c).
-- Products run in row blocks of ~PRODUCT_BLOCK_PRODUCTS (`_row_blocks`): one SpGEMM over a 5e6-row 3D operator needs a
-  workspace larger than an 8 GB card, so never multiply the full fine operator on the backend. The block sum merges
-  only equal block counts (binary counter): a running sum recopies A_c per block. A cupyx / scipy CSR row slice copies
-  the matrix even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
-- gpu Galerkin products also run in column chunks of P (`_column_ranges`, <= PRODUCT_MAX_COLUMNS): cuSPARSE's default
-  SpGEMM raises INSUFFICIENT_RESOURCES when a segment of intermediate products overflows its 32-bit coding, which grows
-  with the right factor's columns, so smaller row blocks do not cure it (carey2026 E2 mesh_fine, 5.6e6 cells). A chunk
-  gives the column block R A P_c of A_c; its transpose (A_c symmetric) is the row block, stacked by `_stack_rows`.
-  `_column_block` slices by array masks; its P_c copy is not in `setup_extra_bytes` (a few % of the setup peak). The
-  prolongation smoothing A_F,b T (all coarse columns, one product per entry) is not chunked.
-- Hierarchy (T, P, R, coarse operators / vectors) is HIERARCHY_DTYPE float32 at every precision; a float64 fine level
-  casts its residual before R. `precondition` scales the residual by a power of two to max |r| in [0.5, 1) and back
-  (exact, no sync): unscaled ~1e-40 residuals underflowed the float32 levels and CG ran to its limit.
-- PCGSolver builds it in `factorize`: assembled scalar CSR only (TypeError for a CSR with a callback preconditioner;
-  the passed inverse diagonal is ignored), not with 'mixed' (ValueError in `_factorize_mixed`). A matrix-free operator
-  with a callback brings its own multigrid: pcg uses the callback as given (ElasticSystem3D:
-  `physics.mechanics.multigrid3d`, any precision; its counters through `PCGSolver.preconditioner_counters`, its
-  setup ops through `SolverWork.setup_ops`). Whether a role runs multigrid at 'mixed' is the role's
-  `SolverRole.mixed_preconditioners` (default ('jacobi',); `solver_misfit` reports it at the physics; the node-level
-  pcg validate no longer checks it), and `resolved_solvers` falls back to jacobi only for a preconditioner the node
-  does not set and the role does not list there. Automatic for
-  `CG_DIFFUSION_LINEAR_ROLE` (gpu, and 3D tensor meshes on the cpu; jacobi at mixed); a pcg node without the setting is
-  jacobi (`with_exact_cg` too).
-- Aggregation (host numpy): strength -a_ij >= STRENGTH_THRESHOLD sqrt(a_ii a_jj) (negative off-diagonals only) plus each
-  row's largest negative coupling (floor; without it a 3D level-1 operator left ~98 % of rows out of P), symmetrised
-  by scipy's row-local CSR merge S + S^T (int8 ones: no sum cancels; it replaced a np.unique of 2 E int64 keys, 70 %
-  of a 3D setup); distance-2 independent-set roots (Luby, fixed seed: deterministic), each round on the edges of rows
-  still near an undecided row (the list only shrinks; the same roots as full rounds); rows without negative couplings
-  (held / pinned identity rows) stay out of P. The prolongator filtering keeps the plain threshold rule. gpu setups
-  run the device twin `device_aggregate_strong_links` (DEVICE_AGGREGATION; RawKernels per row + one cuSPARSE csrgeam
-  union, one sync per Luby round): the same aggregates bit for bit (float64 strength sums per row in CSR order, the
-  same keys / rounds, max-only joins, so union order is free), no host copy of the level CSR. A change of the host rule
-  changes the kernels in the same edit; self-test multigrid_device_aggregation (heat selftests_multigrid) compares
-  both on synthetic operators and every level of a gpu setup. Its transients (~60 B per unknown + ~25 B per entry) stay
-  below the booked setup_extra_bytes; the host 'multigrid aggregation' item is booked only off the gpu
-  (`diffusion_system_estimate(backend=)`: the heat / potential / magnetic estimators pass `solver_backend(spec)`) and
-  `setup_ops(backend=)` prices device passes + LUBY_ROUNDS_GUESS syncs there.
-- Reuse: one host transfer of each level's CSR only when the fine pattern changed (`_pattern_matches`: identity, then
-  array_equal); a value-only factorize (re-assembly, Newton / B-H iterations, refresh_diagonal) rebuilds P, R and coarse
-  operators on the backend from the cached aggregates; rows whose strong links turned weak get prolongator weight 0
-  (P = T there), which keeps value-only setups converging like fresh aggregation (no re-aggregation needed). An empty
-  fine-level aggregation is never reused: every setup re-tests it (one sync on the gpu when still empty), else a larger
-  dt or a steady solve on the same pattern stayed smoother-only on a Laplacian.
-- Jacobi binds and lagged setups (PCGSolver, own CSR hierarchy only; pcg module header): 'multigrid' binds the passed
-  inverse diagonal when the setup found no strong link on a fine level above COARSEST_DENSE_LIMIT
-  (`MultigridPreconditioner.smoother_only`) or below MULTIGRID_MIN_UNKNOWNS on the solver's first factorize (no setup;
-  the binding's second solve or the next factorize sets it up, later ones rebind); a Jacobi solve over CG_ITERATIONS_PER_AXIS_CELL sqrt(n) iterations continues on the hierarchy and turns the
-  binds off for that solver. A same-pattern factorize keeps the hierarchy (`can_rebind` / `rebind`: level 0 takes the
-  new operator and its l1 weights, the device cycle re-plans when the operator object changed; DiffusionSystem's
-  refresh_diagonal changes A_solve in place) while the last solve took <= LAGGED_SETUP_ITERATION_RATIO x the fresh
-  one; a kept solve over its cap continues on a fresh setup. Mid-solve setups count as factorize seconds and make new
-  _BlockGraphs. Counters multigrid_jacobi_binds / _jacobi_fallbacks / _lagged_binds / _lagged_fallbacks: the summary
-  still says 'multigrid'. The time recipe prices case (b) as Jacobi (`bound_preconditioner`: one factorization
-  and one solve, not stepping); case (a) and the lag are not known a priori (priced as multigrid, every factorize a
-  setup). The memory estimate keeps booking the hierarchy (case (b) builds it on a second solve).
-  MULTIGRID_MIN_UNKNOWNS = 4000 sits below the measured crossover (~6.5e3, solver_profiler heat_2d gpu) so the
-  outer-graded heated-dot selftest keeps the hierarchy. magnetic `KeptPreconditionerSolver` keeps its own hierarchy
-  and binds under 'jacobi', outside all of this.
-- Counters (merged into pcg's): multigrid_setups / aggregations / levels, the last setup's size
-  (`_record_size`: calibrate HIERARCHY_ENTRIES_PER_UNKNOWN / SETUP_ENTRIES_PER_UNKNOWN from them) and seconds
-  (machine-dependent: never pin them in a selftest). Memory: `hierarchy_bytes` / `setup_extra_bytes` /
-  `aggregation_host_bytes`, counted by `diffusion_system_estimate(multigrid=)`: a hierarchy layout change updates those
-  constants. The product workspace is one block's (PRODUCT_WORKSPACE_BYTES) capped by a small operator's whole A @ P
-  (a fixed block booked 256 MiB on 1e3-cell models). `setup_extra_bytes` books the largest of the fine level's
-  three steps on a row block, never their sum: `_filtered_rows` frees its temporaries on return (only the filtered
-  block lives into A_F T), and the Galerkin product starts after the blocks are stacked (the sum read the 2D
-  adaptation_tensor_strip_heater build peak 12 % high at 4e4 .. 6.4e5 cells and 22 % at 2.56e6). Open:
-  HIERARCHY_ENTRIES_PER_UNKNOWN = 12 is the 3D 7-point figure (11.96); the 2D 5-point strip heater holds 8.47
-  (complexity 1.355: P rows ~2.8 in both, the coarse operators differ), kept ~7 % high there; a 3D setup's A @ P
-  result (more than SETUP_ENTRIES_PER_UNKNOWN entries per row) is not counted apart.
-- Level vectors are preallocated; on the gpu each V-cycle allocates its SpMV products, on the cpu `_product` writes into
-  level vectors by `pcg.host_csr_matvec` (falls back to `dot` when dtypes differ).
+- Design (smoothed aggregation, l1-Jacobi V(1,1), filtered prolongator smoothing, float32 hierarchy, power-of-two
+  residual scaling, dense coarsest inverse): multigrid.py constants and `_build_level` / `_filtered_rows` /
+  `_coarsest_solver`. Which roles run it, at which precisions, and the jacobi default of a pcg node: the roles
+  (`CG_DIFFUSION_LINEAR_ROLE`, `SolverRole.mixed_preconditioners`) and the preconditioner help text.
+- Never multiply the full fine operator on the backend: Galerkin products run in row blocks (`_row_blocks`) and on
+  the gpu in column chunks of P (`_column_ranges`), both against cuSPARSE workspace limits. A cupyx / scipy CSR row
+  slice copies even over the full range: block code takes `_rows`, never `matrix[start:stop]`.
+- PCGSolver builds its own hierarchy only from an assembled scalar CSR at 'single' / 'double' (else it raises); a
+  matrix-free operator brings its own V-cycle callback (ElasticSystem3D: `physics.mechanics.multigrid3d`, any
+  precision), reporting through `PCGSolver.preconditioner_counters` and `SolverWork.setup_ops`.
+- Jacobi binds and lagged setups (pcg module header; the own CSR hierarchy only, magnetic `KeptPreconditionerSolver`
+  keeps its own outside them): the summary still names 'multigrid' (counters multigrid_jacobi_binds / _fallbacks /
+  _lagged_*); the time recipe prices only the small-model bind as Jacobi (`bound_preconditioner`), the memory estimate
+  always books the hierarchy; a mid-solve setup counts as factorize seconds.
+- Memory constants (`hierarchy_bytes`, `setup_extra_bytes`, `aggregation_host_bytes`; booked by
+  `diffusion_system_estimate(multigrid=)` and `fem_system_estimate`) follow the hierarchy layout: a layout change
+  updates them; the work counters of `_record_size` measure them. Setup seconds are machine-dependent: never pin them
+  in a selftest.
 - Measured: 3D iterations to 1e-8 (20-35 at 40^3-60^3) exceed the ~12 of MULTIGRID_RESIDUAL_REDUCTION (3D run-time
   estimates run low: level-1 aggregates hold ~3 rows, most level-1 P rows unsmoothed). Rejected: threshold 0 below the
   finest level, |a_ij| strength, smoother weight, V(2,2), float64 hierarchy, a larger coarsest level.

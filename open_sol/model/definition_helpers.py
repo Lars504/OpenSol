@@ -957,7 +957,7 @@ def make_apply_inward_flux(param_name):
     tetrahedron mesh the object interfaces as a face (sheet) source (solver.add_surface_flux)."""
     def apply_inward_flux(ctx, solver, feature_spec, values, selection):
         faces = list(selection.outer_faces)
-        if ctx.domain.grid_kind in ('triangles', 'tetrahedra'):
+        if ctx.domain.grid_kind in FREE_MESH_KINDS:
             return _apply_inward_flux_elements(ctx, solver, feature_spec, values[param_name], selection)
         perimeter = None   # (weights, outline) of the selected object perimeters
         if selection.objects:
@@ -1067,7 +1067,7 @@ def make_point_probe(quantity, unit):
     """(apply, result) callbacks of a one-point DiffusionSystem probe feature reading `quantity` in `unit` (a triangle
     mesh: the point's mesh node; tetrahedra: the field evaluated at the point)."""
     def apply_probe(ctx, solver, feature_spec, values, selection):
-        if ctx.domain.grid_kind in ('triangles', 'tetrahedra'):
+        if ctx.domain.grid_kind in FREE_MESH_KINDS:
             if len(selection.objects) != 1:
                 raise ValueError(f"{quantity} probe '{feature_spec.name}' needs exactly one point object, "
                                  f"got {len(selection.objects)}")

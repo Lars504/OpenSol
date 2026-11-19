@@ -13,7 +13,7 @@ from functools import partial
 import numpy as np
 
 from ..core import host_memory
-from ..core.constants import C0, FACES, FACES_3D, Z_FACES
+from ..core.constants import C0, FACES, FACES_3D, FREE_MESH_KINDS, Z_FACES
 from ..core.domain import Domain, containing_cell
 from ..core.domain3d import Domain3D
 from ..core.grid import DEFAULT_COURANT_FACTOR, courant_time_step, edges_from_widths, uniform_cell_count
@@ -520,7 +520,8 @@ class _KeptElementMeshes:
 
 def element_mesh_key(sizing, size, shapes) -> str:
     """Text naming what an element mesh is made from (resolved sizes, window size, resolved geometry); equal text =
-    the same mesh (the built-in meshers are deterministic; gmsh is taken as such)."""
+    the same mesh (the built-in meshers are deterministic; gmsh is taken as such). A mesher input outside these three
+    must enter the key, else element_mesh reuses a stale mesh."""
     geometry = [(name, shape.kind, sorted(shape.values.items(), key=lambda item: item[0]))
                 for name, shape in shapes.items()]
     return repr((sizing, tuple(float(length) for length in size), geometry))
@@ -586,7 +587,7 @@ def has_estimated_counts(estimate) -> bool:
     """True for an element mesh estimate whose counts are still size-based; tensor estimates and the builtin
     tetrahedra (grid boxes split into 6) are exact."""
     kind = getattr(estimate, 'kind', 'tensor')
-    if kind not in ('triangles', 'tetrahedra') or estimate.counts_built:
+    if kind not in FREE_MESH_KINDS or estimate.counts_built:
         return False
     return not (kind == 'tetrahedra' and estimate.sizing.mesher == 'builtin' and not estimate.sizing.sweep_axis)
 
@@ -594,7 +595,7 @@ def has_estimated_counts(estimate) -> bool:
 def awaits_built_mesh(estimate) -> bool:
     """True for an element mesh estimate not yet counted on its built mesh: size-based counts, or exact builtin
     tetrahedra counts still without the built mesh's factor count (MeshEstimate.dissection)."""
-    return getattr(estimate, 'kind', 'tensor') in ('triangles', 'tetrahedra') and not estimate.counts_built
+    return getattr(estimate, 'kind', 'tensor') in FREE_MESH_KINDS and not estimate.counts_built
 
 
 def built_mesh_estimates(spec, parameters, registry, mesh_estimates, shapes=None, log=None) -> dict:
@@ -619,7 +620,7 @@ def make_domain(spec, parameters, registry=None, *, resolved_geometry=None, mesh
     mesh_spec = spec.mesh_by_name(default_mesh_name(spec) if mesh is None else mesh)
     shapes = resolve_geometry(spec, parameters) if resolved_geometry is None else resolved_geometry
     kind = mesh_values(mesh_spec, parameters)['kind']
-    if kind in ('triangles', 'tetrahedra'):
+    if kind in FREE_MESH_KINDS:
         element_grid, reused = element_mesh(spec, parameters, registry, mesh_spec.name, shapes=shapes, log=log)
         if reused and log is not None:
             log('info', f"mesh '{mesh_spec.name}': reused the {element_grid.n_elements:,} {kind} made earlier from "
@@ -2432,7 +2433,8 @@ def mesh_transfers(spec, registry, meshes) -> list:
     """[{coupling, source_mesh, target_mesh, kind, nnz, bytes}] of the enabled couplings whose source and target run
     on different meshes with a CouplingType.mesh_transfer ('field': interpolate; 'value': its value_kind); meshes =
     {name: estimate} (couplings touching a missing one are skipped). Tensor pairs: core grid_transfer_estimate; a
-    triangle mesh: _TRIANGLE_TRANSFER_ENTRIES per target cell / element (calibrated by T2)."""
+    triangle mesh: _TRIANGLE_TRANSFER_ENTRIES per target cell / element (calibrated by T2; a conservative transfer
+    holds more, ~ the size ratio squared, plus a host float64 copy)."""
     records = []
     for coupling in spec.couplings:
         if not coupling.enabled:

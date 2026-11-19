@@ -38,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ...core.constants import C0, EPS0, HBAR
+from ...core.constants import C0, EPS0, FREE_MESH_KINDS, HBAR
 from ...fem.elements import element_geometry
 from ...fem.indicators import edge_sides
 from ...fem.quadrature import triangle_rule
@@ -561,7 +561,7 @@ def axisymmetric_coupling_table(coupling, optical, solid, data) -> dict:
         raise ValueError(f"optomechanical_coupling '{coupling.name}': em_fdfd_bor optics take forward scattering of "
                          'standing vibration modes only (no guided k_z)')
     kind = data.get('kind', 'tensor')
-    if kind not in ('triangles', 'tetrahedra'):
+    if kind not in FREE_MESH_KINDS:
         raise ValueError(f"optomechanical_coupling '{coupling.name}': em_fdfd_bor optics need the solid on a triangles "
                          f'mesh (geometry axisymmetric) or a tetrahedra mesh, not a {kind} one')
     samples = bor_optical_samples(optical, coupling.optical_mode)

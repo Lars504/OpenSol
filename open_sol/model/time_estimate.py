@@ -14,7 +14,7 @@ from ..core.time_profile import load_profile, profile_from_dict, profile_path
 from . import meshing
 from .geometry import (bounding_box, domain_entities, domain_extent, domain_size_z, expand_entities, resolve_geometry,
                        z_extent)
-from .schema import get_registry, resolve_values, resolved_solvers, solver_backend
+from .schema import FREE_MESH_KINDS, get_registry, resolve_values, resolved_solvers, solver_backend
 from .spec import outer_faces
 
 # a coupled fixed point (stationary study, background stage) solves the physics on or downstream of a coupling cycle
@@ -172,13 +172,13 @@ class TimeContext:
         return math.prod(mesh.window_axis_cells)
 
     def longest_axis(self) -> int:
-        """Window cells along the longest axis (3D: z included; triangles / tetrahedra: 2 x the longest side over the
-        mean element size, as solvers.pcg.resolve_max_iterations)."""
+        """Window cells along the longest axis (3D: z included; triangles / tetrahedra: solvers.pcg.element_longest_axis,
+        as its resolve_max_iterations)."""
         mesh = self.mesh
         if mesh.kind != 'tensor':
+            from ..solvers.pcg import element_longest_axis
             sides = [high - low for low, high in zip(mesh.extent[0::2], mesh.extent[1::2])]
-            mean_size = (max(math.prod(sides), 1e-300) / max(int(mesh.n_cells), 1)) ** (1.0 / len(sides))
-            return max(int(2 * math.ceil(max(sides) / mean_size)), 1)
+            return element_longest_axis(sides, mesh.n_cells)
         return max(max(mesh.window_axis_cells), 1)
 
     def selection_window_cells(self, selection) -> tuple:
@@ -458,7 +458,7 @@ def _mesh_signature(spec, parameters, meshes):
     try:
         for name, mesh in sorted(meshes.items()):
             kind = getattr(mesh, 'kind', 'tensor')
-            if kind in ('triangles', 'tetrahedra'):
+            if kind in FREE_MESH_KINDS:
                 shapes = resolve_geometry(spec, parameters, errors={}) if shapes is None else shapes
                 key = meshing.element_mesh_key(mesh.sizing, meshing.element_window_size(spec, parameters, kind), shapes)
             else:
