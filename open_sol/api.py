@@ -1370,7 +1370,7 @@ class Results:
         'physics.component' or a component unique among field_names() (or narrowed by physics). 3D models: plane
         (axis 'x' | 'y' | 'z', position [m]) picks the cut (live Results only; saved fields are the mid-height z
         cut). unfold: the field mirrored
-        over the model's x / y mirror faces and the rotation axis of axisymmetric heat (core.mirror.unfold_faces /
+        over the model's x / y mirror faces and the rotation axis of an axisymmetric field (core.mirror.unfold_faces /
         unfold_field; ValueError for a field without a parity; a parity-sector run: the last sector's signs, whose
         state this is). Polar / spherical domains: a containing-cell
         image over the sector's box, or with native (live only) the (r, angle) window cells (axes ('r', 'phi' |

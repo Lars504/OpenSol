@@ -801,8 +801,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._unfold_check = QtWidgets.QCheckBox('Unfold mirror planes')
         self._unfold_check.setToolTip(rich_tooltip(
             'Show the whole structure: the field is mirrored across every mirror boundary of the domain, with the '
-            'sign each field component takes under that mirror, and an axisymmetric heat field across its rotation '
-            'axis.\n\n'
+            'sign each field component takes under that mirror, and an axisymmetric field across its rotation axis '
+            '(heat, electric currents, electrostatics, semiconductors, solids, acoustics, magnetics).\n\n'
             'Exports and line profiles then use the unfolded field too.'))
         self._unfold_check.toggled.connect(self._on_unfold_toggled)
         form.addRow('', self._unfold_check)

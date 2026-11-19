@@ -9,7 +9,7 @@ import numpy as np
 
 from ..core.constants import FACES_3D
 from ..core.fv_diffusion import BCSide
-from ..core.mirror import mirror_faces
+from ..core.mirror import AXIS_UNFOLD_TYPES, MIRROR_SIGNS, mirror_faces
 from ..core.monitors import probe_result
 from ..fem.squeeze_film import SLIP_MODELS, VEIJOLA_KNUDSEN_LIMIT
 from ..solvers.host_direct import HOST_DIRECT_BACK_ENDS, HOST_DIRECT_DOUBLE_BACK_ENDS, HOST_DIRECT_MIXED_BACK_ENDS
@@ -134,6 +134,69 @@ def mirror_face_issues(vctx, physics_spec, boundary_feature_types, path, consequ
             issues.append(Issue(severity, feature_path(physics_spec, feature),
                                 f"{', '.join(on_plane)} lies on a mirror plane of the model, where the mirrored (unfolded) "
                                 f'model needs this physics insulated (no boundary feature): {consequence}'))
+    return issues
+
+
+def own_mirror_face_conflicts(vctx, physics_spec, face_feature_types, own_mirrors):
+    """Error per enabled face feature (of the given types) of physics_spec on one of its own mirror-feature faces
+    (`own_mirrors`: core.mirror.feature_mirror_faces of that physics): the mirror plane and a face condition cannot
+    both hold. Callers pass mirror_face_issues the model mirror faces without their own (those are reported here)."""
+    if not own_mirrors:
+        return []
+    issues = []
+    for feature, entities in enabled_feature_entities(vctx, physics_spec, face_feature_types):
+        on_plane = [face for face in own_mirrors if face in entities]
+        if on_plane:
+            issues.append(Issue('error', feature_path(physics_spec, feature),
+                                f"{', '.join(on_plane)} is a mirror (symmetry) face of '{physics_spec.name}', so "
+                                f'this {feature.type} feature cannot act there: remove it from the face, or remove '
+                                'the face from the symmetry feature (a full model across it)'))
+    return issues
+
+
+def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
+    """Rules of a core.mirror.MIRROR_FEATURES face feature (heat, potential, ... symmetry): a Cartesian domain, never
+    the x_lo rotation axis of geometry 'axisymmetric' (settings_params: the type's settings, read through
+    vctx.values), and every other physics of the model with mirror bc settings (EM bc_<face> symmetric /
+    antisymmetric) mirrors the face itself (else its fields unfold and its integrals double with a sign it never
+    solved). Parity sectors of a type without features of both signs are refused by study validation."""
+    path = feature_path(physics_spec, feature_spec)
+    try:
+        faces = [name for name in expand_entities(vctx.spec, feature_spec.selection) if name in FACES_3D]
+    except (ValueError, KeyError, TypeError):   # reported by the selection checks
+        return []
+    issues = []
+    if vctx.domain_map is not None and vctx.domain_map.mapped:
+        issues.append(Issue('error', path, f'a {feature_spec.type} face needs a Cartesian domain, not the '
+                                           f'{vctx.domain_map.grid_text} grid (the unfolding mirrors the window, not '
+                                           'the drawn sector): remove the feature'))
+    if 'x_lo' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(settings_params,
+                                                                                physics_spec.settings)):
+        unfold = (' Unfold mirror planes (Results.field(unfold=True)) shows the r < 0 side of the axisymmetric '
+                  'field without it' if physics_spec.type in AXIS_UNFOLD_TYPES else '')
+        issues.append(Issue('error', path, "x_lo is the rotation axis (r = 0) of geometry 'axisymmetric', not a mirror "
+                                           'plane: the ring weights already count the whole revolution (a mirror '
+                                           'would double integrals reaching it), and the axis condition holds by '
+                                           f'construction. Remove x_lo from the selection.{unfold}'))
+    for other, other_type in known_physics(vctx.spec, vctx.registry):
+        if other.name == physics_spec.name:
+            continue
+        bc_params = {param.name for param in other_type.settings
+                     if param.name.startswith('bc_') and set(MIRROR_SIGNS) <= set(param.choices or ())}
+        mirrored_faces = [face for face in faces if f'bc_{face}' in bc_params]
+        if not mirrored_faces:
+            continue
+        other_values = vctx.values(other_type.settings, other.settings)
+        if not other_values:   # reported at that physics
+            continue
+        for face in mirrored_faces:
+            value = other_values.get(f'bc_{face}')
+            if value not in MIRROR_SIGNS:
+                issues.append(Issue('error', path, f"{face} is a model mirror plane through this {feature_spec.type} "
+                                                   f"face, but '{other.name}' sets bc_{face} = {value!r}: its fields "
+                                                   'would unfold (and its integrals reaching the face double) as a '
+                                                   f'mirror it does not solve. Set its bc_{face} to symmetric or '
+                                                   'antisymmetric, or remove the face from this feature'))
     return issues
 
 

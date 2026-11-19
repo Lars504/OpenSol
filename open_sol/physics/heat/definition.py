@@ -4,10 +4,10 @@ import math
 from dataclasses import replace
 
 from ...core.backend import to_host
-from ...core.constants import FACES_3D, N_A
+from ...core.constants import N_A
 from ...core.memory_estimate import (COMPLEX128_BYTES, FLOAT32_BYTES, FLOAT64_BYTES, MemoryEstimate, combine,
                                      diffusion_system_estimate, host_lu_bytes, window_cell_count)
-from ...core.mirror import MIRROR_SIGNS, feature_mirror_faces, mirror_faces
+from ...core.mirror import feature_mirror_faces, mirror_faces
 from ...core.renderer import FieldInfo
 from ...core.time_estimate import (HeldValues, HostStream, TimeEstimate, TimeItem, Transfer, combine as combine_time,
                                    diffusion_time_estimate)
@@ -17,15 +17,15 @@ from ...fem.diffusion3d import fem_diffusion_estimate_3d
 from ...model.definition_helpers import (
     AXISYMMETRIC_SPACE_SETTINGS, AZIMUTHAL_ORDER_PARAM, CG_DIFFUSION_LINEAR_ROLE, DISCRETIZATION_PARAM,
     antiperiodic_wrap, axisymmetric_issues, azimuthal_order_issues, azimuthal_order_of, cg_solver_issues,
-    conducting_fraction, conducts, cross_term_materials, element_order, enabled_feature_entities, evaluates_to,
+    conducting_fraction, conducts, cross_term_materials, element_order, evaluates_to,
     face_conflicts, geometry_param, held_object_conflicts, indefinite_cross_term_issue, is_axisymmetric,
     linear_solver_direct, linear_solver_mixed, linear_solver_multigrid, linear_solver_precision, make_apply_inward_flux, make_point_probe,
-    mapped_domain_issues, material_follows_state, mirror_face_issues, on_tetrahedra, on_triangles,
-    optional_material_param, outline_full_grid, outline_pieces_of, perimeter_flux_weights, plain_number, point_cells,
+    mapped_domain_issues, material_follows_state, mirror_face_issues, mirror_feature_issues, on_tetrahedra, on_triangles,
+    optional_material_param, outline_full_grid, own_mirror_face_conflicts, outline_pieces_of, perimeter_flux_weights, plain_number, point_cells,
     reports_model_checks, selected_material_data, time_following_values, uses_time, validate_points_inside,
 )
 from ...model.geometry import expand_entities
-from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path, known_physics
+from ...model.schema import FeatureType, Issue, Param, PhysicsType, SolverRole, feature_path
 from ...model.spec import RESERVED_ENTITY_NAMES
 from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
 from ...solvers.line_block import (MAX_CHUNK_SHIFTS, operator_bytes as line_block_operator_bytes,
@@ -844,63 +844,9 @@ def _triangle_issues(vctx, settings_values, path):
     return issues
 
 
-def _symmetry_face_conflicts(vctx, physics_spec, own_mirrors):
-    """Error per enabled face feature of the heat physics on one of its own symmetry faces (the insulated mirror plane
-    and a face condition cannot both hold)."""
-    if not own_mirrors:
-        return []
-    issues = []
-    for feature, entities in enabled_feature_entities(vctx, physics_spec, _FACE_FEATURES):
-        on_plane = [face for face in own_mirrors if face in entities]
-        if on_plane:
-            issues.append(Issue('error', feature_path(physics_spec, feature),
-                                f"{', '.join(on_plane)} is a symmetry face of '{physics_spec.name}' (an insulated "
-                                f'mirror plane), so this {feature.type} feature cannot act there: remove it from the '
-                                'face, or remove the face from the symmetry feature (a full model across it)'))
-    return issues
-
-
 def _validate_symmetry(vctx, physics_spec, feature_spec, values):
-    """symmetry: Cartesian domains only, never the (r, z) rotation axis; every physics of the model with mirror bc
-    settings (EM) mirrors the face itself (else its fields unfold and its integrals double with a sign it never
-    solved); parity_sectors have no odd heat mirror (study validation)."""
-    path = feature_path(physics_spec, feature_spec)
-    try:
-        faces = [name for name in expand_entities(vctx.spec, feature_spec.selection) if name in FACES_3D]
-    except (ValueError, KeyError, TypeError):   # reported by the selection checks
-        return []
-    issues = []
-    if vctx.domain_map is not None and vctx.domain_map.mapped:
-        issues.append(Issue('error', path, f'a symmetry face needs a Cartesian domain, not the '
-                                           f'{vctx.domain_map.grid_text} grid (the unfolding mirrors the window, not '
-                                           'the drawn sector): remove the feature'))
-    if 'x_lo' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(_SETTINGS, physics_spec.settings)):
-        issues.append(Issue('error', path, "x_lo is the rotation axis (r = 0) of geometry 'axisymmetric', not a mirror "
-                                           'plane: the ring weights already count the whole revolution (a mirror '
-                                           'would double integrals reaching it), and the axis is insulated by '
-                                           'construction. Remove x_lo from the selection; Unfold mirror planes '
-                                           '(Results.field(unfold=True)) shows the r < 0 side of an axisymmetric '
-                                           'heat field without it'))
-    for other, other_type in known_physics(vctx.spec, vctx.registry):
-        if other.name == physics_spec.name:
-            continue
-        bc_params = {param.name for param in other_type.settings
-                     if param.name.startswith('bc_') and set(MIRROR_SIGNS) <= set(param.choices or ())}
-        mirrored_faces = [face for face in faces if f'bc_{face}' in bc_params]
-        if not mirrored_faces:
-            continue
-        other_values = vctx.values(other_type.settings, other.settings)
-        if not other_values:   # reported at that physics
-            continue
-        for face in mirrored_faces:
-            value = other_values.get(f'bc_{face}')
-            if value not in MIRROR_SIGNS:
-                issues.append(Issue('error', path, f"{face} is a model mirror plane through this symmetry face, but "
-                                                   f"'{other.name}' sets bc_{face} = {value!r}: its fields would "
-                                                   'unfold (and its integrals reaching the face double) as a mirror '
-                                                   f'it does not solve. Set its bc_{face} to symmetric or '
-                                                   'antisymmetric, or remove the face from this feature'))
-    return issues
+    """symmetry: the shared mirror-feature rules (definition_helpers.mirror_feature_issues)."""
+    return mirror_feature_issues(vctx, physics_spec, feature_spec, _SETTINGS)
 
 
 def _validate_heat(vctx, physics_spec, settings_values):
@@ -923,7 +869,7 @@ def _validate_heat(vctx, physics_spec, settings_values):
     issues.extend(_cadence_issues(vctx, physics_spec, settings_values, steady, path))
     issues.extend(face_conflicts(vctx, physics_spec, _BOUNDARY_FEATURES, path))
     own_mirrors = feature_mirror_faces(vctx.spec, physics_spec)
-    issues.extend(_symmetry_face_conflicts(vctx, physics_spec, own_mirrors))
+    issues.extend(own_mirror_face_conflicts(vctx, physics_spec, _FACE_FEATURES, own_mirrors))
     issues.extend(mirror_face_issues(
         vctx, physics_spec, _FACE_FEATURES, path, _MIRROR_FACE_CONSEQUENCE,
         severity='error' if vctx.study_type == THERMAL_NOISE_STUDY else 'warning',
