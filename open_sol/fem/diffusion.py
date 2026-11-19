@@ -36,7 +36,7 @@ FEM_FILL_FACTOR = 2.0             # SuperLU fill of an FEM operator over the 5-p
 class EdgeCondition:
     """Condition on mesh edges in the unknown's units: 'dirichlet' (u = value), 'neumann' (inward flux value [c u / m])
     or 'robin' (inward flux h (external - u); h and external numbers or arrays per mesh edge / 3D face, e.g. a
-    linearised radiation loss)."""
+    linearised radiation loss: code reading h goes through robin_assembled / robin_anchoring, never h > 0)."""
     kind: str = 'neumann'
     value: float = 0.0
     h: float = 0.0

@@ -108,9 +108,7 @@ class TetrahedronMesh:
 
     @cached_property
     def _inset_centroids(self) -> np.ndarray:
-        low, high = np.array(self.window[:3]), np.array(self.window[3:])
-        inset = PLANE_TOLERANCE * float((high - low).max())
-        centroids = np.clip(self.centroids(), low + inset, high - inset)
+        centroids = clamp_into_window_3d(self.centroids(), self.window)
         centroids.setflags(write=False)
         return centroids
 
@@ -135,6 +133,15 @@ class TetrahedronMesh:
         its elements set to that value throughout (centroid tests misread elements next to faceted curved
         interfaces); unchanged without entities."""
         return values if self.entities is None else entity_majority(values, self.entities, self._entity_groups)
+
+
+def clamp_into_window_3d(points, window) -> np.ndarray:
+    """Float64 copy of points (..., 3) clamped PLANE_TOLERANCE x the longest side inside the window (x0, y0, z0, x1,
+    y1, z1): the one rule that extends window values into the PML shell (inset_centroids: element memberships and
+    region tags; shell dofs), the 3D mesher.clamp_into_window."""
+    low, high = np.array(window[:3], dtype=np.float64), np.array(window[3:], dtype=np.float64)
+    inset = PLANE_TOLERANCE * float((high - low).max())
+    return np.clip(np.asarray(points, dtype=np.float64), low + inset, high - inset)
 
 
 def sliver_warnings(mesh) -> list:
@@ -329,10 +336,12 @@ def region_tags(points, solids) -> np.ndarray:
     return region
 
 
-def structured_box_mesh(x_edges, y_edges, z_edges, window=None, solids=()) -> TetrahedronMesh:
+def structured_box_mesh(x_edges, y_edges, z_edges, window=None) -> TetrahedronMesh:
     """Kuhn split (6 tetrahedra per cell along the monotone paths 000 -> 111, conforming between cells) of the tensor
     grid of these increasing edge coordinates [m]; window None = the grid box (cells outside a given window form a PML
-    shell); regions by `solids` (objects with name / contains) at centroids clamped into the window."""
+    shell). Untagged (region -1): callers tag at inset_centroids (model.tetrahedral_meshing). Every tetrahedron is an
+    orthoscheme (all dihedrals <= 90 deg at any aspect: no slivers, only the radius ratio drops) and periodic sides pair
+    under any grading."""
     axes = [np.asarray(edges, dtype=np.float64) for edges in (x_edges, y_edges, z_edges)]
     if any(edges.ndim != 1 or len(edges) < 2 or not (np.diff(edges) > 0.0).all() for edges in axes):
         raise ValueError('structured_box_mesh needs increasing 1D edge coordinates with >= 2 entries per axis')
@@ -356,9 +365,4 @@ def structured_box_mesh(x_edges, y_edges, z_edges, window=None, solids=()) -> Te
     tets = np.concatenate(tets)
     mesh_window = tuple(float(value) for value in ((*(edges[0] for edges in axes), *(edges[-1] for edges in axes))
                                                    if window is None else window))
-    region = None
-    if solids:
-        centroids = np.clip(points[tets].mean(axis=1), mesh_window[:3], mesh_window[3:])
-        region = region_tags(centroids, solids)
-    return build_tetrahedron_mesh(points, tets, window=mesh_window, region=region,
-                                  region_names=tuple(solid.name for solid in solids))
+    return build_tetrahedron_mesh(points, tets, window=mesh_window)

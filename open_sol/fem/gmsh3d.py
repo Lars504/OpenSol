@@ -53,8 +53,8 @@ import numpy as np
 
 from .gmsh_io import (GMSH_ENVIRONMENT, GMSH_TIMEOUT, PINNED_OUTPUT_OPTIONS, find_gmsh, geo_number, gmsh_errors,
                       node_index, read_msh_blocks)
-from .mesh3d import (OUTER_FACES_3D, PLANE_TOLERANCE, build_tetrahedron_mesh, entity_majority, region_tags,
-                     span_adjugate)
+from .mesh3d import (OUTER_FACES_3D, PLANE_TOLERANCE, build_tetrahedron_mesh, clamp_into_window_3d, entity_majority,
+                     region_tags, span_adjugate)
 
 SOLID_KINDS = ('box', 'sphere', 'cylinder')
 CURVATURE_ELEMENTS = 16   # elements per 2 pi of surface curvature
@@ -341,9 +341,7 @@ def mesh_solids_with_gmsh(window, solids, h_max, pml_widths=None, h_min=None, tr
             return region_tags(centroids, solids)
     region = None
     if region_names:
-        low, high = np.array(window[:3], dtype=np.float64), np.array(window[3:], dtype=np.float64)
-        inset = PLANE_TOLERANCE * float((high - low).max())   # TetrahedronMesh.inset_centroids rule (builder masks)
-        region = entity_majority(region_of(np.clip(points[tets].mean(axis=1), low + inset, high - inset)), entities)
+        region = entity_majority(region_of(clamp_into_window_3d(points[tets].mean(axis=1), window)), entities)
     tagged = time.perf_counter()
     built = build_tetrahedron_mesh(points, tets, window=window, region=region, region_names=tuple(region_names or ()),
                                    entities=entities)

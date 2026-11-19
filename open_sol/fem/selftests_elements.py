@@ -198,7 +198,7 @@ def _window_total(values, x_edges, y_edges, window, axisymmetric=False):
 def _check_transfers(results_by_name):
     from ..fem.assembly import element_areas, integrate, interpolate
     from ..fem.dofs import lagrange_dofs
-    from ..fem.mesher import MERGE_TOLERANCE
+    from ..fem.mesher import clamp_into_window
     from ..fem.transfer import tensor_to_triangles, triangles_to_tensor, triangles_to_triangles
 
     checks = SubChecks()
@@ -266,8 +266,7 @@ def _check_transfers(results_by_name):
     add('triangles_to_triangles_total', error <= _QUADRATURE_RTOL, error)
     target_p1 = lagrange_dofs(target_mesh, 1)
     moved = triangles_to_triangles('interpolate', p2, target_p1).apply(interpolate(p2, linear))
-    inset = MERGE_TOLERANCE * side   # the transfer evaluates window-side points this far inside (keeps off the ring)
-    clamped = np.clip(target_p1.dof_points(), inset, side - inset)
+    clamped = clamp_into_window(target_p1.dof_points(), target_mesh.window)   # where the transfer evaluates ring dofs
     error = float(np.abs(moved - linear(clamped[:, 0], clamped[:, 1])).max())
     add('triangles_to_triangles_linear_exact', error <= _EVALUATION_RTOL, error)
     moved32 = tensor_to_triangles('conservative', x_edges, y_edges, window, p0).apply(density.astype(np.float32))

@@ -29,7 +29,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-DEFLATION_TOLERANCE = 1e-10   # a new vector keeping less of its norm after orthogonalisation adds nothing
+DEFLATION_TOLERANCE = 1e-10   # a new vector keeping less of its norm after orthogonalisation adds nothing; a residual
+# tolerance at or below it is unreachable (training stops: 'added no new direction'). Training costs O(m k^3) per
+# iteration over m frequencies and k basis vectors (fine to k ~ 100)
 SKETCH_ROWS = 512
 SKETCH_NONZEROS = 8
 EXACT_SKETCH_LIMIT = 2048     # up to this many unknowns the residual is exact (identity sketch)

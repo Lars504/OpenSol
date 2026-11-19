@@ -52,7 +52,7 @@ from .diffusion import window_face_edges
 from .dofs import lagrange_dofs
 from .elements import lagrange_values
 from .mesh import FACE_BITS
-from .mesher import MERGE_TOLERANCE
+from .mesher import window_inset
 from .pml import ring_widths
 from .quadrature import TRIANGLE_DEGREES
 from .sampling import locator
@@ -771,6 +771,10 @@ class HarmonicSystemBase:
         from .reduced_harmonic import SWEEP_METHODS, HarmonicLoad, ReducedHarmonicModel
         if method not in SWEEP_METHODS:
             raise ValueError(f"reduced sweep method must be one of {', '.join(SWEEP_METHODS)}, got {method!r}")
+        if (len(extra_loads) and self.frequency_load is not None) or (held_offsets_of is not None
+                                                                      and self.held_offsets is not None):
+            raise ValueError(f'{self.label()}: plan_reduced(extra_loads= / held_offsets_of=) would count the '
+                             'set_frequency_load / set_held_offsets terms twice: set them to None first')
         self.clear_reduced()
         omegas = np.atleast_1d(np.asarray(omegas, dtype=np.float64)).ravel()
         if not (omegas.size and np.all(np.isfinite(omegas)) and np.all(omegas > 0.0)):
@@ -979,7 +983,7 @@ class ScalarHarmonicSystem(HarmonicSystemBase):
                 boundary_load = boundary_load + assemble_edge_load(dofs, edges, condition.value,
                                                                    axisymmetric=axisymmetric)
         x0, y0, x1, y1 = mesh.window
-        slack = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+        slack = window_inset(mesh.window)
         in_window = ((points[:, 0] >= x0 - slack) & (points[:, 0] <= x1 + slack)
                      & (points[:, 1] >= y0 - slack) & (points[:, 1] <= y1 + slack))
         return {'global_ids': dofs.global_ids, 'stiffness': stiffness, 'damping': damping, 'mass': mass,
