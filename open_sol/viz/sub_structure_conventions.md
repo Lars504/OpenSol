@@ -135,6 +135,27 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   signed time) open the Range at their median ratio to the frame maximum when below 0.9 (min 0.3; never other pages:
   a still lobe such as a waveguide mode would saturate) and default to the 'seismic' map until a signed map is
   remembered. A raw session time label 't = <float> s' is shown SI-prefixed.
+  Signed fields: diverging maps, symmetric limits (`DIVERGING`: only when the values cross zero by more than 2 % of
+  the largest magnitude or a mirror image flips the sign; a signed field of one sign is coloured like a magnitude over
+  its own range, and may take the log scale); log scale only for non-negative fields.
+  Scalar look (the page's `// ---- scalars` blocks): `SCALAR_KIND` (temperature / potential / density / other, from
+  the quantity label and unit) picks the opening colour map (each kind remembers the user's choice under its own
+  store key, `cmapStoreKey`) and whether contours start on; densities spanning > 2 decades open on a log scale over
+  the decades the data reach (<= 9, the log codes' span). Colour maps are mirrored in mode_player (CMAPS /
+  CMAP_CHOICES: change both). Contour lines live in the field fragment shader (`vVal` = the value the levels count,
+  log10 on a log scale; levels from `contourLevels`: about CONTOUR_COUNTS over the colour range, every `major`-th
+  bold on the colour bar's default ticks, `c0` a bold level below lo so k stays small in float32; none where the
+  field is flat or the levels crowd): they follow relief and mirror images for free, so a new field program keeps
+  `vVal`. 3D terrain (planar views; `setTerrain` tweens camera and relief together, `scalarsTick` from `tick`; a
+  single stationary state opens flat and rises after 0.7 s unless this browser turned it off or `DATA.view` is
+  set; `resetCamera` of a raised map returns to `terrainPose`): walls are quads under the layers' boundary edges
+  (grid perimeter / triangulation edges used once) with `aDown` = 1 at the bottom (`uBase` below the lowest shown
+  value), edges on a mirror plane left out while the images show. On a raised planar map the outlines (and 2D point /
+  line objects: `decalKind`) are not drawn as lines (they would cut through the relief): `prepareDecal` draws them
+  with the line program through an orthographic matrix into a mipmapped texture over the simulated part, keyed on
+  what they show, and the field shader lays it on the surface at `vSrc` (the unmirrored point, so images reuse it;
+  Contrast colour picked per pixel there). The backdrop gradient is drawn into the GL view (pictures hold it), none
+  with the Plot settings background 'white'. The scale bar has a halo of the opposite tone.
   Quasi-2D (page-side, no Python input): a 2D map or a set of 3D layers in one plane (a single cut) is 'planar': it
   opens face-on as the canvas shows it ((u, v) of `FieldData.axes` right / up), tightly fitted inside the readout /
   legend / axis-label insets, with relief. An axis spanning below 1 / MAX_ASPECT (4) of the largest is stretched by a
