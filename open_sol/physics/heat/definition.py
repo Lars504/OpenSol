@@ -1438,8 +1438,8 @@ _FEATURES = (
                             'image. A heat source on the plane is half the source of the unfolded model, a plane '
                             'held at T_face is a temperature face instead (the odd mirror of T - T_face). Errors: '
                             'another heat face feature on the same face, the x_lo axis of geometry axisymmetric (its '
-                            'r < 0 side unfolds without a feature; the ring weights already count the revolution), a '
-                            'polar / spherical domain, another physics with mirror bc settings (EM) that does not set '
+                            'r < 0 side unfolds without a feature; the ring weights already count the revolution) and '
+                            'its x_hi cylinder (no mirror image), a polar / spherical domain (a 1D slab mirrors), another physics with mirror bc settings (EM) that does not set '
                             'the face symmetric / antisymmetric, parity_sectors (heat has no odd mirror feature).',
                 validate=_validate_symmetry, grids=_FEM_GRIDS),
     FeatureType('heat_source', 'Heat source', 'domain_condition', 'domain',

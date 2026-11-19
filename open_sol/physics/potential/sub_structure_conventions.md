@@ -58,9 +58,19 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
   faces plus exact row sums: never a masked SpMV residual, whose interior rows leave ~eps g_terminal V of rounding
   each), positive out of the held region (sources inside a terminal subtracted), times `mirror_factor(region)` (x 2 per
   mirror plane a held face lies on or meets, or held cells reaching their window edge layer; `_region_flux` / driven
-  basis fluxes stay drawn-half values, held_flux scales once; self-test currents_mirror_held_flux). A cell held by two
+  basis fluxes stay drawn-half values, held_flux scales once; self-test currents_mirror_held_flux: an EM-mirrored half
+  and a symmetry-feature half with an electrostatics twin against the full sheet). The planes come
+  from `set_mirror_faces(mirror_faces(spec))` at create on every grid kind: EM mirror faces and every MIRROR_FEATURES
+  face, the type's own symmetry faces included. A cell held by two
   features (`set_fixed`: the later value wins) still counts in both regions; `definition_helpers.held_object_conflicts`
   warns on a possible overlap (shared object or 'all', or intersecting bounding boxes: hedged).
+- Feature `symmetry` (both kinds, `core.mirror.MIRROR_FEATURES`; outer faces only, tensor / triangles / tetrahedra; no
+  apply: the unset face is already the insulated even mirror) makes its faces model mirror planes (unfold V even, E /
+  J / D polar; Session integrals x 2; held totals via mirror_factor). Validation: `_make_validate_symmetry` =
+  `definition_helpers.mirror_feature_issues` (Cartesian domain, so also no 1D line, not the axisymmetric x_lo axis, EM
+  partners mirror the face); the physics validate errors on a voltage / current_density / surface_charge on its own
+  symmetry face (`own_mirror_face_conflicts`) and warns (`mirror_face_issues`) only on the mirror faces of other
+  physics. Electrolytes, Stern layers, waveforms and azimuthal_order mirror fine (all even about the plane).
 - Scalar outputs: `current_<feature>` (currents) / `charge_<feature>` (electrostatics) per enabled voltage / terminal =
   `held_flux` of the regions registered by `add_held_region`; {} before the first solve; a name equal to an output field
   (terminal 'source' -> current_source) is not declared. Pinned by potential_divider_plates_graded and the examples'
@@ -171,9 +181,11 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
 
 ## Tetrahedron meshes (FEMPotentialPhysics3D, `solver_fem3d.py`, piezo_3d_plan stage 6; fem sub file "Scalar diffusion on tetrahedra")
 - Both types have `dimensions` (1, 2, 3), but 3D runs only on 'tetrahedra': `_three_d_issues` refuses a 3D tensor mesh
-  (the create raises, estimators return nothing), axisymmetric / azimuthal_order, model mirror faces (held fluxes would
-  need the 3D touch factor), voltage waveforms, `<prefix>_xy` materials; the Stern layer in the voltage validate;
-  electrolytes by their FeatureType grids.
+  (the create raises, estimators return nothing), axisymmetric / azimuthal_order, voltage waveforms, `<prefix>_xy`
+  materials; the Stern layer in the voltage validate; electrolytes by their FeatureType grids. Mirror planes (z faces
+  too) are allowed: `FEMPotentialMixin.mirror_factor` (shared with triangles) touches a plane by a held outer face on /
+  meeting it or a held interface / element node on it (`_held_points`, `_plane_tolerance` fem.mesh3d PLANE_TOLERANCE;
+  triangles MERGE_TOLERANCE).
 - `solver_fem.FEMPotentialMixin` holds what FEMPotentialPhysics and FEMPotentialPhysics3D share (kind, fields per
   `_axes`, steps, sources, held reactions `_held_reaction` over the class's `_held_dofs`, publish of V / E / flux /
   q_joule); REMEDY_TEXT / RENDERERS come from solver.py.
@@ -189,4 +201,5 @@ held cells, metric, cut cells) is in `open_sol/core/sub_structure_conventions.md
   piezo), the gpu backend.
 - Self-tests `selftests_fem3d.py`: electrostatics_fem3d_plates (exact C and Gauss, 1e-9), electrostatics_fem3d_coax
   (gmsh, skipped without it; curvature_factor 0.15 on both circles so facet ratios match; C within 2e-3),
-  currents_fem3d_resistor (int q_joule = V I within 1e-6 for float32 storage).
+  currents_fem3d_resistor (int q_joule = V I within 1e-6 for float32 storage; run z_linear_mirror: symmetry on x_lo and
+  y_lo, every current, scalar and the q_joule integral x 4).

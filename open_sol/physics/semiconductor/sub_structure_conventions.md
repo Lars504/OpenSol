@@ -81,6 +81,15 @@ Sub file of the root `structure_conventions.md` (read that first). Drift-diffusi
   `step` re-solves only then and counts `n_solves` (coupling skip rule).
 - Scalars `current_<contact>` / `charge_<gate>` after the enabled features (reads physics_spec); {} before the first
   solve.
+- Mirror planes: `set_mirror_faces(mirror_faces(spec))` at create (EM mirror faces, every MIRROR_FEATURES face, its own
+  `symmetry` feature included); `contact_currents` / `gate_charge` (so table results and `scalars`, which call them,
+  never the core) multiply by `mirror_factor(member sites)` = x 2 per plane the region's effective held sites reach
+  (tensor: the window edge cell layer, `_touched_faces`; triangles: a held node on the window line, MERGE_TOLERANCE).
+  The core stays drawn-half. Feature `symmetry` (outer faces, tensor and triangles) has no apply: every outer face is
+  already insulating (zero D and carrier flux), the exact even mirror of the FV cells and of the box method (plane
+  nodes keep half their control volume and edge weights). Validation = `definition_helpers.mirror_feature_issues`
+  only (no other face feature exists). Covered by examples/semiconductor/analytic_photoconductor_gain (y_hi symmetry
+  on both physics, references at the unfolded height h_full).
 - Contact currents = continuity reaction of the held sites (faces to non-members + held volume (R - G)): 0 volume term
   on tensors, on triangles the lumped generation of free elements on outline nodes, so carrier balances are exact on
   both. Gate charges = D flux out of the gate sites.

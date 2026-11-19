@@ -155,8 +155,8 @@ def own_mirror_face_conflicts(vctx, physics_spec, face_feature_types, own_mirror
 
 
 def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
-    """Rules of a core.mirror.MIRROR_FEATURES face feature (heat, potential, ... symmetry): a Cartesian domain, never
-    the x_lo rotation axis of geometry 'axisymmetric' (settings_params: the type's settings, read through
+    """Rules of a core.mirror.MIRROR_FEATURES face feature (heat, potential, ... symmetry): a Cartesian domain (or 1D
+    slab), never the x_lo rotation axis or the x_hi cylinder of geometry 'axisymmetric' (settings_params: the type's settings, read through
     vctx.values), and every other physics of the model with mirror bc settings (EM bc_<face> symmetric /
     antisymmetric) mirrors the face itself (else its fields unfold and its integrals double with a sign it never
     solved). Parity sectors of a type without features of both signs are refused by study validation."""
@@ -166,8 +166,9 @@ def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
     except (ValueError, KeyError, TypeError):   # reported by the selection checks
         return []
     issues = []
-    if vctx.domain_map is not None and vctx.domain_map.mapped:
-        issues.append(Issue('error', path, f'a {feature_spec.type} face needs a Cartesian domain, not the '
+    domain_map = vctx.domain_map
+    if domain_map is not None and domain_map.mapped and not (domain_map.line and domain_map.kind == 'cartesian'):
+        issues.append(Issue('error', path, f'a {feature_spec.type} face needs a Cartesian domain (a 1D slab too), not the '
                                            f'{vctx.domain_map.grid_text} grid (the unfolding mirrors the window, not '
                                            'the drawn sector): remove the feature'))
     if 'x_lo' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(settings_params,
@@ -178,6 +179,11 @@ def mirror_feature_issues(vctx, physics_spec, feature_spec, settings_params):
                                            'plane: the ring weights already count the whole revolution (a mirror '
                                            'would double integrals reaching it), and the axis condition holds by '
                                            f'construction. Remove x_lo from the selection.{unfold}'))
+    if 'x_hi' in faces and not vctx.spec.is_3d and is_axisymmetric(vctx.values(settings_params,
+                                                                                physics_spec.settings)):
+        issues.append(Issue('error', path, "x_hi is the cylinder r = r_max of geometry 'axisymmetric', which has no "
+                                           'mirror image in a body of revolution (the ring weights and 1 / r terms are '
+                                           'not symmetric about it): remove x_hi from the selection'))
     for other, other_type in known_physics(vctx.spec, vctx.registry):
         if other.name == physics_spec.name:
             continue

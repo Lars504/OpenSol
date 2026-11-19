@@ -31,6 +31,8 @@ class FEMPotentialMixin:
     name = 'currents'
     _probe_field = 'V'
     _axes = 'xy'   # E / flux components of the per-element fields
+    _plane_tolerance = MERGE_TOLERANCE   # x the longest window side: a node this close to a window plane lies on it
+    mirror_faces = frozenset()   # model mirror faces on the window edge (set_mirror_faces): held fluxes join images
 
     def _init_potential(self, kind) -> None:
         """kind 'currents' / 'electrostatics' and its schema (before _init_fem)."""
@@ -130,6 +132,32 @@ class FEMPotentialMixin:
         self.held_regions.append(region)
         return region
 
+    def set_mirror_faces(self, faces) -> None:
+        """Mirror planes of the model on the window edge (core.mirror.mirror_faces: EM mirror faces, symmetry feature
+        faces; this physics' face there is the even, insulated mirror): held fluxes join their images (x 2 per touched
+        face)."""
+        self.mirror_faces = frozenset(faces)
+
+    def mirror_factor(self, region) -> float:
+        """core.mirror.touch_factor of the mirror faces `region` touches: a held outer face on the plane or meeting it
+        (any face but the opposite one), held outline / interface / element nodes (_held_points) on the window plane."""
+        if not self.mirror_faces:
+            return 1.0
+        window = self.domain.mesh.window   # (lo..., hi...) per axis of _axes
+        dimensions = len(self._axes)
+        low, high = window[:dimensions], window[dimensions:]
+        tolerance = self._plane_tolerance * max(hi - lo for lo, hi in zip(low, high))
+        points = self._held_points(region)
+        touched = set()
+        for mirror in self.mirror_faces:
+            opposite = mirror[0] + ('_hi' if mirror.endswith('lo') else '_lo')
+            axis = self._axes.index(mirror[0])
+            plane = low[axis] if mirror.endswith('lo') else high[axis]
+            if any(face != opposite for face in region.faces) or bool(
+                    (np.abs(points[:, axis] - plane) <= tolerance).any()):
+                touched.add(mirror)
+        return touch_factor(self.mirror_faces, touched)
+
     def _held_scalars(self) -> dict:
         """current_<feature> or charge_<feature> [flux_unit] of every kept region."""
         prefix = 'current_' if self.kind == 'currents' else 'charge_'
@@ -227,8 +255,6 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
     """2D quasi-static potential V on a fem.domain.TriangleDomain (`kind` 'currents' / 'electrostatics'): one solve per
     change of operator or sources; held fluxes from the reactions of the un-eliminated system."""
 
-    mirror_faces = frozenset()
-
     def __init__(self, domain, kind: str = 'currents', order: int = 2, axisymmetric: bool = False,
                  linear_solver=None):
         self._init_potential(kind)
@@ -276,10 +302,6 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
     @property
     def waveforms(self) -> tuple:
         return ()
-
-    def set_mirror_faces(self, faces) -> None:
-        """Mirror planes of the model on the window edge: held fluxes join their images (x 2 per touched face)."""
-        self.mirror_faces = frozenset(faces)
 
     def add_edge_potential(self, edges, V, stern_capacitance: float = 0.0) -> int:
         """V [V] on mesh edges (an object outline: Dirichlet; no Stern layer on outlines); handle for
@@ -418,27 +440,15 @@ class FEMPotentialPhysics(FEMPotentialMixin, FEMDiffusionPhysicsBase):
             dofs.append(system.region_dofs(region.elements))
         return dofs
 
-    def mirror_factor(self, region: FEMHeldRegion) -> float:
-        """core.mirror.touch_factor of the mirror faces `region` touches: a held face on or meeting the plane, held
-        outline / element nodes on the window edge there."""
-        touched = set()
-        mesh = self.system.mesh
-        x0, y0, x1, y1 = mesh.window
-        tolerance = MERGE_TOLERANCE * max(x1 - x0, y1 - y0)
+    def _held_points(self, region: FEMHeldRegion):
+        """(n, 2) node coordinates of the held outline edges and elements of `region` (mirror_factor)."""
+        mesh = self.domain.mesh
         nodes = []
         if region.edges is not None:
             nodes.append(mesh.edges[region.edges].ravel())
         if region.elements is not None:
             nodes.append(mesh.triangles[region.elements].ravel())
-        points = mesh.points[np.concatenate(nodes)] if nodes else np.zeros((0, 2))
-        for mirror in self.mirror_faces:
-            opposite = mirror[0] + ('_hi' if mirror.endswith('lo') else '_lo')
-            axis = 0 if mirror[0] == 'x' else 1
-            line = {'x_lo': x0, 'x_hi': x1, 'y_lo': y0, 'y_hi': y1}[mirror]
-            if any(face != opposite for face in region.faces) or bool(
-                    (np.abs(points[:, axis] - line) <= tolerance).any()):
-                touched.add(mirror)
-        return touch_factor(self.mirror_faces, touched)
+        return mesh.points[np.concatenate(nodes)] if nodes else np.zeros((0, 2))
 
     def rebuild_operator(self) -> None:
         """Assemble the coefficient tensor (sigma_dc or eps0 eps_dc) and the ionic loss, eliminate the held dofs,
