@@ -17,7 +17,7 @@ from ...core.kernels import twin
 
 from ...core.constants import C0, DTYPE, MU0
 from ...core.sources import WaveformSpectrumCache
-from .boundaries import MIRROR_TYPES, BCType, cpml_axis_profiles
+from .boundaries import MIRROR_TYPES, PINNED_FACE_TYPES, WALL_SIGNS, BCType, cpml_axis_profiles
 from .dispersion import complex_permittivity
 from .monitors import _check_frequencies, _LineSpectra
 from .operators import pml_stretch
@@ -43,12 +43,8 @@ _METAL_ENDS = {'ez': 'dirichlet', 'hz': 'neumann'}
 # A 'pml' end sits on the grid edge, where the kernels hold the missing / never-updated end face at 0 (ez tangential
 # H: PMC, hz tangential E: PEC): zero end flux in both polarisations.
 _GRID_EDGE_END = 'neumann'
-# Wall BCs re-applied after injection along the normal (as definition_feature_validation._PINNED_CELL_BCS /
-# _PINNED_FACE_BCS, the model-path twins): per side those overwriting the outermost cell's out-of-plane field, and per polarisation those
-# pinning the in-plane field on its inner face (lo face 0, hi face n - 2).
-_PINNED_CELL_WALLS = {side: (BCType.PEC, BCType.PMC, BCType.SYMMETRIC, BCType.ANTISYMMETRIC) for side in ('lo', 'hi')}
-_PINNED_FACE_WALLS = {'ez': {side: (BCType.PMC, BCType.SYMMETRIC) for side in ('lo', 'hi')},
-                      'hz': {side: (BCType.PEC, BCType.ANTISYMMETRIC) for side in ('lo', 'hi')}}
+# Wall BCs re-applied after injection along the normal: every boundaries.WALL_SIGNS type pins the outermost cell's
+# out-of-plane field, boundaries.PINNED_FACE_TYPES the in-plane field on its inner face (lo face 0, hi face n - 2).
 # Port role -> (name of its face, consequence of a wall-pinned row, of a cell-width change); as
 # definition_feature_validation.
 _PLACEMENT_ROLES = {
@@ -243,10 +239,10 @@ class PortLine:
             pinned = []
             for side, outer_cell, wall_face in (('lo', 0, 0), ('hi', self._n_normal - 1, self._n_normal - 2)):
                 wall = self._normal_walls[side]
-                if self.line_cell == outer_cell and wall in _PINNED_CELL_WALLS[side]:
+                if self.line_cell == outer_cell and wall in WALL_SIGNS[self.polarization]:
                     out_of_plane = 'E_z' if self.polarization == 'ez' else 'H_z'
                     pinned.append(f"{out_of_plane} of the line cell ({self.normal}_{side} = {wall.value})")
-                if face == wall_face and wall in _PINNED_FACE_WALLS[self.polarization][side]:
+                if face == wall_face and wall in PINNED_FACE_TYPES[self.polarization]:
                     pinned.append(f"{transverse[0].upper()}_{transverse[1]} on its {face_name} face "
                                   f"({self.normal}_{side} = {wall.value})")
             if pinned:

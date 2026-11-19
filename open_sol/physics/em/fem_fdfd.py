@@ -13,7 +13,7 @@ and the eigen pencil of eigenfrequency.solve_resonances. Host numpy (scipy insid
 # (j omega eps0) (unstretched values in the PML ring: display only).
 # PML ring (fem_modes.pml_ring): s_x, s_y of the tensor CPML grading at the quadrature points; K takes T_xx s_y / s_x,
 # T_yy s_x / s_y, T_xy unchanged, M takes s_x s_y. The ring's outer side is pec (the industry-standard exterior, as
-# fem_modes). Walls (the Yee _WALL_SIGNS as essential / natural conditions; mirror planes = the window edge):
+# fem_modes). Walls (boundaries.WALL_SIGNS as essential / natural conditions; mirror planes = the window edge):
 #   ez: E_z = 0 on pec / antisymmetric faces, the ring's outer side and the closure of PEC elements (vertex contacts
 #       too); pmc / symmetric faces natural.
 #   hz: H_z = 0 on pmc / symmetric faces; pec / antisymmetric faces, the ring's outer side and PEC outlines natural.

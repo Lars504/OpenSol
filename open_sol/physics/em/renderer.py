@@ -15,7 +15,7 @@ _MODULUS_FIELD_INFOS = {
     'e_intensity': FieldInfo('e_intensity', '|E|^2', unit='V^2/m^2', cmap='inferno'),
     'h_abs': FieldInfo('h_abs', '|H|', unit='A/m', cmap='viridis'),
 }
-_HARMONIC_STUDY = 'frequency_domain'   # FieldInfo.requires_study of the harmonic FDTD fields (harmonic_fdtd.py)
+_HARMONIC_STUDY = 'frequency_domain'   # FieldInfo.requires_study of the harmonic FDTD fields (2D and BOR)
 # mirror parity (core.mirror) of the out-of-plane component: E_z polar, H_z axial
 OUT_OF_PLANE_PARITY = {'ez': 'polar_z', 'hz': 'axial_z'}
 

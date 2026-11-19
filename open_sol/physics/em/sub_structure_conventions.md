@@ -192,146 +192,104 @@ type's vocabulary and refusals are in its help texts and validation.
   docstring (the rate cap above T_fast keeps a melt-quench amorphous).
 
 ## Harmonic FDTD (em_fdtd_* in a frequency_domain study; harmonic_fdtd.py)
-- `model.study._run_harmonic_pulse` calls `EMPhysics.attach_harmonic(frequencies)` after finalize, before the first
-  step (else ValueError): a `HarmonicAccumulator` (DFTMonitor, complex64) appended to `monitors` with its own
-  `dft_sample_interval`. Every source must share one gaussian / ricker waveform (`_shared_pulse`,
-  `definition_harmonic_fdtd`). Only the FDTD physics steps (couplings reading frozen physics are refused); auto_shutoff
-  after 2 t0 or max_duration.
+- Flow in the root file (frequency_domain): `attach_harmonic` before the first step (after it: ValueError) appends a
+  `HarmonicAccumulator` (DFTMonitor, complex64, own `dft_sample_interval`) to `monitors`; all sources share one
+  gaussian / ricker waveform (`_shared_pulse`, validation `definition_harmonic_fdtd`).
 - `normalize` divides once by `results._shared_waveform_spectrum` (S over steps 1..n_step), so phasors follow the FDFD
-  convention (phase 0 = DFT / S); a sample grid change or a step before attach breaks that. Feature monitors keep
-  unnormalised spectra. Renderer fields `requires_study='frequency_domain'`; `harmonic_primary` is the default stored
-  field; `absorbed_power_harmonic` uses the continuous chi (hz per component, unlike the FDFD face mean). The sheet
-  calibration is exact at f0 only (away from it: the sheet's |eta / cos| mismatch).
+  convention (phase 0 = DFT / S); changing the accumulator's sample grid breaks that. Feature monitors keep
+  unnormalised spectra. Renderer fields carry `requires_study` (renderer `_HARMONIC_STUDY`, also the BOR FDTD's);
+  `harmonic_primary` is the default stored field; `absorbed_power_harmonic` takes the continuous chi at the centres
+  (hz per component, unlike the FDFD face mean). A calibrated sheet source is exact at f0 only (elsewhere its
+  |eta / cos| mismatch).
 - Self-tests em_harmonic_fdtd_vs_fdfd (pins both source signs), em_hz_harmonic_fdtd_slab (only the last wavelength
   stays live: read stored snapshots); template cylinder_harmonic_fdtd. Result `harmonic_pulse` -> summary.json (api).
 
 ## FDFD (em_fdfd_ez / em_fdfd_hz)
-- `FDFDPhysics` shares EMPhysics' attributes (domain, sources, monitors, dispersive_regions, pec_cells,
-  permittivity_arrays, ...), so PortLine, couplings and the Visualizer treat both alike. `step` solves only when
-  dirty, `solve_harmonic` always; `inject_source` takes only eps slots (a per-step source has no harmonic meaning); hz
-  creates missing eps_xx / eps_yy from eps_r.
-- time_dependent study: allowed beside a time-stepped physics (dt_limit inf; steps every `every` ticks, re-solves only
-  when dirty); `_time_dependent_issues` errors beside any em_fdtd_*.
-- Backends: every array on `self.xp` (cupy + cupyx CSR or numpy + scipy CSR), masks included; cpu = scipy_splu only;
-  eigenfrequency gets host copies. Sources keep host arrays until the first solve (`fdfd_sources._on_backend`). Must
-  stay backend-neutral (shared with FDTD): `materials.register_em_arrays`, PortLine `_host_rows`, PhaseChangeMedium,
-  `_phasor_part(xp)`, adjoint.py, DesignRegion. Automatic without scipy is the only cpu refusal
-  (`direct_solver_issues`). Self-tests em_fdfd_cpu_gpu, em_fdfd_adjoint_cpu_gpu.
-- Conventions (harmonic.py header): exp(+j omega t), u at cell centres on the A1 flat index, assembly / solve /
-  `solution` complex128. Source sign: every FDTD source ADDS +c J s(t), so J_F = -J_std, M_F = -M_std; the FDFD keeps
-  the FDTD amplitude meanings: phase 0 = FDTD DFT / S(omega), FDTD sin carrier = phase -90, `phase` [deg] 0 = cos. A
-  line current gives E_z = +(omega mu0 I / 4) H0^(2)(k r), H_z = +(omega eps0 K_m / 4) H0^(2)(k r)
-  (em_fdfd_line_current_hankel).
-- Assembly: ez face weight 1/mu of the face's lower cell; hz 1/eps_face from `face_average` of the complex eps, 0 on
-  `face_pec` faces; poles add their continuous chi. PEC: ez rows pinned; the rhs is zeroed on PEC cells after every
-  source in both polarisations (an hz PEC cell keeps the uncoupled k0^2 mu row, so H_z = 0).
+- `FDFDPhysics` (HarmonicEMShell) shares EMPhysics' attributes (domain, sources, monitors, dispersive_regions,
+  pec_cells, permittivity_arrays, ...), so PortLine, couplings and the Visualizer treat both alike.
+- Backends: every array on `self.xp` (cupy + cupyx CSR or numpy + scipy CSR), masks included; eigenfrequency gets host
+  copies; sources keep host arrays until the first solve (`fdfd_sources._on_backend`). Shared with FDTD, so they must
+  stay backend-neutral: `materials.register_em_arrays`, PortLine `_host_rows`, PhaseChangeMedium, `_phasor_part(xp)`,
+  adjoint.py, DesignRegion. Self-tests em_fdfd_cpu_gpu, em_fdfd_adjoint_cpu_gpu.
+- Conventions: harmonic.py header (exp(+j omega t); every FDTD source ADDS +c J s(t), so J_F = -J_std and the FDFD
+  keeps the FDTD amplitude meanings: phase 0 = FDTD DFT / S(omega)); u at cell centres on the A1 flat index, assembly /
+  solve / `solution` complex128; FDTD sin carrier = phase -90, `phase` [deg] 0 = cos. A line current gives E_z =
+  +(omega mu0 I / 4) H0^(2)(k r), H_z = +(omega eps0 K_m / 4) H0^(2)(k r) (em_fdfd_line_current_hankel).
 - Conformal PEC (S7.6): `ConformalFDFD` built once on the host, reset by any new PEC region; pec_cells = the staircase
-  (ports, sources, TFSF / eps_xy checks read it). ez: face weights into the metal x 1 / max(t, CONDITIONING_FLOOR
-  0.02). hz (Dey-Mittra): `face_fractions` / `cell_area_fractions` (>= 0.02), area-scaled operator (complex symmetric,
-  so reciprocal), while `weight_hi_*_faces` stay physical for face_fields; face_current_rhs, q_abs, adjoint dA and
-  eigen mass take f / a. hz `system.pec_cells` = fixed cells only (cut cells with a metal centre stay unknowns): rhs
-  zeroing, wall-fill re-zero, eigen pinning and adjoint fold read `system.pec_cells`, never `physics.pec_cells`. Not
-  conformal: eps_xy couplings, slab-mode ports, sheet calibrations. Self-tests em_fdfd_conformal_disk_eigen,
+  (ports, sources, TFSF / eps_xy checks read it). ez: face weights into the metal x 1 / max(t, CONDITIONING_FLOOR).
+  hz (Dey-Mittra): `face_fractions` / `cell_area_fractions`, area-scaled operator (complex symmetric, so reciprocal),
+  while `weight_hi_*_faces` stay physical for face_fields; face_current_rhs, q_abs, adjoint dA and eigen mass take
+  f / a. hz `system.pec_cells` = fixed cells only (cut cells with a metal centre stay unknowns): rhs zeroing, wall-fill
+  re-zero, eigen pinning and adjoint fold read `system.pec_cells`, never `physics.pec_cells`. Not conformal: eps_xy
+  couplings, slab-mode ports, sheet calibrations. Self-tests em_fdfd_conformal_disk_eigen,
   em_fdfd_conformal_reciprocity.
 - hz off-diagonal eps_xy (harmonic.py header; the only EM type with it): material `eps_xy` + private float32
-  `_coupled_eps_xy` of slot `eps_xy_update` (OFF_DIAGONAL_SLOT), real, set to 0 in PEC cells and the outer two cell
-  rows of every wall / mirror face (`pin_image_cells` folds a pinned cell into ONE neighbour: a 9-point stencil there
-  would be wrong). Faces hold the effective 1/eta_ii = eps_ii - eps_xy^2 / eps_jj; cell_eps_xx / _yy stay raw for
-  q_abs. `off_diagonal_face_couplings` drops zero-weight / never-updated faces (`active_coupling_faces`), keeping the
-  operator complex symmetric. `HarmonicSystem.off_diagonal` None when all zero (one `cp.any` sync). Not seen by:
-  slab-mode ports, sheet calibrations, TFSF background (`_off_diagonal_line_warnings` at finalize only),
-  em_fdtd_hz / em_modes / BOR (couplings drop the xy row with a crystal warning), the NLFD cascade adjoint
-  (`_check_differentiable` refuses). Renderer `eps_xy` parity 'even'. Self-tests em_fdfd_hz_rotated_slab,
+  `_coupled_eps_xy` of slot `eps_xy_update` (OFF_DIAGONAL_SLOT), real, zeroed in PEC cells and the outer two cell rows
+  of every wall / mirror face (`pin_image_cells` folds a pinned cell into ONE neighbour: a 9-point stencil there would
+  be wrong). Faces hold the effective 1/eta_ii = eps_ii - eps_xy^2 / eps_jj; cell_eps_xx / _yy stay raw for q_abs.
+  `off_diagonal_face_couplings` drops zero-weight / never-updated faces (`active_coupling_faces`), keeping the operator
+  complex symmetric. Not seen by: slab-mode ports, sheet calibrations, TFSF background (`_off_diagonal_line_warnings`
+  at finalize only), em_fdtd_hz / em_modes / BOR (couplings drop the xy row with a crystal warning), the NLFD cascade
+  adjoint (`_check_differentiable` refuses). Renderer `eps_xy` parity 'even'. Self-tests em_fdfd_hz_rotated_slab,
   em_fdfd_hz_anisotropic_reciprocity.
-- hz gyrotropic gyration_z (harmonic.py header; material only, no slot, no renderer field): eps = [[eps_xx, eps_xy + j
-  g], [eps_xy - j g, eps_yy]]; `assembly_gyration` (same zeroing as eps_xy), `HarmonicSystem.cell_gyration`, entries
-  from `harmonic.off_diagonal_entries`; faces take eps_ii - (eps_xy^2 + g^2) / eps_jj and the two face couplings their
-  own eta_xy / eta_yx (`off_diagonal_face_couplings(eta_yx=)`), so A(-g) = D^-1 A(g)^T D: non-reciprocal, and code
-  assuming D A symmetric must check `cell_gyration` (`_symmetrizer` returns None with it: cuDSS / MUMPS / PARDISO
-  factor a general LU, eigen pencils too; the adjoint is the true transposed solve). Lossless g keeps the discrete
-  Poynting balance exact (W_f X_xy = (W_f X_yx)^H), q_abs unchanged (diagonal loss). The X maps take plain cell means
-  across an interface (no Kottke-like weighting), so a guide's non-reciprocal phase shift converges at first order
-  (~6 % at 10 nm cells, Si / Ce:YIG; omega itself second order): checks Richardson-extrapolate. Not seen by the port
-  modes / line-source calibrations / TFSF (finalize warning, as eps_xy). Refused by validation (`_gyration_issues`):
-  mirror faces and so parity sectors (the image reverses the magnetisation), triangles meshes (fdfd_2d_fem also
-  raises: its pencil is factored complex symmetric), every other EM type. Self-tests em_fdfd_hz_gyrotropic_reciprocity
-  (H(B; A, g) = H(A; B, -g), flux ring balance; flux lines measure on their cells' hi faces, so a closed ring needs
-  lines at cell centres spanning the cells between the other pair's faces), em_fdfd_hz_gyrotropic_nrps (Bloch eigen vs
-  the exact slab, selftests_gyrotropy.exact_slab_beta), em_fdfd_hz_gyrotropic_adjoint_gradient.
+- hz gyrotropic gyration_z (harmonic.py header; material only, no slot, no renderer field): `assembly_gyration` (same
+  zeroing as eps_xy), `HarmonicSystem.cell_gyration`; the two face couplings take their own eta_xy / eta_yx
+  (`off_diagonal_face_couplings(eta_yx=)`), so A(-g) = D^-1 A(g)^T D: non-reciprocal. Code assuming D A symmetric must
+  check `cell_gyration` (`_symmetrizer` returns None with it: cuDSS / MUMPS / PARDISO factor a general LU, eigen
+  pencils too; the adjoint is the true transposed solve). Lossless g keeps the discrete Poynting balance exact, q_abs
+  unchanged (diagonal loss). The X maps take plain cell means across an interface (no Kottke-like weighting), so a
+  guide's non-reciprocal phase shift converges at first order (~6 % at 10 nm cells, Si / Ce:YIG; omega itself second
+  order): checks Richardson-extrapolate. Not seen by what ignores eps_xy (above); refusals: `_gyration_issues`.
+  Self-tests em_fdfd_hz_gyrotropic_reciprocity (H(B; A, g) = H(A; B, -g), flux ring balance; flux lines measure on
+  their cells' hi faces, so a closed ring needs lines at cell centres spanning the cells between the other pair's
+  faces), em_fdfd_hz_gyrotropic_nrps (Bloch eigen vs `selftests_gyrotropy.exact_slab_beta`),
+  em_fdfd_hz_gyrotropic_adjoint_gradient.
 - Dirty flags: `_system_dirty` (materials_changed of a read array, slots, PEC, poles, new omega) reassembles and
-  refactorises; `_solution_dirty` (that or a new source) re-solves. scipy_splu at an unchanged omega (Picard step)
-  solves by host GMRES preconditioned with the old factor, refactorising when the residual misses `RECYCLE_RTOL`
-  within `RECYCLE_MAX_ITERATIONS`; a new omega always refactorises. A1 operators cached per omega (`_yee_ops`).
+  refactorises; `_solution_dirty` (that or a new source) re-solves. A recyclable factor at an unchanged omega (Picard
+  step) preconditions host GMRES instead (`_solve_linear`); A1 operators cached per omega (`_yee_ops`).
 - Linear solver: 'linear' role (`SparseDirectSolver`, `FDFDPhysics(linear_solver=)`), 'auto' resolved at finalize;
-  scipy_splu without scipy raises naming 'pip install scipy'. Eigenfrequency uses the 'eigen' role (also
-  optomechanics). Size guards: an overrun never fails cleanly (the cusolver_qr workspace bypasses the pool budget and
-  can freeze Windows / crash the driver), so sizes are refused before solving: `size_issue` is the one rule for
-  validation and solver (scipy_splu warns > 1e6, refuses > 2e6 nx * ny; cusolver_qr `qr_workspace_bytes` = 64 B nx ny
-  band, band from `qr_band_order`, which `factorize` also applies; warns > 512 MiB, refuses > 2 GiB);
-  `check_solver_size` (finalize, every factorisation) also refuses a QR workspace over half the free device memory
-  (after freeing the cupy pool above 512 MiB). A solve cannot be cancelled (Progress before each solve, cancel acts
-  between). SuperLU: MMD_AT_PLUS_A, SymmetricMode, diag_pivot_thresh 0.1 (1 swaps rows off the ordering);
-  `factorize_host(ordering=)` runs NATURAL. The study logs `solve_summary()` (not on the ABC) after the first solve.
-  The HarmonicSystem keeps A on the device on both back ends (TFSF / mode rhs need it).
-- cuDSS 'linear' (cudss / cudss_mixed, `FDFD_DIRECT_BACK_ENDS`, GPU only): tensor meshes factorise D A
-  (`_symmetrizer` = `stretched_cell_areas`, None with a Bloch phase; a failed symmetry check, e.g. eps_xy, gives a
-  general LU). Not recyclable: a system change keeps the factor as `_cudss_previous` (for its plan; its device memory
-  stays during the next assembly) and refactorises it in place (`previous=`). An adjoint solve on a general LU
-  factorises the transpose (`_transposed_solve`: one extra factor outside the pool, not estimated). Triangles:
-  `factorize_host(symmetric=True, row_scale=system.equilibration, previous=)` (SuperLU ignores the options). Selftest
-  em_fdfd_cudss. B1a: Automatic is cuDSS on the gpu with nvmath-python when the role lists `auto_back_ends`
-  (validation / estimators follow the resolved back end); an 'auto' runtime that cuDSS refuses falls back to SuperLU
-  (solvers sub file B1b) and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free `_cudss_previous`. A deferred
-  cuDSS check (a refreshed factor judged by its first solve) raises CudssAccuracyError from the solve: fdfd_2d
-  `_solve_linear` (driven and transposed) and host_fdfd `_checked_solve_host` (BOR / conical driven solves, BOR order
-  sums) catch it, `host_fdfd.fell_back_to_superlu` (this miss switched the 'auto' runtime, or an earlier one did: a
-  shared solver) and refactorise on SuperLU. Those paths refresh with `defer_check=True` (fdfd_2d driven + transposed
-  factorize, host_fdfd `_factorize_operator`); BOR's C^T W C - k0^2 M also passes `symmetric_by_construction` ->
-  canonicalised in place + `symmetric_known` (no asymmetry check), conical (D A) not. fdfd_2d_fem and every other
-  `factorize_host(previous=)` caller has no catch: its refreshes stay probed (defer_check False). Self-tests
-  comparing with "SuperLU" (em_fdfd_cudss, selftests_fdfd line_block, em_bor_cudss_driven, em_fdfd_conical_cudss)
-  must give the reference an explicit scipy_splu node, never Automatic.
-- MUMPS / PARDISO (solvers.host_direct; 'linear' back_end and 'eigen' factorization mumps / pardiso (+ _mixed), opt-in,
-  either backend, optional python-mumps / pydiso; every EM type, solvers sub file "host_direct"): code tests the
-  tuples / predicates, never the names (`HOST_DIRECT_BACK_ENDS`, `sparse_direct.SYMMETRIC_OPTION_BACK_ENDS` /
-  `MIXED_BACK_ENDS`, `arpack_shift_invert.LDLT_FACTORIZATIONS` / `MIXED_FACTORIZATIONS`, `is_host_direct_factor`,
-  `factor_label`; help texts take `definition_common.HOST_DIRECT_NAMES`). They get the cuDSS factor options (fdfd_2d:
-  symmetric + `_symmetrizer` D, so the LDL^T of D A, LU when the asymmetry check fails; host_fdfd
-  `_linear_symmetric_options`: BOR / conical row scale / symmetrizer; fdfd_2d_fem: symmetric + equilibration), but
-  are recyclable and transpose natively like SuperLU: no `_transposed_solve`, GMRES recycling at an unchanged omega,
-  no `_cudss_previous` on tensor meshes (fdfd_2d_fem keeps one as previous: analysis reused on the same pattern). Size
-  rules: SuperLU's everywhere (`size_issue` / `fem_*_size_issue` / `size_issue_for_unknowns` take the host names;
-  `fem_modes.host_solver_label` names the library), plus the library's own memory check after the analysis.
-  Eigen: `_eigen_symmetrizer` returns D for every LDLT_FACTORIZATIONS entry; `solve_resonances` polishes every own
-  mixed LDL^T (factor_precision 'mixed' and symmetric: cuDSS on the device, host `solve_host(refinement_steps=
-  MIXED_EIGS_REFINEMENTS)`), fem_modes likewise; every polished solve is refined (eigs on unrefined solves was tried
-  and removed: the Rayleigh move squared misses the 1 / gap of a near eigenvector, eigenfrequency header); and a double own LDL^T of a complex A when the caller passed a
-  tolerance_floor > 0 (open models): ARPACK to MIXED_ARPACK_TOLERANCE + the quotients, no refinement steps (`refine`
-  is mixed only); a closed lossless model keeps its floor (Q = inf). E2: 2D FDFD passes `rayleigh_symmetrizer` =
-  `_adjoint_symmetrizer()` (D measured, None with a Bloch phase / eps_xy), so a complex A (PML, loss) is polished
-  the same way on any factor (SuperLU, the line-block factor, a double LDL^T); a real A keeps machine precision. An
-  own host factor logs `_host_direct_factor_text`; elimination
-  orders (em3d) are skipped. Texts: solve_summary / direct_text / `HOST_DIRECT_KINDS` (em_modes factor_kind prefixes)
-  name the description and the library's factor bytes. Estimates: `memory_estimates.host_factor_items` (the SuperLU
-  heuristic x `superlu_bytes_scale`, LDL^T where D A / the pencil is symmetric, + `solver_host_bytes`; an eigen mixed
-  request below MIXED_EIGEN_MIN_UNKNOWNS booked double) at every place a SuperLU factor item was booked (2D FDFD,
-  triangles, BOR, conical, em_modes, em3d, eme); the hz eps_xy extra fill stays at SuperLU size; time recipes are the
-  role's (sparse_direct / arpack host items). Self-test em_fdfd_host_direct (selftests_fdfd, cpu, heavy, skipped
-  without both libraries).
-- line_block 'linear' node (opt-in, Automatic stays sparse_direct): one host operator copy (`set_operator(owner=)`,
-  block axis = the periodic one; two periodic axes: ValueError / validation error) and one kept factor, no GMRES
-  recycling. An adjoint solve runs on the kept factor as x = D solve(g / D) when D A is complex symmetric
-  (`_adjoint_symmetrizer`: D = `_symmetrizer`, asymmetry measured once per system against cudss_factor
-  SYMMETRY_TOLERANCE; None with a Bloch phase or eps_xy). A rejected solve marks the system `_REJECTED`
-  (line_block_fallbacks) and, like a non-symmetric adjoint solve, goes to `_reference_solver` (SparseDirectSolver
-  'auto'). Wavelength batches: the frequency_domain study calls
-  `plan_harmonic_frequencies(omegas)` before its loop and `(())` after (`_solve_wavelengths`; not the coupled scan /
-  optimization); up to `MAX_BATCH_WAVELENGTHS` omegas factorised together (`factorize_operators`, capped by
-  MEMORY_FRACTION). Each wavelength's own `_assemble` must give the identical operator, guarded by `_material_serial`
-  (bumped by every `_mark_system_dirty` but `omega_only`), so any change of the assembled system must go through
-  `_mark_system_dirty`. Eigenfrequency wraps `_system_line_factor` as `LineBlockFactorization`; a
-  RejectedLineBlockSolve redoes it on SuperLU. Self-tests em_fdfd_line_block, _line_block_wavelengths,
-  em_fdfd_eigenfrequency_line_block.
+  eigenfrequency uses the 'eigen' role (also optomechanics). Size guards: a cusolver_qr workspace overrun bypasses the
+  pool budget and can freeze Windows / crash the driver instead of failing, so sizes are refused before solving:
+  `size_issue` is the one rule for validation and solver, `check_solver_size` (finalize, every factorisation) also
+  refuses a QR workspace over half the free device memory. A solve cannot be cancelled (Progress before each solve,
+  cancel acts between). The study logs `solve_summary()` (not on the ABC) after the first solve. The HarmonicSystem
+  keeps A on the device on both back ends (TFSF / mode rhs need it).
+- cuDSS 'linear' (cudss / cudss_mixed, GPU only): tensor meshes factorise D A (`_symmetrizer` =
+  `stretched_cell_areas`; a failed symmetry check, e.g. eps_xy, gives a general LU). Not recyclable: a system change
+  keeps the factor as `_cudss_previous` (for its plan; its device memory stays during the next assembly) and
+  refactorises it in place (`previous=`). An adjoint solve on a general LU factorises the transpose
+  (`_transposed_solve`: one extra factor outside the pool, not estimated). Triangles: `factorize_host(symmetric=True,
+  row_scale=system.equilibration, previous=)`. Automatic = cuDSS on the gpu with nvmath (B1a, solvers sub file); an
+  'auto' runtime that cuDSS refuses falls back to SuperLU and fdfd_2d / fdfd_2d_fem / fdfd_bor / fdfd_conical free
+  `_cudss_previous`. Deferred checks: fdfd_2d driven + transposed factorize and host_fdfd `_factorize_operator` refresh
+  with `defer_check=True`, so CudssAccuracyError comes from the solve: fdfd_2d `_solve_linear` and host_fdfd
+  `_checked_solve_host` (BOR / conical driven solves, BOR order sums) catch it, ask `host_fdfd.fell_back_to_superlu`
+  and refactorise on SuperLU. A new refresh path passes defer_check only with that catch; fdfd_2d_fem and every other
+  `factorize_host(previous=)` caller has none, so its refreshes stay probed. BOR's C^T W C - k0^2 M also passes
+  `symmetric_by_construction` (canonicalised in place + `symmetric_known`, no asymmetry check), conical (D A) not.
+  Self-tests comparing with "SuperLU" (em_fdfd_cudss, selftests_fdfd line_block, em_bor_cudss_driven,
+  em_fdfd_conical_cudss) must give the reference an explicit scipy_splu node, never Automatic.
+- MUMPS / PARDISO (solvers sub file "host_direct"; 'linear' back_end and 'eigen' factorization mumps / pardiso
+  (+ _mixed), opt-in, either backend, every EM type): code tests the tuples / predicates, never the names
+  (`HOST_DIRECT_BACK_ENDS`, `sparse_direct.SYMMETRIC_OPTION_BACK_ENDS` / `MIXED_BACK_ENDS`,
+  `arpack_shift_invert.LDLT_FACTORIZATIONS` / `MIXED_FACTORIZATIONS`, `is_host_direct_factor`, `factor_label`; help
+  texts `definition_common.HOST_DIRECT_NAMES`). They get the cuDSS factor options (fdfd_2d: symmetric + `_symmetrizer`
+  D; host_fdfd `_linear_symmetric_options`; fdfd_2d_fem: symmetric + equilibration) but are recyclable and transpose
+  natively like SuperLU: no `_transposed_solve`, GMRES recycling at an unchanged omega, no `_cudss_previous` on tensor
+  meshes (fdfd_2d_fem keeps one as previous: analysis reused on the same pattern). Size rules: SuperLU's everywhere
+  (`size_issue` / `fem_*_size_issue` / `size_issue_for_unknowns` take the host names), plus the library's own memory
+  check after the analysis. Texts: solve_summary / direct_text / `HOST_DIRECT_KINDS` (em_modes factor_kind prefixes)
+  name the description and the library's factor bytes; an own eigen host factor logs `_host_direct_factor_text`.
+  Estimates: `memory_estimates.host_factor_items` at every place a SuperLU factor item was booked (2D FDFD, triangles,
+  BOR, conical, em_modes, em3d, eme); the hz eps_xy extra fill stays at SuperLU size. Self-test em_fdfd_host_direct.
+- line_block 'linear' node (opt-in; solvers sub file line_block): one host operator copy (`set_operator(owner=)`, block
+  axis = the periodic one) and one kept factor, no GMRES recycling. An adjoint solve runs on the kept factor as
+  x = D solve(g / D) when D A is complex symmetric (`_adjoint_symmetrizer`, measured once per system); a rejected solve
+  marks the system `_REJECTED` (line_block_fallbacks) and, like a non-symmetric adjoint solve, goes to the private
+  `_reference_solver` (role-less 'auto' = host SuperLU). Wavelength batches (`plan_harmonic_frequencies`, root file):
+  each wavelength's own `_assemble` must give the identical operator, guarded by `_material_serial` (bumped by every
+  `_mark_system_dirty` but `omega_only`), so any change of the assembled system must go through `_mark_system_dirty`.
+  Self-tests em_fdfd_line_block, _line_block_wavelengths, em_fdfd_eigenfrequency_line_block.
 - Bloch k != 0 (symmetry 2.2): only the wrap entries change. `lower_wrap_factors` = e^{+j k L} per axis: every
   face-to-centre mean across the wrap takes it (`face_mean_at_centres(wrap_factor=)`; q_abs needs none; NF2FF boxes
   never wrap), as do a dipole on the last face and a mode source's upstream cell. Sheets carry e^{-j k.r}
@@ -339,17 +297,14 @@ type's vocabulary and refusals are in its help texts and validation.
   refused (`_check_bloch_line`, `bloch_period_line_issues`). nlfd takes each channel's factor in its C / C*.
 - Polar (r, phi) grids (symmetry 2.16 / 2.18; scripts only, `coordinate_grids` lists 'polar'; PhysicsTypes stay
   Cartesian until the model path exists): the metric lives only in the A1 ops (`polar_radius_min=`, complex r~ in
-  the x_hi CPML); `FDFDPhysics.metric` gives point-source areas, arc flux weights and eigen PML shares. Faces
-  (`_check_polar_boundaries`): x_lo pec / pmc or the origin ('pmc' placeholder, wall row dropped); x_hi cpml / pec /
-  pmc (PML on the last r width, no mesh_config); phi faces pec / pmc / mirrors, periodic / bloch only when angle_wrap
-  joins them (bloch_ky = azimuthal order m [1/rad]). `_require_cartesian` refuses line sources / beams, TFSF, dipoles,
-  mode ports, NF2FF, objectives, design regions, sheets, conformal PEC, subpixel smoothing, eps_xy. Closed forms are
-  semi-discrete: order nu = (2 / dphi) sin(m dphi / 2). Self-tests selftests_polar.
-- Faces: cpml, periodic, pec / pmc walls and mirrors with the FDTD rows (`_WALL_SIGNS`: outermost cell = sign x inner
-  neighbour; ez pec / hz pmc 0, ez pmc / symmetric and hz pec / antisymmetric +1, ez antisymmetric / hz symmetric
-  -1): outer cells pinned via `pin_image_cells` (rhs zeroed, filled after the solve, PEC re-zeroed); a +1 row also
-  zeroes the inner face weight, so an hz face current there drops (as the FDTD re-pin). `_PINNED_CELL_BCS` /
-  `_PINNED_FACE_BCS` must match the FDTD's.
+  the x_hi CPML); `FDFDPhysics.metric` gives point-source areas, arc flux weights and eigen PML shares. Faces:
+  `_check_polar_boundaries`; bloch_ky = azimuthal order m [1/rad]. Every Cartesian-only feature calls
+  `_require_cartesian` (grep it; eps_xy / gyration_z raise in `_assemble`): a new one that assumes Cartesian cells
+  must call it too. Closed forms are semi-discrete: order nu = (2 / dphi) sin(m dphi / 2). Self-tests selftests_polar.
+- Faces: cpml, periodic, pec / pmc walls and mirrors with the FDTD rows (`boundaries.WALL_SIGNS`): outer cells pinned
+  via `pin_image_cells` (rhs zeroed, filled after the solve, PEC re-zeroed); a +1 row also zeroes the inner face
+  weight (`PINNED_FACE_TYPES`), so an hz face current there drops (as the FDTD re-pin). Placement checks of the model
+  path and of PortLine derive their pinned rows from the same tables.
 - `face_fields()` (cached per solve): hi faces; hz = discrete curl PLUS source `face_currents` (dipole, sheet), so E is
   exact on a source face. TFSF and mode phasors only add to the rhs, so the field jumps across their interface: no
   measuring face (monitor line cell hi face, probe hx / hy, NF2FF samples) may sit on a mode source's interface face
@@ -357,17 +312,16 @@ type's vocabulary and refusals are in its help texts and validation.
   box around a TFSF box needs >= 2 cells on the lo sides and its x1 / y1 edges past it (FDTD: 1 cell). Validation
   warns (`_total_field_regions`, `_mixed_region_texts`); hz q_abs beside such a face is wrong in lossy cells, unchecked.
 - TFSF (`PlaneWavePhasor`): b += (1 - Q) A (Q u_inc) - Q A ((1 - Q) u_inc) through `system.operator`; exact whenever
-  u_inc solves the background rows (medium of outline cell (x0 - 1, y0), read per solve), so it is exact only with
-  that one medium around the box. Bloch ky needs uniform y cells (else ValueError / validation error); uniform columns
-  use the discrete-dispersion wave (raises at <= pi cells per medium wavelength), graded ones a march on the operator's
-  x line (kept off uniform lines: round-off growth in lossy media). Phase referred to the centre of column x0 (FDTD
-  TFSF phases differ); hz amplitude = incident E_y. `full_period_y`: no y edges. Selftest em_fdfd_tfsf_graded_leakage.
+  u_inc solves the background rows (medium of outline cell (x0 - 1, y0), read per solve), so only with that one
+  medium around the box. Bloch ky needs uniform y cells; uniform columns use the discrete-dispersion wave, graded ones
+  a march on the operator's x line (kept off uniform lines: round-off growth in lossy media). Phase referred to the
+  centre of column x0 (FDTD TFSF phases differ); hz amplitude = incident E_y. `full_period_y`: no y edges. Selftest
+  em_fdfd_tfsf_graded_leakage.
 - Mode ports (`fdfd_ports`): unlike the drift-gated FDTD ports, modes are re-solved at finalize and after every
   reassembly (`PortLine.solve_modes` returns the last SlabModes when omega, counts, spacing, host rows and pole objects
-  are unchanged). Source = the TFSF formula on the line cells and their upstream neighbours (periodic normal axis: half
-  period >= 4 cells or ValueError); `add_to_rhs` refuses a mode solved at another omega. The source re-selects
-  `mode_number` per solve; the monitor tracks by overlap + `align_phase`. power_* = |a|^2 W/m (FDTD 2 |a|^2). Only
-  finalize's port warnings are reported.
+  are unchanged). Source = the TFSF formula on the line cells and their upstream neighbours; `add_to_rhs` refuses a
+  mode solved at another omega. The source re-selects `mode_number` per solve; the monitor tracks by overlap +
+  `align_phase`. power_* = |a|^2 W/m (FDTD 2 |a|^2). Only finalize's port warnings are reported.
 - `create` (FDFD and em_modes) builds at `first_solved_wavelength`, so ports select modes there; auto mesh at
   `shortest_solved_wavelength` with the static index; the resolution warning checks `all_solved_wavelengths` with |n|
   of the complex eps(omega) plus >= 2 cells per skin depth, so metals the static index (Drude eps_inf) misses are
@@ -375,49 +329,35 @@ type's vocabulary and refusals are in its help texts and validation.
 - Monitors record one value per omega (repeat overwrites) on the device; results ascending wavelengths; a monitor
   added after a solve records it at once. HarmonicProbe: ez hx / hy raw on the +y / +x face, hz ex / ey collocated.
   Flux = 1/2 Re(E x H*) [W/m], discretely conserved; modes normalised to that discrete flux.
-- q_abs: ez 1/2 omega eps0 (-Im eps) |E_z|^2; hz per component the face-mean |E|^2 (`face_mean_at_centres`) x -Im
-  eps_ii; magnetic loss not counted. Renderer primary `<field>_re` (the stationary fixed point compares it).
-- Eigenfrequency (A6, `eigenfrequency.py`, host only): `solve_resonances` is dimension-free ('shift_invert' 2D,
-  'squared_cayley' for curl-curl with a gradient null space; sparse mass / energy weights via `_PencilMass`, a pinned
-  row absent, not zero; em_eigen_sparse_mass; a host B v from HOST_MASS_THREAD_MIN_ENTRIES runs by row blocks on a
-  process-wide thread pool, `_mass_pool`, relying on scipy's CSR kernel releasing the GIL). 2D shift-invert factor: host SuperLU (`_eigen_size_warnings`), a
-  line_block node's kept factor, or cudss / cudss_mixed / the host direct ones (`_eigen_symmetrizer`, LDL^T of D A).
-  Own factor at sigma =
-  k_t^2 (1 + SHIFT_RELATIVE_OFFSET): a target on a lossless resonance gave a singular factor cuDSS refused. Drops Re
-  omega <= 1e-6 omega_t (hz Neumann constant) and PML resonances (> 0.5 energy outside `physical_window`); too few
-  left: ARPACK with 2x the eigenpairs, `MAX_WIDENINGS` times (estimates size the first pass only; cost ~
-  eigenpairs^2, so ask only for resonances that exist near the target). Own cuDSS factor, or a host factor on a gpu
-  runtime where `device_arnoldi_fits(host_matvec=True)`: device Arnoldi (`eigs_device`, no rows reserved: the estimate books the first pass only), widenings resume the
-  Krylov-Schur decomposition (`basis_kept` in the info) through `_device_basis_for_widening`: kept rows to the host,
-  device basis freed, the wider one allocated (never two device bases), only when it fits
-  `gpu_memory.pool_room_bytes`; else no widening and a solve warning (a widening that happens warns too: memory beyond
-  the estimate). Any other host factor: the host twin (`eigs_host`, `_HostKrylovSchur`, numpy rows, resume in place on
-  rows reserved by the first pass, WIDENING_BASIS_RESERVE;
-  host ARPACK only below DEVICE_ARNOLDI_MIN_RATIO), so cpu runs follow the gpu algorithm. The candidate filter (`_ResonanceFilter`, built once per solve: on the device on a gpu runtime or own
-  cuDSS factor, else host) takes per column v^H B v, v^H A v, the D-scaled Rayleigh terms and the energy / window /
-  region sums from ONE sparse product per operator and block of FILTER_BLOCK_COLUMNS vectors; never per-column host
-  csr_matvec loops (tetrahedral Mie: 2.4 s of 8 s). `squared_cayley_roots` takes those products, not the vectors.
-  Estimators book it via `memory_estimates.resonance_search_items` and `eigenfrequency.resonance_filter_time_item`
-  (2D FDFD, BOR, conical, em_fdfd_3d). Dispersion and PML stretch stay frozen at omega_t
-  (first-order error; help texts say so). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the sign to
-  round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents); `_solution_dirty`
-  stays True so a later step() re-solves the driven problem. Region (P2): `set_resonance_region`, column
-  `region_energy_fraction` last; on tensor grids the region is `ctx.domain_mask`, so an object touching the window
-  edge counts the PML cells beyond it (clamped centres; example dbr_cavity_q stops its gaps one cell short). Self-tests em_fdfd_eigenfrequency_pec_cavity, em_resonance_region_fraction,
-  em_fdfd_resonance_region; template disk_resonator_eigenmodes.
+- q_abs: ez 1/2 omega eps0 (-Im eps) |E_z|^2; hz per component the face-mean |E|^2 x -Im eps_ii; magnetic loss not
+  counted. Renderer primary `<field>_re` (the stationary fixed point compares it).
+- Eigenfrequency (A6, `eigenfrequency.py`, host only): `solve_resonances` is dimension-free and shared (2D FDFD, BOR,
+  conical, em_fdfd_3d, FEM); spectral maps, the own-factor shift, PML / region filters, widenings, device / host
+  Krylov-Schur and the mixed / E2 Rayleigh polish are in its module header. 2D factor: host SuperLU
+  (`_eigen_size_warnings`), a line_block node's kept factor (RejectedLineBlockSolve -> SuperLU), or the eigen role's
+  cuDSS / host direct LDL^T of D A (`_eigen_symmetrizer`); `rayleigh_symmetrizer` = `_adjoint_symmetrizer()`. Cost ~
+  eigenpairs^2, so ask only for resonances that exist near the target; estimators book
+  `memory_estimates.resonance_search_items` and `eigenfrequency.resonance_filter_time_item` (first pass only). Per-
+  column measures go through `_ResonanceFilter` (one sparse product per operator and block), never per-column host
+  csr_matvec loops (tetrahedral Mie: 2.4 s of 8 s). Fields are 1 at the first argmax |u|: mirror-equal peaks leave the
+  sign to round-off. `select_resonance(k)` sets `selected_resonance` (hz `face_fields` skips source currents);
+  `_solution_dirty` stays True so a later step() re-solves the driven problem. Region (P2): on tensor grids
+  `ctx.domain_mask`, so an object touching the window edge counts the PML cells beyond it (clamped centres; example
+  dbr_cavity_q stops its gaps one cell short). Self-tests em_fdfd_eigenfrequency_pec_cavity,
+  em_resonance_region_fraction, em_fdfd_resonance_region, em_eigen_sparse_mass; template disk_resonator_eigenmodes.
 - Adjoint (C7, `adjoint.py`, derivation in its header): objectives subclass the flux / mode monitors; J = sum weight
   * value (flux unfolded by `mirror_factor`, mode power raw). `eps_sensitivity()` is lazy, cached per (n_solves,
-  objectives), zeros while a resonance is shown. `solve_adjoint` uses `self.system`: never call it after
-  `solve_eigenfrequencies` reassembled. The adjoint source is folded through the transpose of the wall fill; hz
-  differentiates V incl. the `pin_image_cells` fold, plus (as nlfd) the objectives' face fields (`face_cotangents` =
-  the objective face parts) and the rhs D_e V J of the sources' summed `face_currents`. Held fixed: source
-  calibrations (the J values), TFSF / port incident fields, port modes; sigma_e, poles, mu_r not differentiated. `mode_amplitude_weights` is the one map behind
-  mode_amplitudes and the mode objective. eps_xy: `EpsSensitivity.off_diagonal_density` ('eps_xy_sensitivity', hz
-  only, parity 'even' although its true image is odd). physics/nlfd/adjoint.py chains `objective_cotangents` ->
-  `adjoint_source` -> `solve_adjoint` -> `permittivity_gradients` -> `sensitivity_density`, so a signature change must
-  reach it. Self-tests em_fdfd_adjoint_gradient, em_fdfd_hz_eps_xy_adjoint_gradient. gyration_z: one cotangent per
-  map (h_xy onto the hi-y faces, h_yx onto the hi-x faces), chain rule on q = eps_xy^2 + g^2 with g held fixed (no dJ /
-  dg output).
+  objectives), zeros while a resonance is shown; `solve_adjoint` refuses a system reassembled since the last driven
+  solve or a shown resonance. The adjoint source is folded through the transpose of the wall fill; hz differentiates V
+  incl. the `pin_image_cells` fold, plus (as nlfd) the objectives' face fields (`face_cotangents` = the objective face
+  parts) and the rhs D_e V J of the sources' summed `face_currents`. Held fixed: source calibrations (the J values),
+  TFSF / port incident fields, port modes; sigma_e, poles, mu_r not differentiated. `mode_amplitude_weights` is the
+  one map behind mode_amplitudes and the mode objective. eps_xy: `EpsSensitivity.off_diagonal_density`
+  ('eps_xy_sensitivity', hz only, parity 'even' although its true image is odd); gyration_z: one cotangent per map
+  (h_xy onto the hi-y faces, h_yx onto the hi-x faces), chain rule on q = eps_xy^2 + g^2 with g held fixed (no dJ /
+  dg). physics/nlfd/adjoint.py chains `objective_cotangents` -> `adjoint_source` -> `solve_adjoint` ->
+  `permittivity_gradients` -> `sensitivity_density`, so a signature change must reach it. Self-tests
+  em_fdfd_adjoint_gradient, em_fdfd_hz_eps_xy_adjoint_gradient.
 - Design regions (`design_density.py`): `DesignMap` (host only) = conic filter -> tanh projection -> eps;
   `density_gradient` is its exact transpose (em_fdfd_design_chain_rule). `DesignRegion` writes eps into every
   permittivity array of its physics (hz: xx and yy, so dJ/d eps = the sum) via `MaterialGrid.assign_window`; the caller
@@ -428,12 +368,10 @@ type's vocabulary and refusals are in its help texts and validation.
 - Conducting sheets (`sheet_conductivity.py`): enter the OPERATOR only (ez diagonal on the line cells, hz hi-face
   weights, after face averaging, before PEC / even-wall zeroing); `cell_eps` / `eps_hi_*_faces` stay bulk (source /
   TFSF calibrations, eigen mass). Port modes and MaterialGrid maps never see a sheet (`_mark_system_dirty(ports=
-  False)`); sigma(omega) cached (graphene Kubo: scipy quad). Self-tests em_graphene_kubo_limits, em_fdfd_conducting_sheet.
-- `set_extra_permittivity(values, box)`: physics-private complex eps before face averaging, never in the MaterialGrid;
-  sources, q_abs, adjoint see it, port modes do not. `_solve(record_monitors=False)` + `record_monitors()` later.
-  Such a solve defers q_abs and the float32 state arrays (`_refresh_pending_state`): `state()`, `take_absorbed_power`,
-  `record_monitors` and a reassembly (it needs the old system's face fields) write them first; the wall rows,
-  solution and solved_omega are current at once. New readers of `_q_abs` / `_field_re` / `_field_im` refresh first.
+  False)`); sigma(omega) cached (graphene Kubo: scipy quad). Self-tests em_graphene_kubo_limits,
+  em_fdfd_conducting_sheet.
+- `set_extra_permittivity(values, box)` (docstring): `_solve(record_monitors=False)` defers q_abs and the float32 state
+  arrays (`_refresh_pending_state`); new readers of `_q_abs` / `_field_re` / `_field_im` refresh first.
 - Phasor sources with `set_amplitude(*values of amplitude_params)` re-set in place (a reused sweep build: nlfd
   `_FOLLOWING_SOURCE_PARAMS`): point / magnetic / dipole currents, sheet currents, TFSF plane wave, mode source
   (rescales its solved incident phasors; power <= 0 raises at the run, not at validation).

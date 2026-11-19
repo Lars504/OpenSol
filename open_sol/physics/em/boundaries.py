@@ -55,14 +55,18 @@ class BCType(Enum):
 MIRROR_TYPES = frozenset({BCType.SYMMETRIC, BCType.ANTISYMMETRIC})
 MIRROR_GHOST_CELLS = 1
 # Frequency-domain wall / mirror rows of the out-of-plane field per polarisation: outermost cell = sign x its inner
-# neighbour (0: pinned), as the FDTD rows below write it (FDFD operator, EME wall fill).
+# neighbour (0: pinned), as the FDTD rows below write it (FDFD operator, EME wall fill). Every type here pins the
+# outermost cell; the sign +1 ones also pin the in-plane field on its inner face (PINNED_FACE_TYPES).
 WALL_SIGNS = {'ez': {BCType.PEC: 0.0, BCType.PMC: 1.0, BCType.SYMMETRIC: 1.0, BCType.ANTISYMMETRIC: -1.0},
               'hz': {BCType.PEC: 1.0, BCType.PMC: 0.0, BCType.SYMMETRIC: -1.0, BCType.ANTISYMMETRIC: 1.0}}
-# Face types that put tangential E = 0 on the inner face of the outermost cell in H_z polarisation.
-_HZ_PEC_PLANE_TYPES = frozenset({BCType.PEC, BCType.ANTISYMMETRIC})
-# Face types that make E_z even about the inner face of the outermost cell (tangential H = 0 there) in E_z
-# polarisation: the same row copy serves the pmc wall and the symmetric mirror.
-_EZ_EVEN_PLANE_TYPES = frozenset({BCType.PMC, BCType.SYMMETRIC})
+# Per polarisation, the face types whose even row (sign +1) pins the in-plane field on the inner face of the outermost
+# cell: ez pmc / symmetric (E_z even about it, tangential H frozen), hz pec / antisymmetric (tangential E = 0). The
+# FDFD zeroes those faces' weights; mode-port and feature placement checks (mode_ports, definition_feature_validation)
+# warn about them.
+PINNED_FACE_TYPES = {polarization: frozenset(bc for bc, sign in signs.items() if sign == 1.0)
+                     for polarization, signs in WALL_SIGNS.items()}
+_HZ_PEC_PLANE_TYPES = PINNED_FACE_TYPES['hz']
+_EZ_EVEN_PLANE_TYPES = PINNED_FACE_TYPES['ez']   # one row copy serves the pmc wall and the symmetric mirror
 # Per face: (outermost cell-centre row, its inner neighbour) and the inner face of the outermost cell (hi-face rows
 # 0 / n-2) as 2D indices.
 _CENTRE_ROWS = {'x_lo': (np.s_[0, :], np.s_[1, :]), 'x_hi': (np.s_[-1, :], np.s_[-2, :]),

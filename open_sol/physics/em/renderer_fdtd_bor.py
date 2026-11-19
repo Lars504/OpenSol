@@ -5,10 +5,9 @@ from ...core.backend import array_module_of
 from ...core.constants import DTYPE
 from ...core.renderer import FieldInfo
 from .body_of_revolution import yee_centres
-from .renderer import _MODULUS_FIELD_INFOS, _EMRendererBase
+from .renderer import _HARMONIC_STUDY, _MODULUS_FIELD_INFOS, _EMRendererBase
 from .renderer_bor import BORRenderer
 
-_HARMONIC_STUDY = 'frequency_domain'   # FieldInfo.requires_study of the phasor fields
 # (name, label, unit, azimuthal profile of the standing wave: fdtd_bor module header)
 _COMPONENTS = (('er', 'E_r', 'V/m', 'cos'), ('ephi', 'E_phi', 'V/m', 'sin'), ('ez', 'E_z', 'V/m', 'cos'),
                ('hr', 'H_r', 'A/m', 'sin'), ('hphi', 'H_phi', 'A/m', 'cos'), ('hz', 'H_z', 'A/m', 'sin'))
