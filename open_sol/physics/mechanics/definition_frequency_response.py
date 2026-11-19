@@ -2,9 +2,8 @@
 5): the admittance feature, their validation rules and the host memory items; imported by definition.py."""
 from ...core.memory_estimate import FLOAT64_BYTES, INT32_BYTES, host_lu_bytes
 from ...model.definition_helpers import evaluates_to, is_axisymmetric, on_tetrahedra, on_triangles
-from ...model.schema import FeatureType, Issue, Param, feature_path
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, FeatureType, Issue, Param, feature_path
 from .bvd import FIT_KEYS
-from .definition_common import FREQUENCY_RESPONSE_STUDY_NAME as FREQUENCY_RESPONSE_STUDY
 from .definition_common import merged_materials, modal_study_issues
 from .frequency_response import ADMITTANCE_SERIES, AdmittanceMonitor, admittance_result, driven_electrode
 from .materials import LOSS_ARRAYS, SHEAR_COUPLING_ARRAYS, STIFFNESS_TENSOR_ARRAYS

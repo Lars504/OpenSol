@@ -7,7 +7,7 @@ components, K7). numpy at module level, scipy inside functions."""
 import numpy as np
 
 from ...core.backend import array_module, sparse_module, to_host
-from ...fem.dofs import lagrange_dofs
+from ...fem.dofs import bloch_prolongation, lagrange_dofs
 from ...fem.mesh import side_members
 from ...fem.elasticity import (AZIMUTHAL_COMPONENTS, COMPONENTS, assemble_azimuthal_geometric_stiffness,
                                assemble_azimuthal_mass, assemble_azimuthal_stiffness, assemble_elastic_mass,
@@ -368,7 +368,6 @@ class ElasticFEMSystem(DirectElasticSystem):
     def _periodic_prolongation(self):
         """Real host CSR P (c n_dofs, n_r) of a trivial-phase cell over the free dofs (kept until the next assembly)."""
         if self._periodic_p is None:
-            from .bloch3d import bloch_prolongation
             self._periodic_p = bloch_prolongation(*self.bloch.vector_masters(self.components), self.free)[1].tocsr()
         return self._periodic_p
 

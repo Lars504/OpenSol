@@ -21,7 +21,7 @@ from ...core.metric import ring_angle
 from ...core.monitors import FieldProbe
 from ...core.solver_base import PhysicsSolver
 from ...fem.assembly import assemble_load, nodal_average, pattern_sum
-from ...fem.dofs import lagrange_dofs
+from ...fem.dofs import bloch_prolongation, lagrange_dofs
 from ...fem.elasticity import (AXIS_TOLERANCE, CENTROID, COMPONENTS, StressField, TangentAssembler,
                                assemble_body_load, assemble_edge_traction, assemble_stress_load,
                                azimuthal_element_strains, element_strains, green_lagrange_strains,
@@ -38,7 +38,6 @@ from .generalized_plane_strain import (BENDING_TERMS, condition_matrix, conditio
 from .materials import (DENSITY_SCHEMA, EXPANSION_ARRAYS, LOSS_ARRAYS, MECHANICAL_SCHEMA, PRESTRESS_ARRAYS,
                         PRESTRESS_NAMES, SHEAR_PHOTOELASTIC_SCHEMA, STIFFNESS_ARRAYS, STIFFNESS_TENSOR_ARRAYS,
                         lame_coefficients)
-from .bloch3d import bloch_prolongation
 from .modal import ModalPencil, MultiShiftModes
 from .nonlinear_start import NonlinearStart, solve_from_start
 from .pml2d import DEFAULT_PML_REFLECTION, check_ring, elastic_pml_ring, ring_wave_speed
@@ -729,9 +728,9 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
     def error_indicator(self):
         """eta^2 per element (float64 (n_elements,)) of the last static solve for mesh refinement (S7.7, mesh plan
         A3): Kelly traction jumps h_E / c int_E |sigma_0 n - sigma_1 n - t|^2 ds (1/2 per side of an edge between solid
-        elements; free and traction edges of the solid one-sided, components held along the whole edge skipped), c =
-        (c11 + c22) / 2 of the element; 2 pi r weights axisymmetric; nominal tractions after a nonlinear solve.
-        ValueError without a static solve."""
+        elements; free, traction and periodic edges of the solid one-sided, components held along the whole edge
+        skipped), c = (c11 + c22) / 2 of the element; 2 pi r weights axisymmetric; nominal tractions after a
+        nonlinear solve. ValueError without a static solve."""
         system, mesh = self.system, self.domain.mesh
         if self._shows_mode or self._shows_harmonic or system.n_solves == 0:
             raise ValueError(f'{self._label()}: the error indicator needs a static solve (not a vibration mode or a '

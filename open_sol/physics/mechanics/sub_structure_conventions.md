@@ -1,7 +1,6 @@
 # open_sol/physics/mechanics — conventions & gotchas
 
-Sub file of the root `structure_conventions.md` (read that first). Solid mechanics (C3). Designs (repository root):
-`solid_mechanics_3d_plan.md`, `piezo_3d_plan.md`.
+Sub file of the root `structure_conventions.md` (read that first). Solid mechanics (C3).
 
 ## Layout (2D and 3D)
 - Tensor meshes: `solver_common.SolidMechanicsBase` (subclass contract in its docstring) under `solver.py` (2D) /
@@ -106,275 +105,69 @@ Sub file of the root `structure_conventions.md` (read that first). Solid mechani
   carries 3 dofs per node.
 
 ## Bloch cells, 2D (`bloch2d.py`, `definition_bloch2d.py`; settings periodic_x / _y, bloch_kx / _ky)
-- Same phase convention and reduction as the tetrahedra cells (`bloch3d`, section "Tetrahedron meshes"): the 2D
-  identification is a `bloch3d.BlochCell3D` with z never periodic (`vector_masters(c)` for every interleaved layout: 2
-  plane strain, 3 guided (u_x, u_y, w) and 3 piezo (u_x, u_y, phi), all sharing the node phase), prolongation
-  `bloch3d.bloch_prolongation(master, phase, free)`. Tensor: `tensor_bloch_cell` pairs the window corner nodes by index
-  (x_hi column -> x_lo, y_hi row -> y_lo, corners chained by `fem.dofs.bloch_master_map`; L = the window widths sum, so
-  graded cells need no matching), built once in prepare. Triangles: `system_fem.ElasticFEMSystem.periodic` makes every
-  assembly rebuild `bloch` on the SOLID map (`fem.dofs.bloch_masters`: a void-touching side raises when the solid does
-  not reach both sides alike; L = the node extent, a y_lo / y_hi PML ring strip keeps the x extent).
-- Rigid check: regions join through partner pairs (`bloch2d.joined_regions`); a wrapping region cannot rotate, keeps
-  nothing at a non-trivial phase and its unheld translations at phase 1 (counted with rigid_motions_allowed = target >
-  0, else refused); a region touching no partner keeps the ordinary rules. The tensor system gained `bloch` /
-  `rigid_motions_allowed` / `n_rigid_motions` for this only (still no free bodies otherwise); guided at k_z = 0 adds the
-  u_z translation (`_guided_bloch_rigid_motions`) instead of check_antiplane_supports.
-- Eigenfrequency study; a plain periodic cell (every bloch_k 0) on triangles also stationary / time_dependent:
-  `ElasticFEMSystem.solve` factors K_r = P^T K P of the real prolongation (`_periodic_p`, per assembly; the ordinary
-  support rules apply, `static_periodic_cell` turns the Bloch support rules off), reactions stay K u - f at held dofs.
-  Validation `bloch_issues_2d` refuses the rest (tensor statics: the PCG has no P; frequency_response: HarmonicSystem's
-  output rows assume no column map); stress_stiffening / geometric_nonlinearity, generalized plane strain and
-  axisymmetric are refused (no periodic prestate / superposition / axis rule). Supports
-  and electrodes on a periodic face are validation errors; a face of the other axis may reach the periodic corners
-  (consistent: a master is held with any dof it stands for). Floating electrodes touching a periodic side raise in
-  `_assemble_piezo` (their G tie would fight the phase); `PiezoSystem(require_ground=)` and `_piezo_issues` drop the
-  ground rule at a non-trivial phase.
-- Triangles + elastic PML on the other axis (a surface-wave cell): the damped pencil reduced by a complex P is neither
-  complex symmetric nor Hermitian, so `ModalPencil._pencil` asks a general ShiftPencil (symmetric = vouched) and
-  `eigs_shifted` honours the caller pencil's flag (LU). Tensor complex modes: `_show_complex_mode` (real parts, u_abs).
+- One machinery with the tetrahedra cells: a 2D cell is a `bloch3d.BlochCell3D` with z never periodic (convention and
+  rigid-motion rules: bloch2d / bloch3d headers). Every interleaved layout (plane strain 2, guided 3, piezo 3) takes
+  `vector_masters(components)` and P = `fem.dofs.bloch_prolongation`. Tensor cells are built once in prepare
+  (`tensor_bloch_cell`); triangles rebuild `bloch` on the solid map at every assembly (`ElasticFEMSystem.periodic`).
+- Which studies / settings run: periodic_x help text and `bloch_issues_2d`. Why the gaps stay: tensor statics (the PCG
+  has no P), frequency_response (HarmonicSystem's output rows assume no column map; the admittance of an infinite IDT
+  would need P through them), prestress / generalized plane strain / axisymmetric (no periodic prestate /
+  superposition / axis rule).
+- Triangles + an elastic PML on the other axis (surface-wave cell): a complex P reduction of the damped (complex
+  symmetric) pencil is neither complex symmetric nor Hermitian, so `ModalPencil._pencil` asks a general ShiftPencil and
+  `eigs_shifted` factors it by LU.
 - ARPACK can return only some copies of an exactly degenerate band (the Q1 square cell's 4-fold c_T 2 pi / a band at
-  Gamma came back 3-fold with n = 4; guided at k_z = 0 its 8-fold in-plane + antiplane band 4-fold even with n = 10):
-  cases ask a few more modes than they grade, or grade at a k off the symmetry point.
-- Self-tests `selftests_bloch2d.py` (also the template solid_bloch_band_diagram: definition.py imports it, so its
-  sibling selftests imports stay inside functions; listed in import_contracts TEMPLATE_SOURCES); example
-  examples/mechanics/rayleigh_wave_bloch_dispersion.json. Not built: periodic frequency responses (the harmonic
-  admittance of an infinite IDT would need a prolongation through HarmonicSystem's output rows), tensor periodic
-  statics, Bloch with piezoelectric on triangles (no 2D piezo there). The error_indicator treats periodic sides as free
-  edges (one-sided traction jumps).
+  Gamma came back 3-fold with n = 4; guided at k_z = 0 its 8-fold band 4-fold even with n = 10): cases ask a few more
+  modes than they grade, or grade at a k off the symmetry point.
 
 ## Eigenfrequency study, 3D tensor meshes (`ElasticSystem3D.lowest_modes`; tetrahedra: section "Tetrahedron meshes")
-- Decision: matrix-free shift-invert at sigma = 0 (no CSR in 3D; a 3D elastic SuperLU fills host memory at ~30-40^3
-  cells). K - sigma M is indefinite above omega_1^2, which CG cannot solve, so the tensor mesh finds the LOWEST n
-  modes only (target_frequency / search 'targets' / 'band' are validation errors,
-  `eigen_search_issues(tensor_mesh_3d=True)`). Interior targets would need MINRES / a direct factor; free-free a
-  negative shift + rigid filter.
-- `modal.solve_lowest_modes_matrix_free` -> `ArpackShiftInvertSolver.eigsh_inverse` (OPinv = one PCG solve, M = the
-  kernels3d mass product) on host vectors of the free dofs. Lanczos tolerance = max(node tolerance,
-  `LANCZOS_TOLERANCE_PER_CG` x CG tolerance): with 0 the inexact inner solves floor the Ritz residual and ARPACK
-  restarts forever (capped `MAX_LANCZOS_RESTARTS`). Validation errors on a single-precision 'linear' node here.
-- An eigen node of type block_eigen (opt-in, `eigen_role(block_eigen=True)`; tensor grids only, so tetrahedra misfit
-  it) takes `ElasticSystem3D._lowest_modes_block` -> `modal.solve_lowest_modes_block` (info 'method' 'block_eigen'):
-  full-dof rows masked by `free`, ONE launch for all rows of a brick product / mass product / block Jacobi
-  (`BrickKernels.product_rows` / `mass_product_rows` / `precondition_rows`: the kernels' `_rows` entries, one thread
-  per (row, node), the one-vector body shared as a __device__ function; numpy twin `kernels3d.rows_host` = the
-  one-vector twin per row); float32 rows on float32 copies (the mixed linear solver's `_single_operator` +
-  widths_single when kept, else made per solve); the 'multigrid' preconditioner reuses `self.multigrid` even after its
-  CG guard fell back (LOBPCG only needs it SPD), else builds a private BrickMultigrid on the float32 copies (block
-  Jacobi + warning when the build raises), and cycles the block through `multigrid3d.BlockCycle` (the V-cycle of every
-  row per launch of the mg3 `_rows` entries; own (rows, n) work rows per level = `block_cycle_bytes`, the hierarchy's
-  operators / tables / coarsest inverse shared; float64 rows cast in and out through its float32 rows; sized by the
-  first call's rows, regrown if more come). A change of a one-vector kernel body or of `BrickMultigrid._cycle` /
-  `_smooth` / transfers must keep the `_rows` entry and `BlockCycle` in step. Exactly n_resonances pairs are asked
-  (no EXTRA_EIGENVALUES: the guard vectors are the margin). No inner CG, rhs / CG unknown untouched. Still needs a
-  float64 'linear' solver (the system dtype). Estimators: `_block_eigen_values(context)` switches the 3D memory items
-  (block_eigen.block_bytes + copies + private hierarchy + block_cycle_bytes, transient 'eigen solve') and the time
-  recipe (block_eigen.time_estimate; setup_ops flags multigrid). LOBPCG cannot target interior modes either.
-  Self-tests: section "Self-tests" (solid_3d_eigenfrequency_block_eigen, _block_eigen_levels).
-- Inner solves count in `n_solves`: `reaction` raises after an eigen solve / shown mode until the next static
-  re-solve (`_shows_mode`), and `rhs` / the CG unknown are scratch (`_rhs_built` cleared).
-- Exact 3D roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give
+- LOWEST n modes only (`eigen_search_issues(tensor_mesh_3d=True)`): there is no CSR in 3D (a 3D elastic SuperLU fills
+  host memory at ~30-40^3 cells), and K - sigma M is indefinite above omega_1^2, which neither the inner CG of the
+  shift-invert Lanczos at sigma = 0 nor LOBPCG (block_eigen) handles. Interior targets would need MINRES / a direct
+  factor, free-free a negative shift + rigid filter.
+- block_eigen (opt-in, tensor grids only): `ElasticSystem3D._lowest_modes_block`. Each block callback is ONE launch
+  for all rows: the kernels' `_rows` entries share the one-vector __device__ body, while `multigrid3d.BlockCycle`
+  repeats `BrickMultigrid._cycle` / `_smooth` / transfers on rows (change them together). Estimators switch by
+  `definition3d._block_eigen_values(context)`.
+- Exact roller-box modes need pairwise coprime cell counts per axis (9 x 5 x 4: equal phases on two axes give
   degenerate pairs); odd N_x has no node at the mode-1 sine peak (expected shape divides by max_i sin(pi i / N_x)).
 
-## Optomechanical g0 (`optomechanics.py`, design: `optomechanics_plan.md`)
-- Host numpy only (no cupy import; em helpers inside functions). The optomechanics study solves the optics, then
-  `solve_eigenfrequencies`, then `OptomechanicalCoupling.evaluate(optical, solid)` per feature (solver's
-  `optomechanical_couplings`, filled by the apply); `modal_overlap_data()` hands widths / edges, solid cells, p11 / p12
-  / p44 and the host `modal_mass`.
-- Face rule: interior faces between two window cells, Q_d = mean of the face's two corner nodes, Delta eps = lo - hi;
-  `face_mean` / `face_jump` are the one face helper (optical_force too). em_modes faces: ghost-filled cell eps, |E_tan|^2
-  as neighbour Yee means, D_n = eps0 eps_face E_n, per-component bend factors (`ModePointMaterials` centre /
-  face_factor, z_centre / z_face_factor). The photoelastic overlap face-averages the cell Delta eps exactly as the
-  operator does, so it is the exact first-order perturbation of a TE slab.
-- em_fdfd_hz (`in_plane_hz_overlap`): face fields from `FDFDPhysics.face_fields()` (curl at the assembly omega,
-  rescaled by omega_t / omega_res; evaluate selects the coupling's resonance and re-selects the shown one); a missing lo
-  face of grid row 0 reads 0 (the operator's rule, not `lower_face_partner`'s duplicate). Denominator mu0 = 1 / (eps0
-  C0^2), never core MU0 (its 1e-10 mismatch shows in the exact cases).
-- om_integrand (`requires_study='optomechanics'`, parity even): stored by evaluate, shown for `selected_resonance` of
-  the first evaluated coupling. Kept out of `state_fields` (`state()` has no such array): a new study-only renderer
-  field must stay out too. Tensor meshes only: `SolidFEMRenderer` drops it from its `field_infos`, since default
-  snapshots store every listed field (`_stored_field_keys`) and a listed field the renderer cannot read fails the study.
-- Normalisation: |Q| = 1 at the reference node (peak or nearest reference_x / _y); g0 independent of it, g_om and m_eff
-  not. m_eff = length x 2^(EM mirror faces) x Q^T M Q: EM mirror faces need solid rollers (validation warning); the
-  em_modes mirror_factor cancels in the in-plane ratio. brillouin_gain (last column): em_modes with
-  mechanical_quality_factor only (else NaN).
-- Backward scattering (scattering 'backward', em_modes only): guided modes at k_z = 2 Re beta (evaluate refuses
-  another k_z); `cross_section_overlap(backward=True)`: Stokes = (E_x, E_y, -E_z), so every |E_z|^2 term flips sign;
-  strain of (u_x, u_y, -i w) with d/dz = +i k_z (`guided_axial_strains`). The sign of the shear terms rests on the
-  optomechanics.py header derivation: om_crystal_photoelastic_contraction pins the assembly, not the convention. g_om
-  / g0 / dn_eff_dx hold Re kappa; |Q| and m_eff include w.
-- Strain only on solid cells (c11 > 0): a void cladding with p != 0 adds nothing. Moving boundaries on the periodic
-  seam are not summed.
-- photoelastic_p44 (2D solid_mechanics only, `SHEAR_PHOTOELASTIC_SCHEMA`; elastic_waves / solid_mechanics_3d lack
-  it): default NaN, resolved per cell to (p11 - p12) / 2 by `shear_photoelastic_coefficient` — never compute with the
-  raw array elsewhere. Delta eps_xy at cell centres (ez: no term). Optical operators hold diagonal eps, so this is a
-  continuum form without a discrete reference: exactness cases pass p44 = 0.
-- Crystal photoelasticity: every cell via `inverse_permittivity_changes` + `permittivity_changes`; cells of a material
-  with a crystal entry with photoelastic data take its rotated p (`definition_optomechanics.crystal_photoelastic_tensor`;
-  None when the material sets any photoelastic_* itself: user values win). The apply stores (host full-grid mask, p)
-  in `crystal_regions` from ctx.material_regions, so before release_caches. Every overlap callback takes (xx, yy, zz,
-  xy, xz, yz). Guided (backward) modes refuse crystal c_ij.
-- Subpixel smoothing: the overlap keeps the staircase (face jumps / photoelastic eps unsmoothed; ez subtracts the
-  'cells' deltas, `_unsmoothed_cell_eps`), D_n / fields / energy from the smoothed solve: not the exact first-order
-  change of the smoothed operator (validation info).
-- Validation infos (`_material_issues`, CPU on the material preview): zero p, crystal data on void, no permittivity
-  jump at a solid cell, in-plane plane-stress / neither length rules.
-- Self-tests `selftests_optomechanics.py`, `selftests_optomechanics_crystal.py`, `selftests_brillouin.py` (registration
-  and templates in `definition_optomechanics`). Gotcha: a sin(pi j / N) roller mode is even about the centre, its S_yy
-  odd: zero overlap with TE0 (om_forward_brillouin_gain uses sin(2 pi j / N)).
+## Optomechanical g0 (`optomechanics.py`, `optomechanics_fem.py`)
+- Conventions, face rule, overlaps (ez / hz / cross-section / backward / crystal), normalisation, m_eff, Brillouin gain
+  and the subpixel staircase: the two module headers; the solid hands its data only through `modal_overlap_data()`.
+- om_integrand (`requires_study='optomechanics'`) is not in `state_fields` (`state()` has no such array): a new
+  study-only renderer field must stay out too. Tensor meshes only: `SolidFEMRenderer` drops it from its `field_infos`,
+  since default snapshots store every listed field (`_stored_field_keys`) and a listed field the renderer cannot read
+  fails the study.
+- Case gotcha: a sin(pi j / N) roller mode is even about the centre, its S_yy odd: zero overlap with TE0
+  (om_forward_brillouin_gain uses sin(2 pi j / N)).
 
-## FEM / axisymmetric overlaps (`optomechanics_fem.py`, plans O1 / O2)
-- Host numpy; every integral carries 2 pi r. Moving boundary: n out of side 0, Delta = side 0 - side 1, isotropic eps
-  at interfaces (eps_phiphi); photoelastic isotropic p only (a crystal tensor is not phi-invariant). 3D solids:
-  phi-average on `ring_points` (n_phi > highest order + 1). Pass `geometry_order = layout.nedelec.geometry_order` to
-  `interface_sides` so sample points match the field map.
-- `evaluate` routes em_fdfd_bor optics or modal_overlap_data `kind` != 'tensor' to `axisymmetric_coupling_table`.
-  `bor_optical_samples` needs the FEMBORPhysics `assembly` (a tensor-mesh BOR raises); interfaces touching PEC / the
-  PML ring dropped. Solids kind 'triangles' (axisymmetric) or 'tetrahedra', sampled by point location in their own
-  mesh. q_n from side 0 if solid, else side 1, else 0 (never the zero-padded field of a void element). m >= 1: x
-  `ring_factor(m)`, photoelastic 0. m_eff = Q^T M Q [kg] (no length / mirror factors), no om_integrand. Params
-  `prescribed_normal_displacement`, `axis_x` / `axis_y` (drawing y = 3D z).
-- A 3D solid with em_fdfd_bor optics is wired at runtime / validation only: em_fdfd_bor is 2D, so no model holds both
-  yet.
-- Self-tests: om_fem_* (CPU), `selftests_optomechanics_bor.py` (heavy, cpu backend).
-
-## Squeeze film (`squeeze_film.py` = the tet runtime, plan S6w; the film itself is `fem/squeeze_film.py`)
-- Physics-neutral film in fem/squeeze_film.py, shared with membrane; this module keeps `film_faces`,
-  `sealed_rim_axes`, `SqueezeFilmDamping`. Gas Params = `model.definition_helpers.SQUEEZE_FILM_GAS_PARAMS` (shared
-  objects).
-- Feature squeeze_film_damping (definition3d, tetrahedra; eigenfrequency / optomechanics only, warning elsewhere: not
-  coupled into frequency_response): films evaluated in `solve_eigenfrequencies` after the pencil solve (`_modal_pencil`
-  finish, on the merged list after a search); footprint from `_solid` of the last assembly, rebuilt when it changes;
-  m_eff = Re(psi^H M psi) of the 1 m peak shape. resonance_table appends `GAS_TABLE_COLUMNS` (totals over films).
-  Refused: Bloch cells, PML faces, closed incompressible film. definition3d imports squeeze_film (and fem.surface_mesh)
-  at module level for its choice constants.
+## Squeeze film (`squeeze_film.py` = the tet runtime; the film itself is `fem/squeeze_film.py`, fem sub file)
+- Films are evaluated in the `_modal_pencil` finish (on the merged list after a search), so every modal path of the
+  tetrahedra keeps that finish; they are not coupled into frequency_response (validation warning).
 
 ## SolidMechanics3DPhysics / ElasticSystem3D (solid_mechanics_3d)
-- Isotropic 3D law sigma = lambda tr(eps) I + 2 mu eps - beta dT; forces, tractions and reactions in N.
-- Bricks = window cells, nodes C-order, dof = 3 node + component, node = (i ny_nodes + j) nz_nodes + k; widths as 1D
-  device arrays (graded axes need no kernel change); 3 x nodes < 2^31 (int32 indexing, prepare raises).
-- No CSR: matrix-free product of `kernels3d.BrickKernels` (lazy float / double RawKernels incl. fused load / outputs:
-  no float64 window temporaries). The PCGSolver is factorized once in `prepare` with masked product + block
-  preconditioner callbacks (they read the latest assembly). `reaction` uses the CG unknown `_solution` as scratch and
-  keeps K u there while (n_solves, assemblies) are unchanged (every PCG solve, Lanczos inner ones too, bumps
-  n_solves); anything else that writes `_solution` or `unknown` between solves must reset `_reaction_key`.
-- GPU product and mass kernels work in the per-axis sum / difference (Walsh) basis of each element's corner values
-  (kernels3d preamble: the 1D integrals are orthogonal there, ~240 flops per (node, element) visit against ~520 for the
-  pairwise blocks; one deterministic gather launch, no extra memory). `brick_block` stays for the diagonal blocks.
-  Every CG step runs as `kernels3d.FusedBrickIteration` (pcg fused_iteration: elastic_update_precondition +
-  elastic_direction_product, grid-stride with block partial sums that the next launch sums itself) and the gpu check
-  blocks as CUDA graphs (pcg capture_blocks): `assemble` calls `release_block_graphs()` after replacing lame_lambda / mu
-  / the float32 copies; anything else that replaces an array the fused operator reads must do the same.
-- pcg preconditioner 'multigrid' (opt-in, speed plan A2; design `.temp_scratchpad/solidmech3d_multigrid_design.md`):
-  `multigrid3d.BrickMultigrid` is the precondition callback (no fused iteration then; the check blocks of 2 are still
-  captured, so a V-cycle must stay sync- and allocation-free: everything it touches is allocated in its __init__ in
-  `prepare`, and `build` after each assembly, before `release_block_graphs`). Levels: `level_element_shapes` (shared
-  with the estimators), elastic_product / diagonal_blocks / reduce_invert_blocks on a BrickKernels per coarse level;
-  the cycle is float32 at every precision: level 0 is the float32 operator copy (`_single_operator`, also built for a
-  double node with multigrid; a double CG casts the residual in and `_cycle_out` back; float64 cycles were 19x slower
-  on a GPU with slow float64). Coarse
-  levels are rediscretised, not Galerkin (volume-mean Lame values, injected holds; lost holds become pseudo-inverse
-  null space), except the coarsest dense operator: P^T A P of the level above, probed by the same 27 colours (nested
-  Q1 basis: 27-node stencil); rediscretised it over-stiffened a thin plate in void (solid_3d_multigrid_void fell back).
-  Coarse free dofs: only SUPPORT holds are injected (`build(held=)`, the system's `held`, never `~free`); a void pin is
-  not a hold: a coarse dof is free when a free fine dof lies in its interpolation stencil (`_reached_dofs`: P^T of the
-  free mask > 0), so void coarse nodes beside a solid carry its surface values. Injecting `~free` kept only the
-  mid-plane layer of a plate whose faces sit on odd nodes (surface values prolonged to half: no rigid modes, the coarse
-  correction could not bend; the cycle ran as its smoother alone and tripped the guard). The probes run in the cycle
-  dtype (float32): counters `multigrid_coarsest_kept` / `multigrid_coarsest_condition` show what they had to resolve
-  (trouble expected towards 1e7: soft eigenvalues lost in the probe rounding; then probe in float64). Intermediate
-  rediscretised levels still over-stiffen a thin plate that half-fills its coarse cells (bending ~4x; no self-test
-  with >= 3 levels in void yet). Transfers are separable 1D gathers in the node coordinates (graded widths: weights != 1/2); restriction
-  = the exact transpose (gather form), so pre / post Chebyshev + R = P^T keep the cycle symmetric for plain PCG.
-  `_guarded_solve` (static and every Lanczos inner solve) caps max_iterations at `multigrid_budget()` (the block-Jacobi
-  estimate CG_ITERATIONS_PER_AXIS_CELL x longest axis over CYCLE_COST_IN_JACOBI_ITERATIONS, within
-  [FALLBACK_MIN_ITERATIONS, FALLBACK_ITERATIONS]): a solve unconverged within it switches the system to block Jacobi
-  for good (warning, `multigrid_fallbacks`) and re-solves from there (its failed attempt is taken out of
-  n_unconverged). A mixed solve that stalled (`PCGSolver.last_stalled`: round-off floor of the system, below the
-  budget) is no fallback: block Jacobi stops at the same residual after its full iteration count (void plate: 3e-11 on
-  both, tolerance 1e-12); it stays reported unconverged. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` (thin plate in void) fail on a
-  fallback, so the guard cannot hide a weak cycle. Counters via `PCGSolver.preconditioner_counters`; estimator items 'multigrid levels' / build
-  transient / coarsest host build, time recipe `_multigrid_ops` (cycle as preconditioner_ops, build as setup_ops).
-- pcg 'mixed' (`CG_ELASTIC_3D_LINEAR_ROLE`; 2D: section "SolidMechanicsPhysics / ElasticSystem"): float64 system + `_single_operator`
-  float32 copy per assemble (blocks inverted in float64, then cast). Automatic on the gpu backend (speed plan A1: the
-  float64 product runs at the FP64 rate of consumer cards; 25 s -> 1.5 s at 2e5 nodes); cpu Automatic stays double;
-  solver_defaults.precision replaces it. Kernels pick their real type from args[0]: every array argument of one call
-  must share the dtype. Eigenfrequency accepts mixed. Estimator: mixed workspace (+ the fused second direction) +
-  float32 copy item; time recipe `iteration_ops` = the fused pair.
-- Node blocks are not diagonal: reduce them (fixed rows / columns zeroed, 1 on the diagonal) BEFORE inversion;
-  inverting the full block puts free residual into held components at a roller node (silently wrong solve).
-- Rigid-mode check = rank of the 6 x 6 Gram matrix of rigid-mode rows at each region's held dofs (26-connected;
-  RIGID_RANK_TOLERANCE); `rigid_motion_text` names the slide / axis (shared with tetrahedra). Same hinge gap as 2D.
-- 2D rules that do not apply: face filters use FACES_3D; body_force / temperature_change values with z are
-  `BoxValues` added on the selection box only (`add_masked_to`: never a window / full-grid float temporary); no
-  strain-optic / optical-force coupling (em_fdtd_3d's uint16 material index cannot hold three continuous permittivity
-  components; plan section 7). CG iterations scale with the longest edge: keep 3D self-test strips short.
-- Memory estimate: nodal vectors + PCGSolver `workspace_bytes` + masks, inverse blocks, element arrays; supports book
-  their held dof mask as a feature item.
+- Matrix-free (no CSR): `kernels3d.BrickKernels` products, every CG step a `FusedBrickIteration` and the gpu check
+  blocks CUDA graphs; captured arrays and the reaction scratch: `ElasticSystem3D` comments (`_fused_operator`,
+  `_reaction_key`). CG iterations scale with the longest edge: keep 3D self-test strips short.
+- pcg preconditioner 'multigrid' (opt-in): design and known weakness in the `multigrid3d.py` header, the fallback guard
+  in `_guarded_solve`. Self-tests `solid_3d_multigrid` and `solid_3d_multigrid_void` fail on a fallback, so the guard
+  cannot hide a weak cycle.
+- No strain-optic / optical-force coupling in 3D: em_fdtd_3d's uint16 material index cannot hold three continuous
+  permittivity components.
 
-## Triangle meshes (`solver_fem.py`, `system_fem.py`, fem/elasticity.py; mesh plan stage T5)
-- Shared with tetrahedra: `solver_common.FEMSolidCommon` (records / Newton reporting, element masks and values, dT and
-  rho reads, `_loads_dirty`, `_ensure_outputs` over the class's `_output_groups`) on `HostInputCache` (alpha, dT,
-  sigma0, beta, rho host copies kept read-only until materials_changed / inject_source / an assembly / a temperature
-  feature: a new mutation of those inputs calls `_drop_host_inputs`). Tetrahedra also keep the sigma0 force
-  -int B^T sigma0 dV there (`_initial_stress_force`: the finalize imbalance check and the static load share it).
-- Outputs are lazy as on tetrahedra (`_OUTPUT_GROUPS` primary: u, u_abs, Im u; derived: strain, stress, energies);
-  materials_changed and inject_source compute pending groups first.
-- solid_mechanics dispatches on the mesh kind: `_create_solid` builds SolidMechanicsFEMPhysics on a TriangleDomain.
-  `discretization` quadratic (P2, default) / linear, isoparametric on curved edges. Runs stationary, time_dependent,
-  eigenfrequency, frequency_response, optomechanics (axisymmetric with em_fdfd_bor only; `set_axial_wavenumber`
-  raises), all out-of-plane conditions and axisymmetric, c_ij via ElementStiffness (ring elements void unless an
-  elastic PML), Bloch cells (section "Bloch cells, 2D"). Refused (`_triangle_issues`): piezoelectric (so no electrode /
-  admittance), guided modes, the planar
-  optomechanics study, solid_em_strain_optic from it, a 'linear' node other than sparse_direct (back_end choices
-  DIFFUSION_DIRECT_BACK_ENDS keep cusolver_qr out; cg_solver_issues is tensor only: it reads nx).
+## Triangle meshes (`solver_fem.py`, `system_fem.py`, fem/elasticity.py)
+- solid_mechanics dispatches on the mesh kind (`_create_solid` -> SolidMechanicsFEMPhysics); shared with tetrahedra:
+  `solver_common.FEMSolidCommon` / `HostInputCache` (a new mutation of alpha / dT / sigma0 / beta / rho calls
+  `_drop_host_inputs`). What runs and what is refused: the type help and `_triangle_issues`.
 - Why the gaps stay open: piezo needs phi on every window element + G on a DofMap (~a piezo_fem.py, would unlock
   admittance); guided modes need a 3-component guided stiffness; the planar optomechanics overlap is written on Yee
-  faces (needs em_modes on triangles); solid_em_strain_optic has no mesh_transfer. Optical force into a triangle solid
-  works through em_solid_optical_force's mesh_transfer.
-- Elastic PML ring (`pml2d.py`, pml_<face> / pml_cells / pml_reflection; ring from `pml3d.PMLPadding`, outer side
-  clamped): eigenfrequency only; static / prestress solves see the ring unstretched and clamped; pencil from
-  `system.stiffness(stretched=True)` in a damped ModalPencil with the ring filter. No PML on the axis. Ring strains /
-  energies are not physical.
-- Azimuthal order m >= 1 (triangles, eigenfrequency, isotropic only): `components` = 3 (U_phi shown in u_z, rings
-  weighted pi); the m = 1 axis tie u_phi = -u_r is `system.prolongation` (pass it to the
-  ModalPencil); rigid motions 2 at m = 1, none at m >= 2; static, frequency response, c_ij refused;
-  stress_stiffening at m >= 1 takes the initial stress only.
-- Energy fields (`fields.ENERGY_DENSITY_FIELDS`) are display / probe fields, not in `state()`; tensor meshes render
-  0 (energy probes there: validation error).
-- Dofs: vector Lagrange 2 d + component on solid window elements (void-only nodes have none). Holds live on the
-  full-mesh dof ids, so they survive a changed solid set; `face_edges` takes the window edge geometrically (also with
-  a PML ring). Segment loads act on mesh edges (`ctx.boundary_edges`, any direction); probes on `ctx.point_node`.
-- Solve: K_ff factorised lazily by the first static solve after an assembly (eigen / frequency response never
-  factorise K alone) through `sparse_direct.DiffusionDirectSolver` over the 'linear' SparseDirectSolver runtime (the one
-  place a cuDSS back end plugs in for static K; scripts get a private runtime, fem_* counters). Rigid check = rank of
-  (1, 0), (0, 1), (-y, x) at held dofs per region (axisymmetric: a held u_z). Reactions = K u - f at held dofs.
-  Eigen: consistent mass on the 'eigen' runtime (superlu / cudss / cudss_mixed; the SuperLU size rule is skipped for
-  cuDSS); select_resonance makes reactions raise.
-- Generalized plane strain: the tensor superposition on the K factor (`_solve_generalized`, `_unit_axial` kept until
-  the next assembly); `_term_integral` uses the same quadrature as the loads so the conditions hold to round-off;
-  reference = mesh window centre, moments about the drawing origin (generalized_plane_strain helpers reused via a
-  SimpleNamespace with `reference`). Modal / harmonic outputs use eps_zz = 0.
-- Run-time recipe `definition._fem_time_estimate`: constants uncalibrated, calibrate from the solid_fem_* time split.
-  Session field sampling is no physics work (lands in the study rest).
-- Frequency response (elastic only): the kept `_harmonic_system()` (K (+ K_sigma), eta K, consistent mass on the
-  'linear' runtime: host SuperLU or cuDSS DevicePencil, one plan per sweep), keyed by the identity of
-  (system.operator, `_harmonic_operators`, `_prestress`): any replaced = rebuilt, old factor handed on as previous.
-  Reactions and the error indicator raise while it is shown (`_shows_harmonic`).
-- Axisymmetric: stiffness / stress loads on the degree-6 rule (N_a N_b / r is rational); on the axis hoop strain =
-  d u_r / d r. fem.assembly.assemble_load's default degree is 2 order + 3 with r (7 for P2: above the largest rule),
-  so assemble_body_load passes its own degree.
-- Fields: state() and slots one float32 per element (centroid, 0 off the solid and in the ring; P0). `fem_field`
-  display: u exact nodal, strain / stress averaged at each dof over the solid elements around it (smeared across a
-  material interface: read interface stresses from one side).
-- `error_indicator()`: Kelly traction jumps, free / traction edges one-sided, fully held components skipped, no
-  element residual; ValueError while a mode is shown.
-- Self-tests `selftests_fem.py` (tolerances first estimates). solid_fem_kirsch sets h_min: the default dx / 100 floored
-  the hole sizes (1 % low stresses).
-- cuDSS verdict per solve: static K gains little (2D SuperLU fast to ~1e6 dofs; Cholesky through the
-  DiffusionDirectSolver back end when it exists). Eigen (indefinite above omega_1: LDL^T) runs on cuDSS double / mixed;
-  eigsh_shifted equilibrates by (|diag K| + |sigma| |diag M|)^-1/2, never |diag(K - sigma M)| (can cancel at sigma >
-  0). Frequency response is the best candidate (complex symmetric, one pattern, 100-600 frequencies: plan reuse),
-  double (near a resonance a float32 factor needs many refinement steps).
+  faces (needs em_modes on triangles); solid_em_strain_optic has no mesh_transfer (the optical force reaches a
+  triangle solid through em_solid_optical_force's mesh_transfer).
+- cuDSS verdict: static K gains little (2D SuperLU is fast to ~1e6 dofs); eigen (indefinite above omega_1: LDL^T) runs
+  on cuDSS double / mixed; frequency response is the best candidate (complex symmetric, one pattern, 100-600
+  frequencies: plan reuse), double (near a resonance a float32 factor needs many refinement steps).
+- solid_fem_kirsch sets h_min: the default dx / 100 floored the hole sizes (1 % low stresses).
 
 ## Tetrahedron meshes (solid_mechanics_3d; `solver_fem3d.py`, `system_fem3d.py`, fem/elasticity3d.py)
 - Dispatches on the mesh kind (every feature declares ('tensor', 'tetrahedra')): `_create_solid_3d` builds

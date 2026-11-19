@@ -27,6 +27,7 @@ from ...core.harmonic_probe import HarmonicProbeRecord
 from ...core.monitors import FieldProbe
 from ...core.solver_base import PhysicsSolver
 from ...fem.assembly import pattern_sum
+from ...fem.dofs import bloch_prolongation
 from ...fem.dofs3d import lagrange_dofs_3d
 from ...fem.elasticity import StressField
 from ...fem.elasticity3d import (CENTROID_3D, COMPONENTS, TangentAssembler3D, assemble_body_load_3d,
@@ -40,7 +41,7 @@ from ...fem.reduced_outputs import field_policy, wants_fields
 from ...fem.renderer3d import LagrangeSampleRenderer
 from ...fem.sampling3d import centroid_values_3d, evaluate_lagrange_3d
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
-from .bloch3d import bloch_cell_3d, bloch_prolongation
+from .bloch3d import bloch_cell_3d
 from .fields3d import (ELECTRIC_OUTPUT_ARRAYS_3D, ENERGY_OUTPUT_ARRAYS_3D, HARMONIC_IMAG_FIELDS_3D, INPUT_ARRAYS_3D,
                        OUTPUT_ARRAYS_3D, SOURCE_SLOTS_3D)
 from .frequency_response import FrequencyPoint, HarmonicSystem

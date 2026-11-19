@@ -1214,7 +1214,8 @@ class BrickKernels:
                      (blocks, lame_lambda, mu, *widths, *self._element_args))
 
     def reduce_invert_blocks(self, blocks, free_dofs):
-        """In place: reduce each block to the free dofs (1 on fixed diagonals) and invert it."""
+        """In place: reduce each block to the free dofs (1 on fixed diagonals) and invert it. The node blocks are not
+        diagonal: inverting before the reduction would put free residual into the held components of a roller node."""
         self._launch('reduce_invert_blocks', self._node_blocks, (blocks, free_dofs, self._n_nodes_i32))
 
     def precondition(self, inverse_blocks, residual, out):

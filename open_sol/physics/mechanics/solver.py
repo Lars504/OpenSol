@@ -12,6 +12,7 @@ from ...core.backend import to_host
 from ...core.constants import DTYPE, FACES
 from ...core.fv_diffusion import edge_extension_views
 from ...core.monitors import FieldProbe
+from ...fem.dofs import bloch_prolongation
 from ...fem.reduced_outputs import field_policy, wants_fields
 from ...solvers.arpack_shift_invert import ArpackShiftInvertSolver
 from .fields import ELECTRIC_OUTPUT_ARRAYS, INPUT_ARRAYS, OUTPUT_ARRAYS, SOURCE_SLOTS, MechanicsFields2D
@@ -21,7 +22,6 @@ from .materials import (DENSITY_SCHEMA, ELECTROMECHANICAL_ARRAYS, LOSS_ARRAYS, M
                         PIEZO_ARRAYS, PIEZO_DEFAULTS, PIEZO_OUT_OF_PLANE_ARRAYS, SHEAR_PHOTOELASTIC_SCHEMA,
                         STIFFNESS_TENSOR_ARRAYS)
 from .bloch2d import tensor_bloch_cell
-from .bloch3d import bloch_prolongation
 from .modal import ModalPencil, MultiShiftModes
 from .piezo import (DISPLACEMENT_COMPONENTS, ELECTRODE_CONNECTIONS, PIEZO_COMPONENTS, Electrode, PiezoSystem,
                     coupled_mass, coupled_operator, interleaved_layout, node_potential_dofs)

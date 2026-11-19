@@ -1,18 +1,19 @@
 """Geometric multigrid V-cycle preconditioner of the matrix-free 3D brick elasticity (ElasticSystem3D, speed plan A2):
 2:1 coarsened tensor levels on kernels3d.BrickKernels, separable trilinear transfers, Chebyshev block-Jacobi smoothing
 and a dense coarsest pseudo-inverse; every launch a core.kernels twin, no host sync and no allocation inside a cycle."""
-# Design: .temp_scratchpad/solidmech3d_multigrid_design.md. Coarse levels are rediscretised (not Galerkin): pair sums of
-# the widths per axis (an odd count keeps its last cell single), volume-mean Lame values (void children count 0, so a
-# half-void coarse cell is half as stiff; void only when every child is), support holds by injection at coincident
-# nodes (holds at other fine nodes are lost there; the prolonged correction is masked by the fine free dofs, and a
-# coarse rigid motion that results falls into the pseudo-inverse's dropped null space). Void pins are NOT injected: a
-# coarse dof is free when any free fine dof lies in its interpolation stencil, so coarse nodes in the void beside a
-# solid carry its surface values (injecting them left a plate 2 cells thick with its mid-plane layer only: the surface
-# nodes prolonged to half the mid-plane value, no rigid translation or rotation, and solid_3d_multigrid_void fell
-# back on a coarse correction that could not bend). The coarsest dense operator alone is
-# Galerkin (P^T A P of the level above, probed): a rediscretised one over-stiffened thin plates in void (bending ~ t^3
-# of the averaged thickness) and multigrid fell back on solid_3d_multigrid_void. Pre- and post-smoothing are the same
-# Chebyshev polynomial in B^-1 A and R = P^T, so the cycle is symmetric (plain PCG).
+# Coarse levels are rediscretised (not Galerkin): pair sums of the widths per axis (an odd count keeps its last cell
+# single), volume-mean Lame values (void children count 0, so a half-void coarse cell is half as stiff; void only when
+# every child is), support holds by injection at coincident nodes (holds at other fine nodes are lost there; the
+# prolonged correction is masked by the fine free dofs, and a coarse rigid motion that results falls into the
+# pseudo-inverse's dropped null space). Void pins are NOT injected: a coarse dof is free when any free fine dof lies in
+# its interpolation stencil, so coarse nodes in the void beside a solid carry its surface values (injecting them left a
+# plate 2 cells thick with its mid-plane layer only: the surface nodes prolonged to half the mid-plane value, no rigid
+# translation or rotation, and solid_3d_multigrid_void fell back on a coarse correction that could not bend). The
+# coarsest dense operator alone is Galerkin (P^T A P of the level above, probed): a rediscretised one over-stiffened
+# thin plates in void (bending ~ t^3 of the averaged thickness) and multigrid fell back on solid_3d_multigrid_void. Pre-
+# and post-smoothing are the same Chebyshev polynomial in B^-1 A and R = P^T, so the cycle is symmetric (plain PCG).
+# Known weakness: intermediate rediscretised levels still over-stiffen a thin plate that half-fills its coarse cells
+# (bending ~4x; no self-test with >= 3 levels in void yet).
 import itertools
 import time
 
@@ -447,7 +448,8 @@ class _Transfer:
 
 class BrickMultigrid:
     """precondition(residual, out) = one V(CHEBYSHEV_DEGREE, CHEBYSHEV_DEGREE)-cycle on the level hierarchy of an
-    ElasticSystem3D window (level arrays allocated here once; build() after every assembly)."""
+    ElasticSystem3D window (level arrays allocated here once; build() after every assembly, before the system's
+    release_block_graphs). The pcg check blocks replay the cycle as CUDA graphs: it stays sync- and allocation-free."""
 
     def __init__(self, element_shape, dtype, xp):
         self.dtype = np.dtype(dtype)
@@ -640,6 +642,7 @@ class BrickMultigrid:
         self._cycle(0, out)
 
     def _cycle(self, index, solution):
+        # BlockCycle._cycle / _smooth / _restrict / _prolong repeat this cycle on rows: change them together
         level = self.levels[index]
         if index == len(self.levels) - 1:
             _TWINS['mg3_dense_product'](self._dense_grid, (_BLOCK,),

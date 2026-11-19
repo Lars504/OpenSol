@@ -70,7 +70,7 @@ def _cell_system(periods, shift_cubes, holds, wavenumber, rigid_allowed=False):
 
 
 def _cell_prolongation(system):
-    from .bloch3d import bloch_prolongation
+    from ...fem.dofs import bloch_prolongation
     return bloch_prolongation(*system.bloch.vector_masters(), system.free)[1]
 
 
