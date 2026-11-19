@@ -457,9 +457,22 @@ const CAN_MIRROR = MIRROR_IMAGES.length > 1;
 const hmin = [Infinity, Infinity, Infinity], hmax = [-Infinity, -Infinity, -Infinity];
 for (const L of LAYERS) for (let k = 0; k < L.n; k++) for (let c = 0; c < 3; c++) {
   const v = L.pos[3 * k + c]; if (v < hmin[c]) hmin[c] = v; if (v > hmax[c]) hmax[c] = v; }
-if (DATA.volume) for (const c of [0, 1, 2]) {   // fields3d: the volume's box (texel edges) is shown too
-  const V = DATA.volume, half = 0.5 * (V.hi[c] - V.lo[c]) / Math.max(V.n[c] - 1, 1);
-  hmin[c] = Math.min(hmin[c], V.lo[c] - half); hmax[c] = Math.max(hmax[c], V.hi[c] + half); }
+function volumeBoxOf(V) {
+  // fields3d: [lo, hi] texel edges of a volume (length units): half a step beyond the end centres (graded axes:
+  // their end steps)
+  const lo = [], hi = [];
+  for (const c of [0, 1, 2]) {
+    const C = V.axes && V.axes[c] ? f32(V.axes[c]) : null, n = V.n[c];
+    const first = C ? C[1] - C[0] : (V.hi[c] - V.lo[c]) / Math.max(n - 1, 1);
+    const last = C ? C[n - 1] - C[n - 2] : first;
+    lo.push(V.lo[c] - 0.5 * first); hi.push(V.hi[c] + 0.5 * last);
+  }
+  return [lo, hi];
+}
+if (DATA.volume) {   // fields3d: the volume's box is shown too
+  const [lo, hi] = volumeBoxOf(DATA.volume);
+  for (const c of [0, 1, 2]) { hmin[c] = Math.min(hmin[c], lo[c]); hmax[c] = Math.max(hmax[c], hi[c]); }
+}
 
 // thin geometries: the GUI canvas gives them unequal scales (and its side views a Stretch z); here an axis whose span is
 // below 1 / MAX_ASPECT of the largest is stretched by a 1-2-5 factor, named on its axis title and in the readout
@@ -1434,11 +1447,22 @@ uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
 uniform int uMode; uniform float uLevel; uniform vec3 uStops[9];
 uniform vec4 uPlanes[3];   // opaque cut planes: (axis, placed position, on, -)
 uniform vec4 uSlices[3];   // slices: (axis, placed position, on, -)
-uniform vec3 uInnerLo; uniform vec3 uInnerHi;   // box faces shared with another shown mirror image (1): no cap there
 uniform float uDensity;    // samples per lattice step along the ray (volumeDensity: lower while frames are slow)
+uniform int uGraded; uniform highp sampler2D uAxisMap;   // graded lattice: texture coordinate per box position (R32F)
+uniform vec3 uFinest;      // smallest lattice step per axis (length units): the ray's sample spacing
 out vec4 outColor;
+const int MAPN = 2048;     // VOL_MAP_ENTRIES
+float mapAxis(float u, int row) {   // u in [0, 1] across the box -> texture coordinate along that axis
+  float x = clamp(u, 0.0, 1.0) * float(MAPN - 1);
+  int i = int(min(floor(x), float(MAPN - 2)));
+  return mix(texelFetch(uAxisMap, ivec2(i, row), 0).r, texelFetch(uAxisMap, ivec2(i + 1, row), 0).r, x - float(i));
+}
 vec3 cmap(float t) { t = clamp(t, 0.0, 1.0) * 8.0; int i = int(min(floor(t), 7.0)); return mix(uStops[i], uStops[i + 1], t - float(i)); }
-vec3 toTex(vec3 placed) { return ((placed - uMirB) * uMirA - uBoxLo) / (uBoxHi - uBoxLo); }
+vec3 boxPart(vec3 placed) { return ((placed - uMirB) * uMirA - uBoxLo) / (uBoxHi - uBoxLo); }
+vec3 toTex(vec3 placed) {
+  vec3 u = boxPart(placed);
+  return uGraded == 0 ? u : vec3(mapAxis(u.x, 0), mapAxis(u.y, 1), mapAxis(u.z, 2));
+}
 float colourOf(float v) {   // unclamped fraction of the colour scale
   if (uLog == 1) return (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
   return (v - uLo) / (uHi - uLo);
@@ -1448,11 +1472,16 @@ vec2 sampleAt(vec3 tex) {   // (colour fraction, inside the field 0 / 1)
   return vec2(colourOf((uOffset + uScale * s.r) * uValSign), uMasked == 1 ? step(0.5, s.g) : 1.0);
 }
 float axisOf(vec3 v, int i) { return i == 0 ? v.x : (i == 1 ? v.y : v.z); }
-vec3 gradientAt(vec3 tex) {  // d(colour fraction) / d(shown coordinates)
-  vec3 h = 0.75 / uN;
+vec3 gradientAt(vec3 placed) {  // d(colour fraction) / d(shown coordinates)
+  vec3 tex = toTex(placed), h = 0.75 / uN;
   vec3 g = vec3(sampleAt(tex + vec3(h.x, 0, 0)).x - sampleAt(tex - vec3(h.x, 0, 0)).x,
                 sampleAt(tex + vec3(0, h.y, 0)).x - sampleAt(tex - vec3(0, h.y, 0)).x,
                 sampleAt(tex + vec3(0, 0, h.z)).x - sampleAt(tex - vec3(0, 0, h.z)).x) / (2.0 * h);
+  if (uGraded == 1) {   // d tex / d box fraction: the local slope of each axis map
+    vec3 u = boxPart(placed), du = vec3(1.0 / float(MAPN - 1));
+    g *= vec3(mapAxis(u.x + du.x, 0) - mapAxis(u.x - du.x, 0), mapAxis(u.y + du.y, 1) - mapAxis(u.y - du.y, 1),
+              mapAxis(u.z + du.z, 2) - mapAxis(u.z - du.z, 2)) / (2.0 * du);
+  }
   return g * uMirA / ((uBoxHi - uBoxLo) * uStretch);
 }
 vec3 lit(vec3 base, vec3 shownPoint, vec3 grad, vec3 rayDir) {
@@ -1471,8 +1500,8 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 void main() {
   // the ray eye -> this back-face fragment in placed coordinates: placed(t) = e + d t (t = 1 here)
   vec3 e = uEye / uStretch + uCenter, d = vShown / uStretch + uCenter - e;
-  vec3 b0 = min(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB), b1 = max(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB);
-  b0 = max(b0, uClipLo); b1 = min(b1, uClipHi);
+  vec3 box0 = min(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB), box1 = max(uBoxLo * uMirA + uMirB, uBoxHi * uMirA + uMirB);
+  vec3 b0 = max(box0, uClipLo), b1 = min(box1, uClipHi);
   vec3 inv = 1.0 / d, ta = (b0 - e) * inv, tb = (b1 - e) * inv;
   float t0 = max(max(max(min(ta.x, tb.x), min(ta.y, tb.y)), min(ta.z, tb.z)), 0.0);
   float t1 = min(min(max(ta.x, tb.x), max(ta.y, tb.y)), max(ta.z, tb.z));
@@ -1502,19 +1531,19 @@ void main() {
     outColor = vec4(cmap(hit.x), 1.0);
     return;
   }
-  if (uMode == 1) {   // a ray entering the field beyond the level: the cut face of the solid, coloured by the field
+  if (uMode == 1) {   // a ray entering through an axis-limit cut beyond the level: the solid's cut face, field coloured
+    // (at the box faces the surface stays open: caps there would hide a wave's fronts behind the box sides)
     vec3 p0 = e + d * t0, tol = 1e-4 * (b1 - b0);
-    bool inner = t0 <= 0.0 || any(greaterThan(uInnerLo * step(abs(p0 - b0), tol), vec3(0.5)))
-                 || any(greaterThan(uInnerHi * step(abs(p0 - b1), tol), vec3(0.5)));
+    bool cut = t0 > 0.0 && (any(greaterThan(step(abs(p0 - b0), tol) * step(box0 + tol, b0), vec3(0.5)))
+                            || any(greaterThan(step(abs(p0 - b1), tol) * step(b1 + tol, box1), vec3(0.5))));
     vec2 first = sampleAt(toTex(p0));
-    if (!inner && first.y > 0.5 && (uSigned == 1 ? abs(first.x - 0.5) >= 0.5 * uLevel : first.x >= uLevel)) {
+    if (cut && first.y > 0.5 && (uSigned == 1 ? abs(first.x - 0.5) >= 0.5 * uLevel : first.x >= uLevel)) {
       gl_FragDepth = depthOf(uEye + (vShown - uEye) * t0);
       outColor = vec4(cmap(first.x) * 0.94, 1.0);
       return;
     }
   }
-  vec3 texA = toTex(e + d * t0), texB = toTex(e + d * t1);
-  float voxels = length((texB - texA) * uN);
+  float voxels = length(d * (t1 - t0) / uFinest);   // lattice steps along the ray (graded: the finest)
   int n = int(clamp(ceil(voxels * uDensity), 2.0, 600.0));
   float dt = (t1 - t0) / float(n), stepVox = voxels / float(n);
   float t = t0 + dt * hash(gl_FragCoord.xy);   // jittered start: no wood-grain bands
@@ -1552,7 +1581,7 @@ void main() {
           th = 0.5 * (a0 + a1);
         }
         vec3 point = e + d * th, shownPoint = uEye + (vShown - uEye) * th;
-        vec3 grad = gradientAt(toTex(point));
+        vec3 grad = gradientAt(point);
         vec3 base = cmap(uSigned == 1 && uMode == 1 ? (L > 0.5 ? 0.93 : 0.07) : L);
         vec3 col = lit(base, shownPoint, grad, shownDir);
         if (uMode == 1) { gl_FragDepth = depthOf(shownPoint); outColor = vec4(col, 1.0); return; }
@@ -1578,13 +1607,14 @@ function adaptVolume(dt) {
   if (volumeFrameTime > 1 / 24) volumeDensity = Math.max(VOL_DENSITY[0], volumeDensity * 0.97);
   else if (volumeFrameTime < 1 / 50) volumeDensity = Math.min(VOL_DENSITY[1], volumeDensity * 1.02);
 }
+let volMapTex = null;
 let volProg = null, volTex = null, volVao = null, volCount = 0, volFrame = -1, volFailed = false;
 const volUni = {};
 const volCache = new Map();
 function setupVolume() {
   volProg = linkProgram(VOL_VS, VOL_FS, ['uView', 'uProj', 'uCenter', 'uStretch', 'uMirA', 'uMirB', 'uBoxLo', 'uBoxHi',
     'uVol', 'uMasked', 'uN', 'uEye', 'uClipLo', 'uClipHi', 'uOffset', 'uScale', 'uValSign', 'uLo', 'uHi', 'uLog',
-    'uSigned', 'uMode', 'uLevel', 'uStops', 'uPlanes', 'uSlices', 'uDensity', 'uInnerLo', 'uInnerHi'], volUni);
+    'uSigned', 'uMode', 'uLevel', 'uStops', 'uPlanes', 'uSlices', 'uDensity', 'uGraded', 'uAxisMap', 'uFinest'], volUni);
   // a unit cube, every face counter-clockwise seen from outside (front faces are culled per image's handedness)
   const corner = (i) => [i & 1, (i >> 1) & 1, (i >> 2) & 1];
   const faces = [[0, 2, 6, 4], [1, 5, 7, 3], [0, 4, 5, 1], [2, 3, 7, 6], [0, 1, 3, 2], [4, 6, 7, 5]];
@@ -1603,6 +1633,12 @@ function setupVolume() {
   gl.texStorage3D(gl.TEXTURE_3D, 1, VOL.masked ? gl.RG16F : gl.R16F, VOL.n[0], VOL.n[1], VOL.n[2]);
   for (const p of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, p, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  if (VOL_GRADED) {   // the axis maps, read with texelFetch (R32F is not filterable everywhere): one row per axis
+    volMapTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, volMapTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, VOL_MAP_ENTRIES, 3);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, VOL_MAP_ENTRIES, 3, gl.RED, gl.FLOAT, volumeAxisMaps());
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  }
 }
 function uploadVolume() {
   if (!VOL || volFailed || !gl || !ready || !volumeShown() || volFrame === state.frame) return;
@@ -1619,9 +1655,32 @@ function uploadVolume() {
   gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, VOL.n[0], VOL.n[1], VOL.n[2], VOL.masked ? gl.RG : gl.RED, gl.HALF_FLOAT, texels);
   volFrame = state.frame;
 }
-// the volume box: the lattice's first to last centre plus half a sample (texel edges), length units
-const VOL_BOX = VOL ? [VOL.lo.map((v, c) => v - 0.5 * (VOL.hi[c] - v) / Math.max(VOL.n[c] - 1, 1)),
-                       VOL.hi.map((v, c) => v + 0.5 * (v - VOL.lo[c]) / Math.max(VOL.n[c] - 1, 1))] : null;
+// the volume box (texel edges, length units) and the graded axes' centres (null: uniform)
+const VOL_BOX = VOL ? volumeBoxOf(VOL) : null;
+const VOL_CENTRES = VOL ? (VOL.axes || [null, null, null]).map((text) => text ? f32(text) : null) : null;
+const VOL_GRADED = !!VOL && VOL_CENTRES.some(Boolean);
+const VOL_MAP_ENTRIES = 2048;                 // the shader's MAPN
+const VOL_FINEST = VOL ? [0, 1, 2].map((c) => { const C = VOL_CENTRES[c];
+  if (!C) return (VOL_BOX[1][c] - VOL_BOX[0][c]) / VOL.n[c];
+  let m = Infinity; for (let i = 1; i < C.length; i++) m = Math.min(m, C[i] - C[i - 1]); return m; }) : null;
+function volumeAxisMaps() {
+  // per axis and map entry k (box fraction k / (entries - 1)) the texture coordinate: the fractional texel through
+  // the graded centres (texel i's centre at (i + 0.5) / n; beyond the end centres the end steps continue), on a
+  // uniform axis the fraction itself
+  const out = new Float32Array(3 * VOL_MAP_ENTRIES);
+  for (const c of [0, 1, 2]) {
+    const C = VOL_CENTRES[c], n = VOL.n[c], lo = VOL_BOX[0][c], span = VOL_BOX[1][c] - lo;
+    let i = 0;
+    for (let k = 0; k < VOL_MAP_ENTRIES; k++) {
+      const u = k / (VOL_MAP_ENTRIES - 1);
+      if (!C) { out[c * VOL_MAP_ENTRIES + k] = u; continue; }
+      const x = lo + u * span;
+      while (i < n - 2 && x > C[i + 1]) i++;
+      out[c * VOL_MAP_ENTRIES + k] = (i + 0.5 + (x - C[i]) / (C[i + 1] - C[i])) / n;
+    }
+  }
+  return out;
+}
 function slicePosition(c) { return VOL_BOX[0][c] + volState.slices[c] * (VOL_BOX[1][c] - VOL_BOX[0][c]); }
 function drawVolume(view, proj, lo, hi, logScale) {
   if (!volumeShown() || volFailed) return;
@@ -1633,6 +1692,8 @@ function drawVolume(view, proj, lo, hi, logScale) {
   gl.uniform3fv(volUni.uBoxLo, VOL_BOX[0]); gl.uniform3fv(volUni.uBoxHi, VOL_BOX[1]);
   gl.uniform3fv(volUni.uClipLo, clipLo); gl.uniform3fv(volUni.uClipHi, clipHi);
   gl.uniform3fv(volUni.uN, VOL.n); gl.uniform1i(volUni.uMasked, VOL.masked ? 1 : 0);
+  gl.uniform3fv(volUni.uFinest, VOL_FINEST); gl.uniform1i(volUni.uGraded, VOL_GRADED ? 1 : 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, volMapTex); gl.uniform1i(volUni.uAxisMap, 1);
   const d = eyeDir(); gl.uniform3fv(volUni.uEye, cam.target.map((t, i) => t + cam.dist * d[i]));
   const F = FRAMES[state.frame];
   gl.uniform1f(volUni.uOffset, F.volume_offset); gl.uniform1f(volUni.uScale, F.volume_scale);
@@ -1652,11 +1713,8 @@ function drawVolume(view, proj, lo, hi, logScale) {
   const boxMid = VOL_BOX[0].map((v, c) => 0.5 * (v + VOL_BOX[1][c]));
   const order = images().map((I) => ({ I, far: -Math.hypot(...[0, 1, 2].map((c) => ((boxMid[c] * I.a[c] + I.b[c]) - center[c]) * f[c] - eye[c])) }))
     .sort((p, q) => p.far - q.far);
-  const boxes = order.map(({ I }) => imageBox(I));
-  for (const [index, { I }] of order.entries()) {
+  for (const { I } of order) {
     setImage(volUni, I);
-    const [innerLo, innerHi] = innerFaces(boxes, index);
-    gl.uniform3fv(volUni.uInnerLo, innerLo); gl.uniform3fv(volUni.uInnerHi, innerHi);
     gl.frontFace(I.a[0] * I.a[1] * I.a[2] > 0 ? gl.CCW : gl.CW);   // a reflection turns the faces' handedness
     const planes = new Float32Array(12), slices = new Float32Array(12);
     LAYERS.filter((L) => L.visible).slice(0, 3).forEach((L, k) => { planes.set([L.axis, I.a[L.axis] * L.position + I.b[L.axis], 1, 0], 4 * k); });
@@ -1667,24 +1725,51 @@ function drawVolume(view, proj, lo, hi, logScale) {
   gl.frontFace(gl.CCW); gl.disable(gl.CULL_FACE); gl.depthMask(true); gl.disable(gl.BLEND);
   gl.bindVertexArray(null); gl.useProgram(prog);
 }
-function imageBox(I) {
-  // the volume box of a mirror image in placed coordinates [lo, hi]
-  const a = VOL_BOX[0].map((v, c) => v * I.a[c] + I.b[c]), b = VOL_BOX[1].map((v, c) => v * I.a[c] + I.b[c]);
-  return [a.map((v, c) => Math.min(v, b[c])), a.map((v, c) => Math.max(v, b[c]))];
-}
-function innerFaces(boxes, index) {
-  // per axis whether the lo / hi face of box `index` touches another shown image's box (a mirror plane between them)
-  const [lo, hi] = boxes[index], tol = 1e-6 * Math.max(...hi.map((v, c) => v - lo[c])), inLo = [0, 0, 0], inHi = [0, 0, 0];
-  boxes.forEach(([lo2, hi2], j) => {
-    if (j === index) return;
-    for (const c of [0, 1, 2]) {
-      const others = [0, 1, 2].filter((k) => k !== c);
-      if (!others.every((k) => Math.abs(lo2[k] - lo[k]) <= tol && Math.abs(hi2[k] - hi[k]) <= tol)) continue;
-      if (Math.abs(hi2[c] - lo[c]) <= tol) inLo[c] = 1;
-      if (Math.abs(lo2[c] - hi[c]) <= tol) inHi[c] = 1;
+const HALF = (() => {   // float16 bits -> value, for the start levels (the GPU reads the texture itself)
+  const out = new Float32Array(65536);
+  for (let h = 0; h < 65536; h++) {
+    const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+    out[h] = e === 0 ? s * f * Math.pow(2, -24) : e === 31 ? (f ? NaN : s * Infinity) : s * (1 + f / 1024) * Math.pow(2, e - 15);
+  }
+  return out;
+})();
+function volumeStartLevels() {
+  // start levels from the values, not fixed fractions: a peak (a source cell, a needle tip) would leave a fixed
+  // fraction of the colour scale enclosing next to nothing. Samples of the shown frame, or with colour limits over
+  // all frames of up to 12 frames spread over them. The isosurface encloses the top ~5 % of the samples (signed: of
+  // |value|), the shells start at the 80th percentile, the cloud at the 70th; a non-negative field whose 95th
+  // percentile lies below 2 % of its top opens on the log scale
+  const frames = state.scale === 'all' ? [...new Set(Array.from({ length: Math.min(NF, 12) },
+    (_, k) => Math.round(k * (NF - 1) / Math.max(Math.min(NF, 12) - 1, 1))))] : [state.frame];
+  const stepIn = VOL.masked ? 2 : 1, picked = [];
+  for (const f of frames) {
+    const F = FRAMES[f];
+    if (F.empty || !F.volume) continue;
+    const bits = new Uint16Array(b64bytes(F.volume)), count = bits.length / stepIn;
+    const every = Math.max(1, Math.floor(count * frames.length / 200000));
+    for (let k = 0; k < count; k += every) {
+      if (VOL.masked && HALF[bits[stepIn * k + 1]] < 0.5) continue;
+      const v = F.volume_offset + F.volume_scale * HALF[bits[stepIn * k]];
+      if (isFinite(v)) picked.push(SIGNED ? Math.abs(v) : v);
     }
-  });
-  return [inLo, inHi];
+  }
+  if (picked.length < 8) return;
+  const sorted = Float64Array.from(picked).sort(), at = (q) => sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))];
+  if (LOG_OK && at(0.95) > 0 && at(0.95) < 0.02 * sorted[sorted.length - 1]) {
+    state.log = true;
+    if (at(0.8) < limits()[0]) { state.decades = 4; $('decades').value = '4'; }   // the bulk below 3 decades
+  }
+  if (SIGNED && fig.color_min === null && fig.color_max === null && at(0.95) < 0.03 * limits()[1]) {
+    // a signed field has no log scale: a peak far above the bulk (a source cell) saturates instead (Range)
+    state.range = Math.max(0.02, Math.min(1, Math.round(100 * 8 * at(0.95) / limits()[1]) / 100));
+    $('range').value = state.range;
+  }
+  const [lo, hi] = limits(), logScale = state.log && LOG_OK;
+  const fraction = (v) => SIGNED ? v / hi : logScale ? Math.log(Math.max(v, 1e-300) / lo) / Math.log(hi / lo) : (v - lo) / (hi - lo);
+  for (const [mode, q] of [['iso', 0.95], ['shells', 0.8], ['cloud', 0.7]]) {
+    const f = fraction(at(q));
+    if (isFinite(f) && f > 0) volState.levels[mode] = Math.round(100 * Math.min(0.95, Math.max(0.03, f))) / 100;
+  }
 }
 function volumeLevelText() {
   // the level's value in the field's unit (signed: +-)
@@ -1733,8 +1818,9 @@ if (VOL) {
     $('slicegroup').append(button, range); slicesUi.push({ button, range });
   }
   for (const L of LAYERS) L.visible = !volumeShown();
+  volumeStartLevels();
   // the objects as see-through surfaces around the field (else their edges): outlines would lie on hidden planes
-  if (GEOM_MODES.some(([key]) => key === 'glass')) state.geom = 'glass';
+  if (GEOM_FACES.some((G) => G.material !== null && G.material !== undefined)) state.geom = 'glass';   // material solids
   else if (HAS_EDGES) state.geom = 'edges';
   syncGeometry();
   window.addEventListener('keydown', (e) => {

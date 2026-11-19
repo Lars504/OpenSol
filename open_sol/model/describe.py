@@ -1339,7 +1339,9 @@ _RESULTS_NOTES = (
         'that axis, else the window middle; snapshots and closed / loaded runs: the mid-height z cut and '
         "the stored_cuts; planes [(axis, position m)] instead: the live state on exactly those planes, a snapshot "
         "its held cut on each axis nearest the position, ValueError for 2D models or an axis no snapshot holds when "
-        "not live); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
+        "not live; live Results of a Cartesian 3D model also put the whole field on the page, the current state or "
+        "each snapshot's kept solution (GUI runs, up to 60 snapshots), drawn as movable slices, a lit isosurface "
+        "(signed fields: both signs), nested see-through shells or a glowing cloud); a dft_fields result 'physics.feature': its intensity map per monitored frequency; a "
         'mode_shapes result: the complex mode shapes animated on the solid surface beside the band diagram (a sweep '
         'contributes every successful value on the same surface mesh, abscissa k a / 2 pi of the Bloch wavenumber, '
         'else the swept parameter; coloured by displacement, and with the kept stress / strain of the mode_shapes '

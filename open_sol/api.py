@@ -59,9 +59,10 @@ from .model.time_estimate import estimate_overheads, estimate_time, estimated_ru
 from .model.templates import make_template, template_entries
 from .model.validate import internal_error_text, refused_on_estimated_counts, validate
 from .viz.common import line_profile
-from .viz.field_viewer import (ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror, ViewerQuantity, ViewerVolume,
-                               figure_settings, layer_from_field, mirror_plane, plan_frames, reduced_volume,
-                               snap_to_mirrors, strided_layer, time_label, write_field_viewer)
+from .viz.field_viewer import (MAX_VOLUME_FRAMES, ViewerFrame, ViewerGeometry, ViewerLayer, ViewerMirror,
+                               ViewerQuantity, ViewerVolume, figure_settings, layer_from_field, mirror_plane,
+                               plan_frames, reduced_volume, snap_to_mirrors, strided_layer, time_label,
+                               write_field_viewer)
 from .viz.mode_player import mode_player_from_results
 from .viz.result_plots import (far_field_wavelengths, save_field_figure, save_line_profile_figure,
                                save_result_figure)
@@ -1588,7 +1589,10 @@ class Results:
         (live) or saved state; a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
         a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
         not spanning the window on that axis, else the window middle;
-        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
+        snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts; live Results of a
+        Cartesian 3D model also put the whole field on the page (viz.field_viewer.ViewerVolume: the current state,
+        or every snapshot's kept solution in GUI runs, up to MAX_VOLUME_FRAMES), drawn as movable slices, a lit
+        isosurface, nested see-through shells or a glowing cloud); planes [(axis,
         position [m])] (3D field pages; the GUI passes its shown cut) picks them instead: the live state on exactly
         those planes, a snapshot its held cut on each plane's axis nearest the position (live: the current state
         when the snapshots hold no cut on an axis, named in the subtitle). A dft_fields result
@@ -1726,6 +1730,11 @@ class Results:
         try:
             if snapshots is None:
                 return [self._reduced_volume(component, physics, count)]
+            if count > MAX_VOLUME_FRAMES:
+                warnings.warn(f'web page volume of {key}: not offered for {count} snapshots (at most '
+                              f'{MAX_VOLUME_FRAMES}: each is a whole 3D field read); the cut planes are shown',
+                              RuntimeWarning, stacklevel=4)
+                return None
             roots = {id(snapshot): index for index, snapshot in enumerate(self.session.snapshots)}
             if any(id(snapshot) not in roots or physics not in snapshot.solutions for snapshot in snapshots):
                 return None   # headless runs keep no snapshot solutions: the page shows the cut planes only
