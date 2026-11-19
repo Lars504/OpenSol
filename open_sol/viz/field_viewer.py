@@ -77,7 +77,7 @@ class ViewerLayer:
     plane: tuple | None = None
     triangulation: tuple | None = None   # (nodes (n, 2) float, triangles (k, 3) int)
     extent: tuple | None = None
-    displacement: tuple | None = None    # ViewerMotion.channels arrays shaped like values (m): real parts, then imaginary
+    displacement: tuple | None = None    # ViewerMotion.channels arrays shaped like values (m): real, then imaginary
 
 
 @dataclass(eq=False)
@@ -210,9 +210,9 @@ def _check_layers(frames):
                     and np.shape(layer.values) == np.shape(reference.values)
                     and (layer.displacement is None) == (reference.displacement is None))
             if not same:
-                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, plane, axes, displacement or sample count '
-                                 f'{np.shape(layer.values)} vs {np.shape(reference.values)}): one page shows one set '
-                                 'of surfaces')
+                raise ValueError(f'frame {index}: a layer differs from frame 0 (kind, plane, axes, displacement or '
+                                 f'sample count {np.shape(layer.values)} vs {np.shape(reference.values)}): one page '
+                                 'shows one set of surfaces')
 
 
 def _stride(layers, n_frames, max_bytes):

@@ -1663,7 +1663,10 @@ class Results:
         in a browser; returns the written path (.html added when missing). what: a field ('physics.component' or a
         component unique among field_names(), narrowed by physics) -> viz.field_viewer: every stored snapshot holding
         it is a frame (time snapshots play, labelled ones such as wavelengths or modes get a slider), else the current
-        (live) or saved state; a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
+        (live) or saved state; a field of a 2D solid_mechanics / membrane physics is drawn on the deformed body (its
+        displacement u_x / u_y or w_re, plus the imaginary parts when held, per frame; a Deform magnification; the
+        solid's void cells, youngs_modulus <= 0, hidden and cropped away; modes and frequency responses oscillate,
+        static states ramp their load with Animate); a 3D field is shown on its cut planes in place (live state: an x, y and z cut, each at
         a mirror plane of the field's physics (drawn on the plane), else through the middle of the material objects
         not spanning the window on that axis, else the window middle;
         snapshots and closed / loaded runs: the mid-height z cut plus the study stored_cuts); planes [(axis,
@@ -1828,7 +1831,8 @@ class Results:
                 return None, ', no deformed shape (the displacement lies on other samples than this field)'
             layer.displacement = tuple(channels)
         if stiffness_name and f'{physics}.{stiffness_name}' in names:
-            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'), set(mirror_faces(self._state_spec(), physics)))
+            _hide_void(frames, self.field(f'{physics}.{stiffness_name}'),
+                       set(mirror_faces(self._state_spec(), physics)))
         mirror_signs = {}
         if 'n' in components:   # the normal displacement's images follow its own parity, not the shown field's
             spans = [(layer.axes, layer.extent) for layer in frames[0].layers]
