@@ -10,6 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..core.gpu_memory import format_bytes
 from ..core.time_estimate import format_seconds
 from ..model.solve_flow import MEMORY_GROUPS, TIME_SOURCES, op_text, solve_flow
+from .document import results_inputs
 from .forms import hint_label, rich_tooltip
 from .helpers import ask_save_path, mesh_color
 
@@ -26,9 +27,8 @@ _PICTURE_SCALE = 2.0
 _TAG_POINTS = 7.0         # box texts at 100 % zoom
 _TITLE_POINTS = 10.0
 _TEXT_POINTS = 8.5
-# the opening zoom fits the chart but stays readable: between these scales (taller charts scroll)
-_MIN_READABLE_SCALE = 0.8
-_MAX_READABLE_SCALE = 1.15
+_MEASURED_LINE = 16.0     # extra box height for the measured line once a run of this model exists
+_WHEEL_ZOOM_BASE = 1.0015 # zoom factor per wheel angle unit (120 units = one notch: about 20 %)
 _CHART_SHARE = 0.6        # opening width share of the chart pane
 # box fills per step kind (light: the box text is always dark, whatever the application theme)
 _KIND_COLORS = {'model': '#dbe7f6', 'mesh': '#d5eee8', 'materials': '#e4efd0', 'solver': '#fbe1c4',
@@ -42,6 +42,7 @@ _MEMORY_BAR_COLOR = '#3f7fbf'
 _TIME_BAR_COLOR = '#d9822b'
 _BAR_TRACK_COLOR = QtGui.QColor(0, 0, 0, 22)
 _TAG_COLOR = '#6b7480'
+_MEASURED_COLOR = '#22663a'
 # row kind shown in the corner of each box
 _KIND_TAGS = {'model': 'MODEL', 'mesh': 'MESH', 'materials': 'MATERIALS', 'solver': 'SOLVER JOB',
               'physics': 'PHYSICS', 'couplings': 'COUPLINGS', 'study': 'STUDY', 'output': 'RESULTS',
@@ -52,17 +53,23 @@ _INTRO = ('Every step of a run of this model, top to bottom: the build (mesh, ma
           'couplings), the study and the results. Each box shows the memory and run time the estimates book at it '
           '(blue bar: share of the memory items, orange bar: share of the run time); click a box for the items and '
           'what they are computed from. Brackets on the right are repetitions (sweeps, sectors, refinement levels). '
-          'The chart follows the model as you edit it; nothing is run.')
+          'After a Build / Compute of this model the measured values appear next to the estimates (green). The chart '
+          'follows the model as you edit it; nothing is run. Mouse wheel zooms, drag pans.')
 
 
 def show_solve_flow(document, parent):
-    """Show (raise) the solve flow window of the document, made on first use as a child of parent's window."""
-    window = parent.window()
+    """Show (raise) the solve flow window of the document, made on first use as a child of the main window: the first
+    ancestor of parent holding the WorkerBridge (`bridge`: measured values of the last run), else parent's window."""
+    window = parent
+    while window is not None and not hasattr(window, 'bridge'):
+        window = window.parentWidget()
+    bridge = getattr(window, 'bridge', None)
+    window = window if window is not None else parent.window()
     for dialog in window.findChildren(SolveFlowDialog):
         if dialog.document is document:
             break
     else:
-        dialog = SolveFlowDialog(document, window)
+        dialog = SolveFlowDialog(document, window, bridge)
     dialog.show()
     dialog.raise_()
     dialog.activateWindow()
@@ -71,13 +78,17 @@ def show_solve_flow(document, parent):
 
 class SolveFlowDialog(QtWidgets.QDialog):
     """Non-modal window: flow chart (left) and the selected step's details (right); redrawn after document edits
-    (debounced, only while visible) and estimate changes (issues_invalidated: budgets, built element counts)."""
+    (debounced, only while visible), estimate changes (issues_invalidated: budgets, built element counts) and the end
+    of every build / run of the bridge (measured values, shown only while the bridge's results are of this model)."""
 
-    def __init__(self, document, parent=None):
+    def __init__(self, document, parent=None, bridge=None):
         super().__init__(parent)
         self.document = document
+        self.bridge = bridge
+        self._results_key = (None, None)   # (results_spec, its results_inputs) cached by identity
         self.flow = None
         self._boxes = {}
+        self._measured_note = ''
         self._selected_key = None
         self._dirty = True
         self._fitted = False
@@ -88,8 +99,8 @@ class SolveFlowDialog(QtWidgets.QDialog):
         layout.addWidget(hint_label(_INTRO))
         buttons = QtWidgets.QHBoxLayout()
         fit_button = QtWidgets.QPushButton('Fit to window')
-        fit_button.setToolTip(rich_tooltip('Show the whole chart (Ctrl + mouse wheel zooms, drag to pan).'))
-        fit_button.clicked.connect(lambda _checked=False: self._fit(readable=False))
+        fit_button.setToolTip(rich_tooltip('Show the whole chart (the mouse wheel zooms, drag to pan).'))
+        fit_button.clicked.connect(lambda _checked=False: self._fit())
         actual_button = QtWidgets.QPushButton('100 %')
         actual_button.clicked.connect(lambda _checked=False: self._zoom_to(1.0))
         save_button = QtWidgets.QPushButton('Save picture…')
@@ -124,6 +135,10 @@ class SolveFlowDialog(QtWidgets.QDialog):
         self._timer.timeout.connect(self.refresh)
         document.changed.connect(self._on_document_changed)
         document.issues_invalidated.connect(self._schedule)
+        if bridge is not None:
+            for signal in (bridge.built, bridge.build_failed, bridge.study_finished):
+                signal.connect(lambda _event: self._schedule())
+            bridge.study_failed.connect(lambda _message, _traceback: self._schedule())
 
     # refresh
 
@@ -160,9 +175,10 @@ class SolveFlowDialog(QtWidgets.QDialog):
             estimates, _errors = document.used_mesh_estimates()
             run_time, message = document.run_time_estimate()
             study_time, _ = document.time_estimate()
+            build_record, study_summary, self._measured_note = self._measured()
             self.flow = solve_flow(document.spec, document.registry, document.parameters(), estimates,
                                    document.memory_estimate(), document.plain_roles(), run_time,
-                                   document.time_overheads(), study_time, message)
+                                   document.time_overheads(), study_time, message, build_record, study_summary)
             self._boxes = _draw_flow(self.scene, self.flow, document.spec)
             self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
         except Exception:   # a solve_flow / drawing bug: shown in the window and logged, never a blank window
@@ -179,6 +195,23 @@ class SolveFlowDialog(QtWidgets.QDialog):
         if not self._fitted:
             self._fitted = True
             QtCore.QTimer.singleShot(0, self._fit)
+
+    def _measured(self):
+        """(build record, study summary, note) of the bridge's last build / run when its results are of the current
+        model (results_inputs equal), else (None, None, why there are no measured values)."""
+        bridge = self.bridge
+        if bridge is None:
+            return None, None, 'Measured values: not available in this window.'
+        spec = bridge.results_spec
+        if spec is None or (bridge.last_build_summary is None and bridge.last_study_summary is None):
+            return None, None, 'Measured values: Build or Compute this model to compare them with the estimates.'
+        if self._results_key[0] is not spec:
+            self._results_key = (spec, results_inputs(spec.to_dict()))
+        if self._results_key[1] != results_inputs(self.document.spec_dict()):
+            return None, None, 'Measured values hidden: the model changed after the last build / run.'
+        note = ('Measured values: from the last build of this model (Compute to measure the study too).'
+                if bridge.last_study_summary is None else 'Measured values: from the last run of this model.')
+        return bridge.last_build_summary, bridge.last_study_summary, note
 
     # selection and details
 
@@ -203,22 +236,19 @@ class SolveFlowDialog(QtWidgets.QDialog):
             self.details.setHtml('')
             return
         if self._selected_key is None:
-            self.details.setHtml(_overview_html(self.flow))
+            self.details.setHtml(_overview_html(self.flow, self._measured_note))
         else:
             self.details.setHtml(_step_html(self.flow, self.flow.step(self._selected_key)))
 
     # view actions
 
-    def _fit(self, readable=True):
-        """Scale to show the whole chart; readable: kept within _MIN / _MAX_READABLE_SCALE (the top shown first)."""
+    def _fit(self):
+        """Scale to show the whole chart (also the opening view)."""
         rect = self.scene.sceneRect()
         viewport = self.view.viewport().rect()
         if not rect.isValid() or viewport.width() < 10 or viewport.height() < 10:
             return
-        scale = min(viewport.width() / rect.width(), viewport.height() / rect.height())
-        if readable:
-            scale = min(max(scale, _MIN_READABLE_SCALE), _MAX_READABLE_SCALE)
-        self._zoom_to(scale)
+        self._zoom_to(min(viewport.width() / rect.width(), viewport.height() / rect.height()))
 
     def _zoom_to(self, scale):
         """Set the zoom to scale, centred across and showing the top of the chart."""
@@ -253,7 +283,7 @@ class SolveFlowDialog(QtWidgets.QDialog):
 
 
 class _FlowView(QtWidgets.QGraphicsView):
-    """Graphics view: drag to pan, Ctrl + wheel to zoom about the cursor (plain wheel scrolls)."""
+    """Graphics view: drag to pan, the mouse wheel zooms about the cursor."""
 
     def __init__(self, scene):
         super().__init__(scene)
@@ -264,19 +294,18 @@ class _FlowView(QtWidgets.QGraphicsView):
         self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
     def wheelEvent(self, event):
-        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
-            factor = 1.0015 ** event.angleDelta().y()
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if delta:
+            factor = _WHEEL_ZOOM_BASE ** delta
             self.scale(factor, factor)
-            event.accept()
-            return
-        super().wheelEvent(event)
+        event.accept()
 
 
 class _StepBox(QtWidgets.QGraphicsPathItem):
     """Rounded, selectable box of one FlowStep that paints its own texts (kind tag, title, subtitle, estimate line,
     each one elided line) and its memory / time bars; no Qt selection outline: a thicker blue border instead."""
 
-    def __init__(self, step, rect, fill, border, shares):
+    def __init__(self, step, rect, fill, border, shares, show_measured=False):
         super().__init__()
         self.key = step.key
         self._rect = rect
@@ -297,7 +326,14 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
         if step.not_estimated:
             estimate.append(f'{len(step.not_estimated)} not estimated')
         self._tag = _KIND_TAGS.get(step.kind, step.kind.upper())
-        self._title, self._subtitle, self._estimate = step.title, step.subtitle, '  ·  '.join(estimate)
+        self._title, self._subtitle = step.title, step.subtitle
+        self._estimate = ('estimated ' if show_measured and estimate else '') + '  ·  '.join(estimate)
+        measured = []
+        if step.measured_bytes is not None:
+            measured.append(format_bytes(step.measured_bytes))
+        if step.measured_seconds is not None:
+            measured.append(format_seconds(step.measured_seconds))
+        self._measured = ('measured ' + '  ·  '.join(measured)) if show_measured and measured else ''
 
     def _set_border(self, selected):
         pen = QtGui.QPen(QtGui.QColor(_SELECTED_COLOR) if selected else self._border, 3.0 if selected else 1.3)
@@ -332,9 +368,11 @@ class _StepBox(QtWidgets.QGraphicsPathItem):
             text_metrics = QtGui.QFontMetricsF(text_font)
             painter.setFont(text_font)
             painter.setPen(QtGui.QColor(_SUBTEXT_COLOR))
-            for text in (self._subtitle, self._estimate):
+            for text, color in ((self._subtitle, _SUBTEXT_COLOR), (self._estimate, _SUBTEXT_COLOR),
+                                (self._measured, _MEASURED_COLOR)):
                 baseline += text_metrics.lineSpacing() + 1.0
                 if text:
+                    painter.setPen(QtGui.QColor(color))
                     painter.drawText(QtCore.QPointF(left, baseline), _elided(text, text_font, width))
             painter.setPen(QtCore.Qt.PenStyle.NoPen)
             for offset, (share, color) in enumerate(zip(self._shares, (_MEMORY_BAR_COLOR, _TIME_BAR_COLOR))):
@@ -379,18 +417,20 @@ def _elided(text, font, width) -> str:
 
 # --- drawing --------------------------------------------------------------------------------------------------------
 
-def _box_rect(step) -> QtCore.QRectF:
-    """Scene rectangle of a step: centred over its lanes, one lane's box width per lane (capped for wide steps)."""
+def _box_rect(step, extra=0.0) -> QtCore.QRectF:
+    """Scene rectangle of a step: centred over its lanes, one lane's box width per lane (capped for wide steps);
+    extra: added box (and row) height (the measured line)."""
     span = step.lane_end - step.lane_start
     width = BOX_WIDTH if span <= 1.0 else min(span * LANE_WIDTH - (LANE_WIDTH - BOX_WIDTH), WIDE_BOX_WIDTH)
     centre = 0.5 * (step.lane_start + step.lane_end) * LANE_WIDTH
-    return QtCore.QRectF(centre - 0.5 * width, step.row * ROW_HEIGHT, width, BOX_HEIGHT)
+    return QtCore.QRectF(centre - 0.5 * width, step.row * (ROW_HEIGHT + extra), width, BOX_HEIGHT + extra)
 
 
 def _draw_flow(scene, flow, spec) -> dict:
     """Draw arrows, coupling links, loops and step boxes (the row kind is each box's tag); returns {step key:
     _StepBox}."""
-    rects = {step.key: _box_rect(step) for step in flow.steps}
+    extra = _MEASURED_LINE if flow.measured else 0.0
+    rects = {step.key: _box_rect(step, extra) for step in flow.steps}
     largest_bytes = max((step.memory_bytes for step in flow.steps), default=0)
     largest_seconds = max((step.time_seconds for step in flow.steps), default=0.0)
     right = max((rect.right() for rect in rects.values()), default=flow.lanes * LANE_WIDTH)
@@ -403,14 +443,15 @@ def _draw_flow(scene, flow, spec) -> dict:
         if link.source in rects and link.target in rects:
             _draw_link(scene, rects[link.source], rects[link.target], link.label, index)
     for index, loop in enumerate(flow.loops):
-        _draw_loop(scene, loop, right + 18 + index * LOOP_SPACING)
+        _draw_loop(scene, loop, right + 18 + index * LOOP_SPACING, extra)
     boxes = {}
     for step in flow.steps:
         border = (mesh_color(spec, step.key.split(':', 1)[1]) if step.kind in ('mesh', 'materials')
                   else _BORDER_COLOR)
         shares = tuple(_share(value, largest) for value, largest in ((step.memory_bytes, largest_bytes),
                                                                      (step.time_seconds, largest_seconds)))
-        box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border, shares)
+        box = _StepBox(step, rects[step.key], _KIND_COLORS.get(step.kind, '#eeeeee'), border, shares,
+                       flow.measured)
         box.setZValue(2)
         box.setToolTip(rich_tooltip(step.title, step.subtitle, step.explanation))
         scene.addItem(box)
@@ -453,10 +494,11 @@ def _draw_link(scene, source, target, label, index):
     text.setZValue(3)
 
 
-def _draw_loop(scene, loop, x):
+def _draw_loop(scene, loop, x, extra=0.0):
     """Bracket at x from the top of first_row to the bottom of last_row, an arrow back up and its title."""
     pen = QtGui.QPen(QtGui.QColor(_LOOP_COLOR), 1.6)
-    top, bottom = loop.first_row * ROW_HEIGHT + 4.0, loop.last_row * ROW_HEIGHT + BOX_HEIGHT - 4.0
+    row_height, box_height = ROW_HEIGHT + extra, BOX_HEIGHT + extra
+    top, bottom = loop.first_row * row_height + 4.0, loop.last_row * row_height + box_height - 4.0
     path = QtGui.QPainterPath(QtCore.QPointF(x - 10.0, bottom))
     path.lineTo(x, bottom)
     path.lineTo(x, top)
@@ -508,15 +550,29 @@ def _units(count, unit) -> str:
     return f'{count:.4g} {plural}'
 
 
-def _overview_html(flow) -> str:
-    parts = ['<h3>Solve flow totals</h3>', _table(flow.totals) if flow.totals else '<p>No estimates.</p>']
+def _overview_html(flow, measured_note='') -> str:
+    parts = ['<h3>Solve flow totals</h3>', _totals_table(flow) if flow.totals else '<p>No estimates.</p>']
+    if measured_note:
+        parts.append(f'<p style="color:{_MEASURED_COLOR}">{html.escape(measured_note)}</p>')
     if flow.notes:
         parts.append('<h4>Notes</h4><ul>' + ''.join(f'<li>{html.escape(note)}</li>' for note in flow.notes) + '</ul>')
     parts.append('<p class="note">Memory items are the arrays each step\'s estimator counts from the code '
                  '(meshing.estimate_memory); time items are one study run priced on this computer\'s profile '
                  '(model.time_estimate, python -m open_sol profile). The whole-study time also counts every sweep '
-                 'value, sector and estimation run. Click a box for its items.</p>')
+                 'value, sector and estimation run. Measured: the build\'s memory ledger (pool change and wall time '
+                 'per build stage) and the run summary\'s time check. Click a box for its items.</p>')
     return ''.join(parts)
+
+
+def _totals_table(flow) -> str:
+    rows = []
+    for name, estimate, measured in flow.totals:
+        cells = (f'<td>{html.escape(str(name))}</td><td class="number">{html.escape(str(estimate))}</td>'
+                 + (f'<td class="number" style="color:{_MEASURED_COLOR}">{html.escape(measured or "—")}</td>'
+                    if flow.measured else ''))
+        rows.append(f'<tr>{cells}</tr>')
+    header = '<tr><th></th><th>Estimated</th>' + ('<th>Measured</th>' if flow.measured else '') + '</tr>'
+    return '<table class="items" cellspacing="0">' + header + ''.join(rows) + '</table>'
 
 
 def _step_html(flow, step) -> str:
@@ -528,11 +584,17 @@ def _step_html(flow, step) -> str:
     if step.facts:
         parts.append(_table(step.facts))
     parts.append(_memory_html(flow, step))
-    parts.append(_time_html(step))
+    parts.append(_stages_html(flow, step))
+    parts.append(_time_html(flow, step))
     if step.not_estimated:
         parts.append('<h4>Not estimated</h4><ul>'
                      + ''.join(f'<li>{html.escape(label)}</li>' for label in step.not_estimated) + '</ul>')
     return ''.join(parts)
+
+
+def _measured_cell(text, number=True) -> str:
+    align = ' class="number"' if number else ''
+    return f'<td{align} style="color:{_MEASURED_COLOR}">{text}</td>'
 
 
 def _memory_html(flow, step) -> str:
@@ -544,15 +606,42 @@ def _memory_html(flow, step) -> str:
         if entry.phase:
             group += f' (phase: {entry.phase})'
         rows.append(f'<tr><td>{html.escape(entry.label)}</td><td class="number">{format_bytes(entry.bytes)}</td>'
-                    f'<td><span class="small">{html.escape(group)}</span></td></tr>')
+                    + (_measured_cell('—') if flow.measured else '')
+                    + f'<td><span class="small">{html.escape(group)}</span></td></tr>')
+    if flow.measured:   # the ledger measures each build stage's pool change: comparable with the kept items only
+        measured = step.measured_bytes
+        rows.append(f'<tr><td><b>Kept from the build</b><br><span class="small">the items the build ledger measures '
+                    f'(pool change of this step\'s build stages)</span></td>'
+                    f'<td class="number"><b>{format_bytes(step.kept_bytes)}</b></td>'
+                    + _measured_cell(f'<b>{format_bytes(measured)}</b>' if measured is not None else '—')
+                    + '<td></td></tr>')
     note = ('<p class="note">On the cpu backend the device arrays live in processor memory.</p>'
             if flow.backend == 'cpu' else '')
+    header = ('<tr><th>Item</th><th>Estimated</th>' + ('<th>Measured</th>' if flow.measured else '')
+              + '<th>Kind</th></tr>')
     return (f'<h4>Memory items ({format_bytes(step.memory_bytes)} listed)</h4>'
-            '<table class="items" width="100%" cellspacing="0">'
-            '<tr><th>Item</th><th>Bytes</th><th>Kind</th></tr>' + ''.join(rows) + '</table>' + note)
+            '<table class="items" width="100%" cellspacing="0">' + header + ''.join(rows) + '</table>' + note
+            + ('<p class="note">Items are not measured one by one: the measured column compares the step as a whole.'
+               '</p>' if flow.measured else ''))
 
 
-def _time_html(step) -> str:
+def _stages_html(flow, step) -> str:
+    """Build stages of the memory ledger booked at the step (after a build of this model)."""
+    if not flow.measured or not (step.measured_stages or step.measured_study_seconds is not None):
+        return ''
+    rows = ''.join(f'<tr><td>{html.escape(stage.owner)}</td>'
+                   + _measured_cell(format_bytes(stage.bytes) if stage.bytes is not None else '—')
+                   + _measured_cell(format_seconds(stage.seconds) if stage.seconds is not None else '—') + '</tr>'
+                   for stage in step.measured_stages)
+    if step.measured_study_seconds is not None:
+        rows += ('<tr><td>study time of its timers<br><span class="small">time check seconds groups of this step'
+                 + (' (the study time no solver timer covers)' if step.kind == 'study' else '') + '</span></td>'
+                 + _measured_cell('—') + _measured_cell(format_seconds(step.measured_study_seconds)) + '</tr>')
+    return ('<h4>Measured</h4><table class="items" width="100%" cellspacing="0">'
+            '<tr><th>Build stage / timer</th><th>Pool change</th><th>Wall time</th></tr>' + rows + '</table>')
+
+
+def _time_html(flow, step) -> str:
     if not step.time:
         return ''
     rows = []
@@ -564,20 +653,46 @@ def _time_html(step) -> str:
         if item.limit is not None:
             spread += f'; at most {item.limit:.4g}'
         ops = '<br>'.join(f'<code>{html.escape(op_text(op))}</code>' for op in item.ops) or '—'
-        measured = '.'.join(str(part) for part in item.counter) if item.counter else ''
-        rows.append(f'<tr><td>{html.escape(entry.label)}<br><span class="small">'
-                    f'{html.escape(TIME_SOURCES.get(entry.source, entry.source))}'
-                    + (f'<br>checked against summary {html.escape(measured)}' if measured else '') + '</span></td>'
-                    f'<td class="number"><b>{format_seconds(entry.seconds)}</b></td>'
-                    f'<td>{html.escape(count)} x {format_seconds(item.seconds_per_unit or 0.0)}<br>'
-                    f'<span class="small">{html.escape(spread)}</span></td>'
-                    f'<td>{ops}</td></tr>')
-    return (f'<h4>Run-time items ({format_seconds(step.time_seconds)})</h4>'
-            '<p class="note">time = count x time per unit; each unit costs the listed operations, priced on this '
-            'computer\'s profile.</p>'
-            '<table class="items" width="100%" cellspacing="0">'
-            '<tr><th>Item</th><th>Time</th><th>Count x per unit</th><th>Operations per unit</th></tr>'
-            + ''.join(rows) + '</table>')
+        counter = '.'.join(str(part) for part in item.counter) if item.counter else ''
+        cells = (f'<tr><td>{html.escape(entry.label)}<br><span class="small">'
+                 f'{html.escape(TIME_SOURCES.get(entry.source, entry.source))}'
+                 + (f'<br>checked against summary {html.escape(counter)}' if counter else '') + '</span></td>'
+                 f'<td class="number"><b>{format_seconds(entry.seconds)}</b></td>'
+                 f'<td>{html.escape(count)} x {format_seconds(item.seconds_per_unit or 0.0)}<br>'
+                 f'<span class="small">{html.escape(spread)}</span></td>')
+        if flow.measured:
+            cells += _measured_cell(_measured_time_text(entry), number=False)
+        rows.append(cells + f'<td>{ops}</td></tr>')
+    header = ('<tr><th>Item</th><th>Estimated</th><th>Count x per unit</th>'
+              + ('<th>Measured</th>' if flow.measured else '') + '<th>Operations per unit</th></tr>')
+    note = ('<p class="note">time = count x time per unit; each unit costs the listed operations, priced on this '
+            'computer\'s profile.'
+            + (' Measured: the counted units of the run and its time, which is timed per solver timer (or the rest of '
+               'the study), so each item gets its group\'s measured / estimated ratio.' if flow.measured else '')
+            + '</p>')
+    return (f'<h4>Run-time items ({format_seconds(step.time_seconds)})</h4>' + note
+            + '<table class="items" width="100%" cellspacing="0">' + header + ''.join(rows) + '</table>')
+
+
+def _measured_time_text(entry) -> str:
+    """Measured column of a time item: counted units (x their prediction) and the group-scaled seconds."""
+    record = entry.measured
+    if record is None:
+        return '—'
+    parts = []
+    count = entry.measured_count
+    if count is not None:
+        ratio = record.get('count_ratio')
+        parts.append(html.escape(_units(count, entry.item.unit))
+                     + (f' <span class="small">(x{ratio:.2g})</span>' if ratio is not None else ''))
+    else:
+        parts.append('<span class="small">count not recorded</span>')
+    seconds = entry.measured_seconds
+    if seconds is not None:
+        ratio = record.get('unit_ratio')
+        parts.append(f'<b>{format_seconds(seconds)}</b>'
+                     + (f' <span class="small">(group x{ratio:.2g})</span>' if ratio is not None else ''))
+    return '<br>'.join(parts)
 
 
 def _table(rows) -> str:
