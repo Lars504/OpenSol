@@ -20,6 +20,10 @@ class FieldInfo:
     plane_signs: str = ''    # 'x_lo:1 y_lo:-1': this field's own E parity on those mirror faces, replacing the
     #                          physics' face signs when unfolding (nlfd channels; core.mirror.plane_signs_text)
 
+    def available_in(self, study_type):
+        """True when this component exists in a study of study_type (requires_study empty or equal to it)."""
+        return not self.requires_study or self.requires_study == study_type
+
 
 def polar_field_infos(field_infos, axisymmetric):
     """field_infos with the labels of in-plane components (names ending _x / _y / _xx / _yy, labels ending in the

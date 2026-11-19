@@ -4,194 +4,84 @@ Sub file of the root `structure_conventions.md`. GUI gotchas.
 
 - Thread rule: the GUI thread calls only model.spec / schema / expressions, geometry with numpy, validate,
   `meshing.estimate_mesh`, `time_estimate.estimate_time`, templates, io, the registry and `gpu_memory.format_bytes`; GPU
-  work goes through `WorkerBridge.call(fn)` (a return value holding cupy arrays within 4 references fails the task).
-- Bridge state: `WorkerBridge.results_spec` (copy of the built spec) is cleared by BuildFailed and by StudyFailed /
-  StudyFinished with `session_live` False (BuildFailed always leaves no session: build_session closes a session whose
-  tail failed); `last_build_summary` / `last_study_summary` (None after Built, a failure or a dead session) feed File >
-  Save run (`MainWindow._save_run`: `api.save_session_run` in a `bridge.call`, the `run --out` files; log.txt = the
-  Messages lines since the last Build / Compute, `_job_log` capped; summary model.file = the document path at the
-  request). The results panel then names that cause in its banner and skips session fetches after a sweep whose last
-  value failed. View in browser (web page of the canvas field) has one path: the canvas button
-  (`ModelCanvas._browser_button`, a child of `_plot_area` placed over the plot frame's top-right corner by
-  `_update_browser_button` from `_place_plot` / `_set_mode`; field view with a field only) and the Results Field tab's
-  export-row button both emit `canvas.view_in_browser_requested` -> `MainWindow._view_in_browser`. Its
-  `_web_page_target` needs the Save run state and `canvas.current_field`: the field's physics' only 'mode_shapes' result
-  (the animation), a 'dft_' component (`_dft_field_data`) -> `ResultsPanel.shown_dft_key` (set by `_show_dft_field`),
-  else 'physics.component'. Never greyed out: a click with nothing to view says so in the status bar. It calls
-  `api.export_session_html` (Results.export_html: viz.field_viewer / viz.mode_player page) in a `bridge.call`, writing
-  into `web_page_directory()` (temporary folder, one file per model and target, no save dialog), then opens it with
-  QDesktopServices (failure names the file). A mode animation is first written with max_bytes =
-  `_MODE_PAGE_ASK_BYTES` (only for a mode_shapes target: export_html refuses fields= / max_bytes= on a field page):
-  above it the worker returns the `ModePageTooLarge` (nothing written) and the GUI thread
-  asks which kept groups to take (`_ask_mode_page_fields`), then exports again with that `fields=`. Compute runs
-  `schema.with_gui_run_features` of the document spec (FeatureType.gui_run_studies: a mode_shapes feature on every
-  solved tetrahedra solid of an eigenfrequency / optomechanics study without one), so the animation needs no feature
-  in the model; the run spec (bridge results_spec, Save run's model.json) holds it, the document and tree do not.
-  `ResultsPanel.refresh` skips mode_shapes results (no panel shows them; View in browser fetches its own). It passes no `planes=`: a live 3D page gets api's default x, y and z
-  cuts through the structure (one shown cut alone was a worse page: a single plane, often missing the objects).
-- "Results out of date" compares the content minus title, description, derived_values, analytic_curves and
-  derived_curves with the document (never revisions). The Derived values tab evaluates the document's current
-  definitions via `Session.derived_value` (no rebuild; a derived-curve source is built from the document's curve, not
-  the built spec's) and shows a value only while its `_derived_definition` (expression, selection, operation, source, at, window, wavelength, fit, degree, a curve
-  source's expression + ordered inputs) is unchanged;
-  'Export table…' writes `_derived_rows` as a 'table' result. The Derived curves tab runs
-  `analytic.derived_curve_plots` of a deep copy of the document's derived_curves on the worker after Built /
-  StudyFinished / a 'results' or 'all' edit, skipped while a job runs (its end re-evaluates); inputs editor
-  `forms.CurveInputsEdit` (a `_parse` problem blocks the commit).
-- References and analytic curves are evaluated on the GUI thread from the document's definitions over
-  `ResultsPanel._curve_parameters` (the worker session's parameters, fetched after Built and StudyFinished: a swept
-  model's Build is at the base value; until then `built_parameters(results_spec or document spec, study summary)`), so
-  a 'results' / 'all' change redraws every result view and refetches a chosen line-curve profile (`session.field` at
-  the curve's plane, else the Field tab's z cut (mid-height while a side cut is shown), whose change refetches it too;
-  a `snapshot` curve reads `_session_snapshot_field`, its index resolved on the GUI thread from the summary labels).
-- Result curve plots (every tab but Field, DFT, Derived values, Parity sectors and the far-field polar plot) are
-  `plot_view.ResultPlotView`s made by `ResultsPanel._plot_view` (exports stamped by `_export_metadata`; None without
-  results_spec: curve-data export refused). Contract: `plots()` -> [(name, xy or None)], xy = x (SI), x_label, x_unit,
-  series, series_units, y_label, optional series_x {name: own x} (`plot_view.curve_xy`), log_x / log_y (applied only
-  when (plot, flags) change), parameters, preview (live min / max: curve-data export refused); x_label 'Wavelength'
-  with x_unit 'm' is shown in nm. The view owns the plot / unit-group / series combos (hidden with one entry, choices
-  kept by name / unit), Export plot (`panel.export_path()` without asking when set, else a dialog), Export curve data
-  (`io.export_curve_plots` after `exportable_xy`: series_x on the union x, NaN off each series' samples; then the
-  owner's `extra_export_actions`, e.g. `_export_key`, which refuses a decimated preview) and Compare data (per view,
-  never saved: 'plot' = one plot of an `io.read_curve_data` file, 'match' = its plots over the shown plot of the same
-  name, 'run' = another plot of the same view; a set with recorded units on another abscissa is skipped in the error
-  line).
-- Drawing: colour = position of the series in the whole xy (not its unit group), all-NaN series skipped,
-  `connect='finite'`, markers or an own `pen` from `curve_options`, then `overlays(plot, DrawnPlot)` (the owner's
-  analytic / reference curves via `ResultsPanel._draw_feature_curves`, reporting to `view.add_error`), compared sets,
-  labels via `plot_view.axis_label` ('', '1', a.u., dB, deg go into the label text), `panel.apply(context(name))`. Note
-  line = `note(name, xy)`; error line = `set_error` (kept) + this draw's `add_error`s. `request_redraw(live=)`
-  coalesces (singleShot 0; live: at most every 200 ms); a hidden view only marks itself dirty and redraws on
-  showEvent: owners call it on every data change, never draw themselves. Overlay pens use `SERIES_COLORS` or a colour
-  off the palette; PlotPanel keeps the owner's colour unless a curve has its own.
-- Per view: Probes = time view (stationary iterations get a plot 'Probe iterations' of their own) + FFT view, live
-  from `live_results`; Spectra: 'Ratio to reference' swaps `_spectrum_plots` for `_ratio_plots` under the same plot
-  names; Curves & tables: `analytic.table_xy` (panel hidden for a table without number columns); Sweep: computed once
-  per study summary or `SweepValueDone` (`_current_sweep`: the finished table, else the running sweep's partial one,
-  dropped by a failure, a new sweep's first SweepStep or a replaced document; `_sweep_xy`); Derived values: table +
-  plot of summary `derived_series`; Parity sectors: a QTableWidget from the summary's parity_sectors (a sweep: the last
-  value's sectors); Line profile: a changed line-curve list while no line is drawn selects the first curve; a profile
-  carries start / end / plane / snapshot / resampled (True on a display grid, False on native cells) / mid_run into its
-  xy and 'Raw profile…'.
-- `plot_controls.PlotPanel` (tabs Axes / Curves / Labels / Exports; style groups `_LABEL_` / `_AXIS_` / `_EXPORT_` /
-  `_LEGEND_STYLE_GROUPS`) ends every redraw with `apply(context)`. Axis limits (view coordinates are log10 on a log
-  axis) and tick steps (`tick_step`, read by `_style_axes`) belong to that view only, not saved; an axis is fitted only
-  when its log toggle or limits change, so a redraw keeps a mouse zoom. Curves tab: per-curve settings kept per
-  context, curves matched by name (unnamed 'curve <n>'), not saved; apply refills the table only when (context, curve
-  keys) changed, never from a cell widget's own signal; the export takes widths / sizes from these settings; a
-  one-sample curve on Auto marker gets 'o'. The `viz.curve_figure.PlotStyle` is ONE object per QSettings key
-  ('curve_plot_style') shared by every panel (`_SharedPlotStyle.changed` refreshes all), so a style value must suit
-  every plot: data-dependent settings go to the Axes / Curves tables.
-- PlotPanel screen preview: `_ArticleAxis` items (a fixed tick step giving more than `_MAX_FIXED_TICKS` falls back to
-  automatic in `tickSpacing`, else pyqtgraph allocates range / step ticks; automatic steps are raised 1-2-5 until the
-  major labels fit, since pyqtgraph always labels the major level; tickAlpha 1 unless the grid is on, as
-  pyqtgraph draws grid lines with the ticks); legend in a view-box corner ('best' re-placed on zoom / resize and handed
-  to the export as that corner) or 'outside right' in a widened layout margin; curves restyled from the owner's look
-  (kept per item in a WeakKeyDictionary), axis labels overridden while the owner's (text, units) are remembered; SI
-  prefix off = `autoSIPrefixScale` 1 before `setLabel` (enableAutoSIPrefix(False) still scales). Export plot =
-  `PlotPanel.export`, WYSIWYG: visible PlotDataItems, view range, log flags, shown axis texts, SI scales and the ticks
-  `_ArticleAxis` drew last (`drawn_ticks`) go to `save_curve_figure` (matplotlib) at the widget's size / logical dpi;
-  pt -> px through `_px_per_pt` so screen and file agree; never the pyqtgraph exporters (cosmetic pens stay thin).
-- Canvas display grid (`canvas._display_grid`): float64 stays float64 (DFT maps are sent float64); uniform centres
-  span first / last centre +- half a spacing. Non-uniform centres (graded cells, native snapshots) keep `_NativeCells`:
-  edges from `viz.common.edges_from_centers` (never midpoints of centres: wrong on graded cells) and the
-  `viz.common.containing_cells` rule of line_profile for image, detail, hover and drawn profiles ('resampled' False;
-  also for a uniform field shown cell for cell); colour limits span every cell; `_detail_image` (above the field
-  image, ignoreBounds so the A button fits the whole field) redraws the visible range +- `_DETAIL_MARGIN` after each
-  zoom / pan settles (`_detail_timer`), hidden where the whole-window image already resolves the cells.
-- Progress (`MainWindow._on_progress`): the toolbar bar is the whole run (Progress.fraction over its stages, times the
-  sweep position); the Progress tab's `stage_bar` shows the stage itself. Time remaining = the whole sweep's, else the
-  current stage's for a multi-stage run (later stages have no estimate).
-- WorkerBridge keeps `device` / `last_memory_status` and re-emits them; the gauge shows pool_used / budget, on kind
-  'cpu' (no usable GPU) host RAM. The build-memory table is filled from Built (`BuildSummary.gpu_*`) and BuildFailed
-  (`build_memory`). Examples menu: one submenu per `<repo>/examples` subfolder (`ExampleCatalog.folders()`, no file
-  read; json directly in examples/ is not listed); one folder per physics area, its 2D / 3D / axisymmetric models
-  together (no `em3d` folder). Below a folder: space submenus (`examples.EXAMPLE_SPACES`, always shown, even one) of
-  its single-type models, then a separator and Multiphysics -> spaces of its models with several types (the
-  multiphysics folder: spaces directly), then a submenu per physics type group when a space holds several.
-  `ExampleModel.space` comes from the raw JSON only: `size_z` 3D, `size_y` null 1D, spherical grid or every physics
-  instance axisymmetric (`schema.instance_spaces` over the type's setting defaults: heat 'geometry', the BOR types)
-  Axisymmetric, else 2D; aboutToShow runs `ExampleCatalog.scan(folder)` (skips `*_out`,
-  hidden folders; raw JSON title / description / domain / physics types only, cached per file version), listing every readable
-  file: never load_model / validate there (on a CPU-only machine validation probes cuDSS / gmsh per file and stalls the
-  hover); a model is checked only when opened, like any file; menus are rebuilt
-  on every aboutToShow and old submenus deleteLater'd (`clear()` keeps them). An example opens as an untitled copy.
-  Entries show `ModelSpec.title`, never the file stem (examples/README.md indexes stems: its "Naming" paragraph has the
-  menu path folder label (`examples._FOLDER_LABELS`) -> space -> physics type label(s) -> title, and the title convention
-  'Analytic: ...' for benchmarks); the tooltip ends with the relative path. A folder without a `_FOLDER_LABELS` entry shows its name capitalised.
+  work goes through `WorkerBridge.call(fn)` (worker side: model sub file "Worker"; cupy in the returned value fails the
+  task). Its callbacks are dropped once the document is replaced (`advance_generation`, called by ResultsPanel on
+  `replaced`) unless `keep_if_replaced` (Save run, View in browser: they act on the run they captured).
+- Bridge state (`WorkerBridge.results_spec`, `last_build_summary`, `last_study_summary`; when each is cleared: its
+  handler) says whether a session / finished run exists: File > Save run, View in browser and the results panel read
+  it (a sweep whose last value failed leaves no session: the banner names the cause, session fetches are skipped).
+- View in browser has one handler: the canvas button and the Results Field tab's button both emit
+  `canvas.view_in_browser_requested` -> `MainWindow._view_in_browser` (target: `_web_page_target`). Compute runs
+  `schema.with_gui_run_features` of the document spec (model sub file "GUI run features"), so the mode animation needs
+  no feature in the model: the run spec (results_spec, Save run's model.json) holds it, the document and tree do not.
+- Post-processing edits (title, description, derived values, analytic and derived curves: `document.results_inputs`)
+  neither make results out of date nor drop cached estimates. Post-processing is evaluated from the document's current
+  definitions, never the built spec's: derived values by `Session.derived_value` on the worker (shown only while
+  `results._derived_definition` is unchanged), derived curves likewise (`analytic.derived_curve_plots`), references
+  and analytic curves on the GUI thread over `ResultsPanel._curve_parameters` (the session's parameters: a swept
+  model's Build is at the base value). A 'results' / 'all' edit redraws every result view.
+- Result curve plots (all but the Field / DFT maps, tables and the far-field polar plot) are
+  `plot_view.ResultPlotView`s made by `ResultsPanel._plot_view` (contract: the class docstring). Owners call
+  `request_redraw(live=)` on every data change and never draw themselves (a hidden view redraws when shown). Series
+  colour = position in the whole xy (not its unit group): overlays take the colour `DrawnPlot.drawn` hands them or
+  one off `SERIES_COLORS`.
+- `plot_controls.PlotPanel` ends every redraw (`apply(context)`); axis limits, tick steps and per-curve settings
+  belong to that view / context and are not saved (a redraw keeps a mouse zoom). The `viz.curve_figure.PlotStyle` is
+  ONE object per QSettings key shared by every panel (`_SharedPlotStyle`), so a style value must suit every plot:
+  data-dependent settings go to the Axes / Curves tables. Export plot is WYSIWYG: `PlotPanel.export` hands what the
+  screen drew (visible items, view range, shown axis texts, SI scales, the ticks `_ArticleAxis` drew last) to
+  `save_curve_figure` (pt -> px through `_px_per_pt`), never the pyqtgraph exporters (cosmetic pens stay thin).
+- Canvas display grid (`canvas._display_grid`): non-uniform cells (graded, native snapshots) keep `_NativeCells`, edges
+  from `viz.common.edges_from_centers` (never midpoints of centres: wrong on graded cells) and the `containing_cells`
+  rule of line_profile for image, detail, hover and drawn profiles.
+- Examples menu (`gui/examples.py`, `MainWindow._populate_examples_menu`): menu path and title convention are written
+  up in examples/README.md "Naming": change both together. The catalog reads raw JSON only, never load_model /
+  validate (why: `ExampleCatalog.scan`). Menus are rebuilt on every aboutToShow and old submenus deleteLater'd
+  (`QMenu.clear()` keeps addMenu's submenus).
 - More windows = more processes, never more documents in one MainWindow: one window owns one document, one
-  WorkerBridge and one worker session, and gpu_memory.set_budget / the element-mesh and cuDSS ordering caches are per
-  process. File > New window / Open in new window / Duplicate in new window call `main_window.launch_window`
-  (detached `python -m open_sol.gui ... --cascade`, package root first on PYTHONPATH). Duplicate writes the spec
-  (unsaved edits included) into `window_copy_directory()`; the new process reads it with `--copy` as untitled
-  (Save asks for a name), deletes it once read (kept when reading fails) and refuses a `--copy` file elsewhere. Windows
-  share QSettings (recent files, dock state); a `--cascade` window is offset by `_CASCADE_OFFSET_PX` and never saves
-  its geometry. Each window budgets the GPU memory free when its job starts: computing in two windows at once can run
-  the later one out of memory.
+  WorkerBridge and one worker session (`main_window.launch_window`; Duplicate: `window_copy_directory`). The GPU budget
+  and the element-mesh and cuDSS ordering caches are per process, so two windows computing at once can run the later
+  one out of memory. Windows share QSettings.
 - PySide6 is imported before pyqtgraph (`gui/__init__`). `app.main` sets `imageAxisOrder='col-major'` (images are
-  `[i, j]`) and the QSettings names ('open_sol', 'open_sol') that results.py relies on.
+  `[i, j]`) and the QSettings organisation / application names every bare `QSettings()` relies on.
 - Views: defer rebuilds with `QTimer.singleShot(0)` and a pending flag; block an editor's signals before deleting it;
-  mutate fns look nodes up by name; catch `helpers.USER_ERRORS` around user edits and show
-  `expressions.error_message(exc)` (`helpers.run_user_operation`); a refused edit reads '<undo label>: <message>' and
-  reaches `MainWindow._report_refused_edit`. File dialogs via `helpers.start_directory` / `remember_directory` /
-  `ask_save_path`; Save run uses `helpers.ask_run_directory` (never a QFileDialog in save mode: it enters an existing
-  folder typed as the name). `MainWindow._commit_pending_edit` clears focus before Build, Compute, saves and the
-  discard prompt (an external rebuild drops uncommitted editor text). SettingsPanel rebuilds only on a node change,
-  section 'all' or (external edits) the `_LIST_BACKED_NODES` forms, else refreshes in place: an edit outside 'all' that
-  changes a form's structure must select another node, and every editor a non-'all' edit can change needs a refresher.
-- ModelDocument: the estimate methods live in `SpecEstimates` (shared with `SweepValueEstimates`): a new cached
-  estimate goes there. `spec` is replaced on undo / redo / set_spec and after a failed mutate (never cache it); edits from
-  inside a document signal handler raise; `spec_dict()` = the current revision's to_dict, kept by every edit (next
-  undo snapshot, out-of-date input): never modify it, never change `spec` outside mutate; `node_selected` carries a
-  tuple. `mesh_estimate(name)` (None = default mesh) / `used_mesh_estimates()` / `memory_estimate()` /
-  `mesh_memory_estimate(name)` / `time_estimate()` (no benchmark on the GUI thread) / `issues()` are cached per
-  revision, carried over (all but issues) by an edit leaving `results_inputs` unchanged (title, description, result
-  settings: `_next_revision`); a new estimate reading those parts of the spec must not be cached there. Canvas and 3D
-  preview likewise skip re-evaluating on 'model' / 'results' edits (selection overlays and the title only);
-  `set_memory_budget` (fed every MemoryStatus budget and host_available) drops cached issues and emits
-  `issues_invalidated` on a > 5 % change. `replaced` fires only on new / open, just before `changed('all')` (undo / redo
-  emit only `changed('all')`): canvas and ResultsPanel drop the old field and results (the worker session lives until
-  the next build), and ResultsPanel calls `bridge.advance_generation()`: an earlier job keeps running but ResultsPanel
-  ignores its signals (`bridge.event_is_current`) and drops its pending `bridge.call` results (`ResultsPanel._call`: a
-  new view call must use it).
-- Node paths: physics are children of ('model',); ('parameter', name) belongs to ('parameters',) and has no tree item;
-  ('results',) holds the always-present `RESULT_GROUP_NODES` (not spec items, no rename / delete / move):
-  `DERIVED_VALUES_NODE`, `ANALYTIC_CURVES_NODE`, `DERIVED_CURVES_NODE` (one ('derived_plot', plot) node per
-  `derived_plot_names` entry: renaming sets the plot of its curves, no delete / move; 'derived_curve' nodes sit under
-  it, their siblings are their plot's curves, a duplicate stays in its plot); `COMPUTED_RESULTS_NODE` = the tree's
-  'Results' node (not in the spec, always `node_exists`, shown while `ResultsPanel.has_results`). `parent_node` /
-  `sibling_names` live in gui/document. Same-edit rules: `add_physics` sets every = 500 when a used mesh's estimate has
-  a dt and the type declares no courant_factor (and, when the first courant_factor type arrives, on existing
-  non-Courant physics still at every 1; `notice` -> status bar); `add_feature` creates its geometry; `duplicate_node`
-  copies a feature's own object (`_owned_object`).
-- Add physics menu (`ModelTree._add_physics_menu`, rebuilt on every context menu): one submenu per `PHYSICS_GROUPS`
-  entry, misfits disabled under 'Not available in this model' (tooltip = `physics_type_misfit` reason, which also
-  greys out types without the model's `solver_backend`). Only the physics present restrict it: `add_physics` switches
-  2D <-> 3D in the same edit when the picked space needs it (3D: size_z = size_x; 2D: size_z and every object's z params
-  cleared). The Solvers form's 'Run on' Automatic label follows `cupy_installed()`; mesh memory lines on the cpu are one
-  processor total (gpu_peak + host). `solver_defaults.memory_check` is edited only by the mesh form's tick box 'Override
-  memory warning' (`_MEMORY_OVERRIDE`: ticked = 'warning') in its Estimate group, shown on the mesh the budget issue is
-  reported at (`document.memory_verdict()`) while the estimate is over a budget or the override is on. Mesh form order:
-  Build mesh group, Estimate (+ tick box), the node's issues. Built element counts: the store hands
-  `built_mesh_counts` of every preview / built mesh, and after BuildFailed of the meshes the worker kept
-  (`meshing.kept_element_mesh_counts`: a build that meshed, then refused the model), to
-  `document.set_element_counts(name, key, counts)`; while `document.element_mesh_key(name)` is that key,
-  `mesh_estimate` carries them (`counts_built`), so the memory / time estimates and issues follow
-  (`issues_invalidated`, which SettingsPanel refreshes on, as for a budget change). Compute stays refused on an
-  over-budget error until the override is ticked or the built counts fit.
-- Meshes (S7.2; it must always be clear which mesh a physics uses): `MESHES_NODE` ('meshes',) between Couplings and
-  Solvers, one ('mesh', name) child per ModelSpec.meshes entry (section 'mesh'; rename / delete / move are 'all' edits:
-  `ModelSpec.rename_mesh` / `remove_mesh`; `delete_mesh(move_physics=True)` first moves its physics to the remaining
-  default; a move names the default mesh in the physics on it, since meshes[0] is the default). Mesh names are their
-  own namespace (`_new_mesh_name`). `add_mesh(kind, physics=None)` adds an automatic mesh (with a physics: named
-  '<physics>_mesh' and assigned in the same edit); `set_physics_mesh` stores '' for meshes[0]. Every view names meshes
-  through `helpers.mesh_color` (by index in spec.meshes), `mesh_summary_text`, `mesh_badge_html`, `field_mesh_name`
-  (FieldData.mesh, else the physics' mesh in the built spec), `coupling_mesh_text`, `evaluation_mesh`. The mesh form
-  addresses its MeshSpec by the form's node name (`_form_mesh`, inside every mutate); its 'Used by' untick = back to the
-  default mesh (refused on the default mesh). Canvas `_active_mesh_name` = the shown field's mesh in the field view,
-  else `document.mesh_of_node(current node)`, else the default; `_view_is_stale` re-evaluates on a change. 'Show mesh'
-  (`canvas.set_show_field_mesh`) draws the document's current estimate (triangles: the built ones; after mesh
-  refinement the last level's).
+  mutate fns look nodes up by name; catch `helpers.USER_ERRORS` around user edits (`helpers.run_user_operation`; every
+  panel's refused edit reaches `MainWindow._report_refused_edit`). File dialogs via `helpers.start_directory` /
+  `remember_directory` / `ask_save_path`; Save run uses `helpers.ask_run_directory` (never a QFileDialog in save mode:
+  it enters an existing folder typed as the name). `MainWindow._commit_pending_edit` clears focus before Build,
+  Compute, saves and the discard prompt (an external rebuild drops uncommitted editor text). SettingsPanel rebuilds
+  only on a node change, section 'all' or the cases of `_on_document_changed`, else refreshes in place: an edit outside
+  'all' that changes a form's structure must select another node, and every editor a non-'all' edit can change needs a
+  refresher.
+- ModelDocument: never cache `spec` (replaced on undo / redo / set_spec and after a failed mutate) or change it outside
+  `mutate` (from a document signal handler it raises: defer); never modify `spec_dict()`. A new cached estimate goes
+  into `SpecEstimates` (shared with `SweepValueEstimates`) and must depend only on `results_inputs` (an edit leaving
+  them unchanged carries the cache over); canvas and 3D preview likewise skip re-evaluating on 'model' / 'results'
+  edits. `replaced` fires only on new / open, just before `changed('all')` (undo / redo emit only `changed('all')`):
+  views drop run data there (canvas, ResultsPanel, mesh previews), and ResultsPanel advances the bridge generation.
+- Node paths: the node constants, `parent_node`, `sibling_names`, `mesh_of_node` and `issue_node_path` live in
+  gui/document (tree, forms and issue placement share them). Group nodes (`RESULT_GROUP_NODES`, ('derived_plot', plot),
+  `COMPUTED_RESULTS_NODE` = the tree's 'Results', `MESHES_NODE`, `ESTIMATION_NODE`) are not spec items: no rename /
+  delete / move (renaming a derived_plot sets the plot of its curves). Same-edit side effects of `add_physics`,
+  `add_feature`, `duplicate_node`, `add_mesh`: their docstrings; the document's `notice` signal reports them.
+- Add physics menu (`ModelTree._add_physics_menu`, rebuilt on every context menu): one submenu per
+  `schema.PHYSICS_GROUPS` entry; misfits (`physics_type_misfit`, also a missing `solver_backend`) disabled under 'Not
+  available in this model' with the reason as tooltip. Only the physics present restrict it: `add_physics` switches
+  2D <-> 3D in the same edit when the picked space needs it.
+- Memory budget: `solver_defaults.memory_check` is edited only by the mesh form's 'Override memory warning' tick box
+  (`settings_panel._MEMORY_OVERRIDE`), shown on the mesh the budget issue is reported at (`document.memory_verdict()`)
+  while over a budget or overridden. Built element counts (previews, built meshes, the meshes a failed build kept)
+  reach the estimates through `document.set_element_counts` (mesh_preview); its `issues_invalidated` (also a > 5 %
+  budget change) is what SettingsPanel refreshes on. Compute stays refused on an over-budget error until the override
+  is ticked or the built counts fit.
+- Meshes (S7.2; it must always be clear which mesh a physics uses): `MESHES_NODE` between Couplings and Solvers, one
+  ('mesh', name) child per ModelSpec.meshes entry (rename / delete / move are 'all' edits; meshes[0] is the default, so
+  `set_physics_mesh` stores '' for it and a move names the default mesh in the physics on it). Every view names and
+  colours meshes through the mesh helpers of gui/helpers (`mesh_color`: by index in spec.meshes), never its own text.
+  The mesh form addresses its MeshSpec by the form's node name inside every mutate (`_form_mesh`). Canvas
+  `_active_mesh_name` = the shown field's mesh in the field view, else `document.mesh_of_node(current node)`, else the
+  default; 'Show mesh' draws the document's current estimate (triangles: the built ones; after mesh refinement the
+  last level's).
 - Mesh refinement (StudySpec.adaptation): the off group is disabled by `settings_panel._adaptation_blocker` (=
   validation's rules, re-checked by a refresher since a parity-sector edit only refreshes); a method edit rebuilds. A
   run emits Built per level (StudyStarted after level 0's): ResultsPanel counts them in `_refinement_level`. The

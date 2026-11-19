@@ -1262,7 +1262,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._report_file_failure('Save run failed', f'Could not save the run to {directory}:\n{message}')
 
         self.show_status('Saving the run…')
-        bridge.call(save, on_result=saved, on_error=failed)
+        bridge.call(save, on_result=saved, on_error=failed, keep_if_replaced=True)
 
     def _view_in_browser(self, fields=None):
         """Write the web page of the canvas field (_web_page_target; api.export_session_html on the worker: the page
@@ -1281,7 +1281,8 @@ class MainWindow(QtWidgets.QMainWindow):
         suffix = file_stem(what)
         path = os.path.join(web_page_directory(), f'{stem}_{suffix}.html')
         log_entries = list(self._job_log)
-        # fields= / max_bytes= exist only for a mode animation (export_html raises on a field or DFT page)
+        # fields= / max_bytes= exist only for a mode animation (export_html raises on a field or DFT page); no planes=:
+        # a live 3D page gets api's default x, y and z cuts through the structure (the one shown cut often misses it)
         mode_page = what in {f'{physics}.{feature}' for physics, feature, kind in build_summary.feature_results
                              if kind == 'mode_shapes'}
         size_cap = _MODE_PAGE_ASK_BYTES if mode_page and fields is None else None
@@ -1316,7 +1317,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._report_file_failure('Open in browser failed', f'Could not write the web page of {what}:\n{message}')
 
         self.show_status(f'Writing the web page of {what}…')
-        bridge.call(export, on_result=exported, on_error=failed)
+        bridge.call(export, on_result=exported, on_error=failed, keep_if_replaced=True)
 
     def _populate_add_object_menu(self):
         """Geometry > Add object: the kinds of the model's dimension (box / cylinder_z / sphere only in 3D), as the

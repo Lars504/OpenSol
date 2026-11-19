@@ -1377,12 +1377,8 @@ class ResultsPanel(QtWidgets.QWidget):
         return lambda *args: handler(*args) if self._bridge.event_is_current else None
 
     def _call(self, fn, on_result, on_error=None):
-        """bridge.call whose result / error is dropped when the document was replaced meanwhile."""
-        generation = self._bridge.generation
-
-        def if_current(callback):
-            return lambda value: callback(value) if self._bridge.generation == generation else None
-        self._bridge.call(fn, on_result=if_current(on_result), on_error=if_current(on_error or self._on_call_error))
+        """bridge.call (dropped when the document was replaced meanwhile), errors by default to _on_call_error."""
+        self._bridge.call(fn, on_result=on_result, on_error=on_error or self._on_call_error)
 
     # ---- curve views: shared ----
     def _redraw_views(self):

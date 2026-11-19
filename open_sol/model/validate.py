@@ -1916,9 +1916,9 @@ class _Validator:
                 self.error(path, f"stored field '{entry}': physics '{physics_name}' has no output field "
                                  f"'{component}'; available: {', '.join(components)}")
                 continue
-            required_study = physics_type.output_fields[components.index(component)].requires_study
-            if required_study and required_study != self.spec.study.type:
-                self.error(path, f"stored field '{entry}' exists only in a {required_study} study (this study: "
+            info = physics_type.output_fields[components.index(component)]
+            if not info.available_in(self.spec.study.type):
+                self.error(path, f"stored field '{entry}' exists only in a {info.requires_study} study (this study: "
                                  f'{self.spec.study.type}); remove it or change the study type')
 
     def _check_stored_cuts(self, path, stored_cuts):

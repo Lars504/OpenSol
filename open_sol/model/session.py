@@ -379,7 +379,7 @@ class Session:
         self._require_open()
         study_type = self.spec.study.type
         return [(name, info) for name in self.physics for info in self.renderer(name).field_infos.values()
-                if not info.requires_study or info.requires_study == study_type]
+                if info.available_in(study_type)]
 
     # ---- fields ----
     def display_field(self, component, physics=None, max_pixels=DISPLAY_MAX_PIXELS, plane=None) -> FieldData:
