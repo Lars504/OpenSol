@@ -56,10 +56,12 @@ class YeeRenderer3D(PhysicsRenderer):
         self.xp = physics.domain.xp
 
     def device_field(self, component):
+        """Whole-window values (window-sized temporaries: a cut plane takes device_plane)."""
         return self._field(component, None)
 
     def device_plane(self, component, axis, index_window):
-        """Window plane normal to axis 'x' | 'y' | 'z' at window cell index_window (the axis dropped)."""
+        """Window plane normal to axis 'x' | 'y' | 'z' at window cell index_window (the axis dropped), touching only
+        that plane."""
         if axis not in _AXES:
             raise ValueError(f"cut plane axis must be one of {_AXES}, got {axis!r}")
         return self._field(component, (_AXES.index(axis), int(index_window)))

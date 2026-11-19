@@ -15,7 +15,8 @@ from ...model.definition_resonance import resonance_monitor_feature
 from ...model.expressions import ExpressionError, referenced_names
 from ...model.geometry import expand_entities
 from ...core.renderer import FieldInfo
-from ...model.schema import DomainRequirements, FeatureType, Issue, Param, PhysicsType, array_owner, feature_path
+from ...model.schema import (FREQUENCY_DOMAIN_STUDY, DomainRequirements, FeatureType, Issue, Param, PhysicsType,
+                             array_owner, feature_path)
 from ..em.definition_common import (EM_FAMILY, FLUX_PARAMS, POINT_SOURCE_SIGN, _monitor_wavelengths,
                                     _q_accum_referenced, background_permittivity, boundary_settings_params,
                                     em_material_params, make_pole,
@@ -539,7 +540,7 @@ def _half_storage_issues(vctx, physics_spec, settings_values, path):
     if resolved_stepper_precision(vctx.solvers(physics_spec)) != 'half_storage':
         return []
     issues = []
-    if vctx.study_type == 'frequency_domain':
+    if vctx.study_type == FREQUENCY_DOMAIN_STUDY:
         issues.append(Issue('error', path, 'half_storage (fp16 fields) does not run the harmonic FDTD of a '
                                            'frequency_domain study: use a single-precision stepper solver'))
     from ...materials import effective_material_data   # lazy: physics -> materials only inside functions
@@ -729,7 +730,7 @@ EM_FDTD_3D = PhysicsType(
                   _Q_ACCUM_INFO),
     output_fields=tuple(EMRenderer3D.field_infos.values()),
     source_slots=source_slot_docs(_SLOT_ARRAYS),
-    supported_studies=('time_dependent', 'frequency_domain'),
+    supported_studies=('time_dependent', FREQUENCY_DOMAIN_STUDY),
     default_study={'type': 'time_dependent', 'settings': {'duration': 50e-15}},
     uses_dispersion=True,
     create=_create,

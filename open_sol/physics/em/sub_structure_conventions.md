@@ -503,7 +503,7 @@ type's vocabulary and refusals are in its help texts and validation.
   rules of body_of_revolution, changes both types (selftests em_fdtd_bor_*, example analytic_bor_transverse_dipole_m1).
 - r_hi CPML kappa enters the assembly widths, shared by every stepper of an order sum: flux / source helpers see
   rho = r inside the window only.
-- Its kernels and their numpy twins live in fdtd_bor (not core.kernels); keep every new path xp-generic.
+- Its kernels are `core.kernels` twins named 'em.bor_fdtd_*' (defined in fdtd_bor with their numpy twins).
 - A new per-step term goes into `_LockstepBatch` (flat index = member position x layout size + own index), never into
   a per-member loop; host coefficient changes reach the device through `upload` / `injections_changed`.
 - Physics, monitors, BORHarmonic and the renderer use only the engine interface of the `BOROrderSum` docstring

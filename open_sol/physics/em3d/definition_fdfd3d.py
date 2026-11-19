@@ -18,10 +18,10 @@ from ...model.schema import DomainRequirements, FeatureType, Issue, Param, Physi
 from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, MIXED_EIGEN_MIN_UNKNOWNS,
                                             MIXED_FACTORIZATIONS, arnoldi_basis_size)
 from ...solvers.sparse_direct import vector_3d_size_issue
-from ..em.definition_common import (DEFAULT_WAVELENGTH, EM_FAMILY, _refractive_index, all_solved_wavelengths,
-                                    boundary_settings_params, make_validate_physics, object_result, physics_counter,
-                                    HOST_DIRECT_NAMES, resonance_eigenpairs, shortest_solved_wavelength,
-                                    source_slot_docs)
+from ..em.definition_common import (DEFAULT_WAVELENGTH, EIGENFREQUENCY_STUDY, EM_FAMILY, _refractive_index,
+                                    all_solved_wavelengths, boundary_settings_params, make_validate_physics,
+                                    object_result, physics_counter, HOST_DIRECT_NAMES, resonance_eigenpairs,
+                                    shortest_solved_wavelength, source_slot_docs)
 from ..em.definition_fdfd import (MIN_REGION_FRACTION_PARAM, resonance_region_memory_estimate,
                                   validate_resonance_table)
 from ..em.eigenfrequency import (REGION_COLUMN, ResonanceRegion, ResonanceTable, resonance_filter_time_item,
@@ -40,7 +40,6 @@ from .fem_solver3d import FEMResonancePhysics3D
 from .renderer_fdfd3d import FDFDRenderer3D
 
 TYPE_NAME = 'em_fdfd_3d'
-_EIGENFREQUENCY_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
 _SELECT_PHASE = 'select resonance'          # run phase (MemoryEstimate.transient_items) of select_resonance's upload
 _GRIDS = ('tensor', 'tetrahedra')   # PhysicsType / FeatureType.grids: tetrahedra = FEMResonancePhysics3D (T4b)
 # tetrahedra: stored entries per Nedelec row (degree 1 ~18, degree 2 ~45; fem3d YEE_EQUIVALENT_UNKNOWNS) and Nedelec
@@ -587,8 +586,8 @@ EM_FDFD_3D = PhysicsType(
     state_fields=(FDFDRenderer3D.field_infos['eps_r'],),
     output_fields=tuple(FDFDRenderer3D.field_infos.values()),
     source_slots=source_slot_docs(_SLOT_ARRAYS),
-    supported_studies=(_EIGENFREQUENCY_STUDY,),
-    default_study={'type': _EIGENFREQUENCY_STUDY, 'settings': {'n_resonances': 6}},
+    supported_studies=(EIGENFREQUENCY_STUDY,),
+    default_study={'type': EIGENFREQUENCY_STUDY, 'settings': {'n_resonances': 6}},
     uses_dispersion=True,
     grids=_GRIDS,
     create=_create,
@@ -601,7 +600,7 @@ EM_FDFD_3D = PhysicsType(
     subpixel_smoothing=True,
     # Automatic on the gpu: cudss_mixed, the examples' and self-tests' node (host SuperLU took 35-48 s to factor the Mie
     # examples, against ~1 s); a cuDSS refusal falls back to SuperLU (B1b)
-    solver_roles={'eigen': eigen_role((_EIGENFREQUENCY_STUDY,), mixed_factorization=True,
+    solver_roles={'eigen': eigen_role((EIGENFREQUENCY_STUDY,), mixed_factorization=True,
                                       auto_factorizations={'tensor': 'cudss_mixed', 'tetrahedra': 'cudss_mixed'})},
     backends=('gpu', 'cpu'),   # host assembly and solve; fields on the Domain's xp
 )

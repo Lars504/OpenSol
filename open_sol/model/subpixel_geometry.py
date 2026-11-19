@@ -677,7 +677,8 @@ def subpixel_memory_estimate(spec, registry, shapes, mesh) -> MemoryEstimate:
     ), build_extra=build_extra).labelled('subpixel smoothing')
 
 
-_FACE_INDEX_BYTES_PER_CELL = 2        # em_fdtd_3d uint16 face override index (physics/em3d/subpixel_smoothing3d)
+_FACE_INDEX_BYTES_PER_CELL = 2        # em_fdtd_3d uint16 face override index (physics/em3d/subpixel_smoothing3d;
+                                      # em_fdfd_3d, which has none, is counted alike: a small overestimate)
 _FACE_BYTES_PER_LOCATION = 30         # its per-location kind positions (int64), values (3 x float32), ids, cells
 _REFRESH_BYTES_PER_LOCATION = 48      # re-quantisation temporaries of a refresh (material_index3d on 1D arrays)
 
