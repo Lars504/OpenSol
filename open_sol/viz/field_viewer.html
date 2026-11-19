@@ -229,14 +229,19 @@ body.present .app { padding: 10px; gap: 10px; }
         <option value="all">All frames</option><option value="frame">This frame</option></select>
       <button id="log" aria-pressed="false" title="Logarithmic colour scale (non-negative fields)">Log</button>
       <select id="decades" title="Decades shown on the log scale">
-        <option value="2">2 dec</option><option value="3" selected>3 dec</option><option value="4">4 dec</option></select>
+        <option value="2">2 dec</option><option value="3" selected>3 dec</option><option value="4">4 dec</option>
+        <option value="6">6 dec</option><option value="9">9 dec</option></select>
     </div>
     <div class="group"><label for="range">Range</label>
       <input type="range" id="range" min="0.02" max="1" step="0.01" value="1" title="Colour limit as a fraction of the largest value (saturates hot spots)">
       <span class="val num" id="rangev"></span></div>
-    <div class="group" id="reliefgroup"><label for="relief">Relief</label>
+    <div class="group" id="reliefgroup"><button id="terrain" aria-pressed="false" title="Raise the map into a lit 3D terrain with its walls, and turn the view to it; again: back to the flat map seen face-on (R)">3D</button>
+      <label for="relief">Relief</label>
       <input type="range" id="relief" min="0" max="1" step="0.01" value="0" title="Raise the map by its value">
       <span class="val num" id="reliefv"></span></div>
+    <div class="group" id="contourgroup"><button id="contours" aria-pressed="false" title="Contour lines at round values, the bolder ones at the colour bar's ticks (decades on a log scale) (C)">Contours</button>
+      <select id="contourn" title="Number of contour levels over the colour range">
+        <option value="coarse">Coarse</option><option value="normal" selected>Normal</option><option value="fine">Fine</option></select></div>
     <div class="group" id="layergroup"></div>
     <div class="group" id="geomgroup"><label for="geom">Objects</label>
       <select id="geom" title="Model objects drawn with the field (G)"></select>
@@ -309,6 +314,7 @@ function barScale(lo, hi, unit) {
 const CMAPS = {
   viridis: ['#440154', '#472d7b', '#3b528b', '#2c728e', '#21918c', '#28ae80', '#5ec962', '#addc30', '#fde725'],
   inferno: ['#000004', '#1f0c48', '#550f6d', '#88226a', '#ba3655', '#e35933', '#f98e09', '#f8c931', '#fcffa4'],
+  plasma: ['#0d0887', '#4c02a1', '#7e03a8', '#a92395', '#cc4778', '#e56b5d', '#f89441', '#fdc328', '#f0f921'],
   ice: ['#04051a', '#151a4b', '#1d3a7a', '#1f5f9e', '#2a86b5', '#4fabc4', '#86ccd3', '#c2e7e6', '#f4fbfb'],
   coolwarm: ['#3b4cc0', '#6282ea', '#8db0fe', '#b8d0f9', '#dddcdc', '#f5c4ad', '#f49a7b', '#de604d', '#b40426'],
   rdbu: ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#fddbc7', '#f4a582', '#d6604d', '#b2182b'],
@@ -316,7 +322,7 @@ const CMAPS = {
   icefire: ['#9be4ff', '#3fa9e6', '#2563b8', '#1b2a5e', '#141414', '#5e1b1b', '#b83a25', '#e6823f', '#ffd59b'],
 };
 const CMAP_CHOICES = {
-  sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['ice', 'Ice']],
+  sequential: [['viridis', 'Viridis'], ['inferno', 'Inferno'], ['plasma', 'Plasma'], ['ice', 'Ice']],
   diverging: [['coolwarm', 'Cool–warm'], ['rdbu', 'Blue–red'], ['puor', 'Purple–orange'], ['icefire', 'Ice–fire (dark middle)']],
 };
 
@@ -333,7 +339,24 @@ const KIND = DATA.frame_kind;              // 'time' | 'labelled' | 'single'
 const is2d = DATA.dimensions === 2;
 const lengthUnit = niceUnit(DATA.length_unit || 'm');
 const AX = { x: 0, y: 1, z: 2 };
-const LOG_OK = !SIGNED && DATA.range[1] > 0 && DATA.range[0] >= 0;
+// ---- scalars: quantity defaults ----
+// DIVERGING: a signed field whose values cross zero (or whose mirror images flip its sign): diverging maps, limits
+// symmetric about 0. A signed field of one sign throughout (a potential of 0 .. 5 V, a temperature rise) is coloured
+// like a magnitude, over its own range: symmetric limits would leave half the map unused
+const DIVERGING = SIGNED && (Math.min(DATA.range[0], -DATA.range[1]) < -0.02 * Math.max(Math.abs(DATA.range[0]), Math.abs(DATA.range[1]))
+  || (DATA.mirrors || []).some((M) => M.sign < 0));
+const LOG_OK = !DIVERGING && DATA.range[1] > 0 && DATA.range[0] >= 0;
+// the kind of quantity picks the opening colour map (each kind remembers the user's own choice) and, for densities
+// spanning decades, the log scale
+const SCALAR_KIND = (() => {
+  const label = (Q.label || '').toLowerCase(), unit = Q.unit || '';
+  if (/temperature/.test(label) || unit === 'K') return 'temperature';
+  if (/densit|concentration/.test(label) && /m\^-?3|m³|cm/.test(unit)) return 'density';
+  if (/potential/.test(label) || unit === 'V') return 'potential';
+  return 'other';
+})();
+const KIND_CMAP = { temperature: 'inferno', potential: 'plasma', density: 'viridis', other: 'viridis' };
+function cmapStoreKey() { return DIVERGING ? 'cmap_signed' : SCALAR_KIND === 'other' ? 'cmap' : 'cmap:' + SCALAR_KIND; }
 
 // ---------- plot settings (the Plot settings panel; keys and values as viz.field_viewer.figure_settings) ----------
 // fig: lengths in m, colour limits in the field's unit, null = automatic. Start: the defaults, then what this browser
@@ -503,9 +526,9 @@ const state = {
   // colour limits: shared over time frames; per frame for labelled ones (modes, wavelengths: independent states)
   frame: 0, playing: false, fps: 8, scale: KIND === 'time' ? 'all' : 'frame', log: false, decades: 3, range: 1, relief: 0,
   lines: false, box: !PLANAR, spin: false, axes: !scaleBarOffered(), stretch: true, mirror: CAN_MIRROR,   // a scale bar stands in for the axes
-  cmap: (SIGNED ? store('cmap_signed') : store('cmap')) || (SIGNED ? 'coolwarm' : 'viridis'),
+  cmap: store(cmapStoreKey()) || (DIVERGING ? 'coolwarm' : KIND_CMAP[SCALAR_KIND]),
 };
-const choices = CMAP_CHOICES[SIGNED ? 'diverging' : 'sequential'];
+const choices = CMAP_CHOICES[DIVERGING ? 'diverging' : 'sequential'];
 if (!choices.some(([key]) => key === state.cmap)) state.cmap = choices[0][0];
 $('cmap').replaceChildren(...choices.map(([key, label]) => new Option(label, key)));
 $('cmap').value = state.cmap;
@@ -551,7 +574,7 @@ function limits() {
   const auto = autoLimits(), lo = fig.color_min, hi = fig.color_max;
   if (lo === null && hi === null) return auto;
   let out;
-  if (SIGNED && (lo === null || hi === null)) { const m = Math.abs(lo === null ? hi : lo); out = [-m, m]; }
+  if (DIVERGING && (lo === null || hi === null)) { const m = Math.abs(lo === null ? hi : lo); out = [-m, m]; }
   else out = [lo === null ? auto[0] : lo, hi === null ? auto[1] : hi];
   if (state.log && LOG_OK && !(lo > 0)) out[0] = out[1] * Math.pow(10, -state.decades);
   return out[1] > out[0] ? out : auto;
@@ -560,7 +583,7 @@ function autoLimits() {
   // colour limits [lo, hi] of the data and the Range slider (log: hi and the decades below it)
   const F = FRAMES[state.frame];
   let lo = state.scale === 'frame' ? F.lo : DATA.range[0], hi = state.scale === 'frame' ? F.hi : DATA.range[1];
-  if (SIGNED) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
+  if (DIVERGING) { const m = Math.max(Math.abs(lo), Math.abs(hi)) * state.range || 1; return [-m, m]; }
   if (state.log && LOG_OK) { const top = Math.max(hi * state.range, 1e-300); return [top * Math.pow(10, -state.decades), top]; }
   hi = lo + (hi - lo) * state.range;
   if (!(hi > lo)) hi = lo + (Math.abs(lo) || 1);
@@ -575,21 +598,22 @@ if (!gl) { $('empty').hidden = false; $('empty').textContent = 'This browser has
 const VS = `#version 300 es
 precision highp float;
 precision highp int;
-in vec3 aPos; in vec2 aVal;
+in vec3 aPos; in vec2 aVal; in float aDown;   // aDown: 1 = a terrain wall's bottom vertex (scalars block), else 0
 uniform mat4 uView; uniform mat4 uProj; uniform vec3 uCenter;
 uniform float uLo; uniform float uHi; uniform int uLog; uniform int uSigned;
-uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch;
+uniform float uRelief; uniform vec3 uNormal; uniform vec3 uStretch; uniform float uBase;
 uniform vec3 uMirA; uniform vec3 uMirB; uniform float uValSign; uniform int uPhase;   // mirror image: a x + b, value sign
-out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace;
+out float vT; out float vOk; out vec3 vViewPos; out vec3 vPlace; out float vVal; out vec3 vSrc;
 void main() {
   float v = aVal.x, t;
   if (uValSign < 0.0) v = (uPhase == 1) ? (v > 0.0 ? v - 3.14159265 : v + 3.14159265) : -v;
-  if (uLog == 1) t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo));
-  else t = (v - uLo) / (uHi - uLo);
+  if (uLog == 1) { t = (log(max(v, 1e-37)) - log(uLo)) / (log(uHi) - log(uLo)); vVal = log(max(v, 1e-37)) * 0.4342944819; }
+  else { t = (v - uLo) / (uHi - uLo); vVal = v; }   // vVal: the value the contour levels count (log10 on a log scale)
   t = clamp(t, 0.0, 1.0);
   float h = (uSigned == 1) ? 2.0 * t - 1.0 : t;
   vPlace = aPos * uMirA + uMirB;      // true coordinates of the (mirrored) point: the axis limits cut on them
-  vec3 p = (vPlace - uCenter) * uStretch + uNormal * (uRelief * h);
+  vSrc = aPos;                        // of the simulated point: where an image reads the outline decal
+  vec3 p = (vPlace - uCenter) * uStretch + uNormal * mix(uRelief * h, -uBase, aDown);
   vT = t; vOk = aVal.y;
   vec4 vp = uView * vec4(p, 1.0);
   vViewPos = vp.xyz;
@@ -598,9 +622,12 @@ void main() {
 const FS = `#version 300 es
 precision highp float;
 precision highp int;
-in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace;
+in float vT; in float vOk; in vec3 vViewPos; in vec3 vPlace; in float vVal; in vec3 vSrc;
 uniform vec3 uStops[9]; uniform int uLine; uniform vec4 uLineColor; uniform float uShade;
 uniform vec3 uClipLo; uniform vec3 uClipHi;
+uniform int uContour; uniform float uC0; uniform float uCStep; uniform float uCMajor; uniform float uCWidth;
+uniform float uWall;                  // terrain walls (scalars block): darker, no contours
+uniform int uDecal; uniform int uDecalAuto; uniform sampler2D uDecalTex; uniform vec3 uDecalU; uniform vec3 uDecalV; uniform vec4 uDecalBox;   // outlines on a raised map
 out vec4 outColor;
 vec3 cmap(float t) {
   t = clamp(t, 0.0, 1.0) * 8.0;
@@ -612,18 +639,42 @@ void main() {
   if (any(lessThan(vPlace, uClipLo)) || any(greaterThan(vPlace, uClipHi))) discard;   // outside the axis limits
   if (uLine == 1) { outColor = uLineColor; return; }
   vec3 base = cmap(vT);
+  if (uContour == 1 && uWall < 0.5) {
+    // isolines at uC0 + k uCStep (every uCMajor-th one bolder, as the colour bar ticks), anti-aliased over the
+    // screen-space change of k; none where the field is flat (a level the whole region sits on) or where the levels
+    // crowd closer than ~2 px (a moire otherwise)
+    float k = (vVal - uC0) / uCStep, w = fwidth(k);
+    if (w > 1e-6 && vT > 0.0 && vT < 1.0) {
+      float d = abs(fract(k + 0.5) - 0.5) / w;   // px to the nearest level
+      bool major = abs(mod(floor(k + 0.5), uCMajor)) < 0.5;
+      float hw = (major ? 0.85 : 0.5) * uCWidth;
+      float a = (1.0 - smoothstep(hw - 0.5, hw + 0.5, d)) * (1.0 - smoothstep(0.25, 0.5, w)) * (major ? 0.9 : 0.6);
+      float lum = dot(base, vec3(0.2126, 0.7152, 0.0722));
+      vec3 ink = lum > 0.42 ? base * 0.28 : mix(base, vec3(1.0), 0.75);   // darker over light colours, lighter over dark
+      base = mix(base, ink, a);
+    }
+  }
   vec3 col = base;
-  if (uShade > 0.0) {                 // relief: light the raised surface; flat maps keep the legend colours
+  if (uShade > 0.0) {                 // relief: light the raised surface (key, fill, rim as mode_player); flat maps keep the legend colours
     vec3 n = normalize(cross(dFdx(vViewPos), dFdy(vViewPos)));
     vec3 v = normalize(-vViewPos);
-    vec3 key = normalize(vec3(0.45, 0.75, 0.55));
-    float dk = abs(dot(n, key));
-    float sp = pow(max(dot(n, normalize(key + v)), 0.0), 40.0);
-    col = mix(base, base * (0.45 + 0.65 * dk) + vec3(0.16) * sp, uShade);
+    if (dot(n, v) < 0.0) n = -n;
+    vec3 key = normalize(vec3(0.45, 0.75, 0.55)), fill = normalize(vec3(-0.6, -0.25, 0.5));
+    float dk = max(dot(n, key), 0.0), df = max(dot(n, fill), 0.0);
+    float sp = pow(max(dot(n, normalize(key + v)), 0.0), 48.0);
+    float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+    vec3 lit = base * (0.42 + 0.55 * dk + 0.18 * df) + vec3(0.18) * sp + vec3(0.05) * rim;
+    col = mix(base, lit, uShade);
+    if (uWall > 0.5) col *= 0.62;
+  }
+  if (uDecal == 1 && uWall < 0.5) {   // the model outlines drawn into a texture over the plane: they follow the relief
+    vec4 d = texture(uDecalTex, (vec2(dot(vSrc, uDecalU), dot(vSrc, uDecalV)) - uDecalBox.xy) / uDecalBox.zw);
+    vec3 ink = d.rgb / max(d.a, 1e-4);
+    if (uDecalAuto == 1) ink = dot(col, vec3(0.2126, 0.7152, 0.0722)) > 0.45 ? vec3(0.05, 0.06, 0.08) : vec3(1.0);   // Contrast: per pixel
+    col = mix(col, ink, d.a);
   }
   outColor = vec4(col, 1.0);
 }`;
-
 let prog = null, uni = {}, ready = false, boxVao = null, boxBuf = null, boxCount = 0;
 function boxLines() {
   const c = [[bmin[0], bmin[1], bmin[2]], [bmax[0], bmin[1], bmin[2]], [bmax[0], bmax[1], bmin[2]], [bmin[0], bmax[1], bmin[2]],
@@ -647,7 +698,8 @@ function setupGL() {
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
   for (const name of ['uView', 'uProj', 'uCenter', 'uLo', 'uHi', 'uLog', 'uSigned', 'uRelief', 'uNormal', 'uStretch',
                       'uStops', 'uLine', 'uLineColor', 'uShade', 'uMirA', 'uMirB', 'uValSign', 'uPhase',
-                      'uClipLo', 'uClipHi'])
+                      'uClipLo', 'uClipHi', 'uBase', 'uContour', 'uC0', 'uCStep', 'uCMajor', 'uCWidth', 'uWall',
+                      'uDecal', 'uDecalAuto', 'uDecalTex', 'uDecalU', 'uDecalV', 'uDecalBox'])
     uni[name] = gl.getUniformLocation(prog, name);
   const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal');
   for (const L of LAYERS) {
@@ -688,7 +740,7 @@ let plotScale = (() => { const v = Number(store(PLOT_SCALE_STORE));
   return isFinite(v) && v >= PLOT_SCALE_MIN && v <= 1 ? v : 1; })();
 function setPlotScale(v) { plotScale = Math.max(PLOT_SCALE_MIN, Math.min(1, v)); store(PLOT_SCALE_STORE, String(plotScale)); }
 function resetCamera() {
-  if (PLANAR) [cam.az, cam.el] = FACE_ON[NORMAL];
+  if (PLANAR) [cam.az, cam.el] = state.relief > 0 ? terrainPose() : FACE_ON[NORMAL];   // a raised map: its terrain angle
   else { cam.az = 2.2; cam.el = 0.42; }        // eye at +x, -y, +z: x to the right, y into the view
   if (DATA.view) { cam.az = DATA.view[0] * Math.PI / 180; cam.el = DATA.view[1] * Math.PI / 180; }
   cam.target = [0, 0, 0]; cam.moved = false;
@@ -787,9 +839,11 @@ function resize() {
 function draw() {
   if (!gl || !ready) return;
   resize();
+  try { prepareDecal(); } catch (err) { decalFailed = true; decalActive = false; console.error('outline decal:', err); }
   gl.viewport(0, 0, canvas.width, canvas.height);
   const bg = themeColors.clear;
   gl.clearColor(bg[0], bg[1], bg[2], 1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  drawBackdrop();
   gl.useProgram(prog);
   gl.uniform3fv(uni.uClipLo, clipLo); gl.uniform3fv(uni.uClipHi, clipHi);
   const [lo, hi] = limits();
@@ -798,7 +852,8 @@ function draw() {
   gl.uniformMatrix4fv(uni.uView, false, view); gl.uniformMatrix4fv(uni.uProj, false, proj);
   gl.uniform3fv(uni.uCenter, center); gl.uniform3fv(uni.uStretch, stretch());
   gl.uniform1f(uni.uLo, lo); gl.uniform1f(uni.uHi, hi);
-  gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, SIGNED ? 1 : 0);
+  gl.uniform1i(uni.uLog, logScale ? 1 : 0); gl.uniform1i(uni.uSigned, DIVERGING ? 1 : 0);
+  setContourUniforms(lo, hi, logScale); setDecalUniforms();
   gl.uniform3fv(uni.uStops, new Float32Array(CMAPS[state.cmap].map(hexRgb).flat()));
   const relief = PLANAR ? reliefHeight() : 0;
   gl.uniform1f(uni.uShade, relief > 0 ? 1 : 0);
@@ -814,6 +869,7 @@ function draw() {
       gl.drawElements(gl.TRIANGLES, L.tri.length, gl.UNSIGNED_INT, 0);
     }
   }
+  drawWalls(relief);
   gl.disable(gl.POLYGON_OFFSET_FILL);
   gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.uniform1i(uni.uLine, 1);
@@ -1027,7 +1083,8 @@ function barTicks(lo, hi, logScale, factor, count) {
   if (logScale) {
     const decades = [];
     for (let k = Math.ceil(l0 - 1e-9); k <= l1 + 1e-9; k++)
-      decades.push({ t: place(Math.pow(10, k)), text: Number((Math.pow(10, k) / factor).toPrecision(3)).toString() });
+      decades.push({ t: place(Math.pow(10, k)), text: factor === 1 && Math.abs(k) >= 3 ? '10' + superscript(k)
+                                                  : Number((Math.pow(10, k) / factor).toPrecision(3)).toString() });
     if (decades.length >= 2) return decades;
   }
   let out = [];
@@ -1053,7 +1110,9 @@ function drawColorbar(c) {
   MOVABLE.colorbar.box = null;
   if (where === 'off') return;
   const px = pixelRatio, W = canvas.width, H = canvas.height, pad = PAD * px, B = barMetrics(), F = B.F, gap = 0.6 * F;
-  const [lo, hi] = limits(), logScale = state.log && LOG_OK, S = barScale(lo, hi, Q.unit);
+  const [lo, hi] = limits(), logScale = state.log && LOG_OK;
+  const decadeTicks = logScale && Math.floor(Math.log10(hi) + 1e-9) - Math.ceil(Math.log10(lo) - 1e-9) >= 1;
+  const S = decadeTicks ? { factor: 1, unit: Q.unit || '' } : barScale(lo, hi, Q.unit);   // decades: labelled 10ⁿ
   const name = Q.label + (S.unit ? ' (' + S.unit + ')' : '') + (logScale ? ', log scale' : '');
   const upright = where === 'left' || where === 'right', centred = where === 'top' || where === 'bottom';
   const length = Math.min(fig.colorbar_length !== null ? fig.colorbar_length * (upright ? H : W)
@@ -1346,6 +1405,7 @@ function drawGeometry(view, proj) {
     for (const G of GEOM_LINES) {
       if (G.kind === 'outline' && (!LAYERS[G.layer].visible || selfImage(LAYERS[G.layer], I))) continue;
       if (G.kind !== 'outline' && state.geom === 'outline' && !is2d) continue;   // 3D edges and points: Edges / Glass
+      if (decalActive && decalKind(G)) continue;   // on a raised map they are drawn into the map (outlineDecal)
       // material-coloured outlines lie inside their own object (two objects meeting on a line: both colours show,
       // each on its side) and are a little wider; one-colour outlines stay centred on the true boundary
       const inset = G.kind === 'outline' && state.geomColor === 'material';
@@ -1377,12 +1437,18 @@ window.addEventListener('keydown', (e) => {
 syncGeometry();
 
 // ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
+function frameHeading(F) {
+  // { main, meta } of the heading: the quantity leads a single state whose label only counts solves ('solve 1', a
+  // stationary result) or is empty; frames (time, wavelengths, modes) lead with their label and name the quantity below
+  const label = (F.label || '').replace(/\blambda\b/g, 'λ');
+  if (KIND === 'single') return /^(solve \d+)?$/.test(label) ? { main: Q.label, meta: '' } : { main: Q.label, meta: label };
+  return { main: label || 'frame ' + (state.frame + 1), meta: Q.label };
+}
 function updateReadout() {
   const F = FRAMES[state.frame];
-  const label = (F.label || '').replace(/\blambda\b/g, 'λ');
-  heading.main = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
-  const parts = [];
-  if (KIND !== 'single' || label) parts.push(Q.label);
+  const head = frameHeading(F);
+  heading.main = head.main;
+  const parts = head.meta ? [head.meta] : [];
   if (F.empty) parts.push('no value in this frame');
   const planes = LAYERS.filter((L) => L.name && L.visible).map((L) => L.name + ' ' + lengthUnit);
   if (planes.length) parts.push(planes.join(', '));
@@ -1423,7 +1489,7 @@ function syncSettings() {
   $('settingsbtn').textContent = 'Plot settings' + (limited ? ' •' : '');
   $('settingsbtn').title = 'Font sizes, colour and axis limits, colour bar and label places of the picture'
     + (limited ? ' (limits are set)' : '');
-  $('range').disabled = fig.color_max !== null || (SIGNED && fig.color_min !== null);   // the limit it scales is given
+  $('range').disabled = fig.color_max !== null || (DIVERGING && fig.color_min !== null);   // the limit it scales is given
   $('hint').style.display = fig.colorbar === 'bottom_left' || fig.colorbar === 'bottom' ? 'none' : '';
 }
 function applySettings(boundsChanged) {
@@ -1513,6 +1579,7 @@ function syncControls() {
   $('present').setAttribute('aria-pressed', String(document.body.classList.contains('present')));
   $('settingsbtn').setAttribute('aria-pressed', String(!$('settings').hidden));
   for (const L of LAYERS) if (L.button) L.button.setAttribute('aria-pressed', String(L.visible));
+  syncScalars();
 }
 function select(f) { state.frame = ((f % NF) + NF) % NF; uploadFrame(); updateReadout(); syncControls(); }
 $('framegroup').style.display = NF > 1 ? '' : 'none';
@@ -1542,7 +1609,7 @@ $('prev').onclick = () => { state.playing = false; select(state.frame - 1); };
 $('next').onclick = () => { state.playing = false; select(state.frame + 1); };
 $('frame').oninput = (e) => { state.playing = false; select(+e.target.value); };
 $('speed').oninput = (e) => { state.fps = +e.target.value; syncControls(); };
-$('cmap').onchange = (e) => { state.cmap = e.target.value; store(SIGNED ? 'cmap_signed' : 'cmap', state.cmap); updateReadout(); };
+$('cmap').onchange = (e) => { state.cmap = e.target.value; store(cmapStoreKey(), state.cmap); updateReadout(); };
 $('scale').onchange = (e) => { state.scale = e.target.value; updateReadout(); };
 $('log').onclick = () => { state.log = !state.log; updateReadout(); syncControls(); };
 $('decades').onchange = (e) => { state.decades = +e.target.value; updateReadout(); };
@@ -1679,12 +1746,313 @@ canvas.addEventListener('dblclick', (e) => {
   else resetCamera();
 });
 
+// ---- scalars ----
+// contour lines (in the field program: uContour), the lit '3D' terrain (relief with walls down to a base, reached by a
+// tween from the face-on map; pages of one stationary state open with it) and the backdrop gradient behind the view
+const CONTOUR_COUNTS = { coarse: 6, normal: 12, fine: 24 };   // levels over the colour range, about
+const CONTOUR_STORE = 'contours:' + SCALAR_KIND;
+state.contours = (() => { const v = store(CONTOUR_STORE); return v === 'on' || (v !== 'off' && SCALAR_KIND !== 'other'); })();
+state.contourDensity = CONTOUR_COUNTS[store('contour_density')] ? store('contour_density') : 'normal';
+function niceStep(lo, hi, count) {
+  // a 1-2-5 step giving about count steps over [lo, hi]
+  const raw = (hi - lo) / Math.max(count, 1), p = Math.pow(10, Math.floor(Math.log10(raw)));
+  return [1, 2, 5, 10].map((m) => m * p).find((s) => s >= raw * (1 - 1e-9));
+}
+function contourLevels(lo, hi, logScale) {
+  // { c0, step, major }: levels c0 + k step in the value the shader counts (log10 on a log scale), every major-th one
+  // bold: on the colour bar's ticks (about 4 over the range, as drawColorbar's default bar), decades on a log scale.
+  // c0 a bold level just below lo keeps k small (float32 in the shader)
+  const n = CONTOUR_COUNTS[state.contourDensity];
+  const a = logScale ? Math.log10(lo) : lo, b = logScale ? Math.log10(hi) : hi;
+  if (!(b > a) || !isFinite(a) || !isFinite(b)) return null;
+  const bold = logScale ? Math.max(1, niceStep(a, b, 4)) : niceStep(a, b, 4);
+  let best = 1;
+  for (const sub of [1, 2, 4, 5, 10]) if (Math.abs((b - a) / (bold / sub) - n) < Math.abs((b - a) / (bold / best) - n)) best = sub;
+  return { c0: Math.floor(a / bold) * bold, step: bold / best, major: best };
+}
+function setContourUniforms(lo, hi, logScale) {
+  const C = state.contours ? contourLevels(lo, hi, logScale) : null;
+  gl.uniform1i(uni.uContour, C ? 1 : 0);
+  if (!C) return;
+  gl.uniform1f(uni.uC0, C.c0); gl.uniform1f(uni.uCStep, C.step); gl.uniform1f(uni.uCMajor, C.major);
+  gl.uniform1f(uni.uCWidth, 1.6 * pixelRatio);
+}
+
+// terrain: relief TERRAIN_RELIEF seen from above at an angle; the tween moves the camera and the relief together
+const TERRAIN_RELIEF = 0.32, TWEEN_SECONDS = 1.1;
+const TERRAIN_OFFERED = PLANAR;
+let tween = null;                            // { start, from, to, flat } while the view moves between flat and 3D
+function terrainPose() { return [FACE_ON[NORMAL][0] - 0.5, NORMAL === 2 ? 0.66 : 0.55]; }
+function poseOf(relief, flat) {
+  // the camera { az, el, dist, target } fitted for a relief, face-on (flat) or at the terrain angle
+  const keep = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target, moved: cam.moved, relief: state.relief };
+  state.relief = relief; [cam.az, cam.el] = flat ? FACE_ON[NORMAL] : terrainPose(); cam.target = [0, 0, 0];
+  fitDistance();
+  const pose = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief };
+  Object.assign(cam, { az: keep.az, el: keep.el, dist: keep.dist, target: keep.target, moved: keep.moved });
+  state.relief = keep.relief;
+  return pose;
+}
+function setTerrain(on, animate = true) {
+  if (!TERRAIN_OFFERED) return;
+  if (tween) finishTween();
+  store('terrain', on ? 'on' : 'off');
+  const from = { az: cam.az, el: cam.el, dist: cam.dist, target: cam.target.slice(), relief: state.relief };
+  const to = on ? poseOf(state.relief > 0 ? state.relief : TERRAIN_RELIEF, false) : poseOf(0, true);
+  while (to.az - from.az > Math.PI) to.az -= 2 * Math.PI;   // the shorter way round
+  while (to.az - from.az < -Math.PI) to.az += 2 * Math.PI;
+  tween = { start: performance.now(), from, to, flat: !on };
+  if (!animate) finishTween();
+  syncScalars();
+}
+function finishTween() {
+  const T = tween; tween = null;
+  state.relief = T.to.relief;
+  if (T.flat) resetCamera();
+  else Object.assign(cam, { az: T.to.az, el: T.to.el, dist: T.to.dist, target: T.to.target, moved: false });
+  syncControls();
+}
+function scalarsTick(now) {
+  if (!tween) return;
+  const p = Math.min((now - tween.start) / (1000 * TWEEN_SECONDS), 1);
+  if (p >= 1) { finishTween(); return; }
+  const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;   // ease in and out
+  const A = tween.from, B = tween.to, mix = (a, b) => a + (b - a) * e;
+  // the map tilts before it lifts (and lies down before it turns face-on)
+  const r = tween.flat ? Math.max(0, 1 - 1.6 * e) : Math.min(1, Math.max(0, 1.6 * e - 0.25));
+  state.relief = (tween.flat ? A.relief : B.relief) * r;
+  Object.assign(cam, { az: mix(A.az, B.az), el: mix(A.el, B.el), dist: Math.exp(mix(Math.log(A.dist), Math.log(B.dist))),
+                       target: A.target.map((t, i) => mix(t, B.target[i])) });
+  $('reliefv').textContent = Math.round(state.relief * 100) + ' %'; $('relief').value = state.relief;
+}
+
+// walls of the raised map: a quad down to the base under every boundary edge (grid perimeter, triangulation edges
+// used once), coloured like the edge, lit darker; edges on a mirror plane are inside the unfolded map: left out
+// while the images show. Built on first use, values refreshed when the frame changes
+let walls = null;                            // null: not built yet, false: failed; else per layer
+let wallFrame = -1;
+function boundaryEdges(L, layer) {
+  if (layer.kind === 'grid') {
+    const nu = layer.nu, nv = layer.nv, e = [];
+    if (nu < 2 || nv < 2) return e;
+    for (let i = 0; i + 1 < nu; i++) e.push([i * nv, (i + 1) * nv], [i * nv + nv - 1, (i + 1) * nv + nv - 1]);
+    for (let j = 0; j + 1 < nv; j++) e.push([j, j + 1], [(nu - 1) * nv + j, (nu - 1) * nv + j + 1]);
+    return e;
+  }
+  const count = new Map(), n = L.n, tri = L.tri;
+  for (let t = 0; t < tri.length; t += 3) for (let c = 0; c < 3; c++) {
+    const a = tri[t + c], b = tri[t + (c + 1) % 3], key = Math.min(a, b) * n + Math.max(a, b);
+    count.set(key, (count.get(key) || 0) + 1);
+  }
+  const e = [];
+  for (const [key, k] of count) if (k === 1) e.push([Math.floor(key / n), key % n]);
+  return e;
+}
+function buildWalls() {
+  const aPos = gl.getAttribLocation(prog, 'aPos'), aVal = gl.getAttribLocation(prog, 'aVal'), aDown = gl.getAttribLocation(prog, 'aDown');
+  const tol = 1e-6 * (Math.max(...hmax.map((v, c) => v - hmin[c])) || 1);
+  const onMirror = (L, a, b) => (DATA.mirrors || []).some((M) => {
+    const c = AX[M.axis]; return Math.abs(L.pos[3 * a + c] - M.position) <= tol && Math.abs(L.pos[3 * b + c] - M.position) <= tol; });
+  return LAYERS.map((L, index) => {
+    const edges = boundaryEdges(L, DATA.layers[index]);
+    const outer = edges.filter(([a, b]) => !onMirror(L, a, b)), inner = edges.filter(([a, b]) => onMirror(L, a, b));
+    const ordered = outer.concat(inner), count = 6 * ordered.length;
+    const pos = new Float32Array(3 * count), down = new Float32Array(count), src = new Uint32Array(count);
+    let v = 0;
+    for (const [a, b] of ordered) for (const [node, d] of [[a, 0], [b, 0], [b, 1], [a, 0], [b, 1], [a, 1]]) {
+      pos.set(L.pos.subarray(3 * node, 3 * node + 3), 3 * v); down[v] = d; src[v] = node; v++;
+    }
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    vertexBuffer(aPos, pos, 3, gl.STATIC_DRAW);
+    const valBuf = vertexBuffer(aVal, new Float32Array(2 * count), 2, gl.DYNAMIC_DRAW);
+    vertexBuffer(aDown, down, 1, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    return { vao, valBuf, src, count, outerCount: 6 * outer.length, vals: new Float32Array(2 * count) };
+  });
+}
+function wallBase(relief) {
+  // depth of the walls' bottom below the plane: a little under the lowest raised point of the shown values
+  const [lo, hi] = limits(), F = FRAMES[state.frame], low = state.scale === 'frame' ? F.lo : DATA.range[0];
+  const logScale = state.log && LOG_OK;
+  let t = logScale ? (Math.log(Math.max(low, 1e-300)) - Math.log(lo)) / (Math.log(hi) - Math.log(lo)) : (low - lo) / (hi - lo);
+  t = Math.min(1, Math.max(0, isFinite(t) ? t : 0));
+  return -relief * (DIVERGING ? 2 * t - 1 : t) + 0.035 * Math.max(...shownSpan());
+}
+function drawWalls(relief) {
+  if (!(relief > 0) || !PLANAR) return;
+  if (walls === null) { try { walls = buildWalls(); } catch (err) { walls = false; console.error('terrain walls:', err); } }
+  if (!walls) return;
+  if (wallFrame !== state.frame) {
+    const values = frameValues(state.frame);
+    walls.forEach((W, i) => {
+      const V = values[i];
+      for (let k = 0; k < W.count; k++) { W.vals[2 * k] = V[2 * W.src[k]]; W.vals[2 * k + 1] = V[2 * W.src[k] + 1]; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, W.valBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, W.vals);
+    });
+    wallFrame = state.frame;
+  }
+  gl.uniform1f(uni.uWall, 1);
+  gl.uniform1f(uni.uBase, wallBase(relief));
+  for (const I of images()) {
+    setImage(uni, I);
+    walls.forEach((W, i) => {
+      const L = LAYERS[i];
+      if (!L.visible || selfImage(L, I)) return;
+      gl.uniform3fv(uni.uNormal, L.normal); gl.uniform1f(uni.uRelief, relief);
+      gl.bindVertexArray(W.vao); gl.drawArrays(gl.TRIANGLES, 0, state.mirror && CAN_MIRROR ? W.outerCount : W.count);
+    });
+  }
+  gl.uniform1f(uni.uWall, 0);
+}
+
+// backdrop: the theme's view gradient (top to bottom, a soft light behind the middle), drawn into the GL view so
+// pictures and recordings hold it; none with the Plot settings background 'white' (the clear colour is white)
+const BACK_VS = `#version 300 es
+out vec2 vUv;
+void main() { vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)); vUv = p; gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }`;
+const BACK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; uniform vec3 uTop; uniform vec3 uBottom; uniform float uGlow;
+out vec4 outColor;
+void main() {
+  vec3 c = mix(uBottom, uTop, smoothstep(0.0, 1.0, vUv.y));
+  float r = length((vUv - vec2(0.5, 0.58)) * vec2(1.0, 1.25));
+  outColor = vec4(c + uGlow * (1.0 - smoothstep(0.0, 0.75, r)), 1.0);
+}`;
+let backProg = null, backColors = null, backTheme = null;
+const backUni = {};
+function drawBackdrop() {
+  if (fig.background === 'white') return;
+  if (backProg === null) { try { backProg = linkProgram(BACK_VS, BACK_FS, ['uTop', 'uBottom', 'uGlow'], backUni); }
+                           catch (err) { backProg = false; console.error('backdrop:', err); } }
+  if (!backProg) return;
+  if (backTheme !== themeColors) {           // readTheme makes a new object: the theme or the background changed
+    backTheme = themeColors;
+    backColors = { top: cssRgb('--view-top'), bottom: cssRgb('--view-bottom'), glow: themeColors.dark ? 0.035 : 0.02 };
+  }
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.useProgram(backProg);
+  gl.uniform3fv(backUni.uTop, backColors.top); gl.uniform3fv(backUni.uBottom, backColors.bottom);
+  gl.uniform1f(backUni.uGlow, backColors.glow);
+  gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.depthMask(true); gl.enable(gl.DEPTH_TEST);
+}
+
+// outline decal: on a raised planar map the model outlines (and in 2D the point / line objects) are drawn once into a
+// texture over the plane (the line program, seen face-on through an orthographic matrix) and the field program lays
+// that texture on the surface, so they follow the relief (drawn as lines at the plane they would cut through it).
+// Redrawn when what it shows changes (key); mipmapped, so a turned view stays smooth
+let decalActive = false, decal = null;       // decal: { tex, fb, w, h, key }
+function decalKind(G) { return G.kind === 'outline' || (is2d && G.kind === 'glyph'); }
+let decalFailed = false;
+function prepareDecal() {
+  decalActive = false;
+  if (decalFailed) return;
+  if (!PLANAR || !(state.relief > 0) || !geometryGL || state.geom === 'off') return;
+  const lines = GEOM_LINES.filter((G) => decalKind(G) && (G.kind !== 'outline' || LAYERS[G.layer].visible));
+  if (!lines.length) return;
+  const [iu, iv] = PLANE_AXES, f = stretch();
+  const su = (hmax[iu] - hmin[iu]) * f[iu], sv = (hmax[iv] - hmin[iv]) * f[iv];
+  if (!(su > 0 && sv > 0)) return;
+  const side = Math.min(4096, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+  const w = su >= sv ? side : Math.max(64, Math.round(side * su / sv)), h = su >= sv ? Math.max(64, Math.round(side * sv / su)) : side;
+  const screen = Math.max(canvas.width, canvas.height);
+  const key = [state.geom, state.geomColor, state.cmap, state.stretch, w, h, Math.round(screen / 64),
+               LAYERS.map((L) => L.visible ? 1 : 0).join('')].join('|');
+  if (!decal || decal.key !== key) renderDecal(lines, w, h, su, sv, side / (0.7 * screen), key);
+  decalActive = true;
+}
+function renderDecal(lines, w, h, su, sv, texelsPerPixel, key) {
+  if (!decal || decal.w !== w || decal.h !== h) {
+    if (decal) { gl.deleteTexture(decal.tex); gl.deleteFramebuffer(decal.fb); }
+    const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, Math.floor(Math.log2(Math.max(w, h))) + 1, gl.RGBA8, w, h);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fb = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('outline decal framebuffer incomplete');
+    decal = { tex, fb, w, h, key: '' };
+  }
+  const [iu, iv] = PLANE_AXES, f = stretch();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, decal.fb); gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST); gl.enable(gl.BLEND);
+  gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);   // premultiplied texels
+  gl.useProgram(lineProg);
+  // clip = M (p - centre) stretch: the plane's u, v onto x, y over the simulated part
+  const M = new Float32Array(16); M[4 * iu] = 2 / su; M[4 * iv + 1] = 2 / sv; M[15] = 1;
+  const middle = [0, 1, 2].map((c) => 0.5 * (hmin[c] + hmax[c]));
+  gl.uniformMatrix4fv(lineUni.uView, false, M); gl.uniformMatrix4fv(lineUni.uProj, false, new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+  gl.uniform3fv(lineUni.uCenter, middle); gl.uniform3fv(lineUni.uStretch, f);
+  gl.uniform3fv(lineUni.uClipLo, NO_CLIP_LO); gl.uniform3fv(lineUni.uClipHi, NO_CLIP_HI);
+  gl.uniform2f(lineUni.uViewport, w, h);
+  setImage(lineUni, IDENTITY_IMAGE);
+  const dash = 0.008 * (Math.max(...SPAN) || 1);
+  for (const G of lines) {
+    const inset = G.kind === 'outline' && state.geomColor === 'material';
+    // Contrast outlines: drawn white here, the field program picks dark or light over each pixel's colour
+    gl.uniform4fv(lineUni.uColor, state.geomColor === 'auto' ? [1, 1, 1, 0.92] : lineRgba(G)); gl.uniform1f(lineUni.uInset, inset ? 1 : 0);
+    gl.uniform1f(lineUni.uWidth, (G.kind === 'glyph' ? 2.5 : inset ? 2.25 : 1.75) * pixelRatio * texelsPerPixel);
+    gl.uniform1f(lineUni.uDash, G.dashed ? dash : 0);
+    gl.bindVertexArray(G.vao); gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, G.count);
+  }
+  gl.bindVertexArray(null);
+  gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.generateMipmap(gl.TEXTURE_2D);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
+  decal.key = key;
+}
+function setDecalUniforms() {
+  gl.uniform1i(uni.uDecal, decalActive ? 1 : 0);
+  if (!decalActive) return;
+  gl.uniform1i(uni.uDecalAuto, state.geomColor === 'auto' ? 1 : 0);
+  const [iu, iv] = PLANE_AXES, U = [0, 0, 0], V = [0, 0, 0]; U[iu] = 1; V[iv] = 1;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, decal.tex); gl.uniform1i(uni.uDecalTex, 0);
+  gl.uniform3fv(uni.uDecalU, U); gl.uniform3fv(uni.uDecalV, V);
+  gl.uniform4f(uni.uDecalBox, hmin[iu], hmin[iv], hmax[iu] - hmin[iu], hmax[iv] - hmin[iv]);
+}
+
+// controls
+function syncScalars() {
+  $('contours').setAttribute('aria-pressed', String(state.contours));
+  $('contourn').value = state.contourDensity; $('contourn').disabled = !state.contours;
+  $('terrain').setAttribute('aria-pressed', String(tween ? !tween.flat : state.relief > 0));
+}
+$('terrain').style.display = TERRAIN_OFFERED ? '' : 'none';
+$('terrain').onclick = () => setTerrain(!(tween ? !tween.flat : state.relief > 0));
+$('contours').onclick = () => { state.contours = !state.contours; store(CONTOUR_STORE, state.contours ? 'on' : 'off'); syncScalars(); };
+$('contourn').onchange = (e) => { state.contourDensity = e.target.value; store('contour_density', state.contourDensity); };
+window.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'c' || e.key === 'C') $('contours').click();
+  else if ((e.key === 'r' || e.key === 'R') && TERRAIN_OFFERED) $('terrain').click();
+});
+// densities (carriers, concentrations) spanning decades open on a log scale showing them all (up to 9 decades: the
+// log codes' span)
+if (SCALAR_KIND === 'density' && LOG_OK) {
+  let low = Infinity;
+  for (const V of frameValues(0)) for (let k = 0; k < V.length; k += 2) if (V[k + 1] > 0 && V[k] > 0 && V[k] < low) low = V[k];
+  const decades = Math.log10(FRAMES[0].hi / low);
+  if (decades > 2) {
+    state.log = true;
+    state.decades = [2, 3, 4, 6, 9].find((d) => d >= decades - 0.05) || 9;
+    $('decades').value = String(state.decades);
+  }
+}
+// one stationary state (heat, potential, carriers: no frames to step) opens flat, as the canvas shows it, then rises
+// into the terrain, unless this browser turned the terrain off or the page was written with a view
+const TERRAIN_AT_OPEN = TERRAIN_OFFERED && is2d && KIND === 'single' && !Q.phase && !DATA.view && store('terrain') !== 'off';
+
 // ---------- loop ----------
 const SPIN_RATE = 2 * Math.PI / 12;          // one turn in 12 s
 let last = performance.now(), frameClock = 0;
 function tick(now) {
   const dt = Math.min((now - last) / 1000, 0.1); last = now;
   if (state.spin) cam.az -= SPIN_RATE * dt;
+  scalarsTick(now);
   if (state.playing && NF > 1) {
     frameClock += dt * state.fps;
     if (frameClock >= 1) { const steps = Math.floor(frameClock); frameClock -= steps; select(state.frame + steps); }
@@ -1699,6 +2067,7 @@ if (mq.addEventListener) mq.addEventListener('change', () => readTheme());
 window.addEventListener('resize', () => { resize(); });
 if (gl) { try { setupGL(); } catch (err) { $('empty').hidden = false; $('empty').textContent = 'WebGL error: ' + err.message; } }
 resize(); resetCamera(); syncControls(); syncSettings(); select(0);
+if (TERRAIN_AT_OPEN) setTimeout(() => { if (state.relief === 0 && !tween) setTerrain(true); }, 700);
 window.fieldViewer = { state, select, draw, cam, limits, figure: fig };
 requestAnimationFrame(tick);
 })();
