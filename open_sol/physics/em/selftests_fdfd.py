@@ -7,13 +7,14 @@ import numpy as np
 from ...core.constants import C0, EPS0, ETA0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import (PERIODIC_Y, available_host_direct, cell_centre, float_list, glass_half_space,
-                                       probe_phasor, single_value, skip_result, skip_without_host_direct,
-                                       solver_role, vertical_line, with_direct_node, worst_item)
+                                       normalized_result, probe_phasor, single_value, skip_result,
+                                       skip_without_host_direct, solver_role, vertical_line, with_direct_node,
+                                       worst_item)
 from ...model.spec import (OUTER_FACES, CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec,
                            MaterialSpec, MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec,
                            StudySpec)
 from .selftests import (_PROBE_FEATURE, _WALL_AMPLITUDE, _WALL_RUNS, _WALL_WAVELENGTH, WALL_REFLECTION_TEXT,
-                        _hankel0_modulus, normalized_result, wall_reflection_result, wall_reflection_spec,
+                        _hankel0_modulus, wall_reflection_result, wall_reflection_spec,
                         wall_run_name)
 from .selftests_bloch import _TFSF_FLUX_LINES, _oblique_tfsf_spec
 from .selftests_hz import (_DRUDE_CELL, _DRUDE_EPS_INF, _DRUDE_GAMMA, _DRUDE_INNER_PREFIX, _DRUDE_OMEGA_P,
@@ -211,7 +212,8 @@ def _probe_feature(index):
 
 def cpu_specs(specs):
     """specs (a {run: ModelSpec} dict) with solver_defaults.backend 'cpu' on every spec (FDFD factorises on the host
-    on both backends; the gpu assembly is covered by em_fdfd_cpu_gpu)."""
+    on both backends; the gpu assembly is covered by em_fdfd_cpu_gpu). Call it in a case's `specs`, never in a shared
+    spec builder: em_fdfd_cpu_gpu / em_bor_cpu_gpu / em_fdfd_adjoint_cpu_gpu reuse those per backend."""
     for spec in specs.values():
         spec.solver_defaults.backend = 'cpu'
     return specs
@@ -494,10 +496,6 @@ def _host_direct_back_ends() -> tuple:
     return tuple(name for name in HOST_DIRECT_BACK_ENDS if library_of(name) in libraries)
 
 
-def _host_precision(back_end) -> str:
-    return 'mixed' if back_end.endswith('_mixed') else 'double'
-
-
 def _host_direct_specs():
     """cpu runs per back end b of _HOST_REFERENCE + _host_direct_back_ends(): '<model>_<b>' (the em_fdfd_cudss
     frequency_domain models, _DIRECT_NODE on b) and 'adjoint_<b>' (em_fdfd_adjoint_gradient's ez reflection gradient
@@ -517,9 +515,10 @@ def _host_direct_specs():
             specs[f"{name[:-len('_sparse_direct')]}_{back_end}"] = spec
         specs[f'{_HOST_ADJOINT_RUN}_{back_end}'] = with_direct_node(_adjoint_spec('ez', _SILICON_EPS_R, 1.0, 0.0),
                                                                      back_end, node_name=_DIRECT_NODE)
+    from ...solvers.host_direct import host_direct_precision
     polarization, _, sigma_e = _RUNS[_HOST_CAVITY_RUN]
     for back_end in back_ends:
-        cells, cell = _HOST_CAVITIES[_host_precision(back_end)]
+        cells, cell = _HOST_CAVITIES[host_direct_precision(back_end)]
         specs[f'cavity_{back_end}'] = with_direct_node(_cavity_spec(polarization, cells, sigma_e, cell), back_end,
                                                        role='eigen')
     return cpu_specs(specs)
@@ -540,6 +539,7 @@ def _check_host_direct(results_by_name):
     fallback); skipped without python-mumps and pydiso."""
     if not results_by_name:
         return skip_without_host_direct() or skip_result('no host direct back end installed')
+    from ...solvers.host_direct import host_direct_precision
     from .selftests_eigenfrequency import _OMEGA_TOLERANCE, _Q_TOLERANCE, _cavity_errors
     back_ends = tuple(name[len('cavity_'):] for name in results_by_name if name.startswith('cavity_'))
     n_wavelengths = int(_BATCH_STUDY['n_wavelengths'])
@@ -547,7 +547,7 @@ def _check_host_direct(results_by_name):
     gradient = 'block_gradient'   # selftests_adjoint._GRADIENT_VALUE
     reference_gradient = float(results_by_name[f'{_HOST_ADJOINT_RUN}_{_HOST_REFERENCE}'].summary()['derived'][gradient])
     for back_end in back_ends:
-        tolerance = _HOST_TOLERANCES[_host_precision(back_end)]
+        tolerance = _HOST_TOLERANCES[host_direct_precision(back_end)]
         for model in _BATCH_MODELS:   # driven solves, LDL^T of D A refactorised per wavelength
             reference = _wavelength_values(results_by_name[f'{model}_{_HOST_REFERENCE}'], model)
             expected_size = n_wavelengths * (len(_LINE_BLOCK_PROBE_OFFSETS) if model.startswith('hankel') else 1)
@@ -576,7 +576,7 @@ def _check_host_direct(results_by_name):
         errors[f'adjoint {back_end} record'] = 0.0 if counters.get('back_end') == back_end else math.inf
         tolerances[f'adjoint {back_end} record'] = 1.0
         details[f'adjoint_{back_end}'] = {'gradient': value, 'superlu_gradient': reference_gradient}
-        cells, cell = _HOST_CAVITIES[_host_precision(back_end)]   # shift-invert by the eigen node's own factor
+        cells, cell = _HOST_CAVITIES[host_direct_precision(back_end)]   # shift-invert by the eigen node's own factor
         results = results_by_name[f'cavity_{back_end}']
         part_errors, part_tolerances, part_details = _cavity_errors({_HOST_CAVITY_RUN: results}, _OMEGA_TOLERANCE,
                                                                     _Q_TOLERANCE, cell, {_HOST_CAVITY_RUN: cells})

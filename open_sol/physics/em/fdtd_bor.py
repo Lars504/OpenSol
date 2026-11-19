@@ -1216,7 +1216,8 @@ def order_term_fields(order, family, e_values, a_values, shape):
 
 
 def combine_terms(term_lists):
-    """[(signed order, summed yee dict)] of term lists [(signed order, yee dict)], equal signed orders added."""
+    """[(signed order, summed yee dict)] of term lists [(signed order, yee dict)], equal signed orders added (the two
+    families of one order must add before a flux: their cross terms cancel only between +m and -m)."""
     combined = {}
     for terms in term_lists:
         for order, fields in terms:

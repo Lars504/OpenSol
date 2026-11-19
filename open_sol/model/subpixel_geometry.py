@@ -320,6 +320,7 @@ def _chunk(context, kind, batch):
     candidate_material = batch['near_material'].reshape(cell_i.size, 16)[:, xp.asarray(_NEAR_SLOTS[kind])]
     cell_a, found_a = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_a[:, None], ny)
     cell_b, found_b = _nearest(xp, candidate_i, candidate_j, distance, candidate_material == material_b[:, None], ny)
+    # a sliver covering no candidate centre has no representative cell: that location stays unsmoothed
     keep = found_a & found_b & (count_b > 0.0)
 
     location = cell_i * ny + block_j

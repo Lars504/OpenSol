@@ -9,8 +9,6 @@ import numpy as np
 from ...core.constants import C0, MU0
 from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import PERIODIC_Y, vertical_line, worst_item
-# re-exported for the sibling em selftests modules (imported from .selftests)
-from ...model.selftest_helpers import normalized_result, tolerance_units_result  # noqa: F401
 from ...model.spec import DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_hz import (cw_duration, fresnel_case, fresnel_device_spec, mie_drude_cylinder_case, plane_wave_case,
                            steady_peak)

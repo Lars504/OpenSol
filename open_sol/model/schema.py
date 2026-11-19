@@ -376,6 +376,8 @@ class PhysicsType:
                                  f"{role!r}: {solver_role!r}")
         if not isinstance(self.family, str):
             raise TypeError(f'{owner}: family must be text, got {type(self.family).__name__}')
+        if self.family == 'em' and not self.uses_dispersion:   # the builder would drop every pole silently
+            raise ValueError(f"{owner}: a family 'em' type needs uses_dispersion=True")
         if not (isinstance(self.dimensions, tuple) and self.dimensions
                 and set(self.dimensions) <= {1, 2, 3}):
             raise ValueError(f'{owner}: dimensions must be a non-empty tuple of 1, 2, 3, got {self.dimensions!r}')

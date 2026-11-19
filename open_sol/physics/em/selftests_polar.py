@@ -11,8 +11,7 @@ import numpy as np
 
 from ...core.constants import C0, EPS0, MU0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, max_relative_error
-from .selftests import tolerance_units_result
+from ...model.selftest_helpers import float_list, max_relative_error, tolerance_units_result
 
 # ---- PEC disk cavity: full disk from the origin, 2 pi periodic, pec outer wall (ez: E_z = 0 in the outermost cells,
 # so the wall is the centre of the last cell; hz: no flux through the inner face of the last cell, so the wall is

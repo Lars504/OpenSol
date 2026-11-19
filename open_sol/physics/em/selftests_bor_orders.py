@@ -9,10 +9,10 @@ import numpy as np
 
 from ...core.constants import C0, ETA0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, norm_relative_error, skip_result, solver_role
+from ...model.selftest_helpers import (float_list, norm_relative_error, normalized_result, skip_result,
+                                       solver_role)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, SolverSpec,
                            StudySpec)
-from .selftests import normalized_result
 from .selftests_bor import (_BOX_R_CELLS, _BOX_Z_ROWS, _CAVITY_CELL, _CAVITY_CELLS, _CAVITY_TARGET, _DIPOLE_CELL,
                             _DIPOLE_CURRENT, _DIPOLE_PML, _DIPOLE_WAVELENGTH, _DIPOLE_WINDOW, _EIGEN_STUDY, _IDENTITY_SOURCE_ROW,
                             _IDENTITY_TOLERANCE, _PATTERN_TOLERANCE, _PHYSICS, _POWER_TOLERANCE, _RADIATION_THETA,

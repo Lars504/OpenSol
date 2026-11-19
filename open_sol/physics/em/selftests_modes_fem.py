@@ -8,10 +8,9 @@ import numpy as np
 
 from ...core.constants import C0, FACES
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import skip_result, skip_without_cudss
+from ...model.selftest_helpers import normalized_result, skip_result, skip_without_cudss
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec)
-from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'

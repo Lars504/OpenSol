@@ -8,9 +8,8 @@ import numpy as np
 
 from ...core.constants import C0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list
+from ...model.selftest_helpers import float_list, tolerance_units_result
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec)
-from .selftests import tolerance_units_result
 from .selftests_fdfd import cpu_specs
 
 _N_RESONANCES = 3

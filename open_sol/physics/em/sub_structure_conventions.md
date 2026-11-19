@@ -197,7 +197,7 @@ type's vocabulary and refusals are in its help texts and validation.
   gaussian / ricker waveform (`_shared_pulse`, validation `definition_harmonic_fdtd`).
 - `normalize` divides once by `results._shared_waveform_spectrum` (S over steps 1..n_step), so phasors follow the FDFD
   convention (phase 0 = DFT / S); changing the accumulator's sample grid breaks that. Feature monitors keep
-  unnormalised spectra. Renderer fields carry `requires_study` (renderer `_HARMONIC_STUDY`, also the BOR FDTD's);
+  unnormalised spectra. Renderer fields carry `requires_study` (`schema.FREQUENCY_DOMAIN_STUDY`, also the BOR FDTD's);
   `harmonic_primary` is the default stored field; `absorbed_power_harmonic` takes the continuous chi at the centres
   (hz per component, unlike the FDFD face mean). A calibrated sheet source is exact at f0 only (elsewhere its
   |eta / cos| mismatch).
@@ -408,7 +408,6 @@ type's vocabulary and refusals are in its help texts and validation.
   `memory_estimates.real_cross_section_operator`: a change to the solve's count, basis or real test changes those too.
 - Degenerate pairs (fibre HE11) come back as arbitrary non-orthogonal combinations; separate them with mirrors.
   `mode_group_indices` re-solves with the modes as ARPACK v0 and tracks by overlap: pass the solve's n_eff_guess.
-- Leaky bend modes want pml_kappa_max 1 (the default 15 reflects grazing radiation).
 - Self-tests: `CROSS_SECTION_CPU_SELFTESTS` (selftests_cross_section: a TE slab matches slab_modes 'ez' to round-off,
   TM matches 'hz' only to discretisation order, dual point set), selftests_bend, model/selftests_conformal_cuts.
 
@@ -496,228 +495,61 @@ type's vocabulary and refusals are in its help texts and validation.
   sweeps.
 - Self-tests: selftests_bor_fem (not yet run; tolerances first estimates).
 
-## Body-of-revolution FDTD (em_fdtd_bor; fdtd_bor, solvers/fdtd_bor, renderer_fdtd_bor, definition_fdtd_bor; 2.3)
-- Triangles / cuDSS decision: Yee only, grids ('tensor',): the leap-frog stepper has no linear solve; a DGTD / FETD on
-  triangles would be a second solver (conforming answers belong in em_fdfd_bor on triangles).
-- fdtd_bor module header = the scheme. One real field set on the em_fdfd_bor full layouts (inactive / PEC points held
-  0, never removed, so Yee views are plain reshapes; the |m| = 1 axis E_r / H_phi are overwritten with the slaved
-  values after each update, `_axis_slaving`): x = (E_r, u, E_z), h = (H_r, H_z, H_phi) with S = -1 folded into the a_r
-  rows, so h is the physical H of the standing wave (E_r, E_z, H_phi ~ cos(m phi); u = E_phi, H_r, H_z ~ sin(m phi)).
-  Operators are host products of `stretched_assembly(...).curl_parts(m)` (= `BORAssembly(..., None)` on kappa-widened
-  r_hi cpml widths): the same C and point rules as em_fdfd_bor, hence the exact leap-frog map (DFT phasors solve
-  em_fdfd_bor at omega_tilde; resonances at (2 / dt) asin(omega dt / 2)). DFT timing: x at n dt, h and the sources at
-  (n + 1/2) dt; `source_spectrum` sums S on the injection times. Changing a sample time breaks the exact map
-  (selftests em_fdtd_bor_*).
-- Phasor convention (`phasor_yee`): j on E_phi, H_r, H_z; a 'phi' current q_u = r I s(t) is the em_fdfd_bor phi
-  current at phase +90 deg: powers and moduli agree, phases of phi sources differ.
-- dt = courant x 2 / omega_max of the vacuum operator with the build's PEC (`stable_time_step`: dense eigvalsh up to
-  400 active points, else eigsh 'LA' with a 1e-5 margin; an order sum seeds each order's eigsh with the previous
-  order's eigenvector, `warm_start`), not the 2D CFL rule; `refresh_coefficients` refuses a point
-  eps / mu below 1 and, with poles, eps - sum w P below `stability_ratio`^2 (P = physics/em `_pole_step_term`). PEC and
-  poles only before finalize; material changes re-read the arrays and refresh decay / gain, injection, pole correction
-  and field-injection weights.
-- z CPML: 1 / kappa on the C0 d_z rows plus one psi driver (float32 CSR of the stretched rows) per side;
-  `cpml_axis_profiles`: edge k = H row k - 1, centres = E rows.
-- r_hi CPML is cylindrical: the em_fdfd_bor radius stretch at alpha = 0 (pml_alpha_max acts on z only). kappa enters
-  the assembly widths (shared by every stepper of an order sum, so flux / source helpers see rho = r inside the window
-  only); the layer rows leave the main product and go through `_RadialPlan` / `_BatchRadial`, added into the curl
-  buffer before the fused update. It then differs from em_fdfd_bor only by the recursive-convolution discretisation
-  (em_fdtd_bor_cylindrical_pml).
-- Poles (`_PolePoints`, velocity form as the 2D engines) on active E points with e_point_means share w > 0; update
-  from x^n between the H and E advances, correction after the E advance. `leapfrog_susceptibility` = the stepped chi:
-  with it DFT phasors solve em_fdfd_bor at omega_tilde exactly (em_fdtd_bor_dispersive_cavity);
-  BORFDTDPhysics.stepped_materials(omega) builds those materials (sigma terms x cos(omega dt / 2) too), as the ports do.
-- Stepping: every cupy kernel (`_UPDATE` / `_UPDATE_PML`, `_RADIAL_POLES`, `_DRUDE_STEP` / `_LORENTZ_STEP` /
-  `_POLE_CORRECT`, `_FIELD_INJECT`, `_POINT_ADD`, `_AXIS_COPY`, the DFT kernels, `_CSR_PRODUCT`) has a numpy twin in
-  the same class; runs on 'gpu' and 'cpu': keep every new path xp-generic.
-- Lockstep batch (fdtd_bor header): a BORTimeStepper holds host plans and coefficients only; its x / h are rows of a
-  `_LockstepBatch` (a single order: its own batch of one; BOROrderSum: one batch of all members, `own_batch=False`),
-  which steps every member in one launch per kernel (block-diagonal CSR products by `_CSR_PRODUCT`, not cuSPARSE).
-  So the launch count per step does not grow with the member count. A new per-step term goes into the batch (flat
-  indices = member position x layout size + own index), never into a per-member loop; host coefficient changes reach
-  the device through `_LockstepBatch.upload` / `injections_changed`; spectra live in stacked `_SpectraGroup`s whose
-  member views are BORSpectra.
-- Physics: BORFDTDPhysics builds the stepper in finalize (sources / monitors attach then); `engine` serves the shared
-  resonance_monitor (H components delayed 0.5 step) and BORHarmonic. No absorbed_power (no em_heat_joule), no TFSF
-  plane wave / mirrors. Dispersive regions are recorded by `add_dispersive` until finalize. Flux / far field reuse
-  body_of_revolution.line_flux / far_field_samples on the DFT phasors with the real-metric assembly as `system`;
-  power_per_cw / W/sr only with one shared source waveform.
-- Mode ports (fdtd_bor_ports header; single order, refused with azimuthal_orders): bor_ports.solve_port_modes at
-  omega_tilde of the carrier / each monitor frequency, line materials from stepped_materials; the source adds two
-  `add_field_injection` sets (H interface rows at n dt, upstream E_r / u rows at (n + 1/2) dt) from `port_operators`
-  and the PortModes `strip` curl; E_z on the interface edge counts as total in both directions, so only d_z entries
-  cross. The monitor decomposes with bor_ports.slice_amplitudes. Modes are solved once (no material-drift re-solve);
-  off the carrier the launched power deviates (em_fdtd_bor_pipe_ports normalises by the incident forward power).
-- Engine interface: `engine` is a BORTimeStepper or (azimuthal_orders) a `BOROrderSum`; physics, monitors, BORHarmonic
-  and the renderer use only dt / n_step / time / orders / order_sum, step, add_current, add_spectra (BORSpectra /
-  OrderSumSpectra, both with `scale`), `spectra_terms` ([(signed order, yee dict)]: single order phasor_yee, order sum
-  physical travelling terms), `harmonic_yee`, `probe_value` (`FieldProbe.record_value`), yee_views, field_energy,
-  refresh_coefficients. A new consumer goes through these, never through x / h / fields of one stepper.
-- Driven order sum (fdtd_bor header): (order, family) steppers on one shared real-metric assembly, families from the
-  source components at finalize (`order_sum_families`; a later source of a new kind raises), lockstep dt = courant x
-  min of `order_time_step_limit`; member currents `order_sum_current` (2 x the em_fdfd_bor term at m > 0, -2 x on the
-  phi family); phi = 0 field by `phi_zero_weights`; flux per |m| = line_flux of the combined signed-order terms (A and B
-  families add inside one signed order before the flux: their cross terms cancel only between +m and -m); far field
-  `order_sum_far_field`. Results as em_fdfd_bor's order sum. Memory: `_fdtd_bor_members` counts the steppers.
-- Self-tests (selftests_fdtd_bor): em_fdtd_bor_cavity_ringdown (vs leap-frog-corrected solve_bor_resonances),
-  em_fdtd_bor_radiated_power, em_fdtd_bor_model_ringdown (E_z and E_phi tables: in the PEC cylinder TE modes have no
-  E_z and TM_mn0 no E_phi, so one component misses lines). selftests_fdtd_bor_orders (heavy): em_fdtd_bor_offaxis_dipole,
-  em_fdtd_bor_offaxis_dipole_model. Gotcha: an order cut errs on the phi = 0 pattern by amplitude terms (coherent sum),
-  not power shares (at k rho_s = 0.39, |m| <= 1 is 7 % off U_max while m >= 2 holds ~1 % of the power); a phi current
-  needs one order more (its order m pairs J_{m-1}, J_{m+1}). selftests_fdtd_bor_media: em_fdtd_bor_dispersive_cavity,
-  em_fdtd_bor_dispersive_model, em_fdtd_bor_cylindrical_pml (vs same-grid 5e-3 and far-PML em_fdfd_bor 3e-2: a PML
-  reflection r moves a radial line's source power by up to 2 |r| at any radius, so a far-PML grid is no tighter
-  reference), em_fdtd_bor_pipe_ports (heavy, launch at the carrier).
+## Body-of-revolution FDTD (em_fdtd_bor; fdtd_bor, fdtd_bor_ports, solvers/fdtd_bor, definition_fdtd_bor)
+- Yee only (grids ('tensor',)): the leap-frog has no linear solve; conforming answers belong in em_fdfd_bor on triangles.
+- Scheme (layouts, phasor convention, time step, CPML, poles, driven order sum, lockstep batch): `fdtd_bor` module
+  header; ports: `fdtd_bor_ports` header. It steps the em_fdfd_bor curl (`stretched_assembly(...).curl_parts(m)`), so
+  DFT phasors solve em_fdfd_bor at omega_tilde exactly: a change of a sample or injection time, or of the point / axis
+  rules of body_of_revolution, changes both types (selftests em_fdtd_bor_*, example analytic_bor_transverse_dipole_m1).
+- r_hi CPML kappa enters the assembly widths, shared by every stepper of an order sum: flux / source helpers see
+  rho = r inside the window only.
+- Its kernels and their numpy twins live in fdtd_bor (not core.kernels); keep every new path xp-generic.
+- A new per-step term goes into `_LockstepBatch` (flat index = member position x layout size + own index), never into
+  a per-member loop; host coefficient changes reach the device through `upload` / `injections_changed`.
+- Physics, monitors, BORHarmonic and the renderer use only the engine interface of the `BOROrderSum` docstring
+  (BORTimeStepper has the same), never x / h of one stepper.
+- Order-sum references: the phi = 0 pattern adds the order amplitudes coherently, so an order cut errs by amplitude
+  terms, not power shares, and a phi current needs one order more (`selftests_fdtd_bor_orders._MODEL_ORDERS`).
 
-## Subpixel smoothing (igor 1.5; subpixel_smoothing.py, geometry in model/subpixel_geometry.py)
-- Switch: `solver_defaults.subpixel_smoothing` (model-wide), honoured by the types with
-  `PhysicsType.subpixel_smoothing` (em_fdtd_ez / _hz, em_fdfd_ez / _hz, em_modes; em_fdtd_3d: em3d sub file) outside
-  the optimization study (`schema.subpixel_smoothing_physics`, the one rule), on both backends (backend-neutral geometry
-  build, `core.kernels` twins for the four averaging kernels; `subpixel_smoothing_cpu_gpu`). The builder computes one
-  `core.interface_geometry.InterfaceGeometry` after the static materials and calls `set_subpixel_smoothing(geometry)`
-  right after create; the solvers own it (no ctx reference: Session.close frees it).
-- The geometry stores n_d^2 of the hz layout (faces_y: n_x^2 of E_x, faces_x: n_y^2 of E_y). em_modes ('modes') has
-  E_x on hi-x and E_y on hi-y faces: it uses the same sets with 1 - n_d^2 (`_COMPLEMENT_NORMAL`) and the 'cells' set
-  for E_z (arithmetic). Its deltas (`point_deltas`) enter `CrossSectionMaterials.eps_point_deltas`, which
-  `cross_section_modes._point_materials` adds before the bend map, so every solve, `mode_group_indices`,
-  `point_materials` (thermal noise, optomechanics, overlaps) and an em3d port (its own deltas) see the same eps.
-- Locations: 'cells' (E_z), 'faces_y' (E_x on hi-y faces), 'faces_x' (E_y on hi-x faces; dual volume = two half cells;
-  the last face of a non-periodic axis is never a location). Only volumes two materials share; each holds fill, n_d^2
-  and two representative cells (nearest of a 3 x 3 / 3 x 4 neighbourhood with build material a / b). Averaged eps =
-  1 / (n^2 <1/eps> + (1 - n^2) / <eps>) of the CURRENT eps of those two cells (E_z: <eps>): never write the averaged
-  value into the MaterialGrid (couplings and n0 read the raw cells; the averaging re-runs on every rebuild).
-- Geometry (model/subpixel_geometry.py; two rasters per build, 64 x 4 and 4 x 64 samples per cell): rasters clamped like the build centres, moments on the unclamped positions, so a
-  PML-extended interface keeps its normal; a vanishing moment gives n^2 = 1/2. A sliver that covers no cell centre in the neighbourhood has no representative cell: that
-  location stays unsmoothed.
-- Consumers (all at once, or the port modes / FDTD / FDFD disagree): the FDTD engines call
-  `subpixel_smoothing.correct_fdtd(engine)` inside `_rebuild_e_coefficients` after the fused kernel and BEFORE the PEC
-  fold (ca / cb through the shared `e_coefficients` formula; hz also eps_x / eps_y, so the C5 media see it);
-  FDFDPhysics `_assemble` adds averaged - standard (`add_deltas`) to the cell (ez) / face (hz) eps after the complex
-  face means; `PortLine._host_rows` appends one `line_delta` row per permittivity row (material_drift sees them). Not
-  averaged (documented limits): sigma_e, mu, pole membership, the FDTD sheet / point calibrations, the E_z nonlinear
-  n0^2 (raw eps_r), the Courant check (raw eps), the q_accum split.
-- A new kernel or consumer of face / cell eps on these types applies the same averaging (or reads eps_x / eps_y, the
-  FDFD system, em_modes `point_materials`), and `subpixel_smoothing_cpu_gpu` (model/selftests_subpixel) gets a check
-  for it. em_modes self-tests: the consistency case (complement normal, E_z = the E_z FDTD cells) and example
-  em/analytic_modes_subpixel_slab_thickness (the smoothed n_eff still moves with the interface shift at O(dx^2): the
-  interface sample weighs its volume's eps by E^2 at the sample).
+## Subpixel smoothing (subpixel_smoothing.py, geometry in model/subpixel_geometry.py)
+- Switch, honouring types and the no-MaterialGrid rule: root "Physics definitions"; formula, locations and kinds:
+  `subpixel_smoothing` / `core.interface_geometry` / `model.subpixel_geometry` headers. The solvers own their
+  SubpixelSmoothing (no ctx reference: Session.close frees it).
+- Consumers change together, or port modes / FDTD / FDFD disagree: FDTD `correct_fdtd` in `_rebuild_e_coefficients`
+  (before the PEC fold; hz also eps_x / eps_y, which the nonlinear / gain media read), FDFD `_assemble` (`add_deltas`
+  after the complex face means), `PortLine._host_rows` (`line_delta` rows), em_modes `point_deltas` (section
+  "Cross-section modes"). A new kernel or consumer of face / cell eps on these types applies the same averaging (or
+  reads eps_x / eps_y, the FDFD system, em_modes `point_materials`) and gets a check in `subpixel_smoothing_cpu_gpu`
+  (model/selftests_subpixel). Not averaged beyond what the help text names: the FDTD sheet / point calibrations, the
+  E_z nonlinear n0^2, the Courant check, the q_accum split.
 
 ## Definitions and self-tests
-- Symmetry self-tests (`selftests_symmetry.py`, mostly 1e-5): em_fdfd_mirror_unfold (mirror_factor 2 / 1),
-  em_fdfd_reciprocity, em_fdfd_parity_sectors (vs the two `core.mirror` sector runs and the study setting
-  parity_sectors), em_fdfd_parity_sectors_eigen (symmetric sector = odd m), em_fdfd_parity_sectors_sweep,
-  em_fdtd_parity_sectors_time (1e-4: float32 half / full runs differ by fused multiply-add round-off, which the
-  post-pulse residual field magnifies), em_tfsf_mirror. The FDTD variants reuse `_mirror_model` and swap the type /
-  params (`_fdtd_sector_spec`).
-- Backend of the analytic FDFD / BOR self-tests: every FDFD path factorises on the host, so the analytic model cases
-  run on the cpu (`selftests_fdfd.cpu_specs` in their case `specs`, never in the shared spec builders, which
-  em_fdfd_cpu_gpu / em_bor_cpu_gpu / em_fdfd_adjoint_cpu_gpu reuse per backend); line_block runs keep the default
-  backend. The gpu runs of the FDFD types are those parity cases (`_groups`; physics named 'em'); a new feature needs
-  no gpu model of its own (root file "Selftest structure"). Not covered: conformal PEC in a
-  driven run (the reciprocity pair names its physics from_a / from_b).
-- Memory estimators (`memory_estimates.py`, E8): FDTD / FDFD / em_modes physics, the FDTD dft / flux / mode / far-field
-  monitors and every pec_domain, each counted from the engine code it names (SuperLU host factor by
-  `core.memory_estimate.host_lu_bytes`; the cusolver_qr workspace is outside the pool and stays with `size_issue`).
-  Change an engine allocation -> change its estimator. Run-time device bytes (harmonic FDTD accumulators, FieldProbe
-  trace growth) are `run_items`, never steady (the build ledger would flag them); field_probe / resonance_monitor traces
-  are counted by the FDTD physics estimator (a feature estimator has no study duration). An eigen-solved FDFD physics
-  (`definition_common.eigen_solved`: eigenfrequency study, or the optical physics an optomechanical_coupling names)
-  replaces the driven SuperLU host items by the shift-invert ones. Run phases (transient_items, the phase constants at
-  the top of memory_estimates; em3d imports them): the kept system / solution / a kept driven cuDSS factor's pool
-  copies, rhs buffer and row scale are run items (`kept_cudss_items`; its solve vectors CUDSS_SOLVE_PHASE, never
-  kept); ASSEMBLY_PHASE the FDFD assembly temporaries (`_FDFD_ASSEMBLY_BYTES`: the term plan's build sort, or a later
-  omega's term buffer; the plan itself is a run item, `_FDFD_PLAN_BYTES`); a single solve (no `later_factorisations`) assembles before its solution and factor
-  exist, so that phase is booked net of them (`core.memory_estimate.phase_before_items`); SOLVE_PHASE a solve's
-  material temporaries; EIGEN_PHASE everything solve_resonances / a mode solve allocates and drops
-  (`cudss_own_factor_bytes`: its own cuDSS factor's copies and one solve's vectors, device
-  Krylov basis, `resonance_search_items`' filter: min(FILTER_BLOCK_COLUMNS, n_wanted) wide blocks); REFACTOR_PHASE
-  `refresh_peak_bytes(n_unknowns=, mixed=)` (+ the kept `index_map_bytes` as a run item) only where the engine refactorises a kept factor
-  (`previous=`: fdfd_2d, fdfd_2d_fem, host_fdfd
-  BOR / conical driven) AND `later_factorisations(context)` (or a BOR order sum) says the study factorises again
-  (em_modes / FEM modes / eigen searches plan a fresh factor per solve: no refresh); ADJOINT_PHASE per
-  adjoint_objective feature (one shared transposed solve: the labelled per-feature phases make the largest count
-  once). Every cuDSS factor is an external item from `cudss_factor_items` (factor_device_bytes on the full pattern,
-  dimensions 2 here, 3 in em3d; an LU (Bloch, em_modes): symmetric=False, x cudss_factor.CUDSS_LU_OVER_LDLT; hz
-  eps_xy stays an LDL^T of D A (it passes the runtime asymmetry check); an eigen factor's precision through
-  `eigen_mixed`: cudss_mixed below MIXED_EIGEN_MIN_UNKNOWNS factors in double); an FDFD LU with an adjoint objective
-  adds the transpose's factor. Entries per row are counted from the operator's stencil, never measured (tensor BOR
-  `_bor_entries_per_row`: Cᵀ W C of the Yee curl, 19/3 for m = 0, 9 for m >= 1; 25 overbooked 3-4x): every
-  per-entry item (copies, index maps, refresh, fill) scales with it. Still 25 in definition_bor's time estimate
-  (`_BOR_ENTRIES_PER_ROW`, its assembly bytes per entry calibrated on it).
-- `definition_common.write_dispersive_materials` (used by `create_em_physics` and the FDFD create) skips dispersive
-  regions with an empty mask and writes each permittivity array's background (owner property, else the first Drude
-  eps_inf, else 1) unless state-dependent; `create_em_physics` also sets `enable_q_accum` for track_absorption or when
-  the model reads q_accum; neither finalizes. Gotcha: the PhysicsType needs `uses_dispersion=True` (default False),
-  else the builder drops every pole silently (no eps_inf, no poles). `DISPERSION_POLE_PARAMS` is the pole vocabulary.
-  The material Params of all five types come from `em_material_params(polarization, helps, tips)` ('ez' / 'hz' /
-  'modes'); a type supplies only its help texts (em_modes overrides all four and the eps_zz tip, whose shared text says
-  "the only one this physics uses").
-- GUI texts (`Param.tip`, `choice_labels`, type `summary`): a tip every EM type shares lives in definition_common
-  (`_MATERIAL_TIPS`, tip constants such as EZ_CURRENT_TIP, LINE_AMPLITUDE_TIPS, MODE_POWER_TIP,
-  PROBE_COMPONENT_CHOICE_LABELS); type-specific tips and summaries stay in definition_fdtd / definition_fdfd.
-- Texts and Params that differ only by solver ('fdtd' | 'fdfd') are built once in definition_common:
-  `sheet_amplitude_param(polarization, solver, beam)`, `mode_end_text(polarization, solver)` (PortLine serves both, so
-  the wall ends are the same); `quasi_static_domain_requirements` is the FDFD and em_modes one (no Courant factor).
-- Split: definition_common = vocabulary, texts, build / result callbacks, physics validation (`make_validate_physics`,
-  imported by em3d too); definition_feature_validation = the 2D feature placement checks; it imports
-  definition_common, never the reverse.
-- C7 validation (optimization study only): an adjoint_objective needs an enabled design_region on a physics of its
-  type (else a constant J term: ez regions write eps_r, hz eps_xx / eps_yy); design regions sharing material-preview
-  pixels are errors (same physics, same array or ez + hz), source / port / objective lines crossing a region warnings
-  (definition_design, `geometry.domain_object_rasterizer`); an eps_xy reaching an em_fdfd_hz physics is an info
-  (definition_fdfd `_off_diagonal_issues`: held fixed by the design and the gradient).
-- FDFD feature validation reuses the FDTD callbacks with `time_domain=False` (`make_validate_mode_monitor`,
-  `validate_far_field`, `monitor_line_interface_issues`); far field via `make_far_field_result_callback(params,
-  harmonic_far_field_result)`; physics validation is `make_validate_physics(slot_arrays, time_domain=False,
-  solved_wavelengths=all_solved_wavelengths)` plus `unused_wavelength_issues` and its own linear-solver checks.
-  `FACE_MEAN`, `hz_point_source_params` and `validate_hz_point_source` are shared by the H_z types.
-- FDTD and FDFD register the same `apply_*` callbacks: `source_time_kwargs` passes `phase=` when the feature has a
-  Param 'phase' (FDFD) and the FDTD waveform when it has 'waveform' or no 'phase' (an FDTD port with a launch phase,
-  em_fdtd_bor mode_source, gets both); monitors get `wavelengths=` only when they have 'wavelength_start'. So never
-  give an FDFD source a 'waveform' Param or an FDFD monitor spectral params. Feature-only results go through
-  `object_result(fn, with_solver)`.
-- Unit-slip guards (lengths are SI m): `make_validate_physics` warns for a source (FDTD) / shortest solved (FDFD)
-  wavelength below 1e-9 m or above 100 domain diagonals, and (time_dependent) for a duration below the longest pulse's
-  2 t0 plus diagonal * n_max / C0 with a spectral monitor; the mesh-too-large error names the unit.
-  `definition_helpers.study_duration` is the one duration lookup (also em_heat_joule).
+- Analytic FDFD / BOR model cases run on the cpu (`selftests_fdfd.cpu_specs` docstring); the `*_cpu_gpu` parity
+  cases (`selftests_fdfd_backend._groups`, physics named 'em') are the FDFD types' gpu runs, so a new feature needs no
+  gpu model of its own. Not covered on the gpu: conformal PEC in a driven run.
+- Memory estimators (`memory_estimates.py`; em3d and eme reuse its helpers and phase constants): per-entry items
+  (copies, index maps, refresh, fill) scale with entries per row counted from the operator's stencil
+  (`_bor_entries_per_row`), never measured. Phases: a kept driven cuDSS factor's pool copies are run items
+  (`kept_cudss_items`), its solve vectors CUDSS_SOLVE_PHASE; REFACTOR_PHASE only where the engine refactorises a kept
+  factor (`previous=`) AND `later_factorisations` says the study factorises again (mode / eigen searches plan a fresh
+  factor per solve); a single solve's ASSEMBLY_PHASE is booked net of the solution and factor it precedes
+  (`phase_before_items`); ADJOINT_PHASE per adjoint_objective (labelled per feature: the largest counts once); every
+  cuDSS factor is an external item from `cudss_factor_items` (an FDFD LU with an adjoint objective adds the
+  transpose's).
+- Material Params of the 2D EM types come from `definition_common.em_material_params` (a type supplies only help
+  texts); GUI tips every EM type shares live in definition_common (`_MATERIAL_TIPS` and the `*_TIP` constants),
+  type-specific tips and summaries in definition_fdtd / definition_fdfd; texts and Params that differ only by solver
+  ('fdtd' | 'fdfd') are built once there (e.g. `sheet_amplitude_param`).
+- FDFD features reuse the FDTD validate / result callbacks with `time_domain=False`. FDTD and FDFD register the same
+  `apply_*` callbacks, which tell them apart by Param names (`source_time_kwargs`, `_monitor_wavelength_kwargs`): never
+  give an FDFD source a 'waveform' Param or an FDFD monitor spectral params; em_heat_joule likewise finds pulsed
+  sources by a 'waveform' other than 'cw'.
 - A horizontal line gives line_source / beam / mode_source / mode_monitor axis 'x' (along it) and flux_monitor axis
-  'y'. TFSF / NF2FF margin checks and the mode-line checks (`_mode_line_messages`, `_pinned_positions(settings, axis,
-  n, polarization)`) use the MeshEstimate edges with `core.domain.containing_cell` to mirror the runtime; every PortLine
-  refusal must be a validation error first. em_heat_joule finds pulsed sources through a Param 'waveform' other than
-  'cw'.
-- Bloch model layer (`definition_bloch`, FDTD, FDFD and em_modes types; em_modes refuses k != 0 for shg_overlap and
-  the thermal_noise / optomechanics studies, `_bloch_issues`): settings bloch_kx / bloch_ky [rad/m] (visible with
-  periodic faces; `bloch_params`, `fdfd_bloch_params`); `fdtd_domain_requirements` / `fdfd_domain_requirements` turn
-  periodic faces with k != 0 into bloch faces; FDFD validation `fdfd_bloch_issues` plus the period-spanning port lines
-  (`is_fdfd_port_feature`); template fdfd_band_diagram; self-tests em_fdfd_oblique_fresnel /
-  em_fdfd_hz_brewster_oblique, em_fdfd_oblique_tfsf, em_fdfd_bloch_empty_lattice (selftests_bloch). FDTD:
-  `with_bloch_validation` adds k on a non-periodic axis (warning), absorbed power with k != 0 (error), real-set-only
-  sources (info), k = 0 port modes (warning). `register` adds the 'bloch_band_diagram' template and `selftests_bloch`
-  (`oblique_fresnel_case` stays for the backend case em_fdtd_cpu_gpu_media).
-- Self-tests: the FDTD plane-wave, Fresnel (+ graded) and Drude cylinder cases of both polarisations come from
-  `selftests_hz.plane_wave_case / fresnel_case / mie_drude_cylinder_case(physics_type, polarization)` (the
-  'fresnel_interface' template is `fresnel_device_spec`); the Mie / Drude vacuum references run on a smaller domain
-  with every shape shifted by whole cells (the TFSF aux line is box-relative; keep the shift a whole number of cells);
-  em_wall_reflection_phase (FDTD) and em_fdfd_pec_reflection_phase pin every wall / mirror / pec_domain plane
-  (`selftests.wall_reflection_spec`); em_operators_consistency needs a GPU (part B steps both engines against the A1
-  operators: never a Python copy of the kernels); selftests_mode_ports holds the 'directional_coupler' template
-  (`directional_coupler_spec(physics_type, source_params, spectral, study)`; em_hz_directional_coupler_fdtd_vs_fdfd),
-  selftests_fdfd the 'fd_joule_heating' template; graded `*_graded` Fresnel variants (`selftests_hz.graded_interface_mesh`,
-  inv_dx != inv_dy) raise when the mesh fell back to uniform (`require_graded`).
-- Case records in tolerance units (worst of {item: error / tolerance}, tolerance 1) come from
-  `model.selftest_helpers.normalized_result` / `tolerance_units_result` (re-exported by selftests for its siblings),
-  never a local copy; selftests imports selftests_hz, so selftests_hz never imports selftests.
+  'y' (its normal). Placement checks look cells up on the MeshEstimate as the runtime does
+  (`definition_feature_validation`); every PortLine refusal must be a validation error first.
+- em_operators_consistency (gpu) steps both engines against the A1 operators: never a Python copy of the kernels.
 
-## Effective index 2.5D (effective_index, definition_effective_index; B4)
-- `effective_index(indices, thicknesses, wavelength, slab_polarization, mode_number, cell_size)` (host, lru-cached:
-  validation calls it per check) builds its own SlabLine along the stack normal: whole cells per layer (interfaces on
-  faces), Dirichlet walls in claddings deepened (x4 while the mode is not found, else to 14 decay lengths, cap 50
-  wavelengths). 'te' = slab 'ez', 'tm' = slab 'hz' with face weight 1 / (width-weighted mean eps): E parallel to the
-  layers is continuous on an interface face, so the harmonic mean would be the wrong (first-order) choice. Top-view
-  pairing: 'te' <-> em_*_hz, 'tm' <-> em_*_ez.
-- Feature `effective_index` (all four in-plane types, appended after pec_domain): `apply` writes n_eff^2 into every
-  `solver.permittivity_arrays` entry under the selection + `materials_changed`, after the static materials and the
-  dispersive backgrounds, before finalize (so ports, Courant and the heat n0 see it); poles / sigma_e stay, a
-  state-dependent permittivity material overwrites it (dynamic updates run after features). The auto mesh does not see
-  n_eff (validation warning). Selftests em_effective_index_slab (CPU) and em_effective_index_rib (template
-  effective_index_rib_waveguide, em_fdfd_hz).
+## Effective index 2.5D (effective_index, definition_effective_index)
+- Feature `effective_index` writes n_eff^2 in its apply, before finalize, so ports, the Courant check and the heat n0
+  see it; a state-dependent permittivity overwrites it (dynamic updates run after features). Method, polarisation
+  pairing and the 'tm' face weight: `effective_index` header and `_stack_line`.

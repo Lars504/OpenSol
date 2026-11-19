@@ -8,10 +8,9 @@ import numpy as np
 
 from ...core.constants import C0, EPS0
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, solver_role
+from ...model.selftest_helpers import float_list, solver_role, tolerance_units_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
-from .selftests import tolerance_units_result
 from .selftests_fdfd import cpu_specs
 
 _PHYSICS = 'em'

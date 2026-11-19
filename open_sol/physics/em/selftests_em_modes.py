@@ -5,11 +5,10 @@ import math
 import numpy as np
 
 from ...model.schema import SelfTestCase
-from ...model.selftest_helpers import float_list, solver_role
+from ...model.selftest_helpers import float_list, normalized_result, solver_role
 from ...model.spec import (CouplingSpec, DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec,
                            MeshSpec, ModelSpec, ParameterSpec, PhysicsSpec, RefinementSpec, SolverSpec, StudySpec,
                            SweepSpec)
-from .selftests import normalized_result
 
 _TYPE = 'em_modes'      # = definition_modes.EM_MODES.name (definition_modes imports this module)
 _PHYSICS = 'modes'
