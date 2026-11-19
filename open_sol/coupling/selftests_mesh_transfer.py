@@ -1,4 +1,4 @@
-"""Per-physics mesh self-tests (S7.2, mesh plan stage P2): the GridTransfer weights on the CPU, and the strips of
+"""Per-physics mesh self-tests (S7.2): the GridTransfer weights on the CPU, and the strips of
 coupling/selftests.py with heat on its own mesh on the cpu backend (coarse heat vs the shared mesh; in the currents
 case also an identical second mesh reproducing the one-mesh run bit for bit). Registered by definitions.register; no physics imports."""
 import math

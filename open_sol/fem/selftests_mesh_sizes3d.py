@@ -1,4 +1,4 @@
-"""Self-tests of tetrahedron face / point size fields (new_modules_plan G1; CPU, specs() empty, check({}) directly):
+"""Self-tests of tetrahedron face / point size fields (CPU, specs() empty, check({}) directly):
 the SizedFace distance, the gmsh MathEval / Ball rows against their numpy twins, the estimate's density, the MeshSpec
 path and, when gmsh is found, element sizes near / far from a refined face and a size point."""
 import math
@@ -243,7 +243,7 @@ def _check_size_fields(results_by_name):
     return checks_result(checks)
 
 
-# ---- composite sizes (plan D1) and the on-disk gmsh cache (plan D4) ----
+# ---- composite sizes and the on-disk gmsh cache ----
 _RING_WINDOW = (0.0, 0.0, 0.0, 1.2 * _UM, 1.2 * _UM, 0.4 * _UM)
 _RING_CENTRE = (0.6 * _UM, 0.6 * _UM)
 _RING_OUTER = 0.5 * _UM

@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of the DiffusionSystem physics (solver_plan S6 stage 2): heat and electric_currents models
+"""CPU vs GPU backend case of the DiffusionSystem physics: heat and electric_currents models
 solved on solver_defaults.backend 'cpu' (numpy / scipy: Automatic = host SuperLU, or a pcg node on numpy) against the
 same models on 'gpu' and the analytic slab peak; registered by definition.register. api.selftest skips the gpu runs without a usable GPU."""
 import numpy as np

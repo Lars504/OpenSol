@@ -1,4 +1,4 @@
-"""Transfers between tensor grids and triangle meshes (mesh plan 2.9 / 1.4), the GridTransfer interface
+"""Transfers between tensor grids and triangle meshes, the GridTransfer interface
 (apply(array, out=None)) over one host CSR. Kinds: 'interpolate' (fields: bilinear from window cell centres, FE
 evaluation; clamped into the source window = edge extension into padding / the PML ring) and 'conservative'
 (densities: the window integral is preserved exactly; tensor padding and ring elements get 0). Host numpy (scipy

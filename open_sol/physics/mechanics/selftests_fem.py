@@ -1,4 +1,4 @@
-"""Self-tests of solid_mechanics on triangle meshes (mesh plan stage T5): CPU elasticity patch / operator checks
+"""Self-tests of solid_mechanics on triangle meshes: CPU elasticity patch / operator checks
 (fem.elasticity, system_fem, check({})), and model runs against closed forms: the Kirsch hole, a heated two-material
 cylinder (planar with the temperature from heat on a tensor mesh, and axisymmetric), the vibration modes of an
 orthotropic roller box, generalized plane strain (uniform and bending), the elastic frequency response of a bar, and

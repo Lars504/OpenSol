@@ -1,4 +1,4 @@
-"""3D magnetostatics by the reduced magnetic scalar potential on the 7-point DiffusionSystem (magnetostatics_3d_plan):
+"""3D magnetostatics by the reduced magnetic scalar potential on the 7-point DiffusionSystem:
 unknown u = mu0 Omega [T m] with c = mu_dc per axis, so the physical face flux c (w - grad u) is B itself; the drive w =
 mu0 T + B_r / mu_dc enters as face terms (stranded coils by T-Omega: T along the coil axis, J = curl T), symmetry (u =
 0) / insulation (Neumann) faces, ideal-iron held regions, a uniform external field on the held outer ring and a corner

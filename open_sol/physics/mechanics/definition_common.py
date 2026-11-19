@@ -9,8 +9,8 @@ from ...model.definition_helpers import (conducting_fraction, eigen_search, eval
                                          optional_material_param, reports_model_checks)
 from ...model.expressions import ExpressionError, evaluate_scalar
 from ...model.geometry import expand_entities
-from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, STATIONARY_STUDY,
-                             FeatureType, Issue, Param, feature_path, resolve_values)
+from ...model.schema import (EIGENFREQUENCY_STUDY, FREE_MESH_KINDS, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY,
+                             STATIONARY_STUDY, FeatureType, Issue, Param, feature_path, resolve_values)
 from ...solvers.pcg import resolve_max_iterations
 from .material_params import (PHOTOELASTIC_P11_PARAM, PHOTOELASTIC_P12_PARAM, POISSON_RATIO_PARAM,
                               YOUNGS_MODULUS_PARAM)
@@ -22,7 +22,6 @@ from .tangent_update import SLOW_RESIDUAL_RATIO, TANGENT_UPDATES
 LOCKING_POISSON_RATIO = 0.45   # bilinear / trilinear elements grow too stiff (volumetric locking) above about this
 SUPPORT_FEATURES = frozenset({'fixed', 'roller', 'displacement', 'fixed_domain', 'prescribed_displacement_domain'})
 LOAD_FEATURES = frozenset({'boundary_load', 'body_force', 'temperature_change'})
-OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
 BACKGROUND_STUDY = STATIONARY_STUDY       # the background study of the modal / response studies
 PRESTRESS_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)   # read stress_stiffening
 MODAL_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # studies running solve_eigenfrequencies
@@ -844,7 +843,7 @@ def thermoelastic_damping_feature(grids, where_text):
         apply=_apply_thermoelastic_damping, result=_thermoelastic_damping_result,
         validate=_validate_thermoelastic_damping, memory_estimate=_thermoelastic_damping_memory, grids=grids)
 
-# ---- frequency_probe feature and complex reactions (new_modules_plan K4; triangle / tetrahedron meshes) ----
+# ---- frequency_probe feature and complex reactions (triangle / tetrahedron meshes) ----
 def _frequency_probe_result(session, solver, record, feature_spec, options):
     from ...core.harmonic_probe import harmonic_probe_result   # lazy: core.harmonic_probe imports core.backend (cupy)
     return harmonic_probe_result(record)

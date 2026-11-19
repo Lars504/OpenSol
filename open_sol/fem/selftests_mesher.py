@@ -1,4 +1,4 @@
-"""Self-test of the own triangle mesher (mesh plan stage T1, CPU; specs() is empty, check({}) meshes directly):
+"""Self-test of the own triangle mesher (CPU; specs() is empty, check({}) meshes directly):
 conformity, quality, areas, region tags, P2 curved-boundary convergence, size bound, determinism, the PML ring, the
 MeshSpec path and, when gmsh is found, the gmsh variant."""
 import math

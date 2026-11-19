@@ -1,4 +1,4 @@
-"""Model definition of 'em_fdtd_bor' (body-of-revolution FDTD, symmetry plan 2.3: (r, z) half plane, azimuthal order m,
+"""Model definition of 'em_fdtd_bor' (body-of-revolution FDTD: (r, z) half plane, azimuthal order m,
 time stepped) on definition_common / definition_bor, with its self-tests; definition.register calls register."""
 import math
 from dataclasses import replace

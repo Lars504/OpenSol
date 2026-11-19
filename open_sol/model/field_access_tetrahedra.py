@@ -1,4 +1,4 @@
-"""TetrahedraAccess: the FieldAccess of tetrahedron-mesh Session views (igor3d_plan T4b: renderers provide
+"""TetrahedraAccess: the FieldAccess of tetrahedron-mesh Session views (renderers provide
 sample(component, points); host numpy reads on the mesh's sample lattice, quadrature-point derived values)."""
 import math
 

@@ -1,4 +1,4 @@
-"""Banded direct solver of 1D models (symmetry plan 2.20; SolverType 'banded', role 'linear'): the PCGSolver protocol
+"""Banded direct solver of 1D models (SolverType 'banded', role 'linear'): the PCGSolver protocol
 of core.fv_diffusion.DiffusionSystem on a window one cell across (unknowns in line order, so the operator is banded),
 one host banded Cholesky (scipy.linalg) per assembly, exact solves. numpy at module level, scipy inside functions."""
 import time

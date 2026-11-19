@@ -30,7 +30,7 @@ poles on region boxes and the J.E loss accounting (q_accum) of the EM loss proto
 # approximate); phi faces pec / pmc / mirrors (rays are mirror planes: C_nv) or periodic on a domain whose angle_wrap
 # joins them, with the angular Floquet phase bloch_ky = azimuthal order m [1/rad] (F(phi + span) = F(phi) e^{-j m
 # span}, the FDFD polar rule); a phase of 0 or pi mod 2 pi steps the real set alone (c = +-1, s = 0).
-# Backends (solver_plan S6): every array lives on the Domain's xp (cupy on 'gpu', numpy on 'cpu') and every kernel is
+# Backends: every array lives on the Domain's xp (cupy on 'gpu', numpy on 'cpu') and every kernel is
 # a core.kernels twin (kernels3d, the shared 2D pole corrections), so this one code path runs on both.
 import math
 import warnings
@@ -258,7 +258,7 @@ class FDTDEngine3D:
         self.subpixel_smoothing = None
         self._no_face_id = xp.zeros((1, 1, 1), dtype=np.uint16)
         self._no_face_table = xp.zeros(3, dtype=DTYPE)
-        # solver_plan S7.6: (face cells int64, H components int32, (n, 4) weight - 1 float32, grid, block, int32 count)
+        # (face cells int64, H components int32, (n, 4) weight - 1 float32, grid, block, int32 count)
         # of the Dey-Mittra H faces (set_conformal_faces), None without conformal PEC
         self._conformal = None
 

@@ -10,13 +10,12 @@ SOLVER_ROLES = {'stepper': 'Time stepping', 'linear': 'Linear systems', 'shifted
 OPERATOR_CLASSES = {'spd': 'symmetric positive definite', 'complex_symmetric': 'complex symmetric',
                     'general': 'general (non-symmetric)'}
 BACKENDS = {'gpu': 'GPU', 'cpu': 'CPU'}
-# precision -> GUI text; storage / compute dtypes per role are the runtime's business (solver_plan S5)
+# precision -> GUI text; storage / compute dtypes per role are the runtime's business
 PRECISIONS = {'single': 'single precision', 'double': 'double precision', 'mixed': 'mixed precision',
               'half_storage': 'half-precision storage'}
-# solver_plan S7.0 adds kinds; a 'line' (1D model, one cell across: symmetry 2.20) and a 'tensor_3d' (a 3D model's
+# a 'line' (1D model, one cell across: symmetry 2.20) and a 'tensor_3d' (a 3D model's
 # tensor mesh: its own kind only so that grid_defaults can differ from 2D) are tensor meshes, so solvers and physics
-# declaring 'tensor' fit them too (solver_misfit); 'triangles' / 'tetrahedra' = a MeshSpec of that kind (FEM, S7.5;
-# igor3d_plan T4b)
+# declaring 'tensor' fit them too (solver_misfit); 'triangles' / 'tetrahedra' = a MeshSpec of that kind (FEM)
 GRID_KINDS = {'tensor': 'rectilinear (uniform or graded) mesh', 'line': '1D line of cells (a 1D model)',
               'tensor_3d': '3D rectilinear (uniform or graded) mesh',
               'triangles': 'triangle (finite element) mesh', 'tetrahedra': 'tetrahedron (finite element) mesh'}

@@ -1,4 +1,4 @@
-"""Cross-section eigenmodes on triangle meshes (mesh plan 2.6: em_modes on a 'triangles' mesh): Lee-Sun-Cendes mixed
+"""Cross-section eigenmodes on triangle meshes (em_modes on a 'triangles' mesh): Lee-Sun-Cendes mixed
 Nedelec (E_t) / Lagrange (E_z) elements of degree 1 or 2 for beta^2, the PML ring as a complex coordinate stretch at
 the quadrature points, shift-invert on the host through the 'eigen' role runtime. xy = cross-section, fields ~ exp(j
 omega t - j beta z), lossy Im n_eff < 0. Host numpy (scipy inside functions)."""
@@ -62,7 +62,7 @@ SAMPLE_POINTS = 6               # points of that rule per element
 _LOCAL_NODES = {1: np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                 2: np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.5], [0.0, 0.5], [0.5, 0.0]])}
 # SuperLU L + U of the FEM pencil over the 5-point heuristic of core.memory_estimate.host_lu_bytes (wider stencils):
-# uncalibrated first figure (mesh plan 2.10); the summary 'solvers' factor_host_bytes calibrates it
+# uncalibrated first figure; the summary 'solvers' factor_host_bytes calibrates it
 FEM_LU_FILL_FACTOR = 4.0
 FEM_ENTRIES_PER_ROW = {1: 12, 2: 30}   # nonzeros per row of the assembled blocks (estimate)
 _NATURAL_WALLS = frozenset({BCType.PMC, BCType.SYMMETRIC})
@@ -667,7 +667,7 @@ def element_means(layout, mode, mu) -> tuple:
 
 
 def mode_error_indicator(layout, mode, materials) -> np.ndarray:
-    """eta^2 per mesh element (float64 (n_elements,)) of a mode (mesh plan A3): Kelly jumps of tangential H (H . t and
+    """eta^2 per mesh element (float64 (n_elements,)) of a mode: Kelly jumps of tangential H (H . t and
     H_z) and normal D across interior window edges between non-PEC elements, 1/2 h_E int_E (mu0 |mu| |[H_tan]|^2 +
     |[D_n]|^2 / (eps0 |eps|)) ds to each side (that side's energy weights); outer, PEC and PML edges carry none."""
     mesh = layout.mesh

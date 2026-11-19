@@ -1,4 +1,4 @@
-"""Self-tests of the FEM core (mesh plan stage T2, CPU; specs() empty, check({}) assembles directly): Lagrange patch
+"""Self-tests of the FEM core (CPU; specs() empty, check({}) assembles directly): Lagrange patch
 tests, Nedelec / Lagrange pipe cutoffs, tensor <-> triangle transfer totals. Each case
 reports error = number of failed sub-checks (tolerance 0) with the measured values in details."""
 import math

@@ -1,4 +1,4 @@
-"""CPU self-tests of the 2D FDFD on polar (r, phi) Domains (symmetry plan 2.16 item 5 / 2.18; scripted FDFDPhysics on
+"""CPU self-tests of the 2D FDFD on polar (r, phi) Domains (scripted FDFDPhysics on
 the cpu backend): PEC disk cavity and dielectric whispering-gallery resonances vs Bessel / Hankel closed forms, a
 ring of phased line currents in a C_4 sector with an angular Bloch phase and a cylindrical PML."""
 # Closed forms are semi-discrete: a phasor e^{-j m phi} on uniform angle cells dphi is an exact eigenvector of the

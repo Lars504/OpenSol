@@ -804,7 +804,7 @@ def _thermorefractive_noise_memory(values, n_selected_cells, mesh):
 
 
 def _triangle_issues(vctx, settings_values, path):
-    """Rules of heat on a triangle mesh (FEMHeatPhysics, mesh plan T4): no azimuthal order m != 0, no thermal_noise
+    """Rules of heat on a triangle mesh (FEMHeatPhysics): no azimuthal order m != 0, no thermal_noise
     study (its operator is the finite-volume one)."""
     issues = []
     if azimuthal_order_of(settings_values):
@@ -927,7 +927,7 @@ def _create_heat(ctx, physics_spec, values):
     time_mode = values['time_mode'] if ctx.study_type == TIME_DEPENDENT_STUDY else 'stationary'
     solvers = ctx.solvers(physics_spec.name)
     time_step = values['time_step'] if time_mode == 'transient' else math.inf
-    if ctx.domain.grid_kind == 'triangles':   # FEM (mesh plan T4): discretization order, no azimuthal order / noise
+    if ctx.domain.grid_kind == 'triangles':   # FEM: discretization order, no azimuthal order / noise
         return FEMHeatPhysics(ctx.domain, T0=values['T0'], order=element_order(values), time_mode=time_mode,
                               time_step=time_step, axisymmetric=is_axisymmetric(values),
                               linear_solver=solvers['linear'])
@@ -1530,7 +1530,7 @@ HEAT_PHYSICS = PhysicsType(
                 'unknowns.',
     settings=_SETTINGS,
     features=_FEATURES,
-    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics (mesh plan T4) / FEMHeatPhysics3D
+    grids=('tensor', 'triangles', 'tetrahedra'),   # FEMHeatPhysics / FEMHeatPhysics3D
     material_properties=_MATERIAL_PROPERTIES,
     material_schema=THERMAL_SCHEMA,
     state_fields=_STATE_FIELDS,
@@ -1548,7 +1548,7 @@ HEAT_PHYSICS = PhysicsType(
                                         precisions=('mixed', 'double'),
                                         setting_choices={'back_end': ('auto', 'scipy_splu', 'cusolver_qr')
                                                          + HOST_DIRECT_BACK_ENDS})},
-    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels (solver_plan S6 stage 2)
+    backends=('gpu', 'cpu'),   # numpy twins of the system / field kernels
     conformal_boundaries=True,   # cut cells (held edges, insulated walls, perimeter heat_flux / convection; 2D)
     conformal_coordinates=('cartesian', 'polar', 'spherical'),   # cut cells on the logical (r, angle) cells too
     create=_create_heat,

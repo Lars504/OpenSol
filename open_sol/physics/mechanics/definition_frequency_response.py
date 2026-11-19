@@ -1,5 +1,5 @@
-"""Model-layer pieces of the 2D solid_mechanics frequency response and anisotropic stiffness (piezoelectric plan stage
-5): the admittance feature, their validation rules and the host memory items; imported by definition.py."""
+"""Model-layer pieces of the 2D solid_mechanics frequency response and anisotropic stiffness: the
+admittance feature, their validation rules and the host memory items; imported by definition.py."""
 from ...core.memory_estimate import FLOAT64_BYTES, INT32_BYTES, host_lu_bytes
 from ...model.definition_helpers import evaluates_to, is_axisymmetric, on_tetrahedra, on_triangles
 from ...model.schema import EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, FeatureType, Issue, Param, feature_path

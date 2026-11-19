@@ -11,7 +11,7 @@ assembled host pencil about the target (the 'eigen' role: SuperLU, or cuDSS LDL^
 # dropped below RIGID_EIGENVALUE_FRACTION x the shift. The same driver serves the 2.5D guided modes
 # (physics/mechanics/guided_modes.py). A resistive electrode load (pencil kind 'loaded') adds j B / omega on its master
 # potential: T(omega) is frozen at the target (complex symmetric, eigs_shifted) and each mode's omega refined by Newton on
-# x^T T(omega) x = 0 (x fixed). An elastic PML shell (pml3d) and a loss factor K_el (1 + j eta) (new_modules_plan K3)
+# x^T T(omega) x = 0 (x fixed). An elastic PML shell (pml3d) and a loss factor K_el (1 + j eta)
 # make K (and M) complex but keep the pencil linear in omega^2 (pencil kind 'damped': eigs_shifted, no refinement); PML
 # modes mostly in the shell are dropped. A prestressed pencil (K2) only adds the real K_sigma to K. Bloch cells
 # (bloch3d): a prolongation P replaces the free selection, the pencil

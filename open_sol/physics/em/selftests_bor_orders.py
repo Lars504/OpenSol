@@ -68,7 +68,7 @@ _OFFAXIS_DOMAIN = (1.2e-6, 1.8e-6)    # = _DIPOLE_WINDOW cells of _DIPOLE_CELL
 _OFFAXIS_BOX = (0.6e-6, 0.9e-6)
 _OFFAXIS_FAR_FIELD_BOX = (0.95e-6, 0.65e-6)   # far-field box: r extent, half height about the source row
 
-# ---- wavelength batch (solver_plan Part II stage 3): the axial z dipole (m = 0) in a smaller box of its own (the
+# ---- wavelength batch: the axial z dipole (m = 0) in a smaller box of its own (the
 # check compares line block with SuperLU only), frequency_domain at two wavelengths (already a multi-shift batch,
 # below fdfd_line_block.MAX_BATCH_WAVELENGTHS = 8: one batch), SuperLU vs a line_block shifted node
 _BATCH_WAVELENGTHS = (0.95e-6, 1.05e-6)

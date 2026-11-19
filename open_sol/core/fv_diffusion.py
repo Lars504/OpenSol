@@ -1556,7 +1556,7 @@ class DiffusionPhysicsBase(PhysicsSolver):
         return self.add_probe(*self.domain.pos_to_cell(*position))
 
     def error_indicator(self):
-        """S7.7 mesh refinement hook (mesh plan A2): Kelly flux-jump eta^2 parts (2, *window), host float64, of the
+        """S7.7 mesh refinement hook: Kelly flux-jump eta^2 parts (2, *window), host float64, of the
         shown solution (DiffusionSystem.flux_jump_indicator of _indicator_flux())."""
         return self.system.flux_jump_indicator(self._indicator_flux())
 

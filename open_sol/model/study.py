@@ -1397,7 +1397,7 @@ def _feedback_rounds(session, background, solved, feedback, values, solve, emit,
 
 def _solve_wavelengths(session, harmonic, wavelengths, recorder, live, emit, control, service, pulsed=()):
     """_solve_wavelength_list between plan_harmonic_frequencies(omegas) and (): physics with that hook (FDFD
-    line-block wavelength batches, solver_plan Part II stage 3) learn the solve order first."""
+    line-block wavelength batches) learn the solve order first."""
     planners = [session.runner.physics[name] for name in harmonic
                 if isinstance(session.runner.physics[name], HarmonicFrequencyPlanner)]
     for solver in planners:
@@ -1920,9 +1920,9 @@ def _frequency_domain_counts(values):
 
 def _selftest_cases():
     """The model-layer and fem SelfTestCases (imported on the first registry.selftests(), not by get_registry)."""
-    from ..fem.selftests import FEM_SELFTEST_CASES   # mesh plan T1+: the fem package's cases
+    from ..fem.selftests import FEM_SELFTEST_CASES   # the fem package's cases
     from .selftests_3d_core import CORE_3D_SELFTEST_CASES
-    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # mesh plan A1 (S7.7 refinement levels)
+    from .selftests_adaptation import ADAPTATION_SELFTEST_CASES   # S7.7 refinement levels
     from .selftests_analytic import ANALYTIC_SELFTEST_CASES
     from .selftests_conformal import CONFORMAL_SELFTEST_CASES
     from .selftests_conformal_cuts import CONFORMAL_CUT_SELFTEST_CASES
@@ -1933,7 +1933,7 @@ def _selftest_cases():
     from .selftests_interface import INTERFACE_SELFTEST_CASES
     from .selftests_line import LINE_SELFTEST_CASES
     from .selftests_mesh import MESH_SELFTEST_CASES
-    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # mesh plan P3 (Session / results per mesh)
+    from .selftests_per_mesh import PER_MESH_SELFTEST_CASES   # Session / results per mesh
     from .selftests_snapshot_solutions import SNAPSHOT_SOLUTION_SELFTEST_CASES   # GUI snapshot solutions
     from .selftests_subpixel import SUBPIXEL_SELFTEST_CASES
     from .selftests_sweep import SWEEP_SELFTEST_CASES

@@ -1,4 +1,4 @@
-"""Model-layer definition of the 'magnetostatics_3d' physics type (stages 1-3 of magnetostatics_3d_plan: fields of
+"""Model-layer definition of the 'magnetostatics_3d' physics type (fields of
 permeable and saturating materials, permanent magnets, ideal iron, a uniform applied field and stranded coils by the
 reduced scalar potential; settings, features, material vocabulary, validation, memory estimate, scalars) plus its
 template and selftests; registered through definition.py. On a 'tetrahedra' mesh the create builds MagneticFEMPhysics3D

@@ -1,5 +1,5 @@
 """S7.2 grid transfers between the meshes of one build: the transfer factory (tensor <-> tensor: core.grid_transfer;
-a triangle mesh: fem.transfer through TriangleTransfer, mesh plan stage T2) and the rule of where a cross-mesh
+a triangle mesh: fem.transfer through TriangleTransfer) and the rule of where a cross-mesh
 coupling's transform runs."""
 import numpy as np
 

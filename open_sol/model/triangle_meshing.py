@@ -1,4 +1,4 @@
-"""Triangle meshes of 'triangles' MeshSpecs (solver_plan S7.5 2.2): PSLG and size field from the resolved geometry
+"""Triangle meshes of 'triangles' MeshSpecs: PSLG and size field from the resolved geometry
 (the only reader of shape internals for the mesher), the fem mesher (built-in or gmsh), the PML layer ring, and
 element regions / boundary edges / points tagged by the builder's rasterizer rules. Host numpy only."""
 import math
@@ -60,7 +60,7 @@ def triangulate(spec, parameters, registry=None, mesh=None, *, shapes=None, sizi
 
 
 def _periodic_axes(sizing) -> tuple:
-    """'x' / 'y' of sizing.periodic_axes (new_modules_plan G3: matching opposite window sides); ValueError when one
+    """'x' / 'y' of sizing.periodic_axes (matching opposite window sides); ValueError when one
     carries an absorbing ring (a periodic side is the cell boundary)."""
     periodic_axes = tuple(axis for axis in ('x', 'y') if axis in tuple(getattr(sizing, 'periodic_axes', ())))
     for axis in periodic_axes:
@@ -105,7 +105,7 @@ def _plain_parts(shapes, window, sizing, periodic_axes=(), size_field=None) -> d
 
 
 def _mirrored_parts(shapes, window, sizing, periodic_axes=()) -> dict:
-    """_plain_parts of a mirror-symmetric mesh (new_modules_plan G2): the half (quarter) window below the centre
+    """_plain_parts of a mirror-symmetric mesh: the half (quarter) window below the centre
     line(s) of sizing.mirror_axes meshed with a symmetric size field and the PSLG of the geometry plus its mirror
     images, the PML ring on its outer faces, then mirrored per axis (fem.mesher.reflect_mesh; curves mapped to their
     images); line and point tags found geometrically on the whole mesh. A periodic mirror axis matches by the

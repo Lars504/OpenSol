@@ -1,5 +1,5 @@
-"""'explicit_kernels' solver type runtime (role 'stepper'): the settings bundle of an explicit time-stepping engine
-(solver_plan S3.1); the engine stays the loop. single = float32 fields; double = float64 fields and arithmetic
+"""'explicit_kernels' solver type runtime (role 'stepper'): the settings bundle of an explicit time-stepping engine;
+the engine stays the loop. single = float32 fields; double = float64 fields and arithmetic
 (em_fdtd_ez / em_fdtd_hz); half_storage = fp16 fields in memory, float32 arithmetic in registers (em_fdtd_3d,
 elastic_waves, laminar_flow transient; core.half_storage). On the cpu backend the engines run the core.kernels twins of
 their kernels (single and double: backend_misfit)."""

@@ -1,4 +1,4 @@
-"""Elastic PML ring of solid_mechanics on a triangle mesh (new_modules_plan K5): the fem.pml stretch of the mesh's layer
+"""Elastic PML ring of solid_mechanics on a triangle mesh: the fem.pml stretch of the mesh's layer
 ring at the eigenfrequency target, its wave speed, the ring-only dofs of the PML-mode filter and the mesh padding the
 definition requests. Host numpy."""
 # The stretch is fem.pml's: s = 1 - j beta (d / w)^2 at depth d into the ring of face f (thickness w), beta = 3 ln(1 / R)

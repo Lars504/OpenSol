@@ -1,4 +1,4 @@
-"""Self-tests of the tetrahedral FEM core (igor3d_plan section 7, T1 / T2; CPU, specs() empty, check({}) on structured
+"""Self-tests of the tetrahedral FEM core (CPU, specs() empty, check({}) on structured
 Kuhn meshes, no gmsh): quadrature exactness, mesh conformity, Nedelec tangential continuity, point location and the
 degree-1 reproduction of constant fields; the Lagrange assembly / face integral / interface-face patch checks. error =
 number of failed sub-checks (tolerance 0), values in details."""

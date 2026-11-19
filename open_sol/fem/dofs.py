@@ -1,6 +1,6 @@
-"""Degree-of-freedom maps of the FEM path (mesh plan 2.4): Lagrange P0 / P1 / P2 and Nedelec degree 1 / 2 on all
+"""Degree-of-freedom maps of the FEM path: Lagrange P0 / P1 / P2 and Nedelec degree 1 / 2 on all
 elements or an element subset (a region of the mesh), global numbering compressed to the subset; periodic dof
-partners, Bloch masters / phases and the Bloch prolongation (new_modules_plan G3, the 2D twins of fem.dofs3d). Host
+partners, Bloch masters / phases and the Bloch prolongation (the 2D twins of fem.dofs3d). Host
 numpy."""
 # Bloch convention (as fem.dofs3d / em3d): each hi-side dof stands for its lo-side partner times e^{-j k L} per crossed
 # period, u(x + L) = u(x) e^{-j k L}; x = P x_r, reduced operators P^H A P (Hermitian for Hermitian A).
@@ -156,7 +156,7 @@ def nedelec_dofs(mesh, degree, elements=None, geometry_order=None) -> DofMap:
     return _compress(mesh, 'nedelec', degree, geometry_order, elements, local_ids)
 
 
-# ---- periodic sides and Bloch cells (new_modules_plan G3) ----
+# ---- periodic sides and Bloch cells ----
 def periodic_dof_partners(dofs, node_partners) -> np.ndarray:
     """Int64 (n_dofs,): the dof of the partner entity of every dof on the hi side (node_partners of
     fem.mesh.periodic_node_partners), -1 elsewhere; Lagrange P1 / P2 only (their dofs carry no sign); ValueError for a

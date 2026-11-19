@@ -96,8 +96,8 @@ _FEM_STUDIES = (STATIONARY_STUDY, TIME_DEPENDENT_STUDY, EIGENFREQUENCY_STUDY,   
 # The 'linear' SolverRole of solid_mechanics (local: no other type uses it): tensor
 # mesh = block-Jacobi CSR pcg (no scalar multigrid: it does not fit the vector problem), 'mixed' = float32 inner CG on
 # float32 copies of the CSR and the 2 x 2 inverse blocks (system.ElasticSystem._bind_linear_solver); Automatic on the
-# gpu backend = pcg mixed (3D speed plan A1: float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
-# ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh (mesh plan D11) = sparse_direct
+# gpu backend = pcg mixed (float64 is slow on consumer GPUs; the CSR product is bound by bytes, so
+# ~1.5x here, not 3D's 17x; a pcg node setting no precision takes it too); triangle mesh = sparse_direct
 # on both backends (back_end 'auto' = cudss on the gpu backend with nvmath, B1a: double, thin-film K is badly
 # conditioned and its frequency response near resonance converges worst in float32). Stationary / time_dependent on a
 # tensor mesh, gpu backend: sparse_direct, a double cuDSS Cholesky of A_solve kept per assembly (speed review 3.1: the
@@ -858,7 +858,7 @@ def _create_solid(ctx, physics_spec, values):
     """SolidMechanicsPhysics on ctx.domain with the build's linear (pcg) solver (solid_linear_solver), the 'eigen'
     (arpack_shift_invert) runtime in a modal study and, in an eigenfrequency study, the guided axial_wavenumber (an
     optomechanics study with backward scattering: guided, k_z set by the study). A triangle mesh:
-    SolidMechanicsFEMPhysics with the 'linear' sparse_direct runtime (mesh plan D11), the azimuthal order, the elastic
+    SolidMechanicsFEMPhysics with the 'linear' sparse_direct runtime, the azimuthal order, the elastic
     PML faces and the geometric nonlinearity settings."""
     if ctx.domain.grid_kind == _TRIANGLES:
         runtimes = ctx.solvers(physics_spec.name)

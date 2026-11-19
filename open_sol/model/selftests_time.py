@@ -1,4 +1,4 @@
-"""CPU self-tests of the run-time estimate (time_estimation_plan): the quick cpu machine profile (curves, interpolation,
+"""CPU self-tests of the run-time estimate: the quick cpu machine profile (curves, interpolation,
 round trip; never saved) and the recipes on a synthetic profile (pricing, count spans, study steps, sweeps, the
 post-run time_check warnings, every template estimated without a failing recipe)."""
 import math

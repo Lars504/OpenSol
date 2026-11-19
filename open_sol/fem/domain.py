@@ -1,4 +1,4 @@
-"""TriangleDomain (mesh plan 2.5): the Domain of a 'triangles' mesh: TriangleMesh + per-element MaterialGrid
+"""TriangleDomain: the Domain of a 'triangles' mesh: TriangleMesh + per-element MaterialGrid
 (shape (n_elements,)) on the run backend. Tensor-only accessors (cell_widths, cell_edges, pos_to_cell, ...) do not
 exist here: physics using them are refused by PhysicsType.grids."""
 import hashlib

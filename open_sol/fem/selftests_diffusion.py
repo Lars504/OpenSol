@@ -1,4 +1,4 @@
-"""Self-test of fem.diffusion (mesh plan stage T4, CPU; specs() empty, check({}) solves directly): FEMDiffusionSystem
+"""Self-test of fem.diffusion (CPU; specs() empty, check({}) solves directly): FEMDiffusionSystem
 identities on the curved disc mesh (selftests_mesher.disc_mesh), error = number of failed sub-checks (tolerance 0)."""
 import numpy as np
 

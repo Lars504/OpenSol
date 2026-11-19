@@ -1,4 +1,4 @@
-"""Model definition of the 3D FDFD physics type 'em_fdfd_3d' (igor3d_plan stages 1-2): settings, the em_fdtd_3d material
+"""Model definition of the 3D FDFD physics type 'em_fdfd_3d': settings, the em_fdtd_3d material
 vocabulary, features (PEC, resonance table), validation and the memory / run-time estimates; registered by
 definition.register after em_fdtd_3d."""
 import math
@@ -138,7 +138,7 @@ def _domain_requirements(settings_values):
 def _create(ctx, physics_spec, settings_values):
     """FDFDPhysics3D at the wavelength setting with the 'eigen' solver and the dispersive poles of every material region
     (definition.write_dispersive_regions_3d); on a 'tetrahedra' mesh FEMResonancePhysics3D (Nedelec elements of the
-    element_order setting, igor3d_plan T4b)."""
+    element_order setting)."""
     eigen_solver = ctx.solvers(physics_spec.name)['eigen']
     if ctx.domain.grid_kind == 'tetrahedra':
         physics = FEMResonancePhysics3D(ctx.domain, _boundary_config(settings_values),

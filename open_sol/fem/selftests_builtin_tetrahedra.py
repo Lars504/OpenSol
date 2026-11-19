@@ -1,4 +1,4 @@
-"""Self-tests of the graded builtin tetrahedron mesher (plan D2; CPU, no gmsh, specs() empty, check({}) directly): the
+"""Self-tests of the graded builtin tetrahedron mesher (CPU, no gmsh, specs() empty, check({}) directly): the
 exact estimate against the built Kuhn split, conforming object faces, the orthoscheme dihedral bound on a 10:1 graded
 mesh, the uniform case unchanged, the z axis alone (swept prisms), the mesh key and the refusals."""
 import math

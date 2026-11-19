@@ -1,4 +1,4 @@
-"""Conformal PEC of the 2D FDTD engines and the 2D FDFD assembly (solver_plan S7.6; host numpy, built once): E_z gets
+"""Conformal PEC of the 2D FDTD engines and the 2D FDFD assembly (host numpy, built once): E_z gets
 the exact wall distance on each H link to a PEC cell, H_z the free face lengths and cell areas (Dey-Mittra). FDTD: each
 limited per cell so the cell keeps its Gershgorin bound below the leap-frog limit (the smallest cut never sets the time
 step); FDFD: floored at CONDITIONING_FLOOR only, the free area entering as the mass (the operator stays symmetric)."""

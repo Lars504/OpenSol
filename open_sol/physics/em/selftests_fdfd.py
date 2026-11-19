@@ -63,7 +63,7 @@ _FAR_FIELD_N_ANGLES = 360
 _FAR_FIELD_DIPOLE = {'excitation': 'electric_dipole', 'dipole_moment': 1e-3, 'orientation': 30.0, 'phase': 0.0}
 _FAR_FIELD_POWER_TOLERANCE = 0.02         # relative, angle integral vs flux box
 _FAR_FIELD_SHAPE_TOLERANCE = 0.02         # absolute, peak-normalised pattern
-# em_fdfd_far_field_power_graded: the same boxes on a graded mesh (solver_plan S7.1 lift): base 25 nm, a centred core
+# em_fdfd_far_field_power_graded: the same boxes on a graded mesh: base 25 nm, a centred core
 # square refined to 12.5 nm (both axes) with a margin, so the far-field contour rows / columns cross graded cells while
 # its four sample lines and the flux lines stay in base cells.
 _GRADED_FAR_FIELD_CORE = (1.8e-6, 2.2e-6)  # m, refined square (both axes)
@@ -125,7 +125,7 @@ _FD_DRUDE_SCATTERING_TOLERANCE = 0.10     # relative, worst wavelength
 _FD_DRUDE_ABSORPTION_TOLERANCE = 0.15     # relative, worst wavelength
 _FD_DRUDE_BALANCE_TOLERANCE = 1e-3        # relative, inner-box inward flux vs integrated q_abs
 
-# em_fdfd_tfsf_graded_leakage (solver_plan S7.1): an empty vacuum TFSF box must stay transparent on graded meshes.
+# em_fdfd_tfsf_graded_leakage: an empty vacuum TFSF box must stay transparent on graded meshes.
 # 'ez' / 'hz': 3 x 3 um all-CPML box, wavelength 1 um, mode 'nonuniform' base 50 nm, the TFSF box (1, 2) um and a
 # refinement rectangle x 1.05..1.45, y 1.3..1.7 um refined to 20 nm with a 0.1 um margin: the lo-x edge (x = 1 um) lies
 # in the graded margin (start pair of unequal widths), the x march crosses graded columns, the y edges run along graded

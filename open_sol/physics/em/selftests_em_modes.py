@@ -158,7 +158,7 @@ def _check_bloch_plate(results_by_name):
                               'n_eff_squared_expected': expected}, errors=errors)
 
 
-# ---- em_modes_line_block (solver_plan Part II stage 3): the PEC waveguide runs (mode_analysis with the group index:
+# ---- em_modes_line_block: the PEC waveguide runs (mode_analysis with the group index:
 # omega and omega (1 +- 1e-3) in one batch; frequency_domain at three wavelengths: one planned batch) and the Bloch
 # plate (periodic x inside the blocks, cpu backend) with a line_block node as the 'shifted' solver. The dispersion run
 # is double only: the planned-wavelength batch takes the same factorize_operators call as the modes batch, whose mixed

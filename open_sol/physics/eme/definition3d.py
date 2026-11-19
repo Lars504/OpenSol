@@ -448,5 +448,5 @@ EM_EME_3D = PhysicsType(
     scalar_outputs_help=SCALAR_OUTPUTS_HELP,
     dimensions=(3,),
     solver_roles={'eigen': eigen_role()},
-    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp (solver_plan S6)
+    backends=('gpu', 'cpu'),   # host cross-section solves / cascade, fields on the Domain's xp
 )

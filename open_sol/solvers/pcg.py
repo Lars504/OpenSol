@@ -75,7 +75,7 @@ LAGGED_SETUP_SLACK = 4
 
 # gpu, callers opting in (factorize capture_blocks): each full check block (no host sync inside: alpha / beta / rho are
 # device scalars, every launch a RawKernel or cupy kernel) runs once eagerly per (operator, solution, length), then as
-# one captured CUDA graph (speed plan A3: 8 launches of ~12 us per block-Jacobi iteration were the whole iteration at
+# one captured CUDA graph (8 launches of ~12 us per block-Jacobi iteration were the whole iteration at
 # 6e3 nodes). Graphs hold the callbacks' array pointers: the caller drops them (release_block_graphs) whenever those
 # arrays change; factorize drops them too.
 CG_BLOCK_GRAPHS = True       # False: launch every block eagerly

@@ -1,4 +1,4 @@
-"""Electric currents / electrostatics on a triangle mesh (mesh plan 2.7, stage T4): FEMPotentialPhysics, P1 / P2
+"""Electric currents / electrostatics on a triangle mesh: FEMPotentialPhysics, P1 / P2
 Lagrange V on the window (fem.diffusion), planar or axisymmetric (r, z); the PotentialPhysics field names, slots, held
 regions, scalar outputs and linear electrolytes where they apply (no nonlinear electrolytes, driven terminals or
 azimuthal orders). State arrays are per element (V at the element centroid, E / J / D element means, q_joule the

@@ -221,7 +221,7 @@ class FeatureType:
     # n_selected_cells = full-grid cells of the selection's bounding box, 3D boxes in 3D: meshing._selection_cells);
     # set on features that allocate per-region or per-frequency arrays (meshing.estimate_memory)
     memory_estimate: Callable | None = None
-    # stepper precisions the feature works at (solver_plan S3.3; validate checks the resolved 'stepper' solver)
+    # stepper precisions the feature works at (validate checks the resolved 'stepper' solver)
     precisions: tuple = tuple(PRECISIONS)
     # MESH_KINDS of the meshes the feature works on (validate refuses an enabled one on another kind)
     grids: tuple = ('tensor',)
@@ -296,7 +296,7 @@ class PhysicsType:
     memory_estimate: Callable | None = None
     # time_estimate(settings_values, mesh_estimate, context) -> core.time_estimate.TimeEstimate (CPU, unpriced; context
     # = model.time_estimate.TimeContext): the work per step / solve / wavelength as ops and solver roles' work, never
-    # seconds; None = 'not estimated' (time_estimation_plan)
+    # seconds; None = 'not estimated'
     time_estimate: Callable | None = None
     # scalar_outputs(settings_values, physics_spec) -> tuple of names the solver's scalars() reports (derived values:
     # <physics>_<name>; physics_spec for names that follow its features, CPU only); scalar_outputs_help (units,
@@ -318,13 +318,13 @@ class PhysicsType:
     # (physics_type_misfit; '3d' from dimensions)
     spaces_2d: tuple = ('planar',)
     space_settings: dict = field(default_factory=dict)
-    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out (solver_plan S3.3);
+    # SOLVER_ROLES key -> SolverRole (solvers.roles): the numerical jobs the type hands out;
     # register_physics checks every default_type is a registered SolverType
     solver_roles: dict = field(default_factory=dict)
     # honours solver_defaults.subpixel_smoothing (igor 1.5): the builder hands its solver the interface geometry by
     # set_subpixel_smoothing(geometry) right after create (subpixel_smoothing_physics decides where it applies)
     subpixel_smoothing: bool = False
-    # honours solver_defaults.conformal_boundaries (solver_plan S7.6): the builder hands its solver a
+    # honours solver_defaults.conformal_boundaries: the builder hands its solver a
     # model.boundary_locator.GeometryLocator by set_conformal_boundaries(locator) right after create, in models of
     # the conformal_dimensions (em_fdtd_3d: (3,), a 3D locator) whose 2D DomainSpec.coordinates are in
     # conformal_coordinates (heat / potential also 'polar' / 'spherical': the locator then takes logical coordinates)
@@ -332,7 +332,7 @@ class PhysicsType:
     conformal_dimensions: tuple = (2,)
     conformal_coordinates: tuple = ('cartesian',)
     # run backends (solvers.roles BACKENDS) the type's own code runs on: engine, renderer, features, the couplings it
-    # owns (solver_plan S6); a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
+    # owns; a type adds 'cpu' only once all of it runs on numpy (validate errors on the cpu otherwise)
     backends: tuple = ('gpu',)
     # core.metric GRIDS of the 2D in-plane grid the type solves on (DomainSpec.coordinates 'polar' / 'spherical' map to
     # 'polar'); validate refuses the others; its solver's PhysicsSolver.coordinate_grids must agree
@@ -609,14 +609,15 @@ def coupling_role_text(coupling_type, role) -> str:
     return 'any' if accepted is None else ' or '.join(f"'{name}'" for name in accepted)
 
 
-# built-in study names (model.study / study_eigenfrequency / study_frequency_response register them); physics compare
-# study names against these, never the literal (FieldInfo.requires_study of harmonic fields, wavelength settings
-# frequency_domain overrides)
+# built-in study names (model.study / study_eigenfrequency / study_frequency_response / study_optomechanics
+# register them); physics compare study names against these, never the literal (FieldInfo.requires_study of harmonic
+# fields, wavelength settings frequency_domain overrides)
 FREQUENCY_DOMAIN_STUDY = 'frequency_domain'   # the wavelength-based harmonic study
 EIGENFREQUENCY_STUDY = 'eigenfrequency'
 TIME_DEPENDENT_STUDY = 'time_dependent'
 STATIONARY_STUDY = 'stationary'
 FREQUENCY_RESPONSE_STUDY = 'frequency_response'   # the frequency-list (Hz) harmonic study
+OPTOMECHANICS_STUDY = 'optomechanics'
 
 
 @dataclass(frozen=True)
@@ -700,7 +701,7 @@ class TemplateEntry:
 @dataclass(frozen=True)
 class SelfTestVariant:
     """A repeat of a SelfTestCase's runs on another backend and / or solver precision, passed against its own
-    tolerance (solver_plan S3.6): api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
+    tolerance: api.selftest re-runs specs() moved by api._variant_spec and re-uses check()."""
     name: str                       # identifier, unique within the case (report key, run directory variant_<name>)
     tolerance: float                # replaces the tolerance check() returns
     backend: str | None = None      # 'cpu' | 'gpu': solver_defaults.backend of every run; None = the specs' own
@@ -1133,7 +1134,7 @@ def memory_check_level(spec) -> str:
 
 def solver_backend(spec) -> str:
     """Backend of a run: solver_defaults.backend, 'auto' = 'gpu' when cupy imports, else 'cpu' (no driver query:
-    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu', solver_plan S6 stage 0)."""
+    GUI-thread safe; a machine with cupy but no CUDA device still resolves 'gpu')."""
     backend = spec.solver_defaults.backend
     if backend == 'auto':
         return 'gpu' if cupy_installed() else 'cpu'
@@ -1158,7 +1159,7 @@ SOLVER_DEFAULT_PRECISIONS = ('auto', *PRECISIONS)   # SolverDefaultsSpec.precisi
 
 
 def with_default_precision(spec, solver_type, settings, solver_role=None) -> dict:
-    """settings (raw) plus 'precision' = solver_defaults.precision (solver_plan S9) when settings set none and
+    """settings (raw) plus 'precision' = solver_defaults.precision when settings set none and
     solver_type (and solver_role, when given) offer it; else settings unchanged. An explicit node precision wins."""
     precision = getattr(spec.solver_defaults, 'precision', 'auto')
     if (precision == 'auto' or 'precision' in settings or precision not in solver_type.precisions
@@ -1371,7 +1372,7 @@ def auto_back_end_values(values, solver_role, backend, grid) -> dict:
 
 
 def restricted_feature_precisions(feature_type) -> tuple:
-    """The stepper precisions feature_type is limited to, () when it works at every precision (solver_plan S3.3)."""
+    """The stepper precisions feature_type is limited to, () when it works at every precision."""
     return () if set(feature_type.precisions) == set(PRECISIONS) else feature_type.precisions
 
 
@@ -1385,7 +1386,7 @@ def feature_precision_note(feature_type) -> str:
 
 def feature_precision_misfit(feature_type, resolved) -> str:
     """'' when feature_type works at the precision of the resolved 'stepper' solver ({role: ResolvedSolver}; no
-    stepper = no restriction), else the reason naming that precision (solver_plan S3.3)."""
+    stepper = no restriction), else the reason naming that precision."""
     stepper = resolved.get('stepper')
     if stepper is None:
         return ''

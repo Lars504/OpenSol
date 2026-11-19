@@ -1,4 +1,4 @@
-"""Bloch / Floquet unit cells of the tetrahedra solid (piezo_3d_plan D9): the periodic identification of the periodic
+"""Bloch / Floquet unit cells of the tetrahedra solid: the periodic identification of the periodic
 axes on the full-mesh scalar map, its vector / coupled (block layout) masters, the prolongation x = P x_r over the free
 masters, the rigid motions the periodicity leaves and the dofs on periodic faces. Host numpy."""
 # fem.dofs3d.bloch_masters (the em3d convention): each hi-side dof stands for its lo-side partner times e^{-j k L} per

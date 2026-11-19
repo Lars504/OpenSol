@@ -1,5 +1,5 @@
 """Coupling type solid_mechanics -> membrane: solid_membrane_tension, the relaxed plane-stress film stress times its
-thickness (N_ij = h sigma_ij per element) overwriting the membrane's coupled tension slots (new_modules_plan S9);
+thickness (N_ij = h sigma_ij per element) overwriting the membrane's coupled tension slots;
 discovered and registered by definitions.register."""
 from ..core.backend import array_module_of
 from ..core.constants import DTYPE, FACES

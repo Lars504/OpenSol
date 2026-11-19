@@ -1,4 +1,4 @@
-"""Unbounded decaying physics by outer grading (symmetry plan 2.15): an axisymmetric disc heater on a half-space whose
+"""Unbounded decaying physics by outer grading: an axisymmetric disc heater on a half-space whose
 held far faces sit 1000 radii away on a few dozen geometrically growing cells, against the infinite-medium closed
 forms; one CPU case (cpu backend, Automatic sparse_direct), registered by definition.register."""
 import numpy as np

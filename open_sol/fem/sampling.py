@@ -1,4 +1,4 @@
-"""Field sampling on triangle meshes (mesh plan 2.9): point location (bucket grid over element boxes, barycentric
+"""Field sampling on triangle meshes: point location (bucket grid over element boxes, barycentric
 test, Newton on the P2 map of curved elements), evaluation of Lagrange / Nedelec fields at points, the display
 raster (pixel centres -> values, NaN outside; cached per mesh and raster), quadrature sample sets for derived values
 and the display triangulation (P2 split 1 -> 4). Host numpy."""

@@ -1348,7 +1348,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
     scatter_bytes = _TANGENT_SCATTER_BYTES_PER_COO * coo_entries
     linear = (context.solvers or {}).get('linear')
     if context.backend == 'gpu' and linear is not None and linear.values.get('back_end') in CUDSS_BACK_ENDS:
-        # device TangentAssembler3D (plan G5) on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
+        # device TangentAssembler3D on the element kernel: per chunk (sized by the chunk byte cap) one CUDA
         # block per element, the block scatter_add, the displacement up and the force down
         chunks = -(-int(mesh.n_elements) // device_tangent_chunk_elements(local, points, element_kernel=True))
         ops = (te.DenseFlops(kernel_flops),
@@ -1369,7 +1369,7 @@ def _newton_time(settings_values, mesh, context, unknowns, scales, solves, kind,
 
 
 def _device_tangent_items(order, elements, scalar_dofs, entries, reduced_entries, factored):
-    """(run items, transient items) of the device Newton tangents (plan G5, uncalibrated): the kept TangentAssembler3D
+    """(run items, transient items) of the device Newton tangents (uncalibrated): the kept TangentAssembler3D
     caches, values, vectors and cuDSS index maps; one chunk's temporaries per tangent assembly."""
     local = 10 if order == 2 else 4
     points = _TANGENT_RULE_POINTS[order]
@@ -1447,7 +1447,7 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
         factors.append(('frequency response cuDSS factor', factored, factored_entries, _COMPLEX_BYTES, fill,
                         linear_back_end == 'cudss_mixed'))
     coupled_csr = (FLOAT64_CSR_ENTRY_BYTES * factored_entries + INT32_BYTES * factored)
-    # Newton tangents on the GPU (plan G5): system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
+    # Newton tangents on the GPU: system_fem3d.device_tangent = gpu backend and a cuDSS 'linear' back end
     device_tangent = (bool(settings_values.get('geometric_nonlinearity')) and static_solve
                       and on_gpu and linear_back_end in CUDSS_BACK_ENDS)
     if device_tangent:

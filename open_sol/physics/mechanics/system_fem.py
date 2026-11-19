@@ -1,8 +1,8 @@
-"""ElasticFEMSystem: the host float64 vector P1 / P2 elasticity of a solid on a triangle mesh (mesh plan 2.7, stage T5):
+"""ElasticFEMSystem: the host float64 vector P1 / P2 elasticity of a solid on a triangle mesh:
 dofs on the solid window elements, holds kept on the full-mesh dof ids (nodes, P2 edge nodes), assembly by
 fem.elasticity, rigid-mode check per solid region, one factorisation of K_ff per assembly by the 'linear' sparse_direct
 runtime (through sparse_direct.DiffusionDirectSolver, lazily at the first solve), solves, Newton tangent solves
-(geometric nonlinearity, new_modules_plan K6), reactions and the consistent mass; an elastic PML ring (stretched pencil operators, new_modules_plan K5) and the azimuthal order m >= 1 form (three
+(geometric nonlinearity), reactions and the consistent mass; an elastic PML ring (stretched pencil operators) and the azimuthal order m >= 1 form (three
 components, K7). numpy at module level, scipy inside functions."""
 import numpy as np
 

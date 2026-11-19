@@ -1,4 +1,4 @@
-"""Self-tests of the rounded_rectangle geometry kind and fem.mesh.Curve arc pieces (new_modules_plan G4; CPU, specs()
+"""Self-tests of the rounded_rectangle geometry kind and fem.mesh.Curve arc pieces (CPU, specs()
 empty, check({}) directly): rasters, outlines, sections and 3D rules against closed forms, the arc PSLG, triangle meshes
 following the corner arcs (P2 area) and the tetrahedra solids. Written, not run: tolerances are first estimates."""
 import math

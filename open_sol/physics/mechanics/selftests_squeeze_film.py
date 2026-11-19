@@ -1,4 +1,4 @@
-"""Squeeze-film self-tests (new_modules_plan S6; CPU, specs() empty, check({}), builtin Kuhn meshes, no gmsh): the
+"""Squeeze-film self-tests (CPU, specs() empty, check({}), builtin Kuhn meshes, no gmsh): the
 fem.surface_mesh footprint and P1 / P2 displacement transfer with the compressible strip closed form, and the vented
 annulus of Basiri E4 (rigid piston c_sq, mode-weighted gamma_gas of the Kirchhoff bracket shapes). error = number of
 failed sub-checks (tolerance 0), values in details. definition3d registers them."""
@@ -11,7 +11,7 @@ from ...model.schema import SelfTestCase
 from ...model.selftest_helpers import checks_result
 
 UM = 1e-6
-# air and the Basiri microdisk (plan section 2): mu [Pa s], p_a [Pa], mean free path [m]; annulus radii a, b and
+# air and the Basiri microdisk: mu [Pa s], p_a [Pa], mean free path [m]; annulus radii a, b and
 # thickness t [m]; SiO2 E [Pa], nu, rho [kg/m^3]
 _VISCOSITY = 1.81e-5
 _AMBIENT_PRESSURE = 101325.0
@@ -27,7 +27,7 @@ _DENSITY = 2200.0
 _SECTORS = 16
 _RADIAL_CELLS = 8
 _ANGULAR_CELLS = 12
-_PISTON_TOLERANCE = 5e-3   # plan S6 / Basiri E4: rigid annular piston within 0.5 %
+_PISTON_TOLERANCE = 5e-3   # Basiri E4: rigid annular piston within 0.5 %
 _PISTON_TABLE = {10.0 * UM: 3.782e-6, 20.0 * UM: 4.727e-7}   # Basiri section 6 c_sq [kg/s]
 _TABLE_TOLERANCE = 1e-3    # closed form vs the 4-digit table
 # Basiri section 6 brackets, lowest axisymmetric mode at H = 10 um (max |psi| = 1): f [Hz], m_eff [kg], zeta,
@@ -38,7 +38,7 @@ _MODE_GAP = 10.0 * UM
 _FREQUENCY_TOLERANCE = 1e-3   # Kirchhoff roots vs the 4-digit table
 _MASS_TOLERANCE = 1e-2        # m_eff / zeta vs the 3-digit table
 _ZETA_FREE_TOLERANCE = 1e-6   # free-free: int psi dA = 0 exactly (momentum)
-_RADIAL_TOLERANCE = 5e-3      # FE c_psi vs the 1D radial integral of the same shape (plan 0.5 %)
+_RADIAL_TOLERANCE = 5e-3      # FE c_psi vs the 1D radial integral of the same shape (0.5 %)
 _GAMMA_TOLERANCE = 1e-2       # FE gamma_gas vs the 4-digit table (first estimate)
 _RADIAL_SAMPLES = 20001       # trapezoid samples of the 1D radial references over [b, a]
 _ROOT_GRID = np.linspace(0.5, 8.0, 1501)   # lambda = k a scanned for the Kirchhoff roots

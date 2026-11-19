@@ -1,5 +1,5 @@
-"""Reduced-order frequency sweeps of a linear harmonic system A(omega) x = b(omega) on its solved unknowns (experiment
-plan A1 / A2): ReducedHarmonicModel = a Galerkin projection on an orthonormal basis grown by greedy moment matching at
+"""Reduced-order frequency sweeps of a linear harmonic system A(omega) x = b(omega) on its solved unknowns:
+ReducedHarmonicModel = a Galerkin projection on an orthonormal basis grown by greedy moment matching at
 expansion frequencies ('adaptive') or from given vectors plus a static correction ('modal'), with a sketched residual
 estimate per frequency. Solver-neutral host numpy; the caller supplies the terms and the factorisation."""
 # Contract (physics wire it through their own systems, e.g. fem.harmonic.HarmonicSystemBase.plan_reduced):
@@ -436,7 +436,7 @@ class ReducedHarmonicModel:
         return self._finish(method, omegas, residuals, float(tolerance), converged, verify, started)
 
     def fit_modal(self, mode_vectors, omegas, tolerance=1e-6, verify=True) -> dict:
-        """Modal basis (plan A2): the (n, m) mode vectors plus A(omega_c)^-1 b_q of every load at the band centre omega_c
+        """Modal basis: the (n, m) mode vectors plus A(omega_c)^-1 b_q of every load at the band centre omega_c
         (the static correction of the truncated modes), then evaluate over omegas [rad/s]."""
         omegas = _checked_omegas(omegas)
         kept = self.add_vectors(mode_vectors)

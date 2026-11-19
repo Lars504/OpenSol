@@ -782,8 +782,8 @@ EM_MODES = PhysicsType(
                   'shifted': SolverRole('general', 'sparse_direct', precisions=('mixed', 'double'))},
     subpixel_smoothing=True,
     conformal_boundaries=True,   # pec_domain cut cells (cross_section_modes pec_cuts; 2D Cartesian)
-    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp (solver_plan S6)
-    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem (mesh plan 2.6)
+    backends=('gpu', 'cpu'),   # host eigen solve, mode fields on the Domain's xp
+    grids=BOTH_GRIDS,         # triangles: solvers/modes_fem
 )
 
 

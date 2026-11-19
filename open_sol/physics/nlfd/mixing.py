@@ -3,7 +3,7 @@
 # A channel is one (frequency, polarisation): 'ez' carries E_z (model component 2), 'hz' carries E_x, E_y (0, 1).
 # Frequencies of generated channels are integer combinations of the input channels, so a process frequency matches a
 # channel exactly by its coefficient vector; channels given by separate wavelengths are compared with 1e-12 relative.
-# Response of order n at channel k (plan 2.1): P_k = eps0 2^(1-n) sum over ordered signed source tuples chi(n) : E..E,
+# Response of order n at channel k: P_k = eps0 2^(1-n) sum over ordered signed source tuples chi(n) : E..E,
 # E_{-m} = conj(E_m). The tensors are symmetric in their source indices (tensors.symmetrize_sources), so one term per
 # multiset of signed sources carries factor 2^(1-n) x (number of orderings).
 import itertools

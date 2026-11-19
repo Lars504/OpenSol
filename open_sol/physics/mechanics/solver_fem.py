@@ -1,4 +1,4 @@
-"""Static 2D solid mechanics on a triangle mesh (mesh plan 2.7, stage T5): vector Lagrange P2 (default, the
+"""Static 2D solid mechanics on a triangle mesh: vector Lagrange P2 (default, the
 industry-standard quadratic) or P1 elements on the solid window elements, isoparametric on curved boundaries; plane
 strain / plane stress / generalized plane strain or axisymmetric (r, z) whole rings; isotropic or anisotropic c_ij
 (stiffness.ElementStiffness, per element: D12), thermal strain, initial stress, supports, tractions on outer faces /
@@ -49,7 +49,7 @@ from .stiffness import (ElementStiffness, check_positive_definite, element_stiff
 from .system_fem import ElasticFEMSystem
 from .tangent_update import TangentPolicy, newton_proposer
 
-DISCRETIZATIONS ={'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order (mesh plan D5)
+DISCRETIZATIONS ={'quadratic': 2, 'linear': 1}   # setting discretization -> Lagrange order
 _OPERATOR_NAMES = ('c11', 'c12', 'c22', 'c66', 'c16', 'c26')
 _HOOP_NAMES = ('c13', 'c23', 'c33')
 # Newton scale floor: the largest displacement counts at least this fraction of the mesh window extent (a zero solution)
@@ -121,13 +121,13 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self.out_of_plane = PLANE_STRAIN if self._axisymmetric else out_of_plane
         if self.out_of_plane not in OUT_OF_PLANE_CONDITIONS:
             raise ValueError(f"out_of_plane must be one of {', '.join(OUT_OF_PLANE_CONDITIONS)}, got {out_of_plane!r}")
-        # azimuthal order m of the axisymmetric solid (new_modules_plan K7): 0 = torsion-free rings, >= 1 three components
+        # azimuthal order m of the axisymmetric solid: 0 = torsion-free rings, >= 1 three components
         if isinstance(azimuthal_order, bool) or int(azimuthal_order) != azimuthal_order or int(azimuthal_order) < 0:
             raise ValueError(f'azimuthal_order must be an integer >= 0, got {azimuthal_order!r}')
         self.azimuthal_order = int(azimuthal_order)
         if self.azimuthal_order and not self._axisymmetric:
             raise ValueError(f"azimuthal_order {self.azimuthal_order} needs geometry 'axisymmetric'")
-        # elastic PML ring (pml2d, new_modules_plan K5): its faces and target reflection; the eigenfrequency study only
+        # elastic PML ring (pml2d): its faces and target reflection; the eigenfrequency study only
         self.pml_faces = tuple(pml_faces)
         unknown = [face for face in self.pml_faces if face not in FACES]
         if unknown:
@@ -151,7 +151,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
             on_pml = [face for face in self.pml_faces if self.periodic['xy'.index(face[0])]]
             if on_pml:
                 raise ValueError(f'a PML on the periodic face(s) {on_pml}: put it on the other axis')
-        # total-Lagrangian Newton of every static solve (new_modules_plan K6): load steps and the damped loop
+        # total-Lagrangian Newton of every static solve: load steps and the damped loop
         if isinstance(load_steps, bool) or int(load_steps) != load_steps or load_steps < 1:
             raise ValueError(f'load_steps must be an integer >= 1, got {load_steps!r}')
         self.geometric_nonlinearity = bool(geometric_nonlinearity)
@@ -167,7 +167,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                                                         max_iterations=int(nonlinear_max_iterations)),
                                         lambda: f'{self._label()} geometrically nonlinear solve')
                         if self.geometric_nonlinearity else None)
-        # tangent refactorised per Newton iteration or kept while the residual falls fast (plan G4, modified Newton)
+        # tangent refactorised per Newton iteration or kept while the residual falls fast (modified Newton)
         self._tangent_policy = TangentPolicy(tangent_update)
         # (converged every load step, warning or None, Newton iterations) of the last nonlinear solve
         self._nonlinear_record = None
@@ -351,7 +351,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         self._write_outputs(green_lagrange=self.geometric_nonlinearity)
         self._loads_dirty = False
 
-    # --- geometric nonlinearity (total-Lagrangian Newton, new_modules_plan K6) ----
+    # --- geometric nonlinearity (total-Lagrangian Newton) ----
 
     def _fixed_stress(self, thermal=True):
         """fem.elasticity.StressField of the stress that is no strain response, in the fem Voigt rows: sigma0 (initial
@@ -449,7 +449,7 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
                                        *(np.asarray(seed[name], dtype=np.float64)[rows].reshape(-1)
                                          for name in ('u', 'external', 'held')))
 
-    # --- prestress (stress stiffening, new_modules_plan K2) -------------------------
+    # --- prestress (stress stiffening) -------------------------
 
     def solve_static_state(self, with_loads=True) -> str:
         """PrestressSolver hook: the static state whose K_sigma (int grad N . sigma grad N dA per component, axisymmetric
@@ -726,8 +726,8 @@ class SolidMechanicsFEMPhysics(FEMSolidCommon, MultiShiftModes, PhysicsSolver):
         return force_x * depth, force_y * depth
 
     def error_indicator(self):
-        """eta^2 per element (float64 (n_elements,)) of the last static solve for mesh refinement (S7.7, mesh plan
-        A3): Kelly traction jumps h_E / c int_E |sigma_0 n - sigma_1 n - t|^2 ds (1/2 per side of an edge between solid
+        """eta^2 per element (float64 (n_elements,)) of the last static solve for mesh refinement (S7.7):
+        Kelly traction jumps h_E / c int_E |sigma_0 n - sigma_1 n - t|^2 ds (1/2 per side of an edge between solid
         elements; free, traction and periodic edges of the solid one-sided, components held along the whole edge
         skipped), c = (c11 + c22) / 2 of the element; 2 pi r weights axisymmetric; nominal tractions after a
         nonlinear solve. ValueError without a static solve."""

@@ -1,4 +1,4 @@
-"""Plate bending of the membrane on Lagrange P2 triangles (new_modules_plan S7): the C0 interior penalty form of
+"""Plate bending of the membrane on Lagrange P2 triangles: the C0 interior penalty form of
 D del^4 w on the isoparametric P2 map (Hessian volume term, normal-moment / slope-jump edge terms, Nitsche slope holds
 on clamped edges), its fem.pml stretched form and the Bloch seam edges of a periodic cell. Host numpy, scipy inside
 functions."""
@@ -14,7 +14,7 @@ functions."""
 # Bloch seam (periodic axis, phase p = e^{-j k L}): an element A on the hi side sees across the seam the copy of the
 # lo-side partner element B carrying p u_B, so the full-numbering seam matrix holds S_AA, S_AB p, S_BA conj(p), S_BB and
 # its reduction P^H S P is the Galerkin term of the Bloch cell.
-# PML (plan F1; fem.pml stretch s_i(x_i), d/dx_i -> (1 / s_i) d/dx_i, dA -> J dA, J = s_x s_y): the same form in the
+# PML (fem.pml stretch s_i(x_i), d/dx_i -> (1 / s_i) d/dx_i, dA -> J dA, J = s_x s_y): the same form in the
 # stretched coordinates, unconjugated (complex symmetric). Stretched Hessian H~_ij = H_ij / (s_i s_j) - delta_ij (s_i' /
 # s_i^3) dw/dx_i, volume int M~(w) : H~(v) J dA with M~ = M of H~; integrating it by parts per element gives the edge
 # moment J n . S^-1 M~ S^-1 n against the physical slope jump [dv/dn] (tangential parts cancel across an edge), and the

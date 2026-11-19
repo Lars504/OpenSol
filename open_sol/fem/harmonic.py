@@ -1,4 +1,4 @@
-"""Complex scalar harmonic FEM on triangle meshes (new_modules_plan S2): ScalarHarmonicSystem solves -div(a grad u) +
+"""Complex scalar harmonic FEM on triangle meshes: ScalarHarmonicSystem solves -div(a grad u) +
 (b + j omega c - omega^2 m) u = f by Lagrange P1 / P2 on an element selection, planar or axisymmetric (r, z), with a
 fem.pml ring, Dirichlet / Neumann / Robin edge conditions and point loads; the dimension-free HarmonicCondition,
 HarmonicPencil (K, C, M on one pattern, one complex factor per frequency), HarmonicSystemBase and HarmonicEigenPencil

@@ -69,7 +69,7 @@ SPLU_LIMIT_UNKNOWNS = 2_000_000       # L + U of order 10 GB of host memory
 SPLU_3D_WARN_UNKNOWNS = 100_000
 SPLU_3D_LIMIT_UNKNOWNS = 400_000
 # Complex 3D curl-curl systems (em_fdfd_3d, E on the live Yee faces, 13 entries per row): no iterative alternative yet,
-# so the limits follow the factor memory only; first values (igor3d_plan decision 11), to lower from measured factors
+# so the limits follow the factor memory only; first values, to lower from measured factors
 SPLU_VECTOR_3D_WARN_UNKNOWNS = 1_000_000
 SPLU_VECTOR_3D_LIMIT_UNKNOWNS = 4_000_000
 _TO_PCG = ("assign a pcg solver node as the physics' linear solver (preconditioner multigrid on graded or strongly "
@@ -1440,7 +1440,7 @@ class DiffusionDirectSolver(ExactSolveRecord):
 
     def factorize_device_values(self, values, indptr, indices, defer_check=False) -> None:
         """factorize of a canonical symmetric CSR given as device values (cupy (nnz,)) on the host pattern (indptr,
-        indices) (gpu backend, plan G5): cuDSS refreshes a factor of the same options on the device
+        indices) (gpu backend): cuDSS refreshes a factor of the same options on the device
         (CudssFactorization.refactorize_device_values: no host CSR once planned on that pattern; defer_check: the next
         solve checks it), else plans a new one from the device values; SuperLU factorises a host copy."""
         import cupy as cp

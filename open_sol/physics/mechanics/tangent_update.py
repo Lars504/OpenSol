@@ -1,5 +1,5 @@
 """Tangent refresh rule and Newton proposal of the total-Lagrangian solids (2D triangles, 3D tetrahedra): full Newton
-or modified Newton that keeps the factorised tangent while the residual falls fast (plan G4). Tangent data of a device
+or modified Newton that keeps the factorised tangent while the residual falls fast. Tangent data of a device
 TangentAssembler3D go to the system's device solve. numpy only."""
 import math
 

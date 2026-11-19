@@ -1,4 +1,4 @@
-"""Self-tests of mirror-symmetric triangle meshes (new_modules_plan G2; CPU, specs() empty, check({}) meshes directly):
+"""Self-tests of mirror-symmetric triangle meshes (CPU, specs() empty, check({}) meshes directly):
 node / element / ring / curved-edge invariance under the mirror, tags, the MeshSpec path, the material symmetry check
 and the em_fdfd_ez parity selection rule on a mirrored mesh. Written, not run: tolerances are first estimates."""
 import math

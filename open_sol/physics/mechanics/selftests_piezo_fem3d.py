@@ -1,4 +1,4 @@
-"""Piezoelectric solid_mechanics_3d on tetrahedra (piezo_3d_plan stages 2 and 3, builtin Kuhn meshes): the coupled
+"""Piezoelectric solid_mechanics_3d on tetrahedra (builtin Kuhn meshes): the coupled
 operator identities (CPU, no model), a z-rotated lithium niobate bar in uniaxial strain under voltage / charge (exact P1 /
 P2), its short / open thickness modes against the continuum and a two-layer capacitor with a void dielectric layer and a
 floating island electrode (exact). The thickness bar with a resistive_load drive checks the damped modes against

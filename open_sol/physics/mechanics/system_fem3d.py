@@ -153,7 +153,7 @@ class ElasticFEMSystem3D(DirectElasticSystem):
 
     @property
     def device_tangent(self) -> bool:
-        """Newton tangents assembled and factorised on the GPU (plan G5): the gpu backend with a cuDSS 'linear' back
+        """Newton tangents assembled and factorised on the GPU: the gpu backend with a cuDSS 'linear' back
         end (SuperLU factors on the host, so its tangents stay host)."""
         from ...solvers.sparse_direct import CUDSS_BACK_ENDS
         return self.backend == 'gpu' and self.runtime.back_end in CUDSS_BACK_ENDS

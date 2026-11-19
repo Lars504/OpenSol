@@ -1,4 +1,4 @@
-"""Self-tests of em_fdfd_3d (igor3d_plan stages 0-3): the 3D Yee operators of operators3d (curl identities, symmetry,
+"""Self-tests of em_fdfd_3d: the 3D Yee operators of operators3d (curl identities, symmetry,
 the discrete PEC box spectrum and its mirror sectors, CPU), the eigenfrequency model runs (dielectric and lossy PEC
 boxes, the Bloch empty lattice, parity sectors, a k_z-swept Bragg stack cell), the FDTD ring-down of the same grid and
 the host factor ordering on an eighth Mie sphere grid; templates pec_box_eigenmodes_3d and
@@ -10,7 +10,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import failed_count_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverDefaultsSpec, SolverSpec, StudySpec, SweepSpec)
@@ -20,7 +20,7 @@ _PHYSICS_NAME = 'em'
 _PHYSICS_TYPE = 'em_fdfd_3d'          # literal (selftests never import the definition)
 _FDTD_TYPE = 'em_fdtd_3d'
 _TABLE = 'resonances'
-_STUDY = 'eigenfrequency'
+_STUDY = EIGENFREQUENCY_STUDY
 _CELL = 50e-9                         # m
 _IDENTITY_TOLERANCE = 1e-12           # curl identities and symmetry, relative to the factor entries
 _SPECTRUM_TOLERANCE = 1e-10           # dense eigenvalues vs the discrete closed form

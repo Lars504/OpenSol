@@ -1,6 +1,6 @@
 """SolverType definitions ('pcg', 'line_block', 'sparse_direct', 'banded', 'arpack_shift_invert', 'block_eigen',
 'explicit_kernels') and register(registry). Imports no cupy at module level; get_registry() imports it after
-model.study, before the physics definitions (solver_plan S3.5)."""
+model.study, before the physics definitions."""
 from ..model.schema import Issue, Param, solver_backend
 from . import (arpack_shift_invert, banded, block_eigen, explicit_kernels, host_direct, line_block, multigrid, pcg,
                sparse_direct)

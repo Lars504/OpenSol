@@ -1,4 +1,4 @@
-"""CPU vs GPU parity self-tests of the solver runtimes (solver_plan S6 / stage B): pcg, sparse_direct and line_block on
+"""CPU vs GPU parity self-tests of the solver runtimes: pcg, sparse_direct and line_block on
 small synthetic 2D grid operators, each backend against a scipy reference, the cuDSS eigen factorization against
 SuperLU and the cuDSS sparse_direct back ends against scipy. No model run; the gpu half is skipped without a usable GPU.
 The block_eigen LOBPCG on 3D grid pencils against their exact / dense eigenvalues, on both backends. Also the CPU checks of the solver_defaults.precision resolution (S9) with the Automatic diffusion multigrid (mesh M0) and
@@ -6,7 +6,7 @@ of eigsh_shifted with its shift on an eigenvalue. The MUMPS / PARDISO host direc
 against scipy (skipped without their wrappers)."""
 import numpy as np
 
-from ..model.schema import SelfTestCase
+from ..model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ..model.selftest_helpers import SubChecks, norm_relative_error, skip_without_cudss
 
 _GRID = (30, 20)                  # nx, ny of the synthetic operators (i * ny + j unknown order)
@@ -1183,7 +1183,7 @@ _EIGEN_ROLE_CASES = (
     ('solid_2d_block_node_misfit', 'solid_mechanics', 'auto', ('block_eigen', {}), 'gpu',
      ('block_eigen', 'mixed', None, False, False)),
 )
-_EIGEN_ROLE_STUDY = 'eigenfrequency'
+_EIGEN_ROLE_STUDY = EIGENFREQUENCY_STUDY
 
 
 def _precision_spec(physics_type, role, study, precision, node, backend, size_z=None):
@@ -1336,7 +1336,7 @@ def _host_fit_checks(registry, checks):
             'host_size_errors': size_errors}
 
 
-# --- Automatic multigrid of the diffusion types (mesh plan M0 / D16) ------------------------------------------------
+# --- Automatic multigrid of the diffusion types ------------------------------------------------
 
 # (check name, physics type, default precision, node (type, settings) or None, backend,
 #  expected (resolved type, resolved precision, resolved preconditioner or None))

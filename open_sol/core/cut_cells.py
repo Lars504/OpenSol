@@ -1,4 +1,4 @@
-"""Exact boundary geometry of the conformal options (solver_plan S7.6) from a point-membership test inside(x, y) -> bool
+"""Exact boundary geometry of the conformal options from a point-membership test inside(x, y) -> bool
 (segment_* / rectangle_free_areas: any dimension, inside(x, y, z) in 3D): crossing fractions along segments, free
 (outside) fractions of segments and of axis-aligned cells, the held-edge fractions and the insulated-wall apertures /
 merged volume fractions of a DiffusionSystem, the outline pieces of perimeter fluxes, the inside area fractions of

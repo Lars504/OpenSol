@@ -145,7 +145,7 @@ class MeshAxisSpec:
 
 @dataclass
 class MeshFaceSizeSpec:
-    """Element size near a plane face of a tetrahedron mesh (new_modules_plan G1): an outer face, or the bounding-box
+    """Element size near a plane face of a tetrahedron mesh: an outer face, or the bounding-box
     faces of a domain object (face '' = all six), size within `distance` of the face, growing by max_ratio beyond."""
     entity: str                                  # outer face 'x_lo' .. 'z_hi' or a domain object
     size: float | int | str                      # element size at the face [m]
@@ -174,9 +174,9 @@ class MeshSpec:
     h_min: float | int | str | None = _MESH_DEFAULTS['h_min']                 # triangles (S7.5)
     curvature_factor: float | int | str = _MESH_DEFAULTS['curvature_factor']
     mesher: str = _MESH_DEFAULTS['mesher']
-    sweep_axis: str = _MESH_DEFAULTS['sweep_axis']   # tetrahedra: 'z' = swept prism layers (plan D5)
+    sweep_axis: str = _MESH_DEFAULTS['sweep_axis']   # tetrahedra: 'z' = swept prism layers
     pml_layers: int | str = _MESH_DEFAULTS['pml_layers']
-    # triangles: the half (quarter) window meshed and mirrored about the window centre line x / y (new_modules_plan G2)
+    # triangles: the half (quarter) window meshed and mirrored about the window centre line x / y
     mirror_x: bool = _MESH_DEFAULTS['mirror_x']
     mirror_y: bool = _MESH_DEFAULTS['mirror_y']
     # element-size sources [m] graded by max_ratio: triangles [x, y, h] (written by adaptive refinement, S7.7 A3),
@@ -255,10 +255,10 @@ class SolverDefaultsSpec:
     (schema.solver_backend; api / CLI backend= overrides it per run)."""
     backend: str = 'auto'          # 'auto' | 'gpu' | 'cpu'
     # 'auto' (each solver's own default) | a PRECISIONS key: every solver that offers it and sets none of its own
-    # (Automatic and nodes without a precision setting; schema.with_default_precision, solver_plan S9)
+    # (Automatic and nodes without a precision setting; schema.with_default_precision)
     precision: str = 'auto'
     subpixel_smoothing: bool = False   # material-interface averaging (igor 1.5), honoured per PhysicsType flag
-    conformal_boundaries: bool = False   # exact curved walls (solver_plan S7.6), honoured per PhysicsType flag
+    conformal_boundaries: bool = False   # exact curved walls, honoured per PhysicsType flag
     # 'error' | 'warning': a memory estimate over the GPU / host budget refuses the model or only warns (schema.MEMORY_CHECKS)
     memory_check: str = 'error'
 

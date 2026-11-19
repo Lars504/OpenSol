@@ -445,7 +445,7 @@ class NonlinearPolarizationPhasor:
 
 
 class KerrOperatorTerm:
-    """Lagged Kerr permittivity of one channel (pump-depleted, plan decision 7): the diagonal M_aa of its chi(3)
+    """Lagged Kerr permittivity of one channel (pump-depleted): the diagonal M_aa of its chi(3)
     |E_m|^2 E terms goes into the channel operator (FDFDPhysics.set_extra_permittivity on the media's union box), and
     the same operator change applied to the stored previous field is subtracted again as a source, so a fixed point
     solves the rhs form of every term (the operator part only stabilises the iteration; ez: the two cancel exactly).

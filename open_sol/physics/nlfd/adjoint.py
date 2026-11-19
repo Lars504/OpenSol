@@ -1,7 +1,7 @@
-"""Adjoint dJ/d eps of the NLFD channels (nonlinear_optics_plan stage 5 (b)): J = the adjoint_objective terms of every
+"""Adjoint dJ/d eps of the NLFD channels: J = the adjoint_objective terms of every
 channel; undepleted one transposed solve per channel in reverse solve order, pump_depleted the transposed fixed point
 by real GMRES; the nonlinear sources back-propagated through the exact transposes of their polynomial and C / C*."""
-# Cascade (undepleted, plan 5.1): A_k u_k = b_k + r_k(x_<k), x_k = the store fields of channel k (ez E_z = the filled
+# Cascade (undepleted): A_k u_k = b_k + r_k(x_<k), x_k = the store fields of channel k (ez E_z = the filled
 # solution; hz E_x / E_y = face_fields = scale W (D_h u + J), J incl. the channel's own nonlinear face currents), r_k
 # the rhs of P_k(x_<k) (ez -omega^2 mu0 P_z; hz face_current_rhs of J = -j omega C* P). With dJ = 2 Re(c^T dx) (c
 # the cotangents, unconjugated, as physics/em/adjoint.py), per channel k in reverse solve order: its cotangent = the

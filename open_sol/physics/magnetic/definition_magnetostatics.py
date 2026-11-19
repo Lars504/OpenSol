@@ -777,8 +777,8 @@ MAGNETOSTATICS = PhysicsType(
     scalar_outputs=_scalar_outputs,
     scalar_outputs_help=_SCALARS_HELP,
     dimensions=(2,),
-    backends=('gpu', 'cpu'),   # MagneticPhysics on the Domain's xp (solver_plan S6 stage 2); FEM: host + run backend
-    grids=('tensor', 'triangles'),   # triangles: MagneticFEMPhysics (solver_fem.py, magnetic plan stage 5)
+    backends=('gpu', 'cpu'),   # MagneticPhysics on the Domain's xp; FEM: host + run backend
+    grids=('tensor', 'triangles'),   # triangles: MagneticFEMPhysics (solver_fem.py)
     mesh_method=_mesh_method,
 )
 

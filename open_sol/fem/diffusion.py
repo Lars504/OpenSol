@@ -1,4 +1,4 @@
-"""FEM scalar diffusion on triangle meshes (mesh plan 2.7, stage T4): -div(C grad u) + a u (+ c du/dt) = f by Lagrange
+"""FEM scalar diffusion on triangle meshes: -div(C grad u) + a u (+ c du/dt) = f by Lagrange
 P1 / P2 on the conducting window elements. FEMDiffusionSystem: host assembly (fem.assembly), Dirichlet / Neumann /
 Robin edge conditions (outer faces on the window edge, object outlines), held element regions, P0 and point sources,
 implicit-Euler capacity, (r, z) ring weights per radian; the linear solve by a solver of the PCGSolver protocol on the
@@ -53,7 +53,7 @@ class FEMDiffusionSystemCommon:
         from ..solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
         if order not in (1, 2):
             raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the triangle / tetrahedra Automatic (mesh plan D11: host SuperLU)
+        if linear_solver is None:   # scripts: the triangle / tetrahedra Automatic (host SuperLU)
             linear_solver = SparseDirectSolver(backend=backend)
         if isinstance(linear_solver, SparseDirectSolver):
             linear_solver = DiffusionDirectSolver(linear_solver)

@@ -1,4 +1,4 @@
-"""Self-tests of solver_defaults.conformal_boundaries (solver_plan S7.6): exact cut geometry and the conformal PEC
+"""Self-tests of solver_defaults.conformal_boundaries: exact cut geometry and the conformal PEC
 operators of a disk cavity (CPU) and the heat cut cells at a held curved edge (GPU model run); the insulated-ring spec
 is graded in selftests_conformal_cuts (k_switch)."""
 import math

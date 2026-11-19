@@ -1,5 +1,5 @@
 """Solve schedules of the NLFD-chi channels: the undepleted rank-ordered cascade, the pump-depleted block Gauss-Seidel
-fixed point with under-relaxation, Anderson acceleration and source continuation (plan 5.1, 5.2 stage 3a), and the
+fixed point with under-relaxation, Anderson acceleration and source continuation, and the
 pump-depleted Newton-Krylov solve (stage 3b)."""
 # Pump-depleted fixed point x -> G(x): x = the ChannelFieldStore vector (what the nonlinear sources read), G = one sweep
 # solving every channel in solve order with the newest stored fields (Kerr operator terms updated before their channel),

@@ -1,4 +1,4 @@
-"""Run-time estimate of a model (time_estimation_plan): per used mesh every physics' time recipe on a TimeContext (its
+"""Run-time estimate of a model: per used mesh every physics' time recipe on a TimeContext (its
 solver roles through their SolverType recipes, its array bytes from the memory estimate), multiplied by the study
 counts (time steps, wavelengths, iterations), priced on the machine profile. CPU, GUI-thread safe."""
 import itertools
@@ -14,8 +14,8 @@ from ..core.time_profile import load_profile, profile_from_dict, profile_path
 from . import meshing
 from .geometry import (bounding_box, domain_entities, domain_extent, domain_size_z, expand_entities, resolve_geometry,
                        z_extent)
-from .schema import (FREE_MESH_KINDS, FREQUENCY_DOMAIN_STUDY, get_registry, resolve_values, resolved_solvers,
-                     solver_backend)
+from .schema import (FREE_MESH_KINDS, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, TIME_DEPENDENT_STUDY,
+                     get_registry, resolve_values, resolved_solvers, solver_backend)
 from .spec import outer_faces
 
 # a coupled fixed point (stationary study, background stage) solves the physics on or downstream of a coupling cycle
@@ -106,7 +106,7 @@ class TimeContext:
 
     @property
     def time_dependent(self) -> bool:
-        return self.study.type == 'time_dependent'
+        return self.study.type == TIME_DEPENDENT_STUDY
 
     def count(self, name, default=None):
         return self.study.counts.get(name, default)
@@ -492,7 +492,7 @@ def _run_estimate(spec, parameters, registry, mesh_estimate, backend, ordering_k
                                        physics_spec.name in coupled, physics_spec.name in fixed_point, ordering_kept,
                                        plain_roles, continues_previous, live_parameters))
     estimate = combine((_with_study_steps(parts, study), TimeEstimate(snapshot_read_items(spec, meshes, study))))
-    if study.type == 'time_dependent':
+    if study.type == TIME_DEPENDENT_STUDY:
         missing = tuple(f"coupling '{coupling.name}' transfers" for coupling in spec.couplings if coupling.enabled)
         estimate = combine((estimate, TimeEstimate(not_estimated=missing)))
     return estimate
@@ -505,9 +505,9 @@ def _snapshot_count(study) -> tuple:
     setting = study.values.get('snapshots')
     if setting == 'none':
         return 0.0, 'exact'
-    if study.type == 'frequency_response':
+    if study.type == FREQUENCY_RESPONSE_STUDY:
         return (float(study.counts.get('harmonic_points', 1) or 1) if setting == 'all' else 1.0), 'exact'
-    if study.type == 'time_dependent':
+    if study.type == TIME_DEPENDENT_STUDY:
         interval, duration = float(study.values['output_interval']), float(study.values['duration'])
         if interval > 0.0:   # t = 0, interval, ... below the end, then the final state
             return float(math.ceil(duration / interval - 1e-9) + 1), 'exact'
@@ -734,7 +734,7 @@ def _with_study_steps(parts, study) -> TimeEstimate:
     max_duration); other studies run no steps. A stride-n physics steps at ticks 0, n, 2n, ... (ceil(ticks / n)) and
     runner.flush() steps every quasi-static physics once more."""
     finite = [part.dt_limit for part, _ in parts if math.isfinite(part.dt_limit)]
-    if study.type == 'time_dependent' and finite and study.counts.get('duration'):
+    if study.type == TIME_DEPENDENT_STUDY and finite and study.counts.get('duration'):
         dt_sync = min(finite)
         ticks = max(int(round(study.counts['duration'] / dt_sync)), 0)
         return combine(part.with_steps(-(-ticks // every) + (0 if math.isfinite(part.dt_limit) else 1), 'exact', every,

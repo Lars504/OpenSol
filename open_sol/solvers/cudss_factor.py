@@ -88,7 +88,7 @@ at module level."""
 # its own family: a symmetric ordering served the LU of a symmetric matrix, but an unsymmetric one (drift_diffusion
 # Jacobians) is not measured. nvmath exposes no setter, so the raw bindings take DirectSolver.handle / data_ptr: any
 # nvmath / cuDSS error plans as before.
-# refactorize_device_values (plan G5, H1, R7): values on the device on a canonical host pattern: R from |diag| (or the
+# refactorize_device_values: values on the device on a canonical host pattern: R from |diag| (or the
 # caller's row_scale) and E = R A R by device index maps (rows, columns, indptr, diagonal slots, lower take and the
 # lower triangle's indices / indptr: ~20 B per entry; _DeviceIndexMaps uploads each at its first read, once per plan,
 # so refactorize_device_lower holds only the lower triangle's: ~4 B per entry), no host CSR. On the planned pattern and kind
@@ -1476,7 +1476,7 @@ class CudssFactorization(ProbedFactor):
     def refactorize_device_values(self, values, indptr, indices, row_scale=None, defer_check=False,
                                   check_symmetry=False, symmetrizer=None) -> bool:
         """refactorize of a canonical CSR given as device values (cupy (nnz,)) on the host pattern (indptr, indices),
-        all on the device (no host CSR; plan G5, H1, R7): rows times the symmetrizer D (exactly when the factor was
+        all on the device (no host CSR): rows times the symmetrizer D (exactly when the factor was
         built with one: E = R D A R), equilibration (R = row_scale, else from |diag|), lower-triangle take, the value
         refresh on the planned pattern and kind, else (first call, new pattern or kind) a plan of those device arrays.
         check_symmetry: the asymmetry is checked on the device (an operator from the host route); else the caller

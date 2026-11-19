@@ -1,4 +1,4 @@
-"""Self-tests of the resonance region energy fraction (new_modules_plan P2): eigenfrequency.solve_resonances and
+"""Self-tests of the resonance region energy fraction: eigenfrequency.solve_resonances and
 fem.harmonic_resonances on two decoupled Dirichlet chains (CPU, no model run), and the em_fdfd_ez resonance_table
 region on a PEC box split by a pec_domain wall into a cavity and a side room (tensor and triangles meshes)."""
 import math

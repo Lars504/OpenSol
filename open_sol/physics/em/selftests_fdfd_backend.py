@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of em_fdfd_ez / em_fdfd_hz (solver_plan S6 stage 2): the FDFD self-test models (sources,
+"""CPU vs GPU backend case of em_fdfd_ez / em_fdfd_hz: the FDFD self-test models (sources,
 TFSF, poles, mode ports, flux / far-field monitors, walls, PEC, eigenfrequency, the Joule / thermo-optic heat chain) on
 solver_defaults.backend 'cpu' (numpy / scipy assembly, host SuperLU) against the same models on 'gpu'; no physics
 imports. Without a usable GPU api.selftest skips the gpu runs and the cpu runs are checked against their closed forms."""

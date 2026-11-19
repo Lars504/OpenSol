@@ -21,8 +21,8 @@ from ...solvers.explicit_kernels import stepper_precision
 # FREQUENCY_DOMAIN_STUDY (the study whose wavelengths replace the wavelength setting) and EIGENFREQUENCY_STUDY are
 # re-exported to the EM definitions
 from ...model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, GYRATION_PROPERTY_NAMES,
-                             PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param, array_owner,
-                             coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
+                             OPTOMECHANICS_STUDY, PERMITTIVITY_PROPERTY_NAMES, DomainRequirements, Issue, Param,
+                             array_owner, coupling_reads_absorbed_power, coupling_writes, feature_path, known_physics,
                              output_field_names, permittivity_arrays, resolve_values, state_field_names)
 from . import EMPhysics
 from .boundaries import BoundaryConfig
@@ -730,7 +730,6 @@ def unused_wavelength_issues(vctx, settings_values, path):
 
 
 # ---- eigen-solved FDFD physics: an eigenfrequency study or the optical side of an optomechanics study ----
-OPTOMECHANICS_STUDY = 'optomechanics'     # = model.study_optomechanics.STUDY_NAME
 _OPTOMECHANICAL_FEATURE = 'optomechanical_coupling'   # solid_mechanics feature naming its optical physics
 BOTH_GRIDS = ('tensor', 'triangles')   # PhysicsType / FeatureType.grids of host-solved types running on triangles too
 

@@ -1,4 +1,4 @@
-"""Reference elements on tetrahedra (igor3d_plan section 7, T5): Lagrange P1 / P2 and Nedelec first kind degree 1 / 2,
+"""Reference elements on tetrahedra: Lagrange P1 / P2 and Nedelec first kind degree 1 / 2,
 affine element geometry (covariant Piola for edge elements, contravariant for their curls). Host numpy; reference
 tetrahedron (0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)."""
 # Orientation: a TetrahedronMesh stores every element's nodes in ascending global order (fem.mesh3d), so local edge

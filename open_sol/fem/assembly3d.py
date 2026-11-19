@@ -1,4 +1,4 @@
-"""Assembly on a TetrahedronMesh (igor3d_plan section 7, T6): the Nedelec curl-curl and vector mass matrices with
+"""Assembly on a TetrahedronMesh: the Nedelec curl-curl and vector mass matrices with
 diagonal-tensor coefficients at quadrature points (PML stretch tensors, diagonal anisotropy); Lagrange P1 / P2
 stiffness (full 3 x 3 tensors), mass, volume / point / gradient loads, face (Robin / Neumann) masses and loads, element
 integrals, field values at rule points; Dirichlet elimination (fem.assembly's, dimension-free). Affine elements. Host

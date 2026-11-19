@@ -1,4 +1,4 @@
-"""Self-tests of the S7.7 mesh refinement levels (mesh plan A1 / A2 / A3): CPU checks of the stop rule, Richardson fit,
+"""Self-tests of the S7.7 mesh refinement levels: CPU checks of the stop rule, Richardson fit,
 report, indicators (interpolation, Kelly face jumps, energy-weighted EM, a cpu-backend heat solve; triangles: residual
 / flux jumps, edge-element jumps) and refined MeshSpecs (tensor bands, triangle size points), and the strip-heater /
 disc-heater / rib-modes runs of uniform sequences and adaptive tensor bands, the L-shaped conductor and rib on

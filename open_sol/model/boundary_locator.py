@@ -1,4 +1,4 @@
-"""Point-membership tests of the drawn geometry for solver_defaults.conformal_boundaries (solver_plan S7.6): host numpy
+"""Point-membership tests of the drawn geometry for solver_defaults.conformal_boundaries: host numpy
 callables handed to the honouring solvers by the builder (2D inside(x, y), 3D inside(x, y, z)), plus their CPU memory
 estimate."""
 import math

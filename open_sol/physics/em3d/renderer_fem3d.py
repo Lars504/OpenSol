@@ -1,4 +1,4 @@
-"""Renderer of em_fdfd_3d on a 'tetrahedra' mesh (igor3d_plan T4b): the FDFDRenderer3D field names sampled at points
+"""Renderer of em_fdfd_3d on a 'tetrahedra' mesh: the FDFDRenderer3D field names sampled at points
 (sample(component, points): Re / Im / modulus of E and H, e_abs, e_intensity, h_abs, w_e, eps_r per element; NaN
 outside the mesh), the Session's tetrahedron reads; device_field = the values at the element centroids."""
 import re

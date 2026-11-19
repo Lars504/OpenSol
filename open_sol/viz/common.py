@@ -137,7 +137,7 @@ def line_profile(values, extent, start, end, x_centers=None, y_centers=None, max
     return fraction * length, samples, centre_x, centre_y
 
 
-# ---- triangle meshes (mesh plan T6) ----
+# ---- triangle meshes ----
 @dataclass(frozen=True, eq=False)
 class TriangleMeshLines:
     """Host line sets of a triangle mesh for drawing: segment end-point pairs [m] (rows 2i, 2i + 1 = one segment;
@@ -191,7 +191,7 @@ def triangle_mesh_lines(mesh, max_edges=MESH_LINES_MAX_EDGES) -> TriangleMeshLin
         thinned=thinned)
 
 
-# ---- tetrahedron meshes (igor3d_plan T4b) ----
+# ---- tetrahedron meshes ----
 _AXIS_INDEX = {'x': 0, 'y': 1, 'z': 2}
 _PLANE_NUDGE = 1e-9   # x the longest box side: nodes this close to a cut plane count as above it
 

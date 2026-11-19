@@ -1,4 +1,4 @@
-"""Element meshes for display (mesh plan T6, igor3d_plan T4b): the worker session's built triangle / tetrahedron meshes
+"""Element meshes for display: the worker session's built triangle / tetrahedron meshes
 and mesher previews of the mesh form ('Build mesh'), kept as host data (viz.common.TriangleMeshLines, or
 TetrahedronMeshData the canvas cuts by its shown plane) with a key of the inputs they were made from, so a view shows a
 mesh only while the model would still give it. Their element counts go to the document (set_element_counts), whose

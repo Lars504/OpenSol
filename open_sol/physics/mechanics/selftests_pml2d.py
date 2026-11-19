@@ -1,4 +1,4 @@
-"""Self-tests of the elastic PML ring of the 2D triangle solid and its energy-density outputs (new_modules_plan K5): the
+"""Self-tests of the elastic PML ring of the 2D triangle solid and its energy-density outputs: the
 stretched operator identities (CPU, no model), the radiation Q of a leaky Fabry-Perot bar in plane strain against its
 closed form, and the static / modal energy densities; definition registers them."""
 import math

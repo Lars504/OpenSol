@@ -1,4 +1,4 @@
-"""Cheap outputs of reduced frequency sweeps (experiment plan A4): the field policy of a sweep (fields published only for
+"""Cheap outputs of reduced frequency sweeps: the field policy of a sweep (fields published only for
 stored snapshots and the last frequency) and ReducedRows, chosen rows of x = P V y + x0 and of A_s x precomputed as
 small dense blocks, so a frequency's records cost O(rows x basis) instead of V y. Host numpy, scipy sparse inputs."""
 # Contract: field_policy(options, frequencies) reads options['fields'] of the frequency_response study ('all' default |

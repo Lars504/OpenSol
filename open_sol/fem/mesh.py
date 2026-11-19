@@ -1,4 +1,4 @@
-"""Triangle mesh data of the FEM path (solver_plan S7.5): analytic boundary curves, the mesher input (PSLG) and the
+"""Triangle mesh data of the FEM path: analytic boundary curves, the mesher input (PSLG) and the
 frozen TriangleMesh. Host numpy only; coordinates in m with the origin at the physical-domain corner."""
 import hashlib
 import math

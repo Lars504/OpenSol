@@ -1,4 +1,4 @@
-"""Geometric multigrid V-cycle preconditioner of the matrix-free 3D brick elasticity (ElasticSystem3D, speed plan A2):
+"""Geometric multigrid V-cycle preconditioner of the matrix-free 3D brick elasticity (ElasticSystem3D):
 2:1 coarsened tensor levels on kernels3d.BrickKernels, separable trilinear transfers, Chebyshev block-Jacobi smoothing
 and a dense coarsest pseudo-inverse; every launch a core.kernels twin, no host sync and no allocation inside a cycle."""
 # Coarse levels are rediscretised (not Galerkin): pair sums of the widths per axis (an odd count keeps its last cell

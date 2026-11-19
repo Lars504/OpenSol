@@ -1,4 +1,4 @@
-"""Coupled-mode SHG overlap of em_modes cross-section modes (host numpy, nonlinear_optics_plan stage 5 (e)): kappa =
+"""Coupled-mode SHG overlap of em_modes cross-section modes (host numpy): kappa =
 sum A conj(e_2w) . (d : e_w e_w) over the chi2 cells, the normalised efficiency and the phase mismatch per pump solve."""
 # Modes carry 1 W (1/2 Re integral (e x h*).z dA, exp(j (omega t - beta z))), SHG P(2w)_i = eps0 sum_jk d_ijk E_j E_k
 # (d = chi2 / 2, model axes). Coupled-mode theory (excitation by J = j 2w P): dB/dz = -j (2 w eps0 / 4) kappa A^2

@@ -43,7 +43,8 @@ from .model.meshing import (MESH_ESTIMATE_ERRORS, built_mesh_estimates, estimate
                             estimate_meshes, fitted_memory_estimate, line_block_hint, mesh_transfers,
                             mesh_values, physics_settings)
 from .model.scene_3d import build_scene, object_cut_targets, plane_outlines
-from .model.schema import (FREQUENCY_DOMAIN_STUDY, ISSUE_LEVELS, Issue, get_registry, node_label, resolve_values,
+from .model.schema import (EIGENFREQUENCY_STUDY, FREQUENCY_DOMAIN_STUDY, FREQUENCY_RESPONSE_STUDY, ISSUE_LEVELS,
+                           OPTOMECHANICS_STUDY, TIME_DEPENDENT_STUDY, Issue, get_registry, node_label, resolve_values,
                            resolved_solvers, solver_backend, solver_grid)
 from .solvers.roles import resolved_precision
 from .model.selftest_cache import CACHE_FILE, DependencyTrace, SelftestCache, environment_key, file_hash
@@ -98,8 +99,8 @@ _DERIVED_SERIES_QUANTITY = 'derived_series:'   # Results.sweep_figure quantity p
 # oscillate (modes, harmonic responses: the page animates them)
 _MOTION_FIELDS = {'solid_mechanics': (('u', 'v'), ('u_x', 'u_y'), ('u_x_im', 'u_y_im'), 'youngs_modulus'),
                   'membrane': (('n',), ('w_re',), ('w_im',), '')}
-_OSCILLATING_STUDIES = ('eigenfrequency', 'frequency_response', 'optomechanics')
-_MODE_STUDIES = ('eigenfrequency', 'optomechanics')   # their displacements have an arbitrary amplitude
+_OSCILLATING_STUDIES = (EIGENFREQUENCY_STUDY, FREQUENCY_RESPONSE_STUDY, OPTOMECHANICS_STUDY)
+_MODE_STUDIES = (EIGENFREQUENCY_STUDY, OPTOMECHANICS_STUDY)   # their displacements have an arbitrary amplitude
 _NEGLIGIBLE_IMAGINARY = 1e-6   # imaginary displacement parts below this x the real maximum: a real (standing) mode
 # study summary keys copied into summary.json when the study set them (optimization, thermal_noise, mode_analysis,
 # eigenfrequency / optomechanics, nonlinear_frequency_domain, frequency_response; convergence: StudySpec.adaptation,
@@ -3083,7 +3084,7 @@ def _run_timing(summary, run_seconds):
     without a machine profile)."""
     build = summary.get('build') or {}
     study_seconds, ticks, n_cells = summary.get('study_seconds'), summary.get('ticks'), build.get('n_cells')
-    time_stepped = (summary.get('model') or {}).get('study_type') == 'time_dependent'
+    time_stepped = (summary.get('model') or {}).get('study_type') == TIME_DEPENDENT_STUDY
     cell_ticks_per_second = (n_cells * ticks / study_seconds
                              if time_stepped and study_seconds and ticks and n_cells else None)
     before_output = summary.get('wall_time')

@@ -1,4 +1,4 @@
-"""Model feature 'conducting_sheet' of em_fdfd_ez / em_fdfd_hz (nonlinear_optics_plan stage 0): a zero-thickness 2D
+"""Model feature 'conducting_sheet' of em_fdfd_ez / em_fdfd_hz: a zero-thickness 2D
 material (graphene, a metal film thinner than a cell) of sheet conductivity sigma_s(omega) on an axis-aligned line."""
 import math
 from functools import partial

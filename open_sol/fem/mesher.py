@@ -1,4 +1,4 @@
-"""Own conforming Delaunay mesher (solver_plan S7.5, decision D8): size field, PSLG from straight pieces and closed
+"""Own conforming Delaunay mesher: size field, PSLG from straight pieces and closed
 curves, Ruppert / Shewchuk refinement on scipy.spatial.Delaunay (rebuilt, or updated locally in rounds adding few
 nodes), smoothing, the PML layer ring, mirror images of a half mesh, periodic window sides (matching vertices,
 paired segment splits).
@@ -527,7 +527,7 @@ def _small_angles(vertices, segments) -> tuple:
     return found, acute
 
 
-# ---- periodic window sides (new_modules_plan G3) ----
+# ---- periodic window sides ----
 def periodic_pslg(pslg, axes) -> PSLG:
     """PSLG whose window sides of each periodic axis ('x' / 'y') carry matching vertices: every side vertex gets a
     partner at the same position along the opposite side (that side's segment split there, tags / pieces kept;
@@ -1228,7 +1228,7 @@ def add_layer_ring(points, triangles, window, thickness, n_layers) -> tuple:
     return all_points, all_triangles, np.concatenate([pml_faces, np.array(ring_bits, dtype=np.uint8)])
 
 
-# ---- mirror symmetry (new_modules_plan G2) ----
+# ---- mirror symmetry ----
 def reflect_mesh(points, triangles, pml_faces, axis, plane) -> tuple:
     """(points, triangles, pml_faces, image) of a mesh on one side of the line coordinate[axis] = plane plus its
     mirror image: nodes within MERGE_TOLERANCE x the node extent of the line snapped onto it and shared, image

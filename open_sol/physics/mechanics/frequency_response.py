@@ -1,5 +1,5 @@
-"""Driven time-harmonic response of the solid (frequency_response study, piezoelectric plan stage 5, piezo_3d_plan stage
-4): the reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor per frequency (HarmonicSystem:
+"""Driven time-harmonic response of the solid (frequency_response study): the
+reduced pencil of (K + j L - omega^2 M) x = f with one complex symmetric factor per frequency (HarmonicSystem:
 private host SuperLU, or a sparse_direct runtime's SuperLU / cuDSS LDL^T with plan reuse; or a fem.reduced_harmonic
 model with precomputed record rows), the per-frequency electrode record and the admittance result of an electrode (with
 its BVD fit and kappa_e); host numpy (scipy inside functions)."""
@@ -204,7 +204,7 @@ class HarmonicSystem:
         free_solution, fixed = self._kept
         return self._full(np.asarray(to_host(free_solution)), fixed)
 
-    # ---- reduced sweeps (fem.reduced_harmonic, experiment plan A3 / A4) ----
+    # ---- reduced sweeps (fem.reduced_harmonic) ----
     @property
     def reduced_model(self):
         """The ReducedHarmonicModel solve() evaluates (plan_reduced), or None (one factorisation per solve)."""

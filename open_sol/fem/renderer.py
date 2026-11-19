@@ -1,4 +1,4 @@
-"""Shared renderer of triangle-mesh physics (mesh plan 2.9): fem_field(component) -> (Lagrange DofMap, host float64
+"""Shared renderer of triangle-mesh physics: fem_field(component) -> (Lagrange DofMap, host float64
 coefficients) from the physics' own fem_field (nodal P1 / P2 unknowns, P0 element fields); Session rasterises and
 samples them. device_field returns the same coefficients as a float32 run-backend vector (not a window image)."""
 import numpy as np

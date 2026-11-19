@@ -1,4 +1,4 @@
-"""Optional gmsh tetrahedral mesher (igor3d_plan section 7, T3): primitive solids (box, sphere, z cylinder)
+"""Optional gmsh tetrahedral mesher: primitive solids (box, sphere, z cylinder)
 fragmented with the meshed box (window + PML shell) so interfaces conform, only the fragments inside the box kept,
 written as an OpenCASCADE .geo in normalised coordinates, `gmsh -3` run as an external process (never imported,
 linked or vendored, as fem.gmsh_io), the .msh 4.1 ASCII tetrahedra read back into a TetrahedronMesh. Host numpy."""
@@ -189,7 +189,7 @@ def _outside_distance(solid, points) -> np.ndarray:
 
 @dataclass(frozen=True)
 class SizedRegion:
-    """Element size `size` [m] inside a composite of gmsh3d Solids (plan D1): kind 'solid' (solid) or 'union' /
+    """Element size `size` [m] inside a composite of gmsh3d Solids: kind 'solid' (solid) or 'union' /
     'intersection' / 'difference' (children; difference: the base first), ramping outside like a sized solid."""
     kind: str
     size: float
@@ -224,7 +224,7 @@ class SizedRegion:
         return np.minimum(values, h_max)
 
     def surface_distance(self, points) -> np.ndarray:
-        """Distance [m] of points (..., 3) to the region's surface (plan D3b): the max of the outside distance and
+        """Distance [m] of points (..., 3) to the region's surface: the max of the outside distance and
         the depth trees (children's sizes unused; inf deep in a part whose every face is clipped)."""
         points = np.asarray(points, dtype=np.float64)
         return np.maximum(_region_distance(self, points, False, None), _region_distance(self, points, True, None))
@@ -277,7 +277,7 @@ def _child_clips(region, clip) -> list:
 
 @dataclass(frozen=True)
 class SizedFace:
-    """Axis-aligned rectangle of a tetrahedron size field (new_modules_plan G1): the plane normal to axis 0 / 1 / 2 at
+    """Axis-aligned rectangle of a tetrahedron size field: the plane normal to axis 0 / 1 / 2 at
     coordinate, extents low / high [m] along the two other axes (ascending axis order); element size `size` within
     `distance` of the rectangle, size + (growth - 1) x the distance beyond the band (gmsh: Max of two MathEvals)."""
     axis: int

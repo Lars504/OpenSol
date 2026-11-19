@@ -1,5 +1,5 @@
-"""MagneticFEMSystem: 2D magnetostatics of A (planar A_z [T m], axisymmetric A_phi [T m]) on a triangle mesh (magnetic
-plan section 10, stage 5): Lagrange P1 / P2 on the window elements in B-space (fem.magnetostatics), Dirichlet faces on
+"""MagneticFEMSystem: 2D magnetostatics of A (planar A_z [T m], axisymmetric A_phi [T m]) on a triangle mesh:
+Lagrange P1 / P2 on the window elements in B-space (fem.magnetostatics), Dirichlet faces on
 the window edge, the axis A = 0, held elements, the external field as nodal Dirichlet values; linear per-axis nu with a
 remanence load, or isotropic saturating curves nu(|B|); the minimum of the convex energy W(a) = int w(B) dV - loads . a
 by exact-tangent Newton with an Armijo line search on W (one linear solve without saturating elements), each step
@@ -37,7 +37,7 @@ class MagneticFEMSystem:
         from ...solvers.sparse_direct import DiffusionDirectSolver, SparseDirectSolver
         if order not in (1, 2):
             raise ValueError(f'{label()}: element order must be 1 or 2, got {order!r}')
-        if linear_solver is None:   # scripts: the triangle Automatic (mesh plan D11)
+        if linear_solver is None:   # scripts: the triangle Automatic
             linear_solver = SparseDirectSolver(backend=backend)
         if isinstance(linear_solver, SparseDirectSolver):
             linear_solver = DiffusionDirectSolver(linear_solver)

@@ -16,7 +16,7 @@ _MANUFACTURED_TENSION = 1.0 + 0.4j        # a(x) = a0 (1 + x / L)
 _MANUFACTURED_LOSS = (3.0 - 2.0j) / _MANUFACTURED_LENGTH ** 2
 _MANUFACTURED_MESHES = {1: (20, 40), 2: (10, 20), 3: (10, 20)}   # polynomial degree -> element counts
 _RATE_MARGIN = 0.15        # observed L2 rate >= degree + 1 - margin
-# H-E1 variant A nanostring (hirsch2025 plan section 5): Si3N4, L 100 um, w = h = 100 nm, sigma 1 GPa
+# H-E1 variant A nanostring: Si3N4, L 100 um, w = h = 100 nm, sigma 1 GPa
 _BEAM_LENGTH = 100e-6
 _BEAM_WIDTH = _BEAM_THICKNESS = 100e-9
 _BEAM_YOUNG = 250e9
@@ -25,8 +25,8 @@ _BEAM_STRESS = 1e9
 _BEAM_ELEMENTS = 4000      # 25 nm elements: the clamp boundary layer sqrt(EI / T) = 456 nm is resolved
 _BEAM_PLAN_TARGETS_MHZ = (2.82113, 5.64400, 8.47036, 11.30194, 14.14048)
 _MODE_COUNT = 5
-_MODE_RTOL = 1e-6          # frequencies against the exact values (plan S3)
-_PLAN_TARGET_RTOL = 1e-5   # exact roots against the plan's 6-digit table (rounding ~2e-6)
+_MODE_RTOL = 1e-6          # frequencies against the exact values
+_PLAN_TARGET_RTOL = 1e-5   # exact roots against the reference 6-digit table (rounding ~2e-6)
 _STRING_TENSION = _BEAM_STRESS * _BEAM_THICKNESS        # N/m (per unit width)
 _STRING_DENSITY = _BEAM_DENSITY * _BEAM_THICKNESS       # kg/m^2
 _STRING_LOSS_FACTOR = 1e-3
@@ -243,8 +243,8 @@ def _check_string_modes(_):
 
 
 def _beam_root_hz(number, rigidity, tension, line_density, length):
-    """Exact f_n [Hz] of the clamped-clamped tensioned beam EI w'''' - T w'' = rho A omega^2 w (hirsch2025 plan
-    section 4 reference algorithm): symmetric (odd n) / antisymmetric (even n) tanh forms, bracketed at (n +- 1/2)
+    """Exact f_n [Hz] of the clamped-clamped tensioned beam EI w'''' - T w'' = rho A omega^2 w (reference
+    algorithm): symmetric (odd n) / antisymmetric (even n) tanh forms, bracketed at (n +- 1/2)
     x the string f_1."""
     import scipy.optimize
     string_first = math.sqrt(tension / line_density) / (2.0 * length)

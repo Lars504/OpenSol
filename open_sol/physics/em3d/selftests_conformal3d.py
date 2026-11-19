@@ -1,4 +1,4 @@
-"""Self-tests of the em_fdtd_3d conformal PEC (solver_defaults.conformal_boundaries, solver_plan S7.6): the TM101
+"""Self-tests of the em_fdtd_3d conformal PEC (solver_defaults.conformal_boundaries): the TM101
 resonance of a vacuum sphere cut out of a PEC block from the host operator of the conformal coefficients (closed form,
 largest eigenvalue against the leap-frog limit) and the FDTD ring-down against that operator (gpu and cpu backends)."""
 import math

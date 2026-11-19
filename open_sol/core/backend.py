@@ -1,4 +1,4 @@
-"""Run backends (solver_plan S6): 'gpu' = cupy + cupyx.scipy.sparse, 'cpu' = numpy + scipy.sparse. The only module
+"""Run backends: 'gpu' = cupy + cupyx.scipy.sparse, 'cpu' = numpy + scipy.sparse. The only module
 importing cupy at module level: `cp` / `cupyx_sparse` / `cupyx_ndimage` are cupy's modules, or stand-ins when cupy
 does not import (kernel objects build, every other use raises BackendUnavailable). No driver call at import."""
 import functools

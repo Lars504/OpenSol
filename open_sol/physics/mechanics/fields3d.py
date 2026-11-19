@@ -7,7 +7,7 @@ from .kernels3d import OUTPUT_ARRAYS_3D
 # no arrays): potential [V], E = -grad phi [V/m], D = e S + eps0 eps E [C/m^2].
 ELECTRIC_OUTPUT_ARRAYS_3D = ('electric_potential', 'electric_field_x', 'electric_field_y', 'electric_field_z',
                              'electric_displacement_x', 'electric_displacement_y', 'electric_displacement_z')
-# Energy densities [J/m^3] (tetrahedra only; a tensor mesh renders them as 0 and keeps no arrays, new_modules_plan K5):
+# Energy densities [J/m^3] (tetrahedra only; a tensor mesh renders them as 0 and keeps no arrays):
 # static 1/2 eps_el : C eps_el and 0; a shown mode / response the time averages 1/4 Re(eps* : C eps), 1/4 rho omega^2 |u|^2
 ENERGY_OUTPUT_ARRAYS_3D = ('strain_energy_density', 'kinetic_energy_density')
 # Coupled / applied inputs; inject_source slots = all but temperature_rise_ext (written by temperature_change features).

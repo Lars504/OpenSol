@@ -49,7 +49,7 @@ class BCType(Enum):
     ANTISYMMETRIC = 'antisymmetric'
 
 
-# Mirror faces (symmetry plan 2.5): the plane is the window edge; the domain pads MIRROR_GHOST_CELLS ghost cell outside
+# Mirror faces: the plane is the window edge; the domain pads MIRROR_GHOST_CELLS ghost cell outside
 # it (npml_sides; graded meshes give it the window edge cell's width, so the image is exact), which the wall rows
 # below overwrite with the mirror image. Every other physics sharing the domain has its face on the same plane.
 MIRROR_TYPES = frozenset({BCType.SYMMETRIC, BCType.ANTISYMMETRIC})

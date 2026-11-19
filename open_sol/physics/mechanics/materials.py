@@ -86,7 +86,7 @@ OPTIONAL_STIFFNESS_SCHEMA_3D = {
 # (each allocated when a material sets it), default 0.
 LOSS_ARRAYS = ('mechanical_loss_factor', 'dielectric_loss_tangent')
 OPTIONAL_LOSS_SCHEMA = {name: (0.0, (name,)) for name in LOSS_ARRAYS}
-# Initial (residual) stress sigma0 [Pa] per cell (new_modules_plan K2; triangle / tetrahedron meshes only): total stress
+# Initial (residual) stress sigma0 [Pa] per cell (triangle / tetrahedron meshes only): total stress
 # = sigma0 + C eps - beta dT; each array allocated when a material sets it, default 0. 2D in fem.elasticity row order:
 # planar (xx, yy, xy), axisymmetric (rr = xx, zz = yy, hoop = zz, rz = xy), plus zz (planar out of plane, plane strain
 # only); 3D Voigt (xx, yy, zz, yz, xz, xy).

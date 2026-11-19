@@ -1,9 +1,9 @@
 """Self-tests of the optomechanics study with em_fdfd_bor optics on triangles (optomechanics_fem wiring): the silica
-sphere WGM moving-boundary rate of a uniform expansion (basiri-esfahani2019 plan B-E6) and the symmetry zeros of a
+sphere WGM moving-boundary rate of a uniform expansion and the symmetry zeros of a
 microdisk's flapping and crown modes (B-E8); cpu-backend model runs."""
 import math
 
-from ...model.schema import SelfTestCase
+from ...model.schema import OPTOMECHANICS_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
                            RefinementSpec, StudySpec)
@@ -14,14 +14,14 @@ _OPTICAL_TYPE = 'em_fdfd_bor'
 _SOLID = 'solid'
 _SOLID_TYPE = 'solid_mechanics'
 _COUPLING = 'g0'
-_STUDY = 'optomechanics'   # = model.study_optomechanics.STUDY_NAME
-_SILICA_INDEX = 1.444      # the plan's non-dispersive silica (library eps_r 2.085 is n = 1.44395)
+_STUDY = OPTOMECHANICS_STUDY
+_SILICA_INDEX = 1.444      # the reference's non-dispersive silica (library eps_r 2.085 is n = 1.44395)
 
 # ---- B-E6: silica sphere (R = 10 um) in vacuum as the quarter (r, z) disk (pec z_lo = the equatorial mirror of the
 # TE_52 mode, whose tangential E is odd there), cpml r_hi / z_hi rings of 8 x the coarse size (pml_kappa_max 1), P2
 # elements of 90 nm in the 8.5 .. 11.5 um band, 250 nm elsewhere. q . n = 1 on the sphere: d omega / dR = -omega / R
-# exactly for the open sphere (one length scale), g_OM / 2 pi = 19.233 GHz/nm at the Mie pole 1558.7502 nm (plan
-# section 6); the rate is the table extra prescribed_g_om. The mechanical row (lowest breathing-type mode, roller z_lo)
+# exactly for the open sphere (one length scale), g_OM / 2 pi = 19.233 GHz/nm at the Mie pole 1558.7502 nm; the
+# rate is the table extra prescribed_g_om. The mechanical row (lowest breathing-type mode, roller z_lo)
 # is not checked.
 _SPHERE_RADIUS = 10.0e-6
 _SPHERE_WINDOW = 14.0e-6
@@ -31,8 +31,8 @@ _SPHERE_COARSE = 250e-9
 _SPHERE_ORDER = 52
 _SPHERE_WAVELENGTH = 1558.7502e-9      # TE l = m = 52, radial order 1 (exact Mie pole)
 _SPHERE_G_OM = -2.0 * math.pi * 19.233e18   # rad/s/m: -omega / R at the pole (19.233 GHz/nm)
-_SPHERE_G_TOLERANCE = 5e-3             # relative (plan B-E6)
-_SPHERE_WAVELENGTH_TOLERANCE = 0.1e-9  # m (the plan's 0.02 nm needs a finer mesh; first estimate)
+_SPHERE_G_TOLERANCE = 5e-3             # relative
+_SPHERE_WAVELENGTH_TOLERANCE = 0.1e-9  # m (the reference's 0.02 nm needs a finer mesh; first estimate)
 _PML_SETTINGS = {'pml_cells': 8, 'pml_kappa_max': 1.0}
 
 # ---- B-E8: silica disk (R = 4 um, t = 1 um) centred on the window centre line z = 3 um, mesh mirrored there
@@ -53,7 +53,7 @@ _DISK_WAVELENGTH = 1.45e-6
 _DISK_CONTOUR_FREQUENCY = 4.77e8       # Hz
 _DISK_CONTOUR_MODES = 4
 _DISK_CROWN_ORDER = 2
-_SYMMETRY_TOLERANCE = 1e-3             # |g| / |g_contour| (plan B-E8)
+_SYMMETRY_TOLERANCE = 1e-3             # |g| / |g_contour|
 
 
 def _bor_settings(order, wavelength, z_lo):

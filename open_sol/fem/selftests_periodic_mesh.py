@@ -1,4 +1,4 @@
-"""Self-tests of periodic / Bloch triangle meshes (new_modules_plan G3; CPU, specs() empty, check({}) meshes directly):
+"""Self-tests of periodic / Bloch triangle meshes (CPU, specs() empty, check({}) meshes directly):
 matching opposite window sides (built-in mesher, mirror + periodic, gmsh when installed), P1 / P2 periodic dof
 partners and Bloch masters, and the P2 Bloch Laplacian band of a square cell vs |k + G|^2. Written, not run:
 tolerances are first estimates."""

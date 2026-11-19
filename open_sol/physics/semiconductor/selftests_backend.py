@@ -1,4 +1,4 @@
-"""CPU vs GPU backend case of drift_diffusion (solver_plan S6 stage 2): the pn junction on solver_defaults.backend
+"""CPU vs GPU backend case of drift_diffusion: the pn junction on solver_defaults.backend
 'cpu' against its closed form and against the same model on 'gpu' (the system is host float64 on both and the linear
 solver pinned to SuperLU, so only the field arrays differ). Registered by definition.register; api.selftest skips the
 gpu run without a usable GPU."""

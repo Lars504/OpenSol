@@ -1,4 +1,4 @@
-"""Backend cases of solid_mechanics and solid_mechanics_3d (solver_plan S6 / S8 E): existing exact cases run on
+"""Backend cases of solid_mechanics and solid_mechanics_3d: existing exact cases run on
 solver_defaults.backend 'cpu' (numpy / scipy: CSR + block-Jacobi twin in 2D, kernels3d numpy twins in 3D; the modal,
 piezo and optomechanics solves are host either way), graded by each wrapped case's own closed-form check. The 2D / 3D
 mechanics cases are cpu-only (their standalone runs are the gpu half, and two backends that both pass a 1e-6 .. 1e-5

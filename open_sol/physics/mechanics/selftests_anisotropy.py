@@ -1,4 +1,4 @@
-"""Self-tests of the anisotropic c_ij stiffness of solid_mechanics (piezoelectric plan stage 5): the host Q1 operator
+"""Self-tests of the anisotropic c_ij stiffness of solid_mechanics: the host Q1 operator
 with c16 / c26 and the stiffness reductions (CPU) and uniform-strain block runs (plane strain, plane stress, thermal, a
 YZ lithium niobate crystal entry; exact in Q1); physics imports inside the checks."""
 import numpy as np

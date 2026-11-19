@@ -1,4 +1,4 @@
-"""Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver (solver_plan S7.0) on
+"""Smoothed-aggregation algebraic multigrid: the 'multigrid' preconditioner of the pcg solver on
 assembled SPD CSR operators (DiffusionSystem), one symmetric V(1,1)-cycle per application, hierarchy in float32.
 Aggregation on the host (numpy; on the gpu its device twin, same aggregates), Galerkin products on the backend (cupy / cupyx or numpy / scipy); gpu cycles by
 fused RawKernels replayed as CUDA graphs, cpu cycles by scipy's CSR kernel into level vectors."""

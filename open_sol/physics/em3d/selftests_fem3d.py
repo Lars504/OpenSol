@@ -1,4 +1,4 @@
-"""Self-tests of the tetrahedral Nedelec eigen path (igor3d_plan section 7, T0 / T3 / T4 / T4b): the sparse-mass eigen
+"""Self-tests of the tetrahedral Nedelec eigen path: the sparse-mass eigen
 layer, PEC cube spectra on structured Kuhn meshes (static count, convergence orders, mirror sectors), FEMPhysics3D on
 a lossy dielectric cube with PML symmetry checks (CPU, specs() empty, check({})), Bloch faces on periodic Kuhn cubes,
 em_fdfd_3d on a builtin 'tetrahedra' mesh through the model layer (CPU runs: PEC cube; Bloch cube with field derived

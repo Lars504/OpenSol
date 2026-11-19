@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase, SelfTestVariant
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase, SelfTestVariant
 from ...model.selftest_helpers import (available_host_direct, normalized_result, skip_without_host_direct, solver_role,
                                        with_direct_node)
 from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec,
@@ -16,7 +16,7 @@ from ...model.spec import (DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, 
 
 TYPE_NAME = 'pressure_acoustics'   # = definition_harmonic.TYPE_NAME (selftests never import definitions)
 PHYSICS = 'pressure_acoustics'
-_STUDY = 'frequency_response'      # = model.study_frequency_response.STUDY_NAME
+_STUDY = FREQUENCY_RESPONSE_STUDY
 _AIR_DENSITY = 1.2                 # kg/m^3
 _AIR_SPEED = 343.0                 # m/s
 _AIR = {'rho': _AIR_DENSITY, 'sound_speed': _AIR_SPEED}

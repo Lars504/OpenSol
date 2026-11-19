@@ -1,6 +1,6 @@
-"""Self-tests of the azimuthal order m >= 1 of the axisymmetric triangle solid (new_modules_plan K7): the order-m operator
+"""Self-tests of the azimuthal order m >= 1 of the axisymmetric triangle solid: the order-m operator
 identities (CPU, no model: rigid motions, K_sigma of the tilt, mass totals, the rigid-mode count) and the out-of-plane
-modes of a thin annular plate, free and clamped at its inner rim, against the Kirchhoff table of the Basiri plan (B-E1
+modes of a thin annular plate, free and clamped at its inner rim, against the Basiri Kirchhoff table (B-E1
 brackets); definition registers them."""
 import math
 
@@ -103,7 +103,7 @@ def _check_operator(_):
 # um; E 73 GPa, nu 0.17, rho 2200) as an (r, z) cross-section on 0.45 um P2 triangles (4 across t), the window from the
 # axis (void below r = b): the lowest out-of-plane mode of each order m = 1 .. 4, free-free (order 1: target > 0 drops
 # the sideways translation and the tilt) and clamped at r = b (a Fixed (domain) rim r in [b - 1 um, b] of the same
-# material), against the Kirchhoff plate table of the plan (section 6, 1.5 % as its E1 tolerance, t / (a - b) = 0.027).
+# material), against the Basiri Kirchhoff plate table (1.5 % as its E1 tolerance, t / (a - b) = 0.027).
 # Each run targets 0.9 x the expected frequency and keeps the nearest mode.
 _OUTER = 148.0 * UM
 _INNER = 82.0 * UM
@@ -111,7 +111,7 @@ _THICKNESS = 1.8 * UM
 _RIM = 1.0 * UM
 _SILICA = {'youngs_modulus': 73e9, 'poisson_ratio': 0.17, 'rho': 2200.0}
 _PLATE_H = 0.45 * UM
-_KIRCHHOFF = {'free': {1: 412.1e3, 2: 94.2e3, 3: 254.5e3, 4: 473.6e3},     # Hz, basiri plan section 6
+_KIRCHHOFF = {'free': {1: 412.1e3, 2: 94.2e3, 3: 254.5e3, 4: 473.6e3},     # Hz, Basiri table
               'clamped': {1: 367.7e3, 2: 411.0e3, 3: 504.1e3, 4: 659.6e3}}
 _PLATE_TOLERANCE = 1.5e-2
 

@@ -1,11 +1,11 @@
-"""Self-tests of the frequency_response study of solid_mechanics (piezoelectric plan stage 5): the Butterworth-Van Dyke
+"""Self-tests of the frequency_response study of solid_mechanics: the Butterworth-Van Dyke
 fit round trip and its kappa_e extra (CPU) and the piezoelectric / elastic bar driven harmonically with losses against
 the dense 1D linear-element system (exact: the y-uniform Q1 solution); no physics imports outside the checks."""
 import math
 
 import numpy as np
 
-from ...model.schema import SelfTestCase
+from ...model.schema import FREQUENCY_RESPONSE_STUDY, SelfTestCase
 from ...model.selftest_helpers import float32_value, scaled_worst_result, worst_result
 from ...model.spec import DomainSpec, FeatureSpec, MaterialSpec, MeshSpec, ModelSpec, PhysicsSpec, StudySpec
 from .selftests_piezo import (_CELL, _CELLS, _DENSITY, _EPS_DC, _LENGTH, _PIEZO_E11, _POISSON_RATIO, _WIDTH,
@@ -13,7 +13,7 @@ from .selftests_piezo import (_CELL, _CELLS, _DENSITY, _EPS_DC, _LENGTH, _PIEZO_
 
 _PHYSICS = 'solid'
 _SOLID_TYPE = 'solid_mechanics'       # = selftests.SOLID_TYPE_NAME
-_STUDY = 'frequency_response'         # = model.study_frequency_response.STUDY_NAME
+_STUDY = FREQUENCY_RESPONSE_STUDY
 
 # ---- 1. solid_bvd_fit_round_trip (CPU) ----
 _BVD = {'C0': 2.0e-12, 'C1': 9.0e-14, 'L1': 1.0e-4, 'R1': 15.0, 'tan_delta_0': 2e-3}

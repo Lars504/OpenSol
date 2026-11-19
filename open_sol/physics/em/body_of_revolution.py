@@ -1,4 +1,4 @@
-"""Body-of-revolution (BOR) FDFD of the (r, z) half plane, fields ~ exp(j omega t - j m phi) (symmetry plan 2.3):
+"""Body-of-revolution (BOR) FDFD of the (r, z) half plane, fields ~ exp(j omega t - j m phi):
 full-vector finite-integration Yee operator, driven solve and shift-invert resonances; host numpy / scipy only."""
 # Grid: x = r, y = z. The axis r = 0 is the lo edge of grid cell 0 (no PML side there); edge k = lo edge of cell k,
 # edge n = the hi grid edge. Unknowns (3D cylindrical Yee cell projected, as cross_section_modes with x -> r, y -> z,

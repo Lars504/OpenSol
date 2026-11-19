@@ -740,8 +740,7 @@ def _build_on_gpu(spec, registry, parameters, shapes, log, ledger, start, live_p
     for mesh_name in dict.fromkeys(ctx.mesh_of_physics(name) for name in smoothed_physics):
         with ledger.track(_mesh_owner('subpixel geometry', mesh_name, several)), _issue_at(('solvers',)):
             smoothing_geometries[mesh_name] = interface_geometry(contexts[mesh_name])
-    # solver_plan S7.6: one host geometry locator (mesh-independent), handed to the honouring solvers before their
-    # features apply
+    # one host geometry locator (mesh-independent), handed to the honouring solvers before their features apply
     conformal_physics, _ = conformal_boundaries_physics(spec, registry)
     locator = geometry_locator(ctx) if conformal_physics else None
     ctx.conformal_locators = {name: locator for name in conformal_physics}

@@ -177,7 +177,7 @@ def adaptive_mesh_spec(spec, frozen, estimate, parts, growth, anisotropic, param
 
 
 def adaptive_triangle_spec(spec, frozen, mesh, eta_squared, element_order, growth, parameters, registry, shapes):
-    """(MeshSpec, its estimate, marked elements) of the next 'adaptive' level of a triangle mesh (D14, plan 3.4): per
+    """(MeshSpec, its estimate, marked elements) of the next 'adaptive' level of a triangle mesh (D14): per
     window element h_new = h min(1, (eta_target / eta)^(1 / (p + 1))) (h its equilateral size, p the element order),
     eta_target by bisection so the predicted window elements ~ growth x the current ones; the new sizes go to the nodes
     of the marked elements as MeshSpec.size_points (where finer than the mesh's size field) and the mesh is rebuilt

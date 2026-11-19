@@ -1,4 +1,4 @@
-"""Model-layer definition of the 'membrane' physics type (new_modules_plan S4 / S7: a tensioned film, optionally with
+"""Model-layer definition of the 'membrane' physics type (a tensioned film, optionally with
 plate bending, on triangle meshes and in 1D models; settings, tension / areal density / loss / bending vocabulary,
 clamps, supports, loads, probes, ports, mode projections, the resonance table, PML padding, Bloch cells, validation,
 memory and run-time estimates) plus its template and selftest loader."""

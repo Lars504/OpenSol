@@ -1,4 +1,4 @@
-"""Exact checks of 3D cylindrical (r, phi, z) sectors (symmetry plan 2.21: core.metric.window_metric_3d and the 3D
+"""Exact checks of 3D cylindrical (r, phi, z) sectors (core.metric.window_metric_3d and the 3D
 DiffusionSystem on it): metric identities and scripted HeatPhysics on padding-free polar Domain3D windows of the cpu
 backend, incl. the phi wrap; the model path (DomainSpec polar + size_z: mesh, memory estimate, validation, mapped
 rasters, build and Session on the cpu backend); registered by definition.register."""

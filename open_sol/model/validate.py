@@ -1245,7 +1245,7 @@ class _Validator:
         and the gmsh program; builtin (tensor-graded bricks): no size_points, an info; subpixel smoothing / conformal
         boundaries do not apply (info)."""
         self._check_element_mesh_space(path, 'tetrahedra', 3)
-        swept = mesh_spec.sweep_axis == 'z'   # prism layers (plan D5): meshing refuses their other rules
+        swept = mesh_spec.sweep_axis == 'z'   # prism layers: meshing refuses their other rules
         builtin = mesh_spec.mesher == 'builtin' and not swept
         if swept:
             self._check_swept_mesh(path, mesh_spec)
@@ -1295,7 +1295,7 @@ class _Validator:
             self.info(path, f"{' and '.join(flags)} do not apply on {kind}: {reason}")
 
     def _check_swept_mesh(self, path, mesh_spec):
-        """sweep_axis 'z' (swept prism layers, plan D5): the meshing rules (swept_mesh_problem) as an error, an info,
+        """sweep_axis 'z' (swept prism layers): the meshing rules (swept_mesh_problem) as an error, an info,
         a warning naming the primitives tagged per element (no vertical side walls)."""
         from .geometry import is_array_copy
         from .swept_meshing import footprint_shapes, swept_mesh_problem
@@ -1485,7 +1485,7 @@ class _Validator:
 
     # ---- solvers ----
     def check_solvers(self):
-        """Solver defaults, solver nodes (type, settings, unused) and the physics' role assignments (solver_plan S3.6)."""
+        """Solver defaults, solver nodes (type, settings, unused) and the physics' role assignments."""
         spec = self.spec
         if spec.solver_defaults.backend not in SOLVER_BACKENDS:
             self.error(('solvers',), f'backend {short_repr(spec.solver_defaults.backend)} is not one of '
@@ -1514,7 +1514,7 @@ class _Validator:
                 self._delegate_issues(path, f"solver type '{solver_type.name}' validate", solver_type.validate,
                                       self.vctx, values, path)
         for physics, physics_type, _settings_values in self.physics_entries:
-            if backend not in physics_type.backends:   # solver_plan S6: the physics' own arrays and kernels
+            if backend not in physics_type.backends:   # the physics' own arrays and kernels
                 self.error(('physics', physics.name),
                            f'{physics_type.label} runs on the {BACKENDS[physics_type.backends[0]]} only so far (its '
                            f'fields, materials and kernels have no {BACKENDS[backend]} path yet): set the Solvers '
@@ -1535,7 +1535,7 @@ class _Validator:
 
     def _check_default_precision(self):
         """solver_defaults.precision: 'auto' or a precision; when set, an info naming the (physics, role) solvers that
-        keep their own precision and why (solver_plan S9)."""
+        keep their own precision and why."""
         value = self.spec.solver_defaults.precision
         if value not in SOLVER_DEFAULT_PRECISIONS:
             self.error(('solvers',), f'precision {short_repr(value)} is not one of '

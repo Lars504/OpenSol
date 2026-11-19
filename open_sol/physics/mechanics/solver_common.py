@@ -493,7 +493,7 @@ class SolidMechanicsBase(PhysicsSolver):
         return ()
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): Kelly traction-jump eta^2 parts (2, *window), host float64, of the shown stresses
+        """S7.7 hook: Kelly traction-jump eta^2 parts (2, *window), host float64, of the shown stresses
         across faces between solid elements, weighted 1 / c11 per element (2D; (r, z) faces ring-weighted)."""
         if self.domain.dimensions != 2 or getattr(self, '_stiffness', None) is None:
             raise NotImplementedError(f'{self.system.label()}: the traction-jump error indicator needs a solved 2D '

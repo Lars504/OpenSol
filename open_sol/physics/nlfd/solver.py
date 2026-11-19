@@ -1,7 +1,7 @@
 """NonlinearHarmonicPhysics (physics type em_fdfd_nonlinear): one private FDFDPhysics per harmonic channel on a
 shared Domain, chi(2) / chi(3) bulk media, nonlinear sheets and the mixing table, solved as the undepleted cascade or the
 pump-depleted self-consistent solution (Picard / Anderson or Newton-Krylov)."""
-# Composition (nonlinear_optics_plan decision 1): every channel keeps its own HarmonicSystem, factor, sources, monitors
+# Composition: every channel keeps its own HarmonicSystem, factor, sources, monitors
 # and ports; features apply to channel(name). Nonlinear terms are NonlinearPolarizationPhasor sources appended to the
 # target channels at finalize (or the first solve), reading the ChannelFieldStore snapshot of the source channels;
 # pump-depleted Kerr terms also get a KerrOperatorTerm (lagged operator permittivity). Only this physics is registered

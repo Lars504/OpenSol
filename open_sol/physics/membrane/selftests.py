@@ -1,4 +1,4 @@
-"""Self-tests of the membrane physics (new_modules_plan S4 / S7) against closed forms: rectangle and circular-drum modes
+"""Self-tests of the membrane physics against closed forms: rectangle and circular-drum modes
 on triangles, a rectangle split by a clamped line, the 1D strip dispersion with an axial wavenumber, the lossy string (driven response, Lorentzian Q, complex
 resonance), evanescent decay below cut-off, the PML-terminated guide, the 1D plate strip (Hermite), the simply
 supported plate rectangle, its half models with mirror planes and the clamped plate strip Bloch cell (interior penalty),
@@ -360,7 +360,7 @@ def _check_pml(results_by_name):
                                reflection_dB=20.0 * math.log10(max(reflection, 1e-300)))
 
 
-# ---- exact clamped plate strip (romero2019 plan section 4): D w'''' - T w'' = rho_s omega^2 w on [0, W] clamped (w,
+# ---- exact clamped plate strip: D w'''' - T w'' = rho_s omega^2 w on [0, W] clamped (w,
 # w'), longitudinal wavenumber k: q1^2 - q2^2 = 2 k^2 + T / D; symmetric (odd n) q2 sin(q2 W / 2) + q1 cos(q2 W / 2)
 # tanh(q1 W / 2) = 0, antisymmetric (even n) q1 sin(q2 W / 2) - q2 cos(q2 W / 2) tanh(q1 W / 2) = 0, root n in q2 in (n
 # pi / W, (n + 1) pi / W); omega^2 = (T Q + D Q^2) / rho_s, Q = q2^2 + k^2 (the simply supported form with q2 = n pi / W).
@@ -386,10 +386,10 @@ def _plate_frequency(squared_wavenumber, rigidity, tension, density):
     return math.sqrt((tension * squared_wavenumber + rigidity * squared_wavenumber ** 2) / density) / (2.0 * math.pi)
 
 
-# ---- membrane_plate_strip_dispersion (R-E1B, romero2019 plan section 6): 1D Hermite plate strip, W = 76 um, h = 80 nm
-# silicon nitride at 1 GPa (E 250 GPa, nu 0.23): clamped at both ends, k_y = 0 and 5e4 rad/m, n = 1, 2 against the plan
-# table (5 digits: 1e-3 as the plan) and the exact roots of the float32 material values (1e-5; boundary layer sqrt(D / T)
-# = 0.38 um on 38 nm cells).
+# ---- membrane_plate_strip_dispersion (R-E1B): 1D Hermite plate strip, W = 76 um, h = 80 nm
+# silicon nitride at 1 GPa (E 250 GPa, nu 0.23): clamped at both ends, k_y = 0 and 5e4 rad/m, n = 1, 2 against the
+# Romero table (5 digits: 1e-3 as its tolerance) and the exact roots of the float32 material values (1e-5; boundary
+# layer sqrt(D / T) = 0.38 um on 38 nm cells).
 _PLATE_WIDTH = 76e-6
 _PLATE_THICKNESS = 80e-9
 _PLATE_TENSION = float32_value(1e9 * _PLATE_THICKNESS)                    # 80 N/m
@@ -574,7 +574,7 @@ def _check_bloch(results_by_name):
     return scaled_worst_result(errors, {name: _BLOCH_TOLERANCE for name in errors}, **details)
 
 
-# ---- membrane_port_tunnelling (mauranyapin2021 plan, E3 / E4): guide W1 = 78 um, barrier W2 = 44 um centred, L_b = 75
+# ---- membrane_port_tunnelling (E3 / E4): guide W1 = 78 um, barrier W2 = 44 um centred, L_b = 75
 # um, c = 502.6 m/s, feeds of 30 um to the ports (10 modes each: the DtN is exact for them). 5.5 MHz, incident mode 1:
 # T11 = 0.0493 (2 %, mode matching), T + R = 1 (exact discrete power balance) and the mode_projection of mode 1 in the
 # input feed against A exp(-j beta y) + b exp(+j beta y) of the port amplitudes; 8.1 MHz, incident mode 2: T(2 -> 2) =
@@ -728,7 +728,7 @@ def _check_tunnel(results_by_name):
     return scaled_worst_result(errors, tolerances, **details)
 
 
-# ---- membrane_emfdfd_rectangle (plan S4 cross-check): the template rectangle on em_fdfd_ez (vacuum, PEC walls,
+# ---- membrane_emfdfd_rectangle (cross-check): the template rectangle on em_fdfd_ez (vacuum, PEC walls,
 # quadratic, the same uniform triangles): both solve -lap u = (omega / c)^2 u with Dirichlet walls on one mesh, so f_n / c
 # agree to the eigen-solve accuracy (1e-6 relative). The EM target wavelength lies 20 % above the lowest mode's.
 _EM_PHYSICS = 'em'

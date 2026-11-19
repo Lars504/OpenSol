@@ -1,4 +1,4 @@
-"""Self-tests of swept prism layers (experiment plan D5; CPU, no gmsh, specs() empty, check({}) directly): the
+"""Self-tests of swept prism layers (CPU, no gmsh, specs() empty, check({}) directly): the
 minimum-vertex split (conformity, counts, volume, a P2 patch test, periodic partners) and the model path (estimate vs
 built, layer planes, conforming walls, refusals)."""
 import math

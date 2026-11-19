@@ -3,13 +3,13 @@ solid's optomechanical_coupling features (em_modes modes or em_fdfd_ez / _hz / _
 modes, the g0 tables, then one labelled snapshot per mechanical mode."""
 import time
 
-from .schema import Issue, Param, StudyType
+from .schema import OPTOMECHANICS_STUDY, Issue, Param, StudyType
 from .solver_hooks import EigenfrequencySolver, ModeSolver, OptomechanicalSolver
 from .study import (LogEvent, _background_fixed_point_params, _background_stage, _count_progress,
                     _log_eigen_solve, _numbered_snapshots, _refuse_stepping_background, _reselect_first_resonance,
                     _scipy_issues, _selected_physics, _solve_static_states)
 
-STUDY_NAME = 'optomechanics'
+STUDY_NAME = OPTOMECHANICS_STUDY
 _OPTICAL_STAGE = 'Optical solve'
 _MECHANICAL_STAGE = 'Mechanical modes'
 _FEATURE = 'optomechanical_coupling'

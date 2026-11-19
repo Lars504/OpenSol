@@ -15,7 +15,7 @@ import numpy as np
 from ..core.kernels import host_twin
 
 # numba runs the kernel when the process already loaded numba or the call has at least this many elements (the first
-# parallel numba call of a process costs ~0.2 s, a first compile ~0.5 s: 3D speed plan N6 / lessons)
+# parallel numba call of a process costs ~0.2 s, a first compile ~0.5 s)
 NUMBA_MIN_ELEMENTS = 20000
 _VOIGT_FIRST = np.array([0, 1, 0], dtype=np.int64)    # xx, yy, g = (x, y)
 _VOIGT_SECOND = np.array([0, 1, 1], dtype=np.int64)

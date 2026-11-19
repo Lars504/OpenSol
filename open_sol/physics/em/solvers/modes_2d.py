@@ -413,7 +413,7 @@ class ModePhysics(_ModeStudyMixin, PhysicsSolver):
                                     self._cross_section_materials(omega), self._bend)
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): energy-weighted interpolation eta^2 parts (2, *window) of the selected mode (after a
+        """S7.7 hook: energy-weighted interpolation eta^2 parts (2, *window) of the selected mode (after a
         study the mode_index one): E components x eps0 |eps_ii|, H x mu0 (core.error_indicators)."""
         if self.selected_mode is None:
             raise ValueError(f"em_modes '{self.name}' has no solved mode")

@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from ...core.constants import C0, EPS0
-from ...model.schema import SelfTestCase
+from ...model.schema import EIGENFREQUENCY_STUDY, SelfTestCase
 from ...model.selftest_helpers import float_list, solver_role, tolerance_units_result
 from ...model.spec import (DerivedValueSpec, DomainSpec, FeatureSpec, GeometrySpec, MaterialSpec, MeshSpec, ModelSpec,
                            ParameterSpec, PhysicsSpec, SolverSpec, StudySpec)
@@ -15,7 +15,7 @@ from .selftests_fdfd import cpu_specs
 
 _PHYSICS = 'em'
 _TABLE = 'resonances'
-_STUDY = 'eigenfrequency'   # = model.study_eigenfrequency.STUDY_NAME
+_STUDY = EIGENFREQUENCY_STUDY
 _OMEGA_COLUMNS = (2, 3)     # frequency, frequency_imag [Hz] in the resonance_table rows
 _Q_COLUMN = 4
 
@@ -38,7 +38,7 @@ _MAX_ORDER = 8                                 # orders searched for the expecte
 _OMEGA_TOLERANCE = 1e-8                        # relative complex omega
 _Q_TOLERANCE = 1e-6                            # relative Q (lossy run)
 _FIELD_TOLERANCE = 1e-5                        # max |E_z - closed form| of resonance 1 (peak 1, float32 output)
-# em_fdfd_eigenfrequency_line_block (solver_plan Part II stage 3): the same runs with a line_block 'linear' node, whose
+# em_fdfd_eigenfrequency_line_block: the same runs with a line_block 'linear' node, whose
 # factor of the operator at the target is the shift-invert factor; (omega, Q) tolerances per precision (mixed: complex64
 # block factors refined against the complex128 operator to 1e-9 per Arnoldi step)
 _LINE_BLOCK_TOLERANCES = {'double': (_OMEGA_TOLERANCE, _Q_TOLERANCE), 'mixed': (1e-7, 1e-4)}

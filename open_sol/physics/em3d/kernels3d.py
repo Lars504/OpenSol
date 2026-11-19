@@ -861,7 +861,7 @@ def _ohmic_loss_numba(numba):
     return kernel
 
 
-# Conformal PEC (solver_plan S7.6, conformal_pec3d): one thread per corrected H face, right after the Yee H kernel of
+# Conformal PEC (conformal_pec3d): one thread per corrected H face, right after the Yee H kernel of
 # each field set; face n = H component c of the flat cell face_cell[n] gains db x the curl of its weights - 1 (E_b at
 # the hi / lo a corner, E_a at the hi / lo b corner, (a, b) the next two axes cyclically), so with the Yee term its
 # curl is (1 / A_eff) sum +-l E over the free edge lengths (Dey-Mittra). Faces never touch the grid edge (no wraps).

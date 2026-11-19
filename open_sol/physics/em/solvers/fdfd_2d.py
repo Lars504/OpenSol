@@ -417,7 +417,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         return self._face_fields
 
     def error_indicator(self):
-        """S7.7 hook (mesh plan A2): energy-weighted interpolation eta^2 parts (2, *window) of the shown solution (driven
+        """S7.7 hook: energy-weighted interpolation eta^2 parts (2, *window) of the shown solution (driven
         or the selected resonance): out-of-plane field and face fields, E x eps0 |eps| of the cells, H x mu0."""
         if self.solution is None or self.system is None:
             raise ValueError(f"em_fdfd_{self.polarization} '{self.name}' has no solution yet")

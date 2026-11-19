@@ -1,4 +1,4 @@
-"""Self-tests of the em_fdfd_nonlinear adjoint (nonlinear_optics_plan stage 5 (b)): eps_sensitivity against a central
+"""Self-tests of the em_fdfd_nonlinear adjoint: eps_sensitivity against a central
 difference of the objective (undepleted ez, hz and mixed-polarisation SHG; pump-depleted SHG and SPM; nonlinear sheets
 and free carriers), a short SHG optimization run and the shg_metasurface_optimization template; no physics imports."""
 import math

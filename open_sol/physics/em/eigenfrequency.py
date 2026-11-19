@@ -16,7 +16,7 @@ omega; dispersion and the PML stretch are frozen at the target, so resonances ar
 # parameter only, k_t^2 -> sigma = k_t^2 (1 + SHIFT_RELATIVE_OFFSET) with A + (sigma - k_t^2) M (M, L stay frozen at
 # omega_t: the same resonances), so a target on a lossless resonance is not singular; a caller's factorization (line
 # block of A) keeps sigma = k_t^2. The size rule of the host factor is the caller's (its warnings join the solve's).
-# Region energy fraction (new_modules_plan P2, as fem.harmonic_resonances): in_region flags the unknowns of a region
+# Region energy fraction (as fem.harmonic_resonances): in_region flags the unknowns of a region
 # (a resonance_table selection: cells, or the free dofs of its elements, element_region_rows); region_fraction = the
 # in_region share of the per-row energies (the PML-share split), NaN without a region; below min_region_fraction the
 # resonance is dropped like a PML mode (widenings count it), so table rows and snapshots stay numbered alike.

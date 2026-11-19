@@ -1,4 +1,4 @@
-"""Body-of-revolution FDTD (symmetry plan 2.3): leap-frog stepping of one azimuthal order m on the (r, z) half plane
+"""Body-of-revolution FDTD: leap-frog stepping of one azimuthal order m on the (r, z) half plane
 with the em_fdfd_bor finite-integration curl (body_of_revolution, real metric), CPML (cylindrical along r), Drude /
 Lorentz poles, current sources and DFT spectra; operators host-built (scipy), stepped on numpy or cupy."""
 # State: x = the full E layout of body_of_revolution (E_r (nr+1, nz), u (nr, nz), E_z (nr, nz+1); inactive points of

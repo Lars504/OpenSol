@@ -1,4 +1,4 @@
-"""Straight membrane ports and mode projections (new_modules_plan S7): the strip profiles of an outer face (clamped
+"""Straight membrane ports and mode projections: the strip profiles of an outer face (clamped
 walls sin(n pi s / W), one free mirror wall sin / cos((n - 1/2) pi s / W)), their propagation constants, the exact
 Dirichlet-to-Neumann rank-n update with an incident mode, outgoing amplitudes / powers, and the projection a_n of a field
 onto the profiles along a guide (film ports; a face with bending_stiffness takes plate_ports.PlatePort). Host numpy."""

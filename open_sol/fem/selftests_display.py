@@ -1,4 +1,4 @@
-"""Self-test of triangle-mesh display and saving (mesh plan stage T6, CPU; specs() empty, check({}) works directly):
+"""Self-test of triangle-mesh display and saving (CPU; specs() empty, check({}) works directly):
 raster and display triangulation of a P2 field, the tripcolor PNG, mesh line sets and the results.npz node tables.
 error = number of failed sub-checks (tolerance 0) with the measured values in details."""
 import math

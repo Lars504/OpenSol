@@ -1,4 +1,4 @@
-"""Model features of the NLFD-chi nonlinear sheets (nonlinear_optics_plan stage 4): surface_chi2 (isotropic-surface
+"""Model features of the NLFD-chi nonlinear sheets: surface_chi2 (isotropic-surface
 chi_s(2) on the interface of a domain selection) and sheet_nonlinearity (2D-material chi_s(2) / sigma(3) on an
 axis-aligned line), their validation, memory estimates and mixing-table tensors (imported by definition.py)."""
 import math

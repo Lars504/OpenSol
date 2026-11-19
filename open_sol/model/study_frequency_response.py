@@ -1,4 +1,4 @@
-"""The 'frequency_response' StudyType (piezoelectric plan stage 5): background physics to a stationary fixed point, then
+"""The 'frequency_response' StudyType: background physics to a stationary fixed point, then
 the driven time-harmonic response of every solver with solve_frequency_response (solid_mechanics, membrane, pressure_acoustics) at each
 frequency of a list in Hz, one labelled snapshot per frequency (setting snapshots: all, last or none)."""
 # A frequency-domain study (a frequency list in Hz) for the mechanics; the EM frequency_domain study stays

@@ -1,4 +1,4 @@
-"""Self-tests of fem.pml, fem.harmonic, fem.harmonic3d and fem.harmonic_resonances (new_modules_plan S1, S2, S8; CPU,
+"""Self-tests of fem.pml, fem.harmonic, fem.harmonic3d and fem.harmonic_resonances (CPU,
 specs() empty, check({}) on structured triangle / Kuhn meshes, no gmsh): stretch values and the pml3d identity, exact
 polynomial and convergent plane-wave fields, Robin / PML absorption, axisymmetric Bessel / Hankel fields, closed,
 lossy and PML-terminated cavity resonances; on the GPU the cuDSS device-pencil sweep against host SuperLU. error = number
@@ -25,7 +25,7 @@ _EXACT_RTOL = 1e-10                # polynomial fields the element space holds: 
 _SPEED = 340.0
 _FREQUENCY = 1000.0
 _PML_REFLECTION = 1e-6
-_REFLECTION_TOLERANCE = 1e-3       # plan S2: PML reflection < 1e-3 of a 1D-like strip
+_REFLECTION_TOLERANCE = 1e-3       # PML reflection < 1e-3 of a 1D-like strip
 # resonances: a membrane-like rectangle (c = sqrt(T / rho) = 100 m/s) and an impedance-step strip cavity
 _TENSION = 1.0
 _DENSITY = 1e-4

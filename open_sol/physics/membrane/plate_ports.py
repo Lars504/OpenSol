@@ -1,4 +1,4 @@
-"""Plate ports of the membrane (plan F2): numeric strip modes of a straight tensioned Kirchhoff plate guide from the 1D
+"""Plate ports of the membrane: numeric strip modes of a straight tensioned Kirchhoff plate guide from the 1D
 Hermite strip (fem.line_fem), the exact Dirichlet-to-Neumann map of that semi-discrete strip (reciprocity-symmetric),
 the incident load and the modal port powers. Host numpy, scipy inside functions."""
 # exp(+j omega t); d = outward distance beyond the port face (the FE normal n), s = the coordinate along it, the guide
