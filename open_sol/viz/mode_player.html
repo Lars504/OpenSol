@@ -1049,7 +1049,7 @@ async function recordVideo(config, seconds, step, grab, button) {
   const n = Math.max(1, Math.round(seconds * VIDEO_FPS)), dt = seconds / n, us = 1e6 / VIDEO_FPS;
   const staging = document.createElement('canvas'); staging.width = config.width; staging.height = config.height;
   const sc = staging.getContext('2d', { alpha: false });
-  const samples = []; let description = null, failure = null;
+  const samples = []; let description = null, failure = null, sent = 0;
   const encoder = new VideoEncoder({
     output: (chunk, meta) => {
       const d = meta && meta.decoderConfig && meta.decoderConfig.description;
@@ -1065,7 +1065,7 @@ async function recordVideo(config, seconds, step, grab, button) {
     step(i ? dt : 0);
     sc.drawImage(grab(), 0, 0, config.width, config.height);
     const frame = new VideoFrame(staging, { timestamp: Math.round(i * us), duration: Math.round(us) });
-    try { encoder.encode(frame, { keyFrame: i % (VIDEO_KEY_SECONDS * VIDEO_FPS) === 0 }); } finally { frame.close(); }
+    try { encoder.encode(frame, { keyFrame: i % (VIDEO_KEY_SECONDS * VIDEO_FPS) === 0 }); sent++; } finally { frame.close(); }
     button.textContent = 'Stop ' + Math.round(100 * (i + 1) / n) + ' %';
     do await new Promise((r) => setTimeout(r, 0)); while (encoder.encodeQueueSize > 2 && !failure);   // repaint, let the encoder keep up
   }
@@ -1075,13 +1075,14 @@ async function recordVideo(config, seconds, step, grab, button) {
   if (!samples.length) return null;
   if (!description) throw new Error('the H.264 encoder gave no decoder configuration (avcC)');
   if (!samples[0].key) throw new Error('the H.264 encoder did not start on a key frame');
-  // presentation index of each sample (encoders with B frames emit them in decode order): every frame exactly once
-  const seen = new Uint8Array(samples.length);
-  for (const s of samples) {
-    s.p = Math.round(s.t / us);
-    if (!(s.p >= 0 && s.p < samples.length) || seen[s.p]++)
-      throw new Error('the H.264 encoder returned frame times that are not one per frame (' + s.t + ' us)');
-  }
+  // presentation index of each sample = rank of its timestamp (encoders with B frames emit decode order; Firefox's
+  // Media Foundation encoder returns the times shifted by a frame, so their values are not trusted): every frame once
+  if (samples.length !== sent) throw new Error('the H.264 encoder returned ' + samples.length + ' of ' + sent + ' frames');
+  const order = samples.map((s, k) => k).sort((a, b) => samples[a].t - samples[b].t);
+  order.forEach((k, p) => {
+    if (p && samples[k].t === samples[order[p - 1]].t) throw new Error('the H.264 encoder returned two frames at ' + samples[k].t + ' us');
+    samples[k].p = p;
+  });
   return mp4Blob(samples, description, config.width, config.height);
 }
 function mp4Blob(samples, avcC, w, h) {
