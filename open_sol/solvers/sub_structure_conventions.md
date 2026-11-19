@@ -210,235 +210,39 @@ PARDISO: section "host_direct". Rules across files:
   Double only; host O(n) memory, not estimated. Not yet: per-order (m / l / q) batching, complex operators.
 
 ## arpack_shift_invert (`ArpackShiftInvertSolver`; role 'eigen')
-- `eigs(matvec, n, k, v0, tolerance_floor, max_restarts, default_basis, device_matvec, real)` -> (theta, vectors,
-  applications, converged): tolerance = max(node, floor) (0 = machine precision); subspace_size 0 = the caller's
-  default_basis (`arnoldi_basis_size` for estimators). `real=True` (a real map and v0: cross_section_modes' float64
-  own factor) runs host ARPACK as dnaupd (one real solve per application, `last_arnoldi` 'ARPACK (real)'; ncv >= k + 2
-  holds); the Krylov-Schur paths stay complex and hand the matvec complex vectors. Time recipe: `SolverWork.rhs` =
-  triangular solves per application, `applications_per_basis` (0: APPLICATIONS_PER_BASIS_GUESS 2.5).
-- `eigs_host(...)` = `eigs_device`'s 5-tuple on the host (`_HostKrylovSchur`, a subclass sharing run / Schur ordering /
-  restart test; numpy rows, CGS2 by gemv on the C-contiguous rows, never a conjugated basis copy): solve_resonances
-  around a host-only factor, so a widening resumes (`resume`, `reserve_basis`); below DEVICE_ARNOLDI_MIN_RATIO host
-  ARPACK, state None. Runs inside quiet_openblas like the scipy calls, and inside `host_blas_limit(n)`
-  (HOST_ARPACK_BLAS_THREADS, 0 = off: every BLAS pool at that thread count up to HOST_ARPACK_BLAS_MAX_UNKNOWNS, through
-  `host_direct.limited_blas_threads`, since threadpoolctl lives there; unmeasured, E6) like host ARPACK and the BOR
-  port eigs.
-- Device Krylov-Schur on a device matvec (E4, `_expand_device`): the H column and |w|^2 of every step stay in device
-  rows (`_columns`), read once per expansion (m - keep steps) into a pinned twin; the breakdown test runs on that read
-  and a breakdown redoes the steps after its column on a fresh direction. Around a host matvec the packed read per step
-  stays (the host solve needs the row anyway). The time recipe prices Sync(1 / (m - keep)) per application there.
-- Warm starts (E5): `guarded_start_vector(warm, seed, real)` adds WARM_START_RANDOM_SHARE (by norm) of a seeded random
-  vector to earlier modes used as v0 (em_modes frequency scans, the em3d port source re-solve, BOR ports), so a
-  wanted eigenvector the warm start lacks keeps a component; group-index and monitor-tracking starts take no share.
-- One uninterruptible host call (a GUI stop waits): eigs / eigsh_shifted / eigsh_inverse cap restarts at MAX_RESTARTS
-  (300; scipy's 10 n let a shift on a resonance restart for minutes) and return the converged part with converged False
-  (callers warn); bor_ports / slab_modes' direct scipy calls take the same cap.
-- Tolerance floors only where nothing needs round-off eigenvalues: fem_modes, FDFD / BOR eigenfrequency and
-  mechanics keep machine precision, except cross-section solves dropping PML modes on a CPML cross-section (em_modes,
-  mode ports, bends; not EME): 1e-12 (`cross_section_modes.PML_ARPACK_TOLERANCE_FLOOR`; PML-mode clusters hit
-  MAX_RESTARTS at machine precision); em_modes' own solves at the study wavelengths 1e-10
-  (`cross_section_modes.MODE_ARPACK_TOLERANCE_FLOOR`, E3; its group-index, detached and port solves keep machine
-  precision); em_fdfd_3d with a cpml face 1e-10 (+ a 5 k basis, ARNOLDI_BASIS_PER_WANTED);
-  physics/em/conical 1e-10. Callers without a runtime get a default one inside `solve_cross_section_modes` /
-  `solve_resonances` / `solve_bor_resonances`; BOR port mode solves call scipy eigs directly (no role).
-- `eigsh_inverse(...)`: factor-free symmetric shift-invert at 0 for a possibly inexact inverse (solid_mechanics_3d: one
-  PCG solve each); counted like eigs.
-- nvmath / cuDSS API notes, pitfalls and measurements: `nvmath_guide.md` (repo root).
-- Host direct factorizations mumps / mumps_mixed / pardiso / pardiso_mixed (FACTORIZATIONS order: auto, superlu,
-  cudss, cudss_mixed, then HOST_DIRECT_FACTORIZATIONS): factorize_host returns a HostDirectFactorization (host
-  solves, the caller's ordering unused, symmetric / row_scale / previous honoured: LDLT_FACTORIZATIONS = cuDSS + host,
-  for which _factorize_shift defaults row_scale to ShiftPencil.row_scale); a host *_mixed request below
-  mixed_min_unknowns factors in double (S5c, `host_direct.double_of`; MIXED_FACTORIZATIONS = cudss_mixed + the host
-  mixed names); inertia from the library pivots (real LDL^T / Cholesky: MUMPS INFOG(12), PARDISO iparm[21] / [22]);
-  None (LU, complex, symmetrizer, perturbed or null pivots) -> one counting SuperLU in _shift_inertia (exact); a
-  Hermitian pencil is always counted by `_superlu_count`. No deferred check, no fallback (refusals raise). Counters:
-  eigen_host_direct_analyses, eigen_lu_entries, eigen_factor_symmetric, eigen_double_fallbacks,
-  eigen_refinement_steps, eigen_host_direct_threads; time recipe the SuperLU items x sparse_direct.HOST_DIRECT_*.
-- Setting `factorization` 'superlu' / 'cudss' / 'cudss_mixed' / 'auto' (default). cudss is GPU only (`backend_misfit`;
-  validate errors without nvmath, `cudss_factor.cudss_available` = find_spec); `factorize_host` then returns a
-  `CudssFactorization` for every caller (the eigen callers' Factorization stand-in; no transposed solve, not
-  recyclable), the caller's `ordering` unused. Host planning single-threaded: never pass the wheel's threading layer
-  (`cudss_mtlayer_vcomp*` crashed the process on Windows); only an env CUDSS_THREADING_LIB, read by nvmath, loads one.
-- cuDSS memory: the factor lives outside the cupy pool; after planning a peak estimate above DEVICE_FRACTION (0.8) of
-  free device memory is a ValueError. Estimators count the pool part through the cudss_factor helpers only: kept per
-  plan `operator_copy_bytes` (CSR copies, diagonal, the mixed factor copy) + `solve_buffer_bytes` (rhs buffer, row
-  scale); one solve or probe `solve_peak_bytes` (4 vectors; mixed 2 GMRES_RESTART + 10: the GMRES basis lives only in
-  the solve) as a transient (CUDSS_SOLVE_PHASE, or inside the phase of an own factor), never kept; a caller
-  refactorising on the planned pattern adds `index_map_bytes` (kept maps: a run item) and `refresh_peak_bytes(...,
-  n_unknowns=, mixed=)` (a refresh, or the probe on the still-held uploaded / equilibrated values: a transient item;
-  `refresh_bytes` = maps + refresh) and the factor itself as MemoryEstimate external_items / external_extra from
-  `cudss_factor.factor_device_bytes(n, entries, value_bytes, dimensions, mixed, symmetric)` (permanent, peak extra;
-  `definition_helpers.cudss_external` wraps several, `phases=` binds a factor released after its solve to the
-  transient phases it lives in): fill 2D n log2 n, 3D n^(4/3), scaled by sqrt(rows per reference
-  row), a general LU x CUDSS_LU_OVER_LDLT (L and U), a mixed factor halves only the values (CUDSS_INDEX_BYTES per
-  entry stay), peak = permanent (CUDSS_PEAK_RATIO 1: cuDSS reports them equal); a `FactorFill(entries)` given as
-  `dimensions` replaces the growth law by counted factor entries (fem.dissection on a built element mesh; mechanics
-  triangles / tetrahedra: `definition.factor_fill`; em_fdfd_3d tetrahedra: `definition_fdfd3d.nedelec_factor_entries`,
-  also for its host SuperLU via `core.memory_estimate.host_counted_lu_bytes`; 3D tensor grids:
-  `sparse_direct.box_dissection_entries(window shape, unknowns per cell)`, the box nested-dissection count of A5, for
-  which CUDSS_FILL_3D read 48 % / 76 % low; `yee_faces=True` for the Yee curl-curl: tangential-component separators) x the factor value bytes + the kept matrix copy +
-  CUDSS_ROW_BYTES per row; the growth-law fill fitted to the selftest
-  counters (constants, data, the known double count and open points in the cudss_factor notes above it). The pool items are counted from the
-  arrays the code makes (an estimate above the measured bytes misreads the code); a wrong entries-per-row count is the
-  usual miss, as every per-entry item scales with it; refit the fill
-  from summary.json counters cudss_permanent_bytes / cudss_peak_bytes / cudss_lu_entries (sparse_direct),
-  eigen_permanent_bytes / eigen_lu_entries (arpack_shift_invert) and the run's external_memory record, never from
-  cudss_factor_device_bytes / eigen_factor_device_bytes (`CudssFactorization.device_bytes` = permanent + the in-pool
-  copies, rhs, scales and index maps the estimators already book as pool items: fitting to it counts them twice).
-  Estimates are counts of what the code and cuDSS should hold, never constants scaled to measured bytes: a scaled
-  constant absorbs an extra copy that the estimate-vs-measured verdict should expose. `CudssFactorization._plan_solver` / `_free_solver` book every planned solver in the
-  process-wide `external_live_bytes` / `external_high_water_bytes` (reset per build by study.build_session): free a
-  DirectSolver only through `_free_solver`. em_fdfd_3d's host size rule is skipped; 2D callers keep their SuperLU size
-  rules and items.
-- cuDSS time: 3D by the fitted `CUDSS_*` constants (`_cudss_ops`; fitted on complex curl-curl on one RTX 3050:
-  recalibrate on another GPU from the log's plan / factorise / device-solve seconds; real operators by CUDSS_REAL_*,
-  uncalibrated); 2D by sparse_direct.cudss_2d_ops. Callers pass the run backend for a cuDSS factor, never 'cpu' (that
-  prices device work on the host profile). A fresh plan per factorisation unless SolverWork.plan_reused (callers
-  keeping the plan via previous=, e.g. modal.ModalPencil).
-- Mode infos take `factor_kind` from the factor's description ('SuperLU' only when it has none; em_modes'
-  solve_summary branches on 'cuDSS'). `eigenfrequency.solve_resonances` with its own cuDSS factor applies B and both
-  Cayley solves on the device and logs plan / factorise / device-solve seconds.
-- `factorize_host(symmetric=True)` (cudss only): `relative_asymmetry` <= SYMMETRY_TOLERANCE (1e-12, transpose not
-  conjugate), then the lower triangle as SYMMETRIC / LOWER (LDL^T: about half the factor); no full copy kept: residuals
-  apply E y = L y + L^T y - diag(L) y (`_product`; the cached `L.T` is a non-conjugate CSC view); else general LU,
-  keeping the full E. Users: eigsh_shifted and `solve_resonances(symmetrizer=D)` (factors D A, applies D B): em_fdfd_3d
-  D = stretched face dual volumes (half on antisymmetric faces; None with a Bloch phase), 2D FDFD D =
-  `operators.stretched_cell_areas` (None with Bloch; hz eps_xy couplings fall back to LU via the asymmetry check); BOR
-  none yet.
-- Both cuDSS kinds factor E = R A R, R = |diag A|^-1/2 (probe residuals are of E): unscaled, pinned identity rows of a
-  D-scaled operator sat below cuDSS's pivot epsilon. A caller's `row_scale` replaces R where diag A may nearly cancel
-  (em3d `FEMPhysics3D`: (|diag K| + k_t^2 |diag M|)^-1/2). `solve_resonances(symmetric=True)` = A itself complex
-  symmetric (FEM pencil): the same LDL^T.
-- 'cudss_mixed': complex64 / float32 factor of E (keeping complex symmetry), float64 E on the device for residuals.
-  `solve(rhs, refinement_steps=None)` refines by restarted flexible GMRES preconditioned by the low-precision solve
-  (module `gmres_refine` with xp = cupy, shared with host_direct; GMRES_RESTART 8, vectors in
-  `solve_peak_bytes(mixed=True)`) to MIXED_SOLVE_TOLERANCE (1e-12) or
-  backward error MIXED_SOLVE_BACKWARD_ERROR (1e-15), at most MIXED_MAX_REFINEMENTS 16; a cycle whose FGMRES estimate met
-  the target while the true residual did not is the float64 floor and ends the solve. Consumers checking true
-  residuals (reduced sweep rom_tolerance) need this (a 1e-12 backward error on resonance left 1e-7 - 1e-5 residuals).
-  Target per factor `solve_backward_error` or per call `solve(..., backward_error=)`; probes / deferred checks capped at
-  BACKWARD_ERROR_TOLERANCE. An int fixes plain refinement steps (eigen polish; contracts ~eps32 kappa(E) per step, poor
-  near high-Q drives, which GMRES fixes). Each single solve scales its rhs to unit norm (float32 underflow).
-- Mixed probes / deferred checks stop GMRES after MIXED_STALL_ITERATIONS (4) when the extrapolated rate misses the gate
-  by MIXED_STALL_MARGIN; never a threshold on the unrefined residual alone (high-Q leaves it ~0.4 and GMRES passes). A
-  mixed probe that misses re-plans double (`_next_attempt`; positive_definite LDL^T -> double Cholesky):
-  `last_double_fallback`, `mixed_rejection`, and the object stays double (sticky). While `remember_cudss_orderings` is
-  on, the rejection is kept per (kind, real, pattern digest) (<= KEPT_ORDERINGS): a new factor of that key goes double at
-  once (mixed_rejection ends in '(remembered ...)', last_double_fallback False, so cudss_double_fallbacks counts real
-  rejections only); values are not in the key. `precision` stays the request (can_refactorize); `factor_precision` /
-  `mixed_factor` say what is factored: callers choosing loose solves or log texts branch on factor_precision.
-  Errors `CudssSingularError` / `CudssAccuracyError` (both RuntimeError; fem.harmonic words them apart).
-- cudss_mixed only for roles whose `setting_choices['factorization']` accept it (`eigen_role(mixed_factorization=True)`:
-  em_fdfd_3d, em_fdfd_ez / _hz), because only `eigenfrequency.solve_resonances` asks for loose solves: with an own mixed
-  LDL^T of D A it uses MIXED_EIGS_REFINEMENTS (1), floors ARPACK at MIXED_ARPACK_TOLERANCE (1e-6) and replaces every k^2
-  by the float64 Rayleigh quotient (stationary for the complex symmetric pencil; `info['rayleigh_change']`); a double
-  own LDL^T (cuDSS / MUMPS / PARDISO) of a complex A whose caller floored ARPACK (cpml / PML / lossy) takes the same
-  floor and polish, without the refinement steps; without a symmetric D A (Bloch) it refines every solve to 1e-12. Measured on the Mie eighth sphere: factorise 12x faster, half
-  the memory, lambda / Q identical to double.
-- Probe gates: a probe after factorize must reach ACCEPT_RESIDUAL (1e-10) or cuDSS refinement (REFINEMENT_STEPS) is
-  switched on; still missing = RuntimeError (cuDSS pivots only within supernodes). Every gate and the mixed stop also
-  accept a normwise backward error <= BACKWARD_ERROR_TOLERANCE (1e-12): a random probe's residual floors near eps
-  kappa(E) on stiff thin structures, out of reach of 1e-10. `probe_backward_error` beside probe_residual. Counters
-  eigen_factor_device_bytes / eigen_refinement_steps. Selftest solver_arpack_cudss (gpu; skipped without nvmath; fails
-  when a mixed factor fell back).
-- Not yet: a device ARPACK loop, a device-memory estimate of the factor. Multi-rhs solves were measured and do not pay
-  (factor read bandwidth-bound per rhs): no block Krylov.
-- `eigsh_shifted(stiffness, mass, shift, n, start, row_scale=None)`: cuDSS equilibration defaults to (|diag K| + |sigma|
-  |diag M|)^-1/2 (never cancels); SuperLU of K - shift M (real: float64; complex Hermitian stays complex128 via eigs mode
-  3); returns the factor; singular raises RuntimeError (caller words it). Factor and eigsh use sigma = shift (1 +
-  EIGSH_SHIFT_RELATIVE_OFFSET 1e-4), so a target on a resonance is not singular; a zero shift gets no offset (rigid-mode
-  checks keep K SPD; only an unchecked mechanism is singular, modal.py words it).
-- `eigs_shifted(...)`: complex symmetric K with real semi-definite M (solid_mechanics_3d resistive_load): same sigma and
-  equilibration, complex `factorize_host(symmetric=True)`, eigs on (K - sigma M)^-1 M, lambda = sigma + 1 / theta (theta
-  = 0 -> NaN). Not for a Hermitian pencil (eigsh_shifted keeps M-orthogonality). A caller's `pencil=` keeps its own
-  `symmetric` flag: a ShiftPencil(symmetric=False) factors by LU (modal.ModalPencil does so for a damped pencil reduced
-  by a complex Bloch P: P^H A P of a complex symmetric A is neither symmetric nor Hermitian).
-- 'auto': the role's `auto_back_ends` (`eigen_role(auto_factorizations=)`) on the gpu with nvmath, else superlu (the
-  runtime maps an unresolved auto to superlu). A runtime resolved from auto falls back to SuperLU for good on
-  CUDSS_REFUSALS (factorize_host, the ShiftPencil device path, the deferred check inside eigsh_shifted / eigs_shifted;
-  counter eigen_auto_fallbacks) and counts a Hermitian pencil by a counting SuperLU (`_superlu_count`). A caller's
-  `fallback_refusal` hook (n_unknowns -> '' or a reason, asked only when a fallback would happen) turns that fallback
-  into a RuntimeError with the remedy (A4: em_fdfd_3d tetrahedra above `NEDELEC_SUPERLU_SLOW_BYTES` of counted fill,
-  where SuperLU takes tens of seconds to minutes). Opted in:
-  solid_mechanics triangles (cudss), solid_mechanics_3d tetrahedra (cudss), em_fdfd_conical (cudss), em_fdfd_3d
-  (tensor, tetrahedra: cudss_mixed, the polished path of solve_resonances; Bloch: a general LU refined to 1e-12); other em /
-  membrane / eme eigen roles stay superlu (own-factor and SuperLU-inertia consumers, unchecked).
-- Several shifts: eigsh_shifted / eigs_shifted / factorize_host take `previous=` (cuDSS refactorised in place,
-  `last_plan_reused`; SuperLU ignores it). Only because the shifted operator is built by `pattern_combination((K, M), (1,
-  -sigma))` (root "Solver contract"): any new caller combining a pencil for a reused factor goes through it.
-- `ShiftPencil` (`shift_pencil`): terms on one pattern once (M and the diagonals placed by `merge_positions`, a
-  row-parallel numba merge, host twin 'solvers.pattern_merge', self-test solver_pattern_merge_numba; a global key
-  searchsorted took 1.7 s on a 3D P2 pencil); host route M products for ARPACK by `mass_product` (numba prange CSR
-  product, host twin 'solvers.csr_product', from MASS_PRODUCT_MIN_ENTRIES; scipy's is single-threaded) through
-  `mass_operator`; SuperLU one-pass host combination per shift; cuDSS a
-  DevicePencil + `factorize_pencil` on a private SparseDirectSolver (eigen_cudss_plans / eigen_double_fallbacks /
-  eigen_cudss_reused_orderings / eigen_cudss_plan_seconds folded in; `eigen_reused_orderings` is SuperLU's order count,
-  not cuDSS's). count_below / eigsh_shifted / eigs_shifted take `pencil=` to keep it across shifts. `device_mass()` uploads
-  the host M on its own pattern (a vector FEM mass: a third of the pencil pattern), not the pencil's mirrored M term.
-- Inertia (Sylvester; real symmetric / Hermitian with M positive definite, or semi-definite with a fixed massless block
-  such as piezo phi: then only count differences are meaningful): `eigsh_shifted(..., inertia=True)` appends
-  `ShiftInertia(sigma, n_below, exact)` at the offset sigma; `count_below(K, M, sigma, previous)` at sigma itself
-  (singular: retried once at sigma (1 + COUNT_SHIFT_NUDGE); a refreshed DevicePencil factor is probed at once,
-  `factorize_pencil(defer_check=False)`: a count never solves, so a deferred check would never judge the pivots it
-  reads). Sources: `CudssFactorization.inertia()` (real LDL^T / Cholesky only; None for LU, complex symmetric and
-  symmetrizer factors; exact False when `factor_precision` is mixed, so a double fallback counts as exact) and
-  `Factorization.inertia()` (U diagonal signs, valid only when perm_r == perm_c, else an extra counting SuperLU with
-  diag_pivot_thresh 0). A Hermitian pencil on cuDSS has no count. Counting factorisations count in
-  eigen_factorizations: a time recipe pricing a band search counts them there.
+Algorithms, constants and their measurements (several shifts and ShiftPencil, inertia counts, device / host
+Krylov-Schur, warm starts, the restart cap, shift offsets): arpack_shift_invert.py header and docstrings; cuDSS
+internals: cudss_factor.py header; MUMPS / PARDISO: section "host_direct"; nvmath / cuDSS API notes and measurements:
+`nvmath_guide.md` (repo root). Rules across files:
+- Tolerance floors (`tolerance_floor=`; grep `ARPACK_TOLERANCE_FLOOR`, each with its reason at the constant) only
+  where nothing needs round-off eigenvalues: PML / CPML problems whose PML-mode clusters run into MAX_RESTARTS at
+  machine precision, Rayleigh-polished solves. Everything else passes 0 (machine precision).
+- 'auto' -> cuDSS only where a role sets `eigen_role(auto_factorizations=)` (grep it): a CudssFactorization has no
+  transposed LU solve, no recycling and no inertia of an LU / complex factor, so only roles whose consumers all cope
+  get it; the rest stay superlu (unchecked). A runtime resolved from 'auto' falls back to SuperLU for good on
+  CUDSS_REFUSALS (`_fall_back`), unless the caller's `fallback_refusal` hook gives a reason (em_fdfd_3d tetrahedra:
+  SuperLU would take minutes at that fill), which then raises with the remedy.
+- cuDSS memory items (this role and sparse_direct): only through the cudss_factor helpers: per plan
+  `operator_copy_bytes` + `solve_buffer_bytes` (kept), `solve_peak_bytes` as a transient (CUDSS_SOLVE_PHASE, or inside
+  the phase of an own factor), refreshing callers `index_map_bytes` (run item) + `refresh_peak_bytes` (transient), the
+  factor an external item from `factor_device_bytes` (a counted `FactorFill` wherever the mesh gives one). Refit the
+  factor rule from cudss_permanent_bytes / eigen_permanent_bytes and *_lu_entries, never from *_factor_device_bytes
+  (those include the pool copies the estimators book as items: counted twice).
 
 ## block_eigen (`BlockEigenSolver`; role 'eigen', opt-in)
-- Factor-free LOBPCG of the lowest eigenpairs of a symmetric pencil on caller block callbacks (module notes: layout,
-  the five steps of an iteration, mixed phases). Opt-in only: SolverType `opt_in_roles=('eigen',)` and the physics'
-  role from `definition_helpers.eigen_role(block_eigen=True)` (operator 'spd', precisions double / mixed,
-  opt_in_types ('block_eigen',)); grids ('tensor',), so a tetrahedra / triangle physics with that role misfits it.
-  Today: solid_mechanics_3d on brick meshes (`ElasticSystem3D._lowest_modes_block`). A new consumer: an 'spd' eigen
-  role with block_eigen=True, a dispatch on `isinstance(eigen_solver, BlockEigenSolver)` where it calls the eigen
-  runtime, its validation of what LOBPCG cannot do (interior targets, bands, zero eigenvalues: the relative residual
-  divides by |lambda|), and memory / time items (below).
-- Callback contract: `(rows_in, rows_out)` on C-contiguous (m, n) row blocks of the backend array module, float32 or
-  float64 (mixed calls both: keep an operator copy per dtype), rows_out written, never aliased with rows_in; rows_in
-  may be the runtime's scratch (the preconditioner's input rows are overwritten afterwards). With a `mask` every row is
-  0 outside it and K / M must keep that (masked products); the runtime masks the preconditioner output itself. The
-  preconditioner must be SPD (a symmetric V-cycle, block Jacobi), not exact: no inner solves, no tolerance coupling.
-  A callback gets every row of a step in one call and must run them in ONE launch (a per-row loop of single-vector
-  launches is latency-bound and leaves the GPU idle: the reason the Lanczos path does not load it): solid_mechanics_3d
-  uses the `*_rows` kernel entries (one thread per (row, node)) and `multigrid3d.BlockCycle`.
-- Only the wanted rows must converge; the guard rows widen the search space. A consumer asks exactly the eigenpairs
-  it keeps (no ARPACK-style margin such as EXTRA_EIGENVALUES on top: that only adds pairs to converge).
-- Memory: 9 b n values of the phase dtype (S, KS, MS of (3 b, n); b = wanted + guards) + CHUNK_BYTES scratch, nothing
-  else of that size: every block product runs by column chunks in place (`_rotate`, the W projection), compaction is
-  forward row copies, the start rows are drawn row by row on the gpu. Mixed frees the float32 stores before the
-  float64 ones (the float32 X is the only copy held across): `block_eigen.block_bytes` is the estimate item (a
-  transient of the eigen solve; the consumer adds its own copies, e.g. float32 operator copies and a private
-  multigrid hierarchy). Host: the k eigenvectors only.
-- Syncs per iteration: two host reads (residual norms, Gram pair) and one small upload (the rotation coefficients);
-  the block callbacks stay asynchronous. The Rayleigh-Ritz is a host eigh of
-  (3 b)^2 (diag(B)^-1/2 scaled, B eigenvalues below DROP dropped: dependent W / P directions near convergence).
-- Mixed: float32 to max(tolerance, SINGLE_PHASE_TOLERANCE) or a STALL_ITERATIONS stall (the float32 floor of the
-  products is ~eps32 lambda_max / lambda: ~1e-3 on fine 3D elasticity, so the float64 phase is always needed for tight
-  tolerances; it starts from the float32 X with a fresh P). Double stalls over DOUBLE_STALL_ITERATIONS stop
-  unconverged (tolerance below the float64 floor), with a warning. A stall counts only once the worst wanted residual
-  has been below STALL_ARMED_RESIDUAL: the O(1) start-up plateau of a weak preconditioner is no rounding floor (it
-  runs to the iteration cap instead). The cap is the node's max_iterations, else DEFAULT_MAX_ITERATIONS (never a
-  linear CG limit).
-- Fewer free unknowns than DENSE_MAX_RATIO x b: a dense scipy eigh of the applied K and M (`eigen_dense_solves`).
-- Counters: eigen_solves, eigen_iterations / _single_ / _double_iterations, operator_applications (K rows),
-  mass_applications, preconditioner_applications, eigen_seconds, eigen_unconverged, eigen_dense_solves,
-  eigen_block_size, eigen_last_residual. Time recipe `block_eigen.time_estimate`: per iteration and row the caller's
-  product_ops (K and M) + preconditioner_ops, block passes, DenseFlops (single for the mixed share), 2 syncs;
-  iterations a priori (multigrid: MULTIGRID_ITERATIONS_PER_DECADE x decades, flagged by work.setup_ops; Jacobi:
-  sqrt(kappa) or CG_ITERATIONS_PER_AXIS_CELL x longest axis): uncalibrated guesses.
-- Not yet: warm starts across sweep values / assemblies, hard locking (converged rows leave X), a fused residual +
-  norm kernel, dropping unconverged pairs from the result (today returned with a warning), FEM pencils (tetrahedra /
-  triangles: SA-AMG of K + tau M as preconditioner), Maxwell (gradient-space projection + auxiliary-space
-  preconditioner).
-- Self-tests: solver_block_eigen_cpu_gpu (synthetic 3D Laplacian pencils, both backends and precisions, mask, Jacobi
-  callback, dense path, counters); solver_default_precision rows eigen_* (role resolution, mixed keeps multigrid);
-  model runs: mechanics sub file "Self-tests".
-- Open estimator gaps (profiled 2026-11-17): mixed under-books the device peak by ~3·3b·n·4 B on large meshes (the
-  float32 stores stay cached in the pool when `_to_double` allocates the float64 ones: reuse one flat float64 buffer
-  per store instead); the chunk scratch is booked as a flat 2·CHUNK_BYTES whatever n (over-books small meshes); the
-  time recipe never prices a private multigrid build (`work.setup_ops` is only a flag), only the shared one through pcg.
+Layout, iteration, mixed phases, stall rules, the dense path and the callback contract: block_eigen.py header,
+`lowest`, `block_bytes`, `time_estimate`.
+- Opt-in only: SolverType `opt_in_roles=('eigen',)`, offered by `definition_helpers.eigen_role(block_eigen=True)`
+  (operator 'spd', precisions double / mixed); grids ('tensor',), so a triangle / tetrahedra physics misfits it. A new
+  consumer (today: grep `block_eigen=True`): such a role, a dispatch on `isinstance(eigen_solver, BlockEigenSolver)`
+  where it calls the eigen runtime (`ElasticSystem3D.lowest_modes`), block callbacks of one launch each, exactly the
+  eigenpairs it keeps (no EXTRA_EIGENVALUES margin), validation of what LOBPCG cannot do (interior targets, bands, zero
+  eigenvalues: the relative residual divides by |lambda|), memory (`block_bytes` + its own operator copies and
+  preconditioner) and time items (product_ops, preconditioner_ops; setup_ops flags a caller-built multigrid).
+- Not yet: warm starts across sweep values / assemblies, hard locking, a fused residual + norm kernel, dropping
+  unconverged pairs (returned with a warning), FEM pencils (tetrahedra / triangles: SA-AMG of K + tau M), Maxwell
+  (gradient-space projection + auxiliary-space preconditioner); the time recipe never prices a private multigrid build
+  (`work.setup_ops` is only a flag).
 
 ## Tried and dropped
 Three opt-in solvers, profiled on 2026-11-17 and dropped. Code: tag `archive/four-new-solvers`; the latest version

@@ -2014,6 +2014,7 @@ class CudssFactorization(ProbedFactor):
         self.device_bytes = self._permanent_bytes + operator_bytes
         probe = self._probe_vector()
         refinement = ('float32' if self.real else 'complex64') + ' + float64 GMRES refinement'
+        # log texts read it: mode infos' factor_kind (em_modes solve_summary branches on the 'cuDSS' prefix)
         if self.mixed_factor:
             self.description = f'cuDSS {kind_text} {refinement}'
         elif self._mixed_rejected:
