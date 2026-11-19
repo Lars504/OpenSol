@@ -894,7 +894,8 @@ def lagrange_entries_per_dof(mesh, order) -> float:
 
 
 def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
-                           refactorizes=False, active_fraction=1.0, kept_terms=True) -> MemoryEstimate:
+                           refactorizes=False, active_fraction=1.0, kept_terms=True, *, precision,
+                           mixed) -> MemoryEstimate:
     """FEMDiffusionSystem + its physics on a TriangleMeshEstimate (fem_system_estimate; SuperLU fill FEM_FILL_FACTOR on
     the 2D heuristic; direct: direct_factor_item); cudss = the 'linear' cuDSS back end (cudss_back_end) or None;
     kept_terms False: a system of its own without KeptTerms / SlotSum / ReducedSplit (magnetostatics on triangles)."""
@@ -906,7 +907,8 @@ def fem_diffusion_estimate(mesh, order, element_fields, nodal_fields=1, direct=F
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 2, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
-                               host_direct=host_direct_name(direct), kept_terms=kept_terms)
+                               host_direct=host_direct_name(direct), kept_terms=kept_terms, precision=precision,
+                               mixed=mixed)
 
 
 def host_direct_name(direct):
@@ -948,12 +950,14 @@ def painted_fraction(mesh, material_names) -> float:
 
 def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element_fields, nodal_fields, dimensions,
                         direct_factor=None, multigrid=False, cudss=None, refactorizes=False,
-                        active_fraction=1.0, host_direct=None, kept_terms=True) -> MemoryEstimate:
+                        active_fraction=1.0, host_direct=None, kept_terms=True, *, precision,
+                        mixed) -> MemoryEstimate:
     """FEMDiffusionSystem[3D] and physics: float32 element state, host nodal arrays, the operator and linear solver on
     the active dofs (pcg keeps its run-backend copy, SuperLU / cuDSS / MUMPS / PARDISO take it as a temporary);
     refactorizes: per change; host_direct: the MUMPS / PARDISO back end of direct_factor (its own arrays beside the
     library factor, host_direct.solver_host_bytes) or None; kept_terms: the system keeps its terms and slot maps across
-    re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class)."""
+    re-assemblies (FEMDiffusionSystem[3D]; False for a caller's own system class); precision / mixed: the pcg's dtype
+    name and whether it runs 'mixed' (as diffusion_system_estimate; its workspace from solvers.pcg.workspace_bytes)."""
     n_active = active_dofs(n_dofs, active_fraction)
     entries = int(round(float(entries_per_dof) * n_active))
     csr_bytes = FLOAT64_CSR_ENTRY_BYTES * entries + INT32_BYTES * (n_active + 1)
@@ -983,13 +987,22 @@ def fem_system_estimate(n_dofs, entries_per_dof, local_dofs, n_elements, element
                                                  mixed=host_direct_precision(host_direct) == 'mixed')))
         build_extra = refactor_extra = csr_bytes
     else:   # pcg keeps the run-backend operator; a re-assembly makes the new copy before the old one goes
-        items.append(('FEM operator and CG vectors (run backend)', csr_bytes + 4 * FLOAT64_BYTES * n_active))
-        refactor_extra = csr_bytes
+        from ..solvers.pcg import DTYPE_PRECISIONS, PRECISION_DTYPES, workspace_bytes   # numpy only
+        pcg_precision = 'mixed' if mixed else DTYPE_PRECISIONS[precision]
+        value_bytes = np.dtype(PRECISION_DTYPES[pcg_precision]).itemsize   # _solve_dtype: float32 only at 'single'
+        device_csr = value_bytes * entries + INT32_BYTES * (n_active + 1)
+        jacobi = not multigrid
+        # solution + (Jacobi, not mixed: workspace_bytes counts the mixed float32 one) pcg's inverse diagonal
+        vectors = (1 + int(jacobi and not mixed)) * value_bytes * n_active
+        items.append((f'FEM operator, solution and CG workspace (run backend, pcg {pcg_precision})',
+                      device_csr + vectors + workspace_bytes(n_active, pcg_precision, jacobi=jacobi,
+                                                             csr_entries=entries)))
+        refactor_extra = device_csr
         if multigrid:
             from ..solvers import multigrid as amg
             items.append(('multigrid hierarchy (operators, prolongations, vectors)',
-                          amg.hierarchy_bytes(n_active, FLOAT64_BYTES, entries_per_dof)))
-            build_extra = amg.setup_extra_bytes(n_active, FLOAT64_BYTES, entries_per_dof)
+                          amg.hierarchy_bytes(n_active, value_bytes, entries_per_dof)))
+            build_extra = amg.setup_extra_bytes(n_active, value_bytes, entries_per_dof)
             refactor_extra += build_extra
     if refactorizes:
         transient_items.append(('refactorisation', 'FEM operator copy and solver setup (run backend)', refactor_extra))

@@ -385,7 +385,8 @@ class FEMDiffusionPhysicsBase3D(FEMDiffusionPhysicsCommon):
 
 
 def fem_diffusion_estimate_3d(mesh, order, element_fields, nodal_fields=1, direct=False, multigrid=False, cudss=None,
-                              refactorizes=False, active_fraction=1.0) -> MemoryEstimate:
+                              refactorizes=False, active_fraction=1.0, *, precision,
+                              mixed) -> MemoryEstimate:
     """FEMDiffusionSystem3D + its physics on a TetrahedronMeshEstimate (fem.diffusion.fem_system_estimate,
     uncalibrated; SuperLU fill FEM_FILL_FACTOR_3D on the 3D heuristic, MUMPS / PARDISO scaled from it:
     fem.diffusion.direct_factor_item); cudss = the 'linear' cuDSS back end or None."""
@@ -397,4 +398,4 @@ def fem_diffusion_estimate_3d(mesh, order, element_fields, nodal_fields=1, direc
                                int(mesh.n_elements),
                                element_fields, nodal_fields, 3, direct_factor=direct_factor, multigrid=multigrid,
                                cudss=cudss, refactorizes=refactorizes, active_fraction=active_fraction,
-                               host_direct=host_direct_name(direct))
+                               host_direct=host_direct_name(direct), precision=precision, mixed=mixed)

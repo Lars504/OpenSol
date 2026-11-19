@@ -356,7 +356,8 @@ def _tetrahedra_memory_estimate(settings_values, mesh, context):
     n_fields = len(MAGNETIC_3D_FIELD_NAMES) + len(MAGNETIC_3D_CURRENT_NAMES) * int(coils) + int(saturation)
     system = fem_diffusion_estimate_3d(mesh, element_order(settings_values), element_fields=n_fields,
                                        direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation))
+                                       cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
+                                       precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     loop_arrays = int(saturation) * (_SATURATION_ARRAYS + (
         _ANDERSON_STATE_ARRAYS if settings_values.get('nonlinear_method') in ('auto', 'anderson') else 0))
     own = MemoryEstimate.from_items(host_items=(

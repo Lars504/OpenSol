@@ -979,7 +979,8 @@ def _memory_estimate(settings_values, mesh, context):
         estimator = fem_diffusion_estimate if mesh.kind == 'triangles' else fem_diffusion_estimate_3d
         return estimator(mesh, element_order(settings_values), element_fields=4, direct=linear_solver_direct(context),
                          multigrid=linear_solver_multigrid(context), cudss=cudss, refactorizes=refactorizes,
-                         active_fraction=_active_fraction(context, mesh, transient))
+                         active_fraction=_active_fraction(context, mesh, transient),
+                         precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
     fields = MemoryEstimate.from_items((('T, Q, Q_ext (3 x float32)', 3 * FLOAT32_BYTES * int(mesh.n_cells)),))
     precision = linear_solver_precision(context)
     # flux: heat_flux_magnitude (renderer reads, snapshots, error_indicator) after a solve; backend: where a multigrid

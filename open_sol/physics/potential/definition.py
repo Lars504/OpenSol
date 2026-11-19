@@ -99,7 +99,7 @@ _GEOMETRY_PARAMS = {
         'Charges of voltages and terminals are those of the whole ring, in coulombs.'),
 }
 _NEWTON_SCALE_TEXT = 'kB T / (e max |z_i|) (the smallest over the nonlinear electrolytes; 25.7 mV for 1:1 at 298.15 K)'
-_NONLINEAR_SETTINGS = (   # damped Newton of nonlinear electrolytes (core.damped_iteration; plans_overview decision 7)
+_NONLINEAR_SETTINGS = (   # damped Newton of nonlinear electrolytes (core.damped_iteration)
     Param('nonlinear_tolerance', 'float', 1e-6, label='Electrolyte iteration tolerance', unit='1', min=0.0,
           min_exclusive=True,
           help='Damped Newton of nonlinear electrolytes: converged when a step changes V by at most this times '
@@ -879,7 +879,9 @@ def _make_memory_estimate(kind):
             estimator = fem_diffusion_estimate if triangles else fem_diffusion_estimate_3d
             return estimator(mesh, element_order(settings_values), element_fields=n_fields + (0 if triangles else 2),
                              direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
-                             cudss=cudss, refactorizes=refactorizes, active_fraction=_active_fraction(context, mesh, kind))
+                             cudss=cudss, refactorizes=refactorizes,
+                             active_fraction=_active_fraction(context, mesh, kind),
+                             precision=linear_solver_precision(context), mixed=linear_solver_mixed(context))
         if context.spec.is_3d:
             return MemoryEstimate()
         n_waveforms = _driven_waveform_count(context.physics_spec) if spec.with_ions else 0

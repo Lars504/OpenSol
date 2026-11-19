@@ -237,270 +237,96 @@ A new accepted sync joins this list.
   study duration). The row's apply hands each point to the physics' `add_probe` as a one-object selection, so
   add_probe keeps its single-object rule.
 
-## Run-time estimate (`time_estimate` pure Python, `time_profile`; time_estimation_plan)
-- Ops carry sizes only (bytes, rows / nnz, unknowns, flops, calls); `price` maps each to one profile curve:
-  Elementwise -> 'fused' ('fused_numba' on the cpu when measured) at max(launches x the curve at bytes / launches, the
-  curve at all bytes): the curve repeats one call on arrays of its size (cache-hot below the cpu L2 / L3 cliffs), while
-  an op's launches stream distinct arrays, so an op's bytes are the distinct bytes all its launches move (a loop over
-  the same small arrays is a count of single-launch ops, not launches). Spmv 'spmv', Reduction 'dot' (+ sync on
-  read_back), Transfer 'transfer' and Sync only on the gpu, HostLU / HostSolve 'host_{lu,solve}_{2,3}d[_complex]' (no
-  complex curve: COMPLEX_LU_FACTOR x the real one), DenseFlops 'gemm' / 'host_gemm' (float64 products; `single`:
-  'gemm_single', complex64 products at 8 n^3 real flops: consumer GPUs run them far above the float64 rate),
-  BlockInverse = dense complex inverses, which do not follow the product rate (cuBLAS batched LU): one batched call on
-  'block_inverse[_single]_<b>' (seconds over the batch at BLOCK_INVERSE_SIZES, log-log interpolated in the block size)
-  or `looped` one matrix per call on 'matrix_inverse[_single]' (over MATRIX_INVERSE_SIZES), HostStream 'host_stream',
-  PythonCalls 'python_call', DevicePlan / DeviceFactor / DeviceSolve 'cudss_{plan,factor,solve}_<d>d[_mixed]' (x
-  scale; only 2D curves exist; DeviceFactor.device_values: 'cudss_factor_<d>d_device[_mixed]', the host curve on an
-  older profile without it). A new op needs its curve in run_profile (or prices from an existing one); a profile
-  lacking a curve moves the item to not_estimated.
-- cuDSS curves (gpu, nvmath installed; `_cudss_curves`, {} on any failure): complex symmetric 5-point Laplacians
-  (+0.1j, CUDSS_AXES cells per axis) through `sparse_direct.cudss_factorization(symmetric=True)` as the engines call
-  it: plan = a fresh factor's plan_seconds (best of 2, double only: one curve for both precisions), factor =
-  refactorisation on the kept plan (previous=: host equilibration, symmetry check, value upload, factorise, probe),
-  factor_device = the same plan refreshed by `SparseDirectSolver.factorize_pencil` (DevicePencil; mixed check deferred
-  to the solve; E7: ~4x below the host path in double, ~13x in mixed), solve = solve_host of one vector (mixed: refined
-  to full accuracy). Real operators and other fills are the caller's scale (sparse_direct.cudss_2d_ops), never extra
-  curves. `library_versions('gpu')` records nvmath and the nvidia-cudss wheel, so a cuDSS update invalidates the gpu
-  profile.
-- `MachineProfile.seconds`: log-log interpolation; below the first point its seconds (latency floor), above the last
-  at least linear growth. run_profile makes curves non-decreasing (`_monotone`: each point clamped down to the next
-  larger one, never up, so a slow first call cannot lift a curve); every benchmark has a warm-up call
-  (`_best_seconds`; host factorisations best of 2). `_best_seconds` sizes its batches from a short doubling probe so
-  each lasts ~minimum_seconds: never grow batches in x4 steps (a call just under the threshold quadrupled the task's
-  wall time without changing the measurement). The progress lines are task wall seconds, not measured values. Each benchmark times the kind of call the engines make (gpu 'dot' =
-  pcg's multi-block `device_vector_dot`; the study max-abs checks and harmonic FDTD energies reduce axis-first, ~1.5x
-  that curve at 1e6 values; 'fused' = an ElementwiseKernel / numpy expression twins): an engine switching to another
-  primitive needs its own curve.
-- Stored profiles are invalidated by any edit of time_profile.py or of the solver code its curves time (`code_hash` of
-  time_profile.py + `_TIMED_SOURCES`: solvers/sparse_direct.py, cudss_factor.py) or other library versions: editing the
-  benchmarks or the cuDSS routes forces every user to re-profile. `library_versions` lists only what the backend's
-  benchmarks run (numba on the cpu only: installing numba invalidates just the cpu profile, whose re-run then measures
-  'fused_numba'); the load reason names the changed libraries. `run_profile(save=False)` for tests. Estimates still
-  price on an out-of-date stored profile (`model.time_estimate.stored_profile`: `outdated=True`, text "(outdated gpu
-  profile)", `TimeEstimate.outdated_text`); only the `time_profile_current` selftest judges it (kept out of this file so
-  the fallback itself does not invalidate profiles).
-- Profile tasks are the `report(text)` calls: each task's wall seconds go to `task_seconds` keyed by that text, and the
-  progress line compares them with the stored file's (read raw, ignoring code_hash / versions). Renaming a progress
-  text drops its previous time.
-- Shared recipes: `explicit_step_estimate` (per step the memory estimate's gpu_steady read once + write_fraction
-  written; frequency_domain also gpu_run; numba_items / numba_launches split the kernels with numba twins from the
-  numpy-twin rest, priced 'fused_numba' / 'fused' on the cpu: an engine giving another kernel a numba twin widens its
-  predicate); `diffusion_time_estimate` (the 'linear' role, assembly, right-hand side, solution update and probe
-  samples, counted by the role's factorizations / solves counters (a refresh_diagonal / refresh_capacity counts as an
-  assembly); transient vs quasi-static vs coupled stepping; a fixed-point / nonlinear series = one cold solve + warm
-  ones; `held` = the type's `HeldValues`, turned into SolverWork.jacobi_condition / distinct_modes by
-  TimeContext.jacobi_conditioning): a new DiffusionSystem type passes its HeldValues.
+## Run-time estimate (`time_estimate` pure Python, `time_profile`)
+- Ops carry sizes only; `price` maps each to its profile curve (the op docstrings name them). An Elementwise op's bytes
+  are the distinct bytes all its launches move (launches stream distinct arrays, priced at the rate of their total:
+  the curve repeats one cache-hot call); a loop re-reading the same small arrays is a multiplicity of single-launch
+  ops, not launches. A kernel bound by arithmetic also counts `flops` (gpu 'arith_float<bits>'); complex64
+  DenseFlops count 8 n^3 real flops. A new op needs its curve in run_profile (or prices from an existing one); a
+  profile lacking a curve moves the item to not_estimated.
+- Each benchmark times the kind of call the engines make (gpu 'dot' = pcg's multi-block `device_vector_dot`; the study
+  max-abs checks and harmonic FDTD energies reduce axis-first, ~1.5x that curve at 1e6 values; 'fused' = an
+  ElementwiseKernel / numpy expression twins; cuDSS = `sparse_direct.cudss_factorization` as the engines call it): an
+  engine switching to another primitive needs its own curve. Real operators and other fills are the caller's `scale`
+  (`sparse_direct.cudss_2d_ops`), never extra curves.
+- `code_hash` covers time_profile.py and `_TIMED_SOURCES` (solvers/sparse_direct.py, cudss_factor.py): any edit there
+  forces every user to re-profile, so code that is not a benchmark lives elsewhere (the outdated-profile fallback is
+  `model.time_estimate.stored_profile`). Progress texts key `task_seconds`: renaming one drops its previous time.
+- Shared recipes: `explicit_step_estimate` (an engine giving another kernel a numba twin widens its `numba_items`
+  predicate) and `diffusion_time_estimate` (a new DiffusionSystem type passes its `held` HeldValues; a
+  refresh_diagonal / refresh_capacity factorises, so the role counter counts it as an assembly).
 - `time_check` groups items by `seconds_counter`; an item without one joins 'study' = study_seconds minus every counted
-  group, so a role timer must not also sit inside another group's timer (mechanics eigenfrequency clears its eigen
+  group, so a role timer must not also sit inside another group's timer (mechanics 3D eigenfrequency clears its eigen
   items' seconds counter: the PCG timer already holds them).
 
-## Damped iteration (`damped_iteration`; plans_overview decision 7)
-- The one loop driver of nonlinear DiffusionSystem physics (electrostatics Poisson-Boltzmann Newton, magnetic B-H fixed
-  point); no solver role, its knobs are physics settings. Array-module agnostic (numpy + core.backend.array_module_of).
-- `DampingSettings(tolerance, max_iterations, relaxation, max_step, min_relaxation, anderson_depth=0)` (frozen,
-  validated); `DampedIteration(settings, label).run(state, propose, scale) -> converged`: `proposal = propose(state)`
-  must be a new array, never a view of state (the caller re-assembles / re-solves inside it); `change = max |proposal -
-  state| / scale` (float or broadcastable array, e.g. V_T or |nu|; the one host sync); stop when change <= tolerance
-  with `state[...] = proposal`, else `state += factor (proposal - state)`, factor = relaxation x min(1, max_step /
-  change); relaxation halves (to min_relaxation) while the change grows, doubles back once it shrinks. Convergence uses
-  the undamped change (a small relaxation never fakes convergence). Non-finite change raises FloatingPointError.
-- `anderson_depth` m > 0 (magnetic B-H default): Walker-Ni Anderson mixing instead of the halving, step = beta f - (dX +
-  beta dF) gamma, gamma the least squares of f / scale on the last m differences, beta = relaxation fixed, max_step caps
-  the mixed step (one extra sync when finite); history (3m + 3 state-sized arrays) lives for one `run`; one transfer of
-  the (m + 1) x m Gram products per iteration; the step is two GEMVs of gamma over the ring rows (no per-row loop), and
-  only the newest weighted df row is rebuilt while `scale` is the same array object (or an equal number): a scale
-  array must not change in place during one run. The state must stay meaningful under linear combinations (magnetics
-  mixes ln nu, not nu). `AndersonHistory` is also the stationary study's loop-back acceleration (model sub file).
-- Record: `n_runs`, `total_iterations`, `last_iterations`, `last_change`, `last_converged`, `n_unconverged`,
-  `last_warning` (never cleared; an unconverged run returns False and keeps the damped state: the caller appends the
-  warning to its `runtime_warnings`); `work_counters()` -> nonlinear_runs / _iterations / _unconverged (merge into the
-  physics' `work_counters` only when the loop is in use).
+## Damped iteration (`damped_iteration`)
+- The one loop driver of nonlinear DiffusionSystem physics (potential electrolyte Newton, magnetic B-H Picard /
+  Anderson); its knobs are physics settings, never a solver role. A caller whose run returns False (unconverged, the
+  damped state kept) appends `last_warning` to its `runtime_warnings`; its `work_counters` merge the loop's only once
+  the loop ran.
+- Anderson mixes states linearly: the state must stay meaningful under linear combinations (magnetics mixes ln nu, not
+  nu), and a `scale` array must not change in place during one run (the weighted history rows are kept by identity).
 - A Picard on a coefficient (magnetostatics B-H nu) keeps the state in the physics, not in a material array (that holds
-  the curve's parameters): the assembly reads the state array, `propose` assembles, solves and returns nu(|B|), and
-  `scale` may be the state itself.
+  the curve's parameters): the assembly reads the state array, `propose` assembles, solves and returns nu(|B|).
 
-## DiffusionSystem (`fv_diffusion`, used by heat and potential)
-- `DiffusionPhysicsBase(PhysicsSolver)` is the shared wrapper (delegated tol / max_iter / compute_residual and
-  convergence record, `set_face_bc`, `add_boundary_flux` into `_applied_source_window`, probes, PML edge extension via
-  `_bind_window`); subclasses call `_init_diffusion` in `__init__` and set `_probe_field` / `_probe_label`. Plain
-  attributes on a physics never reach the system: add new settings as properties here.
-- Snapshot solutions: `DiffusionSystem.solution_state` / `restore_solution` (unknown, face rhs terms, dirty marks)
-  are tied to `n_assemblies` (bumped per full assembly in `_keep_assembly`): a state of another assembly dirties the
-  operator instead of restoring the terms, so a read re-assembles from the owner's restored inputs (heat sub file).
-- `assemble` caches face conductances, outer face terms, owned c_xx / c_yy copies (`assembled_c_xx / _yy`) and, with a
-  2D cross term, `cross` (`CrossQuads`); `flux_at_centres` (= `axis_flux_at_centres` + `cross_flux_at_centres`) /
-  `dissipation_density` read only that cache and raise while `operator_dirty` (`heat_flux_magnitude` re-assembles
-  first; potential calls them right after a solve, E = -grad V from the axis part alone, J / D from both).
-  `flux_jump_indicator(flux)` (S7.7 A2, `DiffusionPhysicsBase.error_indicator`) reads the same cache: a physics whose
-  shown flux is not the system's (potential driven terminals, magnetic H with remanence, the AC phasor) passes it via
-  `_indicator_flux`.
-- Fused re-assembly (`fv_diffusion_fused`; `FUSED_REASSEMBLY`, per system `fused_reassembly`): an assembly on the kept
-  plain 5 / 7-point pattern (no phi wrap, c_xy term, insulated cut-cell walls or held edges; window-shaped c and C/dt)
-  runs two grid-stride `real_raw_twin` kernels instead of build_laplacian + the elimination glue: entries (CSR values in
-  the `_SlotLayout` order, interior / outer-face conductances and rhs into one buffer each, held / pinned masks, fixed
-  values, rhs drive) and elimination (A_solve, Jacobi, rhs offset, fixed cells of the unknown); the anchor check sits
-  between them. Arithmetic order = build_laplacian's (geometry as packed 1D factors, unit factors exact), so it differs
-  only by FMA / summation rounding (selftest diffusion_fused_reassembly, cpu twins and gpu kernels vs build_laplacian).
-  The first assembly (no pattern) and every other case take the build_laplacian path. A new operator term either goes
-  into both paths or makes `_fused_reassembly_applies` refuse it; `_keep_assembly` stores what both paths keep.
-  Run-time estimate: `diffusion_time_estimate` prices re-assemblies at the fused launch count.
-- c_xy cross term (`build_anisotropic_laplacian`): per interior vertex, energy c_q/2 [(u_NE - u_SW)^2 - (u_NW -
-  u_SE)^2], exact for linear u over the rectangle between the four centres on any widths; c_q = area-weighted mean c_xy
-  of that rectangle, 0 unless all four conduct (c_xx, c_yy > 0) or are held; it adds +-c_q/2 to the diagonals, so every
-  row sums to 0 (selftests heat_cross_conduction_box_graded, heat_cross_conduction_graded_convergence). No cross flux
-  through outer faces; never drop the diagonal part (row sums then act as a spurious exchange with u = 0 at window /
-  region corners). Definiteness on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis (r = neighbour
-  width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) at the first assembly
-  and again only after `cross_term_dirty` is set (heat / potential `materials_changed` of the xy array): a script
-  writing the xy array in place must call `materials_changed` too. Post-processing uses the same quads (`cross_quads`):
-  cross flux averaged over the cell's quads, cross energy split by area share (held corners' shares to the free ones),
-  so the dissipation integral is the operator energy (selftest heat_cross_flux_dissipation).
-- Linear solve by `system.linear_solver` (a `solvers.pcg.PCGSolver`, factorized at every `assemble`; it holds the
-  convergence record and work_counters, the system's tol / max_iter / compute_residual / last_* are properties on it;
-  precision via `pcg.DTYPE_PRECISIONS`). The model path injects the build's 'linear' solver (`linear_solver=`: its
-  precision wins, its counters are the summary 'solvers' role record; neither the system nor DiffusionPhysicsBase has
-  work_counters). Stop reference: ||b|| in a steady solve, the step's initial residual when `capacity_over_dt` is set
-  (PHY-1, floored at ~16 eps ||b||); float32 stalls near 1e-6 (default float64); unconverged solves set `last_warning`
-  (never cleared) and `n_unconverged`. CG solves for u - u_fix (0 on fixed cells, `_solution`), so b holds only [c u]
-  drives: never put held values [u] into b (against eps0-scaled rows the tolerance then stops CG after a few
-  iterations). An injected sparse_direct runtime (a node, or the cpu Automatic) is wrapped in
-  `solvers.sparse_direct.DiffusionDirectSolver` (PCGSolver protocol over one real float64 host SuperLU per assembly;
-  tol / max_iter unused, compute_residual honoured). PCG details: solvers sub file. On the gpu a PCGSolver whose
-  preconditioner is in `CAPTURED_PRECONDITIONERS` (Jacobi and multigrid: the V-cycle kernels launch into the block's
-  capture, solvers sub file "pcg") is factorized with capture_blocks (`_factorize_solver`): every array a CG block reads
-  (A_solve data, inverse_diagonal, the solution vector, the multigrid hierarchy) may change only together with a new
-  factorize. A 2D tensor time_dependent study runs sparse_direct by Automatic (solvers sub file "Model path").
-- `BCSide(conductance_factor=f)` (dirichlet / robin, default 1) scales that face's half-cell conductance 2 c / w in
-  `fv_diffusion_3d.boundary_face_terms`, so assembly, anchors, flux, dissipation and `face_inward_flux` stay consistent
-  (magnetic axis: 2, the exact half cell of psi with c = nu / r).
-- Anchors: `require_anchors` (default True) gates `_check_anchors` in `assemble`; only heat in a thermal_noise study
-  clears it. `assemble(check_anchors=False)` skips it for one assembly: only for a caller that changed coefficient
-  values but not which c are > 0, nor held cells or faces (the magnetic B-H iterations after a loop's first).
-  `mark_coefficients_changed()` (heat / potential `materials_changed` of the coefficient arrays: k(T), sigma(T)) dirties
-  the operator like `operator_dirty = True` but marks a coefficient-only change (cleared by every other dirtying, as
-  the diagonal-only mark): the next assembly then runs `positive_pattern_moved` (c > 0 per component and C/dt > 0
-  against the last assembly, one reduction) and the full check only when a cell moved (gpu + PCG: read at the next
-  solve, as `_pending_anchor_check`; not while an older check is still pending; `n_anchor_shortcuts`). The check
-  computes a per-cell uint8 anchor code (`_anchor_code` twin: c_xx / c_yy / c_zz > 0, held, fixed, loss, C/dt > 0,
-  outer face conductance > 0) and labels the link graph (`_label_anchors`, 2x resolution) only when it differs from
-  `anchor_signature` (the first assembly always labels). On the gpu with a PCGSolver the comparison is
-  `_pending_anchor_check`, read at the start of the next `solve()` (no sync of its own), so a floating region raises
-  from that solve; a direct solver or the cpu checks in `assemble`. A new input of the labelling needs its bit in the
-  code.
-- Diagonal losses live in `extra_diag` [c] / `extra_rhs` [c u] (x cell_area; a cell with extra_diag > 0 anchors;
-  `fixed_region_outflow` counts them): `add_diagonal_loss` accumulates (heat convection), `set_diagonal_loss` replaces
-  on its mask (the replaceable diagonal of an iterated term: potential writes its whole ionic term with it at every
-  assembly, then clears held cells). Both are wiped by `prepare`.
-- `refresh_diagonal()` (Newton tangent update of an iterated loss): re-adds extra_diag (+ C/dt) to the cached
-  conduction diagonal and redoes the diagonal-dependent parts and `linear_solver.factorize`, bit-identical to a full
-  `assemble`. It returns False (the caller assembles) unless only the loss setters changed the system since the last
-  assembly (any `operator_dirty = True`, `set_fixed` or `set_face_bc` forces a full assembly) and the pinned and
-  loss-anchored cells are unchanged (one host sync). Writing `extra_diag` directly bypasses the mark: such callers must
-  always assemble. `refresh_capacity(capacity_over_dt)` (heat rho / cp or step length changes) does the same with a new
-  C/dt when the operator is otherwise current and the last assembly had a C/dt; it refuses when the C/dt > 0 cells
-  change (anchors).
-- `update_face_value(face, old_bc, new_bc)` (time-dependent feature values, `DiffusionPhysicsBase.set_face_value`)
-  replaces one outer face's rhs term of the last 2D assembly in place (neumann: `FaceGeometry.outer_face_rhs`, the
-  assembly's own formula) when kind, h and conductance_factor are unchanged
-  (a dirichlet value, neumann flux, robin external); else, stale or 3D, False and the caller dirties the operator. It
-  relies on outer faces carrying no cross (c_xy) flux.
-- `refresh_held_values()` (potential driven-terminal bases): after `set_fixed` alone on cells already held (the held
-  mask enters the face conductances, so a newly held cell needs a full assembly; detected by the held count, one sync)
-  redoes fixed_values / coupling / rhs_offset on the last assembly, no factorisation; else False and the caller
-  assembles. Combine with `update_face_value` before the set_fixed calls (it refuses once the operator is dirty).
-- Held cells (`fixed_user`: terminals, voltage / temperature perimeters, fixed_temperature_domain; not the pinned
-  empty-row cells) are ideal (c -> inf): a held-free face gets the free half cell 2 c_f L / w_f (`held=` of
-  `fv_diffusion_3d.face_conductances` / `face_lower_shares` (`_series_link` / `_lower_share`: one formula per face,
-  interior and phi wrap, 2D and 3D), passed by assembly, flux and dissipation alike), so the value sits on the held region's faces like an outer Dirichlet and a k = 0 / sigma_dc = 0
-  held cell still anchors its conducting neighbours. `flux_at_centres` is 0 in held cells (their flux is
-  `fixed_region_outflow`); a held-free face dissipates wholly in the free cell.
-- Cut-cell held edges (2D, solver_defaults.conformal_boundaries; S7.6): `set_held_wall(t_x, t_y, located_x,
-  located_y)` stores per interior face the drawn held edge at t of the centre spacing d from the free centre
-  (`held_wall`, NaN = none, reset by `prepare`; later calls win per face); `face_conductances(held_wall=)` then gives
-  c_f A / (max(t, HELD_WALL_FLOOR) d) (Shortley-Weller; shares unchanged, so flux / dissipation / outflow follow).
-  Callers: `core.cut_cells.locate_held_edges(system, region, inside)` right after `set_fixed` of a region with a drawn
-  outline (heat add_fixed_temperature, potential add_fixed_potential `inside=`). Only links leaving the region are
-  located.
-- Cut-cell insulated walls (2D: Cartesian, (r, z), polar, spherical; same option):
-  `DiffusionPhysicsBase._set_insulated_wall_locator` hands `locator.material_index` to `set_insulated_wall_test`; the
-  NEXT assembly (after features and dynamic updates) calls `core.cut_cells.locate_insulated_walls` with its conducting
-  cells: closed = neither conducting nor held; a material is insulating when most cells of its centres are closed.
-  `insulated_wall_geometry`: faces between open cells near a cut keep their free fraction (>= APERTURE_FLOOR, so the
-  link graph / anchors never change), free cut cells their free area (>= VOLUME_FLOOR) plus the free slivers of adjacent
-  closed cells, merged across the most open face (no new unknown). `set_insulated_walls(geometry or None)` stores
-  `apertures` (`build_anisotropic_laplacian(apertures=)`) and `volume_fraction` (host): `cell_area` =
-  `geometric_cell_area` x it; volumetric losses added so far (and that assembly's capacity) are rescaled by new / old
-  fractions; `dissipation_density` divides by `geometric_cell_area`, `flux_at_centres` by the full face areas,
-  `cell_volume` includes the fraction once located (point sources added before the first assembly keep the geometric
-  area). k(T) / sigma(T): every assembly with check_anchors compares its conducting cells with the located ones (one
-  sync) and re-locates on a change (`n_insulated_wall_locations`; walls follow drawn material outlines only, a material
-  switching as a whole). Selftests conformal_cut_geometry, conformal_heat_k_switch.
+## DiffusionSystem (`fv_diffusion`, used by heat, potential and magnetic)
+- `DiffusionPhysicsBase` forwards settings and the convergence record to the system (`_forwarded`): plain attributes on
+  a physics never reach it, so a new setting is a forwarded property there. The model path injects the build's
+  'linear' solver (`linear_solver=`: its precision wins, its counters are the summary 'solvers' role record; neither
+  the system nor DiffusionPhysicsBase has work_counters).
+- Post-processing (`flux_at_centres`, `dissipation_density`, `flux_jump_indicator`) reads the last assembly's cache
+  and raises while `operator_dirty` (`heat_flux_magnitude` re-assembles first; potential reads right after a solve).
+  A physics whose shown flux is not the system's (potential driven terminals, magnetic H with remanence, the AC
+  phasor) overrides `_indicator_flux`.
+- Two assembly paths: the first assembly and every wrap / c_xy / cut-cell case through `build_laplacian`, re-assemblies
+  on the kept plain pattern through `fv_diffusion_fused` (selftest diffusion_fused_reassembly). A new operator term
+  goes into both paths or makes `_fused_reassembly_applies` refuse it; `_keep_assembly` stores what both keep.
+- c_xy cross term (2D Cartesian only): never drop its diagonal part (row sums would act as a spurious exchange with
+  u = 0 at window / region corners). Definite on graded cells only for c_xy^2 < c_xx c_yy x 4 r / (1 + r)^2 per axis
+  (r = neighbour width ratio), stricter than the continuum bound. Whether c_xy is nonzero is decided (one sync) only
+  when `cross_term_dirty` is set (heat / potential `materials_changed` of the xy array): a script writing the xy array
+  in place must call `materials_changed` too.
+- CG solves for u - u_fix, so b holds only [c u] drives: never put held values [u] into b (against eps0-scaled rows the
+  tolerance then stops CG after a few iterations). Script constructors keep max_iter = 5000; the model's 0 = auto
+  (`pcg.resolve_max_iterations`, Jacobi needs ~10 iterations per cell of the longest window axis; 'multigrid' needs
+  nothing from the system).
+- Anchors: `assemble(check_anchors=False)` only for a caller that changed coefficient values but not which c are > 0,
+  nor held cells or faces (the magnetic B-H iterations after a loop's first); k(T) / sigma(T) call
+  `mark_coefficients_changed` instead (one pattern test, the full check only when a cell moved). On the gpu with a
+  PCGSolver the check is read at the next `solve()`, so a floating region raises from that solve, not from `assemble`.
+  A new input of the labelling needs its bit in the `_anchor_code` (else the cached signature skips the relabel).
+- In-place refreshes instead of a full assembly (each returns False when it cannot, and the caller assembles):
+  `refresh_diagonal` / `refresh_capacity` (losses or C/dt), `update_face_value` (a face value of t; relies on outer
+  faces carrying no c_xy flux), `refresh_held_values` (set_fixed alone on cells already held). Combine
+  update_face_value before the set_fixed calls (it refuses once the operator is dirty).
+- Held cells are ideal (c -> inf): a held-free face takes the free half cell through `held=` of
+  `fv_diffusion_3d.face_conductances` / `face_lower_shares`, which assembly, flux and dissipation all pass: a new
+  consumer of face conductances passes it too. A k = 0 / sigma_dc = 0 held cell still anchors its neighbours.
+- Cut cells (2D, solver_defaults.conformal_boundaries): held edges by `core.cut_cells.locate_held_edges` right after
+  `set_fixed` of a region with a drawn outline (heat add_fixed_temperature, potential add_fixed_potential `inside=`);
+  insulated walls located by the next assembly (`_set_insulated_wall_locator`) and again whenever its conducting cells
+  change (k(T) / sigma(T): walls follow drawn material outlines only, a material switching as a whole). Their volume
+  fractions scale `cell_area`: point sources added before the first assembly keep the geometric area;
+  `dissipation_density` divides by `geometric_cell_area`, `flux_at_centres` by the full face areas.
 - Cut-cell perimeter terms (same option; definition_helpers `outline_pieces_of`): flux features call
-  `add_boundary_flux(weights, value, outline=True)` with weights = owner sums of piece length (x 2 pi r_piece on (r, z);
-  ring_angle r sin theta on spherical) / geometric volume; the physics keeps that part (`_outline_source_window`) and
-  rescales it in its `volume_fraction_listener` (`_volume_fractions_changed`), so injected totals stay q L.
-  Convection: `add_surface_loss(mask, conductance, external, reference)` adds totals [c] to extra_diag / extra_rhs and to
-  `surface_diag` / `surface_rhs`, which `set_insulated_walls` keeps out of the rescale (`set_diagonal_loss` on the same
-  cells would drop them: no caller combines the two). Polar / spherical: on the logical cells. Selftests
-  conformal_heat_outline, conformal_polar_outline_geometry, conformal_heat_polar, conformal_currents_spherical. Accuracy:
-  perimeter terms and apertures are first order in the cell rings next to a curved insulated wall (errors ~ wall
-  gradient x cell, dipole tails a few % of the rise two cells out), exact totals beyond ~5 cells; held cut-cell edges
-  are second order. A second-order Neumann wall needs unknowns in the slivers (a true cut-cell FV); Johansen-Colella
-  face-centroid interpolation would make the operator nonsymmetric (PCG).
-- Jacobi-PCG needs ~10 iterations per cell along the longest window axis (kappa ~ n^2). pcg `max_iterations` 0
-  (default, Automatic too) = auto, resolved by `solvers.pcg.resolve_max_iterations` (max(5000, 20 x longest window
-  axis)); `cg_iteration_issues` warns for an explicit value below 10 x. Script constructors keep max_iter = 5000.
-  Preconditioner 'multigrid' (Automatic on the gpu; solvers sub file) removes that growth; DiffusionSystem needs nothing
-  for it (`linear_solver.factorize(A_solve, inverse_diagonal)` builds the hierarchy, held / pinned identity rows stay
-  out).
-- Geometry = `self.metric` (2D, `core.metric`), built in `prepare` from `domain.coordinates` and `axisymmetric`:
-  `build_anisotropic_laplacian(metric=)` takes face areas and physical widths from it (conductance A / (w_l / 2 c_l +
-  w_r / 2 c_r), Dirichlet / Robin half cells 2 c A / w), `cell_area` = its volumes, so an axis face (r = 0, theta = 0 /
-  pi) has zero conductance and rhs (any BC there is void; anchors come from face conductance > 0, never from the BC
-  kind). (r, z): totals (`fixed_region_outflow`, `face_inward_flux`) are whole-ring [c u m] (W for heat); densities keep
-  their units. c_xy raises NotImplementedError on any metric but (x, y). `cell_volume(ix, iy)` = host value of one cell
-  (point sources). `DiffusionPhysicsBase.axisymmetric` makes Session field derived values ring-weighted on a Cartesian
-  model domain (polar / spherical weight by the metric volumes; the angle is the solvers' `ring_angle`). Pinned by
-  examples mechanics/axisymmetric_heated_cylinder_thermal_stress, heat/cylinder_cooling_bessel and selftests
-  heat_polar_metric / heat_spherical_metric.
-- Azimuthal order (symmetry 2.14; `DiffusionSystem(azimuthal_order=m)`, axisymmetric (r, z) on a Cartesian domain
-  only): u is the amplitude of u_m(r, z) cos(m phi). Rings carry pi (`ring_angle`), and assemble adds
-  `azimuthal_diagonal` = c_xx m^2 / r_c^2 x cell_area (0 on held cells) to the operator diagonal BEFORE the
-  conduction-diagonal copy, so refresh_diagonal keeps it; the radial c_xx is taken along phi. It is the axis rule (u_m ->
-  0 at r = 0, no BC) and anchors every c_xx > 0 cell; `fixed_region_outflow` adds it to the row sums,
-  `dissipation_density` adds azimuthal_diagonal u^2 (so the pi-ring integral stays the total and P = sum V I holds). u =
-  r_c (m = 1) is exact on any r widths, r_c^2 (m = 2) on uniform dr; the axis cell's flux_at_centres averages in the
-  zero axis face (half the value). Selftests potential_azimuthal_transverse_field, heat_azimuthal_order_2.
-- Phi wrap (`metric.wrap_sign` s, `system.wrap_sign`): one extra face per ring between the last (j = ny-1) and first
-  angle cells, `wrap_face_conductance` (the y_hi face areas; held as interior faces), energy g (u_last - s u_first)^2:
-  +g on both diagonals and -s g in the two wrap slots of the CSR pattern (`LaplacianPattern.wrap`; ny >= 3). `build_anisotropic_laplacian` returns it as a 6th value (`system.wrap_conductance`;
-  `face_conductances` stays the in-window 2-tuple) and raises for any y_lo / y_hi condition but the insulated default.
-  Consumers: `flux_at_centres`, `dissipation_density` (the wrap share of `face_lower_shares`), `fixed_region_outflow` (an
-  antiperiodic pair's rows sum to 2 g), the anchor check (an extra link-image column, then `_join_wrapped_regions`:
-  host union-find with sign parity; an antiperiodic loop anchors its region, periodic keeps the constant null mode).
-  Multigrid needs nothing (antiperiodic +g entries are never strong links). Selftests heat_polar_wrap,
-  currents_polar_wrap.
-- One operator for 2D and 3D (`fv_diffusion_3d`: `FaceGeometry` of `metric` / `metric_3d` built once in `prepare`,
-  separable 1D face-area factors and physical lengths, never full-window area arrays; `LaplacianPattern` slot layout
-  (`_SlotLayout`: sorted neighbour displacements, + 4 c_xy corners in 2D, + 2 wrap slots), `build_laplacian`,
-  `anchor_link_graph`, `flux_at_centres`); `build_anisotropic_laplacian` is its 2D wrapper (checks, cross quads).
-  Cut-cell apertures and held-wall fractions enter `face_conductances` as one more area factor / free-half rule.
-- 3D (B3, chosen in `prepare` by `domain.dimensions`): 7-point operator,
-  window (wx, wy, wz) flat C-order, `cell_area` = cell volume, `system.faces` = FACES_3D (ScalarBoundaryConfig carries
-  z_lo / z_hi, insulated by default, ignored in 2D). `assemble(..., c_zz=)` is required; c_xy must be 0
-  (NotImplementedError), axisymmetric raises. The pattern's column order is -x, -y, -z, diag, +z, +y, +x (int32 limit
-  7 n < 2^31). Anchor check: the same
-  2x-resolution link graph (8 voxels per cell). `flux_at_centres` returns (flux_x, flux_y, flux_z);
-  `dissipation_density` raises (2D only: potential runs 3D only on tetrahedra). Probes / point cells take iz
-  (`FieldProbe(iz=)`, `require_window_cell(..., iz)`), PML edge extension via `edge_extension_views_3d`. Geometry =
-  `system.metric_3d` (`system.metric` stays None in 3D), on the device a `FaceGeometry` built once in prepare
-  (separable factors, physical lengths at most (wx, wy, 1): no full-size metric arrays), so a cylindrical sector needs
-  no other branch. Its phi wrap is the 2D one: two extra slots (`_SlotLayout`: 9, wrap columns between -x / -y and +y /
-  +x; wy >= 3), `wrap_conductance` (wx, wz), a last y voxel layer joined by `_join_wrapped_regions`. Face drives (a cell
-  vector w whose physical flux is -c (grad u - w): magnetostatics_3d remanence and coils): `face_drive_integrals_3d`
-  (held halves 0, an outer face its boundary half), `face_drive_terms_3d` (x the last assembly's conductance; Neumann
-  none), `face_drive_divergence_3d` (rhs), `face_terms_at_centres_3d`; geometry `system.geometry_3d`. `face_flows_3d`
-  (2D windows too) = operator face flows (n + 1 along each axis), `face_flow_energy_3d` = sum of flow^2 / conductance over faces touching
-  a free cell (twice the discrete energy), `centre_gradient_3d` (Cartesian; one-sided in the outer layer). Memory:
-  `diffusion_system_estimate(wrap=True)` counts the dense 9-slot build array; the CSR stays within 7 per row. Selftests
-  heat_3d_field_access, heat_cylindrical_sector_3d.
+  `add_boundary_flux(weights, value, outline=True)` with weights = owner sums of piece length (x the piece's ring
+  factor) / geometric volume, kept as totals when volume fractions change. Convection: `add_surface_loss` (totals
+  [c], kept out of the rescale; `set_diagonal_loss` on the same cells would drop them: no caller combines the two).
+  Accuracy: perimeter terms and apertures are first order in the cell rings next to a curved insulated wall (dipole
+  tails a few % of the rise two cells out), exact totals beyond ~5 cells; held cut-cell edges are second order. A
+  second-order Neumann wall needs unknowns in the slivers (a true cut-cell FV); Johansen-Colella face-centroid
+  interpolation would make the operator nonsymmetric (PCG).
+- Geometry = the window metric (`core.metric`): an axis face (r = 0, theta = 0 / pi) has zero conductance and rhs, so
+  any BC there is void and anchors come from face conductance > 0, never from the BC kind. (r, z) totals
+  (`fixed_region_outflow`, `face_inward_flux`) are whole-ring [c u m]; densities keep their units. Area factors stay
+  separable 1D (`FaceGeometry`), never full-window arrays.
+- Azimuthal order (`azimuthal_order=m`, axisymmetric (r, z) only): `azimuthal_diagonal` enters the operator diagonal
+  BEFORE the conduction-diagonal copy, so the refreshes keep it; it is the axis rule (u_m -> 0 at r = 0, no BC) and
+  anchors every c_xx > 0 cell. u = r_c (m = 1) is exact on any r widths, r_c^2 (m = 2) on uniform dr; the axis cell's
+  flux_at_centres averages in the zero axis face (half the value).
+- Phi wrap (`wrap_sign`): `wrap_conductance` is a separate value beside the in-window `face_conductances`, so every
+  consumer handles it (flux, dissipation, fixed_region_outflow: an antiperiodic pair's rows sum to 2 g; the anchor
+  check's `_join_wrapped_regions`: an antiperiodic loop anchors its region, a periodic one keeps the constant mode).
+- 3D (`domain.dimensions`): `system.metric` stays None (`metric_3d`); `dissipation_density` / `flux_jump_indicator`
+  are 2D only (potential runs 3D only on tetrahedra). Face drives (a cell vector w whose physical flux is -c (grad u -
+  w): magnetostatics_3d remanence and coils) are the `face_drive_*_3d` helpers of `fv_diffusion_3d`.

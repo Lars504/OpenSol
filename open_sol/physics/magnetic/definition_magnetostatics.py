@@ -41,7 +41,7 @@ _GEOMETRY_PARAM = geometry_param(
     'Currents circle the axis.',
     axis_text='psi = 0, exact half-cell axis conductance; a face feature on x_lo is a validation error')
 _SATURATION_TEXT = 'materials with saturation_polarization > 0 or a bh_curve'
-_NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration; plans_overview decision 7)
+_NONLINEAR_SETTINGS = (   # loop of saturating materials (core.damped_iteration)
     Param('nonlinear_tolerance', 'float', 1e-6, label='Saturation iteration tolerance', unit='1', min=0.0,
           min_exclusive=True,
           help=f'Saturation loop stop ({_SATURATION_TEXT}; ignored without one). Tensor mesh: converged when a '
@@ -682,7 +682,8 @@ def _triangle_memory_estimate(settings_values, mesh, context):
     system = fem_diffusion_estimate(mesh, order, element_fields=_N_FIELDS, nodal_fields=_FEM_NODAL_FIELDS,
                                     direct=linear_solver_direct(context), multigrid=linear_solver_multigrid(context),
                                     cudss=cudss_back_end(context.solvers), refactorizes=bool(saturation),
-                                    kept_terms=False)
+                                    kept_terms=False, precision=linear_solver_precision(context),
+                                    mixed=linear_solver_mixed(context))
     own = MemoryEstimate.from_items(host_items=(
         ('curl quadrature cache (float64)', (2 * local + 3) * points * FLOAT64_BYTES * elements),
         ('quadrature point state of one evaluation (float64)', _FEM_POINT_STATE * points * FLOAT64_BYTES * elements)))
