@@ -303,8 +303,9 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
 - Recording (both pages, the `// ---------- video` block is one copy: change both): with WebCodecs H.264 the page
   renders frames itself on a fixed clock (VIDEO_FPS) and writes a plain MP4 with its own muxer (`mp4Blob`: one avc1
   track, constant frame duration, moov before mdat; B frames (Firefox / Media Foundation encoders) get ctts + an
-  edit list, written only when the encoder reorders; `avcNormalized` rewrites Annex B output (Firefox on Windows,
-  which Media Foundation refuses) to avcC + 4-byte lengths), so
+  edit list, written only when the encoder reorders; `avcNormalized` builds avcC from the stream's in-band SPS /
+  PPS, the encoder's description only without them: Firefox on Windows gives an avcC Media Foundation cannot parse;
+  Annex B samples become 4-byte lengths), so
   PowerPoint takes it by drag and drop; else MediaRecorder in real time (`recordRealtime`, WebM in Firefox). While
   `video` is set the rAF loop only reschedules itself and the recorder calls `advance(dt)` + `draw()` per frame:
   anything that moves with time goes in `advance` (never straight in `tick` / `frame`), or recordings miss it. A

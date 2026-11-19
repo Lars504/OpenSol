@@ -1107,23 +1107,26 @@ function nalUnits(data, prefix) {
   return units.filter((u) => u.length);
 }
 function avcNormalized(description, samples) {
-  // MP4 (and Media Foundation: PowerPoint, Windows players) wants an avcC record holding the parameter sets and
-  // 4-byte length-prefixed NAL units; Firefox's Windows encoder gives Annex B start codes (Firefox plays those, Windows
-  // does not). Rewrites every sample in place (access unit delimiters dropped, SPS / PPS moved into avcC) and returns
-  // the avcC built from the parameter sets of the description and the stream
-  const sps = [], pps = [];
+  // MP4 (and Media Foundation: PowerPoint, Windows players, which set the decoder up from avcC alone) wants an avcC
+  // record holding the parameter sets and 4-byte length-prefixed NAL units. Firefox's Windows encoder gives an avcC
+  // whose parameter sets do not parse (ffmpeg: 'too many reference frames 21'; Firefox and ffmpeg play the file from
+  // the valid in-band copies, Windows refuses it), and encoders may give Annex B start codes. Rewrites every sample in
+  // place (access unit delimiters dropped, SPS / PPS moved out) and returns an avcC built from the stream's own
+  // parameter sets, the description's only when the stream carries none (Chrome)
+  const sps = [], pps = [], dsps = [], dpps = [];
   const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
   const keep = (list, u) => { if (!list.some((x) => same(x, u))) list.push(u.slice()); };
-  const sort = (u) => { const type = u[0] & 31; if (type === 7) keep(sps, u); else if (type === 8) keep(pps, u); return type; };
+  const sorter = (S, P) => (u) => { const type = u[0] & 31; if (type === 7) keep(S, u); else if (type === 8) keep(P, u); return type; };
+  const sort = sorter(sps, pps);
   let prefix = 4;
   if (description && description.length > 6 && description[0] === 1) {   // an avcC record
     const d = description; prefix = (d[4] & 3) + 1;
     let o = 6;
     const take = (list) => { const len = d[o] << 8 | d[o + 1]; if (o + 2 + len > d.length) throw new Error('the encoder\'s avcC record is truncated');
       keep(list, d.subarray(o + 2, o + 2 + len)); o += 2 + len; };
-    for (let k = 0, m = d[5] & 31; k < m; k++) take(sps);
-    for (let k = 0, m = d[o++]; k < m; k++) take(pps);
-  } else if (description && description.length) nalUnits(description, 4).forEach(sort);
+    for (let k = 0, m = d[5] & 31; k < m; k++) take(dsps);
+    for (let k = 0, m = d[o++]; k < m; k++) take(dpps);
+  } else if (description && description.length) nalUnits(description, 4).forEach(sorter(dsps, dpps));
   for (const s of samples) {
     const units = nalUnits(s.data, prefix).filter((u) => { const type = sort(u); return type !== 7 && type !== 8 && type !== 9; });
     if (!units.length) throw new Error('an H.264 sample holds no picture data');
@@ -1131,7 +1134,11 @@ function avcNormalized(description, samples) {
     let o = 0; for (const u of units) { v.setUint32(o, u.length); data.set(u, o + 4); o += 4 + u.length; }
     s.data = data;
   }
-  if (!sps.length || !pps.length) throw new Error('the H.264 stream holds no SPS / PPS parameter sets');
+  if (!sps.length || !pps.length) {   // no in-band parameter sets: the description's
+    if (sps.length || pps.length) throw new Error('the H.264 stream carries ' + (sps.length ? 'an SPS but no PPS' : 'a PPS but no SPS'));
+    sps.push(...dsps); pps.push(...dpps);
+  }
+  if (!sps.length || !pps.length) throw new Error('the H.264 encoder gave no SPS / PPS parameter sets');
   if (sps.length > 31) throw new Error('the H.264 stream changes its SPS ' + sps.length + ' times');
   const out = [1, sps[0][1], sps[0][2], sps[0][3], 0xff, 0xe0 | sps.length];   // profile, compatibility, level; 4-byte lengths
   const put = (u) => { out.push(u.length >> 8, u.length & 255); for (const x of u) out.push(x); };
