@@ -128,13 +128,14 @@ def _unavailable(values, backend, gpu_missing) -> str:
     (host_direct.missing_text; PARDISO off x86-64) or nvmath-python for a cuDSS back end ('' when it can)."""
     from open_sol.solvers.cudss_factor import cudss_available
     from open_sol.solvers.host_direct import HOST_DIRECT_BACK_ENDS, host_direct_available, missing_text
+    from open_sol.solvers.sparse_direct import CUDSS_BACK_ENDS   # the cuDSS factorization names alike
     if backend == 'gpu' and gpu_missing:
         return gpu_missing
     for name in LIBRARY_SETTINGS:
         library = values.get(name)
         if library in HOST_DIRECT_BACK_ENDS and not host_direct_available(library):
             return missing_text(library)
-        if library in ('cudss', 'cudss_mixed') and not cudss_available():
+        if library in CUDSS_BACK_ENDS and not cudss_available():
             return f"{name} '{library}' needs nvmath-python with cuDSS (pip install nvmath-python[cu12])"
     return ''
 

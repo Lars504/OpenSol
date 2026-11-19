@@ -23,8 +23,7 @@ from ..eigenfrequency import solve_resonances
 from ....solvers.arpack_shift_invert import CUDSS_FACTORIZATIONS, LDLT_FACTORIZATIONS, ArpackShiftInvertSolver
 from ....solvers.cudss_factor import CudssAccuracyError
 from ....solvers.host_direct import HOST_DIRECT_BACK_ENDS
-from ....solvers.line_block import (LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve,
-                                    operator_shift_bytes)
+from ....solvers.line_block import LineBlockFactorization, LineBlockSolver, RejectedLineBlockSolve
 from ....solvers.sparse_direct import (CUDSS_BACK_ENDS, SparseDirectSolver, host_size_back_end, qr_workspace_bytes,
                                        size_issue)
 from ..fdfd_line_block import LINE_BLOCK_TEXT, MAX_BATCH_WAVELENGTHS, fdfd_block_axis, fdfd_layout
@@ -51,9 +50,9 @@ from .fdtd_2d_base import _check_cell_array, add_pec_cells, record_dispersive_re
 from .harmonic_shell import COMPONENT_UNITS, HarmonicEMShell
 from .host_fdfd import fell_back_to_superlu
 
-# Wall / mirror faces: outermost cell = sign x its inner neighbour, as the FDTD BoundaryManager writes the row (sign 0:
-# pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current there drops.
-_WALL_SIGNS = WALL_SIGNS
+# Wall / mirror faces (boundaries.WALL_SIGNS, shared with the FDTD rows): outermost cell = sign x its inner neighbour
+# (sign 0: pinned to 0). Even faces (sign +1) also get face weight 0 on the inner face: zero flux, and a face current
+# there drops.
 _REJECTED = 'rejected'   # _line_factor of a system whose line-block solve missed the accept tolerance
 _SPARSE_DIRECT_TEXT = 'sparse direct'
 _NOT_KEPT = 'not kept'   # _restored_sensitivity of a restored snapshot whose solve kept no adjoint gradient
@@ -169,6 +168,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
         self.solution = None          # xp complex128 (nx, ny) E_z / H_z of the last solve
         self.system = None            # HarmonicSystem of the last assembly
+        self._system_solved = False   # the last driven solve used self.system (solve_adjoint's guard)
         self.solved_omega = None      # rad/s of the last solve
         self.host_factor_bytes = None   # host factor bytes (SuperLU L + U, MUMPS / PARDISO; Simulation.memory_report)
         self.last_factor_seconds = None   # host wall time of the last factorisation
@@ -273,7 +273,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def solve_eigenfrequencies(self, n_resonances):
         """eigenfrequency study hook: up to n_resonances resonances nearest the wavelength setting (shift-invert on the
         system assembled there, eigenfrequency.solve_resonances; a line_block linear solver's factor of that system,
-        host SuperLU otherwise or after it rejects a solve) -> EigenSolve, kept as eigen_solve."""
+        else the eigen role's own factor; host SuperLU after a line-block rejection) -> EigenSolve, kept as
+        eigen_solve."""
         self.eigen_solve = None
         # SuperLU: the scipy_splu size rule below; line_block: the block-axis rule
         system = self._refresh_system(check_driven_size=self._line_block is not None)
@@ -522,6 +523,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         self._restored_sensitivity = None   # a solve is live again (restore_solution never outlives a read)
         self._refresh_state(system, lazy=not record_monitors)
         self._solution_dirty = False
+        self._system_solved = True
         self.n_solves += 1
         if record_monitors:
             self.record_monitors()
@@ -546,6 +548,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
             self._reference_factorization = None
             if check_driven_size:
                 self._check_solver_size()
+            self._system_solved = False
             self.system = self._assemble(self.omega)
             self._system_dirty = False
         return self.system
@@ -639,10 +642,8 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         upcoming = list(dict.fromkeys(self._planned_omegas[self._planned_omegas.index(omega):]))
         layout = self._line_layout
         host_operator = _host_sparse(self.system.operator)
-        per_operator = operator_shift_bytes(layout.n_blocks, layout.block_size, layout.n_unknowns, host_operator.nnz,
-                                            self._line_block.precision)
         n_batch = min(len(upcoming), MAX_BATCH_WAVELENGTHS,
-                      self._line_block.chunk_size(len(upcoming), 1, layout, per_operator, kept=True))
+                      self._line_block.batch_size(len(upcoming), layout, host_operator.nnz))
         if n_batch < 2:
             return None
         batch_omegas = upcoming[:n_batch]   # the other omegas assembled here and again at their solve (deterministic)
@@ -867,7 +868,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
     def _assemble(self, omega):
         """HarmonicSystem of the current materials (+ extra_permittivity) at omega: A1 operators with the complex PML
         stretch, complex128 Helmholtz operator (ez: PEC cells pinned; hz: PEC face weights 0; wall / mirror rows:
-        _WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps."""
+        WALL_SIGNS; conformal_pec weights); conducting sheets enter the operator only, not cell / face eps."""
         domain = self.domain
         materials = domain.materials
         xp = self.xp
@@ -1256,7 +1257,7 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
         bc = self.boundary_config
         periodic_y = bc.periodic_y
         # a box reaching a y mirror face of the wave's parity opens onto it: the pinned ghost row and the zero face
-        # weight of an even mirror (_WALL_SIGNS +1) leave no correction there, so nothing else changes
+        # weight of an even mirror (WALL_SIGNS +1) leave no correction there, so nothing else changes
         cells = tfsf_box_cells(d, x0, y0, x1, y1, full_period_y=periodic_y, boundary_config=bc,
                                polarization=self.polarization)
         ix0, ix1, iy0, iy1 = cells
@@ -1343,9 +1344,13 @@ class FDFDPhysics(HarmonicEMShell, PhysicsSolver):
 
     def solve_adjoint(self, flat_rhs):
         """x of operator^T x = flat_rhs (unconjugated) for the system of the last solve, on its factorisation (SuperLU
-        trans='T', MUMPS / PARDISO transposed solves; GMRES-recycled or refactorised like a forward solve)."""
+        trans='T', MUMPS / PARDISO transposed solves; GMRES-recycled or refactorised like a forward solve); ValueError
+        when the solution shown is not the driven solve of self.system (a resonance, or a reassembly since)."""
         if self.solution is None or self.system is None:
             raise ValueError("not solved yet: FDFDPhysics.solve_adjoint needs a solve (step or solve_harmonic) first")
+        if not self._system_solved or self.selected_resonance is not None:
+            raise ValueError('FDFDPhysics.solve_adjoint: the assembled system is not that of the last driven solve (a '
+                             'resonance is shown, or an eigenfrequency solve reassembled it since); solve again first')
         return self._solve_linear(self.xp.asarray(flat_rhs, dtype=self.xp.complex128), transpose=True)
 
     def eps_sensitivity(self):
@@ -1480,12 +1485,12 @@ def _is_cudss(factorization) -> bool:
 
 
 def _outer_wall_rows(boundary_config, polarization):
-    """(axis, outermost index, inner neighbour index, inner face index, _WALL_SIGNS sign) per wall / mirror face, x
+    """(axis, outermost index, inner neighbour index, inner face index, WALL_SIGNS sign) per wall / mirror face, x
     faces first (indices along the axis; hi side negative)."""
     rows = []
     for axis, axis_name in ((0, 'x'), (1, 'y')):
         for side, outer, inner, inner_face in (('lo', 0, 1, 0), ('hi', -1, -2, -2)):
-            sign = _WALL_SIGNS[polarization].get(getattr(boundary_config, f'{axis_name}_{side}'))
+            sign = WALL_SIGNS[polarization].get(getattr(boundary_config, f'{axis_name}_{side}'))
             if sign is not None:
                 rows.append((axis, outer, inner, inner_face, sign))
     return tuple(rows)

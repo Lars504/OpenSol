@@ -11,8 +11,7 @@ from ...core.constants import DTYPE
 from ...core.fv_diffusion import edge_extension_views, host_copies, write_host_copies
 from ...core.gpu_memory import format_bytes
 from ...core.solver_base import PhysicsSolver
-from ...solvers.host_direct import HOST_DIRECT_BACK_ENDS
-from ...solvers.sparse_direct import SparseDirectSolver, size_issue
+from ...solvers.sparse_direct import HOST_FACTOR_BACK_ENDS, SparseDirectSolver, size_issue
 from .drift_diffusion import COMPONENTS, DriftDiffusionSystem, thermal_voltage
 from .renderer import SEMICONDUCTOR_FIELD_INFOS, SemiconductorRenderer
 
@@ -45,7 +44,7 @@ def linear_size_issue(back_end, window_cells_x, window_cells_y):
     """sparse_direct.size_issue of the coupled system (3 unknowns per window cell; cusolver_qr sized as a (wx, 3 wy)
     grid, the interleaved index order; MUMPS / PARDISO take the SuperLU rule, uncalibrated); None, ('warning', text) or
     ('error', text). CPU only."""
-    if back_end in ('scipy_splu',) + HOST_DIRECT_BACK_ENDS:
+    if back_end in HOST_FACTOR_BACK_ENDS:
         return size_issue(back_end, window_cells_x, window_cells_y, False, False, unknowns_per_cell=COMPONENTS,
                           remedy=_SMALLER_MODEL)
     return size_issue(back_end, window_cells_x, COMPONENTS * window_cells_y, False, False)

@@ -426,7 +426,7 @@ class LineBlockSolver:
     def factorize_operators(self, operators, layout, owner=None) -> LineBlockFactor:
         """LineBlockFactor of one batch of whole host scipy operators A_s (each block-tridiagonal in `layout`, no shift
         family: e.g. one FDFD Helmholtz operator per wavelength), shift index s = operators[s]; replaces the bound
-        operator (kept as owner). Size the batch with chunk_size(n, 1, layout, operator_shift_bytes(...))."""
+        operator (kept as owner; solve_shifted needs a new set_operator). Size the batch with batch_size."""
         from ..core.backend import sparse_module
         cp = self._xp()
         matrices = [self._checked_matrix(operator, layout, f'operator {index + 1}')

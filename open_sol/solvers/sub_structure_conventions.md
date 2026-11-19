@@ -115,249 +115,93 @@ Design: `solver_plan.md` Part I. Root rules: structure_conventions.md "Solver ro
   finest level, |a_ij| strength, smoother weight, V(2,2), float64 hierarchy, a larger coarsest level.
 
 ## line_block (`LineBlockSolver`, Part II; SolverType 'line_block', roles 'shifted' and opt-in 'linear')
-- Family K + sum_i s_i M_i + sum_j t_j N_j: diagonal M_i (thermal noise: s = (j omega, q^2)) and sparse N_j with K's line
-  coupling (em_fdfd_bor: t = (m, m^2)); coefficient columns = the M_i, then the N_j. One rhs set shared by all shifts.
-  `set_operator(host K, LineBlockLayout, terms, owner=None, matrix_terms=())` keeps device state and `owner`, so
-  consumers sharing one role solver re-bind only when another operator holds it; `release()` drops both, counters stay.
-- `factorize(coefficients)` -> `LineBlockFactor` (size the batch with `chunk_size(n, 1)`): repeated `solve(rhs,
-  index)`; `valid` turns False after the solver's next set_operator / release; `release()` frees it.
-- `LineBlockLayout.from_grid_cells`: blocks = occupied grid lines (empty lines drop out), block axis = the cheaper
-  n_blocks b^3; a coupling more than one line apart raises (no wraps along the line axis).
-- `solve_shifted` yields chunks (start, host solutions, residuals, accepted): rejected shifts (above ACCEPT_TOLERANCE or
-  non-finite) are the consumer's to re-solve with its reference solver. Chunk = min(n_shifts, MAX_CHUNK_SHIFTS,
-  MEMORY_FRACTION of `gpu_memory.pool_room_bytes`: budget - pool used, at most the free device memory, since cuDSS
-  factors of other physics lie outside the pool); consumers estimate `operator_bytes` (run item) + ONE `shift_bytes` (the
-  chunk grows only into free budget, so min(n_shifts, MAX_CHUNK_SHIFTS) x shift_bytes over-books and refuses runs
-  that fit).
-- cpu: the same code on numpy / scipy, inputs and solutions host numpy on both backends; measured 7-9x slower per solve
-  than host SuperLU, so the cpu path is for parity, not speed.
-- Refinement keeps the better iterate per shift and stops when no open shift improves by STALL_RATIO; `debug=True`
-  syncs and records `batch_log`.
-- Role 'linear': em_fdfd_ez / _hz only (em_fdfd_bor and em_modes reach line_block through 'shifted'): one kept factor
-  (`factorize(zeros((1, 0)))`) per assembled system, layout rules in physics/em/fdfd_line_block.
-- `factorize_operators(operators, layout, owner)`: a kept factor of whole operators, one per shift (Helmholtz is not
-  affine in omega); per-shift caches live in the factor's chunk (`_ShiftOperators`: `_coupling` / `_residual` branch on
-  `chunk.operators`); the call releases the bound operator (solve_shifted needs a new set_operator). Size by
-  `batch_size(n, layout, n_entries)`; consumers cap at `fdfd_line_block.MAX_BATCH_WAVELENGTHS` and keep factors only
-  while a material serial is unchanged.
-- `LineBlockFactorization(factor, index, label)`: one shift as a sparse_direct Factorization stand-in (release = the
-  whole batch); solve_host raises `RejectedLineBlockSolve` above the accept tolerance, and every shift-invert consumer
-  (em_fdfd_ez / _hz eigenfrequency, em_modes, em_fdfd_bor) catches it and redoes that eigen-solve on host SuperLU.
-- Launch-bound on small blocks (Python loops over blocks, ~80 us gemm floor per call on an RTX 3050). The time recipe
-  prices each block product per call (FACTOR_DENSE_CALLS_PER_BLOCK, SWEEP_PRODUCTS_PER_BLOCK, *_LAUNCHES_PER_BLOCK,
-  counted from the code: a loop change updates them). A solve_shifted chunk shares those calls between its shifts:
-  the caller passes `SolverWork.batch_shifts` (mean shifts per chunk; 1 = a call per shift, kept factors) and the
-  recipe prices one chunk over its shifts (`_factor_ops`, `_sweep_ops`, `_per_shift`); above BATCHED_INVERSE_MAX_BLOCK
-  the block inverses are one call per matrix, as `_invert`. Per block: two complex products (DenseFlops, 8 b^3 real
-  flops per shift each; mixed: `single`, the complex64 curve) and the inverses as `BlockInverse` on the profile's own
-  inverse curves: a chunk does not scale as b^3 (measured on an RTX 3050, thermal noise, whole chunk time per block
-  and shift: 44 us at b <= 67, 59-74 us at b 111, ~0.55 ms at b ~200 with looped inverses), so pricing all three
-  calls as float64 product flops was 3.4x high at b 111 and 1.4x at b 67. solve_shifted times its chunks: work counter `shift_seconds`, the
-  seconds group of the caller's items (heat thermal noise).
-- Kept factors (`factorize`, `factorize_operators`: `_factor(kept=True)`) also store G_k = D_k^-1 L_k and H_k =
-  D_k^-1 U_k of the scaled system (`_Chunk.lower / upper`; H_k is the elimination's coupling anyway, G_k one more
-  product per block): `_kept_sweep` = y_k = D_k^-1 y_k - G_k y_(k-1), y_k -= H_k y_(k+1), scales only at both ends. A
-  single rhs on the gpu whose three stacks fit KEPT_SWEEP_KERNEL_MAX_BYTES is one launch of the raw twin
-  'solvers.line_block_kept_sweep' (one CUDA block per shift, a warp per row, blocks in sequence; numpy twin = the
-  block loop `_kept_sweep_loop`, which also runs larger gpu stacks); solve_shifted chunks keep `_sweep`. Memory: 3 block
-  stacks per kept shift (`shift_bytes(kept=True)`, `chunk_size(kept=True)`, batch_size): every kept-factor estimate
-  and sizing passes it (fdfd / bor / cross-section line_block bytes); the recipe of a kept solve is
-  `factor_solve_ops` (`_kept_sweep_ops`). A change of the sweep formula changes the CUDA source and the loop
-  together.
-- Not yet: transposed solves (FDFD adjoint uses host SuperLU), per-shift rhs, BATCHED_INVERSE_MAX_BLOCK crossover, a
-  device ARPACK loop, a fused one-launch sweep kernel.
+- One runtime serves several consumers: each passes `owner=` to set_operator / factorize_operators and re-binds only
+  when `solver.owner` is another; any set_operator / factorize_operators / release invalidates the kept LineBlockFactors
+  (`valid` False), so a holder tests `valid` before solving.
+- Operators must be block-tridiagonal in the line order (`_checked_matrix` raises): a periodic / Bloch wrap goes
+  inside the blocks (block-axis rule: physics/em/fdfd_line_block).
+- Memory: consumers estimate `operator_bytes` (run item) + ONE `shift_bytes`: chunks grow only into free memory at run
+  time, so min(n_shifts, MAX_CHUNK_SHIFTS) x shift_bytes over-books and refuses runs that fit. Kept factors
+  (`factorize`, `factorize_operators`) hold three block stacks per shift: every estimate and sizing of one passes
+  `kept=True` (batches: `batch_size`).
+- Rejected shifts (above ACCEPT_TOLERANCE or non-finite) are the consumer's to re-solve with its reference solver:
+  solve_shifted flags them, `LineBlockFactorization.solve_host` raises `RejectedLineBlockSolve`, which every
+  shift-invert consumer (em_fdfd_ez / _hz eigenfrequency, em_modes, em_fdfd_bor) catches to redo that eigen-solve on
+  host SuperLU.
+- Role 'linear' (em_fdfd_ez / _hz only; em_fdfd_bor and em_modes reach line_block through 'shifted'): one kept factor
+  per assembled system, or a wavelength batch of whole operators (`factorize_operators`: Helmholtz is not affine in
+  omega) of at most `fdfd_line_block.MAX_BATCH_WAVELENGTHS`, kept while the material serial holds. Adjoint solves use
+  the factor through the symmetrizer; an unsymmetric D A goes to the reference sparse_direct factor.
+- cpu: measured 7-9x slower per solve than host SuperLU; the cpu path is for parity, not speed.
+- Time recipe: launch-bound on small blocks (Python loops over blocks, ~80 us gemm floor per call on an RTX 3050), so
+  it prices each block call (the `*_PER_BLOCK` constants, counted from `_factor` / `_sweep` / `_kept_sweep`: a loop
+  change updates them); a solve_shifted caller passes `SolverWork.batch_shifts` (mean shifts per chunk; 1 for kept
+  factors). Block inverses are priced on the profile's own inverse curves, since a chunk does not scale as b^3 (RTX
+  3050, thermal noise, per block and shift: 44 us at b <= 67, 59-74 us at b 111, ~0.55 ms at b ~200 looped).
+- Not yet: transposed solves of an unsymmetric operator, per-shift rhs, the BATCHED_INVERSE_MAX_BLOCK crossover, a
+  device matvec for shift-invert (LineBlockFactorization solves host in / host out), a one-launch sweep of
+  solve_shifted chunks or several rhs (only the single-rhs kept sweep is one kernel).
 
 ## sparse_direct (`SparseDirectSolver`; roles 'linear' and 'shifted')
-- Module: Factorization (solve / solve_host / solve_preconditioned GMRES on an earlier factor), `factorize` (device CSR),
-  `factorize_host`, size rules, `resolve_back_end` (raises) and `expected_back_end` (CPU, never raises). The cusolver_qr
-  workspace lives outside the cupy pool: the size rules are the only guard.
-- Orderings: SuperLU MMD_AT_PLUS_A by default; `factorize_host(ordering=)` factors A[p][:, p] with NATURAL and maps every
-  solve back through `Factorization._lu_solve` (never `_host_lu.solve` directly). `grid_nested_dissection(shape)` (low
-  fill only for +-1 cell stencils): em_fdfd_3d and DiffusionDirectSolver on a 3D tensor window (`grid_shape`). SuperLU
-  ordering reuse: `SuperLUOrdering` (one per runtime) keeps the last pattern's elimination order; a later factorisation
-  of the same indptr / indices pre-permutes and skips MMD (counters reused_orderings / eigen_reused_orderings). It
-  also keeps the permuted CSC pattern and the CSR entry of every CSC slot (`_permuted_pattern`, made once in
-  `remember`: H2), so a reused factor permutes by one gather (`permuted`, canonical CSC: splu's sum_duplicates is
-  skipped) instead of `symmetric_permutation`'s COO -> CSC sort; a pattern with duplicate entries keeps the COO route.
-- The runtime keeps no factor: consumers hold their own (one runtime serves the NLFD channels or thermal noise).
-  `back_end` (auto / scipy_splu / cusolver_qr / cudss / cudss_mixed / mumps / mumps_mixed / pardiso / pardiso_mixed:
-  LINEAR_SOLVER_CHOICES, the order solvers.definition's labels follow) resolved on first use; factorize / factorize_host /
-  `solve_recycled` (device) / `solve_recycled_host` (em_fdfd_bor, magnetic AC circuit rows) are counted. The shifted
-  role, magnetic_fields_ac and em_fdfd_bor always factorise on the host (validation refuses cusolver_qr). cpu backend:
-  scipy_splu or a host direct back end, `host_arrays` factors numpy in / out.
-- cuDSS back ends ('cudss' double, 'cudss_mixed' float32 / complex64 factor + float64 refinement to 1e-12): opt-in per
-  role (`opt_in_settings`, Model path): the SPD roles of `DIFFUSION_DIRECT_BACK_ENDS` (via DiffusionDirectSolver),
-  FDFD_LINEAR_ROLE (LDL^T, counter cudss_symmetric_factors) and CUDSS_LINEAR_ROLE (drift_diffusion real LU,
-  BOR / conical LDL^T of A / D A); DIRECT_LINEAR_ROLE and every 'shifted' role misfit them until their physics adopts
-  them. A role opting in needs consumers holding a CudssFactorization on that grid (no transposed LU solve, not
-  recyclable, no SuperLU inertia). GPU only (`backend_misfit`); without nvmath validate errors and `resolve_back_end`
-  raises. `size_issue` returns None for them; cuDSS's own peak estimate after planning is the guard and memory
-  estimators count the factor as an external item (`linear_solver_direct` '', `linear_solver_cudss(solvers)`;
-  `cg_solver_issues` skips the SuperLU size rule). `definition_helpers.linear_solver_direct(context)` returns '' or the
-  resolved non-cuDSS back end name (scipy_splu, a host direct name; truthy as before), which estimators pass on as
-  `direct=` (`diffusion_system_estimate` books a host direct name by host_direct.factor_host_bytes).
-- Back-end groups (module constants, never local copies): SYMMETRIC_OPTION_BACK_ENDS (cuDSS + host direct: factorize
-  honours symmetric / symmetrizer / row_scale / previous), MIXED_BACK_ENDS (cudss_mixed + the host *_mixed: float32 /
-  complex64 factor; validation rules about float32 accuracy use it), HOST_FACTOR_BACK_ENDS (scipy_splu + host direct:
-  host memory, the SuperLU size rules); `host_size_back_end(name)` maps superlu / auto / None to scipy_splu for
+Back ends and entry points: sparse_direct.py header and docstrings; cuDSS internals (probes, deferred checks, plan /
+ordering reuse, parked plans, ordering store, device-value refreshes, raw phases): cudss_factor.py header; MUMPS /
+PARDISO: section "host_direct". Rules across files:
+- The runtime keeps no factor: consumers hold their own (one runtime serves the NLFD channels or the thermal noise
+  operators) and pass the factor to replace as `previous=` (cuDSS plan / MUMPS-PARDISO analysis reused).
+- A host SuperLU factor made on an ordering (`factorize_host(ordering=)`, the runtime's SuperLUOrdering reuse) factors
+  A[p][:, p]: solve through `Factorization._lu_solve` / solve_host, never `_host_lu.solve`.
+- Back-end groups are module constants (CUDSS_BACK_ENDS, SYMMETRIC_OPTION_BACK_ENDS, MIXED_BACK_ENDS,
+  HOST_FACTOR_BACK_ENDS, host_direct.HOST_DIRECT_*), never a tuple spelled out; `host_size_back_end(name)` for
   size_issue.
-- Host direct back ends (mumps / mumps_mixed / pardiso / pardiso_mixed; section "host_direct"): opt-in per role (never
-  'auto'), no backend misfit (host factors on both backends: factorize pulls a cupyx operator to the host once and
-  returns cupy solutions, a scipy one numpy: host_arrays), a missing wrapper is a validate error and `resolve_back_end`
-  raises `host_direct.missing_text`. factorize / factorize_host (+ symmetric_known) / DiffusionDirectSolver
-  (factorize, factorize_host_operator, factorize_device_values through a host copy; real SPD request: PARDISO
-  Cholesky, MUMPS LDL^T; solves on the host) return a HostDirectFactorization: transposed solves, recyclable
-  (solve_recycled*), inertia, previous= refactorises on the kept analysis. Size rules: the SuperLU ones (size_issue /
-  diffusion_size_issue(back_end=) with library-named texts; uncalibrated, LDL^T / nested dissection usually allow
-  more) plus the library's own estimate after the analysis (HOST_FRACTION of the available RAM); refusals
-  (HOST_DIRECT_REFUSALS) raise, no fallback. `fall_back`, `device_pencil` and `factorize_device_csr` stay cuDSS /
-  auto only; `pencil` / `factorize_pencil` serve them by a HostPencil (Device pencils below). Counters (host direct runtimes): host_direct_analyses (fallback
-  re-analyses included), host_direct_reused_analyses, host_direct_peak_bytes (the library estimate), host_direct_lu_entries,
-  host_direct_symmetric_factors, host_direct_refinement_steps, host_direct_single_residual, host_direct_double_fallbacks,
-  host_direct_threads; host_factor_bytes = the library's factor bytes. Time recipe: the SuperLU items (labels named by
-  the library) x HOST_DIRECT_FACTOR_TIME / HOST_DIRECT_SOLVE_TIME, mixed solves x HOST_DIRECT_MIXED_FULL_SOLVES (all
-  uncalibrated, no profile curves yet).
-- 'auto' -> cuDSS only through `SolverRole.auto_back_ends` {grid: back end}: `schema.auto_back_end_values` (inside
-  resolved_solvers: validate, estimators, build and summary see the concrete back end) on the gpu with nvmath
-  (find_spec); role-less `expected_back_end` / `resolve_back_end` map 'auto' to SuperLU. Opted in: pressure_acoustics
-  (triangles, tetrahedra) and membrane (triangles) 'linear' cudss_mixed; CG_ELASTIC_3D_LINEAR_ROLE (tetrahedra)
-  cudss_mixed; cudss for FDFD_LINEAR_ROLE / CUDSS_LINEAR_ROLE (tensor, triangles), SOLID_LINEAR_ROLE (triangles),
-  CG_DIFFUSION_LINEAR_ROLE (triangles, tetrahedra).
-  Self-tests that used Automatic as a SuperLU reference pin a scipy_splu node. Values carry `AUTO_BACK_END_KEY`
-  ('back_end_from_auto'); the runtime gets `fallback_back_end='scipy_splu'`, and a cuDSS refusal
-  (`cudss_factor.CUDSS_REFUSALS`: zero pivot, accuracy, `CudssMemoryError`) within SPLU_LIMIT_UNKNOWNS switches it to
-  SuperLU for good (`fall_back`: RuntimeWarning, counter auto_fallbacks) and redoes the factorisation there (every entry
-  point, incl. DiffusionDirectSolver's and fem.harmonic's deferred check at solve). An explicit cuDSS node raises. The em
-  FDFD / BOR / conical consumers free their plan-kept cuDSS factor once on SuperLU.
-- Entry points `factorize(..., previous=, symmetric=, symmetrizer=, defer_check=)` (device CSR, pulled to the host
-  once), `factorize_host(matrix, real, symmetric, positive_definite, symmetrizer, row_scale, previous, symmetric_known,
-  defer_check)` (SuperLU ignores the cuDSS options; symmetric_known reaches cuDSS and the host direct back ends alike:
-  a canonical symmetric CSR whose index arrays are never modified, no canonical copy, no asymmetry check, the planned
-  pattern matched by identity), module `cudss_factorization(...)`: all return a `cudss_factor.CudssFactorization`;
-  `transpose=True` only with a symmetric factor (x = D (D A)^-1 b for a symmetrizer D), else NotImplementedError; a real
-  factor takes a complex rhs without a cast (cuDSS: two real solves; a real SuperLU `solve_host`: one solve of the
-  (n, 2) real / imaginary columns, H1); `recyclable` False (decided: a value-only refactorisation skips the plan and is
-  exact).
-- Plan reuse: pass the factor to replace as `previous=`; same options = refactorised in place (values written into the
-  planned device CSR, never nvmath `reset_operands(a=)`, which drops the plan for device operands); a new pattern
-  re-plans; other options release it first. A Cholesky is planned only for a double factor (`_requested_kind`): a mixed
-  positive_definite request plans float32 LDL^T (float32 Cholesky hung > 175 s), its double fallback is the double
-  Cholesky.
-- DiffusionDirectSolver on cuDSS: `factorize_device_csr(operator, real=True, positive_definite=True, previous=)`
-  (Cholesky, LDL^T after a failed one), device solves; `release_factor()` before another large factorisation, or
-  `detach_factor()` (the caller owns the factor: released or passed as previous= to a factorisation of the same kind;
-  `positive_definite = False` first makes factorize_host_operator ask cuDSS / MUMPS / PARDISO for the LDL^T of a
-  shifted pencil instead of the SPD kind, which can_refactorize would refuse: mechanics stress stiffening).
-  `factorize_host_operator(host_csr, symmetric_known=, defer_check=)` (FEM Newton tangents): symmetric_known = a
-  canonical symmetric CSR (values copied only, index arrays shared and never modified, asymmetry check skipped; MUMPS /
-  PARDISO then refresh by `host_direct_values_factorization`, pattern matched by identity); never pass it for an
-  operator that may be unsorted, duplicated or unsymmetric. defer_check (both tangent routes; Newton solves right after
-  factorising): a reused analysis / plan skips its probe, the next solve is the check, so a CudssAccuracyError of an
-  'auto' runtime then comes from that solve (no SuperLU fallback). `SparseDirectSolver.factorize_values(values, indptr,
-  indices, real=, previous=, defer_check=)` is the general role's twin for unsymmetric operators on a fixed canonical
-  pattern (drift_diffusion Newton Jacobians): cuDSS refresh / plan from device values, MUMPS / PARDISO
-  `host_direct_values_factorization`, else SuperLU of the CSR; no host canonicalising or asymmetry check per call.
-  `factorize_device_values(values, indptr, indices)` (cupy
-  values on the HOST canonical pattern) -> `refactorize_device_values` / `from_device_values`: equilibration, lower take
-  and refresh or plan on the device by index maps (`_DeviceIndexMaps`, one per plan: each array uploaded at its first
-  read, so `refactorize_device_lower` holds the lower triangle's rows / indices alone, ~4 B per pattern entry against
-  ~18 B on the full-values route; read a new array through `maps[key]`, never assume it exists; its host passes over
-  the pattern are freed by `_finish_refactorize`; a lower-stored DevicePencil hands its rows and lower take over once,
-  `host_passes=` -> `seed_host`, R5), no host value copy. A refresh on the reused plan without symmetrizer or symmetry
-  check runs two kernels (`_fused_refresh`, K2: R and a symmetric kind's diagonal, then E and its factor-dtype copy into
-  the planned buffers); a change of the step-by-step route's scaling rule changes `_row_scale_kernel` /
-  `_scaled_take_kernel` in the same edit. The host route (`refactorize` -> `_equilibrated`) makes the
-  int32 rows once for the scaling and `_lower_triangle`, and scales by `equilibrate_values` (host twin
-  'solvers.cudss_equilibrate': one numba prange pass from EQUILIBRATE_NUMBA_MIN_ENTRIES once numba is imported, K4;
-  case solver_cudss_equilibrate_numba); symmetric_known takes the norm from the row sums alone. Either
-  symmetry vouched (pencils, device tangents) or `check_symmetry=True` (device transpose map), which also serves
-  `refactorize` of a host operator on the planned pattern without symmetrizer (values uploaded only) and
-  `SparseDirectSolver.factorize_device_csr` (non-canonical cupyx CSR canonicalised in a copy). A symmetrizer factor
-  takes the device path too (`symmetrizer=`: rows x D before R, exactly when the factor was built with one): module
-  `factorize` of a cupyx operator with a valid `previous` of the same options refreshes it there
-  (`_refreshed_on_device`; the 2D FDFD per-wavelength route, Sp3), only a first factor goes through the host copy;
-  `row_scale=` replaces R = |diag|^-1/2.
-- Device pencils (sweeps): `SparseDirectSolver.device_pencil(indptr, indices, term_values, symmetric,
-  symmetric_known=False)` -> `DevicePencil` (None off cuDSS / on the cpu: the caller keeps factorize_host); terms
-  uploaded once, symmetry checked once unless vouched (max |X - X^T| <= SYMMETRY_TOLERANCE max |X| per term; a vouched
-  pencil of host values takes each lower triangle on the host, so the full terms never reach the device). A
-  symmetric pencil stores lower triangles only (`lower_stored`; `full_term(k)` returns a new array per call, its take
-  built once at ~48 B per pattern entry of int64 transients: the SuperLU fallback and self-tests only, never a
-  product; `combined(c)` in the stored layout). `factorize_pencil(pencil, coefficients, row_scale=, previous=,
-  extra=)` combines on the device and refreshes `previous` (refactorize_device_lower / refactorize_device_values with
-  defer_check); the pattern is matched by identity of the pencil's indptr / indices first: callers never modify those
-  arrays in place. `extra=(pencil.slots(rows, columns), values)` adds a small per-frequency block (port DtN) at
-  stored-layout slots (lower entries only for a lower-stored pencil, symmetry vouched by the caller; a None slot =
-  outside the pattern: keep factorize_host). `device_pencil_bytes(entries, term_value_bytes, symmetric)`; users
-  (fem.harmonic, mechanics frequency_response.HarmonicSystem) book it + factor maps + transients as a run item. The
-  operator norm of a device refresh is lazy and summed by one atomic-add kernel (`_magnitude_sums_kernel`: no |E|
-  copy; cupyx.scatter_add of cp.abs(E) and its masked copy held 17 B per stored entry at the probe, which is after
-  the plan returned the pool's cached blocks, so it set the run's pool mark).
-- Host pencils: consumers ask `SparseDirectSolver.pencil(...)` (same arguments): a `HostPencil` on a host direct back
-  end (either backend), else device_pencil's answer. HostPencil keeps the terms on the host on the full pattern
-  (`lower_stored` False: an extra block gives both triangles; consumers test `pencil.symmetric`, never lower_stored, before
-  adding an unsymmetric block), symmetry checked once per term; `factorize_pencil` combines on the host and calls
-  `host_direct_values_factorization` (refactorize_values: identity-matched pattern, no canonical copy, no asymmetry check,
-  defer_check; host_direct section). Users: fem.harmonic (acoustics / membrane estimators book its terms as a host
-  item) and mechanics HarmonicSystem (references its own term arrays: nothing new to book).
-- defer_check: a factor on a reused plan whose earlier probe passed skips its probe; its first (full-accuracy) solve is
-  the check, so probe_residual / single_residual / refinement_steps counters lag one factor. A double miss turns on
-  cuDSS refinement and solves again; a second miss releases the factor and raises CudssAccuracyError from the solve
-  (inertia-only factors are never judged: count_below passes defer_check=False). A mixed miss re-plans double in place from the device E (`fallback_listener` ->
-  cudss_plans / cudss_reused_orderings / cudss_double_fallbacks): callers translate CudssAccuracyError at solve /
-  solve_host too (fem.harmonic.solve; FDFD driven solves: fdfd_2d `_solve_linear`, host_fdfd `_checked_solve_host`,
-  physics/em sub file). Fixed-step solves (refinement_steps=) leave a pending check pending. Entry points with
-  defer_check (K1): factorize_pencil / factorize_values / factorize_host_operator, `SparseDirectSolver.factorize`
-  (`_refreshed_on_device`, the FDFD wavelengths) and `factorize_host` (`CudssFactorization.refactorize`, BOR omegas;
-  default False on both): a caller passing it catches CudssAccuracyError at the solve and, when `fall_back(error, n)`
-  is True, drops the factor and factorises again (SuperLU now); a first plan is always probed.
+- Types that factorise host matrices (factorize_host) refuse cusolver_qr at validation
+  (`definition_common.host_matrix_back_end_issues`; magnetic_fields_ac its own). cpu backend: scipy_splu or a host
+  direct back end (`host_arrays`: numpy in / out).
+- cuDSS opt-in: a role lists cudss / cudss_mixed in `setting_choices['back_end']` only when every consumer on its
+  grids holds a CudssFactorization (no transposed LU solve, not recyclable, no SuperLU inertia); the 'shifted' roles
+  do not. Estimators book the factor as an external item (`linear_solver_cudss(solvers)`,
+  `cudss_factor.factor_device_bytes`); the host size rules skip it (`size_issue` None, `cg_solver_issues`).
+- 'auto' -> cuDSS (B1b) only through `SolverRole.auto_back_ends` (grep `auto_back_ends=` for the roles), resolved by
+  `schema.auto_back_end_values` (gpu with nvmath; values carry AUTO_BACK_END_KEY); role-less `expected_back_end` /
+  `resolve_back_end` map 'auto' to SuperLU. The runtime then has `fallback_back_end='scipy_splu'`: a cuDSS refusal
+  (CUDSS_REFUSALS) within SPLU_LIMIT_UNKNOWNS switches it to SuperLU for good (`fall_back`, RuntimeWarning, counter
+  auto_fallbacks) and the entry point redoes the factorisation there; an explicit cuDSS node raises. Self-tests that
+  need a SuperLU reference pin a scipy_splu node.
+- Host direct back ends: opt-in only, never 'auto'; on both backends (a cupyx operator is pulled to the host once,
+  solutions return as cupy); refusals raise, no fallback. `fall_back`, `device_pencil` and `factorize_device_csr` are
+  cuDSS only: ask `pencil` (a HostPencil on MUMPS / PARDISO).
+- Entry points on fixed patterns: a DiffusionSystem CSR -> DiffusionDirectSolver (cuDSS: `factorize_device_csr`);
+  FEM Newton tangents -> `factorize_host_operator(symmetric_known=, defer_check=)` / `factorize_device_values`;
+  unsymmetric Newton Jacobians -> `factorize_values`; frequency sweeps of a pencil -> `pencil` + `factorize_pencil`
+  (never a host A(omega) per frequency into factorize_host: root "Performance"); 2D FDFD wavelengths -> `factorize`
+  with a valid previous (refreshed from the device values). symmetric_known, pencils and factorize_values match the
+  pattern by identity of indptr / indices: callers never modify those arrays in place, and pass symmetric_known only
+  for a canonical symmetric CSR. Pencil users book `device_pencil_bytes` as a run item (fem.harmonic, mechanics
+  HarmonicSystem; a HostPencil's copied terms as a host item).
+- `DiffusionDirectSolver.release_factor()` before another large factorisation, or `detach_factor()` (the caller owns
+  the factor: released, or passed as previous= to a factorisation of the same kind); `positive_definite = False`
+  first makes factorize_host_operator ask for the LDL^T of a shifted pencil instead of the SPD kind (mechanics stress
+  stiffening).
+- defer_check (default True in factorize_pencil / factorize_values, False elsewhere): a refresh skips its probe and
+  its first solve is the check, so the caller catches CudssAccuracyError (HostDirectAccuracyError) at the solve and,
+  when `fall_back(error, n)` is True, drops the factor and factorises again; a first plan is always probed;
+  inertia-only factors pass defer_check=False (a count never solves). Callers: fem.harmonic.solve, the FDFD driven
+  solves (physics/em sub file).
 - solid_mechanics_3d's 'linear' runtime on tetrahedra also factorises the piezo coupled operator (real symmetric
   indefinite) and the complex symmetric frequency-response pencil, although the role's operator class is 'spd'.
-- Counters (cuDSS only): cudss_plans (incl. fallback re-plans of one call: `_counted` adds `last_plans` /
-  `last_reused_orderings` / `last_plans_seconds`), cudss_reused_orderings, cudss_plan_seconds,
-  cudss_factor_device_bytes, cudss_refinement_steps, cudss_single_residual; factor_seconds includes plans and probes.
-- Ordering reuse (`cudss_factor` header): a plan keeps its row permutation + nested-dissection partition tree per
-  (ordering family, n, nnz, pattern digest) and a later plan of that key reuses both (USER_PERM +
-  USER_ND_PARTITION_TREE; ~10-20x faster planning, same fill). `ORDERING_FAMILIES`: Cholesky and LDL^T share one,
-  real and complex alike; LU its own. Never the permutation alone (same fill, 10x slower factorisation). Within a factor
-  object always; across objects only while `remember_cudss_orderings` is on: `model.study.run_study`
-  (`cudss_orderings_kept()` per study) and the GUI worker; off for selftest checks and scripts, so a case never plans on
-  another case's ordering. nvmath has no public setter (DirectSolver.handle / data_ptr): any error plans from scratch
-  (logged at INFO).
-- Parked plans (K5, `cudss_factor` header): in the same scope `release()` of an accepted factor parks its planned
-  DirectSolver (KEPT_PLANS, key = ordering key + kind + factor dtype, operand references dropped: the pool arrays go,
-  the outside-pool bytes stay in external_live_bytes), and the next plan of that key by any factor object adopts it
-  (`_adopted_plan`: nvmath's pointer updates, no analysis, no memory check; counted as a plan on a kept ordering,
-  `last_plan_adopted`); a rejected adopted plan re-plans from scratch once. A plan of another key, each build start
-  (`reset_external_high_water`, study.build_session), the scope end and every `cudss_orderings_kept` exit (a GUI study)
-  free the parked plans, so a parked factor outlives its phase only until the next plan of the same build. Self-test:
-  `_ordering_reuse_checks`.
-- On-disk ordering store (K6): `remember_cudss_orderings(store=True)` (default; the GUI worker's call) with a folder
-  in OPEN_SOL_CUDSS_ORDERING_CACHE (unset = off, like OPEN_SOL_MESH_CACHE) also writes each fresh plan's (permutation,
-  tree) there per (key, cuDSS version), pruned by mtime to ORDERING_STORE_MAX_BYTES, and reads a key the in-process
-  store lacks (a bad file plans from scratch). run_study's `cudss_orderings_kept()` turns the scope on without the
-  store, so api / CLI runs and selftests never read it (a GUI run inside the worker's scope does).
-- Measure-first switches (off; `tools_profilers/time_profilers/cudss_phase_profile.py` times each against the nvmath
-  path and writes its results file): REFACTORIZATION_PHASE (K3: refreshes of a plan factorised before run cuDSS's
-  REFACTORIZATION phase by `cudss.execute`), RAW_SOLVE (K7: `cudss.execute(SOLVE)` into one kept solution buffer, no
-  nvmath sync; solve_buffer_bytes books the buffer), REORDERING_ALGORITHM (K10: e.g. 'AMD' for fresh plans; no
-  ordering kept or reused while set). Any raw-phase error uses the nvmath call from then on (`_raw_failed`).
-- Time recipe `_cudss_time_items`: one plan (a work marked `ordering_kept`, read by getattr, at
-  CUDSS_KEPT_ORDERING_PLAN_FRACTION) + factorisations + solves (+ the deferred check of device-value refreshes); real
-  operators scaled by CUDSS_REAL_BYTES / CUDSS_REAL_FLOPS (uncalibrated). 2D: `cudss_2d_ops` (also arpack's) on the
-  profile's cudss curves (core sub file) at work.factor_scale / solve_scale = the caller's fill over that curve, never the
-  SuperLU fill unless nothing better is known; SolverWork.device_values selects the device refresh curve. The profile's
-  code hash does not cover solvers/: re-run `python -m open_sol profile` after changes to cudss_factor / sparse_direct (a
-  profile without the '_device' curves prices device refreshes 4.3x high). 3D: arpack's CUDSS_* fit, mixed solves x
-  CUDSS_MIXED_FULL_SOLVES.
-- Self-tests (`selftests.py`): solver_pcg_cpu_gpu, solver_sparse_direct_cpu_gpu, solver_line_block_cpu_gpu (both
-  backends vs scipy on synthetic operators; gpu half skipped by `_backends()` without a GPU); solver_sparse_direct_cudss
-  (gpu; its role / misfit part is CPU and judged without nvmath); solver_cudss_device_pencil (gpu);
-  fem_harmonic_cudss_device_pencil (heavy); solver_host_direct_cpu_gpu and solver_arpack_host_direct (each installed
-  library, both precisions; skipped without python-mumps / pydiso, the role / misfit / resolution part of the first
-  always judged). A change to `cudss_factor.gmres_refine` is checked on the GPU by solver_arpack_cudss,
-  solver_sparse_direct_cudss and fem_harmonic_cudss_device_pencil, on the host by solver_host_direct_cpu_gpu.
-- Validation: the SolverType validate reports scipy / nvmath availability at the node; for Automatic the physics checks
+- Ordering reuse (cuDSS): across factor objects only while `remember_cudss_orderings` is on (`model.study.run_study`
+  per study through `cudss_orderings_kept()`, the GUI worker); off for selftest checks and scripts, so a case never
+  plans on another case's ordering. Parked plans live in the same scope (freed at each build start); the on-disk
+  store (OPEN_SOL_CUDSS_ORDERING_CACHE) is the GUI worker's only.
+- Measure-first switches (REFACTORIZATION_PHASE, RAW_SOLVE, REORDERING_ALGORITHM; off) are turned on only after
+  `tools_profilers/time_profilers/cudss_phase_profile.py` shows a gain.
+- Time recipe: a caller sets `SolverWork.factor_scale` / `solve_scale` to its own fill over the profile curve (never
+  the SuperLU fill unless nothing better is known), `device_values` for device refreshes, `ordering_kept` for a plan
+  on a kept ordering. Stored profiles hash sparse_direct.py and cudss_factor.py (`core.time_profile._TIMED_SOURCES`):
+  an edit there outdates them.
+- Self-tests: `selftests.py` (synthetic operators vs scipy; cuDSS cases gpu only, host direct cases skipped without
+  the wrappers). `cudss_factor.gmres_refine` is checked on the GPU by solver_arpack_cudss, solver_sparse_direct_cudss
+  and fem_harmonic_cudss_device_pencil, on the host by solver_host_direct_cpu_gpu.
+- Validation: the SolverType validate reports scipy / nvmath availability at a node; for Automatic the physics checks
   report it (`definition_fdfd.direct_solver_issues`, also nlfd's) plus the size rule.
 
 ## banded (`BandedSolver`; role 'linear' of 1D models, symmetry 2.20)

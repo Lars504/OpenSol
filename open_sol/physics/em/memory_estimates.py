@@ -15,8 +15,9 @@ from ...solvers.arpack_shift_invert import (CUDSS_FACTORIZATIONS, MIXED_EIGEN_MI
                                             arnoldi_basis_size, device_arnoldi_fits)
 from ...solvers.cudss_factor import (CUDSS_SOLVE_PHASE, FactorFill, factor_device_bytes, index_map_bytes,
                                      operator_copy_bytes, refresh_peak_bytes, solve_buffer_bytes, solve_peak_bytes)
-from ...solvers.host_direct import (HOST_DIRECT_BACK_ENDS, HOST_DIRECT_FACTORIZATIONS, factor_label,
-                                    host_direct_precision, solver_host_bytes, superlu_bytes_scale)
+from ...solvers.host_direct import (HOST_DIRECT_FACTORIZATIONS, factor_label, host_direct_precision, solver_host_bytes,
+                                    superlu_bytes_scale)
+from ...solvers.sparse_direct import CUDSS_BACK_ENDS, HOST_FACTOR_BACK_ENDS
 from .definition_bloch import bloch_active_axes
 from .definition_common import FREQUENCY_DOMAIN_STUDY, _q_accum_referenced, _study_wavelengths, eigen_solved
 from .eigenfrequency import FILTER_BLOCK_COLUMNS
@@ -431,13 +432,13 @@ def fdfd_memory_estimate(polarization):
             superlu_host = not line_block_items and eigen_factorization(context.solvers) not in CUDSS_FACTORIZATIONS
             transient_items += eigen_transient
             run_items += line_block_items
-        elif back_end == 'scipy_splu' or back_end in HOST_DIRECT_BACK_ENDS:
+        elif back_end in HOST_FACTOR_BACK_ENDS:
             # MUMPS / PARDISO: the LDL^T of D A (an LU with a Bloch phase), recyclable like SuperLU (one kept factor)
             host_items = [*host_factor_items(back_end, 'SuperLU L + U factors (heuristic)', host_lu_bytes(n_cells),
                                              n_cells, entries, symmetric=not bloch_active_axes(settings_values)),
                           ('host operator copy', operator_copy)]
             superlu_host = True
-        elif back_end in ('cudss', 'cudss_mixed'):   # kept between solves (_factorization, _cudss_previous)
+        elif back_end in CUDSS_BACK_ENDS:   # kept between solves (_factorization, _cudss_previous)
             mixed = back_end == 'cudss_mixed'
             # no symmetrizer with a Bloch phase: an LU, and an adjoint solve its transpose's LU; with eps_xy D A passes
             # the asymmetry check (an LDL^T, one plan: em_fdfd_adjoint_cpu_gpu xy runs, 2026-11)
