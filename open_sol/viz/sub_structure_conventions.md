@@ -121,6 +121,20 @@ Sub file of the root `structure_conventions.md` (read that first). Visualizer an
   (slider, arrows; Record = one turn of the view); maps are drawn unlit so colours match the legend, lit only with
   relief. Colour limits default to all frames for 'time', to the shown frame for 'labelled' (independent states).
   Signed fields: diverging maps, symmetric limits; log scale only for non-negative fields.
+  Waves (the page's `// ---- waves ----` block; both feed the vertex shader's second value `aVal2`, shown value =
+  aVal uMixA + aVal2 uMixB, a constant (0, 1) where a VAO has no aVal2 buffer): phasor pages (`ViewerLayer.quadrature`,
+  all layers or none, signed quantity, never 'time' frames; data 'phasor', frame 'quadrature' on the frame's own codes,
+  whose [lo, hi] is -+ the largest modulus so every phase fits) animate values cos(wt) + quadrature sin(wt): api
+  `_phasor_partner` pairs '<base>_re' with '<base>_im' (sign -1) and '_im' with '_re' (+1), taken from the snapshots
+  beside the field or, live, rendered from kept snapshot solutions (`_snapshot_partners`; every frame on the same
+  samples, else the page stays still: explicit stored_fields often list only the _re part). Play / Speed (Hz, as
+  mode_player) turn wt, the slider steps frames without stopping it, Record = three periods. Time frames open
+  playing and, Smooth on (remembered), blend the next frame in by the playback clock's fraction (the last into the
+  first; not for angles), with `shownFrameRange` blending the per-frame colour limits too (signed time pages open on
+  'This frame'). Signed frames carry 'robust' (`ROBUST_PERCENTILE` of |value|, phasor: moduli): wave pages (phasor,
+  signed time) open the Range at their median ratio to the frame maximum when below 0.9 (min 0.3; never other pages:
+  a still lobe such as a waveguide mode would saturate) and default to the 'seismic' map until a signed map is
+  remembered. A raw session time label 't = <float> s' is shown SI-prefixed.
   Quasi-2D (page-side, no Python input): a 2D map or a set of 3D layers in one plane (a single cut) is 'planar': it
   opens face-on as the canvas shows it ((u, v) of `FieldData.axes` right / up), tightly fitted inside the readout /
   legend / axis-label insets, with relief. An axis spanning below 1 / MAX_ASPECT (4) of the largest is stretched by a

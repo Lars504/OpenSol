@@ -1389,7 +1389,8 @@ syncGeometry();
 // ---------- heading (drawn by drawHeading) and the automatic values the Plot settings panel shows ----------
 function updateReadout() {
   const F = FRAMES[state.frame];
-  const label = (F.label || '').replace(/\blambda\b/g, 'λ');
+  const label = (F.label || '').replace(/\blambda\b/g, 'λ')
+    .replace(/^t = ([-+0-9.eE]+) s$/, (all, v) => 't = ' + fmtValue(+v, 's'));   // a raw session time: SI prefix
   heading.main = KIND === 'single' ? (label || Q.label) : (label || 'frame ' + (state.frame + 1));
   const parts = [];
   if (KIND !== 'single' || label) parts.push(Q.label);
@@ -1758,7 +1759,8 @@ smoothButton.onclick = () => { wave.smooth = !wave.smooth; store('smooth', wave.
 if (SMOOTH_OK) $('speedgroup').appendChild(smoothButton);
 if (PHASOR) {
   // Play / Speed turn the phase (one cycle in 1 / hz s, as mode_player); frames are still stepped by the slider
-  $('play').style.display = ''; $('speedgroup').style.display = '';
+  $('play').style.display = ''; $('speedgroup').style.display = ''; $('framegroup').style.display = '';
+  for (const id of ['prev', 'next', 'frame', 'framev']) $(id).style.display = NF > 1 ? '' : 'none';   // one state: Play alone
   $('play').title = 'Animate the phase: the field over one period, Re[A exp(jωt)] (Space)';
   const speed = $('speed');
   speed.min = '0.05'; speed.max = '2'; speed.step = '0.05'; speed.value = String(wave.hz);
@@ -1779,13 +1781,13 @@ if (KIND === 'time' && NF > 1) state.playing = true;      // time frames open pl
 if (SMOOTH_OK && SIGNED) { state.scale = 'frame'; $('scale').value = 'frame'; }
 // waves (phasor or signed time frames): the vivid diverging map until one is chosen (remembered for signed fields)
 if ((PHASOR || SMOOTH_OK && SIGNED) && !store('cmap_signed')) { state.cmap = 'seismic'; $('cmap').value = 'seismic'; }
-{ // signed fields open with the Range at the frames' typical robust magnitude (frame 'robust', the 99.5th percentile
+{ // wave pages open with the Range at the frames' typical robust magnitude (frame 'robust', the 99.5th percentile
   // of |value|) over their largest one, so a source cell or a field enhancement does not wash the waves out; the
-  // slider shows the saturation and 100 % brings the full range back
+  // slider shows the saturation and 100 % brings the full range back (a still lobe, e.g. a waveguide mode, keeps 100 %)
   const ratios = FRAMES.filter((F) => !F.empty && F.robust > 0)
     .map((F) => F.robust / Math.max(Math.abs(F.lo), Math.abs(F.hi))).sort((a, b) => a - b);
   const typical = ratios.length ? ratios[Math.floor(ratios.length / 2)] : 1;
-  if (SIGNED && typical < 0.9) { state.range = Math.max(0.3, Math.round(100 * typical) / 100); $('range').value = String(state.range); }
+  if ((PHASOR || SMOOTH_OK && SIGNED) && typical < 0.9) { state.range = Math.max(0.3, Math.round(100 * typical) / 100); $('range').value = String(state.range); }
 }
 
 // ---------- loop ----------
